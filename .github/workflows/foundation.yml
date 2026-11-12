@@ -117,10 +117,11 @@ jobs:
         run: |
           cmake --preset debug -DRYPATH_ALLOW_NO_METAL_DEVICE=ON -DRYPATH_ALLOW_NO_METAL_RAY_TRACING=ON
           cmake --build --preset debug
-      - name: Analyze Objective-C++ Metal adapters
+      - name: Analyze Objective-C++ source
         run: |
-          python3 scripts/analyze_metal.py build/debug/compile_commands.json src/metal_backend.mm
-          python3 scripts/analyze_metal.py build/debug/compile_commands.json src/metal_geometry.mm
+          for source in src/*.mm tests/*.mm; do
+            python3 scripts/analyze_metal.py build/debug/compile_commands.json "$source"
+          done
       - name: Run Debug and Metal tests
         run: |
           ./build/debug/rypath --metal-info
