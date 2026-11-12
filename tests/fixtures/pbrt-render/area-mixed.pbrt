@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [58]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [5]
+WorldBegin
+
+LightSource "infinite" "rgb L" [0.45 0.9 1.5] "float scale" [0.2]
+
+# Back wall and floor.
+Material "diffuse" "spectrum reflectance" [360 0.35 540 0.65 830 0.45]
+Shape "trianglemesh" "point3 P" [-1.6 -1.15 5 2.3 -1.15 5 2.3 1.5 5 -1.6 1.5 5]
+    "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [-1.6 -1.15 1 2.3 -1.15 1 2.3 -1.15 5 -1.6 -1.15 5]
+    "integer indices" [0 1 2 0 2 3]
+Material "diffuse" "rgb reflectance" [0.12 0.24 0.65]
+Shape "trianglemesh" "point3 P" [-1.6 -1.15 1 -1.6 -1.15 5 -1.6 1.5 5 -1.6 1.5 1]
+    "integer indices" [0 1 2 0 2 3]
+Material "diffuse" "rgb reflectance" [0.65 0.19 0.07]
+Shape "trianglemesh" "point3 P" [2.3 -1.15 1 2.3 -1.15 5 2.3 1.5 5 2.3 1.5 1]
+    "integer indices" [0 1 2 0 2 3]
+
+# Two unequal triangles share the ceiling emitter. The side emitter faces inward.
+AttributeBegin
+    Material "diffuse" "rgb reflectance" [0.25 0.3 0.35]
+    AreaLightSource "diffuse" "rgb L" [3 1.4 0.25]
+    Shape "trianglemesh" "point3 P" [-0.9 1.45 2.5 0.9 1.45 2.5 0.25 1.45 3.6 -0.6 1.45 3.6]
+        "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+AttributeBegin
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "float scale" [0.6]
+    Shape "trianglemesh" "point3 P" [2.2 -0.75 3.3 2.2 0.7 4.2 2.2 0.4 3.25]
+        "integer indices" [0 1 2]
+AttributeEnd

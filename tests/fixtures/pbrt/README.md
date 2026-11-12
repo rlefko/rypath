@@ -13,10 +13,13 @@
 | Comparison settings | Byte-for-byte upstream input, structural preflight with default limits, zero rendering overrides |
 | Expected inventory | 8 named materials, 8 indexed triangle meshes, 36 triangles, 0 object placements, 0 input dependencies |
 | Expected result | Complete syntax and dependency inventory, incomplete checked structure, exit 2 |
-| Unsupported features | Sobol sampler, triangle pixel filter, diffuse area-light emission, eight mesh normal arrays, eight mesh UV arrays |
+| Unsupported features | Sobol sampler, triangle pixel filter, eight mesh normal arrays, eight mesh UV arrays |
 
 The web-falcor notice and Rendering Resources attribute the scene to Benedikt
 Bitterli. Rendering Resources credits Matt Pharr for converting the PBRT scenes
 to v4. Both vendored files retain their upstream bytes. [Pinned scene](https://raw.githubusercontent.com/windingwind/web-falcor/e969701f3ebc0238003150dc0c0e7c3cc93aa1fc/tests/gpu/assets/pbrt/cornell-box.pbrt),
 [pinned notice](https://raw.githubusercontent.com/windingwind/web-falcor/e969701f3ebc0238003150dc0c0e7c3cc93aa1fc/tests/gpu/assets/pbrt/LICENSE.txt),
 [Rendering Resources](https://benedikt-bitterli.me/resources/).
+
+The [render fixture manifest](../pbrt-render/README.md) records the edits to
+`cornell-box-adapted.pbrt` for matched triangle-area-light comparisons.

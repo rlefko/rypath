@@ -601,6 +601,100 @@ LightSource "infinite"
             "RGB value limits must take precedence over unsupported color spaces");
 }
 
+void area_light_translation(const fs::path &scratch) {
+    std::string source(basic);
+    source += R"(LightSource "infinite" "rgb L" [4 2 1]
+Material "diffuse" "rgb reflectance" [0 0 0]
+Attribute "light" "rgb L" [4 2 1]
+AttributeBegin
+ColorSpace "rec2020"
+AreaLightSource "diffuse" "bool twosided" true "float power" 0
+Scale -2 3 1
+)";
+    source += triangle;
+    source += triangle;
+    source += "AttributeEnd\n";
+    source += triangle;
+    source += "AreaLightSource \"diffuse\" \"float scale\" 2 \"float power\" -3\n";
+    source += triangle;
+    source += R"(AreaLightSource "diffuse" "spectrum L" [360 2 830 2]
+)";
+    source += triangle;
+    source += "AreaLightSource \"diffuse\" \"rgb L\" [0 0 0]\n";
+    const auto entry = write(scratch, "area-light.pbrt", source);
+    const auto scene = accepted(entry).scene;
+    require(scene.area_emissions.size() == 3 &&
+                scene.instance_emissions ==
+                    std::vector<std::uint32_t>{0, 0, no_area_emission, 1, 2},
+            "Placed shapes share owned emission tables without allocating for unused declarations");
+    require(scene.area_emissions[0].two_sided && !scene.area_emissions[1].two_sided &&
+                scene.instance_reverse_orientation == std::vector<std::uint32_t>{1, 1, 0, 0, 0} &&
+                scene.instance_materials[0] == scene.instance_materials[2],
+            "Area sidedness, shape orientation, and reflective material are independent");
+    require(scene.area_emissions[0].radiance == scene.environment,
+            "Area and infinite RGB L share spectral normalization and honor captured RGB space");
+    for (std::size_t i = 0; i < scene.environment.size(); ++i) {
+        near(scene.area_emissions[1].radiance[i], 2. * scene.environment[i], 1e-8,
+             "Area scale preserves RGB intensity");
+    }
+    near(pbrt_y_inner_product(scene.area_emissions[2].radiance), 1., 1e-6,
+         "Numeric area SPD normalizes by its own Y integral");
+
+    std::string defaults(basic);
+    defaults += "AreaLightSource \"diffuse\" \"string filename\" \"\"\n";
+    defaults += triangle;
+    const auto defaults_entry = write(scratch, "area-defaults.pbrt", defaults);
+    const auto default_area = accepted(defaults_entry).scene.area_emissions.at(0);
+    near(pbrt_y_inner_product(default_area.radiance), 1., 1e-6,
+         "Omitted area L uses D65 normalized to unit Y");
+    require(!default_area.two_sided && default_area.radiance.front() > 0,
+            "Area defaults are one-sided, nonzero D65");
+    Limits limits;
+    limits.total_values = 470;
+    const auto bounded = translation(defaults_entry, limits);
+    require(bounded.exit_code() == 1 && !bounded.scene &&
+                bounded.diagnostics.back().code == "limit-exceeded",
+            "Placed area emission tables obey the translation value budget");
+    const auto unused = translation(write(scratch, "area-unused.pbrt",
+                                          std::string(basic) +
+                                              "AreaLightSource \"diffuse\"\n"
+                                              "AreaLightSource \"\"\n" +
+                                              std::string(triangle)),
+                                    limits);
+    require(unused.exit_code() == 0 && unused.scene && unused.scene->area_emissions.empty() &&
+                unused.scene->instance_emissions.empty(),
+            "Unused area declarations do not consume the dense table budget");
+    const auto invalid_unused =
+        translation(write(scratch, "area-invalid-unused.pbrt",
+                          std::string(basic) +
+                              "AreaLightSource \"diffuse\" \"spectrum L\" [360 0 830 0]\n"
+                              "AreaLightSource \"\"\n" +
+                              std::string(triangle)),
+                    limits);
+    require(invalid_unused.exit_code() == 1 && !invalid_unused.scene &&
+                invalid_unused.diagnostics.front().location.line == 7 &&
+                invalid_unused.diagnostics.front().message.find("CIE Y inner product") !=
+                    std::string::npos,
+            "Unused declarations still validate numeric spectral normalization");
+
+    const auto positive =
+        translation(write(scratch, "area-positive-power.pbrt",
+                          std::string(basic) + "AreaLightSource \"diffuse\" \"float power\" 1\n" +
+                              std::string(triangle)));
+    require(positive.exit_code() == 2 && !positive.scene &&
+                positive.diagnostics.front().location.line == 7 &&
+                positive.diagnostics.front().message.find("Positive power") != std::string::npos,
+            "Positive area power receives a source-located render diagnostic");
+    const auto extreme = translation(write(scratch, "area-unrepresentable.pbrt",
+                                           std::string(basic) +
+                                               "AreaLightSource \"diffuse\"\n"
+                                               "Scale 1e30 1e30 1\n" +
+                                               std::string(triangle)));
+    require(extreme.exit_code() == 1 && !extreme.scene &&
+                extreme.diagnostics.front().location.line == 9,
+            "Area geometry that overflows in world space fails at the shape before acquisition");
+}
+
 // Keep the path arguments in the same order as the test runner's command line.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
@@ -609,10 +703,10 @@ void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
     require(checked.exit_code() == 2 && checked.document.syntax_complete &&
                 std::ranges::any_of(checked.document.diagnostics,
                                     [](const Diagnostic &diagnostic) {
-                                        return diagnostic.message.find("AreaLightSource type") !=
+                                        return diagnostic.message.find("Sampler type \"sobol\"") !=
                                                std::string::npos;
                                     }),
-            "The pinned Cornell scene must still be rejected with an area light diagnostic");
+            "The pinned Cornell scene still requires the Sobol sampler");
     const auto result = translate(checked, Location{path.string()});
     require(result.exit_code() == 2 && !result.scene,
             "Cornell must remain outside the render profile");
@@ -630,7 +724,7 @@ void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
                     (directive.name == "MakeNamedMaterial" && selected->name == "reflectance"),
                 "Unexpected Cornell RGB parameter");
         std::string scene(basic);
-        scene += is_light ? "LightSource \"infinite\"" : "Material \"diffuse\"";
+        scene += is_light ? "AreaLightSource \"diffuse\"" : "Material \"diffuse\"";
         scene += " \"rgb " + selected->name + "\" [";
         for (const auto &value : selected->values) {
             scene += value.text + ' ';
@@ -640,7 +734,7 @@ void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
         const auto translated = accepted(write(scratch, "cornell-color.pbrt", scene));
         if (is_light) {
             ++lights;
-            require(pbrt_y_inner_product(translated.scene.environment) > 1,
+            require(pbrt_y_inner_product(translated.scene.area_emissions.at(0).radiance) > 1,
                     "Cornell emission parameter retains HDR luminance");
         } else {
             ++materials;
@@ -715,6 +809,7 @@ int main(int argc, char **argv) {
         infinite_light_normalization(scratch);
         rgb_material_context(scratch);
         rgb_light_context(scratch);
+        area_light_translation(scratch);
         rejects_rgb_values_and_spaces(scratch);
         cornell_rgb_parameters(scratch, argv[2]);
         sensor();

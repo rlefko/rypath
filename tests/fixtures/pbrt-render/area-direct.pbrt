@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [7.152668749994703]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+
+# View a diffuse receiver from a narrow field of view beside a finite emitter.
+Material "diffuse" "spectrum reflectance" [360 0.2 525 0.85 830 0.35]
+Shape "trianglemesh" "point3 P" [-0.125 -0.125 2 -0.125 0.125 2 0.125 0.125 2 0.125 -0.125 2]
+    "integer indices" [0 1 2 0 2 3]
+AttributeBegin
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "spectrum L" [360 0.25 485 0.8 650 1 830 0.25]
+    Shape "trianglemesh" "point3 P" [0.25 -0.5 1 1.5 -0.5 1 0.25 0.5 1]
+        "integer indices" [0 1 2]
+AttributeEnd

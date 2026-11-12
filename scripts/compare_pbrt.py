@@ -15,25 +15,24 @@ import tempfile
 WIDTH = HEIGHT = 8
 REPLICATES = 16
 FULL = (0, 0, WIDTH, HEIGHT)
+QUADRANTS = {
+    "full": FULL,
+    "top-left": (0, 0, 4, 4),
+    "top-right": (4, 0, 8, 4),
+    "bottom-left": (0, 4, 4, 8),
+    "bottom-right": (4, 4, 8, 8),
+}
 REGIONS = {
     "background": {"full": FULL},
     "diffuse": {"full": FULL},
     "rgb-background": {"full": FULL},
     "rgb-diffuse": {"full": FULL},
-    "rgb-multibounce": {
-        "full": FULL,
-        "top-left": (0, 0, 4, 4),
-        "top-right": (4, 0, 8, 4),
-        "bottom-left": (0, 4, 4, 8),
-        "bottom-right": (4, 4, 8, 8),
-    },
-    "multibounce": {
-        "full": FULL,
-        "top-left": (0, 0, 4, 4),
-        "top-right": (4, 0, 8, 4),
-        "bottom-left": (0, 4, 4, 8),
-        "bottom-right": (4, 4, 8, 8),
-    },
+    "rgb-multibounce": QUADRANTS,
+    "multibounce": QUADRANTS,
+    "area-visible": QUADRANTS,
+    "area-direct": QUADRANTS,
+    "area-mixed": QUADRANTS,
+    "cornell-box-adapted": QUADRANTS,
 }
 
 
@@ -122,7 +121,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rypath", type=Path, required=True, help="rypath_pbrt_reference binary")
     parser.add_argument("--pbrt", type=Path, required=True, help="pinned upstream pbrt binary")
-    parser.add_argument("--fixtures", type=Path, required=True, help="owned PBRT fixture directory")
+    parser.add_argument("--fixtures", type=Path, required=True, help="PBRT render fixture directory")
     parser.add_argument("--output-dir", type=Path, required=True, help="cache for variants and PFM outputs")
     args = parser.parse_args()
     try:

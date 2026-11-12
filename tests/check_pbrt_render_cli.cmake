@@ -12,6 +12,7 @@ Integrator "path" "integer maxdepth" 1
 WorldBegin
 LightSource "infinite" "rgb L" [1 0.7 0.2]
 Material "diffuse" "rgb reflectance" [0.1 0.5 0.3]
+AreaLightSource "diffuse" "bool twosided" true
 Shape "trianglemesh" "point3 P" [-1 -1 3 1 -1 3 0 1 3]
 ]=])
 
@@ -64,6 +65,7 @@ if(exit STREQUAL "2")
 endif()
 if(NOT metal_enabled OR NOT exit STREQUAL "0" OR NOT stderr STREQUAL "" OR
    NOT stdout MATCHES "Render profile: pbrt-spectral-v1\n" OR
+   NOT stdout MATCHES "Light sampling: separate environment and uniform triangle area" OR
    NOT stdout MATCHES "Resolution: 8x6\nSamples per pixel: 3\nBatch size: 2\nSeed: 0\n" OR
    NOT stdout MATCHES "Finite path maxdepth: 1\n" OR
    NOT stdout MATCHES "Committed samples per pixel: 2/3\nCommitted samples per pixel: 3/3\n" OR
