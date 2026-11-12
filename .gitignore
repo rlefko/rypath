@@ -1,0 +1,11 @@
+.DS_Store
+/build/
+/CMakeUserPresets.json
+/.venv/
+/.cache/
+__pycache__/
+*.py[cod]
+/.rypath-local/
+/rypath-handoff/
+/rypath-handoff*.zip
+/rypath-handoff*.tar*

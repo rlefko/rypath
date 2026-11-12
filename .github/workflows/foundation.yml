@@ -1,0 +1,147 @@
+name: Foundation CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Formatting and repository policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Identify Python runtime
+        id: python
+        run: echo "version=$(python3 --version)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/pre-commit
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ steps.python.outputs.version }}-tools-${{ hashFiles('.pre-commit-config.yaml', '.github/workflows/foundation.yml') }}
+      - name: Install policy tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/quality-tools"
+          "$RUNNER_TEMP/quality-tools/bin/python" -m pip install pre-commit==4.5.1 emoji==2.15.0
+      - name: Check tracked paths and policy fixtures
+        run: |
+          "$RUNNER_TEMP/quality-tools/bin/python" scripts/check_handoff.py --tree HEAD
+          "$RUNNER_TEMP/quality-tools/bin/python" -m unittest discover -s scripts -p 'test_*.py'
+      - name: Check pull request history
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          "$RUNNER_TEMP/quality-tools/bin/python" scripts/check_handoff.py --range "$BASE_SHA" "$HEAD_SHA"
+          "$RUNNER_TEMP/quality-tools/bin/python" scripts/check_commit_subject.py --range "$BASE_SHA" "$HEAD_SHA"
+      - name: Run pre-commit checks
+        run: '"$RUNNER_TEMP/quality-tools/bin/pre-commit" run --all-files'
+
+  lint:
+    name: Clang-Tidy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: Configure compilation database
+        run: cmake --preset debug
+      - name: Analyze C++ source
+        run: |
+          clang-tidy-18 --version
+          clang-tidy-18 -p build/debug src/main.cpp
+
+  linux:
+    name: Linux Clang build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: Build and test Debug
+        run: bash scripts/check_debug.sh
+      - name: Build and test Release
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+          ctest --preset release
+      - name: Build and test with ASan and UBSan
+        run: |
+          cmake --preset asan-ubsan
+          cmake --build --preset asan-ubsan
+          ctest --preset asan-ubsan
+
+  macos:
+    name: macOS Arm64 build and tests
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: Build and test Debug
+        run: bash scripts/check_debug.sh
+
+  codeql:
+    name: CodeQL C++ analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        with:
+          languages: c-cpp
+          build-mode: manual
+      - name: Compile C++ under CodeQL tracing
+        run: |
+          cmake --preset debug -DCMAKE_CXX_COMPILER_LAUNCHER=
+          cmake --build --preset debug --clean-first
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
+        with:
+          category: /language:c-cpp
+
+  gate:
+    name: Foundation Gate
+    needs: [format, lint, linux, macos, codeql]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$JOB_RESULTS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<< "$JOB_RESULTS"
