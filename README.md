@@ -4,9 +4,10 @@ rypath is a C++20 spectral path tracer being developed for Apple Silicon through
 Metal. The first goal is progressive offline rendering; a native macOS application
 and interactive rendering follow later.
 
-**Current state: Metal execution foundations.** The executable reports Metal
-device capabilities and checks a small compute dispatch against a CPU reference.
-It does not render images or load scenes yet.
+**Current state: native geometry queries.** The backend builds Metal triangle and
+instance acceleration structures and checks closest-hit and occlusion queries
+against an independent CPU reference. The executable retains device diagnostics
+and its compute smoke test. It does not render images or load scenes yet.
 
 ## Build and run
 
@@ -33,19 +34,21 @@ UndefinedBehaviorSanitizer support. Build outputs stay under `build/`.
 Metal is enabled by default on macOS. GPU tests require device access and fail
 when a device is unavailable unless a CI run explicitly permits that condition.
 See [Metal execution](docs/metal-execution.md) for toolchain setup, portable-only
-builds, command results, and validation limits.
+builds and command results, and [geometry validation](docs/geometry.md) for the
+ray-tracing contract and capability requirements.
 
 ## Direction
 
 The renderer will use Metal native acceleration structures, spectral Monte Carlo
 transport, PBRT v4 scenes, and progressive raw accumulation. Scene compatibility,
 numerical correctness, and performance will each have explicit evidence. No
-rendering, scene-format, or target-device performance claims apply to this
-execution foundation. Ray-tracing API flags describe device capabilities;
-the smoke test exercises integer compute, not ray tracing.
+rendering, scene-format, or target-device performance claims apply yet.
+Ray-tracing API flags describe device capabilities; geometry validation runs
+through CTest, while the CLI smoke test exercises integer compute.
 
 - [Architecture and product goals](docs/architecture.md)
 - [Metal execution and validation](docs/metal-execution.md)
+- [Native geometry and reference checks](docs/geometry.md)
 - [Ordered PR plan and roadmap](docs/roadmap.md)
 - [Contributing and validation](docs/contributing.md)
 - [Current status](docs/status.md)

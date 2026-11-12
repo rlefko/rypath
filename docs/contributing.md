@@ -26,7 +26,8 @@ Each preset uses its own `build/<preset>` directory. To choose a compiler, set
 On macOS, these builds enable the Metal adapter and compile its MSL library.
 GPU tests require device access by default. See [Metal execution](metal-execution.md)
 for toolchain setup, portable-only builds, availability handling, and the required
-M4 Max validation record.
+M4 Max validation record. [Geometry checks](geometry.md) additionally require
+compute ray-tracing support and compare native queries with a portable oracle.
 
 CTest checks exact stdout, stderr, and exit status for no arguments, help,
 version, unsupported options, and excess arguments. All test presets fail when
@@ -84,8 +85,10 @@ skill for scene translation and importers. Record assumptions, primary reference
 validation evidence, and unavailable checks with the change.
 
 The macOS job compiles the Metal library, runs a native Clang analyzer pass on
-the Objective-C++ adapter, and attempts GPU tests. Only an absent device may be
-reported as an explicit skip there. CodeQL covers portable C++, not Objective-C++
+the Objective-C++ adapters, and attempts GPU tests. An absent device may be
+reported as an explicit skip there; geometry tests also have a separate opt-in
+skip for an observed lack of compute ray-tracing support. Neither option hides
+execution or comparison failures. CodeQL covers portable C++, not Objective-C++
 or MSL. A real M4 Max pass is required before presenting execution changes for
 review. Hosted macOS compilation is not M4 Max performance evidence. Keep long corpus,
 convergence, and benchmark studies outside the fast PR checks. Do not run

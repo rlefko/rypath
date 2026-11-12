@@ -16,25 +16,35 @@ if(NOT rypath_metal_tool_result STREQUAL "0")
     )
 endif()
 
-set(rypath_metal_source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/smoke.metal")
-set(rypath_metal_air "${rypath_runtime_directory}/CMakeFiles/rypath-smoke.air")
 set(rypath_metal_library "${rypath_runtime_directory}/rypath.metallib")
 set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cache")
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
-add_custom_command(
-    OUTPUT "${rypath_metal_air}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
-    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
-        "-fmodules-cache-path=${rypath_metal_cache}" -c "${rypath_metal_source}" -o "${rypath_metal_air}"
-    DEPENDS "${rypath_metal_source}"
-    VERBATIM
-)
+set(rypath_metal_air_files)
+foreach(shader IN ITEMS smoke geometry)
+    set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
+    set(air "${rypath_runtime_directory}/CMakeFiles/rypath-${shader}.air")
+    set(shader_options)
+    set(shader_dependencies "${source}")
+    if(shader STREQUAL "geometry")
+        list(APPEND shader_options -fno-fast-math)
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/geometry_wire.h")
+    endif()
+    add_custom_command(
+        OUTPUT "${air}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+        COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+            "-fmodules-cache-path=${rypath_metal_cache}" ${shader_options} -c "${source}" -o "${air}"
+        DEPENDS ${shader_dependencies}
+        VERBATIM
+    )
+    list(APPEND rypath_metal_air_files "${air}")
+endforeach()
 add_custom_command(
     OUTPUT "${rypath_metal_library}"
     COMMAND "${RYPATH_XCRUN}" --sdk macosx metal "${rypath_metal_min_version}"
-        -o "${rypath_metal_library}" "${rypath_metal_air}"
-    DEPENDS "${rypath_metal_air}"
+        -o "${rypath_metal_library}" ${rypath_metal_air_files}
+    DEPENDS ${rypath_metal_air_files}
     VERBATIM
 )
 add_custom_target(rypath_metal_shaders DEPENDS "${rypath_metal_library}")

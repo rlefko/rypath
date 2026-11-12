@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "metal_backend.hpp"
+#include "metal_execution.hpp"
 
 #import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
 
 #include <algorithm>
 #include <array>
@@ -14,35 +13,12 @@
 
 #include <mach-o/dyld.h>
 
-namespace rypath {
+namespace rypath::metal {
 namespace {
-
-constexpr std::array<std::uint32_t, 2> smoke_counts{1, 257};
-constexpr NSUInteger max_smoke_group_width = 256;
-constexpr std::uint32_t sentinel = std::numeric_limits<std::uint32_t>::max();
 
 std::string utf8(NSString *value) {
     const char *characters = value.UTF8String;
     return characters == nullptr ? std::string{} : std::string{characters};
-}
-
-MetalDeviceInfo inspect_device(id<MTLDevice> device) {
-    return {
-        .name = utf8(device.name),
-        .architecture = utf8(device.architecture.name),
-        .registry_id = device.registryID,
-        .unified_memory = static_cast<bool>(device.hasUnifiedMemory),
-        .compute_ray_tracing = static_cast<bool>(device.supportsRaytracing),
-        .render_ray_tracing = static_cast<bool>(device.supportsRaytracingFromRender),
-    };
-}
-
-MetalResult no_device() {
-    return {
-        .status = MetalStatus::no_device,
-        .device = {},
-        .diagnostic = "No system-default Metal device",
-    };
 }
 
 std::string with_error(std::string message, NSError *error) {
@@ -70,6 +46,92 @@ std::filesystem::path default_library_path(std::string &diagnostic) {
         return {};
     }
     return executable.parent_path() / "rypath.metallib";
+}
+
+} // namespace
+
+MetalDeviceInfo inspect_device(id<MTLDevice> device) {
+    return {
+        .name = utf8(device.name),
+        .architecture = utf8(device.architecture.name),
+        .registry_id = device.registryID,
+        .unified_memory = static_cast<bool>(device.hasUnifiedMemory),
+        .compute_ray_tracing = static_cast<bool>(device.supportsRaytracing),
+        .render_ray_tracing = static_cast<bool>(device.supportsRaytracingFromRender),
+    };
+}
+
+id<MTLLibrary> load_library(id<MTLDevice> device, const std::filesystem::path &library_path,
+                            std::string &diagnostic) {
+    const auto path = library_path.empty() ? default_library_path(diagnostic) : library_path;
+    if (path.empty()) {
+        return nil;
+    }
+    NSURL *url = [NSURL fileURLWithFileSystemRepresentation:path.c_str()
+                                                isDirectory:NO
+                                              relativeToURL:nil];
+    if (url == nil) {
+        diagnostic = "Metal library URL creation failed for " + path.string();
+        return nil;
+    }
+
+    NSError *error = nil;
+    id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+    if (library == nil) {
+        diagnostic = with_error("Metal library load failed for " + path.string(), error);
+    }
+    return library;
+}
+
+id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> library,
+                                          NSString *name, std::string &diagnostic) {
+    id<MTLFunction> function = [library newFunctionWithName:name];
+    if (function == nil) {
+        diagnostic = "Metal library function lookup failed for " + utf8(name);
+        return nil;
+    }
+
+    NSError *error = nil;
+    id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function
+                                                                                 error:&error];
+    if (pipeline == nil) {
+        diagnostic = with_error("Metal compute pipeline creation failed", error);
+    }
+    return pipeline;
+}
+
+NSUInteger group_width(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
+    constexpr NSUInteger width_cap = 256;
+    return std::min(
+        {width_cap, pipeline.maxTotalThreadsPerThreadgroup, device.maxThreadsPerThreadgroup.width});
+}
+
+std::string complete(id<MTLCommandBuffer> command, std::string stage) {
+    [command commit];
+    [command waitUntilCompleted];
+    const auto status = command.status;
+    if (status != MTLCommandBufferStatusCompleted) {
+        return with_error(stage + " failed with status " +
+                              std::to_string(static_cast<NSUInteger>(status)),
+                          command.error);
+    }
+    return {};
+}
+
+} // namespace rypath::metal
+
+namespace rypath {
+namespace {
+
+constexpr std::array<std::uint32_t, 2> smoke_counts{1, 257};
+constexpr std::uint32_t sentinel = std::numeric_limits<std::uint32_t>::max();
+
+MetalResult no_device() {
+    return {
+        .status = MetalStatus::no_device,
+        .device = {},
+        .diagnostic = "No system-default Metal device",
+    };
 }
 
 std::string run_dispatch(id<MTLDevice> device, id<MTLCommandQueue> queue,
@@ -113,13 +175,8 @@ std::string run_dispatch(id<MTLDevice> device, id<MTLCommandQueue> queue,
     [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
     [encoder endEncoding];
-    [command commit];
-    [command waitUntilCompleted];
-    const auto status = command.status;
-    if (status != MTLCommandBufferStatusCompleted) {
-        return with_error("Metal command buffer execution failed with status " +
-                              std::to_string(static_cast<NSUInteger>(status)),
-                          command.error);
+    if (auto error = metal::complete(command, "Metal command buffer execution"); !error.empty()) {
+        return error;
     }
 
     // The completed command makes shared buffer writes visible to the CPU.
@@ -151,7 +208,9 @@ MetalResult query_metal_device() {
         if (device == nil) {
             return no_device();
         }
-        return {.status = MetalStatus::success, .device = inspect_device(device), .diagnostic = {}};
+        return {.status = MetalStatus::success,
+                .device = metal::inspect_device(device),
+                .diagnostic = {}};
     }
 }
 
@@ -161,36 +220,14 @@ MetalResult run_metal_smoke_test(const std::filesystem::path &library_path) {
         if (device == nil) {
             return no_device();
         }
-        MetalResult result{.device = inspect_device(device), .diagnostic = {}};
-        const auto path =
-            library_path.empty() ? default_library_path(result.diagnostic) : library_path;
-        if (path.empty()) {
-            return result;
-        }
-        NSURL *url = [NSURL fileURLWithFileSystemRepresentation:path.c_str()
-                                                    isDirectory:NO
-                                                  relativeToURL:nil];
-        if (url == nil) {
-            result.diagnostic = "Metal library URL creation failed for " + path.string();
-            return result;
-        }
-
-        NSError *error = nil;
-        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        MetalResult result{.device = metal::inspect_device(device), .diagnostic = {}};
+        id<MTLLibrary> library = metal::load_library(device, library_path, result.diagnostic);
         if (library == nil) {
-            result.diagnostic = with_error("Metal library load failed for " + path.string(), error);
             return result;
         }
-        id<MTLFunction> function = [library newFunctionWithName:@"rypath_smoke"];
-        if (function == nil) {
-            result.diagnostic = "Metal library function lookup failed for rypath_smoke";
-            return result;
-        }
-        error = nil;
-        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function
-                                                                                     error:&error];
+        id<MTLComputePipelineState> pipeline =
+            metal::load_pipeline(device, library, @"rypath_smoke", result.diagnostic);
         if (pipeline == nil) {
-            result.diagnostic = with_error("Metal compute pipeline creation failed", error);
             return result;
         }
         id<MTLCommandQueue> queue = [device newCommandQueue];
@@ -198,9 +235,7 @@ MetalResult run_metal_smoke_test(const std::filesystem::path &library_path) {
             result.diagnostic = "Metal command queue creation failed";
             return result;
         }
-        const NSUInteger group_width =
-            std::min({max_smoke_group_width, pipeline.maxTotalThreadsPerThreadgroup,
-                      device.maxThreadsPerThreadgroup.width});
+        const NSUInteger group_width = metal::group_width(device, pipeline);
         if (group_width == 0) {
             result.diagnostic = "Metal compute dispatch has a zero threadgroup width limit";
             return result;
