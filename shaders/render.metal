@@ -114,14 +114,17 @@ static float sigmoid_reflectance(const device wire::Material &material, float wa
     return 0.5f + 0.5f * copysign(1.0f / sqrt(1.0f + inverse * inverse), p);
 }
 
+static uint dense_index(float wavelength) {
+    const uint nm = uint(wavelength);
+    return nm + uint(wavelength - float(nm) >= 0.5f) - 360u;
+}
+
 static float sky_radiance(const device float *environment, constant wire::Parameters &p,
                           float wavelength) {
     if (p.model == wire::demo_model) {
         return 1.0f;
     }
-    const uint nm = uint(wavelength);
-    const uint nearest = nm + uint(wavelength - float(nm) >= 0.5f);
-    return environment[nearest - 360u];
+    return environment[dense_index(wavelength)];
 }
 
 static float3 sphere(float u, float v) {
@@ -166,9 +169,29 @@ static float3 round_out(float3 position, float3 n) {
     return position;
 }
 
-static bool spawn_point(ray incoming, float t, float2 uv, float3 p0, float3 p1, float3 p2,
-                        const device wire::Instance &instance, thread float3 &n,
-                        thread float3 &out) {
+static float triangle_extent(float3 e1, float3 e2) {
+    const float3 extent = max(abs(e1), max(abs(e2), abs(e2 - e1)));
+    return max(extent.x, max(extent.y, extent.z));
+}
+
+struct SurfacePoint {
+    float3 position;
+    float3 error;
+    float3 normal;
+    float area;
+    float world_extent;
+};
+
+enum class PointSource { native_hit, area_sample };
+
+static bool surface_point(float2 uv, const device wire::Instance &instance, uint primitive,
+                          const device wire::Point *positions,
+                          const device wire::Triangle *triangles, PointSource source,
+                          thread SurfacePoint &point) {
+    const wire::Triangle triangle = triangles[instance.triangle_begin + primitive];
+    const float3 p0 = unpack(positions[instance.vertex_begin + triangle.vertices[0]]);
+    const float3 p1 = unpack(positions[instance.vertex_begin + triangle.vertices[1]]);
+    const float3 p2 = unpack(positions[instance.vertex_begin + triangle.vertices[2]]);
     const float3 ax(instance.matrix[0], instance.matrix[1], instance.matrix[2]);
     const float3 ay(instance.matrix[4], instance.matrix[5], instance.matrix[6]);
     const float3 az(instance.matrix[8], instance.matrix[9], instance.matrix[10]);
@@ -182,41 +205,93 @@ static bool spawn_point(ray incoming, float t, float2 uv, float3 p0, float3 p1, 
     if (!(normal_squared > 0.0f) || !isfinite(normal_squared)) {
         return false;
     }
-    n = cross_edges / sqrt(normal_squared);
+    const float normal_length = sqrt(normal_squared);
+    point.area = 0.5f * normal_length;
+    point.world_extent = triangle_extent(world_e1, world_e2);
+    point.normal = cross_edges / normal_length;
     if (instance.reverse_orientation != 0) {
-        n = -n;
-    }
-    if (dot(n, incoming.direction) > 0.0f) {
-        n = -n;
+        point.normal = -point.normal;
     }
     const float3 local = p0 + (uv.x * e1 + uv.y * e2);
-    const float3 world = float3(dot(ax, local), dot(ay, local), dot(az, local)) + shift;
-    // The barycentric allowance comes from the bounded geometry fixtures. Metal
-    // does not specify a universal native-traversal error bound.
-    constexpr float barycentric_allowance = 64.0f * 0x1.0p-23f;
-    const float3 extent = max(abs(e1), max(abs(e2), abs(e2 - e1)));
-    const float max_extent = max(extent.x, max(extent.y, extent.z));
-    // Allow for native intersection arithmetic across axes, even for a plane
-    // whose vertices have an exact zero along the normal. This extent-scaled
-    // allowance is validated on the bounded fixtures.
-    const float traversal_error = gamma_bound(7.0f) * max_extent;
-    const float3 local_error = gamma_bound(7.0f) * (abs(p0) + abs(uv.x * e1) + abs(uv.y * e2)) +
-                               barycentric_allowance * (abs(e1) + abs(e2)) + traversal_error;
+    point.position = float3(dot(ax, local), dot(ay, local), dot(az, local)) + shift;
+    float3 local_error = gamma_bound(7.0f) * (abs(p0) + abs(uv.x * e1) + abs(uv.y * e2));
+    if (source == PointSource::native_hit) {
+        // These allowances cover error in reconstructing a native hit. A light
+        // sample's barycentrics are exact on its sampling grid, so its local
+        // error comes from interpolation alone.
+        constexpr float barycentric_allowance = 64.0f * 0x1.0p-23f;
+        const float traversal_error = gamma_bound(7.0f) * triangle_extent(e1, e2);
+        local_error = (local_error + barycentric_allowance * (abs(e1) + abs(e2))) + traversal_error;
+    }
     const float3 error_input = local_error + gamma_bound(4.0f) * abs(local);
-    const float3 world_error =
+    point.error =
         float3(dot(abs(ax), error_input), dot(abs(ay), error_input), dot(abs(az), error_input)) +
         gamma_bound(4.0f) * abs(shift);
+    return all(isfinite(point.position)) && all(isfinite(point.error)) &&
+           all(isfinite(point.normal));
+}
+
+static float3 spawn_origin(ray incoming, float t, SurfacePoint point, float3 n) {
     const float3 ray_position = fma(float3(t), incoming.direction, incoming.origin);
     // The ray evaluation can cancel near the origin. Bound its rounding error
     // from the magnitudes of the operands before cancellation.
     const float3 ray_error =
         gamma_bound(2.0f) * (abs(t * incoming.direction) + abs(incoming.origin));
-    const float3 error = world_error + abs(world - ray_position) + ray_error;
-    if (!all(isfinite(world)) || !all(isfinite(error)) || !all(isfinite(n))) {
-        return false;
+    const float3 error = point.error + abs(point.position - ray_position) + ray_error;
+    return round_out(point.position + dot(abs(n), error) * n, n);
+}
+
+// Reflect independent midpoint coordinates into the triangle. The unequal
+// grids make the seam unreachable and preserve three positive binary32 weights.
+static float2 triangle_uv(uint u_word, uint v_word) {
+    constexpr uint grid = 1u << 24;
+    uint u = 2u * (u_word >> 9) + 1u;
+    uint v = 4u * (v_word >> 10) + 2u;
+    if (u + v > grid) {
+        u = grid - u;
+        v = grid - v;
     }
-    out = round_out(world + dot(abs(n), error) * n, n);
-    return all(isfinite(out));
+    return float2(u, v) * 0x1.0p-24f;
+}
+
+struct AreaWeights {
+    float direct_factor;
+    float hit_weight;
+};
+
+static AreaWeights area_weights(float area, float light_cosine, float bsdf_pdf,
+                                float distance_squared, uint slots) {
+    // p_bsdf / p_light = (slots * area * |cos_light| * p_bsdf) / r^2.
+    // Work with the smaller ratio so neither a large PDF nor its square overflows.
+    const float a = (float(slots) * area) * light_cosine * bsdf_pdf;
+    const float b = distance_squared;
+    if (!(a >= FLT_MIN && b >= FLT_MIN) || !isfinite(a) || !isfinite(b)) {
+        return {NAN, NAN};
+    }
+    const float ratio = min(a, b) / max(a, b);
+    if (!(ratio >= FLT_MIN)) {
+        return {NAN, NAN};
+    }
+    const float square = ratio * ratio;
+    const float denominator = 1.0f + square;
+    // When a <= b, the square is the numerator of the hit contribution.
+    // When a > b, its underflow only rounds the denominator to one.
+    const float hit_weight =
+        a > b ? 1.0f / denominator : (square >= FLT_MIN ? square / denominator : NAN);
+    return {ratio / denominator, hit_weight};
+}
+
+static float3 shadow_segment_direction(float3 origin, float3 delta, SurfacePoint target,
+                                       float signed_cosine) {
+    const float3 n = signed_cosine > 0.0f ? target.normal : -target.normal;
+    // Include connection-ray arithmetic as well as the sampled point's error.
+    // Traversal of the connection still needs an empirical allowance. Use the
+    // world-space extent so stretching a local tangent axis cannot enlarge
+    // the normal offset after the instance transform cancels that stretch.
+    const float3 error = target.error + gamma_bound(2.0f) * (abs(origin) + abs(delta)) +
+                         gamma_bound(7.0f) * target.world_extent;
+    const float3 endpoint = round_out(target.position + dot(abs(n), error) * n, n);
+    return endpoint - origin;
 }
 
 kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
@@ -243,6 +318,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 const device wire::Material *materials [[buffer(6)]],
                                 const device float *environment [[buffer(7)]],
                                 const device wire::SpectralKnot *knots [[buffer(8)]],
+                                const device wire::AreaEmission *emissions [[buffer(9)]],
+                                const device wire::Emitter *emitters [[buffer(10)]],
                                 uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
@@ -258,6 +335,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
     shadow.accept_any_intersection(true);
     float throughput = 1.0f;
     float escape_weight = 1.0f;
+    float previous_bsdf_pdf = 0.0f;
     const float E = sky_radiance(environment, p, sample.wavelength);
 
     while (true) {
@@ -284,8 +362,46 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::invalid_hit;
             break;
         }
-        // A miss can still contribute at the authored depth. A valid opaque
-        // hit at that depth contributes no further direct or indirect light.
+        SurfacePoint point;
+        const bool emissive = instance.emission != wire::no_emission;
+        if (emissive) {
+            if (instance.emission >= p.emission_count || p.emitter_count == 0u) {
+                sample.status = wire::invalid_hit;
+                break;
+            }
+            if (!surface_point(hit.triangle_barycentric_coord, instance, hit.primitive_id,
+                               positions, triangles, PointSource::native_hit, point)) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            const device wire::AreaEmission &emission = emissions[instance.emission];
+            const float Le = emission.radiance[dense_index(sample.wavelength)];
+            if (Le > 0.0f &&
+                (emission.two_sided != 0u || dot(point.normal, -incoming.direction) >= 0.0f)) {
+                float weight = 1.0f;
+                if (bounce != 0u) {
+                    // incoming.origin is the same spawned reference point used
+                    // by the competing area proposal at the previous scatter.
+                    const float3 delta = point.position - incoming.origin;
+                    const float distance_squared = dot(delta, delta);
+                    if (!(distance_squared >= FLT_MIN) || !isfinite(distance_squared)) {
+                        sample.status = wire::invalid_arithmetic;
+                        break;
+                    }
+                    const float light_cosine =
+                        abs(dot(point.normal, -delta / sqrt(distance_squared)));
+                    weight = area_weights(point.area, light_cosine, previous_bsdf_pdf,
+                                          distance_squared, p.emitter_slots)
+                                 .hit_weight;
+                }
+                if (!isfinite(weight)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                sample.radiance += throughput * (weight * Le);
+            }
+        }
+        // Emission at this endpoint has already contributed at authored depth.
         if (p.model == wire::pbrt_model && bounce >= p.max_depth) {
             break;
         }
@@ -317,14 +433,15 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::emergency_depth;
             break;
         }
-        const wire::Triangle triangle = triangles[instance.triangle_begin + hit.primitive_id];
-        const float3 p0 = unpack(positions[instance.vertex_begin + triangle.vertices[0]]);
-        const float3 p1 = unpack(positions[instance.vertex_begin + triangle.vertices[1]]);
-        const float3 p2 = unpack(positions[instance.vertex_begin + triangle.vertices[2]]);
-        float3 n;
-        float3 origin;
-        if (!spawn_point(incoming, hit.distance, hit.triangle_barycentric_coord, p0, p1, p2,
-                         instance, n, origin)) {
+        if (!emissive && !surface_point(hit.triangle_barycentric_coord, instance, hit.primitive_id,
+                                        positions, triangles, PointSource::native_hit, point)) {
+            sample.status = wire::invalid_arithmetic;
+            break;
+        }
+        const float3 n =
+            dot(point.normal, incoming.direction) > 0.0f ? -point.normal : point.normal;
+        const float3 origin = spawn_origin(incoming, hit.distance, point, n);
+        if (!all(isfinite(origin))) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -341,6 +458,65 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         }
 
         const uint4 bsdf_words = philox(base + uint4(0, 0, 0, 1 + 2 * bounce), key);
+        // A null slot intentionally contributes zero. This gives every emitter
+        // an exact dyadic PMF and avoids altering the BSDF and sky streams.
+        const uint selected = bsdf_words.w & (p.emitter_slots - 1u);
+        if (selected < p.emitter_count) {
+            const wire::Emitter emitter = emitters[selected];
+            if (emitter.instance >= p.instance_count) {
+                sample.status = wire::invalid_hit;
+                break;
+            }
+            const device wire::Instance &light_instance = instances[emitter.instance];
+            if (emitter.primitive >= light_instance.triangle_count ||
+                light_instance.emission >= p.emission_count) {
+                sample.status = wire::invalid_hit;
+                break;
+            }
+            const device wire::AreaEmission &emission = emissions[light_instance.emission];
+            const float Le = emission.radiance[dense_index(sample.wavelength)];
+            // A flat Lambertian triangle has no transport to its own interior.
+            const bool same_triangle =
+                emitter.instance == hit.instance_id && emitter.primitive == hit.primitive_id;
+            if (Le > 0.0f && !same_triangle) {
+                SurfacePoint target;
+                if (!surface_point(triangle_uv(light_words.z, light_words.w), light_instance,
+                                   emitter.primitive, positions, triangles,
+                                   PointSource::area_sample, target)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                const float3 delta = target.position - origin;
+                const float distance_squared = dot(delta, delta);
+                if (!(distance_squared >= FLT_MIN) || !isfinite(distance_squared)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                const float3 direction = delta / sqrt(distance_squared);
+                const float receiver_cosine = dot(n, direction);
+                const float emitter_cosine = dot(target.normal, -direction);
+                if (receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
+                    (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
+                    const float factor =
+                        area_weights(target.area, abs(emitter_cosine), receiver_cosine / pi,
+                                     distance_squared, p.emitter_slots)
+                            .direct_factor;
+                    const float3 segment =
+                        shadow_segment_direction(origin, delta, target, emitter_cosine);
+                    const float progress = dot(segment, direction);
+                    if (!isfinite(factor) || !all(isfinite(segment)) || !(progress > 0.0f) ||
+                        !isfinite(progress)) {
+                        sample.status = wire::invalid_arithmetic;
+                        break;
+                    }
+                    const ray connection(origin, segment, 0.0f, 0x1.fffffep-1f);
+                    if (shadow.intersect(connection, scene, all_visible).type ==
+                        intersection_type::none) {
+                        sample.radiance += (throughput * rho) * (factor * Le);
+                    }
+                }
+            }
+        }
         ++sample.scatterings;
         throughput *= rho;
         if (sample.scatterings >= 3) {
@@ -356,6 +532,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         escape_weight = bsdf_weight(cosine);
+        previous_bsdf_pdf = cosine / pi;
         incoming = ray(origin, wi);
     }
 

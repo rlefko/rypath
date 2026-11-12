@@ -126,6 +126,7 @@ struct Shape {
     MaterialBinding material;
     bool reverse_orientation = false;
     std::uint32_t mesh_index = 0;
+    std::shared_ptr<const Descriptor> area_light;
 };
 struct Object {
     std::string name;
@@ -142,6 +143,7 @@ struct Scene {
     std::vector<Descriptor> named_materials;
     std::vector<std::shared_ptr<const Descriptor>> inline_materials;
     std::vector<Descriptor> lights;
+    std::vector<std::shared_ptr<const Descriptor>> area_lights;
     std::vector<Shape> shapes;
     std::vector<Object> objects;
     std::vector<Placement> placements;

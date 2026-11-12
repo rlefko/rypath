@@ -312,6 +312,14 @@ constexpr std::array light_fields{
     Field{"filename", "string", 1, false, false, true},
 };
 
+constexpr std::array area_light_fields{
+    light_fields[0],
+    light_fields[1],
+    Field{"twosided", "bool"},
+    Field{"power", "float"},
+    Field{"filename", "string"},
+};
+
 constexpr std::array mesh_fields{
     Field{"P", "point3", 3, true, true},
     Field{"indices", "integer", 3, true},
@@ -393,6 +401,7 @@ struct GraphicsState {
     TransformSet transform{};
     std::array<bool, 2> active{true, true};
     MaterialBinding material;
+    std::shared_ptr<const Descriptor> area_light;
     std::string color_space = "srgb";
     bool reverse = false;
 };
@@ -755,12 +764,16 @@ void Interpreter::scan_after_include(const Directive &directive) {
     } else if (name == "Texture") {
         dependencies(directive, "texture", directive.arguments[2].text);
     } else if (name == "LightSource" || name == "AreaLightSource") {
-        dependencies(directive, "light", argument);
-        if (name == "AreaLightSource" && argument == "diffuse") {
-            unsupported(directive.location,
-                        "AreaLightSource type \"diffuse\" is outside the structural profile");
+        if (name == "AreaLightSource" && argument.empty()) {
+            if (!directive.parameters.empty()) {
+                error("unused-parameter", directive.parameters.front().location,
+                      "An empty area light declaration takes no parameters");
+            }
+            return;
         }
-        if (name == "LightSource" && argument == "infinite") {
+        dependencies(directive, "light", argument);
+        if ((name == "LightSource" && argument == "infinite") ||
+            (name == "AreaLightSource" && argument == "diffuse")) {
             if (const auto *radiance = select(directive, {}, light_fields.front())) {
                 if (charge_validation(radiance->values.size(), radiance->location)) {
                     parameter_dependencies(*radiance);
@@ -831,10 +844,18 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
                 error("missing-parameter", directive.location,
                       "Missing required parameter \"" + std::string(field.name) + "\"");
             }
-        } else if (field_valid(field, *parameter)) {
+        } else {
+            const bool valid = field_valid(field, *parameter);
+            // A malformed cardinality can still name discoverable inputs. The
+            // validation charge bounds this scan even for inherited parameters.
+            if (!validation_exhausted_) {
+                parameter_dependencies(*parameter,
+                                       field.type == "float-texture" ? "float" : "spectrum");
+            }
+            if (!valid) {
+                continue;
+            }
             effective.emplace(field.name, parameter);
-            parameter_dependencies(*parameter,
-                                   field.type == "float-texture" ? "float" : "spectrum");
             if (field.deferred || parameter->type == "texture" ||
                 (parameter->type == "spectrum" &&
                  parameter->values.front().kind == ValueKind::string &&
@@ -1173,19 +1194,38 @@ void Interpreter::material(const Directive &directive) {
 
 void Interpreter::light(const Directive &directive) {
     const string_view type = directive.arguments.front().text;
-    dependencies(directive, "light", type);
-    if (directive.name == "AreaLightSource" && type.empty()) {
+    const bool area = directive.name == "AreaLightSource";
+    if (area && type.empty()) {
+        state_.area_light.reset();
         if (!directive.parameters.empty()) {
             error("unused-parameter", directive.parameters.front().location,
                   "An empty area light declaration takes no parameters");
         }
         return;
     }
-    if (directive.name != "LightSource" || type != "infinite") {
+    dependencies(directive, "light", type);
+    if (area && type == "diffuse") {
+        // The declaration captures the parameter dictionary. The following shape owns its pose.
+        Descriptor descriptor = describe(directive, false);
+        const auto fields = validate(descriptor, directive, "light", area_light_fields);
+        if (const auto filename = fields.find("filename");
+            filename != fields.end() && !filename->second->values.front().text.empty()) {
+            if (fields.contains("L")) {
+                error("invalid-parameter", filename->second->location,
+                      "A diffuse area light cannot specify both L and a filename");
+            } else {
+                unsupported(
+                    filename->second->location,
+                    "Diffuse area light emission images are outside the structural profile");
+            }
+        }
+        state_.area_light = std::make_shared<const Descriptor>(std::move(descriptor));
+        scene_.area_lights.push_back(state_.area_light);
+        return;
+    }
+    if (area || type != "infinite") {
         const bool known =
-            directive.name == "AreaLightSource"
-                ? type == "diffuse"
-                : one_of(type, {"point", "spot", "goniometric", "projection", "distant"});
+            !area && one_of(type, {"point", "spot", "goniometric", "projection", "distant"});
         deferred_type(directive, type, known, "light");
         return;
     }
@@ -1203,6 +1243,10 @@ void Interpreter::light(const Directive &directive) {
 void Interpreter::shape(const Directive &directive) {
     const string_view type = directive.arguments.front().text;
     dependencies(directive, "shape", type);
+    if (current_object_ && state_.area_light) {
+        unsupported(directive.location,
+                    "Diffuse area lights on shapes inside object definitions are unsupported");
+    }
     if (type != "trianglemesh") {
         if (type == "plymesh") {
             ++result_.inventory.meshes;
@@ -1292,7 +1336,8 @@ void Interpreter::shape(const Directive &directive) {
     result_.inventory.triangles += triangle_count;
     const auto mesh_index = static_cast<std::uint32_t>(scene_.geometry.meshes.size());
     scene_.geometry.meshes.push_back(std::move(checked.meshes.front()));
-    Shape checked_shape{std::move(descriptor), state_.material, state_.reverse, mesh_index};
+    Shape checked_shape{std::move(descriptor), state_.material, state_.reverse, mesh_index,
+                        state_.area_light};
     if (current_object_) {
         scene_.objects[*current_object_].shapes.push_back(std::move(checked_shape));
     } else {

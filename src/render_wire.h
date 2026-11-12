@@ -18,6 +18,7 @@ using Word = std::uint32_t;
 enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_hit = 3 };
 enum : Word { demo_model = 0, pbrt_model = 1 };
 enum : Word { sampled_material = 0, constant_material = 1, rgb_sigmoid_material = 2 };
+enum : Word { no_emission = 0xffffffffu };
 
 struct Point {
     float x;
@@ -46,6 +47,15 @@ struct Instance {
     Word triangle_count;
     Word material;
     Word reverse_orientation;
+    Word emission;
+};
+struct AreaEmission {
+    float radiance[471];
+    Word two_sided;
+};
+struct Emitter {
+    Word instance;
+    Word primitive;
 };
 struct Parameters {
     Point origin;
@@ -69,6 +79,9 @@ struct Parameters {
     Word max_depth;
     Word material_count;
     Word knot_count;
+    Word emission_count;
+    Word emitter_count;
+    Word emitter_slots;
 };
 struct Sample {
     Word status;
@@ -94,16 +107,26 @@ static_assert(sizeof(Material) == 60 && alignof(Material) == 4 &&
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 68 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 72 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
-                  __builtin_offsetof(Instance, reverse_orientation) == 64,
+                  __builtin_offsetof(Instance, reverse_orientation) == 64 &&
+                  __builtin_offsetof(Instance, emission) == 68,
               "render instance layout");
-static_assert(sizeof(Parameters) == 144 && alignof(Parameters) == 4 &&
+static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
+                  __builtin_offsetof(AreaEmission, two_sided) == 1884,
+              "render area emission layout");
+static_assert(sizeof(Emitter) == 8 && alignof(Emitter) == 4 &&
+                  __builtin_offsetof(Emitter, primitive) == 4,
+              "render emitter layout");
+static_assert(sizeof(Parameters) == 156 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
                   __builtin_offsetof(Parameters, lane_count) == 120 &&
                   __builtin_offsetof(Parameters, model) == 128 &&
-                  __builtin_offsetof(Parameters, knot_count) == 140,
+                  __builtin_offsetof(Parameters, knot_count) == 140 &&
+                  __builtin_offsetof(Parameters, emission_count) == 144 &&
+                  __builtin_offsetof(Parameters, emitter_count) == 148 &&
+                  __builtin_offsetof(Parameters, emitter_slots) == 152,
               "render parameter layout");
 static_assert(sizeof(Sample) == 44 && alignof(Sample) == 4 &&
                   __builtin_offsetof(Sample, wavelength) == 16 &&

@@ -105,6 +105,8 @@ class Translator {
     std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
                                                       string_view name, double maximum);
     bool supports_rgb_space(string_view color_space, const Location &source);
+    bool emission(const Descriptor &descriptor, double light_multiplier,
+                  std::array<float, 471> &dense);
     void light(const Descriptor &descriptor);
     std::uint32_t material(const Descriptor &descriptor);
     void geometry();
@@ -373,7 +375,7 @@ std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &
     if (outside_range) {
         unsupported(outside_range->location, name == "reflectance"
                                                  ? "Diffuse reflectance must be within [0, 1]"
-                                                 : "Infinite-light spectrum must be nonnegative");
+                                                 : "Emission spectrum must be nonnegative");
         return std::nullopt;
     }
     return knots;
@@ -388,29 +390,28 @@ bool Translator::supports_rgb_space(string_view color_space, const Location &sou
     return false;
 }
 
-void Translator::light(const Descriptor &descriptor) {
+bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
+                          std::array<float, 471> &dense) {
     const auto scale = narrow(descriptor, "scale", 1);
-    const auto illuminance = narrow(descriptor, "illuminance", -1);
     const auto [selected, color_space] = descriptor.effective_parameter("L");
-    auto &dense = scene_.environment;
     const auto &source = selected ? selected->location : descriptor.authored.location;
     double normalization = 0;
     float rgb_scale = 1;
     if (!selected || selected->type == "rgb") {
         if (selected) {
             if (!charge_spectral_values(*selected)) {
-                return;
+                return false;
             }
             const auto &peak = *std::ranges::max_element(selected->values, {}, &Value::number);
             if (peak.number > std::numeric_limits<float>::max() / 2.) {
                 invalid(peak.location,
-                        "Twice the maximum infinite-light RGB component overflows binary32");
-                return;
+                        "Twice the maximum emission RGB component overflows binary32");
+                return false;
             }
             rgb_scale = 2 * static_cast<float>(peak.number);
         }
         if (!supports_rgb_space(selected ? color_space : descriptor.color_space, source)) {
-            return;
+            return false;
         }
         dense = pbrt_d65();
         // PBRT's photometric normalization uses the RGB spectrum's base illuminant.
@@ -425,8 +426,8 @@ void Translator::light(const Descriptor &descriptor) {
             }
             const auto tint = reconstruct_srgb(rgb);
             if (!tint) {
-                invalid(source, "Infinite-light RGB reconstruction failed");
-                return;
+                invalid(source, "Emission RGB reconstruction failed");
+                return false;
             }
             for (std::size_t i = 0; i < dense.size(); ++i) {
                 dense[i] *= evaluate_srgb(*tint, 360.f + static_cast<float>(i));
@@ -435,7 +436,7 @@ void Translator::light(const Descriptor &descriptor) {
     } else {
         auto knots = spectrum(descriptor, "L", std::numeric_limits<double>::infinity());
         if (!knots) {
-            return;
+            return false;
         }
         SpectralMaterial curve;
         curve.knots = std::move(*knots);
@@ -445,24 +446,31 @@ void Translator::light(const Descriptor &descriptor) {
         }
         normalization = pbrt_y_inner_product(dense);
     }
-    if (!scale || !illuminance) {
-        return;
+    if (!scale) {
+        return false;
     }
     if (!(normalization > 0 && std::isfinite(normalization))) {
-        invalid(source, "Infinite-light spectrum requires a positive finite CIE Y inner product");
-        return;
+        invalid(source, "Emission spectrum requires a positive finite CIE Y inner product");
+        return false;
     }
-    const double amplitude = static_cast<double>(rgb_scale) * *scale *
-                             (*illuminance > 0 ? *illuminance / std::numbers::pi : 1.) /
-                             normalization;
+    const double amplitude =
+        static_cast<double>(rgb_scale) * *scale * light_multiplier / normalization;
     for (auto &value : dense) {
         const double normalized = value * amplitude;
         if (!float_representable(normalized)) {
-            invalid(source, "Normalized infinite-light spectrum overflows binary32");
-            return;
+            invalid(source, "Normalized emission spectrum overflows binary32");
+            return false;
         }
         value = static_cast<float>(normalized);
     }
+    return true;
+}
+
+void Translator::light(const Descriptor &descriptor) {
+    const auto illuminance = narrow(descriptor, "illuminance", -1);
+    const double multiplier =
+        illuminance && *illuminance > 0 ? *illuminance / std::numbers::pi : 1.;
+    emission(descriptor, multiplier, scene_.environment);
 }
 
 std::uint32_t Translator::material(const Descriptor &descriptor) {
@@ -506,9 +514,10 @@ void Translator::geometry() {
     if (geometry.instances.size() > limits_.total_values ||
         geometry.meshes.size() > limits_.total_values ||
         input_.inline_materials.size() > limits_.directives ||
-        input_.named_materials.size() > limits_.directives) {
+        input_.named_materials.size() > limits_.directives ||
+        input_.area_lights.size() > limits_.directives) {
         issue(Severity::error, "limit-exceeded", entry_,
-              "Translated geometry or material limit exceeded");
+              "Translated geometry, material, or light limit exceeded");
         return;
     }
     std::size_t remaining = limits_.total_values;
@@ -553,12 +562,18 @@ void Translator::geometry() {
     struct MeshBinding {
         std::uint32_t material = 0;
         bool reverse_orientation = false;
+        const Shape *emissive_shape = nullptr;
     };
     std::vector<MeshBinding> bindings(geometry.meshes.size());
+    std::map<const Descriptor *, std::uint32_t> area_lights;
     const auto bind = [&](const Shape &shape) {
         const auto &binding = shape.material;
         auto &mesh = bindings[shape.mesh_index];
         mesh.reverse_orientation = shape.reverse_orientation;
+        if (shape.area_light) {
+            mesh.emissive_shape = &shape;
+            area_lights.try_emplace(shape.area_light.get(), no_area_emission);
+        }
         if (!binding.name->empty()) {
             mesh.material = named.at(*binding.name);
         } else if (binding.inline_material) {
@@ -570,9 +585,39 @@ void Translator::geometry() {
         std::ranges::for_each(object.shapes, bind);
     }
 
+    for (const auto &descriptor : input_.area_lights) {
+        if (diagnostics_.diagnostics_truncated) {
+            return;
+        }
+        const bool positive_power = number(*descriptor, "power", -1) > 0;
+        if (positive_power) {
+            unsupported(location(*descriptor, "power"),
+                        "Positive power for diffuse area lights is unsupported");
+        }
+        AreaEmission area;
+        area.two_sided = boolean(*descriptor, "twosided", false);
+        const auto placed = area_lights.find(descriptor.get());
+        if (!emission(*descriptor, 1., area.radiance) || positive_power ||
+            placed == area_lights.end()) {
+            continue;
+        }
+        if (area.radiance.size() > limits_.total_values - spectral_values_ ||
+            scene_.area_emissions.size() >= no_area_emission) {
+            issue(Severity::error, "limit-exceeded", descriptor->authored.location,
+                  "Translated area light table limit exceeded");
+            return;
+        }
+        spectral_values_ += area.radiance.size();
+        placed->second = static_cast<std::uint32_t>(scene_.area_emissions.size());
+        scene_.area_emissions.push_back(area);
+    }
+
     scene_.geometry = geometry;
     scene_.instance_materials.reserve(geometry.instances.size());
     scene_.instance_reverse_orientation.reserve(geometry.instances.size());
+    if (!area_lights.empty()) {
+        scene_.instance_emissions.reserve(geometry.instances.size());
+    }
     for (const auto &instance : geometry.instances) {
         const auto &binding = bindings[instance.mesh_index];
         scene_.instance_materials.push_back(binding.material);
@@ -580,6 +625,18 @@ void Translator::geometry() {
         // edge cross product has an additional sign for a mirrored transform.
         const bool mirrored = handedness(instance.transform) < 0;
         scene_.instance_reverse_orientation.push_back(binding.reverse_orientation != mirrored);
+        if (!area_lights.empty()) {
+            const auto *shape = binding.emissive_shape;
+            scene_.instance_emissions.push_back(shape ? area_lights.at(shape->area_light.get())
+                                                      : no_area_emission);
+            if (shape) {
+                const auto message = validate_area_geometry(geometry.meshes[instance.mesh_index],
+                                                            instance.transform);
+                if (!message.empty()) {
+                    invalid(shape->descriptor.authored.location, message);
+                }
+            }
+        }
     }
 }
 
