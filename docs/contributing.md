@@ -28,6 +28,8 @@ GPU tests require device access by default. See [Metal execution](metal-executio
 for toolchain setup, portable-only builds, availability handling, and the required
 M4 Max validation record. [Geometry checks](geometry.md) additionally require
 compute ray-tracing support and compare native queries with a portable oracle.
+[Rendering tests](rendering.md) validate spectral sampling, atomic film batches,
+analytic expectations, independent CPU/GPU agreement, convergence, and PNG output.
 
 CTest checks exact stdout, stderr, and exit status for no arguments, help,
 version, unsupported options, and excess arguments. All test presets fail when

@@ -11,7 +11,10 @@ function(add_cli_test name expected_exit expected_stdout expected_stderr)
     set_tests_properties("cli.${name}" PROPERTIES TIMEOUT 30)
 endfunction()
 
-set(help_text "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n")
+string(CONCAT help_text
+    "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
+    "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
+    "              [--samples 128] [--batch-size 8] [--seed 1]\n")
 set(error_text "rypath: unsupported arguments\nTry 'rypath --help' for usage.\n")
 
 add_cli_test(no_arguments 0 "${help_text}" "")
@@ -21,6 +24,39 @@ add_cli_test(unknown_argument 1 "" "${error_text}" --unknown)
 add_cli_test(extra_argument 1 "" "${error_text}" --help --version)
 add_cli_test(metal_combined_arguments 1 "" "${error_text}" --metal-info --metal-smoke-test)
 add_cli_test(metal_extra_argument 1 "" "${error_text}" --metal-smoke-test extra)
+add_cli_test(render_missing_output 1 "" "rypath: --render-demo requires --output PATH\n"
+    --render-demo)
+add_cli_test(render_duplicate 1 "" "rypath: duplicate option --seed\n"
+    --render-demo --output unused.png --seed 1 --seed 2)
+add_cli_test(render_unknown 1 "" "${error_text}"
+    --render-demo --output unused.png --unknown value)
+add_cli_test(render_combined_modes 1 "" "${error_text}"
+    --metal-info --render-demo --output unused.png)
+add_cli_test(render_malformed_width 1 "" "rypath: invalid unsigned integer for --width\n"
+    --render-demo --output unused.png --width 12px)
+add_cli_test(render_width_overflow 1 "" "rypath: invalid unsigned integer for --width\n"
+    --render-demo --output unused.png --width 4294967296)
+add_cli_test(render_seed_overflow 1 "" "rypath: invalid unsigned integer for --seed\n"
+    --render-demo --output unused.png --seed 18446744073709551616)
+add_cli_test(render_total_overflow 1 "" "rypath: Total render sample count exceeds 64-bit capacity\n"
+    --render-demo --output unused.png --width 2 --height 1 --samples 18446744073709551615)
+add_cli_test(render_signed_samples 1 "" "rypath: invalid unsigned integer for --samples\n"
+    --render-demo --output unused.png --samples -1)
+
+add_test(NAME cli.render_demo
+    COMMAND "${CMAKE_COMMAND}"
+        "-Dexecutable=$<TARGET_FILE:rypath>"
+        "-Doutput=${CMAKE_CURRENT_BINARY_DIR}/render-demo/$<CONFIG>/demo.png"
+        "-Dmetal_enabled=${RYPATH_ENABLE_METAL}"
+        "-Dallow_no_device=${RYPATH_ALLOW_NO_METAL_DEVICE}"
+        "-Dallow_no_ray_tracing=${RYPATH_ALLOW_NO_METAL_RAY_TRACING}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/check_render_cli.cmake"
+)
+set_tests_properties(cli.render_demo PROPERTIES TIMEOUT 30)
+if(RYPATH_ENABLE_METAL AND (RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING))
+    set_tests_properties(cli.render_demo PROPERTIES SKIP_REGULAR_EXPRESSION
+        "RYPATH_CTEST_SKIP_RENDER_UNAVAILABLE")
+endif()
 
 set(metal_cli_directory "${CMAKE_CURRENT_BINARY_DIR}/metal-cli")
 file(MAKE_DIRECTORY "${metal_cli_directory}")
@@ -67,6 +103,43 @@ else()
     set_tests_properties(metal.api_stub PROPERTIES TIMEOUT 30)
 endif()
 
+add_executable(rypath_render_tests render_tests.cpp render_reference.cpp)
+set_target_properties(rypath_render_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+target_include_directories(rypath_render_tests PRIVATE "${rypath_generated_directory}")
+target_link_libraries(rypath_render_tests PRIVATE rypath_metal_backend)
+rypath_configure_host_target(rypath_render_tests)
+add_test(NAME render.cpu_reference COMMAND rypath_render_tests cpu)
+set_tests_properties(render.cpu_reference PROPERTIES TIMEOUT 30)
+
+set(ray_tracing_test_options)
+if(RYPATH_ALLOW_NO_METAL_DEVICE)
+    list(APPEND ray_tracing_test_options --allow-no-device)
+endif()
+if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+    list(APPEND ray_tracing_test_options --allow-no-ray-tracing)
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.render COMMAND rypath_render_tests metal ${ray_tracing_test_options})
+    set_tests_properties(metal.render PROPERTIES TIMEOUT 30)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    add_executable(rypath_image_output_tests image_output_tests.mm)
+    set_target_properties(rypath_image_output_tests PROPERTIES
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_image_output_tests PRIVATE -fobjc-arc)
+    target_link_libraries(rypath_image_output_tests PRIVATE rypath_metal_backend)
+    rypath_configure_host_target(rypath_image_output_tests)
+    add_test(NAME render.png COMMAND rypath_image_output_tests)
+    set_tests_properties(render.png PROPERTIES TIMEOUT 30)
+else()
+    add_test(NAME render.stub COMMAND rypath_render_tests stub)
+    set_tests_properties(render.stub PROPERTIES TIMEOUT 30)
+endif()
+
 add_executable(rypath_geometry_tests geometry_tests.cpp geometry_reference.cpp)
 set_target_properties(rypath_geometry_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
 target_link_libraries(rypath_geometry_tests PRIVATE rypath_metal_backend)
@@ -76,14 +149,7 @@ add_test(NAME geometry.cpu_reference COMMAND rypath_geometry_tests cpu)
 set_tests_properties(geometry.cpu_reference PROPERTIES TIMEOUT 30)
 
 if(RYPATH_ENABLE_METAL)
-    set(geometry_test_options)
-    if(RYPATH_ALLOW_NO_METAL_DEVICE)
-        list(APPEND geometry_test_options --allow-no-device)
-    endif()
-    if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
-        list(APPEND geometry_test_options --allow-no-ray-tracing)
-    endif()
-    add_test(NAME metal.geometry COMMAND rypath_geometry_tests metal ${geometry_test_options})
+    add_test(NAME metal.geometry COMMAND rypath_geometry_tests metal ${ray_tracing_test_options})
     set_tests_properties(metal.geometry PROPERTIES TIMEOUT 30)
     if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
         set_tests_properties(metal.geometry PROPERTIES SKIP_RETURN_CODE 77)

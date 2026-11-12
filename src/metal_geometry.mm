@@ -4,6 +4,7 @@
 
 #include "geometry_wire.h"
 #include "metal_execution.hpp"
+#include "metal_geometry_access.hpp"
 #include "metal_geometry_limits.hpp"
 
 #import <Foundation/Foundation.h>
@@ -130,6 +131,14 @@ struct MetalGeometryScene::Impl {
     std::vector<InstanceIndices> instance_indices;
     std::vector<std::size_t> triangle_counts;
 
+    void bind(id<MTLComputeCommandEncoder> encoder, NSUInteger slot) const {
+        [encoder setAccelerationStructure:instances atBufferIndex:slot];
+        // Binding the TLAS does not declare the primitive structures it references.
+        for (id<MTLAccelerationStructure> mesh in meshes) {
+            [encoder useResource:mesh usage:MTLResourceUsageRead];
+        }
+    }
+
     template <class Output>
     id<MTLBuffer> dispatch(id<MTLComputePipelineState> pipeline, std::span<const GeometryRay> rays,
                            std::size_t &guard_count, std::string &diagnostic) const {
@@ -182,11 +191,7 @@ struct MetalGeometryScene::Impl {
         [encoder setBuffer:output offset:0 atIndex:1];
         const auto count = static_cast<Word>(rays.size());
         [encoder setBytes:&count length:sizeof(count) atIndex:2];
-        [encoder setAccelerationStructure:instances atBufferIndex:3];
-        // Binding the TLAS does not declare the primitive structures it references.
-        for (id<MTLAccelerationStructure> mesh in meshes) {
-            [encoder useResource:mesh usage:MTLResourceUsageRead];
-        }
+        bind(encoder, 3);
         [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
         [encoder endEncoding];
@@ -209,6 +214,28 @@ MetalGeometryScene::MetalGeometryScene(std::unique_ptr<Impl> impl) : impl_(std::
 MetalGeometryScene::~MetalGeometryScene() = default;
 MetalGeometryScene::MetalGeometryScene(MetalGeometryScene &&) noexcept = default;
 MetalGeometryScene &MetalGeometryScene::operator=(MetalGeometryScene &&) noexcept = default;
+
+id<MTLDevice> MetalGeometryAccess::device(const MetalGeometryScene &scene) {
+    return scene.impl_->device;
+}
+
+id<MTLCommandQueue> MetalGeometryAccess::queue(const MetalGeometryScene &scene) {
+    return scene.impl_->queue;
+}
+
+std::size_t MetalGeometryAccess::instance_count(const MetalGeometryScene &scene) {
+    return scene.impl_->instance_indices.size();
+}
+
+std::uint32_t MetalGeometryAccess::source_instance(const MetalGeometryScene &scene,
+                                                   std::size_t ordinal) {
+    return scene.impl_->instance_indices[ordinal].source_index;
+}
+
+void MetalGeometryAccess::bind(const MetalGeometryScene &scene,
+                               id<MTLComputeCommandEncoder> encoder, NSUInteger slot) {
+    scene.impl_->bind(encoder, slot);
+}
 
 GeometryClosestResult MetalGeometryScene::closest_hits(std::span<const GeometryRay> rays) {
     @autoreleasepool {

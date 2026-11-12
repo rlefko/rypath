@@ -21,14 +21,14 @@ set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cach
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
 set(rypath_metal_air_files)
-foreach(shader IN ITEMS smoke geometry)
+foreach(shader IN ITEMS smoke geometry render)
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
     set(air "${rypath_runtime_directory}/CMakeFiles/rypath-${shader}.air")
     set(shader_options)
     set(shader_dependencies "${source}")
-    if(shader STREQUAL "geometry")
+    if(shader STREQUAL "geometry" OR shader STREQUAL "render")
         list(APPEND shader_options -fno-fast-math)
-        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/geometry_wire.h")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/${shader}_wire.h")
     endif()
     add_custom_command(
         OUTPUT "${air}"

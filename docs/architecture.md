@@ -4,9 +4,9 @@
 
 The current program is a C++20 command-line executable. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
-`--metal-info`, and `--metal-smoke-test`. No arguments prints help, and invalid
-arguments fail with a diagnostic. There is no transport or scene-file ingestion
-yet.
+`--metal-info`, `--metal-smoke-test`, and `--render-demo`. No arguments prints
+help, and invalid arguments fail with a diagnostic. Rendering currently uses
+one original built-in scene; scene-file ingestion remains planned.
 
 A private C++ interface separates the portable CLI from a narrow ARC
 Objective-C++ adapter on macOS. The adapter owns Metal resources through command
@@ -27,7 +27,17 @@ barycentrics; opaque occlusion uses a separate any-hit query. The test-only doub
 reference independently transforms vertices and scans all triangles. See
 [native geometry](geometry.md) for numerical limits, ownership, and validation.
 
-## Planned boundaries
+## Rendering and planned boundaries
+
+The first renderer exercises these boundaries concretely: portable spectral
+sampling and compensated film accumulation, an owned native render session and
+complete-path MSL kernel, and a separate ImageIO PNG adapter. A narrow native
+accessor reuses the existing geometry owner's device, queue, TLAS, and BLAS
+residency. Host code receives complete samples rather than individual bounce
+queries. Predetermined batches commit only after checked GPU readback and full
+sample accounting. The [rendering record](rendering.md) specifies the Lambertian
+environment estimator, MIS/roulette, wavelength and sensor conventions, and
+bounded ray-origin behavior.
 
 The offline renderer will separate scene ingestion, immutable render data,
 transport, sampling, scattering, media, acceleration, accumulation, and image
@@ -49,7 +59,7 @@ without a general plugin system or cross-platform GPU abstraction.
   versioned internal representation. Accepted syntax, faithful semantics,
   approximations, and unsupported features will be tracked separately. Missing
   materials, parameters, or geometry must produce actionable diagnostics.
-- **Presentation:** linear HDR output precedes a native SwiftUI/AppKit application.
+- **Presentation:** PNG output is available; linear HDR output precedes a native application.
   Display-only edits will not invalidate raw samples; changes to the integrand
   will. Preview history and raw accumulation are distinct.
 
@@ -57,7 +67,7 @@ Metal API availability alone will not establish hardware ray-tracing support or
 performance on a selected device. Custom acceleration structures are deferred
 experiments requiring correctness and measured benefit. Geometry tests exercise
 native ray queries; the CLI compute check remains separate. Neither introduces
-a numerical transport estimator.
+a numerical transport estimator; the separate render mode does.
 
 ## Offline MVP acceptance
 
