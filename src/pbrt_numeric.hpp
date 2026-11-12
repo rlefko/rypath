@@ -10,12 +10,12 @@
 
 namespace rypath::pbrt {
 
-// Exact zero test for the linear determinant of a finite binary64 matrix.
+// Exact sign of the linear determinant of a finite binary64 matrix.
 // Each input is a signed integer significand times 2^exponent. The six triple
 // products span bits -3222 through 3071; their sums fit in 200 32-bit limbs.
 // Separate positive/negative magnitudes avoid rounding and cancellation. This
-// predicate imposes no determinant threshold and does not compute an inverse.
-inline bool exact_singular_linear(const Transform &transform) {
+// calculation imposes no determinant threshold and does not compute an inverse.
+inline int exact_linear_determinant_sign(const Transform &transform) {
     static_assert(std::numeric_limits<double>::is_iec559 &&
                   std::numeric_limits<double>::digits == 53 && sizeof(double) == 8);
     using Magnitude = std::array<std::uint32_t, 200>;
@@ -76,7 +76,16 @@ inline bool exact_singular_linear(const Transform &transform) {
             add_word(magnitude, index + 1, static_cast<std::uint32_t>(shifted >> 32));
         }
     }
-    return positive == negative;
+    for (std::size_t i = positive.size(); i > 0; --i) {
+        if (positive[i - 1] != negative[i - 1]) {
+            return positive[i - 1] < negative[i - 1] ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+inline bool exact_singular_linear(const Transform &transform) {
+    return exact_linear_determinant_sign(transform) == 0;
 }
 
 } // namespace rypath::pbrt

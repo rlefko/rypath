@@ -50,3 +50,12 @@ license, and adaptation boundary are recorded in
 [decision record](pbrt-decision.md). The small unmodified CC0 Cornell Box fixture
 retains its own notice, checksum, revision, and coverage manifest in
 [tests/fixtures/pbrt](../tests/fixtures/pbrt/README.md).
+
+The optional numerical reference builds that same pinned PBRT renderer and its
+exact submodules in an ignored local cache. It retains upstream Apache-2.0 and
+dependency notices there; none of its renderer, dependencies, or generated RGB
+tables is linked or copied into rypath. The spectral translation and Metal
+implementation are original project code based on documented pinned semantics.
+New comparison scenes are project-authored GPL-3.0-only fixtures. Reference
+provenance and build instructions are recorded in
+[PBRT render validation](pbrt-render-validation.md).

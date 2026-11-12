@@ -4,12 +4,14 @@
 #include "metal_backend.hpp"
 #include "metal_render.hpp"
 #include "pbrt.hpp"
+#include "pbrt_render.hpp"
 
 #include <charconv>
 #include <exception>
 #include <iostream>
 #include <set>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -75,6 +77,38 @@ template <typename Integer> bool parse_unsigned(std::string_view value, Integer 
     return parsed.ec == std::errc{} && parsed.ptr == end;
 }
 
+int finish_render(const rypath::RenderResult &result, const rypath::RenderSettings &settings,
+                  const std::filesystem::path &output) {
+    if (!result.device.name.empty()) {
+        std::cout << "Device: " << result.device.name << '\n'
+                  << "Registry ID: " << result.device.registry_id << '\n'
+                  << "Architecture: " << result.device.architecture << '\n';
+    }
+    const auto unavailable = [&](std::string_view status) {
+        std::cout << "Render status: " << status << '\n';
+        return render_error(result.diagnostic, 2);
+    };
+    switch (result.status) {
+    case rypath::GeometryStatus::not_built:
+        return unavailable("not_built");
+    case rypath::GeometryStatus::no_device:
+        return unavailable("no_device");
+    case rypath::GeometryStatus::no_ray_tracing:
+        return unavailable("no_ray_tracing");
+    case rypath::GeometryStatus::failure:
+        return render_error(result.diagnostic);
+    case rypath::GeometryStatus::success:
+        break;
+    }
+    if (const auto diagnostic = rypath::write_png(result.film, output); !diagnostic.empty()) {
+        return render_error(diagnostic);
+    }
+    const auto total =
+        static_cast<std::uint64_t>(settings.width) * settings.height * settings.samples;
+    std::cout << "Total samples: " << total << '\n' << "Wrote PNG: " << output.string() << '\n';
+    return 0;
+}
+
 int render_demo(int argc, char *argv[]) {
     rypath::RenderSettings settings;
     std::filesystem::path output;
@@ -129,34 +163,88 @@ int render_demo(int argc, char *argv[]) {
             std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
                       << std::endl;
         });
-    if (!result.device.name.empty()) {
-        std::cout << "Device: " << result.device.name << '\n'
-                  << "Registry ID: " << result.device.registry_id << '\n'
-                  << "Architecture: " << result.device.architecture << '\n';
+    return finish_render(result, settings, output);
+}
+
+int render_pbrt(int argc, char *argv[]) {
+    if (argc < 3 || std::string_view{argv[2]}.starts_with("--")) {
+        return argument_error();
     }
-    const auto unavailable = [&](std::string_view status) {
-        std::cout << "Render status: " << status << '\n';
-        return render_error(result.diagnostic, 2);
-    };
-    switch (result.status) {
-    case rypath::GeometryStatus::not_built:
-        return unavailable("not_built");
-    case rypath::GeometryStatus::no_device:
-        return unavailable("no_device");
-    case rypath::GeometryStatus::no_ray_tracing:
-        return unavailable("no_ray_tracing");
-    case rypath::GeometryStatus::failure:
-        return render_error(result.diagnostic);
-    case rypath::GeometryStatus::success:
-        break;
+    const std::filesystem::path entry = argv[2];
+    std::filesystem::path output;
+    std::uint64_t batch_size = 8;
+    std::set<std::string_view> seen;
+    for (int index = 3; index < argc; index += 2) {
+        const std::string_view option = argv[index];
+        if (!seen.insert(option).second) {
+            return render_error("duplicate option " + std::string{option});
+        }
+        if (index + 1 == argc || std::string_view{argv[index + 1]}.starts_with("--")) {
+            return render_error("missing value for " + std::string{option});
+        }
+        if (option == "--output") {
+            output = argv[index + 1];
+        } else if (option == "--batch-size") {
+            if (!parse_unsigned(std::string_view{argv[index + 1]}, batch_size) || batch_size == 0) {
+                return render_error("--batch-size must be a positive unsigned integer");
+            }
+        } else {
+            return argument_error();
+        }
     }
-    if (const auto diagnostic = rypath::write_png(result.film, output); !diagnostic.empty()) {
+    if (output.empty()) {
+        return render_error("--render-pbrt requires --output IMAGE.png");
+    }
+    if (output.extension() != ".png") {
+        return render_error("--render-pbrt output must have the .png extension");
+    }
+    rypath::pbrt::RenderTranslation translated;
+    {
+        const auto checked = rypath::pbrt::check(entry);
+        if (checked.exit_code() != 0) {
+            std::cout << rypath::pbrt::report(checked);
+            return checked.exit_code();
+        }
+        translated = rypath::pbrt::translate(checked, rypath::pbrt::Location{entry.string()});
+    }
+    for (const auto &diagnostic : translated.diagnostics) {
+        std::cerr << rypath::pbrt::format_diagnostic(diagnostic);
+    }
+    if (translated.exit_code() != 0) {
+        std::cout << "Rendering was not attempted.\n";
+        return translated.exit_code();
+    }
+    auto owned_scene = std::move(translated.scene);
+    if (!owned_scene.has_value()) {
+        return render_error("PBRT translation returned no render scene");
+    }
+    const auto &scene = owned_scene.value();
+    translated.settings.batch_size = batch_size;
+    const auto &settings = translated.settings;
+    if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
         return render_error(diagnostic);
     }
-    const auto total =
-        static_cast<std::uint64_t>(settings.width) * settings.height * settings.samples;
-    std::cout << "Total samples: " << total << '\n' << "Wrote PNG: " << output.string() << '\n';
-    return 0;
+    std::cout << "rypath " RYPATH_VERSION "\n"
+              << "Scene: " << entry.string() << '\n'
+              << "Render profile: pbrt-spectral-v1\n"
+              << "Sampler: philox4x32-10-v1 (sequence differs from PBRT)\n"
+              << "Color: calibrated CIE 1931 XYZ / sRGB\n"
+              << "Resolution: " << settings.width << 'x' << settings.height << '\n'
+              << "Samples per pixel: " << settings.samples << '\n'
+              << "Batch size: " << settings.batch_size << '\n'
+              << "Seed: " << settings.seed << '\n'
+              << "Finite path maxdepth: " << scene.max_depth << '\n'
+              << "Output override: " << output.string()
+              << " (Film.filename overridden; PNG; no FP16 intermediate)\n";
+    for (const auto &item : translated.provenance) {
+        std::cout << item << '\n';
+    }
+    std::cout << std::flush;
+    const auto result = rypath::render_progressive(scene, settings, [&](std::uint64_t count) {
+        std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
+                  << std::endl;
+    });
+    return finish_render(result, settings, output);
 }
 
 } // namespace
@@ -165,11 +253,15 @@ int main(int argc, char *argv[]) {
     if (argc == 1 || (argc == 2 && std::string_view{argv[1]} == "--help")) {
         std::cout << "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
                      "       rypath --check-pbrt SCENE\n"
+                     "       rypath --render-pbrt SCENE --output IMAGE.png [--batch-size 8]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n";
         return 0;
     }
     try {
+        if (argc > 1 && std::string_view{argv[1]} == "--render-pbrt") {
+            return render_pbrt(argc, argv);
+        }
         if (argc == 3 && std::string_view{argv[1]} == "--check-pbrt" &&
             !std::string_view{argv[2]}.starts_with("--")) {
             const auto result = rypath::pbrt::check(argv[2]);

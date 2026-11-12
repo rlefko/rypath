@@ -14,6 +14,7 @@ endfunction()
 string(CONCAT help_text
     "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
     "       rypath --check-pbrt SCENE\n"
+    "       rypath --render-pbrt SCENE --output IMAGE.png [--batch-size 8]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n")
 set(error_text "rypath: unsupported arguments\nTry 'rypath --help' for usage.\n")
@@ -47,6 +48,17 @@ add_cli_test(render_total_overflow 1 "" "rypath: Total render sample count excee
     --render-demo --output unused.png --width 2 --height 1 --samples 18446744073709551615)
 add_cli_test(render_signed_samples 1 "" "rypath: invalid unsigned integer for --samples\n"
     --render-demo --output unused.png --samples -1)
+add_cli_test(render_pbrt_missing_scene 1 "" "${error_text}" --render-pbrt)
+add_cli_test(render_pbrt_missing_output 1 "" "rypath: --render-pbrt requires --output IMAGE.png\n"
+    --render-pbrt unused.pbrt)
+add_cli_test(render_pbrt_duplicate 1 "" "rypath: duplicate option --batch-size\n"
+    --render-pbrt unused.pbrt --output unused.png --batch-size 1 --batch-size 2)
+add_cli_test(render_pbrt_zero_batch 1 "" "rypath: --batch-size must be a positive unsigned integer\n"
+    --render-pbrt unused.pbrt --output unused.png --batch-size 0)
+add_cli_test(render_pbrt_output_format 1 "" "rypath: --render-pbrt output must have the .png extension\n"
+    --render-pbrt unused.pbrt --output unused.exr)
+add_cli_test(render_pbrt_unknown 1 "" "${error_text}"
+    --render-pbrt unused.pbrt --output unused.png --samples 4)
 
 add_test(NAME cli.render_demo
     COMMAND "${CMAKE_COMMAND}"
@@ -143,6 +155,47 @@ if(RYPATH_ALLOW_NO_METAL_DEVICE)
 endif()
 if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
     list(APPEND ray_tracing_test_options --allow-no-ray-tracing)
+endif()
+
+set(pbrt_render_fixtures "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt-render")
+add_executable(rypath_pbrt_render_tests pbrt_render_tests.cpp)
+target_link_libraries(rypath_pbrt_render_tests PRIVATE rypath_pbrt_render)
+rypath_configure_host_target(rypath_pbrt_render_tests)
+add_test(NAME pbrt.render_translation COMMAND rypath_pbrt_render_tests
+    "${CMAKE_CURRENT_BINARY_DIR}/pbrt-render/$<CONFIG>" "${pbrt_render_fixtures}")
+set_tests_properties(pbrt.render_translation PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_pbrt_reference pbrt_reference.cpp)
+set_target_properties(rypath_pbrt_reference PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+target_link_libraries(rypath_pbrt_reference PRIVATE rypath_pbrt_render rypath_metal_backend)
+rypath_configure_host_target(rypath_pbrt_reference)
+
+add_executable(rypath_pbrt_render_gpu_tests pbrt_render_gpu_tests.cpp)
+set_target_properties(rypath_pbrt_render_gpu_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+target_include_directories(rypath_pbrt_render_gpu_tests PRIVATE "${rypath_generated_directory}")
+target_link_libraries(rypath_pbrt_render_gpu_tests PRIVATE rypath_pbrt_render rypath_metal_backend)
+rypath_configure_host_target(rypath_pbrt_render_gpu_tests)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.pbrt_render COMMAND rypath_pbrt_render_gpu_tests
+        "${pbrt_render_fixtures}" ${ray_tracing_test_options})
+    set_tests_properties(metal.pbrt_render PROPERTIES TIMEOUT 90)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.pbrt_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+add_test(NAME cli.render_pbrt COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>"
+    "-Dfixture_directory=${pbrt_render_fixtures}"
+    "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/pbrt-render/$<CONFIG>/cli"
+    "-Dmetal_enabled=${RYPATH_ENABLE_METAL}"
+    "-Dallow_no_device=${RYPATH_ALLOW_NO_METAL_DEVICE}"
+    "-Dallow_no_ray_tracing=${RYPATH_ALLOW_NO_METAL_RAY_TRACING}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_pbrt_render_cli.cmake")
+set_tests_properties(cli.render_pbrt PROPERTIES TIMEOUT 60)
+if(RYPATH_ENABLE_METAL AND (RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING))
+    set_tests_properties(cli.render_pbrt PROPERTIES SKIP_REGULAR_EXPRESSION
+        "RYPATH_CTEST_SKIP_RENDER_UNAVAILABLE")
 endif()
 
 if(RYPATH_ENABLE_METAL)

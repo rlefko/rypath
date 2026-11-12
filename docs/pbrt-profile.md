@@ -18,7 +18,9 @@ inventory; its counts are not evidence that unchecked content was processed.
 ## Compatibility matrix
 
 The reference is [PBRT v4 at b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f](https://github.com/mmp/pbrt-v4/tree/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f).
-“Checked” below means structural interpretation, never faithful rendering.
+“Checked” below means structural interpretation. The Rendering column describes
+`--check-pbrt`, which never renders. The separate [spectral rendering
+profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 
 | Feature | Syntax / authored data | Structural interpretation | Rendering |
 | --- | --- | --- | --- |
@@ -146,5 +148,7 @@ parameter precedence and schema errors, transforms/camera capture, scoped and
 global definitions, object composition, dependencies, limits, and narrowed
 geometry. The unmodified [Cornell fixture manifest](../tests/fixtures/pbrt/README.md)
 records the exact selected external coverage and expected unsupported features.
-A matching upstream `--format` binary was unavailable; no full upstream build or
-large corpus download was performed. See [status](status.md) for measured checks.
+A matching upstream `--format` binary was unavailable for preflight PR #5.
+The subsequent [rendering validation](pbrt-render-validation.md) builds the pinned
+CPU reference for selected numerical comparisons; no large scene corpus is
+downloaded. See [status](status.md) for measured checks.

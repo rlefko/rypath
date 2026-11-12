@@ -780,6 +780,10 @@ const Parameter *Interpreter::select(const Directive &directive, string_view tar
                                      const Field &field, Descriptor *descriptor) {
     for (auto it = directive.parameters.rbegin(); it != directive.parameters.rend(); ++it) {
         if (it->name == field.name && accepts_type(field.type, it->type)) {
+            if (descriptor) {
+                descriptor->effective_authored.push_back(
+                    static_cast<std::size_t>(it.base() - directive.parameters.begin() - 1));
+            }
             return &*it;
         }
     }
@@ -932,6 +936,7 @@ Descriptor Interpreter::describe(const Directive &directive, bool capture) {
     return {directive,
             capture ? capture_transform(directive.location) : Transform{},
             state_.color_space,
+            {},
             {}};
 }
 
@@ -1012,7 +1017,7 @@ void Interpreter::finalize_options() {
 void Interpreter::validate_option(const PendingOption &pending) {
     const auto &directive = *pending.directive;
     const string_view type = directive.arguments.front().text;
-    Descriptor descriptor{directive, pending.transform, pending.color_space, {}};
+    Descriptor descriptor{directive, pending.transform, pending.color_space, {}, {}};
     std::span<const Field> schema;
     string_view supported_type;
     bool known = false;
@@ -1162,6 +1167,7 @@ void Interpreter::material(const Directive &directive) {
         state_.material = {Location::empty_file(),
                            std::make_shared<const Descriptor>(std::move(descriptor)),
                            directive.location};
+        scene_.inline_materials.push_back(state_.material.inline_material);
     }
 }
 
@@ -1710,6 +1716,20 @@ Result Interpreter::run() {
 }
 
 } // namespace
+
+Descriptor::EffectiveParameter Descriptor::effective_parameter(std::string_view name) const {
+    for (const auto index : effective_authored) {
+        if (const auto &parameter = authored.parameters[index]; parameter.name == name) {
+            return {&parameter, color_space};
+        }
+    }
+    for (const auto &entry : inherited) {
+        if (entry.parameter->name == name) {
+            return {entry.parameter.get(), entry.color_space};
+        }
+    }
+    return {};
+}
 
 Result interpret(Document document, const Limits &limits) {
     return Interpreter(std::move(document), limits).run();

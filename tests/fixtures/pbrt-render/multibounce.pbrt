@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [58]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path"
+WorldBegin
+LightSource "infinite" "spectrum L" [360 0.55 483 1.0 591 0.7 830 0.35]
+
+# Back wall and floor.
+Material "diffuse" "spectrum reflectance" [360 0.55 540 0.83 830 0.65]
+Shape "trianglemesh" "point3 P" [-1.6 -1.15 5 2.3 -1.15 5 2.3 1.5 5 -1.6 1.5 5]
+    "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [-1.6 -1.15 1 2.3 -1.15 1 2.3 -1.15 5 -1.6 -1.15 5]
+    "integer indices" [0 1 2 0 2 3]
+
+# Differently colored sides.
+Material "diffuse" "spectrum reflectance" [360 0.85 478 0.9 580 0.19 830 0.28]
+Shape "trianglemesh" "point3 P" [-1.6 -1.15 1 -1.6 -1.15 5 -1.6 1.5 5 -1.6 1.5 1]
+    "integer indices" [0 1 2 0 2 3]
+Material "diffuse" "spectrum reflectance" [360 0.18 481 0.22 641 0.92 830 0.7]
+Shape "trianglemesh" "point3 P" [2.3 -1.15 1 2.3 -1.15 5 2.3 1.5 5 2.3 1.5 1]
+    "integer indices" [0 1 2 0 2 3]
+
+# Partial ceiling leaves an asymmetric opening.
+Material "diffuse" "spectrum reflectance" [360 0.42 547 0.81 830 0.45]
+Shape "trianglemesh" "point3 P" [-1.6 1.5 2.2 0.9 1.5 2.2 0.9 1.5 5 -1.6 1.5 5]
+    "integer indices" [0 1 2 0 2 3]

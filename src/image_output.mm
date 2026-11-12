@@ -138,7 +138,11 @@ std::string write_png(const Film &film, const std::filesystem::path &path) {
             if (!std::ranges::all_of(mean, [](double value) { return std::isfinite(value); })) {
                 return "cannot write a film with nonfinite XYZ values";
             }
-            const auto channels = display_rgb(mean);
+            const auto linear = linear_rgb(film, pixel);
+            if (!std::ranges::all_of(linear, [](double value) { return std::isfinite(value); })) {
+                return "cannot write a film with nonfinite linear RGB values";
+            }
+            const auto channels = display_rgb(film, pixel);
             rgb.insert(rgb.end(), channels.begin(), channels.end());
         }
         const CFObject<CGColorSpace> color_space{CGColorSpaceCreateWithName(kCGColorSpaceSRGB)};

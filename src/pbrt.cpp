@@ -84,12 +84,18 @@ Result check(const std::filesystem::path &entry, const Limits &limits) {
     }
 }
 
+std::string format_diagnostic(const Diagnostic &diagnostic) {
+    std::ostringstream output;
+    output << printable(*diagnostic.location.file) << ':' << diagnostic.location.line << ':'
+           << diagnostic.location.column << ": " << severity_name(diagnostic.severity) << " ["
+           << diagnostic.code << "]: " << printable(diagnostic.message) << '\n';
+    return output.str();
+}
+
 std::string report(const Result &result) {
     std::ostringstream output;
     for (const auto &diagnostic : result.document.diagnostics) {
-        output << printable(*diagnostic.location.file) << ':' << diagnostic.location.line << ':'
-               << diagnostic.location.column << ": " << severity_name(diagnostic.severity) << " ["
-               << diagnostic.code << "]: " << printable(diagnostic.message) << '\n';
+        output << format_diagnostic(diagnostic);
     }
     output << "PBRT v4 preflight (structural profile 1)\n"
            << "Syntax: " << (result.document.syntax_complete ? "complete" : "incomplete") << '\n'

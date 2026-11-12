@@ -1,0 +1,577 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#include "pbrt_render.hpp"
+
+#include "pbrt_numeric.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <map>
+#include <numbers>
+#include <string_view>
+
+namespace rypath::pbrt {
+namespace {
+
+using std::string_view;
+using Vector = std::array<double, 3>;
+
+const Parameter *parameter(const Descriptor &descriptor, string_view name) {
+    return descriptor.effective_parameter(name).parameter;
+}
+
+double number(const Descriptor &descriptor, string_view name, double fallback) {
+    const auto *selected = parameter(descriptor, name);
+    return selected ? selected->values.front().number : fallback;
+}
+
+std::int32_t integer(const Descriptor &descriptor, string_view name, std::int32_t fallback) {
+    const auto *selected = parameter(descriptor, name);
+    return selected ? selected->values.front().integer : fallback;
+}
+
+std::optional<string_view> string(const Descriptor &descriptor, string_view name) {
+    const auto *selected = parameter(descriptor, name);
+    return selected ? std::optional<string_view>(selected->values.front().text) : std::nullopt;
+}
+
+bool boolean(const Descriptor &descriptor, string_view name, bool fallback) {
+    const auto *selected = parameter(descriptor, name);
+    return selected ? selected->values.front().boolean : fallback;
+}
+
+const Location &location(const Descriptor &descriptor, string_view name) {
+    const auto *selected = parameter(descriptor, name);
+    return selected ? selected->location : descriptor.authored.location;
+}
+
+bool float_representable(double value) {
+    return std::abs(value) <= std::numeric_limits<float>::max();
+}
+
+double dot(const Vector &a, const Vector &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+Vector cross(const Vector &a, const Vector &b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+Vector to_vector(const GeometryPoint &point) { return {point.x, point.y, point.z}; }
+
+std::optional<GeometryPoint> narrow_point(const Vector &vector) {
+    if (!std::ranges::all_of(vector, float_representable)) {
+        return std::nullopt;
+    }
+    return GeometryPoint{static_cast<float>(vector[0]), static_cast<float>(vector[1]),
+                         static_cast<float>(vector[2])};
+}
+
+int handedness(const GeometryTransform &transform) {
+    Transform expanded;
+    std::ranges::copy(transform.values, expanded.values.begin());
+    return exact_linear_determinant_sign(expanded);
+}
+
+class Translator {
+  public:
+    Translator(const Scene &input, const Location &entry, const Limits &limits)
+        : input_(input), entry_(entry), limits_(limits) {
+        scene_.model = RenderModel::pbrt;
+    }
+
+    RenderTranslation run();
+
+  private:
+    const Scene &input_;
+    const Location &entry_;
+    const Limits &limits_;
+    Document diagnostics_;
+    RenderTranslation result_;
+    RenderScene scene_;
+    std::size_t spectral_values_ = 0;
+    bool spectral_limit_exceeded_ = false;
+
+    void issue(Severity severity, string_view code, const Location &source, std::string message);
+    void unsupported(const Location &source, std::string message);
+    void invalid(const Location &source, std::string message);
+    const Descriptor *required(string_view name);
+    std::optional<float> narrow(const Descriptor &descriptor, string_view name, double fallback);
+    void film(const Descriptor &descriptor);
+    void camera(const Descriptor &descriptor, const Descriptor *film);
+    void filter(const Descriptor &descriptor);
+    void sampler(const Descriptor &descriptor);
+    void integrator(const Descriptor &descriptor);
+    std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
+                                                      string_view name, double maximum);
+    void light(const Descriptor &descriptor);
+    std::uint32_t material(const Descriptor &descriptor);
+    void geometry();
+};
+
+void Translator::issue(Severity severity, string_view code, const Location &source,
+                       std::string message) {
+    diagnose(diagnostics_, limits_, severity, std::string(code), source, std::move(message));
+}
+
+void Translator::unsupported(const Location &source, std::string message) {
+    issue(Severity::unsupported, "unsupported-render-feature", source, std::move(message));
+}
+
+void Translator::invalid(const Location &source, std::string message) {
+    issue(Severity::error, "invalid-render-value", source, std::move(message));
+}
+
+const Descriptor *Translator::required(string_view name) {
+    const auto found = std::ranges::find_if(
+        input_.options, [name](const Descriptor &option) { return option.authored.name == name; });
+    if (found != input_.options.end()) {
+        return &*found;
+    }
+    unsupported(entry_, "The spectral render profile requires an explicit " + std::string(name));
+    return nullptr;
+}
+
+std::optional<float> Translator::narrow(const Descriptor &descriptor, string_view name,
+                                        double fallback) {
+    const double value = number(descriptor, name, fallback);
+    if (!float_representable(value)) {
+        invalid(location(descriptor, name), std::string(name) + " overflows binary32");
+        return std::nullopt;
+    }
+    return static_cast<float>(value);
+}
+
+void Translator::film(const Descriptor &descriptor) {
+    auto &settings = result_.settings;
+    settings.width = static_cast<std::uint32_t>(integer(descriptor, "xresolution", 1280));
+    settings.height = static_cast<std::uint32_t>(integer(descriptor, "yresolution", 720));
+    if (descriptor.color_space != "srgb") {
+        unsupported(descriptor.authored.location, "Only the sRGB film color space is supported");
+    }
+    if (string(descriptor, "sensor").value_or("cie1931") != "cie1931") {
+        unsupported(location(descriptor, "sensor"), "Only the CIE 1931 film sensor is supported");
+    }
+    if (number(descriptor, "whitebalance", 0) != 0) {
+        unsupported(location(descriptor, "whitebalance"), "Film white balance is unsupported");
+    }
+    if (const auto *crop = parameter(descriptor, "cropwindow")) {
+        if (!std::ranges::equal(crop->values, std::array{0., 1., 0., 1.}, {}, &Value::number)) {
+            unsupported(crop->location, "Only full-frame film cropwindow is supported");
+        }
+    } else if (const auto *bounds = parameter(descriptor, "pixelbounds")) {
+        const std::array expected{0, static_cast<int>(settings.width), 0,
+                                  static_cast<int>(settings.height)};
+        if (!std::ranges::equal(bounds->values, expected, {}, &Value::integer)) {
+            unsupported(bounds->location, "Only full-frame film pixelbounds is supported");
+        }
+    }
+    if (const auto *limit = parameter(descriptor, "maxcomponentvalue")) {
+        unsupported(limit->location, "Film sample clamping is unsupported");
+    }
+    result_.provenance.emplace_back("CLI PNG output overrides PBRT filename and savefp16");
+}
+
+void Translator::camera(const Descriptor &descriptor, const Descriptor *film_descriptor) {
+    if (number(descriptor, "lensradius", 0) != 0) {
+        unsupported(location(descriptor, "lensradius"), "The perspective camera must be pinhole");
+    }
+    const auto open = narrow(descriptor, "shutteropen", 0);
+    const auto close = narrow(descriptor, "shutterclose", 1);
+    const auto iso = film_descriptor ? narrow(*film_descriptor, "iso", 100) : std::optional{100.f};
+    if (open && close && iso) {
+        const double duration = static_cast<double>(*close) - *open;
+        if (!float_representable(duration) || duration <= 0) {
+            invalid(descriptor.authored.location,
+                    "Camera shutter duration must remain finite and positive in binary32");
+        } else if (*iso <= 0) {
+            invalid(location(*film_descriptor, "iso"), "Film ISO collapses to zero in binary32");
+        } else {
+            const double product = static_cast<double>(static_cast<float>(duration)) * *iso;
+            const float exposure =
+                float_representable(product) ? static_cast<float>(product) / 100 : 0;
+            if (exposure <= 0) {
+                invalid(descriptor.authored.location,
+                        "Film exposure must remain finite and positive in binary32");
+            } else {
+                scene_.exposure = exposure;
+            }
+        }
+    }
+
+    const auto &m = descriptor.transform.values;
+    const Vector x{m[0], m[4], m[8]}, y{m[1], m[5], m[9]}, z{m[2], m[6], m[10]};
+    constexpr double tolerance = 64 * std::numeric_limits<float>::epsilon();
+    const std::array gram_errors{dot(x, x) - 1,
+                                 dot(y, y) - 1,
+                                 dot(z, z) - 1,
+                                 dot(x, y),
+                                 dot(x, z),
+                                 dot(y, z),
+                                 std::abs(dot(x, cross(y, z))) - 1};
+    if (!std::ranges::all_of(gram_errors,
+                             [](double error) { return std::abs(error) <= tolerance; })) {
+        unsupported(descriptor.authored.location, "Camera transform must be rigid");
+        return;
+    }
+    const auto origin = narrow_point({m[3], m[7], m[11]});
+    if (!origin) {
+        invalid(descriptor.authored.location, "Camera origin overflows binary32");
+        return;
+    }
+
+    const auto fov = narrow(descriptor, "fov", 90);
+    const auto aspect =
+        narrow(descriptor, "frameaspectratio",
+               static_cast<double>(result_.settings.width) / result_.settings.height);
+    if (!fov || !aspect) {
+        return;
+    }
+    if (!(*fov > 0 && *fov < 180)) {
+        invalid(location(descriptor, "fov"), "Camera FOV collapses in binary32");
+        return;
+    }
+    if (*aspect <= 0) {
+        invalid(location(descriptor, "frameaspectratio"),
+                "Camera aspect ratio collapses in binary32");
+        return;
+    }
+    const double horizontal = std::max(1., static_cast<double>(*aspect));
+    const double vertical = std::max(1., 1. / *aspect);
+    std::array<double, 4> screen{-horizontal, horizontal, -vertical, vertical};
+    if (const auto *window = parameter(descriptor, "screenwindow")) {
+        for (std::size_t i = 0; i < screen.size(); ++i) {
+            if (!float_representable(window->values[i].number)) {
+                invalid(window->values[i].location, "Camera screen window overflows binary32");
+                return;
+            }
+            screen[i] = static_cast<float>(window->values[i].number);
+        }
+    }
+
+    const auto source = location(descriptor, "screenwindow");
+    if (!(screen[0] < screen[1] && screen[2] < screen[3]) ||
+        !std::ranges::all_of(screen, float_representable)) {
+        invalid(source, "Camera screen window must remain finite and ordered in binary32");
+        return;
+    }
+    const double tangent = std::tan(*fov * std::numbers::pi / 360);
+    Vector corner{}, dx{}, dy{};
+    for (std::size_t i = 0; i < corner.size(); ++i) {
+        corner[i] = z[i] + tangent * (screen[0] * x[i] + screen[3] * y[i]);
+        dx[i] = tangent * (screen[1] - screen[0]) * x[i];
+        dy[i] = tangent * (screen[2] - screen[3]) * y[i];
+    }
+    const auto packed_corner = narrow_point(corner);
+    const auto packed_dx = narrow_point(dx);
+    const auto packed_dy = narrow_point(dy);
+    if (!packed_corner || !packed_dx || !packed_dy ||
+        dot(to_vector(*packed_corner), cross(to_vector(*packed_dx), to_vector(*packed_dy))) == 0) {
+        invalid(source, "Camera raster coefficients overflow or collapse in binary32");
+        return;
+    }
+    const RasterCamera raster{origin.value(), packed_corner.value(), packed_dx.value(),
+                              packed_dy.value()};
+    const auto c = to_vector(raster.corner);
+    const auto u = to_vector(raster.dx);
+    const auto v = to_vector(raster.dy);
+    for (std::size_t axis = 0; axis < c.size(); ++axis) {
+        // Each component is affine on the raster, so its extrema are at the corners.
+        const std::array extremes{c[axis] + u[axis], c[axis] + v[axis],
+                                  c[axis] + u[axis] + v[axis]};
+        if (!std::ranges::all_of(extremes, float_representable)) {
+            invalid(source, "Camera raster direction overflows binary32 at a film corner");
+            return;
+        }
+    }
+    scene_.raster_camera = raster;
+}
+
+void Translator::filter(const Descriptor &descriptor) {
+    for (const auto name : {"xradius", "yradius"}) {
+        if (number(descriptor, name, 0.5) != 0.5) {
+            unsupported(location(descriptor, name), "Box filter radius must be 0.5 on each axis");
+        }
+    }
+}
+
+void Translator::sampler(const Descriptor &descriptor) {
+    result_.settings.samples = static_cast<std::uint64_t>(integer(descriptor, "pixelsamples", 4));
+    result_.settings.seed = static_cast<std::uint64_t>(integer(descriptor, "seed", 0));
+}
+
+void Translator::integrator(const Descriptor &descriptor) {
+    const auto depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 5));
+    if (depth > render_emergency_limit) {
+        unsupported(location(descriptor, "maxdepth"),
+                    "Path maxdepth exceeds the spectral render profile limit of " +
+                        std::to_string(render_emergency_limit));
+    }
+    scene_.max_depth = depth;
+    if (boolean(descriptor, "regularize", false)) {
+        unsupported(location(descriptor, "regularize"), "Path regularization is unsupported");
+    }
+    if (string(descriptor, "lightsampler").value_or("bvh") != "bvh") {
+        unsupported(location(descriptor, "lightsampler"),
+                    "Only the bvh light sampler is supported");
+    }
+}
+
+std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &descriptor,
+                                                              string_view name, double maximum) {
+    const auto *selected = parameter(descriptor, name);
+    if (!selected || selected->type != "spectrum" ||
+        selected->values.front().kind == ValueKind::string || selected->values.size() < 4) {
+        unsupported(location(descriptor, name),
+                    std::string(name) + " requires at least two numeric wavelength/value pairs");
+        return std::nullopt;
+    }
+    const auto &values = selected->values;
+    if (values.size() > limits_.list_values ||
+        values.size() > limits_.total_values - spectral_values_) {
+        if (!spectral_limit_exceeded_) {
+            issue(Severity::error, "limit-exceeded", selected->location,
+                  "Translated spectrum value limit exceeded");
+            spectral_limit_exceeded_ = true;
+        }
+        return std::nullopt;
+    }
+    spectral_values_ += values.size();
+
+    std::vector<SpectralKnot> knots;
+    knots.reserve(values.size() / 2);
+    const Value *outside_range = nullptr;
+    for (std::size_t i = 0; i < values.size(); i += 2) {
+        const auto &wavelength = values[i];
+        const auto &value = values[i + 1];
+        if (!float_representable(wavelength.number)) {
+            invalid(wavelength.location, "Spectrum wavelength overflows binary32");
+            return std::nullopt;
+        }
+        if (!float_representable(value.number)) {
+            invalid(value.location, "Spectrum value overflows binary32");
+            return std::nullopt;
+        }
+        const float lambda = static_cast<float>(wavelength.number);
+        if (!knots.empty() && lambda <= knots.back().wavelength) {
+            invalid(wavelength.location, "Spectrum wavelengths must increase in binary32");
+            return std::nullopt;
+        }
+        if (!outside_range && (value.number < 0 || value.number > maximum)) {
+            outside_range = &value;
+        }
+        knots.push_back({lambda, static_cast<float>(value.number)});
+    }
+    if (outside_range) {
+        unsupported(outside_range->location, name == "reflectance"
+                                                 ? "Diffuse reflectance must be within [0, 1]"
+                                                 : "Infinite-light spectrum must be nonnegative");
+        return std::nullopt;
+    }
+    return knots;
+}
+
+void Translator::light(const Descriptor &descriptor) {
+    const auto scale = narrow(descriptor, "scale", 1);
+    const auto illuminance = narrow(descriptor, "illuminance", -1);
+    auto knots = spectrum(descriptor, "L", std::numeric_limits<double>::infinity());
+    if (!knots || !scale || !illuminance) {
+        return;
+    }
+    SpectralMaterial curve;
+    curve.knots = std::move(*knots);
+    auto &dense = scene_.environment;
+    for (std::size_t i = 0; i < dense.size(); ++i) {
+        dense[i] = static_cast<float>(spectral_reflectance(curve, 360. + static_cast<double>(i)));
+    }
+    const double normalization = pbrt_y_inner_product(dense);
+    if (!(normalization > 0 && std::isfinite(normalization))) {
+        invalid(location(descriptor, "L"),
+                "Infinite-light spectrum requires a positive finite CIE Y inner product");
+        return;
+    }
+    const double amplitude =
+        *scale * (*illuminance > 0 ? *illuminance / std::numbers::pi : 1.) / normalization;
+    for (auto &value : dense) {
+        const double normalized = value * amplitude;
+        if (!float_representable(normalized)) {
+            invalid(location(descriptor, "L"),
+                    "Normalized infinite-light spectrum overflows binary32");
+            return;
+        }
+        value = static_cast<float>(normalized);
+    }
+}
+
+std::uint32_t Translator::material(const Descriptor &descriptor) {
+    if (!parameter(descriptor, "reflectance")) {
+        return 0;
+    }
+    auto knots = spectrum(descriptor, "reflectance", 1);
+    if (!knots) {
+        return 0;
+    }
+    const auto index = static_cast<std::uint32_t>(scene_.materials.size());
+    SpectralMaterial material;
+    material.knots = std::move(*knots);
+    scene_.materials.push_back(std::move(material));
+    return index;
+}
+
+void Translator::geometry() {
+    const auto &geometry = input_.geometry;
+    if (geometry.instances.size() > limits_.total_values ||
+        geometry.meshes.size() > limits_.total_values ||
+        input_.inline_materials.size() > limits_.directives ||
+        input_.named_materials.size() > limits_.directives) {
+        issue(Severity::error, "limit-exceeded", entry_,
+              "Translated geometry or material limit exceeded");
+        return;
+    }
+    std::size_t remaining = limits_.total_values;
+    for (const auto &mesh : geometry.meshes) {
+        if (mesh.positions.size() > remaining / 3) {
+            issue(Severity::error, "limit-exceeded", entry_,
+                  "Translated geometry value limit exceeded");
+            return;
+        }
+        remaining -= mesh.positions.size() * 3;
+        if (mesh.triangles.size() > remaining / 3) {
+            issue(Severity::error, "limit-exceeded", entry_,
+                  "Translated geometry value limit exceeded");
+            return;
+        }
+        remaining -= mesh.triangles.size() * 3;
+    }
+    if (std::ranges::none_of(geometry.instances, [&](const GeometryInstance &instance) {
+            return !geometry.meshes[instance.mesh_index].triangles.empty();
+        })) {
+        unsupported(entry_, "The spectral render profile requires at least one placed triangle");
+    }
+
+    SpectralMaterial default_material;
+    default_material.knots = {{360, 0.5f}, {830, 0.5f}};
+    scene_.materials.push_back(std::move(default_material));
+    std::map<string_view, std::uint32_t> named;
+    std::map<const Descriptor *, std::uint32_t> inline_materials;
+    for (const auto &descriptor : input_.named_materials) {
+        if (diagnostics_.diagnostics_truncated) {
+            return;
+        }
+        named.emplace(descriptor.authored.arguments.front().text, material(descriptor));
+    }
+    for (const auto &descriptor : input_.inline_materials) {
+        if (diagnostics_.diagnostics_truncated) {
+            return;
+        }
+        inline_materials.emplace(descriptor.get(), material(*descriptor));
+    }
+
+    struct MeshBinding {
+        std::uint32_t material = 0;
+        bool reverse_orientation = false;
+    };
+    std::vector<MeshBinding> bindings(geometry.meshes.size());
+    const auto bind = [&](const Shape &shape) {
+        const auto &binding = shape.material;
+        auto &mesh = bindings[shape.mesh_index];
+        mesh.reverse_orientation = shape.reverse_orientation;
+        if (!binding.name->empty()) {
+            mesh.material = named.at(*binding.name);
+        } else if (binding.inline_material) {
+            mesh.material = inline_materials.at(binding.inline_material.get());
+        }
+    };
+    std::ranges::for_each(input_.shapes, bind);
+    for (const auto &object : input_.objects) {
+        std::ranges::for_each(object.shapes, bind);
+    }
+
+    scene_.geometry = geometry;
+    scene_.instance_materials.reserve(geometry.instances.size());
+    scene_.instance_reverse_orientation.reserve(geometry.instances.size());
+    for (const auto &instance : geometry.instances) {
+        const auto &binding = bindings[instance.mesh_index];
+        scene_.instance_materials.push_back(binding.material);
+        // PBRT applies the mesh and placement transforms to normals. A world-space
+        // edge cross product has an additional sign for a mirrored transform.
+        const bool mirrored = handedness(instance.transform) < 0;
+        scene_.instance_reverse_orientation.push_back(binding.reverse_orientation != mirrored);
+    }
+}
+
+RenderTranslation Translator::run() {
+    const auto *film_descriptor = required("Film");
+    if (film_descriptor) {
+        film(*film_descriptor);
+    }
+    if (const auto *descriptor = required("Camera")) {
+        camera(*descriptor, film_descriptor);
+    }
+    if (const auto *descriptor = required("PixelFilter")) {
+        filter(*descriptor);
+    }
+    if (const auto *descriptor = required("Sampler")) {
+        sampler(*descriptor);
+    }
+    if (const auto *descriptor = required("Integrator")) {
+        integrator(*descriptor);
+    }
+    for (const auto &option : input_.options) {
+        if (option.authored.name != "Accelerator") {
+            continue;
+        }
+        if (option.effective_authored.empty()) {
+            result_.provenance.emplace_back("PBRT bvh uses native Metal acceleration");
+        } else {
+            unsupported(option.authored.location, "Only a bare bvh accelerator is supported");
+        }
+    }
+
+    if (input_.lights.size() > 1) {
+        unsupported(input_.lights[1].authored.location, "Only one infinite light is supported");
+    }
+    for (const auto &descriptor : input_.lights) {
+        if (diagnostics_.diagnostics_truncated) {
+            break;
+        }
+        light(descriptor);
+    }
+    if (!diagnostics_.diagnostics_truncated) {
+        geometry();
+    }
+    if (const auto message = validate_render_settings(result_.settings); !message.empty()) {
+        invalid(film_descriptor ? film_descriptor->authored.location : entry_, message);
+    }
+
+    const auto has = [&](Severity severity) {
+        return std::ranges::any_of(
+            diagnostics_.diagnostics,
+            [severity](const Diagnostic &diagnostic) { return diagnostic.severity == severity; });
+    };
+    if (diagnostics_.diagnostics_truncated || has(Severity::error)) {
+        result_.status = 1;
+    } else if (has(Severity::unsupported)) {
+        result_.status = 2;
+    } else if (const auto message = validate_render_scene(scene_); !message.empty()) {
+        invalid(entry_, message);
+        result_.status = 1;
+    } else {
+        result_.status = 0;
+        result_.scene = std::move(scene_);
+        result_.provenance.push_back("CIE 1931 sensor exposure uses ISO and shutter duration");
+    }
+    result_.diagnostics = std::move(diagnostics_.diagnostics);
+    return std::move(result_);
+}
+
+} // namespace
+
+RenderTranslation translate(const Result &checked, const Location &entry, const Limits &limits) {
+    if (const int status = checked.exit_code(); status != 0 || !checked.scene) {
+        RenderTranslation result;
+        result.status = status != 0 ? status : 1;
+        return result;
+    }
+    return Translator(*checked.scene, entry, limits).run();
+}
+
+} // namespace rypath::pbrt

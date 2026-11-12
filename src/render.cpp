@@ -29,6 +29,35 @@ bool finite(GeometryPoint point) {
     return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
 }
 
+bool valid_projection(RenderModel model, double exposure) {
+    return (model == RenderModel::demo && exposure == 1) ||
+           (model == RenderModel::pbrt && std::isfinite(exposure) && exposure >= 0);
+}
+
+bool valid_raster_camera(const RasterCamera &camera) {
+    const auto &[origin, corner, dx, dy] = camera;
+    if (!finite(origin) || !finite(corner) || !finite(dx) || !finite(dy)) {
+        return false;
+    }
+    const double nx = double{dx.y} * dy.z - double{dx.z} * dy.y;
+    const double ny = double{dx.z} * dy.x - double{dx.x} * dy.z;
+    const double nz = double{dx.x} * dy.y - double{dx.y} * dy.x;
+    // A nonzero scalar triple product keeps the raster's ray plane away
+    // from the zero vector and requires two independent raster directions.
+    return nx * corner.x + ny * corner.y + nz * corner.z != 0;
+}
+
+bool valid_pbrt_material(const SpectralMaterial &material) {
+    float previous = -std::numeric_limits<float>::infinity();
+    for (const auto [wavelength, value] : material.knots) {
+        if (!(wavelength > previous && std::isfinite(wavelength) && value >= 0 && value <= 1)) {
+            return false;
+        }
+        previous = wavelength;
+    }
+    return material.knots.size() >= 2;
+}
+
 bool valid_film_size(std::uint32_t width, std::uint32_t height) {
     const auto pixels = std::uint64_t{width} * height;
     return pixels > 0 && pixels <= std::numeric_limits<std::uint32_t>::max() &&
@@ -88,6 +117,32 @@ std::string validate_render_scene(const RenderScene &scene) {
         if (material >= scene.materials.size()) {
             return "Render instance material index is out of range";
         }
+    }
+    if (!scene.instance_reverse_orientation.empty() &&
+        (scene.instance_reverse_orientation.size() != scene.geometry.instances.size() ||
+         !std::ranges::all_of(scene.instance_reverse_orientation,
+                              [](std::uint32_t flag) { return flag <= 1; }))) {
+        return "Render orientation flags must supply one Boolean per instance";
+    }
+    if (!valid_projection(scene.model, scene.exposure)) {
+        return "Invalid render model or exposure";
+    }
+    if (scene.model == RenderModel::pbrt) {
+        if (!scene.raster_camera || !valid_raster_camera(*scene.raster_camera)) {
+            return "PBRT camera requires finite, nondegenerate raster ray coefficients";
+        }
+        if (scene.max_depth > render_emergency_limit) {
+            return "PBRT max depth exceeds the renderer limit";
+        }
+        if (!std::ranges::all_of(scene.environment,
+                                 [](float value) { return std::isfinite(value) && value >= 0; })) {
+            return "PBRT environment radiance must be finite and nonnegative";
+        }
+        if (!std::ranges::all_of(scene.materials, valid_pbrt_material)) {
+            return "PBRT reflectance requires at least two finite, strictly increasing "
+                   "wavelengths and values within [0, 1]";
+        }
+        return {};
     }
     for (const auto &material : scene.materials) {
         if (!std::ranges::all_of(material.reflectance,
@@ -156,11 +211,12 @@ RenderScene make_demo_scene() {
     return scene;
 }
 
-Film make_film(std::uint32_t width, std::uint32_t height) {
-    if (!valid_film_size(width, height)) {
+Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model, double exposure) {
+    if (!valid_film_size(width, height) || !valid_projection(model, exposure)) {
         return {};
     }
-    return {width, height, std::vector<FilmPixel>(static_cast<std::size_t>(width) * height)};
+    return {width, height, std::vector<FilmPixel>(static_cast<std::size_t>(width) * height), model,
+            exposure};
 }
 
 std::array<double, 3> film_mean(const FilmPixel &pixel) {
@@ -194,7 +250,39 @@ std::array<double, 3> wavelength_xyz(double wavelength) {
     return xyz;
 }
 
+std::array<double, 3> pbrt_cie_xyz(double wavelength) {
+    if (!(wavelength >= wavelength_min && wavelength <= wavelength_max)) {
+        return {};
+    }
+    return detail::cie_xyz[static_cast<std::size_t>(std::round(wavelength) - wavelength_min)];
+}
+
+double pbrt_y_inner_product(const std::array<float, 471> &spectrum) {
+    static_assert(detail::cie_xyz.size() ==
+                  std::tuple_size_v<std::remove_cvref_t<decltype(spectrum)>>);
+    double integral = 0;
+    for (std::size_t i = 0; i < spectrum.size(); ++i) {
+        integral += spectrum[i] * detail::cie_xyz[i][1];
+    }
+    return integral;
+}
+
 double spectral_reflectance(const SpectralMaterial &material, double wavelength) {
+    if (!material.knots.empty()) {
+        if (!(wavelength >= material.knots.front().wavelength &&
+              wavelength <= material.knots.back().wavelength)) {
+            return 0;
+        }
+        const auto next =
+            std::ranges::lower_bound(material.knots, wavelength, {}, &SpectralKnot::wavelength);
+        if (next == material.knots.begin()) {
+            return next->value;
+        }
+        const auto &previous = *(next - 1);
+        const double fraction =
+            (wavelength - previous.wavelength) / (double{next->wavelength} - previous.wavelength);
+        return std::lerp(double{previous.value}, double{next->value}, fraction);
+    }
     if (!(wavelength >= spectral_knots.front() && wavelength <= spectral_knots.back())) {
         return 0;
     }
@@ -233,14 +321,33 @@ std::array<std::uint32_t, 4> sample_words(std::uint64_t seed, std::uint32_t pixe
 
 float sample_uniform(std::uint32_t word) { return static_cast<float>(word >> 8) * 0x1p-24f; }
 
-std::array<std::uint8_t, 3> display_rgb(const std::array<double, 3> &xyz) {
+std::array<double, 3> linear_rgb(const std::array<double, 3> &xyz) {
     const auto [x, y, z] = xyz;
-    // XYZ to linear D65 sRGB. Exposure is 1; clipping applies only to display.
-    const std::array linear{
+    return {
         3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
         -0.9692660 * x + 1.8760108 * y + 0.0415560 * z,
         0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
     };
+}
+
+std::array<double, 3> linear_rgb(const Film &film, const FilmPixel &pixel) {
+    const auto xyz = film_mean(pixel);
+    if (film.model == RenderModel::demo) {
+        return linear_rgb(xyz);
+    }
+    const auto [x, y, z] = xyz;
+    // Derived from the pinned PBRT v4 stdillum-D65 spectrum, CIE observer,
+    // and sRGB primaries. The matrix maps unit relative white luminance to 1.
+    return {
+        film.exposure * (3.240444291419 * x - 1.537133830545 * y - 0.498529890988 * z),
+        film.exposure * (-0.969266752560 * x + 1.876012242980 * y + 0.041556048487 * z),
+        film.exposure * (0.055643519672 * x - 0.204026238798 * y + 1.057226873771 * z),
+    };
+}
+
+namespace {
+
+std::array<std::uint8_t, 3> encode_srgb(const std::array<double, 3> &linear) {
     std::array<std::uint8_t, 3> rgb{};
     for (std::size_t i = 0; i < rgb.size(); ++i) {
         const double channel = std::clamp(linear[i], 0.0, 1.0);
@@ -253,10 +360,24 @@ std::array<std::uint8_t, 3> display_rgb(const std::array<double, 3> &xyz) {
     return rgb;
 }
 
+} // namespace
+
+std::array<std::uint8_t, 3> display_rgb(const std::array<double, 3> &xyz) {
+    return encode_srgb(linear_rgb(xyz));
+}
+
+std::array<std::uint8_t, 3> display_rgb(const Film &film, const FilmPixel &pixel) {
+    return encode_srgb(linear_rgb(film, pixel));
+}
+
 FilmBatch::FilmBatch(const Film &film, std::uint64_t sample_count) {
     if (!valid_film_size(film.width, film.height) ||
         film.pixels.size() != static_cast<std::size_t>(film.width) * film.height) {
         error_ = "Invalid film dimensions or storage";
+        return;
+    }
+    if (!valid_projection(film.model, film.exposure)) {
+        error_ = "Invalid film model or exposure";
         return;
     }
     begin_ = film.pixels.front().count;
@@ -294,9 +415,11 @@ std::string FilmBatch::add(std::span<const RenderSample> samples) {
             error_ = "Film batch sample index is duplicated, missing, or outside the batch";
             return error_;
         }
-        const auto xyz = wavelength_xyz(sample.wavelength);
+        const bool pbrt = staged_.model == RenderModel::pbrt;
+        const auto xyz = pbrt ? pbrt_cie_xyz(sample.wavelength) : wavelength_xyz(sample.wavelength);
+        const double weighted_radiance = pbrt ? wavelength_span * sample.radiance : sample.radiance;
         for (std::size_t i = 0; i < xyz.size(); ++i) {
-            accumulate(xyz[i] * sample.radiance, pixel.sum[i], pixel.correction[i]);
+            accumulate(xyz[i] * weighted_radiance, pixel.sum[i], pixel.correction[i]);
             if (!std::isfinite(pixel.sum[i] + pixel.correction[i])) {
                 error_ = "Film batch accumulation overflow";
                 return error_;
@@ -317,6 +440,7 @@ std::string FilmBatch::commit(Film &film) {
         return error_;
     }
     if (film.width != staged_.width || film.height != staged_.height ||
+        film.model != staged_.model || film.exposure != staged_.exposure ||
         film.pixels.size() != staged_.pixels.size() ||
         !std::ranges::all_of(film.pixels,
                              [this](const FilmPixel &pixel) { return pixel.count == begin_; })) {

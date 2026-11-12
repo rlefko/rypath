@@ -16,6 +16,7 @@ using Word = std::uint32_t;
 #endif
 
 enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_hit = 3 };
+enum : Word { demo_model = 0, pbrt_model = 1 };
 
 struct Point {
     float x;
@@ -27,6 +28,12 @@ struct Triangle {
 };
 struct Material {
     float reflectance[8];
+    Word knot_begin;
+    Word knot_count;
+};
+struct SpectralKnot {
+    float wavelength;
+    float value;
 };
 struct Instance {
     float matrix[12];
@@ -34,6 +41,7 @@ struct Instance {
     Word triangle_begin;
     Word triangle_count;
     Word material;
+    Word reverse_orientation;
 };
 struct Parameters {
     Point origin;
@@ -53,6 +61,10 @@ struct Parameters {
     Word emergency_limit;
     Word lane_count;
     Word instance_count;
+    Word model;
+    Word max_depth;
+    Word material_count;
+    Word knot_count;
 };
 struct Sample {
     Word status;
@@ -68,14 +80,22 @@ struct Sample {
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "render wire scalar width");
 static_assert(sizeof(Point) == 12 && alignof(Point) == 4, "render point layout");
 static_assert(sizeof(Triangle) == 12 && alignof(Triangle) == 4, "render triangle layout");
-static_assert(sizeof(Material) == 32 && alignof(Material) == 4, "render material layout");
-static_assert(sizeof(Instance) == 64 && alignof(Instance) == 4 &&
-                  __builtin_offsetof(Instance, material) == 60,
+static_assert(sizeof(Material) == 40 && alignof(Material) == 4 &&
+                  __builtin_offsetof(Material, knot_begin) == 32,
+              "render material layout");
+static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
+                  __builtin_offsetof(SpectralKnot, value) == 4,
+              "render spectral knot layout");
+static_assert(sizeof(Instance) == 68 && alignof(Instance) == 4 &&
+                  __builtin_offsetof(Instance, material) == 60 &&
+                  __builtin_offsetof(Instance, reverse_orientation) == 64,
               "render instance layout");
-static_assert(sizeof(Parameters) == 128 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 144 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
-                  __builtin_offsetof(Parameters, lane_count) == 120,
+                  __builtin_offsetof(Parameters, lane_count) == 120 &&
+                  __builtin_offsetof(Parameters, model) == 128 &&
+                  __builtin_offsetof(Parameters, knot_count) == 140,
               "render parameter layout");
 static_assert(sizeof(Sample) == 44 && alignof(Sample) == 4 &&
                   __builtin_offsetof(Sample, wavelength) == 16 &&

@@ -2,7 +2,8 @@
 
 `--render-demo` renders an original built-in matte scene through Metal. It is a
 small declared transport model, not PBRT scene compatibility or a complete
-offline renderer. There is no scene-file parser, texture system, finite light,
+offline renderer. The separate [PBRT spectral profile](pbrt-rendering.md) now
+translates a bounded set of scene files. There is no texture system, finite light,
 specular material, participating medium, denoiser, or CPU rendering fallback.
 
 ```sh
