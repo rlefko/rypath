@@ -1,0 +1,15 @@
+name: Set up build tools
+description: Install the pinned CMake and Ninja versions used in CI
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python3 -m venv "$RUNNER_TEMP/rypath-build-tools"
+        tools_bin="$RUNNER_TEMP/rypath-build-tools/bin"
+        "$tools_bin/python" -m pip install cmake==4.0.3 ninja==1.13.0
+        printf '%s\n' "$tools_bin" >> "$GITHUB_PATH"
+        "$tools_bin/cmake" --version
+        "$tools_bin/ninja" --version
+        "${CXX:-c++}" --version
