@@ -3,6 +3,7 @@
 #include "image_output.hpp"
 #include "metal_backend.hpp"
 #include "metal_render.hpp"
+#include "pbrt.hpp"
 
 #include <charconv>
 #include <exception>
@@ -163,11 +164,18 @@ int render_demo(int argc, char *argv[]) {
 int main(int argc, char *argv[]) {
     if (argc == 1 || (argc == 2 && std::string_view{argv[1]} == "--help")) {
         std::cout << "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
+                     "       rypath --check-pbrt SCENE\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n";
         return 0;
     }
     try {
+        if (argc == 3 && std::string_view{argv[1]} == "--check-pbrt" &&
+            !std::string_view{argv[2]}.starts_with("--")) {
+            const auto result = rypath::pbrt::check(argv[2]);
+            std::cout << rypath::pbrt::report(result);
+            return result.exit_code();
+        }
         if (argc > 1 && std::string_view{argv[1]} == "--render-demo") {
             return render_demo(argc, argv);
         }
