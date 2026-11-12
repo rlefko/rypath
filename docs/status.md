@@ -2,39 +2,53 @@
 
 ## Current milestone
 
-Milestone 1: project foundations implemented and awaiting maintainer review in
-[PR #1](https://github.com/rlefko/rypath/pull/1). The executable only provides help
-and version information. The PR has not been merged.
+Milestone 1 is complete: [foundation PR #1](https://github.com/rlefko/rypath/pull/1)
+was reviewed and merged. The first slice of milestone 2 adds Metal device
+diagnostics, offline shader compilation, and a checked compute dispatch in
+[PR #2](https://github.com/rlefko/rypath/pull/2), awaiting maintainer review.
+
+The CLI now has `--metal-info` and `--metal-smoke-test`. There is no scene
+ingestion, acceleration structure, transport estimator, or image rendering yet.
 
 ## Validation
 
-Local Debug, Release, and ASan/UBSan builds each pass all five CLI tests on an
-Apple M4 Max with macOS 26.6, Xcode 26.6 / Apple Clang 21, CMake 4.0.3, and Ninja
-1.13.2. Tests verify exact output and exit status; an empty test selection fails.
+On November 12, 2026, strict Debug, Release, and ASan/UBSan builds each passed all
+12 tests on the physical Apple M4 Max with no availability skips. The environment
+was macOS 26.6, Xcode 26.6 / Apple Clang 21, Metal compiler 32023.883, CMake 4.0.3,
+and Ninja 1.13.2. The device reported architecture `applegpu_g16s`, unified memory,
+and both ray-tracing API flags. Hardware ray-tracing execution remains untested.
 
-Seven synthetic policy tests pass, including staged ZIP/TAR checks and detection
-of prohibited paths added and later removed in PR history. The installed hooks
-validate commit subjects and formatting. Independent review found no blocking
-implementation issues. The final gate's success/failure/cancelled/skipped cases
-were exercised locally.
+The compute check verified two dispatches, 258 logical values, and 512 guard
+elements. All three backend tests passed with Metal API validation enabled.
+Temporary corrupted shaders were rejected for a changed output at index 0 and a
+guard write at index 1. These probes establish that the checks detect both error
+classes; they are not transport or performance benchmarks.
 
-The [initial hosted run](https://github.com/rlefko/rypath/actions/runs/43271220189)
-passed in 93 seconds on November 12, 2026. Linux Clang 18.1.3 passed five tests in
-each of Debug, Release, and ASan/UBSan; hosted macOS Arm64 with Apple Clang 17
-passed five Debug tests. CI used CMake 4.0.3 and Ninja 1.13.0. Formatting, policy
-fixtures, clang-tidy, and the required final gate all passed.
+The macOS portable-only sanitizer build passed 10 tests. A sandbox with no
+visible device produced four explicit skips only when allowed; strict mode
+failed those tests. Missing/invalid library cases, canonical asset lookup via a
+symlink from another directory, static analysis, and independent review passed.
+Deleting the generated library rebuilt it without relinking the executable.
 
-CodeQL compiled and analyzed the C++ source, processed 58 rules with no reported
-findings, and passed its separate code-scanning check. The active `main` rules
-were read back and verified: PRs, current required checks, resolved discussions,
-CodeQL error/high-security thresholds, and no force pushes, deletion, or bypasses.
-Formal required approvals are zero; maintainer review and manual merge remain
-required. The PR shows the checks for its latest revision.
+The [initial hosted run](https://github.com/rlefko/rypath/actions/runs/43277396280)
+passed all required jobs. Xcode 16.4 on hosted macOS Arm64 compiled the MSL library
+and passed all 12 tests, including GPU execution, with no skips. Linux passed all
+10 portable tests in Debug, Release, and ASan/UBSan. Both static analyzers,
+formatting, policy checks, and compiled C++ CodeQL passed. CodeQL reported no
+findings; it does not cover Objective-C++ or MSL.
 
-No renderer, scene importer, GPU numerical check, or performance benchmark has
-been completed.
+The PR shows final-revision checks. The macOS deployment minimum is 14; runtime
+evidence is from local macOS 26.6 and the hosted macOS 15.8.2 runner.
+
+## Review workflow
+
+`main` retains required PRs, current `Foundation Gate`, resolved discussions,
+CodeQL error/high-security thresholds, and no force pushes or bypasses. Formal
+required approvals are zero so the maintainer can manually merge after review.
+No workstation runner automatically executes untrusted external PR code.
 
 ## Next bounded task
 
-After review and merge of the foundation PR: Metal capability reporting and a
-minimal validated GPU execution path. See the [ordered PR plan](roadmap.md).
+After review and merge of the Metal execution PR: native triangle/instance
+acceleration structures and independent intersection/occlusion checks. See the
+[ordered PR plan](roadmap.md).
