@@ -15,6 +15,8 @@ endif()
 
 option(RYPATH_ENABLE_METAL "Build the macOS Metal backend" ${rypath_macos})
 option(RYPATH_ALLOW_NO_METAL_DEVICE "Allow Metal tests to skip when no device is visible" OFF)
+option(RYPATH_ALLOW_NO_METAL_RAY_TRACING
+    "Allow geometry tests to skip when the Metal device lacks compute ray tracing" OFF)
 option(RYPATH_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 if(RYPATH_ENABLE_METAL AND NOT rypath_macos)
@@ -56,8 +58,13 @@ if(rypath_multi_config)
     string(APPEND rypath_runtime_directory "/$<CONFIG>")
 endif()
 
+add_library(rypath_geometry STATIC src/geometry.cpp)
+target_include_directories(rypath_geometry PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_geometry)
+
 add_library(rypath_metal_backend STATIC)
 target_include_directories(rypath_metal_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(rypath_metal_backend PRIVATE rypath_geometry)
 rypath_configure_host_target(rypath_metal_backend)
 
 if(RYPATH_ENABLE_METAL)
@@ -69,7 +76,7 @@ if(RYPATH_ENABLE_METAL)
     find_library(RYPATH_FOUNDATION_FRAMEWORK Foundation REQUIRED)
     find_library(RYPATH_COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
 
-    target_sources(rypath_metal_backend PRIVATE src/metal_backend.mm)
+    target_sources(rypath_metal_backend PRIVATE src/metal_backend.mm src/metal_geometry.mm)
     set_target_properties(rypath_metal_backend PROPERTIES
         OBJCXX_STANDARD 20
         OBJCXX_STANDARD_REQUIRED YES
@@ -84,7 +91,7 @@ if(RYPATH_ENABLE_METAL)
 
     include(cmake/MetalShaders.cmake)
 else()
-    target_sources(rypath_metal_backend PRIVATE src/metal_backend_stub.cpp)
+    target_sources(rypath_metal_backend PRIVATE src/metal_backend_stub.cpp src/metal_geometry_stub.cpp)
 endif()
 
 add_executable(rypath src/main.cpp)
