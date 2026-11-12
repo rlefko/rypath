@@ -4,8 +4,8 @@
 
 Milestone 1 is complete: [foundation PR #1](https://github.com/rlefko/rypath/pull/1)
 was reviewed and merged. The first slice of milestone 2 adds Metal device
-diagnostics, offline shader compilation, and a checked compute dispatch. It is
-awaiting PR validation and maintainer review.
+diagnostics, offline shader compilation, and a checked compute dispatch in
+[PR #2](https://github.com/rlefko/rypath/pull/2), awaiting maintainer review.
 
 The CLI now has `--metal-info` and `--metal-smoke-test`. There is no scene
 ingestion, acceleration structure, transport estimator, or image rendering yet.
@@ -30,8 +30,15 @@ failed those tests. Missing/invalid library cases, canonical asset lookup via a
 symlink from another directory, static analysis, and independent review passed.
 Deleting the generated library rebuilt it without relinking the executable.
 
-Hosted Linux, Xcode 16.4, and CodeQL results will be recorded after the PR runs.
-The macOS deployment minimum is 14; local runtime evidence is from macOS 26.6.
+The [initial hosted run](https://github.com/rlefko/rypath/actions/runs/43277396280)
+passed all required jobs. Xcode 16.4 on hosted macOS Arm64 compiled the MSL library
+and passed all 12 tests, including GPU execution, with no skips. Linux passed all
+10 portable tests in Debug, Release, and ASan/UBSan. Both static analyzers,
+formatting, policy checks, and compiled C++ CodeQL passed. CodeQL reported no
+findings; it does not cover Objective-C++ or MSL.
+
+The PR shows final-revision checks. The macOS deployment minimum is 14; runtime
+evidence is from local macOS 26.6 and the hosted macOS 15.8.2 runner.
 
 ## Review workflow
 

@@ -120,7 +120,9 @@ jobs:
       - name: Analyze Objective-C++ Metal adapter
         run: python3 scripts/analyze_metal.py build/debug/compile_commands.json src/metal_backend.mm
       - name: Run Debug and Metal tests
-        run: ctest --preset debug --verbose
+        run: |
+          ./build/debug/rypath --metal-info
+          ctest --preset debug --verbose
 
   codeql:
     name: CodeQL C++ analysis
