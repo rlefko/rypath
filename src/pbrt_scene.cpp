@@ -1055,8 +1055,8 @@ void Interpreter::validate_option(const PendingOption &pending) {
         known = one_of(type, {"gbuffer", "spectral"});
         schema = film_fields;
     } else if (directive.name == "PixelFilter") {
-        supported_type = "box";
-        known = one_of(type, {"gaussian", "mitchell", "sinc", "triangle"});
+        supported_type = type == "triangle" ? "triangle" : "box";
+        known = one_of(type, {"gaussian", "mitchell", "sinc"});
         schema = filter_fields;
     } else if (directive.name == "Sampler") {
         supported_type = "independent";

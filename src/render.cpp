@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -104,6 +105,104 @@ bool valid_raster_camera(const RasterCamera &camera) {
     // A nonzero scalar triple product keeps the raster's ray plane away
     // from the zero vector and requires two independent raster directions.
     return nx * corner.x + ny * corner.y + nz * corner.z != 0;
+}
+
+bool valid_pixel_filter(const PixelFilter &filter) {
+    switch (filter.kind) {
+    case PixelFilterKind::box:
+        return filter.x_radius == 0.5f && filter.y_radius == 0.5f;
+    case PixelFilterKind::triangle:
+        return std::isnormal(filter.x_radius) && filter.x_radius > 0 &&
+               std::isnormal(filter.y_radius) && filter.y_radius > 0;
+    }
+    return false;
+}
+
+constexpr double float_max = std::numeric_limits<float>::max();
+constexpr double float_min = std::numeric_limits<float>::min();
+// Metal allows round-toward-zero for float operations. Use a full relative epsilon.
+constexpr double float_roundoff = std::numeric_limits<float>::epsilon();
+constexpr double double_slack = 8. * std::numeric_limits<double>::epsilon();
+
+// Triangle rays evaluate ((float(pixel) + 0.5f) + offset) / float(extent).
+// Enclose both outer pixels using the full closed tent support and allow for
+// the Metal precise operations, including possible subnormal flushing.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+std::optional<std::array<double, 2>> triangle_raster_interval(std::uint32_t extent, float radius) {
+    const double offset_bound = radius * (1. + 4. * float_roundoff) + float_min;
+    const double last_center = static_cast<float>(extent - 1) + 0.5f;
+    if (last_center + offset_bound > float_max) {
+        return std::nullopt;
+    }
+    const double divisor = static_cast<float>(extent);
+    const auto edge = [&](double numerator, double outward) {
+        const double value = numerator / divisor;
+        const double error = 8. * float_roundoff * std::abs(value) + 2. * float_min;
+        return value + outward * error;
+    };
+    return std::array{edge(0.5 - offset_bound, -1.), edge(last_center + offset_bound, 1.)};
+}
+
+double endpoint_bound(const std::array<double, 2> &interval, double slope, double intercept) {
+    return std::max(std::abs(std::fma(interval[0], slope, intercept)),
+                    std::abs(std::fma(interval[1], slope, intercept)));
+}
+
+double dot(const Vector &a, const Vector &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+double dot_error(const Vector &a, const Vector &b) {
+    return double_slack * (std::abs(a[0] * b[0]) + std::abs(a[1] * b[1]) + std::abs(a[2] * b[2]));
+}
+
+double subnormal_magnitude(double value) {
+    return std::abs(value) < float_min ? std::abs(value) : 0.;
+}
+
+bool triangle_ray_range(const RasterCamera &camera, const std::array<double, 2> &x,
+                        const std::array<double, 2> &y) {
+    const auto corner = to_vector(camera.corner);
+    const auto dx = to_vector(camera.dx);
+    const auto dy = to_vector(camera.dy);
+    const double x_abs = std::max(std::abs(x[0]), std::abs(x[1]));
+    const double y_abs = std::max(std::abs(y[0]), std::abs(y[1]));
+    Vector direction_error{};
+    for (std::size_t axis = 0; axis < corner.size(); ++axis) {
+        // Match d = fma(y, dy, fma(x, dx, corner)). Bound the actual affine
+        // extrema, and carry the first FMA's rounding into the second.
+        const double inner = endpoint_bound(x, dx[axis], corner[axis]);
+        const double inner_error =
+            float_roundoff * inner + float_min + subnormal_magnitude(corner[axis]) +
+            x_abs * subnormal_magnitude(dx[axis]) +
+            double_slack * (std::abs(corner[axis]) + x_abs * std::abs(dx[axis]));
+        if (inner + inner_error > float_max) {
+            return false;
+        }
+        double outer = 0;
+        for (const double column : x) {
+            outer = std::max(outer,
+                             endpoint_bound(y, dy[axis], std::fma(column, dx[axis], corner[axis])));
+        }
+        const double outer_error = inner_error + y_abs * subnormal_magnitude(dy[axis]) +
+                                   float_roundoff * (outer + inner_error) + float_min +
+                                   double_slack * (inner + y_abs * std::abs(dy[axis]));
+        if (outer + outer_error > float_max) {
+            return false;
+        }
+        direction_error[axis] = outer_error;
+    }
+
+    // The computed cross is just a candidate separating vector. Bound its
+    // residual dots with dx and dy instead of assuming exact orthogonality.
+    const Vector normal = cross(dx, dy);
+    const Vector abs_normal{std::abs(normal[0]), std::abs(normal[1]), std::abs(normal[2])};
+    const double separation = std::abs(dot(normal, corner)) - dot_error(normal, corner);
+    const double uncertainty = x_abs * (std::abs(dot(normal, dx)) + dot_error(normal, dx)) +
+                               y_abs * (std::abs(dot(normal, dy)) + dot_error(normal, dy)) +
+                               dot(abs_normal, direction_error);
+    // If every direction component were subnormal, their dot with the
+    // separating vector could not exceed this limit.
+    const double minimum_scale = (abs_normal[0] + abs_normal[1] + abs_normal[2]) * float_min;
+    return separation > (uncertainty + minimum_scale) * (1. + double_slack);
 }
 
 bool valid_sampled_material(const SpectralMaterial &material) {
@@ -223,6 +322,26 @@ std::string validate_render_settings(const RenderSettings &settings) {
     return {};
 }
 
+std::string validate_raster_support(const RasterCamera &camera, const PixelFilter &filter,
+                                    std::uint32_t width, std::uint32_t height) {
+    if (!valid_pixel_filter(filter)) {
+        return "Invalid pixel filter or radius";
+    }
+    if (filter.kind == PixelFilterKind::box) {
+        return {};
+    }
+    if (!valid_raster_camera(camera) || width == 0 || height == 0) {
+        return "Triangle filter requires finite nondegenerate raster coefficients and positive "
+               "dimensions";
+    }
+    const auto x = triangle_raster_interval(width, filter.x_radius);
+    const auto y = triangle_raster_interval(height, filter.y_radius);
+    if (!x || !y || !triangle_ray_range(camera, *x, *y)) {
+        return "Triangle filter support exceeds the safe binary32 raster direction range";
+    }
+    return {};
+}
+
 std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                                                const GeometryTransform &transform) {
     const auto point = apply_transform(transform, to_vector(position), true);
@@ -292,6 +411,12 @@ std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTrans
 }
 
 std::string validate_render_scene(const RenderScene &scene) {
+    if (!valid_pixel_filter(scene.filter)) {
+        return "Invalid pixel filter or radius";
+    }
+    if (scene.model == RenderModel::demo && scene.filter.kind != PixelFilterKind::box) {
+        return "Triangle filtering requires the PBRT render model";
+    }
     if (auto error = validate_geometry(scene.geometry); !error.empty()) {
         return error;
     }
@@ -558,6 +683,13 @@ std::array<std::uint32_t, 4> sample_words(std::uint64_t seed, std::uint32_t pixe
 }
 
 float sample_uniform(std::uint32_t word) { return static_cast<float>(word >> 8) * 0x1p-24f; }
+
+// Use the same unit variate, radius order as the shader and PBRT SampleTent.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+float triangle_filter_offset(float u, float radius) {
+    const float s = 2.f * u - 1.f;
+    return radius * (s / (1.f + std::sqrt(1.f - std::abs(s))));
+}
 
 std::array<double, 3> linear_rgb(const std::array<double, 3> &xyz) {
     const auto [x, y, z] = xyz;

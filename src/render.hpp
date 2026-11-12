@@ -27,6 +27,13 @@ struct SpectralMaterial {
     std::array<float, 3> coefficients{};
 };
 enum class RenderModel { demo, pbrt };
+enum class PixelFilterKind { box, triangle };
+
+struct PixelFilter {
+    PixelFilterKind kind = PixelFilterKind::box;
+    float x_radius = 0.5f;
+    float y_radius = 0.5f;
+};
 
 struct RenderCamera {
     GeometryPoint origin{4, 3, 6};
@@ -59,6 +66,7 @@ struct RenderScene {
     std::vector<AreaEmission> area_emissions{};
     // Empty or one emission index (or no_area_emission) per source instance.
     std::vector<std::uint32_t> instance_emissions{};
+    PixelFilter filter{};
 };
 struct RenderSettings {
     std::uint32_t width = 256;
@@ -92,6 +100,8 @@ struct Film {
 };
 
 std::string validate_render_settings(const RenderSettings &settings);
+std::string validate_raster_support(const RasterCamera &camera, const PixelFilter &filter,
+                                    std::uint32_t width, std::uint32_t height);
 // Shared by area geometry preflight and Metal's world-space emitter upload.
 std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                                                const GeometryTransform &transform);
@@ -109,6 +119,7 @@ double spectral_reflectance(const SpectralMaterial &material, double wavelength)
 std::array<std::uint32_t, 4> sample_words(std::uint64_t seed, std::uint32_t pixel,
                                           std::uint64_t sample, std::uint32_t block);
 float sample_uniform(std::uint32_t word);
+float triangle_filter_offset(float u, float radius);
 std::array<double, 3> linear_rgb(const std::array<double, 3> &xyz);
 std::array<double, 3> linear_rgb(const Film &film, const FilmPixel &pixel);
 std::array<std::uint8_t, 3> display_rgb(const std::array<double, 3> &xyz);

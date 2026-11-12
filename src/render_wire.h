@@ -17,6 +17,7 @@ using Word = std::uint32_t;
 
 enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_hit = 3 };
 enum : Word { demo_model = 0, pbrt_model = 1 };
+enum : Word { box_filter = 0, triangle_filter = 1 };
 enum : Word { sampled_material = 0, constant_material = 1, rgb_sigmoid_material = 2 };
 enum : Word { no_emission = 0xffffffffu };
 
@@ -82,6 +83,9 @@ struct Parameters {
     Word emission_count;
     Word emitter_count;
     Word emitter_slots;
+    Word filter_kind;
+    float filter_x_radius;
+    float filter_y_radius;
 };
 struct Sample {
     Word status;
@@ -118,7 +122,7 @@ static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
 static_assert(sizeof(Emitter) == 8 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 156 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 168 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
                   __builtin_offsetof(Parameters, lane_count) == 120 &&
@@ -126,7 +130,10 @@ static_assert(sizeof(Parameters) == 156 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, knot_count) == 140 &&
                   __builtin_offsetof(Parameters, emission_count) == 144 &&
                   __builtin_offsetof(Parameters, emitter_count) == 148 &&
-                  __builtin_offsetof(Parameters, emitter_slots) == 152,
+                  __builtin_offsetof(Parameters, emitter_slots) == 152 &&
+                  __builtin_offsetof(Parameters, filter_kind) == 156 &&
+                  __builtin_offsetof(Parameters, filter_x_radius) == 160 &&
+                  __builtin_offsetof(Parameters, filter_y_radius) == 164,
               "render parameter layout");
 static_assert(sizeof(Sample) == 44 && alignof(Sample) == 4 &&
                   __builtin_offsetof(Sample, wavelength) == 16 &&

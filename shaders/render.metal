@@ -46,7 +46,36 @@ static wire::Sample begin_sample(constant wire::Parameters &p, uint lane) {
                         {words.x, words.y, words.z, words.w}};
 }
 
+static float triangle_offset(float u, float radius) {
+    // Invert the normalized tent CDF without subtracting nearly equal values
+    // around its center. The existing camera uniform grid includes u = 0.
+    const float s = 2.0f * u - 1.0f;
+    return radius * precise::divide(s, 1.0f + precise::sqrt(1.0f - abs(s)));
+}
+
+static ray triangle_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
+    const float ox = triangle_offset(u01(sample.random_words[0]), p.filter_x_radius);
+    const float oy = triangle_offset(u01(sample.random_words[1]), p.filter_y_radius);
+    const float x = precise::divide((float(sample.pixel % p.width) + 0.5f) + ox, float(p.width));
+    const float y = precise::divide((float(sample.pixel / p.width) + 0.5f) + oy, float(p.height));
+    const float3 d =
+        fma(float3(y), unpack(p.up), fma(float3(x), unpack(p.right), unpack(p.forward)));
+    const float scale = max(abs(d.x), max(abs(d.y), abs(d.z)));
+    // Use the existing invalid-ray path for unrepresentable camera arithmetic.
+    if (!all(isfinite(d)) || !(scale > 0.0f)) {
+        return ray(unpack(p.origin), float3(NAN));
+    }
+    const float3 scaled = precise::divide(d, float3(scale));
+    if (!all(isfinite(scaled)) || !any(scaled != 0.0f)) {
+        return ray(unpack(p.origin), float3(NAN));
+    }
+    return ray(unpack(p.origin), normalize(scaled));
+}
+
 static ray primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
+    if (p.filter_kind == wire::triangle_filter) {
+        return triangle_primary_ray(p, sample);
+    }
     const float x = (float(sample.pixel % p.width) + u01(sample.random_words[0])) / float(p.width);
     const float y = (float(sample.pixel / p.width) + u01(sample.random_words[1])) / float(p.height);
     if (p.model == wire::pbrt_model) {
