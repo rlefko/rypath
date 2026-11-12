@@ -43,6 +43,10 @@ effective-parameter selections. It owns narrowed camera, material curves,
 environment/area-emission samples, and per-instance bindings, with source-located diagnostics
 for the narrower [rendering profile](pbrt-rendering.md). It reuses checked geometry
 instead of reinterpreting transforms. Only successful translation reaches Metal.
+An owned filter record selects the original half-pixel box path or normalized
+triangle sampling. Triangle camera arithmetic has dimension-aware support checks
+in translation, progressive setup, and each native request. Samples beyond film
+bounds remain attached to their source pixel with unit weight.
 The render session owns uploaded variable-length spectral data. Film records
 its sensor model and exposure independently of raw XYZ; the demo retains its
 original relative response while PBRT uses calibrated finite-depth transport.
