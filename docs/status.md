@@ -2,8 +2,9 @@
 
 ## Current milestone
 
-Milestone 1: project foundations. The first foundation PR is in progress and has
-not been merged. The executable only provides help and version information.
+Milestone 1: project foundations implemented and awaiting maintainer review in
+[PR #1](https://github.com/rlefko/rypath/pull/1). The executable only provides help
+and version information. The PR has not been merged.
 
 ## Validation
 
@@ -17,9 +18,21 @@ validate commit subjects and formatting. Independent review found no blocking
 implementation issues. The final gate's success/failure/cancelled/skipped cases
 were exercised locally.
 
-Hosted CI, CodeQL, and repository-protection evidence will be recorded after
-verification. No renderer, scene importer, GPU numerical check, or performance
-benchmark has been completed.
+The [initial hosted run](https://github.com/rlefko/rypath/actions/runs/43271220189)
+passed in 93 seconds on November 12, 2026. Linux Clang 18.1.3 passed five tests in
+each of Debug, Release, and ASan/UBSan; hosted macOS Arm64 with Apple Clang 17
+passed five Debug tests. CI used CMake 4.0.3 and Ninja 1.13.0. Formatting, policy
+fixtures, clang-tidy, and the required final gate all passed.
+
+CodeQL compiled and analyzed the C++ source, processed 58 rules with no reported
+findings, and passed its separate code-scanning check. The active `main` rules
+were read back and verified: PRs, current required checks, resolved discussions,
+CodeQL error/high-security thresholds, and no force pushes, deletion, or bypasses.
+Formal required approvals are zero; maintainer review and manual merge remain
+required. The PR shows the checks for its latest revision.
+
+No renderer, scene importer, GPU numerical check, or performance benchmark has
+been completed.
 
 ## Next bounded task
 
