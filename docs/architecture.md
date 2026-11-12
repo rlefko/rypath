@@ -4,10 +4,10 @@
 
 The current program is a C++20 command-line executable. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
-`--metal-info`, `--metal-smoke-test`, `--render-demo`, and `--check-pbrt SCENE`. No arguments prints
-help, and invalid arguments fail with a diagnostic. Rendering currently uses
-one original built-in scene; portable PBRT preflight checks scene files without
-rendering them.
+`--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`, and
+`--render-pbrt SCENE --output IMAGE.png`. No arguments prints help, and invalid
+arguments fail. Render the original demo or the supported PBRT spectral subset;
+portable preflight remains independent of rendering.
 
 A private C++ interface separates the portable CLI from a narrow ARC
 Objective-C++ adapter on macOS. The adapter owns Metal resources through command
@@ -37,6 +37,15 @@ PBRT scene state and builds checked float/index geometry only within the declare
 descriptors without translating them to the demo renderer. Incomplete analysis
 returns diagnostics and a partial inventory, without a complete scene handle.
 No spectral reconstruction, light normalization, or renderer defaults are applied.
+
+A separate portable translator consumes a complete checked scene and shared
+effective-parameter selections. It owns narrowed camera, material curves,
+environment samples, and per-instance bindings, with source-located diagnostics
+for the narrower [rendering profile](pbrt-rendering.md). It reuses checked geometry
+instead of reinterpreting transforms. Only successful translation reaches Metal.
+The render session owns uploaded variable-length spectral data. Film records
+its sensor model and exposure independently of raw XYZ; the demo retains its
+original relative response while PBRT uses calibrated finite-depth transport.
 
 The only upstream adaptation is the pinned Apache-2.0 tokenizer. File expansion,
 typed parsing, scene interpretation, and reporting are implemented in rypath;

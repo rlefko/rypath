@@ -43,6 +43,18 @@ Exit 0 means analysis completed within the profile, 2 means recognized features
 are outside the profile, and 1 means an error or resource limit. Errors take
 precedence. The Cornell fixture intentionally returns 2.
 
+To render the [supported spectral profile](pbrt-rendering.md):
+
+```sh
+./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/multibounce.pbrt \
+  --output build/pbrt.png --batch-size 8
+```
+
+Resolution, sample count, seed, and depth come from the scene. Unsupported
+render settings return 2 before GPU acquisition; structural success alone is
+not sufficient. The pinned CPU PBRT comparison is opt-in and stays outside
+routine offline CTest/CI; see [validation](pbrt-render-validation.md).
+
 CTest checks exact stdout, stderr, and exit status for no arguments, help,
 version, unsupported options, and excess arguments. All test presets fail when
 no tests are selected.

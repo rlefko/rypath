@@ -4,11 +4,12 @@ rypath is a C++20 spectral path tracer being developed for Apple Silicon through
 Metal. The first goal is progressive offline rendering; a native macOS application
 and interactive rendering follow later.
 
-**Current state: progressive demo rendering and portable PBRT v4 preflight.** Metal traces a built-in
-matte scene with native triangle/instance acceleration, environment lighting,
-MIS, and compensated Russian roulette. Complete sample batches accumulate raw
-XYZ; a separate display conversion saves the final PNG. `--check-pbrt` analyzes a declared scene profile and reports dependencies and
-unsupported features. External-scene rendering remains in development.
+**Current state: progressive Metal rendering and a strict PBRT spectral profile.**
+Render the built-in demo or PBRT files containing supported sampled spectra,
+diffuse triangles, and constant environment lighting. Complete batches accumulate
+raw XYZ; separate display conversion saves the final PNG. Portable `--check-pbrt`
+reports scene structure, dependencies, and unsupported features. Broader PBRT
+materials, area lights, and external assets remain in development.
 
 ## Build and run
 
@@ -27,6 +28,8 @@ ctest --preset debug --no-tests=error
 ./build/debug/rypath --metal-info
 ./build/debug/rypath --metal-smoke-test
 ./build/debug/rypath --check-pbrt tests/fixtures/pbrt/cornell-box.pbrt
+./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/multibounce.pbrt \
+  --output build/pbrt.png --batch-size 8
 ./build/debug/rypath --render-demo --output build/demo.png \
   --width 256 --height 192 --samples 128 --batch-size 8 --seed 1
 ```
@@ -50,8 +53,8 @@ compute ray tracing; Linux and Metal-disabled builds report it as unavailable.
 
 ## Direction
 
-PBRT rendering translation, broader spectral materials, media, linear OpenEXR, and resumable
-offline rendering follow this bounded demo. Scene compatibility, numerical
+Broader PBRT rendering, spectral materials, media, linear OpenEXR, and resumable
+offline rendering follow this bounded profile. Scene compatibility, numerical
 correctness, and performance each need separate evidence. The [PBRT profile](docs/pbrt-profile.md) distinguishes checked scene structure
 from rendering conformance. There are no target-device performance claims yet.
 Ray-tracing API flags describe device capabilities; geometry validation runs
@@ -62,6 +65,7 @@ through CTest, while the CLI smoke test exercises integer compute.
 - [Native geometry and reference checks](docs/geometry.md)
 - [Progressive rendering and numerical validation](docs/rendering.md)
 - [PBRT preflight compatibility profile](docs/pbrt-profile.md)
+- [PBRT spectral rendering profile](docs/pbrt-rendering.md)
 - [Ordered PR plan and roadmap](docs/roadmap.md)
 - [Contributing and validation](docs/contributing.md)
 - [Current status](docs/status.md)
