@@ -32,9 +32,9 @@ repos:
       - id: check-merge-conflict
       - id: check-yaml
       - id: end-of-file-fixer
-        exclude: ^(LICENSE|third_party/cie/(CIE_xyz_1931_2deg\.csv(_metadata\.json)?|LICENSE\.txt))$
+        exclude: ^(LICENSE|third_party/cie/(CIE_xyz_1931_2deg\.csv(_metadata\.json)?|LICENSE\.txt)|tests/fixtures/pbrt/(cornell-box\.pbrt|LICENSE\.txt))$
       - id: trailing-whitespace
-        exclude: ^(LICENSE|third_party/cie/(CIE_xyz_1931_2deg\.csv(_metadata\.json)?|LICENSE\.txt))$
+        exclude: ^(LICENSE|third_party/cie/(CIE_xyz_1931_2deg\.csv(_metadata\.json)?|LICENSE\.txt)|tests/fixtures/pbrt/cornell-box\.pbrt)$
 
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: 7d85583be209cb547946c82fbe51f4bc5dd1d017  # v18.1.8

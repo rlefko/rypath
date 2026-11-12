@@ -2,3 +2,7 @@
 third_party/cie/CIE_xyz_1931_2deg.csv -text whitespace=cr-at-eol
 third_party/cie/CIE_xyz_1931_2deg.csv_metadata.json -text whitespace=cr-at-eol
 third_party/cie/LICENSE.txt -text whitespace=-blank-at-eof
+
+# Preserve the pinned PBRT scene and accompanying upstream notice byte for byte.
+tests/fixtures/pbrt/cornell-box.pbrt -text whitespace=-blank-at-eol
+tests/fixtures/pbrt/LICENSE.txt -text
