@@ -27,7 +27,7 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
             result.diagnostic = "render build returned no scene";
             return result;
         }
-        result.film = make_film(settings.width, settings.height);
+        result.film = make_film(settings.width, settings.height, scene.model, scene.exposure);
         const auto pixel_total = static_cast<std::uint32_t>(result.film.pixels.size());
         std::uint64_t completed = 0;
         while (completed < settings.samples) {

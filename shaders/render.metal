@@ -49,6 +49,11 @@ static wire::Sample begin_sample(constant wire::Parameters &p, uint lane) {
 static ray primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
     const float x = (float(sample.pixel % p.width) + u01(sample.random_words[0])) / float(p.width);
     const float y = (float(sample.pixel / p.width) + u01(sample.random_words[1])) / float(p.height);
+    if (p.model == wire::pbrt_model) {
+        const float3 d = unpack(p.forward) + x * unpack(p.right) + y * unpack(p.up);
+        const float scale = max(abs(d.x), max(abs(d.y), abs(d.z)));
+        return ray(unpack(p.origin), normalize(d / scale));
+    }
     const float aspect = float(p.width) / float(p.height);
     const float3 direction =
         normalize(unpack(p.forward) + (2.0f * x - 1.0f) * aspect * p.film_scale * unpack(p.right) +
@@ -56,8 +61,8 @@ static ray primary_ray(constant wire::Parameters &p, thread const wire::Sample &
     return ray(unpack(p.origin), direction);
 }
 
-static float reflectance(const device wire::Material &material, constant wire::Parameters &p,
-                         float wavelength) {
+static float demo_reflectance(const device wire::Material &material, constant wire::Parameters &p,
+                              float wavelength) {
     for (uint i = 1; i < 8; ++i) {
         if (wavelength <= p.knots[i]) {
             const float t = (wavelength - p.knots[i - 1]) / (p.knots[i] - p.knots[i - 1]);
@@ -65,6 +70,44 @@ static float reflectance(const device wire::Material &material, constant wire::P
         }
     }
     return material.reflectance[7];
+}
+
+static float pbrt_reflectance(const device wire::SpectralKnot *knots, uint count,
+                              float wavelength) {
+    if (wavelength < knots[0].wavelength || wavelength > knots[count - 1].wavelength) {
+        return 0.0f;
+    }
+    uint lower = 0;
+    uint upper = count - 1;
+    while (upper - lower > 1) {
+        const uint mid = lower + (upper - lower) / 2;
+        if (wavelength < knots[mid].wavelength) {
+            upper = mid;
+        } else {
+            lower = mid;
+        }
+    }
+    if (lower == upper) {
+        return knots[lower].value;
+    }
+    const float a = knots[lower].wavelength;
+    const float b = knots[upper].wavelength;
+    const float span = b - a;
+    // Finite authored endpoints may straddle the entire binary32 range.
+    // Halving before subtraction preserves the ratio when the full span overflows.
+    const float t = isfinite(span) ? (wavelength - a) / span
+                                   : (0.5f * wavelength - 0.5f * a) / (0.5f * b - 0.5f * a);
+    return mix(knots[lower].value, knots[upper].value, t);
+}
+
+static float sky_radiance(const device float *environment, constant wire::Parameters &p,
+                          float wavelength) {
+    if (p.model == wire::demo_model) {
+        return 1.0f;
+    }
+    const uint nm = uint(wavelength);
+    const uint nearest = nm + uint(wavelength - float(nm) >= 0.5f);
+    return environment[nearest - 360u];
 }
 
 static float3 sphere(float u, float v) {
@@ -126,6 +169,9 @@ static bool spawn_point(ray incoming, float t, float2 uv, float3 p0, float3 p1, 
         return false;
     }
     n = cross_edges / sqrt(normal_squared);
+    if (instance.reverse_orientation != 0) {
+        n = -n;
+    }
     if (dot(n, incoming.direction) > 0.0f) {
         n = -n;
     }
@@ -161,12 +207,16 @@ static bool spawn_point(ray incoming, float t, float2 uv, float3 p0, float3 p1, 
 
 kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                               device wire::Sample *output [[buffer(1)]],
+                              const device float *environment [[buffer(7)]],
                               uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
     }
     wire::Sample sample = begin_sample(p, lane);
-    sample.radiance = 1.0f;
+    if (p.model == wire::pbrt_model && !all(isfinite(primary_ray(p, sample).direction))) {
+        sample.status = wire::invalid_arithmetic;
+    }
+    sample.radiance = sky_radiance(environment, p, sample.wavelength);
     output[lane] = sample;
 }
 
@@ -177,6 +227,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 const device wire::Point *positions [[buffer(4)]],
                                 const device wire::Triangle *triangles [[buffer(5)]],
                                 const device wire::Material *materials [[buffer(6)]],
+                                const device float *environment [[buffer(7)]],
+                                const device wire::SpectralKnot *knots [[buffer(8)]],
                                 uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
@@ -192,6 +244,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
     shadow.accept_any_intersection(true);
     float throughput = 1.0f;
     float escape_weight = 1.0f;
+    const float E = sky_radiance(environment, p, sample.wavelength);
 
     while (true) {
         if (!all(isfinite(incoming.direction)) || !isfinite(throughput) ||
@@ -201,7 +254,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         }
         const auto hit = closest.intersect(incoming, scene, all_visible);
         if (hit.type == intersection_type::none) {
-            sample.radiance += throughput * escape_weight;
+            sample.radiance += throughput * escape_weight * E;
             break;
         }
         const uint bounce = sample.scatterings;
@@ -213,11 +266,32 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         }
 
         const device wire::Instance &instance = instances[hit.instance_id];
-        if (hit.primitive_id >= instance.triangle_count) {
+        if (hit.primitive_id >= instance.triangle_count || instance.material >= p.material_count) {
             sample.status = wire::invalid_hit;
             break;
         }
-        const float rho = reflectance(materials[instance.material], p, sample.wavelength);
+        // A miss can still contribute at the authored depth. A valid opaque
+        // hit at that depth contributes no further direct or indirect light.
+        if (p.model == wire::pbrt_model && bounce >= p.max_depth) {
+            break;
+        }
+        const device wire::Material &material = materials[instance.material];
+        float rho;
+        if (p.model == wire::pbrt_model) {
+            if (material.knot_count == 0 || material.knot_begin > p.knot_count ||
+                material.knot_count > p.knot_count - material.knot_begin) {
+                sample.status = wire::invalid_hit;
+                break;
+            }
+            rho = pbrt_reflectance(knots + material.knot_begin, material.knot_count,
+                                   sample.wavelength);
+        } else {
+            rho = demo_reflectance(material, p, sample.wavelength);
+        }
+        if (!(rho >= 0.0f && rho <= 1.0f)) {
+            sample.status = wire::invalid_arithmetic;
+            break;
+        }
         if (rho == 0.0f) {
             break;
         }
@@ -241,11 +315,11 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         const uint4 light_words = philox(base + uint4(0, 0, 0, 2 + 2 * bounce), key);
         const float3 light_direction = sphere(u01(light_words.x), u01(light_words.y));
         const float light_cosine = dot(n, light_direction);
-        if (light_cosine > 0.0f &&
+        if (E > 0.0f && light_cosine > 0.0f &&
             shadow.intersect(ray(origin, light_direction), scene, all_visible).type ==
                 intersection_type::none) {
             sample.radiance +=
-                throughput * rho * (4.0f * light_cosine) * light_weight(light_cosine);
+                throughput * rho * (4.0f * light_cosine) * light_weight(light_cosine) * E;
         }
 
         const uint4 bsdf_words = philox(base + uint4(0, 0, 0, 1 + 2 * bounce), key);

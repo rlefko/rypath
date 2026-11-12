@@ -39,14 +39,28 @@ wire::Point pack(Vec v) {
     return {static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2])};
 }
 
-wire::Parameters camera_parameters(const RenderCamera &camera) {
+wire::Point pack(GeometryPoint point) { return {point.x, point.y, point.z}; }
+
+wire::Parameters camera_parameters(const RenderScene &scene) {
+    wire::Parameters result{};
+    if (scene.model == RenderModel::pbrt) {
+        const auto &camera = *scene.raster_camera;
+        result.origin = pack(camera.origin);
+        // Reuse the demo camera slots for the PBRT world-space raster basis.
+        result.forward = pack(camera.corner);
+        result.right = pack(camera.dx);
+        result.up = pack(camera.dy);
+        result.model = wire::pbrt_model;
+        result.max_depth = scene.max_depth;
+        return result;
+    }
+    const auto &camera = scene.camera;
     const auto forward = normalize({double{camera.target.x} - camera.origin.x,
                                     double{camera.target.y} - camera.origin.y,
                                     double{camera.target.z} - camera.origin.z});
     const auto right = normalize(cross(forward, {camera.up.x, camera.up.y, camera.up.z}));
     const auto up = cross(right, forward);
-    wire::Parameters result{};
-    result.origin = {camera.origin.x, camera.origin.y, camera.origin.z};
+    result.origin = pack(camera.origin);
     result.forward = pack(forward);
     result.right = pack(right);
     result.up = pack(up);
@@ -60,7 +74,8 @@ bool finite(wire::Point p) {
     return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
 
-template <class T> id<MTLBuffer> upload(id<MTLDevice> device, const std::vector<T> &data) {
+template <class Container> id<MTLBuffer> upload(id<MTLDevice> device, const Container &data) {
+    using T = typename Container::value_type;
     if (data.empty() || data.size() > device.maxBufferLength / sizeof(T)) {
         return nil;
     }
@@ -111,6 +126,8 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> triangles = nil;
     id<MTLBuffer> materials = nil;
+    id<MTLBuffer> environment = nil;
+    id<MTLBuffer> knots = nil;
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
 
@@ -138,10 +155,24 @@ struct MetalRenderScene::Impl {
             vertex_count += mesh.positions.size();
             triangle_count += mesh.triangles.size();
         }
-        if (parameters.instance_count > device.maxBufferLength / sizeof(wire::Instance) ||
+        if (scene.materials.size() > max_index ||
+            parameters.instance_count > device.maxBufferLength / sizeof(wire::Instance) ||
             scene.materials.size() > device.maxBufferLength / sizeof(wire::Material)) {
             return "Metal render instance or material buffer exceeds device size limit";
         }
+        parameters.material_count = static_cast<wire::Word>(scene.materials.size());
+        const auto knot_limit =
+            std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::SpectralKnot));
+        std::size_t knot_count = 0;
+        if (scene.model == RenderModel::pbrt) {
+            for (const auto &material : scene.materials) {
+                if (material.knots.size() > knot_limit - knot_count) {
+                    return "Metal render spectral knot buffer exceeds buffer or index limits";
+                }
+                knot_count += material.knots.size();
+            }
+        }
+        parameters.knot_count = static_cast<wire::Word>(knot_count);
 
         std::vector<wire::Point> packed_positions;
         packed_positions.reserve(vertex_count);
@@ -171,20 +202,41 @@ struct MetalRenderScene::Impl {
             packed.triangle_begin = static_cast<wire::Word>(triangle_offsets[mesh]);
             packed.triangle_count = static_cast<wire::Word>(meshes[mesh].triangles.size());
             packed.material = scene.instance_materials[source];
+            if (!scene.instance_reverse_orientation.empty()) {
+                packed.reverse_orientation = scene.instance_reverse_orientation[source];
+            }
             packed_instances.push_back(packed);
         }
 
         std::vector<wire::Material> packed_materials(scene.materials.size());
+        std::vector<wire::SpectralKnot> packed_knots;
+        packed_knots.reserve(std::max<std::size_t>(1, knot_count));
         for (std::size_t index = 0; index < scene.materials.size(); ++index) {
-            std::ranges::copy(scene.materials[index].reflectance,
-                              packed_materials[index].reflectance);
+            const auto &source = scene.materials[index];
+            auto &packed = packed_materials[index];
+            if (scene.model == RenderModel::demo) {
+                std::ranges::copy(source.reflectance, packed.reflectance);
+            } else {
+                packed.knot_begin = static_cast<wire::Word>(packed_knots.size());
+                packed.knot_count = static_cast<wire::Word>(source.knots.size());
+                for (const auto [wavelength, value] : source.knots) {
+                    packed_knots.push_back({wavelength, value});
+                }
+            }
+        }
+        // The shared kernel always binds a knot buffer. Demo paths use the
+        // fixed table in Material and never read this placeholder.
+        if (packed_knots.empty()) {
+            packed_knots.emplace_back();
         }
 
         instances = upload(device, packed_instances);
         positions = upload(device, packed_positions);
         triangles = upload(device, packed_triangles);
         materials = upload(device, packed_materials);
-        if (instances == nil || positions == nil || triangles == nil || materials == nil) {
+        knots = upload(device, packed_knots);
+        if (instances == nil || positions == nil || triangles == nil || materials == nil ||
+            knots == nil) {
             return "Metal render shading buffer allocation failed";
         }
         return {};
@@ -252,7 +304,9 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:positions offset:0 atIndex:4];
             [encoder setBuffer:triangles offset:0 atIndex:5];
             [encoder setBuffer:materials offset:0 atIndex:6];
+            [encoder setBuffer:knots offset:0 atIndex:8];
         }
+        [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
         [encoder endEncoding];
@@ -286,7 +340,8 @@ struct MetalRenderScene::Impl {
             }
             if (!std::isfinite(value.wavelength) || value.wavelength < spectral_knots.front() ||
                 value.wavelength > spectral_knots.back() || !std::isfinite(value.radiance) ||
-                value.radiance < 0 || value.scatterings > request.emergency_limit) {
+                value.radiance < 0 || value.scatterings > request.emergency_limit ||
+                (p.model == wire::pbrt_model && value.scatterings > p.max_depth)) {
                 result.diagnostic =
                     "Metal render sample values are invalid at lane " + std::to_string(lane);
                 return result;
@@ -328,9 +383,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (!result.diagnostic.empty()) {
             return result;
         }
-        const auto parameters = camera_parameters(scene.camera);
-        if (!(parameters.film_scale > 0.0f) || !std::isfinite(parameters.film_scale) ||
-            !finite(parameters.forward) || !finite(parameters.right) || !finite(parameters.up)) {
+        const auto parameters = camera_parameters(scene);
+        if (scene.model == RenderModel::demo &&
+            (!(parameters.film_scale > 0.0f) || !std::isfinite(parameters.film_scale) ||
+             !finite(parameters.forward) || !finite(parameters.right) || !finite(parameters.up))) {
             result.diagnostic = "Metal render camera basis or field of view is not representable";
             return result;
         }
@@ -366,6 +422,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             impl->parameters.instance_count == 0 ? @"rypath_render_sky" : @"rypath_render_paths";
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic);
         if (impl->pipeline == nil) {
+            return result;
+        }
+        impl->environment = upload(impl->device, scene.environment);
+        if (impl->environment == nil) {
+            result.diagnostic = "Metal render environment buffer allocation failed";
             return result;
         }
         if (impl->parameters.instance_count != 0) {
