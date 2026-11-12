@@ -28,6 +28,7 @@ struct GeometryOcclusionResult {
 };
 
 struct GeometryBuildResult;
+struct MetalGeometryAccess;
 
 // Owns an immutable uploaded scene. Query calls are synchronous and require
 // external serialization; no caller-owned scene storage is retained.
@@ -48,6 +49,7 @@ class MetalGeometryScene {
     explicit MetalGeometryScene(std::unique_ptr<Impl> impl);
     friend GeometryBuildResult build_metal_geometry(const GeometryData &,
                                                     const std::filesystem::path &);
+    friend struct MetalGeometryAccess;
 };
 
 struct GeometryBuildResult {

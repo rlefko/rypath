@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "image_output.hpp"
 #include "metal_backend.hpp"
+#include "metal_render.hpp"
 
+#include <charconv>
 #include <exception>
 #include <iostream>
+#include <set>
 #include <string_view>
 
 namespace {
@@ -53,32 +57,134 @@ int report_metal(bool smoke_test) {
     return 0;
 }
 
+int argument_error() {
+    std::cerr << "rypath: unsupported arguments\n"
+                 "Try 'rypath --help' for usage.\n";
+    return 1;
+}
+
+int render_error(std::string_view diagnostic, int status = 1) {
+    std::cerr << "rypath: " << diagnostic << '\n';
+    return status;
+}
+
+template <typename Integer> bool parse_unsigned(std::string_view value, Integer &result) {
+    const auto *end = value.data() + value.size();
+    const auto parsed = std::from_chars(value.data(), end, result);
+    return parsed.ec == std::errc{} && parsed.ptr == end;
+}
+
+int render_demo(int argc, char *argv[]) {
+    rypath::RenderSettings settings;
+    std::filesystem::path output;
+    std::set<std::string_view> seen;
+    for (int index = 2; index < argc; index += 2) {
+        const std::string_view option = argv[index];
+        if (!seen.insert(option).second) {
+            return render_error("duplicate option " + std::string{option});
+        }
+        if (index + 1 == argc || std::string_view{argv[index + 1]}.starts_with("--")) {
+            return render_error("missing value for " + std::string{option});
+        }
+        const std::string_view value = argv[index + 1];
+        bool valid = true;
+        if (option == "--output") {
+            output = value;
+        } else if (option == "--width") {
+            valid = parse_unsigned(value, settings.width);
+        } else if (option == "--height") {
+            valid = parse_unsigned(value, settings.height);
+        } else if (option == "--samples") {
+            valid = parse_unsigned(value, settings.samples);
+        } else if (option == "--batch-size") {
+            valid = parse_unsigned(value, settings.batch_size);
+        } else if (option == "--seed") {
+            valid = parse_unsigned(value, settings.seed);
+        } else {
+            return argument_error();
+        }
+        if (!valid) {
+            return render_error("invalid unsigned integer for " + std::string{option});
+        }
+    }
+    if (output.empty()) {
+        return render_error("--render-demo requires --output PATH");
+    }
+    if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
+        return render_error(diagnostic);
+    }
+
+    std::cout << "rypath " RYPATH_VERSION "\n"
+              << "Scene: demo-v1\n"
+              << "Sampler: philox4x32-10-v1\n"
+              << "Color: CIE 1931 2-degree XYZ / sRGB\n"
+              << "Resolution: " << settings.width << 'x' << settings.height << '\n'
+              << "Samples per pixel: " << settings.samples << '\n'
+              << "Batch size: " << settings.batch_size << '\n'
+              << "Seed: " << settings.seed << '\n'
+              << std::flush;
+    const auto result =
+        rypath::render_progressive(rypath::make_demo_scene(), settings, [&](std::uint64_t count) {
+            std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
+                      << std::endl;
+        });
+    if (!result.device.name.empty()) {
+        std::cout << "Device: " << result.device.name << '\n'
+                  << "Registry ID: " << result.device.registry_id << '\n'
+                  << "Architecture: " << result.device.architecture << '\n';
+    }
+    const auto unavailable = [&](std::string_view status) {
+        std::cout << "Render status: " << status << '\n';
+        return render_error(result.diagnostic, 2);
+    };
+    switch (result.status) {
+    case rypath::GeometryStatus::not_built:
+        return unavailable("not_built");
+    case rypath::GeometryStatus::no_device:
+        return unavailable("no_device");
+    case rypath::GeometryStatus::no_ray_tracing:
+        return unavailable("no_ray_tracing");
+    case rypath::GeometryStatus::failure:
+        return render_error(result.diagnostic);
+    case rypath::GeometryStatus::success:
+        break;
+    }
+    if (const auto diagnostic = rypath::write_png(result.film, output); !diagnostic.empty()) {
+        return render_error(diagnostic);
+    }
+    const auto total =
+        static_cast<std::uint64_t>(settings.width) * settings.height * settings.samples;
+    std::cout << "Total samples: " << total << '\n' << "Wrote PNG: " << output.string() << '\n';
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
     if (argc == 1 || (argc == 2 && std::string_view{argv[1]} == "--help")) {
-        std::cout << "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n";
+        std::cout << "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
+                     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
+                     "              [--samples 128] [--batch-size 8] [--seed 1]\n";
         return 0;
     }
-    if (argc == 2) {
-        try {
+    try {
+        if (argc > 1 && std::string_view{argv[1]} == "--render-demo") {
+            return render_demo(argc, argv);
+        }
+        if (argc == 2) {
             if (std::string_view{argv[1]} == "--metal-info") {
                 return report_metal(false);
             }
             if (std::string_view{argv[1]} == "--metal-smoke-test") {
                 return report_metal(true);
             }
-        } catch (const std::exception &error) {
-            std::cerr << "rypath: " << error.what() << '\n';
-            return 1;
+            if (std::string_view{argv[1]} == "--version") {
+                std::cout << "rypath " RYPATH_VERSION "\n";
+                return 0;
+            }
         }
+    } catch (const std::exception &error) {
+        return render_error(error.what());
     }
-    if (argc == 2 && std::string_view{argv[1]} == "--version") {
-        std::cout << "rypath " RYPATH_VERSION "\n";
-        return 0;
-    }
-
-    std::cerr << "rypath: unsupported arguments\n"
-                 "Try 'rypath --help' for usage.\n";
-    return 1;
+    return argument_error();
 }
