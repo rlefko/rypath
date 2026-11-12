@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -107,6 +108,13 @@ struct Descriptor {
         std::string color_space;
     };
     std::vector<InheritedParameter> inherited;
+    std::vector<std::size_t> effective_authored;
+
+    struct EffectiveParameter {
+        const Parameter *parameter = nullptr;
+        std::string_view color_space;
+    };
+    EffectiveParameter effective_parameter(std::string_view name) const;
 };
 struct MaterialBinding {
     std::shared_ptr<const std::string> name = Location::empty_file();
@@ -132,6 +140,7 @@ struct Placement {
 struct Scene {
     std::vector<Descriptor> options;
     std::vector<Descriptor> named_materials;
+    std::vector<std::shared_ptr<const Descriptor>> inline_materials;
     std::vector<Descriptor> lights;
     std::vector<Shape> shapes;
     std::vector<Object> objects;
@@ -156,6 +165,7 @@ Document parse_file(const std::filesystem::path &entry, const Limits &limits = {
 Result interpret(Document document, const Limits &limits = {});
 Result check(const std::filesystem::path &entry, const Limits &limits = {});
 std::string report(const Result &result);
+std::string format_diagnostic(const Diagnostic &diagnostic);
 // Central bounded diagnostic insertion, shared by parsing and interpretation.
 void diagnose(Document &document, const Limits &limits, Severity severity, std::string code,
               const Location &location, std::string message);
