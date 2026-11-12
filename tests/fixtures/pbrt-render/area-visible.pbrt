@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [45]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [0]
+WorldBegin
+
+# The left emitter faces the camera. The right emitter faces away and is two-sided.
+Material "diffuse" "rgb reflectance" [0 0 0]
+AttributeBegin
+    AreaLightSource "diffuse" "rgb L" [0.2 1.5 3] "float scale" [1.75]
+    Shape "trianglemesh" "point3 P" [-1 -1 2 -1 1 2 0.1 1 2 0.1 -1 2]
+        "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+AttributeBegin
+    AreaLightSource "diffuse" "spectrum L" [360 0.1 460 0.25 570 0.8 830 0.15]
+        "bool twosided" [true]
+    Shape "trianglemesh" "point3 P" [0.1 -1 2 1 -1 2 1 1 2 0.1 1 2]
+        "integer indices" [0 1 2 0 2 3]
+AttributeEnd

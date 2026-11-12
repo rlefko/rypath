@@ -29,12 +29,13 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Perspective camera, RGB film, box filter, independent sampler, path integrator, BVH | Retained | Declared parameter schemas checked | Not translated |
 | Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
+| Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | Inline trianglemesh and single-level object instances | Retained | Converted to checked float/index geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
 | External meshes, image textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
-| Area lights, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
+| Textured area lights, emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
 | Unknown directives / malformed syntax | Source-located error | Stops without line-based recovery | Not attempted |
 | Legacy v3 forms and hexadecimal numbers | Explicit diagnostic | Outside this profile | Unsupported |
 
@@ -67,6 +68,7 @@ capture still occurs at each camera declaration.
 | BVH | `maxnodeprims`, `splitmethod` |
 | Diffuse material | `reflectance`; named definitions require `string type` |
 | Constant infinite light | `L`, `scale`, `illuminance` |
+| Diffuse area light | `L`, `scale`, `twosided`, `power`, empty `filename`; nonempty image filenames are inventoried and deferred |
 | Triangle mesh | `P`, `indices`; exactly three vertices may omit indices |
 
 Triangle normals, tangents, UVs, face indices, and alpha are retained and
@@ -92,6 +94,15 @@ are inventoried but do not establish their construction-order compatibility. Dup
 members retain definition-time transforms, materials, and orientation; instance
 placement composes outside each member transform. Nested object definitions and
 instances inside object definitions are rejected.
+
+`AreaLightSource "diffuse"` captures effective light defaults and color provenance
+in an immutable binding for subsequent shapes; attribute scopes restore it and
+`AreaLightSource ""` clears it. Shape transforms, orientation, and material remain
+independent. Emitting object-definition members are outside this profile, including
+bindings inherited into a definition. An area declaration active at an ordinary
+`ObjectInstance` does not change its members. A declaration without shapes emits
+nothing. Positive `power` is structurally recognized but unsupported by the render
+translator; structural success alone is not rendering compatibility.
 
 The reader preserves authored spectral numbers and source provenance. It does
 not map spectra to the renderer's eight knots or impose demo reflectance limits.

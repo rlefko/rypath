@@ -11,6 +11,7 @@ namespace rypath {
 inline constexpr std::array<float, 8> spectral_knots{360, 420, 470, 520, 570, 620, 700, 830};
 inline constexpr std::uint32_t render_tile_capacity = 65536;
 inline constexpr std::uint32_t render_emergency_limit = 1024;
+inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
 
 struct SpectralKnot {
     float wavelength = 0;
@@ -40,6 +41,10 @@ struct RasterCamera {
     GeometryPoint dx;
     GeometryPoint dy;
 };
+struct AreaEmission {
+    std::array<float, 471> radiance{};
+    bool two_sided = false;
+};
 struct RenderScene {
     GeometryData geometry;
     std::vector<SpectralMaterial> materials;
@@ -51,6 +56,9 @@ struct RenderScene {
     std::uint32_t max_depth = 5;
     double exposure = 1;
     std::vector<std::uint32_t> instance_reverse_orientation{};
+    std::vector<AreaEmission> area_emissions{};
+    // Empty or one emission index (or no_area_emission) per source instance.
+    std::vector<std::uint32_t> instance_emissions{};
 };
 struct RenderSettings {
     std::uint32_t width = 256;
@@ -84,6 +92,10 @@ struct Film {
 };
 
 std::string validate_render_settings(const RenderSettings &settings);
+// Shared by area geometry preflight and Metal's world-space emitter upload.
+std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
+                                               const GeometryTransform &transform);
+std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_render_scene(const RenderScene &scene);
 RenderScene make_demo_scene();
 Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model = RenderModel::demo,

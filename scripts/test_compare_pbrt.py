@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-only
 
 import contextlib
+import hashlib
 import io
 from pathlib import Path
+import re
 import struct
 import tempfile
 import unittest
 
-from compare_pbrt import compare_regions, read_pfm, roi_means
+from compare_pbrt import REGIONS, compare_regions, read_pfm, roi_means
 
 
 class PFMTests(unittest.TestCase):
@@ -63,6 +65,50 @@ class ComparisonTests(unittest.TestCase):
             self.assertFalse(
                 compare_regions("test", {"pbrt": reference, "rypath": {"full": [(0, 0, 10.001)] * 16}})
             )
+
+
+class CornellFixtureTests(unittest.TestCase):
+    def test_derivative_uses_only_documented_edits(self):
+        fixtures = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+        original = (fixtures / "pbrt" / "cornell-box.pbrt").read_bytes()
+        notice = (fixtures / "pbrt" / "LICENSE.txt").read_bytes()
+        self.assertEqual(hashlib.sha256(original).hexdigest(),
+                         "b2fc6654c966468119187d169a76ecec82e169a1058f3344e27e5103189d4e43")
+        self.assertEqual(hashlib.sha256(notice).hexdigest(),
+                         "520b18c04d27fd9abca81364746178a9a3d52cff3c6204de05be5b68e547ee43")
+
+        expected = original
+        for old, new in (
+            (b'Sampler "sobol"\n    "integer pixelsamples" [ 64 ]',
+             b'Sampler "independent"\n    "integer pixelsamples" [4096]\n    "integer seed" [0]'),
+            (b'PixelFilter "triangle"\n    "float xradius" [ 1 ]\n    "float yradius" [ 1 ]',
+             b'PixelFilter "box"\n    "float xradius" [0.5]\n    "float yradius" [0.5]'),
+            (b'"integer yresolution" [ 1024 ]\n    "integer xresolution" [ 1024 ]',
+             b'"integer yresolution" [8]\n    "integer xresolution" [8]\n'
+             b'    "string sensor" "cie1931"\n    "float iso" [100]\n    "bool savefp16" [false]'),
+        ):
+            self.assertEqual(expected.count(old), 1)
+            expected = expected.replace(old, new, 1)
+        for parameter in (b"normal N", b"point2 uv"):
+            pattern = rb'(?m)^[ \t]+"' + parameter + rb'"\s*\[[^\]]*\]\n'
+            expected, removed = re.subn(pattern, b"", expected)
+            self.assertEqual(removed, 8)
+        credit = (b"# SPDX-License-Identifier: CC0-1.0\n"
+                  b"# Cornell Box by Benedikt Bitterli, converted to PBRT v4 by Matt Pharr.\n"
+                  b"# Adapted for comparison in rypath. See ../pbrt/README.md and ../pbrt/LICENSE.txt.\n")
+        adapted = (fixtures / "pbrt-render" / "cornell-box-adapted.pbrt").read_bytes()
+        self.assertEqual(adapted, credit + expected)
+
+    def test_all_area_fixtures_compare_full_frame_and_quadrants(self):
+        for scene in ("area-visible", "area-direct", "area-mixed", "cornell-box-adapted"):
+            with self.subTest(scene=scene):
+                self.assertEqual(REGIONS[scene], {
+                    "full": (0, 0, 8, 8),
+                    "top-left": (0, 0, 4, 4),
+                    "top-right": (4, 0, 8, 4),
+                    "bottom-left": (0, 4, 4, 8),
+                    "bottom-right": (4, 4, 8, 8),
+                })
 
 
 if __name__ == "__main__":

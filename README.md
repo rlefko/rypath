@@ -6,10 +6,11 @@ and interactive rendering follow later.
 
 **Current state: progressive Metal rendering and a strict PBRT spectral profile.**
 Render the built-in demo or PBRT files containing supported sampled spectra or
-linear sRGB colors, diffuse triangles, and constant environment lighting. Complete batches accumulate
+linear sRGB colors, diffuse triangles, constant environment lighting, and directly
+placed triangle emitters. Complete batches accumulate
 raw XYZ; separate display conversion saves the final PNG. Portable `--check-pbrt`
 reports scene structure, dependencies, and unsupported features. Broader PBRT
-materials, area lights, and external assets remain in development.
+materials, textured/instanced emitters, and external assets remain in development.
 
 ## Build and run
 
@@ -37,6 +38,9 @@ ctest --preset debug --no-tests=error
 The Cornell preflight intentionally returns **2** for features outside the profile;
 it creates no images and does not attempt rendering. Missing or malformed input
 returns **1**; complete analysis within the profile returns **0**.
+The separately attributed `tests/fixtures/pbrt-render/cornell-box-adapted.pbrt`
+is a small renderable adaptation; its manifest records the sampler/filter and
+normal/UV changes. It does not establish support for the unmodified scene.
 
 `release` and `asan-ubsan` provide matching configure, build, and test presets.
 The sanitizer preset requires Clang or GCC with AddressSanitizer and

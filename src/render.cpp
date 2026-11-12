@@ -30,6 +30,64 @@ bool finite(GeometryPoint point) {
     return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
 }
 
+using Vector = std::array<double, 3>;
+
+Vector difference(const Vector &a, const Vector &b) {
+    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+}
+
+Vector cross(const Vector &a, const Vector &b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+Vector apply_transform(const GeometryTransform &transform, const Vector &p, bool point) {
+    Vector result{};
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        const auto *row = transform.values.data() + i * 4;
+        const double bound = std::abs(row[0] * p[0]) + std::abs(row[1] * p[1]) +
+                             std::abs(row[2] * p[2]) + (point ? std::abs(row[3]) : 0);
+        // Metal dot products may round intermediate terms before cancellation.
+        // Require a representable absolute sum regardless of contraction order.
+        result[i] = bound <= std::numeric_limits<float>::max()
+                        ? row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + (point ? row[3] : 0)
+                        : std::numeric_limits<double>::infinity();
+    }
+    return result;
+}
+
+bool binary32_range(const Vector &v) {
+    return std::ranges::all_of(v, [](double component) {
+        return std::abs(component) <= std::numeric_limits<float>::max();
+    });
+}
+
+Vector binary32_round(Vector v) {
+    for (auto &component : v) {
+        component = static_cast<float>(component);
+    }
+    return v;
+}
+
+Vector rounded_cross(const Vector &a, const Vector &b) {
+    Vector result{};
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        const auto j = (i + 1) % result.size();
+        const auto k = (i + 2) % result.size();
+        const double forward = a[j] * b[k];
+        const double reverse = a[k] * b[j];
+        constexpr double largest = std::numeric_limits<float>::max();
+        if (std::abs(forward) > largest || std::abs(reverse) > largest) {
+            return {std::numeric_limits<double>::infinity(), 0, 0};
+        }
+        result[i] = double{static_cast<float>(forward)} - static_cast<float>(reverse);
+    }
+    return result;
+}
+
+double squared_length(const Vector &v) { return v[0] * v[0] + v[1] * v[1] + v[2] * v[2]; }
+
+Vector to_vector(GeometryPoint point) { return {point.x, point.y, point.z}; }
+
 bool valid_projection(RenderModel model, double exposure) {
     return (model == RenderModel::demo && exposure == 1) ||
            (model == RenderModel::pbrt && std::isfinite(exposure) && exposure >= 0);
@@ -165,6 +223,74 @@ std::string validate_render_settings(const RenderSettings &settings) {
     return {};
 }
 
+std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
+                                               const GeometryTransform &transform) {
+    const auto point = apply_transform(transform, to_vector(position), true);
+    if (!binary32_range(point)) {
+        return std::nullopt;
+    }
+    return GeometryPoint{static_cast<float>(point[0]), static_cast<float>(point[1]),
+                         static_cast<float>(point[2])};
+}
+
+std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform) {
+    constexpr double normal_min = std::numeric_limits<float>::min();
+    constexpr double finite_max = std::numeric_limits<float>::max();
+    const bool transformed = transform.values != GeometryTransform{}.values;
+    if (transformed) {
+        for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
+            if (!area_world_vertex(mesh.positions[i], transform)) {
+                return "Area light vertex " + std::to_string(i) +
+                       " is outside the binary32 world-space rendering range";
+            }
+        }
+    }
+    for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+        const auto [a, b, c] = mesh.triangles[i];
+        if (std::max({a, b, c}) >= mesh.positions.size()) {
+            return "Area light triangle " + std::to_string(i) + " has an out-of-range vertex index";
+        }
+        const auto p0 = to_vector(mesh.positions[a]);
+        const auto p1 = to_vector(mesh.positions[b]);
+        const auto p2 = to_vector(mesh.positions[c]);
+        const auto e1 = difference(p1, p0);
+        const auto e2 = difference(p2, p0);
+        const auto w1 = apply_transform(transform, e1, false);
+        const auto w2 = apply_transform(transform, e2, false);
+        const double squared = squared_length(cross(w1, w2));
+        if (!(squared >= normal_min && squared <= finite_max) || !binary32_range(e1) ||
+            !binary32_range(e2) || !binary32_range(difference(e2, e1)) || !binary32_range(w1) ||
+            !binary32_range(w2)) {
+            return "Area light triangle " + std::to_string(i) +
+                   " has world area or edges outside the binary32 rendering range";
+        }
+        // Metal builds emissive geometry from world-space binary32 vertices.
+        // Validate the edges and area the shader reconstructs from those values.
+        const auto q0 = area_world_vertex(mesh.positions[a], transform);
+        const auto q1 = area_world_vertex(mesh.positions[b], transform);
+        const auto q2 = area_world_vertex(mesh.positions[c], transform);
+        if (!q0 || !q1 || !q2) {
+            return "Area light triangle " + std::to_string(i) +
+                   " has world vertices outside the binary32 rendering range";
+        }
+        const auto baked_e1 = difference(to_vector(*q1), to_vector(*q0));
+        const auto baked_e2 = difference(to_vector(*q2), to_vector(*q0));
+        if (!binary32_range(baked_e1) || !binary32_range(baked_e2)) {
+            return "Area light triangle " + std::to_string(i) +
+                   " has baked world edges outside the binary32 rendering range";
+        }
+        const auto rounded_e1 = binary32_round(baked_e1);
+        const auto rounded_e2 = binary32_round(baked_e2);
+        const double rounded_squared = squared_length(rounded_cross(rounded_e1, rounded_e2));
+        if (!binary32_range(difference(rounded_e2, rounded_e1)) ||
+            !(rounded_squared >= normal_min && rounded_squared <= finite_max)) {
+            return "Area light triangle " + std::to_string(i) +
+                   " has rounded world area or edges outside the binary32 rendering range";
+        }
+    }
+    return {};
+}
+
 std::string validate_render_scene(const RenderScene &scene) {
     if (auto error = validate_geometry(scene.geometry); !error.empty()) {
         return error;
@@ -185,6 +311,39 @@ std::string validate_render_scene(const RenderScene &scene) {
     }
     if (!valid_projection(scene.model, scene.exposure)) {
         return "Invalid render model or exposure";
+    }
+    if (!scene.instance_emissions.empty() &&
+        scene.instance_emissions.size() != scene.geometry.instances.size()) {
+        return "Render emission bindings must supply one index per instance";
+    }
+    if (scene.model == RenderModel::demo && !scene.area_emissions.empty()) {
+        return "Area emission requires the PBRT render model";
+    }
+    for (const auto &emission : scene.area_emissions) {
+        if (!std::ranges::all_of(emission.radiance,
+                                 [](float value) { return std::isfinite(value) && value >= 0; })) {
+            return "PBRT area radiance must be finite and nonnegative";
+        }
+    }
+    std::uint64_t emitter_count = 0;
+    for (std::size_t i = 0; i < scene.instance_emissions.size(); ++i) {
+        const auto emission = scene.instance_emissions[i];
+        if (emission == no_area_emission) {
+            continue;
+        }
+        if (emission >= scene.area_emissions.size()) {
+            return "Render instance emission index is out of range";
+        }
+        const auto &instance = scene.geometry.instances[i];
+        const auto &mesh = scene.geometry.meshes[instance.mesh_index];
+        emitter_count += mesh.triangles.size();
+        // Keep bit_ceil(emitter_count) representable as a 32-bit slot count.
+        if (emitter_count > (std::uint64_t{1} << 31)) {
+            return "Render area emitter count exceeds selection index capacity";
+        }
+        if (auto error = validate_area_geometry(mesh, instance.transform); !error.empty()) {
+            return "Instance " + std::to_string(i) + ": " + error;
+        }
     }
     if (scene.model == RenderModel::pbrt) {
         if (!scene.raster_camera || !valid_raster_camera(*scene.raster_camera)) {

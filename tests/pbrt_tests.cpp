@@ -470,9 +470,9 @@ AttributeEnd
     diagnostic_limit.diagnostics = 2;
     const auto truncated =
         check(write_file(directory, "semantic-diagnostic-limit.pbrt", R"(WorldBegin
-AreaLightSource "diffuse"
-AreaLightSource "diffuse"
-AreaLightSource "diffuse"
+AreaLightSource "diffuse" "bool twosided" [true false]
+AreaLightSource "diffuse" "float scale" -1
+AreaLightSource "diffuse" "float twosided" 1
 )"),
               diagnostic_limit);
     require(truncated.exit_code() == 1 && truncated.document.syntax_complete &&
@@ -751,6 +751,83 @@ void geometry_tests(const fs::path &directory) {
             "transform becoming singular after float narrowing fails");
 }
 
+void area_light_state(const fs::path &directory) {
+    std::string source(scene_start);
+    source += R"(Attribute "light" "rgb L" [2 1 0.5] "float scale" 3
+AreaLightSource "diffuse"
+Attribute "light" "float scale" 7
+Translate 1 2 3
+)";
+    source += triangle;
+    source += "AttributeBegin\nAreaLightSource \"diffuse\" \"bool twosided\" true\n";
+    source += triangle;
+    source += "AreaLightSource \"\"\n";
+    source += triangle;
+    source += "AttributeEnd\n";
+    source += triangle;
+    source += "ObjectBegin \"object\"\nAreaLightSource \"\"\n";
+    source += triangle;
+    source += "ObjectEnd\nObjectInstance \"object\"\n";
+    source += triangle;
+    const auto checked = check(write_file(directory, "scoped-area-light.pbrt", source));
+    const auto &scene = checked_scene(checked);
+    require(scene.area_lights.size() == 2 && scene.lights.empty() && scene.shapes.size() == 5 &&
+                scene.objects.size() == 1 && scene.geometry.instances.size() == 6,
+            "Area declarations, checked shapes, and placements stay distinct");
+    const auto &outer = scene.area_lights[0];
+    const auto &inner = scene.area_lights[1];
+    require(scene.shapes[0].area_light == outer && scene.shapes[1].area_light == inner &&
+                !scene.shapes[2].area_light && scene.shapes[3].area_light == outer &&
+                scene.shapes[4].area_light == outer && !scene.objects[0].shapes[0].area_light,
+            "Area binding replacement, reset, and scope restoration");
+    require(outer->effective_parameter("scale").parameter->values.front().number == 3 &&
+                inner->effective_parameter("scale").parameter->values.front().number == 7 &&
+                outer->effective_parameter("L").color_space == "srgb" &&
+                outer->transform.values == Transform{}.values &&
+                scene.shapes[0].descriptor.transform.values[3] == 1,
+            "Area declarations capture defaults and shapes capture transforms");
+
+    const auto object = check(write_file(
+        directory, "emissive-object.pbrt",
+        std::string(scene_start) + "AreaLightSource \"diffuse\"\nObjectBegin \"object\"\n" +
+            std::string(triangle) + "ObjectEnd\n"));
+    const auto &object_diagnostic = find_diagnostic(object.document, "unsupported-feature");
+    require(object.exit_code() == 2 && !object.scene &&
+                object_diagnostic.message.find("inside object definitions") != std::string::npos &&
+                object_diagnostic.location.line == 6,
+            "Inherited emitters on object member shapes have a shape diagnostic");
+
+    write_file(directory, "emission.exr", "asset placeholder");
+    const auto image = check(write_file(directory, "area-image.pbrt", R"(WorldBegin
+Attribute "light" "string filename" "emission.exr"
+AreaLightSource "diffuse"
+)"));
+    require(image.exit_code() == 2 && image.document.dependencies.size() == 1 &&
+                image.document.dependencies.front().kind == DependencyKind::image,
+            "An inherited area light image is inventoried and unsupported");
+    const auto conflict = check(write_file(directory, "area-image-conflict.pbrt", R"(WorldBegin
+Attribute "light" "string filename" "emission.exr"
+AreaLightSource "diffuse" "rgb L" [1 1 1]
+)"));
+    require(conflict.exit_code() == 1 && conflict.document.dependencies.size() == 1 &&
+                find_diagnostic(conflict.document, "invalid-parameter").location.line == 2,
+            "Effective L and filename conflict at the inherited filename");
+    const auto reset = check(write_file(directory, "area-image-reset.pbrt", R"(WorldBegin
+Attribute "light" "string filename" "missing.exr"
+AreaLightSource "diffuse" "string filename" ""
+AreaLightSource ""
+)"));
+    require(checked_scene(reset).area_lights.size() == 1 && reset.document.dependencies.empty(),
+            "Explicit empty filename and reset do not inherit an image dependency");
+    const auto malformed = check(write_file(directory, "area-malformed-spectrum.pbrt", R"(WorldBegin
+AreaLightSource "diffuse" "spectrum L" ["missing-a.spd" "missing-b.spd"]
+)"));
+    require(malformed.exit_code() == 1 && !malformed.document.dependencies_complete &&
+                malformed.document.dependencies.size() == 2 &&
+                find_diagnostic(malformed.document, "invalid-parameter").location.line == 2,
+            "Malformed effective emission retains discoverable spectrum dependencies");
+}
+
 void corpus_tests(const fs::path &fixture_directory) {
     const auto path = fixture_directory / "cornell-box.pbrt";
     const auto result = check(path);
@@ -769,10 +846,9 @@ void corpus_tests(const fs::path &fixture_directory) {
                    *entry.location.file == path.string();
         });
     };
-    require(result.document.diagnostics.size() == 19 &&
+    require(result.document.diagnostics.size() == 18 &&
                 matching("unsupported-feature", "Sampler type \"sobol\"", 4) == 1 &&
                 matching("unsupported-feature", "PixelFilter type \"triangle\"", 6) == 1 &&
-                matching("unsupported-feature", "AreaLightSource type \"diffuse\"", 145) == 1 &&
                 matching("unsupported-parameter", "Parameter \"N\"") == 8 &&
                 matching("unsupported-parameter", "Parameter \"uv\"") == 8,
             "pinned Cornell Box profile diagnostics");
@@ -789,6 +865,7 @@ int main(int argc, char *argv[]) {
             syntax_tests(directory);
         } else if (group == "state") {
             state_tests(directory);
+            area_light_state(directory);
             review_regression_tests(directory);
             bounded_and_numeric_tests(directory);
         } else if (group == "dependencies") {

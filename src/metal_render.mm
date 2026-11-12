@@ -9,10 +9,13 @@
 #import <Foundation/Foundation.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <numbers>
+#include <ranges>
 #include <type_traits>
 
 namespace rypath {
@@ -74,6 +77,82 @@ bool finite(wire::Point p) {
     return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
 
+bool requires_world_space_emitter(const RenderScene &scene, std::size_t source) {
+    const auto &instance = scene.geometry.instances[source];
+    return !scene.instance_emissions.empty() &&
+           scene.instance_emissions[source] != no_area_emission &&
+           instance.transform.values != GeometryTransform{}.values &&
+           !scene.geometry.meshes[instance.mesh_index].triangles.empty();
+}
+
+std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData &prepared) {
+    std::vector<std::size_t> references(scene.geometry.meshes.size());
+    for (const auto &instance : scene.geometry.instances) {
+        ++references[instance.mesh_index];
+    }
+    std::size_t clone_count = 0;
+    std::size_t vertex_count = 0;
+    std::size_t triangle_count = 0;
+    const auto charge_mesh = [&](const GeometryMesh &mesh) {
+        if (mesh.triangles.empty()) {
+            return true;
+        }
+        if (mesh.positions.size() > max_index - vertex_count ||
+            mesh.triangles.size() > max_index - triangle_count) {
+            return false;
+        }
+        vertex_count += mesh.positions.size();
+        triangle_count += mesh.triangles.size();
+        return true;
+    };
+    for (const auto &mesh : scene.geometry.meshes) {
+        if (!charge_mesh(mesh)) {
+            return "Metal world-space emitter geometry exceeds the shading index limits";
+        }
+    }
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        const auto mesh_index = scene.geometry.instances[i].mesh_index;
+        if (requires_world_space_emitter(scene, i) && references[mesh_index] > 1) {
+            if (!charge_mesh(scene.geometry.meshes[mesh_index])) {
+                return "Metal world-space emitter geometry exceeds the shading index limits";
+            }
+            ++clone_count;
+        }
+    }
+    const auto mesh_limit = std::min<std::size_t>(max_index, prepared.meshes.max_size());
+    if (clone_count > mesh_limit - scene.geometry.meshes.size()) {
+        return "Metal world-space emitter mesh count exceeds the index limit";
+    }
+    prepared.meshes.reserve(scene.geometry.meshes.size() + clone_count);
+    prepared.meshes = scene.geometry.meshes;
+    prepared.instances = scene.geometry.instances;
+    for (std::size_t source = 0; source < prepared.instances.size(); ++source) {
+        if (!requires_world_space_emitter(scene, source)) {
+            continue;
+        }
+        auto &instance = prepared.instances[source];
+        if (references[instance.mesh_index] > 1) {
+            prepared.meshes.push_back(scene.geometry.meshes[instance.mesh_index]);
+            instance.mesh_index = static_cast<std::uint32_t>(prepared.meshes.size() - 1);
+        }
+        auto &mesh = prepared.meshes[instance.mesh_index];
+        for (std::size_t vertex = 0; vertex < mesh.positions.size(); ++vertex) {
+            auto &position = mesh.positions[vertex];
+            const auto world = area_world_vertex(position, instance.transform);
+            if (!world) {
+                return "Metal world-space emitter instance " + std::to_string(source) +
+                       " has an unrepresentable vertex " + std::to_string(vertex);
+            }
+            position = *world;
+        }
+        instance.transform = {};
+        if (auto message = validate_area_geometry(mesh, instance.transform); !message.empty()) {
+            return "Metal world-space emitter instance " + std::to_string(source) + ": " + message;
+        }
+    }
+    return {};
+}
+
 template <class Container> id<MTLBuffer> upload(id<MTLDevice> device, const Container &data) {
     using T = typename Container::value_type;
     if (data.empty() || data.size() > device.maxBufferLength / sizeof(T)) {
@@ -128,11 +207,62 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> materials = nil;
     id<MTLBuffer> environment = nil;
     id<MTLBuffer> knots = nil;
+    id<MTLBuffer> area_emissions = nil;
+    id<MTLBuffer> emitters = nil;
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
 
-    std::string upload_shading(const RenderScene &scene) {
-        const auto &meshes = scene.geometry.meshes;
+    std::string upload_area_lighting(const RenderScene &scene,
+                                     const std::vector<wire::Instance> &packed_instances) {
+        static_assert(no_area_emission == wire::no_emission);
+        if (scene.area_emissions.size() > max_index ||
+            scene.area_emissions.size() > device.maxBufferLength / sizeof(wire::AreaEmission)) {
+            return "Metal area emission buffer exceeds device or index limits";
+        }
+        parameters.emission_count = static_cast<wire::Word>(scene.area_emissions.size());
+        const auto emitter_limit = device.maxBufferLength / sizeof(wire::Emitter);
+        std::size_t emitter_count = 0;
+        for (const auto &instance : packed_instances) {
+            if (instance.emission != wire::no_emission) {
+                if (instance.triangle_count > emitter_limit - emitter_count) {
+                    return "Metal area emitter buffer exceeds device size limit";
+                }
+                emitter_count += instance.triangle_count;
+            }
+        }
+        parameters.emitter_count = static_cast<wire::Word>(emitter_count);
+        parameters.emitter_slots = std::bit_ceil(parameters.emitter_count);
+        std::vector<wire::AreaEmission> packed_emissions(
+            std::max<std::size_t>(1, parameters.emission_count));
+        for (std::size_t i = 0; i < scene.area_emissions.size(); ++i) {
+            const auto &source = scene.area_emissions[i];
+            std::ranges::copy(source.radiance, packed_emissions[i].radiance);
+            packed_emissions[i].two_sided = source.two_sided;
+        }
+        std::vector<wire::Emitter> packed_emitters;
+        packed_emitters.reserve(std::max<std::size_t>(1, emitter_count));
+        for (wire::Word ordinal = 0; ordinal < parameters.instance_count; ++ordinal) {
+            const auto &instance = packed_instances[ordinal];
+            if (instance.emission == wire::no_emission) {
+                continue;
+            }
+            for (wire::Word primitive = 0; primitive < instance.triangle_count; ++primitive) {
+                packed_emitters.push_back({ordinal, primitive});
+            }
+        }
+        if (packed_emitters.empty()) {
+            packed_emitters.emplace_back();
+        }
+        area_emissions = upload(device, packed_emissions);
+        emitters = upload(device, packed_emitters);
+        if (area_emissions == nil || emitters == nil) {
+            return "Metal area lighting buffer allocation failed";
+        }
+        return {};
+    }
+
+    std::string upload_shading(const RenderScene &scene, const GeometryData &geometry_data) {
+        const auto &meshes = geometry_data.meshes;
         std::vector<std::size_t> vertex_offsets(meshes.size());
         std::vector<std::size_t> triangle_offsets(meshes.size());
         std::size_t vertex_count = 0;
@@ -194,7 +324,7 @@ struct MetalRenderScene::Impl {
         packed_instances.reserve(parameters.instance_count);
         for (std::size_t ordinal = 0; ordinal < parameters.instance_count; ++ordinal) {
             const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
-            const auto &instance = scene.geometry.instances[source];
+            const auto &instance = geometry_data.instances[source];
             const auto mesh = instance.mesh_index;
             wire::Instance packed{};
             std::ranges::copy(instance.transform.values, packed.matrix);
@@ -205,6 +335,8 @@ struct MetalRenderScene::Impl {
             if (!scene.instance_reverse_orientation.empty()) {
                 packed.reverse_orientation = scene.instance_reverse_orientation[source];
             }
+            packed.emission = scene.instance_emissions.empty() ? wire::no_emission
+                                                               : scene.instance_emissions[source];
             packed_instances.push_back(packed);
         }
 
@@ -251,7 +383,7 @@ struct MetalRenderScene::Impl {
             knots == nil) {
             return "Metal render shading buffer allocation failed";
         }
-        return {};
+        return upload_area_lighting(scene, packed_instances);
     }
 
     RenderSamplesResult sample(const RenderRequest &request) {
@@ -317,6 +449,8 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:triangles offset:0 atIndex:5];
             [encoder setBuffer:materials offset:0 atIndex:6];
             [encoder setBuffer:knots offset:0 atIndex:8];
+            [encoder setBuffer:area_emissions offset:0 atIndex:9];
+            [encoder setBuffer:emitters offset:0 atIndex:10];
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
@@ -403,7 +537,26 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             return result;
         }
 
-        auto built = build_metal_geometry(scene.geometry, library_path);
+        // A transformed emitter's native intersection can be ill-conditioned
+        // even when its world triangle and connection ray are well-conditioned.
+        // Use the same baked positions for both traversal and light sampling.
+        GeometryData prepared;
+        const auto emission_ordinals =
+            std::views::iota(std::size_t{0}, scene.instance_emissions.size());
+        if (std::ranges::any_of(emission_ordinals, [&](std::size_t source) {
+                return requires_world_space_emitter(scene, source);
+            })) {
+            try {
+                result.diagnostic = prepare_world_space_emitters(scene, prepared);
+            } catch (const std::bad_alloc &) {
+                result.diagnostic = "Metal world-space emitter preparation allocation failed";
+            }
+            if (!result.diagnostic.empty()) {
+                return result;
+            }
+        }
+        const auto &geometry_data = prepared.instances.empty() ? scene.geometry : prepared;
+        auto built = build_metal_geometry(geometry_data, library_path);
         result.device = std::move(built.device);
         if (built.status != GeometryStatus::success) {
             result.status = built.status;
@@ -442,7 +595,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             return result;
         }
         if (impl->parameters.instance_count != 0) {
-            result.diagnostic = impl->upload_shading(scene);
+            result.diagnostic = impl->upload_shading(scene, geometry_data);
             if (!result.diagnostic.empty()) {
                 return result;
             }
