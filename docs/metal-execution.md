@@ -1,9 +1,10 @@
 # Metal execution
 
 This slice establishes device diagnostics, offline shader compilation, resource
-ownership, and a checked compute dispatch. It changes execution only. There is
-no transport estimator, scene ingestion, acceleration structure, or rendered
-image yet.
+ownership, and a checked compute dispatch. The compute check changes execution
+only. [Native geometry](geometry.md) adds acceleration structures and independent
+ray-query validation. There is no transport estimator, scene ingestion, or
+rendered image yet.
 
 ## Requirements and commands
 
@@ -95,6 +96,7 @@ results in [status](status.md):
 ```sh
 MTL_DEBUG_LAYER=1 ctest --preset debug --no-tests=error --verbose -R '^metal\.'
 python3 scripts/analyze_metal.py build/debug/compile_commands.json src/metal_backend.mm
+python3 scripts/analyze_metal.py build/debug/compile_commands.json src/metal_geometry.mm
 ```
 
 The API-validation run selects the backend tests because Apple's debug layer
