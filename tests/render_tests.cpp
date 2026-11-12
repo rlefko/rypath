@@ -168,6 +168,52 @@ void cpu_validation() {
     require(!validate_render_scene(scene).empty(), "Degenerate camera FOV accepted");
 }
 
+void cpu_pbrt_material_payloads() {
+    using Kind = SpectralMaterialKind;
+    RenderScene scene;
+    scene.model = RenderModel::pbrt;
+    scene.raster_camera = RasterCamera{{}, {-1, 1, 1}, {2, 0, 0}, {0, -2, 0}};
+    scene.materials.resize(1);
+    auto &material = scene.materials.front();
+    const auto valid = [&] { return validate_render_scene(scene).empty(); };
+    constexpr float largest = std::numeric_limits<float>::max();
+
+    material = {.kind = Kind::constant, .constant = 1};
+    require(valid() && spectral_reflectance(material, 612.75) == 1,
+            "PBRT constant white was rejected or changed");
+    material.constant = 0;
+    require(valid() && spectral_reflectance(material, 612.75) == 0,
+            "PBRT constant black was rejected or changed");
+    for (const auto value : {nan, inf, -0.01f, 1.01f}) {
+        material.constant = value;
+        require(!valid(), "Invalid constant reflectance accepted");
+    }
+    material = {.kind = Kind::rgb_sigmoid, .coefficients = {0, 0, largest}};
+    require(valid() && spectral_reflectance(material, 612.75) == 1,
+            "Finite positive polynomial failed to saturate to white");
+    material.coefficients[2] = -largest;
+    require(valid() && spectral_reflectance(material, 612.75) == 0,
+            "Finite negative polynomial failed to saturate to black");
+    for (const auto coefficients :
+         {std::array{0.0f, 0.0f, nan}, std::array{0.0f, inf, 0.0f}, std::array{largest, 0.0f, 0.0f},
+          std::array{0.0f, largest, 0.0f}, std::array{-1e33f, 1.2e36f, 0.0f}}) {
+        material.coefficients = coefficients;
+        require(!valid(), "Nonfinite or overflowing RGB polynomial accepted");
+    }
+    material = {.knots = {{360, 0}, {830, 1}}, .kind = Kind::rgb_sigmoid};
+    require(!valid(), "RGB material accepted a sampled payload");
+    material.kind = Kind::constant;
+    require(!valid(), "Constant material accepted a sampled payload");
+    material.kind = Kind::sampled;
+    require(valid(), "PBRT sampled material with two knots rejected");
+    material.constant = 0.5f;
+    require(!valid(), "Sampled material accepted a constant payload");
+    // Deliberately construct an unknown tag to exercise input rejection.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    material = {.kind = static_cast<Kind>(-1)};
+    require(!valid(), "Unknown spectral material kind accepted");
+}
+
 void cpu_film() {
     require(make_film(0, 1).pixels.empty(), "Invalid film dimensions allocated storage");
     auto film = make_film(2, 1);
@@ -250,6 +296,7 @@ void run_cpu() {
     cpu_sampler();
     cpu_sensor_and_display();
     cpu_validation();
+    cpu_pbrt_material_payloads();
     cpu_film();
     cpu_reference();
 }

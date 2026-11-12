@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "pbrt_render.hpp"
+#include "rgb_spectrum.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -264,7 +265,8 @@ void rejects_unsupported_profile(const fs::path &scratch) {
     }
 
     const auto nested = write(scratch, "unsupported-include.pbrt",
-                              "\n  Material \"diffuse\" \"rgb reflectance\" [0.5 0.5 0.5]\n" +
+                              "ColorSpace \"rec2020\"\n"
+                              "  Material \"diffuse\" \"rgb reflectance\" [0.5 0.5 0.5]\n" +
                                   std::string(triangle));
     const auto result =
         translation(write(scratch, "include-entry.pbrt",
@@ -347,7 +349,6 @@ void bounded_spectra(const fs::path &scratch) {
     rejected("collapsed-knots.pbrt",
              "Material \"diffuse\" \"spectrum reflectance\" [450 0.2 450.0000001 0.3]\n" +
                  std::string(triangle));
-    rejected("light-no-spectrum.pbrt", R"(LightSource "infinite")");
     rejected("too-many-lights.pbrt", R"(LightSource "infinite" "spectrum L" [360 1 830 1]
 LightSource "infinite" "spectrum L" [360 1 830 1]
 )");
@@ -410,6 +411,248 @@ void infinite_light_normalization(const fs::path &scratch) {
             "A zero-light SPD must fail the positive Y normalization guard");
 }
 
+void rgb_material_context(const fs::path &scratch) {
+    const auto path = write(scratch, "rgb-materials.pbrt", std::string(basic) + R"(
+AttributeBegin
+    ColorSpace "rec2020"
+    Attribute "material" "rgb reflectance" [0.75 0.125 0.25]
+    ColorSpace "srgb"
+    MakeNamedMaterial "tinted" "string type" "diffuse"
+AttributeEnd
+ObjectBegin "pair"
+    ColorSpace "dci-p3"
+    NamedMaterial "tinted"
+)" + std::string(triangle) + R"(
+    Material "diffuse" "spectrum reflectance" [360 0.25 830 0.25]
+)" + std::string(triangle) + R"(
+ObjectEnd
+ColorSpace "aces2065-1"
+ObjectInstance "pair"
+ObjectInstance "pair"
+AttributeBegin
+    Attribute "material" "rgb reflectance" [0.2 0.3 0.4]
+    ColorSpace "srgb"
+    Material "diffuse" "rgb reflectance" [0.75 0.125 0.25]
+        "spectrum reflectance" [360 0.9 830 0.9]
+        "rgb reflectance" [1 1 1]
+)" + std::string(triangle) + R"(
+    Material "diffuse" "rgb reflectance" [0.75 0.125 0.25]
+)" + std::string(triangle) + R"(
+    Material "diffuse" "rgb reflectance" [0 0 0]
+)" + std::string(triangle) + "AttributeEnd\n");
+    const auto translated = accepted(path);
+    const auto &scene = translated.scene;
+    require(scene.instance_materials.size() == 7, "RGB material instance count");
+    require(scene.instance_materials[3] == scene.instance_materials[5] &&
+                scene.instance_materials[4] == scene.instance_materials[6],
+            "Object placements must preserve definition-time material bindings");
+    const auto &white = scene.materials.at(scene.instance_materials[0]);
+    const auto &explicit_rgb = scene.materials.at(scene.instance_materials[1]);
+    const auto &black = scene.materials.at(scene.instance_materials[2]);
+    const auto &inherited = scene.materials.at(scene.instance_materials[3]);
+    const auto &numeric = scene.materials.at(scene.instance_materials[4]);
+    require(inherited.kind == SpectralMaterialKind::rgb_sigmoid && inherited.knots.empty() &&
+                inherited.coefficients == explicit_rgb.coefficients,
+            "Diffuse RGB inheritance must use the material dictionary's sRGB color space");
+    require(numeric.kind == SpectralMaterialKind::sampled &&
+                white.kind == SpectralMaterialKind::constant &&
+                black.kind == SpectralMaterialKind::constant && white.knots.empty() &&
+                black.knots.empty(),
+            "Sampled spectrum and exact RGB grayscale representations");
+    near(spectral_reflectance(numeric, 550.25), 0.25, 0, "Numeric SPD in non-sRGB scope");
+    near(spectral_reflectance(white, 550.25), 1, 0,
+         "Last explicit parameter wins over inherited RGB");
+    near(spectral_reflectance(black, 550.25), 0, 0, "Exact RGB black reflectance");
+    require(spectral_reflectance(inherited, 640.25) > spectral_reflectance(inherited, 510.25),
+            "Named RGB coefficients must remain usable after preflight data is destroyed");
+
+    const auto checked = check(path);
+    if (!checked.scene) {
+        throw std::runtime_error("Expected a checked RGB scene");
+    }
+    require(checked.scene->named_materials.size() == 1, "Expected the retained RGB descriptor");
+    const auto &descriptor = checked.scene.value().named_materials.front();
+    const auto before = descriptor.effective_parameter("reflectance");
+    require(before.parameter && before.color_space == "rec2020" &&
+                descriptor.color_space == "srgb" && before.parameter->values[1].text == "0.125",
+            "Expected distinct inherited color space and original RGB lexeme");
+    const auto result = translate(checked, Location{path.string()});
+    require(result.scene &&
+                descriptor.effective_parameter("reflectance").parameter == before.parameter &&
+                before.parameter->values[1].text == "0.125",
+            "Translation must preserve the authored RGB record");
+}
+
+void rgb_light_context(const fs::path &scratch) {
+    const auto environment = [&](std::string_view body) {
+        return accepted(write(scratch, "rgb-environment.pbrt",
+                              std::string(basic) + std::string(triangle) + std::string(body)))
+            .scene.environment;
+    };
+    const auto d65 = environment(R"(LightSource "infinite")");
+    near(pbrt_y_inner_product(d65), 1, 2e-7, "Default D65 luminance");
+    require(d65[90] > d65[340], "Default light has D65 spectral shape");
+    require(environment(R"(LightSource "infinite" "rgb L" [1 1 1])") == d65,
+            "Unit RGB white and omitted L produce the same D65 samples");
+    require(environment(R"(LightSource "infinite" "rgb L" [0 0 0])") == std::array<float, 471>{},
+            "RGB black must produce exactly zero radiance");
+    const auto hdr = environment(R"(LightSource "infinite" "rgb L" [17 12 4])");
+    const auto inherited = environment(R"(AttributeBegin
+    Attribute "light" "rgb L" [17 12 4]
+    ColorSpace "rec2020"
+    LightSource "infinite"
+AttributeEnd
+)");
+    const auto overridden = environment(R"(ColorSpace "rec2020"
+Attribute "light" "rgb L" [0.5 0.5 0.5]
+ColorSpace "srgb"
+LightSource "infinite" "rgb L" [17 12 4]
+)");
+    require(hdr == inherited && hdr == overridden,
+            "Explicit and inherited light RGB must use the effective parameter's color space");
+    const auto scaled = environment(R"(LightSource "infinite" "rgb L" [17 12 4]
+    "float scale" [2] "float illuminance" [3])");
+    const auto d65_scaled =
+        environment(R"(LightSource "infinite" "float scale" [2] "float illuminance" [3])");
+    const auto tint = reconstruct_srgb({17.f / 34, 12.f / 34, 4.f / 34});
+    if (!tint) {
+        throw std::runtime_error("Expected sRGB reconstruction for normalized HDR tint");
+    }
+    for (std::size_t i = 0; i < hdr.size(); ++i) {
+        const double expected =
+            34. * evaluate_srgb(tint.value(), 360.f + static_cast<float>(i)) * d65[i];
+        near(hdr[i], expected, 2e-7, "HDR tint uses base D65 Y normalization");
+        near(scaled[i], hdr[i] * 6 / std::numbers::pi, 2e-7, "HDR scale and illuminance");
+        near(d65_scaled[i], d65[i] * 6 / std::numbers::pi, 2e-8, "Omitted L scale and illuminance");
+    }
+    require(pbrt_y_inner_product(hdr) > 1, "HDR tint must retain authored luminance");
+    const auto large = environment(R"(LightSource "infinite" "rgb L" [1.7e38 1.7e38 1.7e38])");
+    near(pbrt_y_inner_product(large) / 1.7e38, 1, 2e-7, "Large representable RGB scale");
+    const auto numeric = environment(R"(LightSource "infinite" "spectrum L" [360 1 830 1])");
+    require(environment(R"(ColorSpace "dci-p3"
+LightSource "infinite" "spectrum L" [360 1 830 1]
+)") == numeric,
+            "Numeric infinite-light SPD is independent of ColorSpace");
+}
+
+void rejects_rgb_values_and_spaces(const fs::path &scratch) {
+    const auto rejected = [&](std::string_view body, int status, std::string_view code,
+                              std::size_t line, std::size_t column) {
+        const auto path = write(scratch, "rejected-rgb.pbrt",
+                                std::string(basic) + std::string(body) + std::string(triangle));
+        const auto checked = check(path);
+        const auto result = translate(checked, Location{path.string()});
+        require(result.exit_code() == status && !result.scene,
+                "Invalid RGB produced a render scene");
+        const auto &diagnostics =
+            checked.exit_code() == 0 ? result.diagnostics : checked.document.diagnostics;
+        require(std::ranges::any_of(diagnostics,
+                                    [&](const Diagnostic &diagnostic) {
+                                        return diagnostic.code == code &&
+                                               fs::path(*diagnostic.location.file) == path &&
+                                               diagnostic.location.line == line &&
+                                               diagnostic.location.column == column;
+                                    }),
+                "RGB rejection must identify the effective authored source");
+    };
+    rejected(R"(Attribute "material" "rgb reflectance" [0.5 0.5 0.5]
+ColorSpace "rec2020"
+MakeNamedMaterial "unused" "string type" "diffuse"
+)",
+             2, "unsupported-render-feature", 7, 22);
+    rejected(R"(ColorSpace "dci-p3"
+Attribute "light" "rgb L" [1 1 1]
+ColorSpace "srgb"
+LightSource "infinite"
+)",
+             2, "unsupported-render-feature", 8, 19);
+    rejected("ColorSpace \"aces2065-1\"\nLightSource \"infinite\"\n", 2,
+             "unsupported-render-feature", 8, 1);
+    rejected("LightSource \"infinite\"\n    \"rgb L\" [1 2e38 3]\n", 1, "invalid-render-value", 8,
+             16);
+    rejected("ColorSpace \"rec2020\"\nLightSource \"infinite\"\n    \"rgb L\" [1 2e38 3]\n", 1,
+             "invalid-render-value", 9, 16);
+    rejected("LightSource \"infinite\"\n    \"rgb L\" [1 1e308 3]\n", 1, "invalid-render-value", 8,
+             16);
+    rejected(
+        "LightSource \"infinite\" \"float scale\" 1000\n    \"rgb L\" [1.7e38 1.7e38 1.7e38]\n", 1,
+        "invalid-render-value", 8, 5);
+    rejected("LightSource \"infinite\"\n    \"rgb L\" [1 -0.1 3]\n", 1, "invalid-parameter", 8, 5);
+    rejected("Material \"diffuse\"\n    \"rgb reflectance\" [1 1.01 0]\n", 1, "invalid-parameter",
+             8, 5);
+    rejected("Material \"diffuse\"\n    \"rgb reflectance\" [1 -0.1 0]\n", 1, "invalid-parameter",
+             8, 5);
+    rejected("Material \"diffuse\"\n    \"color reflectance\" [1 0 0]\n", 2, "legacy-parameter", 8,
+             5);
+    rejected("LightSource \"infinite\"\n    \"color L\" [1 0 0]\n", 2, "legacy-parameter", 8, 5);
+    rejected("Material \"diffuse\"\n    \"blackbody reflectance\" [5500]\n", 2,
+             "unsupported-render-feature", 8, 5);
+    rejected("LightSource \"infinite\"\n    \"spectrum L\" \"stdillum-D65\"\n", 2,
+             "unsupported-render-feature", 8, 5);
+    const auto limited_path = write(scratch, "limited-rgb.pbrt",
+                                    std::string(basic) +
+                                        "ColorSpace \"rec2020\"\n"
+                                        "Material \"diffuse\" \"rgb reflectance\" [0.2 0.4 0.6]\n" +
+                                        std::string(triangle));
+    const auto limited = translation(limited_path, {.list_values = 2});
+    require(limited.exit_code() == 1 && !limited.scene &&
+                std::ranges::any_of(limited.diagnostics,
+                                    [](const Diagnostic &d) { return d.code == "limit-exceeded"; }),
+            "RGB value limits must take precedence over unsupported color spaces");
+}
+
+// Keep the path arguments in the same order as the test runner's command line.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
+    const auto path = fixtures.parent_path() / "pbrt" / "cornell-box.pbrt";
+    const auto checked = check(path);
+    require(checked.exit_code() == 2 && checked.document.syntax_complete &&
+                std::ranges::any_of(checked.document.diagnostics,
+                                    [](const Diagnostic &diagnostic) {
+                                        return diagnostic.message.find("AreaLightSource type") !=
+                                               std::string::npos;
+                                    }),
+            "The pinned Cornell scene must still be rejected with an area light diagnostic");
+    const auto result = translate(checked, Location{path.string()});
+    require(result.exit_code() == 2 && !result.scene,
+            "Cornell must remain outside the render profile");
+
+    // Exercise the authored colors independently with supported descriptors and geometry.
+    unsigned materials = 0;
+    unsigned lights = 0;
+    for (const auto &directive : checked.document.directives) {
+        const auto selected = std::ranges::find(directive.parameters, "rgb", &Parameter::type);
+        if (selected == directive.parameters.end()) {
+            continue;
+        }
+        const bool is_light = directive.name == "AreaLightSource";
+        require((is_light && selected->name == "L") ||
+                    (directive.name == "MakeNamedMaterial" && selected->name == "reflectance"),
+                "Unexpected Cornell RGB parameter");
+        std::string scene(basic);
+        scene += is_light ? "LightSource \"infinite\"" : "Material \"diffuse\"";
+        scene += " \"rgb " + selected->name + "\" [";
+        for (const auto &value : selected->values) {
+            scene += value.text + ' ';
+        }
+        scene += "]\n";
+        scene += triangle;
+        const auto translated = accepted(write(scratch, "cornell-color.pbrt", scene));
+        if (is_light) {
+            ++lights;
+            require(pbrt_y_inner_product(translated.scene.environment) > 1,
+                    "Cornell emission parameter retains HDR luminance");
+        } else {
+            ++materials;
+            const auto &reflectance =
+                translated.scene.materials.at(translated.scene.instance_materials.front());
+            require(reflectance.kind != SpectralMaterialKind::sampled,
+                    "Cornell diffuse parameter must reconstruct RGB");
+        }
+    }
+    require(materials == 8 && lights == 1, "Cornell RGB parameter coverage");
+}
+
 void sensor() {
     constexpr XYZ published_479{0.1042979, 0.1334528, 0.8566193};
     constexpr XYZ published_480{0.09564, 0.13902, 0.8129501};
@@ -470,6 +713,10 @@ int main(int argc, char **argv) {
         film_crop_precedence(scratch);
         bounded_spectra(scratch);
         infinite_light_normalization(scratch);
+        rgb_material_context(scratch);
+        rgb_light_context(scratch);
+        rejects_rgb_values_and_spaces(scratch);
+        cornell_rgb_parameters(scratch, argv[2]);
         sensor();
         owned_fixtures(argv[2]);
     } catch (const std::exception &error) {

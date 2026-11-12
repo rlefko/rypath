@@ -3,6 +3,7 @@
 #include "render.hpp"
 
 #include "cie_xyz_data.hpp"
+#include "rgb_spectrum.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -47,7 +48,7 @@ bool valid_raster_camera(const RasterCamera &camera) {
     return nx * corner.x + ny * corner.y + nz * corner.z != 0;
 }
 
-bool valid_pbrt_material(const SpectralMaterial &material) {
+bool valid_sampled_material(const SpectralMaterial &material) {
     float previous = -std::numeric_limits<float>::infinity();
     for (const auto [wavelength, value] : material.knots) {
         if (!(wavelength > previous && std::isfinite(wavelength) && value >= 0 && value <= 1)) {
@@ -56,6 +57,64 @@ bool valid_pbrt_material(const SpectralMaterial &material) {
         previous = wavelength;
     }
     return material.knots.size() >= 2;
+}
+
+bool valid_rgb_coefficients(const std::array<float, 3> &coefficients) {
+    if (!std::ranges::all_of(coefficients, [](float c) { return std::isfinite(c); })) {
+        return false;
+    }
+    const double a = coefficients[0];
+    const double b = coefficients[1];
+    const double c = coefficients[2];
+    constexpr double largest = std::numeric_limits<float>::max();
+    const double inner_max = std::max(std::abs(std::fma(a, wavelength_min, b)),
+                                      std::abs(std::fma(a, wavelength_max, b)));
+    if (inner_max > largest) {
+        return false;
+    }
+    const auto polynomial = [&](double wavelength) {
+        return std::fma(std::fma(a, wavelength, b), wavelength, c);
+    };
+    double peak =
+        std::max(std::abs(polynomial(wavelength_min)), std::abs(polynomial(wavelength_max)));
+    if (a != 0) {
+        const double stationary = -b / (2 * a);
+        if (stationary > wavelength_min && stationary < wavelength_max) {
+            peak = std::max(peak, std::abs(polynomial(stationary)));
+        }
+    }
+    // Allow for binary32 rounding in the inner FMA before multiplication by
+    // the wavelength in the outer FMA.
+    const double rounding = std::numeric_limits<float>::epsilon() * inner_max * wavelength_max;
+    return peak + rounding <= largest;
+}
+
+std::string validate_pbrt_material(const SpectralMaterial &material) {
+    constexpr std::array<float, 3> zero_coefficients{};
+    switch (material.kind) {
+    case SpectralMaterialKind::sampled:
+        if (material.constant != 0 || material.coefficients != zero_coefficients) {
+            return "PBRT sampled reflectance contains a constant or RGB payload";
+        }
+        if (!valid_sampled_material(material)) {
+            return "PBRT reflectance requires at least two finite, strictly increasing "
+                   "wavelengths and values within [0, 1]";
+        }
+        return {};
+    case SpectralMaterialKind::constant:
+        if (!material.knots.empty() || material.coefficients != zero_coefficients ||
+            !(material.constant >= 0 && material.constant <= 1)) {
+            return "PBRT constant reflectance requires a single finite value within [0, 1]";
+        }
+        return {};
+    case SpectralMaterialKind::rgb_sigmoid:
+        if (!material.knots.empty() || material.constant != 0 ||
+            !valid_rgb_coefficients(material.coefficients)) {
+            return "PBRT RGB reflectance requires three finite, evaluable coefficients";
+        }
+        return {};
+    }
+    return "Invalid PBRT spectral material kind";
 }
 
 bool valid_film_size(std::uint32_t width, std::uint32_t height) {
@@ -138,13 +197,18 @@ std::string validate_render_scene(const RenderScene &scene) {
                                  [](float value) { return std::isfinite(value) && value >= 0; })) {
             return "PBRT environment radiance must be finite and nonnegative";
         }
-        if (!std::ranges::all_of(scene.materials, valid_pbrt_material)) {
-            return "PBRT reflectance requires at least two finite, strictly increasing "
-                   "wavelengths and values within [0, 1]";
+        for (const auto &material : scene.materials) {
+            if (auto error = validate_pbrt_material(material); !error.empty()) {
+                return error;
+            }
         }
         return {};
     }
     for (const auto &material : scene.materials) {
+        if (material.kind != SpectralMaterialKind::sampled || material.constant != 0 ||
+            material.coefficients != std::array<float, 3>{}) {
+            return "Demo spectral material requires a sampled reflectance";
+        }
         if (!std::ranges::all_of(material.reflectance,
                                  [](float value) { return value >= 0 && value <= 0.75f; })) {
             return "Spectral reflectance must be finite and within [0, 0.75]";
@@ -268,6 +332,21 @@ double pbrt_y_inner_product(const std::array<float, 471> &spectrum) {
 }
 
 double spectral_reflectance(const SpectralMaterial &material, double wavelength) {
+    switch (material.kind) {
+    case SpectralMaterialKind::constant:
+    case SpectralMaterialKind::rgb_sigmoid:
+        if (!(wavelength >= wavelength_min && wavelength <= wavelength_max)) {
+            return 0;
+        }
+        return evaluate_srgb({.is_constant = material.kind == SpectralMaterialKind::constant,
+                              .constant = material.constant,
+                              .coefficients = material.coefficients},
+                             static_cast<float>(wavelength));
+    case SpectralMaterialKind::sampled:
+        break;
+    default:
+        return std::numeric_limits<double>::quiet_NaN();
+    }
     if (!material.knots.empty()) {
         if (!(wavelength >= material.knots.front().wavelength &&
               wavelength <= material.knots.back().wavelength)) {

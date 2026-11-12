@@ -2,6 +2,7 @@
 #include "pbrt_render.hpp"
 
 #include "pbrt_numeric.hpp"
+#include "rgb_spectrum.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -100,8 +101,10 @@ class Translator {
     void filter(const Descriptor &descriptor);
     void sampler(const Descriptor &descriptor);
     void integrator(const Descriptor &descriptor);
+    bool charge_spectral_values(const Parameter &parameter);
     std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
                                                       string_view name, double maximum);
+    bool supports_rgb_space(string_view color_space, const Location &source);
     void light(const Descriptor &descriptor);
     std::uint32_t material(const Descriptor &descriptor);
     void geometry();
@@ -315,6 +318,20 @@ void Translator::integrator(const Descriptor &descriptor) {
     }
 }
 
+bool Translator::charge_spectral_values(const Parameter &parameter) {
+    const auto count = parameter.values.size();
+    if (count > limits_.list_values || count > limits_.total_values - spectral_values_) {
+        if (!spectral_limit_exceeded_) {
+            issue(Severity::error, "limit-exceeded", parameter.location,
+                  "Translated spectrum value limit exceeded");
+            spectral_limit_exceeded_ = true;
+        }
+        return false;
+    }
+    spectral_values_ += count;
+    return true;
+}
+
 std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &descriptor,
                                                               string_view name, double maximum) {
     const auto *selected = parameter(descriptor, name);
@@ -324,18 +341,11 @@ std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &
                     std::string(name) + " requires at least two numeric wavelength/value pairs");
         return std::nullopt;
     }
-    const auto &values = selected->values;
-    if (values.size() > limits_.list_values ||
-        values.size() > limits_.total_values - spectral_values_) {
-        if (!spectral_limit_exceeded_) {
-            issue(Severity::error, "limit-exceeded", selected->location,
-                  "Translated spectrum value limit exceeded");
-            spectral_limit_exceeded_ = true;
-        }
+    if (!charge_spectral_values(*selected)) {
         return std::nullopt;
     }
-    spectral_values_ += values.size();
 
+    const auto &values = selected->values;
     std::vector<SpectralKnot> knots;
     knots.reserve(values.size() / 2);
     const Value *outside_range = nullptr;
@@ -369,32 +379,86 @@ std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &
     return knots;
 }
 
+bool Translator::supports_rgb_space(string_view color_space, const Location &source) {
+    if (color_space == "srgb") {
+        return true;
+    }
+    unsupported(source, "Only linear sRGB reconstruction is supported (effective ColorSpace \"" +
+                            std::string(color_space) + "\")");
+    return false;
+}
+
 void Translator::light(const Descriptor &descriptor) {
     const auto scale = narrow(descriptor, "scale", 1);
     const auto illuminance = narrow(descriptor, "illuminance", -1);
-    auto knots = spectrum(descriptor, "L", std::numeric_limits<double>::infinity());
-    if (!knots || !scale || !illuminance) {
-        return;
-    }
-    SpectralMaterial curve;
-    curve.knots = std::move(*knots);
+    const auto [selected, color_space] = descriptor.effective_parameter("L");
     auto &dense = scene_.environment;
-    for (std::size_t i = 0; i < dense.size(); ++i) {
-        dense[i] = static_cast<float>(spectral_reflectance(curve, 360. + static_cast<double>(i)));
+    const auto &source = selected ? selected->location : descriptor.authored.location;
+    double normalization = 0;
+    float rgb_scale = 1;
+    if (!selected || selected->type == "rgb") {
+        if (selected) {
+            if (!charge_spectral_values(*selected)) {
+                return;
+            }
+            const auto &peak = *std::ranges::max_element(selected->values, {}, &Value::number);
+            if (peak.number > std::numeric_limits<float>::max() / 2.) {
+                invalid(peak.location,
+                        "Twice the maximum infinite-light RGB component overflows binary32");
+                return;
+            }
+            rgb_scale = 2 * static_cast<float>(peak.number);
+        }
+        if (!supports_rgb_space(selected ? color_space : descriptor.color_space, source)) {
+            return;
+        }
+        dense = pbrt_d65();
+        // PBRT's photometric normalization uses the RGB spectrum's base illuminant.
+        normalization = pbrt_y_inner_product(dense);
+        if (selected) {
+            const auto &values = selected->values;
+            std::array<float, 3> rgb{};
+            if (rgb_scale > 0) {
+                std::ranges::transform(values, rgb.begin(), [rgb_scale](const Value &value) {
+                    return static_cast<float>(value.number) / rgb_scale;
+                });
+            }
+            const auto tint = reconstruct_srgb(rgb);
+            if (!tint) {
+                invalid(source, "Infinite-light RGB reconstruction failed");
+                return;
+            }
+            for (std::size_t i = 0; i < dense.size(); ++i) {
+                dense[i] *= evaluate_srgb(*tint, 360.f + static_cast<float>(i));
+            }
+        }
+    } else {
+        auto knots = spectrum(descriptor, "L", std::numeric_limits<double>::infinity());
+        if (!knots) {
+            return;
+        }
+        SpectralMaterial curve;
+        curve.knots = std::move(*knots);
+        for (std::size_t i = 0; i < dense.size(); ++i) {
+            dense[i] =
+                static_cast<float>(spectral_reflectance(curve, 360. + static_cast<double>(i)));
+        }
+        normalization = pbrt_y_inner_product(dense);
     }
-    const double normalization = pbrt_y_inner_product(dense);
-    if (!(normalization > 0 && std::isfinite(normalization))) {
-        invalid(location(descriptor, "L"),
-                "Infinite-light spectrum requires a positive finite CIE Y inner product");
+    if (!scale || !illuminance) {
         return;
     }
-    const double amplitude =
-        *scale * (*illuminance > 0 ? *illuminance / std::numbers::pi : 1.) / normalization;
+    if (!(normalization > 0 && std::isfinite(normalization))) {
+        invalid(source, "Infinite-light spectrum requires a positive finite CIE Y inner product");
+        return;
+    }
+    const double amplitude = static_cast<double>(rgb_scale) * *scale *
+                             (*illuminance > 0 ? *illuminance / std::numbers::pi : 1.) /
+                             normalization;
     for (auto &value : dense) {
         const double normalized = value * amplitude;
         if (!float_representable(normalized)) {
-            invalid(location(descriptor, "L"),
-                    "Normalized infinite-light spectrum overflows binary32");
+            invalid(source, "Normalized infinite-light spectrum overflows binary32");
             return;
         }
         value = static_cast<float>(normalized);
@@ -402,16 +466,37 @@ void Translator::light(const Descriptor &descriptor) {
 }
 
 std::uint32_t Translator::material(const Descriptor &descriptor) {
-    if (!parameter(descriptor, "reflectance")) {
+    const auto *selected = parameter(descriptor, "reflectance");
+    if (!selected) {
         return 0;
     }
-    auto knots = spectrum(descriptor, "reflectance", 1);
-    if (!knots) {
-        return 0;
+    SpectralMaterial material;
+    if (selected->type == "rgb") {
+        // PBRT's constant spectrum textures use the material dictionary's color space.
+        if (!charge_spectral_values(*selected) ||
+            !supports_rgb_space(descriptor.color_space, selected->location)) {
+            return 0;
+        }
+        std::array<float, 3> rgb{};
+        std::ranges::transform(selected->values, rgb.begin(),
+                               [](const Value &value) { return static_cast<float>(value.number); });
+        const auto reflectance = reconstruct_srgb(rgb);
+        if (!reflectance) {
+            invalid(selected->location, "Diffuse RGB reflectance reconstruction failed");
+            return 0;
+        }
+        material.kind = reflectance->is_constant ? SpectralMaterialKind::constant
+                                                 : SpectralMaterialKind::rgb_sigmoid;
+        material.constant = reflectance->constant;
+        material.coefficients = reflectance->coefficients;
+    } else {
+        auto knots = spectrum(descriptor, "reflectance", 1);
+        if (!knots) {
+            return 0;
+        }
+        material.knots = std::move(*knots);
     }
     const auto index = static_cast<std::uint32_t>(scene_.materials.size());
-    SpectralMaterial material;
-    material.knots = std::move(*knots);
     scene_.materials.push_back(std::move(material));
     return index;
 }

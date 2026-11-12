@@ -158,6 +158,12 @@ if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
 endif()
 
 set(pbrt_render_fixtures "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt-render")
+add_executable(rypath_rgb_spectrum_tests rgb_spectrum_tests.cpp)
+target_link_libraries(rypath_rgb_spectrum_tests PRIVATE rypath_rgb_spectrum)
+rypath_configure_host_target(rypath_rgb_spectrum_tests)
+add_test(NAME render.rgb_spectrum COMMAND rypath_rgb_spectrum_tests)
+set_tests_properties(render.rgb_spectrum PROPERTIES TIMEOUT 30)
+
 add_executable(rypath_pbrt_render_tests pbrt_render_tests.cpp)
 target_link_libraries(rypath_pbrt_render_tests PRIVATE rypath_pbrt_render)
 rypath_configure_host_target(rypath_pbrt_render_tests)

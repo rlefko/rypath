@@ -18,6 +18,15 @@ FULL = (0, 0, WIDTH, HEIGHT)
 REGIONS = {
     "background": {"full": FULL},
     "diffuse": {"full": FULL},
+    "rgb-background": {"full": FULL},
+    "rgb-diffuse": {"full": FULL},
+    "rgb-multibounce": {
+        "full": FULL,
+        "top-left": (0, 0, 4, 4),
+        "top-right": (4, 0, 8, 4),
+        "bottom-left": (0, 4, 4, 8),
+        "bottom-right": (4, 4, 8, 8),
+    },
     "multibounce": {
         "full": FULL,
         "top-left": (0, 0, 4, 4),

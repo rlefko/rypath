@@ -16,9 +16,14 @@ struct SpectralKnot {
     float wavelength = 0;
     float value = 0;
 };
+enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid };
+
 struct SpectralMaterial {
     std::array<float, 8> reflectance{};
     std::vector<SpectralKnot> knots{};
+    SpectralMaterialKind kind = SpectralMaterialKind::sampled;
+    float constant = 0;
+    std::array<float, 3> coefficients{};
 };
 enum class RenderModel { demo, pbrt };
 
