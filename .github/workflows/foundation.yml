@@ -65,9 +65,11 @@ jobs:
       - name: Configure compilation database
         run: cmake --preset debug
       - name: Analyze C++ source
+        shell: bash
         run: |
           clang-tidy-18 --version
-          clang-tidy-18 -p build/debug src/main.cpp
+          jq -ej 'map(.file) | unique[] | ., "\u0000"' build/debug/compile_commands.json |
+            xargs -0 clang-tidy-18 -p build/debug
 
   linux:
     name: Linux Clang build and tests
@@ -97,13 +99,28 @@ jobs:
     name: macOS Arm64 build and tests
     runs-on: macos-15
     timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-build
-      - name: Build and test Debug
-        run: bash scripts/check_debug.sh
+      - name: Verify Metal toolchain
+        run: |
+          xcodebuild -version
+          if ! xcrun --sdk macosx metal --version || ! xcrun --sdk macosx --find metallib; then
+            echo '::error::Metal compiler or linker unavailable. Install the selected Xcode Metal toolchain with xcodebuild -downloadComponent MetalToolchain.'
+            exit 1
+          fi
+      - name: Build Debug with Metal shaders
+        run: |
+          cmake --preset debug -DRYPATH_ALLOW_NO_METAL_DEVICE=ON
+          cmake --build --preset debug
+      - name: Analyze Objective-C++ Metal adapter
+        run: python3 scripts/analyze_metal.py build/debug/compile_commands.json src/metal_backend.mm
+      - name: Run Debug and Metal tests
+        run: ctest --preset debug --verbose
 
   codeql:
     name: CodeQL C++ analysis
