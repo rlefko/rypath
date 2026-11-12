@@ -4,10 +4,11 @@ rypath is a C++20 spectral path tracer being developed for Apple Silicon through
 Metal. The first goal is progressive offline rendering; a native macOS application
 and interactive rendering follow later.
 
-**Current state: native geometry queries.** The backend builds Metal triangle and
-instance acceleration structures and checks closest-hit and occlusion queries
-against an independent CPU reference. The executable retains device diagnostics
-and its compute smoke test. It does not render images or load scenes yet.
+**Current state: a first progressive spectral image.** Metal traces a built-in
+matte scene with native triangle/instance acceleration, environment lighting,
+MIS, and compensated Russian roulette. Complete sample batches accumulate raw
+XYZ; a separate display conversion saves the final PNG. Scene-file loading and
+the broader offline renderer remain in development.
 
 ## Build and run
 
@@ -25,6 +26,8 @@ ctest --preset debug --no-tests=error
 ./build/debug/rypath --version
 ./build/debug/rypath --metal-info
 ./build/debug/rypath --metal-smoke-test
+./build/debug/rypath --render-demo --output build/demo.png \
+  --width 256 --height 192 --samples 128 --batch-size 8 --seed 1
 ```
 
 `release` and `asan-ubsan` provide matching configure, build, and test presets.
@@ -36,19 +39,23 @@ when a device is unavailable unless a CI run explicitly permits that condition.
 See [Metal execution](docs/metal-execution.md) for toolchain setup, portable-only
 builds and command results, and [geometry validation](docs/geometry.md) for the
 ray-tracing contract and capability requirements.
+The [rendering contract](docs/rendering.md) describes sampling, spectral units,
+raw accumulation, output behavior, and validation limits. Rendering requires
+compute ray tracing; Linux and Metal-disabled builds report it as unavailable.
 
 ## Direction
 
-The renderer will use Metal native acceleration structures, spectral Monte Carlo
-transport, PBRT v4 scenes, and progressive raw accumulation. Scene compatibility,
-numerical correctness, and performance will each have explicit evidence. No
-rendering, scene-format, or target-device performance claims apply yet.
+PBRT v4 ingestion, broader spectral materials, media, linear OpenEXR, and resumable
+offline rendering follow this bounded demo. Scene compatibility, numerical
+correctness, and performance each need separate evidence. There are no scene-file
+compatibility or target-device performance claims yet.
 Ray-tracing API flags describe device capabilities; geometry validation runs
 through CTest, while the CLI smoke test exercises integer compute.
 
 - [Architecture and product goals](docs/architecture.md)
 - [Metal execution and validation](docs/metal-execution.md)
 - [Native geometry and reference checks](docs/geometry.md)
+- [Progressive rendering and numerical validation](docs/rendering.md)
 - [Ordered PR plan and roadmap](docs/roadmap.md)
 - [Contributing and validation](docs/contributing.md)
 - [Current status](docs/status.md)

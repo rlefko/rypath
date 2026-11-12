@@ -8,19 +8,19 @@ clarifies the work; completion is recorded in [status](status.md).
    review workflow. No renderer implementation.
 2. **Metal capabilities and execution (merged in PR #2):** device/capability reporting, explicit
    resource and error handling, compiled MSL, and a minimal verified GPU dispatch.
-3. **Native geometry and reference checks (current PR):** Metal triangle/instance
+3. **Native geometry and reference checks (merged in PR #3):** Metal triangle/instance
    acceleration, affine transforms and preserved winding, independent
    intersection/occlusion tests, and adversarial geometry cases. Shading-normal
    orientation follows with transport.
-4. **First progressive image:** reproducible spectral path state, complete sample
-   batches, raw sample accounting, a small declared transport model, and a saved
-   image validated against analytic or independent references.
+4. **First progressive image (current PR):** reproducible scalar-wavelength paths,
+   diffuse environment NEE/MIS and roulette, complete sample batches, compensated
+   raw XYZ accounting, and final PNG output with analytic/independent validation.
 5. **PBRT ingestion:** parser/dependency evaluation and license review, canonical
    scene data, source-located preflight diagnostics, a compatibility matrix, native
    triangle/PLY assets, textures, and the first pinned upstream scene entry points.
 6. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
    variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-7. **Spectral surfaces:** wavelength/sensor weighting, lighting/MIS, GGX conductor
+7. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
    and dielectric scattering, and independent CPU/Metal numerical comparisons.
 8. **Offline completion:** homogeneous spectral media, linear OpenEXR,
    checkpoint/resume, cancellation, and long-run accumulation validation.

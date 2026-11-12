@@ -3,8 +3,9 @@
 This slice establishes device diagnostics, offline shader compilation, resource
 ownership, and a checked compute dispatch. The compute check changes execution
 only. [Native geometry](geometry.md) adds acceleration structures and independent
-ray-query validation. There is no transport estimator, scene ingestion, or
-rendered image yet.
+ray-query validation. [Progressive rendering](rendering.md) uses those structures
+for a declared spectral transport model and final PNG. Scene ingestion remains
+planned.
 
 ## Requirements and commands
 
@@ -60,8 +61,8 @@ executable. Runtime lookup resolves the executable's canonical path, so launchin
 from another directory or through a symlink does not change the asset location.
 Keep the executable and library together when copying build artifacts.
 
-The macOS adapter links Metal, Foundation, and CoreGraphics and keeps Apple types
-behind a private C++ interface. ARC retains the device, queue, pipeline, command
+The macOS adapters link Metal, Foundation, CoreFoundation, CoreGraphics, and
+ImageIO and keep Apple types behind a private C++ interface. ARC retains the device, queue, pipeline, command
 buffer, and shared buffers through completion. CPU reads occur only after the
 command buffer reports successful completion. Failures identify the relevant
 stage and include the available Metal error description.
