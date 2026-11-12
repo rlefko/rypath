@@ -47,8 +47,12 @@ The render session owns uploaded variable-length spectral data. Film records
 its sensor model and exposure independently of raw XYZ; the demo retains its
 original relative response while PBRT uses calibrated finite-depth transport.
 
-The only upstream adaptation is the pinned Apache-2.0 tokenizer. File expansion,
-typed parsing, scene interpretation, and reporting are implemented in rypath;
+The upstream adaptations include the pinned Apache-2.0 tokenizer and sRGB
+spectral reconstruction with its canonical coefficient/D65 data. A portable
+reconstruction module embeds the table and supplies constant or sigmoid material
+payloads; only compact per-material coefficients reach Metal. Numeric material
+knots and dense environment samples retain their separate representations.
+File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 there is no linked PBRT renderer or runtime dependency. The
 [dependency decision](pbrt-decision.md) records the integration boundary.
 

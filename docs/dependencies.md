@@ -53,9 +53,12 @@ retains its own notice, checksum, revision, and coverage manifest in
 
 The optional numerical reference builds that same pinned PBRT renderer and its
 exact submodules in an ignored local cache. It retains upstream Apache-2.0 and
-dependency notices there; none of its renderer, dependencies, or generated RGB
-tables is linked or copied into rypath. The spectral translation and Metal
-implementation are original project code based on documented pinned semantics.
+dependency notices there. Its renderer and dependency libraries are not linked
+into rypath. One canonical 9,437,440-byte sRGB reconstruction table and the pinned
+D65 spectrum are vendored separately under the PBRT attribution record. CMake
+verifies the binary hash and embeds portable byte chunks without running the
+optimizer or downloading data. The lookup/evaluation adaptation retains upstream
+Apache-2.0 notices. Other translation and Metal code is original project code.
 New comparison scenes are project-authored GPL-3.0-only fixtures. Reference
 provenance and build instructions are recorded in
 [PBRT render validation](pbrt-render-validation.md).

@@ -18,20 +18,25 @@ clarifies the work; completion is recorded in [status](status.md).
 5. **PBRT scene preflight (merged in PR #5):** portable typed parsing, scene-state
    interpretation, checked inline geometry, dependency inventory, source-located
    terminal diagnostics, and a pinned CC0 fixture. No external-scene rendering.
-6. **PBRT spectral rendering (current PR):** strict sampled-spectrum diffuse
+6. **PBRT spectral rendering (merged in PR #6):** strict sampled-spectrum diffuse
    triangles, pinhole camera, constant environment, calibrated film and authored
    finite depth, with owned fixtures and pinned CPU PBRT comparisons.
-7. **Broader PBRT rendering:** RGB reconstruction, additional spectra and area
-   lighting, assets/textures, and faithfully rendered pinned upstream entry
+7. **PBRT sRGB reconstruction (current PR):** continuous RGB diffuse spectra,
+   constant RGB/D65 infinite lights, pinned offline reconstruction data, and
+   independent spectral/CPU/Metal comparisons.
+8. **Triangle area lighting:** scoped emission, finite visibility segments,
+   matched light-selection/MIS densities, sidedness, and independent validation.
+9. **Broader PBRT rendering:** wider color spaces, additional spectra,
+   assets/textures, filters/samplers and faithfully rendered pinned upstream entry
    points. JSON preflight reports remain follow-up work.
-8. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
-   variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-9. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
-   and dielectric scattering, and independent CPU/Metal numerical comparisons.
-10. **Offline completion:** homogeneous spectral media, linear OpenEXR,
-   checkpoint/resume, cancellation, and long-run accumulation validation.
-11. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
-   checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
+10. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+    variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
+11. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
+    and dielectric scattering, and independent CPU/Metal numerical comparisons.
+12. **Offline completion:** homogeneous spectral media, linear OpenEXR,
+    checkpoint/resume, cancellation, and long-run accumulation validation.
+13. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+    checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet
 their declared acceptance criteria. Large external assets remain outside Git;

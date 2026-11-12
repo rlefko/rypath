@@ -1,6 +1,8 @@
 # PBRT spectral rendering validation
 
-This record covers [render profile 1](pbrt-rendering.md). It is numerical evidence
+This historical record covers the spectral subset delivered in PR #6. The
+[sRGB extension record](pbrt-rgb-validation.md) documents the subsequent validation.
+The current [render profile](pbrt-rendering.md) includes both slices. It is numerical evidence
 for selected owned scenes, not full PBRT conformance or a performance benchmark.
 Hosted results and their final commit identity are recorded on the PR.
 

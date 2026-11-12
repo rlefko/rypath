@@ -5,8 +5,8 @@ Metal. The first goal is progressive offline rendering; a native macOS applicati
 and interactive rendering follow later.
 
 **Current state: progressive Metal rendering and a strict PBRT spectral profile.**
-Render the built-in demo or PBRT files containing supported sampled spectra,
-diffuse triangles, and constant environment lighting. Complete batches accumulate
+Render the built-in demo or PBRT files containing supported sampled spectra or
+linear sRGB colors, diffuse triangles, and constant environment lighting. Complete batches accumulate
 raw XYZ; separate display conversion saves the final PNG. Portable `--check-pbrt`
 reports scene structure, dependencies, and unsupported features. Broader PBRT
 materials, area lights, and external assets remain in development.
@@ -28,7 +28,7 @@ ctest --preset debug --no-tests=error
 ./build/debug/rypath --metal-info
 ./build/debug/rypath --metal-smoke-test
 ./build/debug/rypath --check-pbrt tests/fixtures/pbrt/cornell-box.pbrt
-./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/multibounce.pbrt \
+./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/rgb-multibounce.pbrt \
   --output build/pbrt.png --batch-size 8
 ./build/debug/rypath --render-demo --output build/demo.png \
   --width 256 --height 192 --samples 128 --batch-size 8 --seed 1

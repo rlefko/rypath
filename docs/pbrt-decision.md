@@ -67,3 +67,22 @@ An existing PBRT binary at the pinned revision may optionally compare `--format`
 syntax acceptance. That mode does not establish scene-state or dependency
 semantics. No matching binary was available locally, and the full renderer was
 not downloaded or built for this slice.
+
+## sRGB reconstruction extension
+
+The RGB rendering slice adds a scoped adaptation of the same pinned PBRT
+RGB-to-spectrum lookup and sigmoid model, based on
+[Jakob and Hanika 2019](https://rgl.epfl.ch/publications/Jakob2019Spectral).
+A canonical binary32 table and D65 data are fixed numerical renderer dependencies,
+not downloaded scene assets. Their Apache-2.0 terms and generation provenance
+are retained in the [adaptation record](../third_party/pbrt/README.md).
+
+The 9 MiB binary is embedded as generated portable C++ byte chunks. This avoids
+a 37.5 MB tracked decimal initializer, a runtime resource lookup, additional
+platform assembly, or a toolchain-dependent optimization step during ordinary
+builds. CMake verifies its checksum before embedding; the optional extraction
+script requires an already-generated pinned reference table. Python and PBRT
+remain unnecessary for routine product configuration and builds.
+
+Only sRGB is included. Wider-gamut tables, RGB textures, and other spectral
+representations require their own compatibility and numerical evidence.
