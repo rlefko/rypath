@@ -4,9 +4,10 @@
 
 The current program is a C++20 command-line executable. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
-`--metal-info`, `--metal-smoke-test`, and `--render-demo`. No arguments prints
+`--metal-info`, `--metal-smoke-test`, `--render-demo`, and `--check-pbrt SCENE`. No arguments prints
 help, and invalid arguments fail with a diagnostic. Rendering currently uses
-one original built-in scene; scene-file ingestion remains planned.
+one original built-in scene; portable PBRT preflight checks scene files without
+rendering them.
 
 A private C++ interface separates the portable CLI from a narrow ARC
 Objective-C++ adapter on macOS. The adapter owns Metal resources through command
@@ -26,6 +27,21 @@ the caller. Closest-hit results retain source IDs, world ray parameters, and
 barycentrics; opaque occlusion uses a separate any-hit query. The test-only double
 reference independently transforms vertices and scans all triangles. See
 [native geometry](geometry.md) for numerical limits, ownership, and validation.
+
+## PBRT preflight boundary
+
+The portable reader owns source records, decoded tokens, authored numeric lexemes,
+typed directives, dependencies, and diagnostics. A separate interpreter tracks
+PBRT scene state and builds checked float/index geometry only within the declared
+[compatibility profile](pbrt-profile.md). It preserves camera and material
+descriptors without translating them to the demo renderer. Incomplete analysis
+returns diagnostics and a partial inventory, without a complete scene handle.
+No spectral reconstruction, light normalization, or renderer defaults are applied.
+
+The only upstream adaptation is the pinned Apache-2.0 tokenizer. File expansion,
+typed parsing, scene interpretation, and reporting are implemented in rypath;
+there is no linked PBRT renderer or runtime dependency. The
+[dependency decision](pbrt-decision.md) records the integration boundary.
 
 ## Rendering and planned boundaries
 

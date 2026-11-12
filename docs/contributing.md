@@ -31,6 +31,18 @@ compute ray-tracing support and compare native queries with a portable oracle.
 [Rendering tests](rendering.md) validate spectral sampling, atomic film batches,
 analytic expectations, independent CPU/GPU agreement, convergence, and PNG output.
 
+[PBRT preflight tests](pbrt-profile.md) run on every platform and remain offline.
+To check a scene without rendering or writing outputs:
+
+```sh
+./build/debug/rypath --check-pbrt path/to/scene.pbrt
+ctest --preset debug --no-tests=error -R pbrt
+```
+
+Exit 0 means analysis completed within the profile, 2 means recognized features
+are outside the profile, and 1 means an error or resource limit. Errors take
+precedence. The Cornell fixture intentionally returns 2.
+
 CTest checks exact stdout, stderr, and exit status for no arguments, help,
 version, unsupported options, and excess arguments. All test presets fail when
 no tests are selected.

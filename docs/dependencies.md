@@ -21,8 +21,8 @@ Development tooling is separate from the distributed executable:
 | GitHub Actions / CodeQL | Hosted checks and compiled C++ analysis | Actions pinned by commit SHA |
 
 The workflow and hook configuration are the executable source of truth for exact
-tool pins. No PBRT, mesh-loader, metal-cpp, or denoising dependency is
-vendored or fetched by the build. CodeQL does not analyze Objective-C++ or MSL;
+tool pins. No PBRT renderer, mesh-loader, metal-cpp, or denoising runtime dependency is
+linked or fetched by the build. CodeQL does not analyze Objective-C++ or MSL;
 the Apple adapter receives a separate native Clang analyzer pass, while shader
 compilation and runtime validation cover the compute path.
 
@@ -42,3 +42,11 @@ on surrounding project code.
 Future dependency additions must record their upstream revision, license, required
 notices, integration boundary, and supported functionality. Scene assets retain
 individual terms and credits; project licensing does not relicense them.
+
+The preflight reader contains a scoped adaptation of PBRT v4’s Apache-2.0
+tokenizer at `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`. Its notices,
+license, and adaptation boundary are recorded in
+[third_party/pbrt](../third_party/pbrt/README.md) and the
+[decision record](pbrt-decision.md). The small unmodified CC0 Cornell Box fixture
+retains its own notice, checksum, revision, and coverage manifest in
+[tests/fixtures/pbrt](../tests/fixtures/pbrt/README.md).

@@ -12,19 +12,23 @@ clarifies the work; completion is recorded in [status](status.md).
    acceleration, affine transforms and preserved winding, independent
    intersection/occlusion tests, and adversarial geometry cases. Shading-normal
    orientation follows with transport.
-4. **First progressive image (current PR):** reproducible scalar-wavelength paths,
+4. **First progressive image (merged in PR #4):** reproducible scalar-wavelength paths,
    diffuse environment NEE/MIS and roulette, complete sample batches, compensated
    raw XYZ accounting, and final PNG output with analytic/independent validation.
-5. **PBRT ingestion:** parser/dependency evaluation and license review, canonical
-   scene data, source-located preflight diagnostics, a compatibility matrix, native
-   triangle/PLY assets, textures, and the first pinned upstream scene entry points.
-6. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+5. **PBRT scene preflight (current PR):** portable typed parsing, scene-state
+   interpretation, checked inline geometry, dependency inventory, source-located
+   terminal diagnostics, and a pinned CC0 fixture. No external-scene rendering.
+6. **PBRT rendering translation:** explicit spectral/color and camera conversion,
+   lighting/material support, native triangle/PLY assets and textures, and the
+   first faithfully rendered pinned upstream scene entry points. JSON preflight
+   reports remain follow-up work.
+7. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
    variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-7. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
+8. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
    and dielectric scattering, and independent CPU/Metal numerical comparisons.
-8. **Offline completion:** homogeneous spectral media, linear OpenEXR,
+9. **Offline completion:** homogeneous spectral media, linear OpenEXR,
    checkpoint/resume, cancellation, and long-run accumulation validation.
-9. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+10. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
    checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet
