@@ -23,6 +23,11 @@ requires a compatible Clang or GCC toolchain and fails on undefined behavior.
 Each preset uses its own `build/<preset>` directory. To choose a compiler, set
 `CXX` before the first configure, or use an untracked `CMakeUserPresets.json`.
 
+On macOS, these builds enable the Metal adapter and compile its MSL library.
+GPU tests require device access by default. See [Metal execution](metal-execution.md)
+for toolchain setup, portable-only builds, availability handling, and the required
+M4 Max validation record.
+
 CTest checks exact stdout, stderr, and exit status for no arguments, help,
 version, unsupported options, and excess arguments. All test presets fail when
 no tests are selected.
@@ -78,7 +83,10 @@ intersection, accumulation, and GPU scheduling changes. Use the PBRT-conformance
 skill for scene translation and importers. Record assumptions, primary references,
 validation evidence, and unavailable checks with the change.
 
-Metal compilation and runtime checks will accompany actual backend code.
-Hosted macOS compilation is not M4 Max performance evidence. Keep long corpus,
+The macOS job compiles the Metal library, runs a native Clang analyzer pass on
+the Objective-C++ adapter, and attempts GPU tests. Only an absent device may be
+reported as an explicit skip there. CodeQL covers portable C++, not Objective-C++
+or MSL. A real M4 Max pass is required before presenting execution changes for
+review. Hosted macOS compilation is not M4 Max performance evidence. Keep long corpus,
 convergence, and benchmark studies outside the fast PR checks. Do not run
 untrusted external PR code automatically on a personal workstation.

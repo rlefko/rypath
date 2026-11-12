@@ -3,10 +3,10 @@
 Each entry is a review boundary. Later entries may be split further as evidence
 clarifies the work; completion is recorded in [status](status.md).
 
-1. **Project foundations:** portable CLI, CMake/Ninja/CTest presets, development
+1. **Project foundations (merged in PR #1):** portable CLI, CMake/Ninja/CTest presets, development
    checks, compiled CodeQL analysis, licensing, public documentation, and protected
    review workflow. No renderer implementation.
-2. **Metal capabilities and execution:** device/capability reporting, explicit
+2. **Metal capabilities and execution (current PR):** device/capability reporting, explicit
    resource and error handling, compiled MSL, and a minimal verified GPU dispatch.
 3. **Native geometry and reference checks:** Metal triangle/instance acceleration,
    transforms and orientation, independent intersection/occlusion tests, and

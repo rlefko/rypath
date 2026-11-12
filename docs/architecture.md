@@ -1,11 +1,22 @@
 # Architecture and product goals
 
-## Implemented foundation
+## Implemented execution foundation
 
-The current program is a dependency-free C++20 command-line executable. CMake,
-Ninja, and CTest provide the build and test contract. It accepts `--help` and
-`--version`; no arguments prints help, and invalid arguments fail with a diagnostic.
-There is no rendering backend or scene representation yet.
+The current program is a C++20 command-line executable. CMake, Ninja, and CTest
+provide the build and test contract. It accepts `--help`, `--version`,
+`--metal-info`, and `--metal-smoke-test`. No arguments prints help, and invalid
+arguments fail with a diagnostic. There is no transport or scene representation
+yet.
+
+A private C++ interface separates the portable CLI from a narrow ARC
+Objective-C++ adapter on macOS. The adapter owns Metal resources through command
+completion and loads a precompiled MSL library beside the executable. Other
+platforms, and explicitly disabled Metal builds, use a stub that reports the
+backend as unavailable. No third-party header distribution is required.
+
+The integer dispatch check validates execution, buffer layout, bounds, and
+readback. It does not change a physical model or Monte Carlo estimator. See
+[Metal execution](metal-execution.md) for its contract and evidence requirements.
 
 ## Planned boundaries
 
@@ -35,8 +46,8 @@ without a general plugin system or cross-platform GPU abstraction.
 
 Metal API availability alone will not establish hardware ray-tracing support or
 performance on a selected device. Custom acceleration structures are deferred
-experiments requiring correctness and measured benefit. No Metal execution or
-numerical estimator is implemented in this foundation.
+experiments requiring correctness and measured benefit. The implemented compute
+check does not exercise ray tracing or a numerical transport estimator.
 
 ## Offline MVP acceptance
 

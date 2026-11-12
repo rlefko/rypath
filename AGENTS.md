@@ -8,7 +8,7 @@ At the start of a task, resolve the repository root and read the directory named
 
 Read `docs/status.md` and relevant architecture/compatibility records when they exist. Keep public status concise and current. After this bootstrap, establish public product and architecture docs so contributors without the local handoff can work from the repository. Do not invent build commands before presets exist; once created, document the exact supported CMake/CTest commands here.
 
-## Supported foundation commands
+## Supported build commands
 
 Use CMake 3.25 or newer, Ninja, and a C++20 compiler:
 
@@ -20,6 +20,9 @@ ctest --preset debug --no-tests=error
 
 The `release` and `asan-ubsan` names also have matching configure/build/test
 presets. See `docs/contributing.md` for pinned development tools and hooks.
+macOS enables Metal by default and requires full Xcode with working Metal tools.
+Runtime GPU tests require device access; see `docs/metal-execution.md` for the
+explicit CI availability policy and hardware validation commands.
 
 ## Technical invariants
 
