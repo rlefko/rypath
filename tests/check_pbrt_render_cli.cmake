@@ -6,7 +6,7 @@ file(WRITE "${test_directory}/valid.pbrt" [=[
 Film "rgb" "integer xresolution" 8 "integer yresolution" 6
     "string filename" "must-not-be-created.png" "bool savefp16" false
 Camera "perspective" "float fov" 45
-PixelFilter "box"
+PixelFilter "triangle" "float xradius" 1 "float yradius" 1.5
 Sampler "independent" "integer pixelsamples" 3 "integer seed" 0
 Integrator "path" "integer maxdepth" 1
 WorldBegin
@@ -32,6 +32,16 @@ execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/unsuppo
 if(NOT exit STREQUAL "2" OR NOT stderr MATCHES "unsupported" OR
    NOT stdout MATCHES "Rendering was not attempted" OR stdout MATCHES "Device:|Committed samples|Wrote PNG")
     message(FATAL_ERROR "Unexpected unsupported result ${exit}: ${stdout}${stderr}")
+endif()
+expect_existing_output()
+
+string(REPLACE "\"float xradius\" 1" "\"float xradius\" 1e-40" unsafe_filter "${valid_scene}")
+file(WRITE "${test_directory}/unsafe-filter.pbrt" "${unsafe_filter}")
+execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/unsafe-filter.pbrt"
+    --output "${output}" RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+if(NOT exit STREQUAL "1" OR NOT stderr MATCHES "xradius must be positive and normal in binary32" OR
+   NOT stdout MATCHES "Rendering was not attempted" OR stdout MATCHES "Device:|Committed samples|Wrote PNG")
+    message(FATAL_ERROR "Unexpected triangle filter failure ${exit}: ${stdout}${stderr}")
 endif()
 expect_existing_output()
 
@@ -65,6 +75,7 @@ if(exit STREQUAL "2")
 endif()
 if(NOT metal_enabled OR NOT exit STREQUAL "0" OR NOT stderr STREQUAL "" OR
    NOT stdout MATCHES "Render profile: pbrt-spectral-v1\n" OR
+   NOT stdout MATCHES "Pixel filter: triangle \\(x radius 1, y radius 1.5\\)" OR
    NOT stdout MATCHES "Light sampling: separate environment and uniform triangle area" OR
    NOT stdout MATCHES "Resolution: 8x6\nSamples per pixel: 3\nBatch size: 2\nSeed: 0\n" OR
    NOT stdout MATCHES "Finite path maxdepth: 1\n" OR
