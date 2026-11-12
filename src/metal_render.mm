@@ -214,18 +214,30 @@ struct MetalRenderScene::Impl {
         for (std::size_t index = 0; index < scene.materials.size(); ++index) {
             const auto &source = scene.materials[index];
             auto &packed = packed_materials[index];
-            if (scene.model == RenderModel::demo) {
-                std::ranges::copy(source.reflectance, packed.reflectance);
-            } else {
-                packed.knot_begin = static_cast<wire::Word>(packed_knots.size());
-                packed.knot_count = static_cast<wire::Word>(source.knots.size());
-                for (const auto [wavelength, value] : source.knots) {
-                    packed_knots.push_back({wavelength, value});
+            switch (source.kind) {
+            case SpectralMaterialKind::sampled:
+                packed.kind = wire::sampled_material;
+                if (scene.model == RenderModel::demo) {
+                    std::ranges::copy(source.reflectance, packed.reflectance);
+                } else {
+                    packed.knot_begin = static_cast<wire::Word>(packed_knots.size());
+                    packed.knot_count = static_cast<wire::Word>(source.knots.size());
+                    for (const auto [wavelength, value] : source.knots) {
+                        packed_knots.push_back({wavelength, value});
+                    }
                 }
+                break;
+            case SpectralMaterialKind::constant:
+                packed.kind = wire::constant_material;
+                packed.constant_value = source.constant;
+                break;
+            case SpectralMaterialKind::rgb_sigmoid:
+                packed.kind = wire::rgb_sigmoid_material;
+                std::ranges::copy(source.coefficients, packed.coefficients);
+                break;
             }
         }
-        // The shared kernel always binds a knot buffer. Demo paths use the
-        // fixed table in Material and never read this placeholder.
+        // The shared kernel always binds a knot buffer, even with no authored knots.
         if (packed_knots.empty()) {
             packed_knots.emplace_back();
         }

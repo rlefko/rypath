@@ -6,3 +6,7 @@ third_party/cie/LICENSE.txt -text whitespace=-blank-at-eof
 # Preserve the pinned PBRT scene and accompanying upstream notice byte for byte.
 tests/fixtures/pbrt/cornell-box.pbrt -text whitespace=-blank-at-eol
 tests/fixtures/pbrt/LICENSE.txt -text
+
+# Canonical binary32 PBRT sRGB reconstruction data, verified during configuration.
+third_party/pbrt/srgb.bin -text
+third_party/pbrt/d65.inc -text

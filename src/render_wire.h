@@ -17,6 +17,7 @@ using Word = std::uint32_t;
 
 enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_hit = 3 };
 enum : Word { demo_model = 0, pbrt_model = 1 };
+enum : Word { sampled_material = 0, constant_material = 1, rgb_sigmoid_material = 2 };
 
 struct Point {
     float x;
@@ -30,6 +31,9 @@ struct Material {
     float reflectance[8];
     Word knot_begin;
     Word knot_count;
+    Word kind;
+    float constant_value;
+    float coefficients[3];
 };
 struct SpectralKnot {
     float wavelength;
@@ -80,8 +84,12 @@ struct Sample {
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "render wire scalar width");
 static_assert(sizeof(Point) == 12 && alignof(Point) == 4, "render point layout");
 static_assert(sizeof(Triangle) == 12 && alignof(Triangle) == 4, "render triangle layout");
-static_assert(sizeof(Material) == 40 && alignof(Material) == 4 &&
-                  __builtin_offsetof(Material, knot_begin) == 32,
+static_assert(sizeof(Material) == 60 && alignof(Material) == 4 &&
+                  __builtin_offsetof(Material, knot_begin) == 32 &&
+                  __builtin_offsetof(Material, knot_count) == 36 &&
+                  __builtin_offsetof(Material, kind) == 40 &&
+                  __builtin_offsetof(Material, constant_value) == 44 &&
+                  __builtin_offsetof(Material, coefficients) == 48,
               "render material layout");
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,

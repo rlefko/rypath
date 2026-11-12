@@ -100,6 +100,20 @@ static float pbrt_reflectance(const device wire::SpectralKnot *knots, uint count
     return mix(knots[lower].value, knots[upper].value, t);
 }
 
+static float sigmoid_reflectance(const device wire::Material &material, float wavelength) {
+    const float p = fma(fma(material.coefficients[0], wavelength, material.coefficients[1]),
+                        wavelength, material.coefficients[2]);
+    if (!isfinite(p)) {
+        return NAN;
+    }
+    // Rescale the ratio before squaring a large polynomial value.
+    if (abs(p) <= 1.0f) {
+        return 0.5f + 0.5f * (p / sqrt(1.0f + p * p));
+    }
+    const float inverse = 1.0f / p;
+    return 0.5f + 0.5f * copysign(1.0f / sqrt(1.0f + inverse * inverse), p);
+}
+
 static float sky_radiance(const device float *environment, constant wire::Parameters &p,
                           float wavelength) {
     if (p.model == wire::demo_model) {
@@ -276,17 +290,21 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const device wire::Material &material = materials[instance.material];
-        float rho;
-        if (p.model == wire::pbrt_model) {
-            if (material.knot_count == 0 || material.knot_begin > p.knot_count ||
-                material.knot_count > p.knot_count - material.knot_begin) {
-                sample.status = wire::invalid_hit;
-                break;
-            }
+        float rho = NAN;
+        if (p.model == wire::demo_model && material.kind == wire::sampled_material) {
+            rho = demo_reflectance(material, p, sample.wavelength);
+        } else if (p.model == wire::pbrt_model && material.kind == wire::sampled_material &&
+                   material.knot_count >= 2 && material.knot_begin <= p.knot_count &&
+                   material.knot_count <= p.knot_count - material.knot_begin) {
             rho = pbrt_reflectance(knots + material.knot_begin, material.knot_count,
                                    sample.wavelength);
+        } else if (p.model == wire::pbrt_model && material.kind == wire::constant_material) {
+            rho = material.constant_value;
+        } else if (p.model == wire::pbrt_model && material.kind == wire::rgb_sigmoid_material) {
+            rho = sigmoid_reflectance(material, sample.wavelength);
         } else {
-            rho = demo_reflectance(material, p, sample.wavelength);
+            sample.status = wire::invalid_hit;
+            break;
         }
         if (!(rho >= 0.0f && rho <= 1.0f)) {
             sample.status = wire::invalid_arithmetic;
