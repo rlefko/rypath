@@ -10,8 +10,8 @@ PixelFilter "box"
 Sampler "independent" "integer pixelsamples" 3 "integer seed" 0
 Integrator "path" "integer maxdepth" 1
 WorldBegin
-LightSource "infinite" "spectrum L" [360 1 830 1]
-Material "diffuse" "spectrum reflectance" [360 0.5 830 0.5]
+LightSource "infinite" "rgb L" [1 0.7 0.2]
+Material "diffuse" "rgb reflectance" [0.1 0.5 0.3]
 Shape "trianglemesh" "point3 P" [-1 -1 3 1 -1 3 0 1 3]
 ]=])
 
@@ -23,8 +23,8 @@ function(expect_existing_output)
 endfunction()
 
 file(READ "${test_directory}/valid.pbrt" valid_scene)
-string(REPLACE "\"spectrum reflectance\" [360 0.5 830 0.5]"
-    "\"rgb reflectance\" [0.5 0.5 0.5]" unsupported_scene "${valid_scene}")
+string(REPLACE "Material \"diffuse\""
+    "ColorSpace \"rec2020\"\nMaterial \"diffuse\"" unsupported_scene "${valid_scene}")
 file(WRITE "${test_directory}/unsupported.pbrt" "${unsupported_scene}")
 execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/unsupported.pbrt"
     --output "${output}" RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)

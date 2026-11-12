@@ -18,6 +18,7 @@ using namespace rypath;
 using XYZ = std::array<double, 3>;
 using Curve = std::vector<std::pair<double, double>>;
 constexpr std::uint32_t analytic_paths = 32768;
+const Curve diffuse_light{{360, 0.25}, {485, 0.8}, {650, 1}, {830, 0.25}};
 
 void require(bool condition, std::string_view reason) {
     if (!condition) {
@@ -80,13 +81,13 @@ struct SpectralMoments {
     XYZ second_moment{};
 };
 
-SpectralMoments quadrature(const Curve &light, double scale, const Curve &reflectance) {
+SpectralMoments spectral_quadrature(const Curve &light, double scale, const auto &reflectance,
+                                    AngularMoments angular) {
     const auto &cie = detail::cie_xyz;
     double normalization = 0;
     for (std::size_t i = 0; i < cie.size(); ++i) {
         normalization += value_at(light, 360.0 + static_cast<double>(i)) * cie[i][1];
     }
-    const auto angular = reflectance.empty() ? AngularMoments{} : diffuse_angular_moments();
     SpectralMoments moments;
     constexpr int subintervals = 128;
     constexpr double width = 1.0 / subintervals;
@@ -95,7 +96,7 @@ SpectralMoments quadrature(const Curve &light, double scale, const Curve &reflec
             const double wavelength = nm + (step + 0.5) * width;
             const auto index =
                 static_cast<std::size_t>(nm - 360) + (step >= subintervals / 2 ? 1u : 0u);
-            const double rho = reflectance.empty() ? 1 : value_at(reflectance, wavelength);
+            const double rho = reflectance(wavelength);
             const double radiance =
                 scale * value_at(light, 360.0 + static_cast<double>(index)) * rho / normalization;
             for (std::size_t c = 0; c < moments.mean.size(); ++c) {
@@ -106,6 +107,15 @@ SpectralMoments quadrature(const Curve &light, double scale, const Curve &reflec
         }
     }
     return moments;
+}
+
+SpectralMoments quadrature(const Curve &light, double scale, const Curve &reflectance) {
+    if (reflectance.empty()) {
+        return spectral_quadrature(light, scale, [](double) { return 1.0; }, {});
+    }
+    return spectral_quadrature(
+        light, scale, [&](double wavelength) { return value_at(reflectance, wavelength); },
+        diffuse_angular_moments());
 }
 
 RenderSamplesResult trace(MetalRenderScene &scene, std::uint32_t paths, std::uint64_t seed,
@@ -167,6 +177,115 @@ Film progressive(const RenderScene &scene, const RenderSettings &settings) {
                 [&](const FilmPixel &pixel) { return pixel.count == settings.samples; }),
             "Progressive PBRT rendering lost sample counts");
     return std::move(rendered.film);
+}
+
+// Coefficients of linear sRGB (1, 0, 0), from the pinned upstream PBRT table.
+constexpr std::array red_coefficients{0x1.5d5e1cp-11f, -0x1.524982p-1f, 0x1.3b3c8p+7f};
+
+double red_oracle(double wavelength) {
+    const auto [a, b, c] = red_coefficients;
+    const double p = a * wavelength * wavelength + b * wavelength + c;
+    return 0.5 + 0.5 * p / std::sqrt(1 + p * p);
+}
+
+RenderScene with_material(RenderScene scene, SpectralMaterial material) {
+    scene.materials.at(scene.instance_materials.front()) = std::move(material);
+    return scene;
+}
+
+void rgb_materials(const RenderScene &plane) {
+    using Kind = SpectralMaterialKind;
+    constexpr SpectralMaterial white{.kind = Kind::constant, .constant = 1};
+    constexpr SpectralMaterial black{.kind = Kind::constant};
+    constexpr SpectralMaterial red{.kind = Kind::rgb_sigmoid, .coefficients = red_coefficients};
+    constexpr float largest = std::numeric_limits<float>::max();
+    constexpr SpectralMaterial large{.kind = Kind::rgb_sigmoid, .coefficients = {0, 0, largest}};
+    constexpr std::uint64_t seed = 0xc1348c175ee1275cULL;
+    const auto whites = trace(*build(with_material(plane, white)), analytic_paths, seed);
+    const auto blacks = trace(*build(with_material(plane, black)), analytic_paths, seed);
+    const auto saturated = trace(*build(with_material(plane, large)), analytic_paths, seed);
+    // The source scene is destroyed before either dispatch.
+    auto native = build(with_material(plane, red));
+    const auto colors = trace(*native, analytic_paths, seed);
+    bool distinguishes_dense = false;
+    double max_error = 0;
+    for (std::size_t i = 0; i < colors.samples.size(); ++i) {
+        const auto &w = whites.samples[i];
+        const auto &c = colors.samples[i];
+        const auto &b = blacks.samples[i];
+        require(w.scatterings == 1 && c.scatterings == 1 && w.radiance > 0 &&
+                    w.wavelength == c.wavelength && w.random_words == c.random_words,
+                "RGB plane must shade the same hit and wavelength as white");
+        require(b.scatterings == 0 && b.radiance == 0 && b.wavelength == w.wavelength,
+                "Constant black plane returned light");
+        require(saturated.samples[i].radiance == w.radiance &&
+                    saturated.samples[i].scatterings == 1,
+                "Large finite RGB polynomial failed to saturate to white");
+        const double expected = w.radiance * red_oracle(c.wavelength);
+        const double bound = 1e-7 + 2e-5 * std::abs(w.radiance);
+        const double error = std::abs(c.radiance - expected);
+        require(error <= bound, "RGB radiance disagrees with the same-seed white plane");
+        max_error = std::max(max_error, error);
+        const double nm = std::floor(c.wavelength);
+        const double dense = std::lerp(red_oracle(nm), red_oracle(nm + 1), c.wavelength - nm);
+        distinguishes_dense |= std::abs(c.radiance - w.radiance * dense) > bound;
+    }
+    require(distinguishes_dense, "RGB samples did not distinguish a one-nanometer interpolation");
+    std::cout << "RGB plane maximum per-path radiance error " << max_error << '\n';
+    analytic(*native, spectral_quadrature(diffuse_light, 1, red_oracle, diffuse_angular_moments()),
+             0x58e193a00927f17aULL, "RGB diffuse", 1);
+
+    auto mixed = with_material(plane, red);
+    mixed.materials.push_back(plane.materials.at(plane.instance_materials.front()));
+    mixed.geometry.meshes.push_back(plane.geometry.meshes.front());
+    for (auto &point : mixed.geometry.meshes[0].positions) {
+        point.x = std::min(point.x, 0.0f);
+    }
+    for (auto &point : mixed.geometry.meshes[1].positions) {
+        point.x = std::max(point.x, 0.0f);
+    }
+    auto second_instance = plane.geometry.instances.front();
+    second_instance.mesh_index = 1;
+    mixed.geometry.instances.push_back(second_instance);
+    mixed.instance_materials.push_back(static_cast<std::uint32_t>(mixed.materials.size() - 1));
+    if (!plane.instance_reverse_orientation.empty()) {
+        mixed.instance_reverse_orientation.push_back(plane.instance_reverse_orientation.front());
+    }
+    auto settings =
+        RenderSettings{.width = 2, .height = 1, .samples = 33, .batch_size = 33, .seed = seed};
+    const auto whole = progressive(mixed, settings);
+    const auto all_red = progressive(with_material(plane, red), settings);
+    const auto all_sampled = progressive(plane, settings);
+    require(whole.pixels[0] == all_red.pixels[0] && whole.pixels[1] == all_sampled.pixels[1] &&
+                whole.pixels[0] != all_sampled.pixels[0] && whole.pixels[1] != all_red.pixels[1],
+            "Mixed material instances did not select the expected sampled or RGB payload");
+    settings.batch_size = 7;
+    require(whole == progressive(mixed, settings),
+            "Mixed RGB and sampled batch partition changed film");
+
+    for (const auto &invalid : {
+             SpectralMaterial{.kind = static_cast<Kind>(-1)},
+             SpectralMaterial{.kind = Kind::constant, .constant = 2},
+             SpectralMaterial{.kind = Kind::rgb_sigmoid, .coefficients = {largest, 0, 0}},
+             SpectralMaterial{.kind = Kind::rgb_sigmoid,
+                              .coefficients = {0, 0, std::numeric_limits<float>::infinity()}},
+         }) {
+        const auto rejected = build_metal_renderer(with_material(plane, invalid));
+        require(rejected.status == GeometryStatus::failure && !rejected.scene &&
+                    !rejected.diagnostic.empty(),
+                "Invalid material payload acquired a native renderer");
+    }
+    auto extreme = with_material(plane, white);
+    extreme.environment.fill(largest);
+    const auto overflow = build(extreme)->sample({.width = 1,
+                                                  .height = 1,
+                                                  .seed = seed,
+                                                  .pixel_count = 1,
+                                                  .sample_count = 128,
+                                                  .threadgroup_width = 32});
+    require(overflow.status == GeometryStatus::failure && overflow.samples.empty() &&
+                overflow.diagnostic.find("arithmetic") != std::string::npos,
+            "Nonfinite shader result returned successful or partial samples");
 }
 
 void depth_and_batch(RenderScene room) {
@@ -265,17 +384,16 @@ int main(int argc, char **argv) {
         analytic(*build(sky), quadrature({{360, 0}, {439, 0}, {460, 1}, {481, 0}, {830, 0}}, 2, {}),
                  0x66f59a71768bba49ULL, "background", 0);
         analytic(*native.scene,
-                 quadrature({{360, 0.25}, {485, 0.8}, {650, 1}, {830, 0.25}}, 1,
+                 quadrature(diffuse_light, 1,
                             {{360, 0.1}, {476, 0.8}, {503.5, 0.2}, {575, 0.9}, {830, 0.3}}),
                  0x495d9cb540c04df3ULL, "diffuse", 1);
 
         constexpr float widest = std::numeric_limits<float>::max();
         auto diffuse = load(directory / "diffuse.pbrt");
+        rgb_materials(diffuse);
         diffuse.materials.at(diffuse.instance_materials.front()).knots = {{-widest, 0.25f},
                                                                           {widest, 0.75f}};
-        analytic(*build(diffuse),
-                 quadrature({{360, 0.25}, {485, 0.8}, {650, 1}, {830, 0.25}}, 1,
-                            {{360, 0.5}, {830, 0.5}}),
+        analytic(*build(diffuse), quadrature(diffuse_light, 1, {{360, 0.5}, {830, 0.5}}),
                  0x7959a5d008b72260ULL, "wide diffuse SPD", 1);
 
         diffuse.environment.fill(0);
