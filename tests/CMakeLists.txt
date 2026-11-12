@@ -13,6 +13,7 @@ endfunction()
 
 string(CONCAT help_text
     "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
+    "       rypath --check-pbrt SCENE\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n")
 set(error_text "rypath: unsupported arguments\nTry 'rypath --help' for usage.\n")
@@ -24,6 +25,10 @@ add_cli_test(unknown_argument 1 "" "${error_text}" --unknown)
 add_cli_test(extra_argument 1 "" "${error_text}" --help --version)
 add_cli_test(metal_combined_arguments 1 "" "${error_text}" --metal-info --metal-smoke-test)
 add_cli_test(metal_extra_argument 1 "" "${error_text}" --metal-smoke-test extra)
+add_cli_test(pbrt_missing_scene 1 "" "${error_text}" --check-pbrt)
+add_cli_test(pbrt_extra_argument 1 "" "${error_text}" --check-pbrt input.pbrt --version)
+add_cli_test(pbrt_option_as_scene 1 "" "${error_text}" --check-pbrt --version)
+add_cli_test(pbrt_combined_modes 1 "" "${error_text}" --version --check-pbrt input.pbrt)
 add_cli_test(render_missing_output 1 "" "rypath: --render-demo requires --output PATH\n"
     --render-demo)
 add_cli_test(render_duplicate 1 "" "rypath: duplicate option --seed\n"
@@ -57,6 +62,26 @@ if(RYPATH_ENABLE_METAL AND (RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_META
     set_tests_properties(cli.render_demo PROPERTIES SKIP_REGULAR_EXPRESSION
         "RYPATH_CTEST_SKIP_RENDER_UNAVAILABLE")
 endif()
+
+set(pbrt_fixture_directory "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt")
+set(pbrt_test_directory "${CMAKE_CURRENT_BINARY_DIR}/pbrt")
+add_test(NAME cli.pbrt_preflight
+    COMMAND "${CMAKE_COMMAND}"
+        "-Dexecutable=$<TARGET_FILE:rypath>"
+        "-Dfixture_directory=${pbrt_fixture_directory}"
+        "-Dtest_directory=${pbrt_test_directory}/$<CONFIG>/cli"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/check_pbrt_cli.cmake"
+)
+set_tests_properties(cli.pbrt_preflight PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_pbrt_tests pbrt_tests.cpp)
+target_link_libraries(rypath_pbrt_tests PRIVATE rypath_pbrt)
+rypath_configure_host_target(rypath_pbrt_tests)
+foreach(group IN ITEMS syntax state dependencies limits geometry corpus)
+    add_test(NAME "pbrt.${group}" COMMAND rypath_pbrt_tests "${group}"
+        "${pbrt_test_directory}/$<CONFIG>/${group}" "${pbrt_fixture_directory}")
+    set_tests_properties("pbrt.${group}" PROPERTIES TIMEOUT 30)
+endforeach()
 
 set(metal_cli_directory "${CMAKE_CURRENT_BINARY_DIR}/metal-cli")
 file(MAKE_DIRECTORY "${metal_cli_directory}")
