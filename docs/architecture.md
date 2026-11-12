@@ -40,7 +40,7 @@ No spectral reconstruction, light normalization, or renderer defaults are applie
 
 A separate portable translator consumes a complete checked scene and shared
 effective-parameter selections. It owns narrowed camera, material curves,
-environment samples, and per-instance bindings, with source-located diagnostics
+environment/area-emission samples, and per-instance bindings, with source-located diagnostics
 for the narrower [rendering profile](pbrt-rendering.md). It reuses checked geometry
 instead of reinterpreting transforms. Only successful translation reaches Metal.
 The render session owns uploaded variable-length spectral data. Film records
@@ -51,7 +51,7 @@ The upstream adaptations include the pinned Apache-2.0 tokenizer and sRGB
 spectral reconstruction with its canonical coefficient/D65 data. A portable
 reconstruction module embeds the table and supplies constant or sigmoid material
 payloads; only compact per-material coefficients reach Metal. Numeric material
-knots and dense environment samples retain their separate representations.
+knots and dense emission samples retain their separate representations.
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 there is no linked PBRT renderer or runtime dependency. The
 [dependency decision](pbrt-decision.md) records the integration boundary.
@@ -67,6 +67,18 @@ queries. Predetermined batches commit only after checked GPU readback and full
 sample accounting. The [rendering record](rendering.md) specifies the Lambertian
 environment estimator, MIS/roulette, wavelength and sensor conventions, and
 bounded ray-origin behavior.
+
+Scoped PBRT area declarations bind independently of materials to directly placed
+triangle meshes. The translator owns deduplicated dense emission tables and
+source-instance bindings. The native session maps these to packed triangle
+references and constant-time emitting-hit lookup. A separate uniform-area light
+sample complements BSDF-hit emission through MIS; finite endpoint-to-endpoint
+visibility reuses native any-hit traversal. The [area-light record](pbrt-area-validation.md)
+states the estimator, numerical domain, and independent acceptance criteria.
+Transformed emitters use checked world-space vertices for both native traversal
+and shading, avoiding observed conditioning failures in highly anisotropic
+object-space parameterizations. This preparation preserves authored records,
+instance/primitive ordering, and effective orientation.
 
 The offline renderer will separate scene ingestion, immutable render data,
 transport, sampling, scattering, media, acceleration, accumulation, and image

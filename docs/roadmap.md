@@ -21,10 +21,10 @@ clarifies the work; completion is recorded in [status](status.md).
 6. **PBRT spectral rendering (merged in PR #6):** strict sampled-spectrum diffuse
    triangles, pinhole camera, constant environment, calibrated film and authored
    finite depth, with owned fixtures and pinned CPU PBRT comparisons.
-7. **PBRT sRGB reconstruction (current PR):** continuous RGB diffuse spectra,
+7. **PBRT sRGB reconstruction (merged in PR #7):** continuous RGB diffuse spectra,
    constant RGB/D65 infinite lights, pinned offline reconstruction data, and
    independent spectral/CPU/Metal comparisons.
-8. **Triangle area lighting:** scoped emission, finite visibility segments,
+8. **Triangle area lighting (current PR):** scoped emission, finite visibility segments,
    matched light-selection/MIS densities, sidedness, and independent validation.
 9. **Broader PBRT rendering:** wider color spaces, additional spectra,
    assets/textures, filters/samplers and faithfully rendered pinned upstream entry

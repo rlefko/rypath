@@ -59,6 +59,9 @@ D65 spectrum are vendored separately under the PBRT attribution record. CMake
 verifies the binary hash and embeds portable byte chunks without running the
 optimizer or downloading data. The lookup/evaluation adaptation retains upstream
 Apache-2.0 notices. Other translation and Metal code is original project code.
-New comparison scenes are project-authored GPL-3.0-only fixtures. Reference
+Owned comparison scenes are GPL-3.0-only. The separately named Cornell rendering
+adaptation retains CC0 attribution and the unchanged original notice; its
+[render fixture manifest](../tests/fixtures/pbrt-render/README.md) records every
+adaptation and both source/derivative hashes. Reference
 provenance and build instructions are recorded in
 [PBRT render validation](pbrt-render-validation.md).

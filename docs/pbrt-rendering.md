@@ -35,10 +35,11 @@ diagnosed even when not placed in the image.
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
 | Filter/sampler | Box radii 0.5; independent samples with Philox4x32-10, not PBRT's random sequence |
-| Integrator | Finite maxdepth 0–1024, default 5; regularization false; omitted or bvh light selection |
+| Integrator | Finite maxdepth 0–1024, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and single-level instances, including affine geometry transforms; at least one placed triangle |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
-| Lighting | No light (black illumination) or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
+| Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
+| Area lighting | Directly placed diffuse triangle emitters; numeric/RGB/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
 | Output metadata | Filename and FP16 setting explicitly overridden by PNG policy; no bitwise PBRT PNG equivalence |
 
@@ -50,11 +51,13 @@ unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
 Non-sRGB reconstruction, legacy `color` parameters, blackbody and named/file spectra,
-area lights, textures/external meshes, shading normals, media, motion, lens
+textured emitters, emitting object members, textures/external meshes, shading normals, media, motion, lens
 effects, and other cameras/filters/integrators remain unsupported. There is no
 CPU fallback. The unchanged CC0 Cornell fixture remains a negative case; this
-profile does not establish Cornell or general upstream-corpus rendering. Cornell still
-requires area emission, Sobol sampling, a triangle filter, normals, and UV arrays.
+profile does not establish unmodified Cornell or general upstream-corpus rendering.
+The original Cornell still requires Sobol sampling, a triangle filter, normals,
+and UV arrays. A separately named, attributed adaptation exercises supported
+rendering; its [manifest](../tests/fixtures/pbrt-render/README.md) lists every change.
 
 ## Spectral and transport contract
 
@@ -100,13 +103,14 @@ demo's Y-reference division. Film projection applies
 conversion alone applies sRGB encoding, clipping, and eight-bit quantization.
 Raw compensated double XYZ and counts remain independent of display. The
 existing CIE table matches the pinned PBRT values. RGB reconstruction extends the
-material/light model; wavelength and path PDFs, MIS, and roulette are unchanged.
+material/light model. Area lighting adds its own proposal and complementary
+emissive-hit MIS; wavelength sampling and roulette are unchanged.
 
 The [existing Lambertian NEE/MIS and compensated roulette](rendering.md) operate
-on imported spectra. Escape precedes the depth cutoff. At an opaque hit, the
-authored cutoff precedes another direct-light estimate or scattering, and the
-emergency watchdog. Depth zero preserves visible sky and makes opaque hits
-black. This targets the finite-depth integral, not infinite-depth transport.
+on imported spectra. Escape and sided surface emission precede the depth cutoff.
+At an opaque hit, the authored cutoff precedes another direct-light estimate or
+scattering, and the emergency watchdog. Depth zero preserves visible sky and
+emission; non-emitting opaque hits are black. This targets the finite-depth integral, not infinite-depth transport.
 PBRT uses different wavelength/path sampling, roulette, and environment
 sampling; comparisons are statistical rather than sample-by-sample.
 
@@ -115,6 +119,28 @@ successfully truncating or discarding samples. High reflectance and large depth
 can produce high variance with fixed-probability roulette. No performance or
 arbitrary-scale geometry guarantee is made. The demo retains its unit
 environment, relative observer response, and compensated stopping policy.
+
+Area emission uses the same dense spectral calibration as the environment,
+without an illuminance multiplier. Emission and reflectance are independent;
+black diffuse emitters remain visible. The emission normal preserves winding,
+transformed handedness, and ReverseOrientation before face-forwarding the
+scattering normal. Two-sided emission changes the emitting hemisphere, not its
+radiance. An empty image filename is inert; nonempty filenames remain inventoried
+unsupported assets, and combining one with effective L is invalid.
+The authored finite value determines whether power is positive; this deferred
+parameter is not narrowed to float. Transformed emitters use checked world-space
+geometry for both native acceleration and shading, while preserving source
+instance/primitive ordering and effective orientation. The authored scene stays
+unchanged.
+
+Each scattering vertex draws one area sample separately from the existing
+environment sample. Real triangles occupy N of M=bit_ceil(N) equally likely
+slots; unused slots contribute zero. The area sample and BSDF-hit emission use
+complementary power weights including the exact 1/M selection probability.
+This uniform-area distribution differs from PBRT's BVH light selection and
+spherical-triangle sampling. Finite visibility rays offset both endpoints and
+retain blockers before the light. Numerical limits, PDFs, and fixed validation
+criteria are recorded in [area-light validation](pbrt-area-validation.md).
 
 ## Reference and validation
 
@@ -130,10 +156,12 @@ remaining reference build assets stay in the cache. Record toolchain,
 dependency versions, source/submodule identities, and binary hash with each
 comparison. Commands and measured evidence are in the
 [spectral validation record](pbrt-render-validation.md) and
-[sRGB validation record](pbrt-rgb-validation.md).
+[sRGB validation record](pbrt-rgb-validation.md), and
+[area-light validation record](pbrt-area-validation.md).
 
-Six owned fixtures cover numeric-spectrum and RGB background, diffuse response,
-and asymmetric multiple scattering. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
+Nine owned fixtures and one labeled CC0 Cornell adaptation cover numeric-spectrum
+and RGB backgrounds, diffuse response, area emission, visibility, and asymmetric
+multiple scattering. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
 16 fixed seeds per renderer (rypath 0–15; PBRT 16–31). Each channel/declared
 region mean must agree within five combined standard errors plus
 `2e-5 * max(1, abs(reference))`. Thresholds and seeds precede results; failures
