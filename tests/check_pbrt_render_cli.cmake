@@ -1,3 +1,5 @@
+include("${CMAKE_CURRENT_LIST_DIR}/cli_availability.cmake")
+
 file(MAKE_DIRECTORY "${test_directory}")
 set(output "${test_directory}/result.png")
 set(sentinel "existing output")
@@ -64,7 +66,7 @@ if(NOT exit STREQUAL "1" OR NOT stdout MATCHES "missing-file" OR stdout MATCHES 
 endif()
 expect_existing_output()
 
-function(check_render input sampler seed warning_pattern)
+function(check_render input sampler seed warning_pattern result)
     file(WRITE "${output}" "${sentinel}")
     file(REMOVE "${test_directory}/must-not-be-created.png")
     execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/${input}"
@@ -83,16 +85,9 @@ function(check_render input sampler seed warning_pattern)
     endif()
     if(exit STREQUAL "2")
         expect_existing_output()
-        if(stdout MATCHES "Committed samples|Wrote PNG" OR
-           NOT stderr MATCHES "^${warning_pattern}rypath: [^\n]+\n$")
-            message(FATAL_ERROR "Unexpected unavailable-render diagnostics: ${stdout}${stderr}")
-        endif()
-        if(NOT metal_enabled AND stdout MATCHES "Render status: not_built\n")
-            return()
-        endif()
-        if(metal_enabled AND ((allow_no_device AND stdout MATCHES "Render status: no_device\n") OR
-           (allow_no_ray_tracing AND stdout MATCHES "Render status: no_ray_tracing\n")))
-            set(skip_render_unavailable "${stdout}${stderr}" PARENT_SCOPE)
+        get_render_availability(availability "${stdout}" "${stderr}" "${warning_pattern}")
+        if(NOT availability STREQUAL "")
+            set("${result}" "${availability}" PARENT_SCOPE)
             return()
         endif()
     endif()
@@ -106,9 +101,10 @@ function(check_render input sampler seed warning_pattern)
     if(NOT signature STREQUAL "89504e470d0a1a0a")
         message(FATAL_ERROR "PBRT render output lacks the PNG signature")
     endif()
+    set("${result}" "success" PARENT_SCOPE)
 endfunction()
 
-check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "")
+check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" independent_status)
 
 string(REPLACE "Sampler \"independent\" \"integer pixelsamples\" 3 \"integer seed\" 0"
     "Sampler \"sobol\" \"integer pixelsamples\" 3 \"integer seed\" -17 \"string randomization\" \"owen\""
@@ -127,7 +123,11 @@ endif()
 expect_existing_output()
 
 check_render("sobol.pbrt" "sobol-v1 / owen (PBRT camera variates; rypath transport dimensions)" -17
-    "[^\n]+:5:[0-9]+: warning \\[sobol-non-power-of-two\\][^\n]*requested 3 samples per pixel\n")
-if(DEFINED skip_render_unavailable)
-    message("RYPATH_CTEST_SKIP_RENDER_UNAVAILABLE\n${skip_render_unavailable}")
+    "[^\n]+:5:[0-9]+: warning \\[sobol-non-power-of-two\\][^\n]*requested 3 samples per pixel\n"
+    sobol_status)
+if(NOT independent_status STREQUAL sobol_status)
+    message(FATAL_ERROR "PBRT render availability differs between independent (${independent_status}) and Sobol (${sobol_status})")
+endif()
+if(independent_status STREQUAL "no_device" OR independent_status STREQUAL "no_ray_tracing")
+    message("${render_skip_marker}\nRender status: ${independent_status}")
 endif()
