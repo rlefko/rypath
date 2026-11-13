@@ -11,16 +11,21 @@ for the zlib license.
 | `lodepng.h` | `a49b98b45ea603a05e2a77bd6b0320e7535a9c6e18aef8ce904692a3e02b87ab` |
 | `LICENSE` | `bdafa318b8e637d600ca1b60545e894881977a16a16b74809c95e805701621e3` |
 
-The two source files have a local change marked `rypath extension`. When
+Local changes are marked `rypath extension`. When
 `LODEPNG_MAX_BLOCKS` is defined, `lodepng_inflatev` counts all DEFLATE blocks
 and stops before processing a block beyond that limit. The header declares
 `LODEPNG_ERROR_BLOCK_LIMIT` (124), and the source maps that code to a diagnostic.
 rypath sets the limit to 65,536 blocks per stream to bound work on streams with
 many small or empty blocks.
 
+`Adam7_getpassvalues` and `postProcessScanlines` compute pass offsets and
+scanline padding lengths by widening the width to `size_t` before
+multiplication. The noninterlaced path detects padding from the resulting
+bit count modulo eight.
+
 | Modified file | SHA-256 |
 | --- | --- |
-| `lodepng.cpp` | `73cc41e7fbdd61a9b8b1c815e5bec2e8c2eddddd5989c3fee5f067b82593a5c4` |
+| `lodepng.cpp` | `f123a824f7df555a1c08882552b6d08047d19c59d08a91d56f6a24002e466053` |
 | `lodepng.h` | `49cb066a096850bea3cd6b4fa90246577745b71fea6bc4054ed86681c1a659dd` |
 
 The build compiles the decoder from these sources with disk I/O, the C++ wrapper,

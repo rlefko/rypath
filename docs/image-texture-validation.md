@@ -114,3 +114,12 @@ Native regression commands are `ctest --preset debug -R 'image|texture|png'` and
 `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 ctest --preset debug -R '^metal\.'`.
 Performance and full-corpus coverage were outside these checks. Hosted CI is
 reported on the PR separately from these local hardware measurements.
+
+The subsequent decoder-only fix widens internal PNG padding and Adam7 offset
+arithmetic before multiplication. These paths are outside the accepted 8-bit,
+noninterlaced input profile. A standalone ASan/UBSan probe checked offsets above
+`UINT32_MAX` without allocating image storage and exact 1-bit PNG round trips
+with and without Adam7. The final source also passed 70/70 tests in each of Debug,
+Release, and ASan/UBSan, 58/58 in Metal-disabled ASan/UBSan, and 14/14 with Metal
+API/shader validation. The comparison artifact hashes above identify the prior
+implementation; no transport or supported texture arithmetic changed in this fix.
