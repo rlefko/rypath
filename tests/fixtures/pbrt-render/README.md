@@ -1,13 +1,13 @@
 # PBRT spectral render fixture manifest
 
-The sixteen rypath-authored entry points are licensed under GPL-3.0-only.
+The eighteen rypath-authored entry points are licensed under GPL-3.0-only.
 `cornell-box-adapted.pbrt`, `cornell-box-attributes.pbrt`, and the three
 `cornell-box-sobol-*.pbrt` entry points are CC0 derivatives
 of the [pinned Cornell Box fixture](../pbrt/README.md) by Benedikt Bitterli,
 converted to PBRT v4 by Matt Pharr. The [upstream notice](../pbrt/LICENSE.txt)
 applies to all five derivatives.
-The eighteen original fixtures below have inline geometry and spectra, with
-zero external dependencies (47,983 bytes total). The three PLY wrappers and their
+The nineteen fixtures below have inline geometry and spectra, with
+zero external dependencies (48,760 bytes total). The four PLY wrappers and their
 complete input closure are documented in the [PLY asset manifest](ply-assets/README.md);
 `dependencies.json` pins asset hashes and sizes, including separate external licensing.
 
@@ -15,6 +15,7 @@ complete input closure are documented in the [PLY asset manifest](ply-assets/REA
 | --- | ---: | --- | --- |
 | `background.pbrt` | 651 | `95612a748fa17e35844bd5ccd86c22d991281885fea2ab6a68675cc09583602b` | 1 mesh, 3 vertices, 1 triangle |
 | `diffuse.pbrt` | 654 | `4a342f8759f744112076f72ef091cbbc90811040f0dd745c7f282ac129cceb71` | 1 mesh, 4 vertices, 2 triangles |
+| `texture-diffuse.pbrt` | 777 | `f4d658dbece38feed2a9284fdf69e9861e7ba7b355f49d9452bd398be5045fbb` | Same geometry as `diffuse.pbrt` |
 | `multibounce.pbrt` | 1,434 | `6a9df8ae504134824986df5bafe1e24d84939d0da4f17042f45a8b1495711cb3` | 5 meshes, 20 vertices, 10 triangles |
 | `rgb-background.pbrt` | 657 | `0f550eebefcad23b0c3baa044739509a53772f9512604cd4fd527403d338d8d0` | 1 mesh, 3 vertices, 1 triangle |
 | `rgb-diffuse.pbrt` | 614 | `ccce5d120a3f8625453873973cffb28ca7c158214259deb666f16b039a8c9f57` | 1 mesh, 4 vertices, 2 triangles |
@@ -38,7 +39,7 @@ with the CIE 1931 sensor, ISO 100, the default shutter interval
 use the randomization named in the filename. The remaining scenes use independent sampling.
 `triangle-filter.pbrt` uses a triangle filter with radii (1.5, 0.75), and
 `cornell-box-attributes.pbrt` and the three Sobol derivatives preserve the
-authored triangle radii (1, 1). The other sixteen use a box filter with radius
+authored triangle radii (1, 1). The other eighteen use a box filter with radius
 0.5 on each axis. The Cornell derivatives preserve the authored camera pose.
 The six background, diffuse,
 and multibounce fixtures each use one uniform infinite light. Their RGB
@@ -48,6 +49,7 @@ variants exercise explicit RGB or omitted D65 emission.
 | --- | ---: | ---: | --- |
 | `background.pbrt` | 50° | 0 | A triangle behind the camera leaves the primary rays unobstructed. The light spectrum peaks at 460 nm and uses scale 2 to exercise negative and above-one linear RGB. |
 | `diffuse.pbrt` | 50° | 1 | An unobstructed quad covers the frame. The broad light spectrum illuminates a diffuse reflectance with a knot at 503.5 nm. |
+| `texture-diffuse.pbrt` | 50° | 1 | The `diffuse.pbrt` reflectance comes from a spectrum constant texture declared after its named diffuse material. |
 | `multibounce.pbrt` | 58° | 5 (default) | An asymmetric opening, five quads and four diffuse spectra exercise visibility and successive surface scattering. |
 | `rgb-background.pbrt` | 50° | 0 | HDR RGB [4, 0.15, 1.2], scale 1.7 and illuminance 7 distinguish D65 normalization from tinted-spectrum normalization. |
 | `rgb-diffuse.pbrt` | 50° | 1 | Chromatic RGB [0.08, 0.7, 0.31] on a covering quad under omitted-L D65 illumination. |
@@ -95,10 +97,18 @@ unscrambled camera sequence stays fixed across all replicates. The Sobol
 standard errors describe the measured variation conditional on those camera
 samples.
 
+The native Metal test also compares `texture-diffuse.pbrt` with `diffuse.pbrt`
+and `texture-ply-external.pbrt` with `ply-external.pbrt`. Each pair uses the same
+reflectance, geometry and illumination. The test checks the translated
+reflectance payloads and requires exact equality of the raw compensated films
+and sample counts at the same seed, using 8×8 pixels, 64 samples per pixel and
+32-sample batches. Zeroing the direct material's reflectance must change the
+film, so the equality check exercises surface reflection.
+
 The comparison uses the full 8×8 frame for every scene and the four top-down
 4×4 quadrants for both multibounce scenes, the three area scenes, the five
-Cornell derivatives, the triangle filter scene, and the three owned normal
-scenes, and all three PLY wrappers. Each region's R, G, and B means must agree within five combined
+Cornell derivatives, the triangle filter scene, the three owned normal
+scenes, and all four PLY wrappers. Each region's R, G, and B means must agree within five combined
 standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)
 for the comparison command.

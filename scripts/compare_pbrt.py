@@ -46,6 +46,8 @@ REGIONS = {
     "ply-external": QUADRANTS,
     "ply-mixed": QUADRANTS,
     "ply-curved-emitter": QUADRANTS,
+    "texture-diffuse": {"full": FULL},
+    "texture-ply-external": QUADRANTS,
 }
 
 

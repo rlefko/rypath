@@ -28,13 +28,14 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
 | Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
+| Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
-| Other external meshes, image textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
+| Other external meshes, image/procedural textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
 | Textured area lights, emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
 | Unknown directives / malformed syntax | Source-located error | Stops without line-based recovery | Not attempted |
 | Legacy v3 forms and hexadecimal numbers | Explicit diagnostic | Outside this profile | Unsupported |
@@ -67,17 +68,36 @@ capture still occurs at each camera declaration.
 | Sobol sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, `fastowen`, or `owen`) |
 | Path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |
-| Diffuse material | `reflectance`; named definitions require `string type` |
+| Diffuse material | `reflectance`, including a spectrum texture reference; named definitions require `string type` |
+| Float constant texture | Optional scalar `float value` |
+| Spectrum constant texture | Optional `value` of type `rgb`, `spectrum`, or `blackbody`, subject to the narrower render profile |
 | Constant infinite light | `L`, `scale`, `illuminance` |
 | Diffuse area light | `L`, `scale`, `twosided`, `power`, empty `filename`; nonempty image filenames are inventoried and deferred |
 | Triangle mesh | `P`, `indices`, per-vertex `N` and `uv`; exactly three vertices may omit indices |
 
 Triangle normals and UVs are narrowed into owned indexed arrays. Tangents, face
 indices, and alpha are retained and cardinality-checked but remain unsupported.
-Material displacement/normal maps,
-texture-valued reflectance, and infinite-light images/portals are also explicit
+Material displacement/normal maps and infinite-light images/portals are also explicit
 unsupported features. RGB reflectance is checked against PBRT's [0,1] rule;
 sampled spectral values remain authored, without the demo's reflectance limits.
+
+## Constant texture definitions
+
+`Texture "name" "float" "constant"` and `Texture "name" "spectrum" "constant"`
+retain their definition and effective `value`, including values inherited from
+`Attribute "texture"`. Float and spectrum names occupy separate global namespaces.
+Empty names and duplicate names within a namespace are errors. Inline and named
+diffuse materials resolve `texture reflectance` in the spectrum namespace after
+parsing, including forward references and definitions in closed scopes. An empty
+or missing reference, or a reference defined only in the float namespace, is an
+error. Omitted `value` stays omitted until translation, where it defaults to one.
+
+The last compatible explicit parameter takes precedence over inherited defaults.
+rypath accepts mixed compatible explicit types for the same field and selects
+the last one. The pinned PBRT `ReportUnused` only recognizes shadowing within the
+same type and name, so it can reject a shadowed explicit value of a different
+type. This acceptance extension covers parameter selection in preflight. See
+the [pinned parameter dictionary](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/paramdict.cpp).
 
 ## PLY meshes
 

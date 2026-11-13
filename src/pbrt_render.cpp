@@ -22,6 +22,8 @@ namespace {
 
 using std::string_view;
 using Vector = std::array<double, 3>;
+enum class SpectrumRole { reflectance, emission };
+enum class ReflectanceSource { material, texture };
 
 const Parameter *parameter(const Descriptor &descriptor, string_view name) {
     return descriptor.effective_parameter(name).parameter;
@@ -96,6 +98,7 @@ class Translator {
     RenderScene scene_;
     std::size_t spectral_values_ = 0;
     bool spectral_limit_exceeded_ = false;
+    std::map<string_view, std::uint32_t> spectrum_textures_;
 
     void issue(Severity severity, string_view code, const Location &source, std::string message);
     void unsupported(const Location &source, std::string message);
@@ -109,11 +112,13 @@ class Translator {
     void integrator(const Descriptor &descriptor);
     bool charge_spectral_values(const Parameter &parameter);
     std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
-                                                      string_view name, double maximum);
+                                                      string_view name, SpectrumRole role);
     bool supports_rgb_space(string_view color_space, const Location &source);
     bool emission(const Descriptor &descriptor, double light_multiplier,
                   std::array<float, 471> &dense);
     void light(const Descriptor &descriptor);
+    void constant_textures();
+    std::uint32_t reflectance(const Descriptor &descriptor, ReflectanceSource source);
     std::uint32_t material(const Descriptor &descriptor);
     void geometry();
 };
@@ -371,7 +376,7 @@ bool Translator::charge_spectral_values(const Parameter &parameter) {
     if (count > limits_.list_values || count > limits_.total_values - spectral_values_) {
         if (!spectral_limit_exceeded_) {
             issue(Severity::error, "limit-exceeded", parameter.location,
-                  "Translated spectrum value limit exceeded");
+                  "Translated spectrum or texture value limit exceeded");
             spectral_limit_exceeded_ = true;
         }
         return false;
@@ -381,7 +386,7 @@ bool Translator::charge_spectral_values(const Parameter &parameter) {
 }
 
 std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &descriptor,
-                                                              string_view name, double maximum) {
+                                                              string_view name, SpectrumRole role) {
     const auto *selected = parameter(descriptor, name);
     if (!selected || selected->type != "spectrum" ||
         selected->values.front().kind == ValueKind::string || selected->values.size() < 4) {
@@ -394,6 +399,8 @@ std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &
     }
 
     const auto &values = selected->values;
+    const double maximum =
+        role == SpectrumRole::reflectance ? 1. : std::numeric_limits<double>::infinity();
     std::vector<SpectralKnot> knots;
     knots.reserve(values.size() / 2);
     const Value *outside_range = nullptr;
@@ -419,7 +426,7 @@ std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &
         knots.push_back({lambda, static_cast<float>(value.number)});
     }
     if (outside_range) {
-        unsupported(outside_range->location, name == "reflectance"
+        unsupported(outside_range->location, role == SpectrumRole::reflectance
                                                  ? "Diffuse reflectance must be within [0, 1]"
                                                  : "Emission spectrum must be nonnegative");
         return std::nullopt;
@@ -480,7 +487,7 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
             }
         }
     } else {
-        auto knots = spectrum(descriptor, "L", std::numeric_limits<double>::infinity());
+        auto knots = spectrum(descriptor, "L", SpectrumRole::emission);
         if (!knots) {
             return false;
         }
@@ -519,16 +526,20 @@ void Translator::light(const Descriptor &descriptor) {
     emission(descriptor, multiplier, scene_.environment);
 }
 
-std::uint32_t Translator::material(const Descriptor &descriptor) {
-    const auto *selected = parameter(descriptor, "reflectance");
-    if (!selected) {
-        return 0;
-    }
+std::uint32_t Translator::reflectance(const Descriptor &descriptor, ReflectanceSource source) {
+    const string_view name = source == ReflectanceSource::texture ? "value" : "reflectance";
+    const auto [selected, value_space] = descriptor.effective_parameter(name);
+    // Named textures use captured value provenance; inline RGB uses its material dictionary.
+    const string_view color_space =
+        source == ReflectanceSource::texture ? value_space : descriptor.color_space;
     SpectralMaterial material;
-    if (selected->type == "rgb") {
-        // PBRT's constant spectrum textures use the material dictionary's color space.
+    if (!selected) {
+        // Named constant textures default to one, independently of the material default.
+        material.kind = SpectralMaterialKind::constant;
+        material.constant = 1;
+    } else if (selected->type == "rgb") {
         if (!charge_spectral_values(*selected) ||
-            !supports_rgb_space(descriptor.color_space, selected->location)) {
+            !supports_rgb_space(color_space, selected->location)) {
             return 0;
         }
         std::array<float, 3> rgb{};
@@ -544,7 +555,7 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
         material.constant = reflectance->constant;
         material.coefficients = reflectance->coefficients;
     } else {
-        auto knots = spectrum(descriptor, "reflectance", 1);
+        auto knots = spectrum(descriptor, name, SpectrumRole::reflectance);
         if (!knots) {
             return 0;
         }
@@ -555,15 +566,53 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
     return index;
 }
 
+void Translator::constant_textures() {
+    for (const auto &descriptor : input_.float_constant_textures) {
+        if (diagnostics_.diagnostics_truncated) {
+            return;
+        }
+        if (const auto *selected = parameter(descriptor, "value");
+            selected && charge_spectral_values(*selected)) {
+            // Float consumers remain unsupported, but unused definitions are checked too.
+            narrow(descriptor, "value", 1);
+        }
+    }
+    for (const auto &descriptor : input_.spectrum_constant_textures) {
+        if (diagnostics_.diagnostics_truncated) {
+            return;
+        }
+        const auto index = reflectance(descriptor, ReflectanceSource::texture);
+        spectrum_textures_.emplace(descriptor.authored.arguments.front().text, index);
+    }
+}
+
+std::uint32_t Translator::material(const Descriptor &descriptor) {
+    const auto *selected = parameter(descriptor, "reflectance");
+    if (!selected) {
+        return 0;
+    }
+    if (selected->type == "texture") {
+        const auto found = spectrum_textures_.find(selected->values.front().text);
+        if (found == spectrum_textures_.end()) {
+            invalid(selected->location, "Diffuse reflectance requires a checked spectrum texture");
+            return 0;
+        }
+        return found->second;
+    }
+    return reflectance(descriptor, ReflectanceSource::material);
+}
+
 void Translator::geometry() {
     const auto &geometry = input_.geometry;
     if (geometry.instances.size() > limits_.total_values ||
         geometry.meshes.size() > limits_.total_values ||
         input_.inline_materials.size() > limits_.directives ||
         input_.named_materials.size() > limits_.directives ||
+        input_.float_constant_textures.size() > limits_.directives ||
+        input_.spectrum_constant_textures.size() > limits_.directives ||
         input_.area_lights.size() > limits_.directives) {
         issue(Severity::error, "limit-exceeded", entry_,
-              "Translated geometry, material, or light limit exceeded");
+              "Translated geometry, material, texture, or light limit exceeded");
         return;
     }
     std::size_t remaining = limits_.total_values;
@@ -592,6 +641,7 @@ void Translator::geometry() {
     SpectralMaterial default_material;
     default_material.knots = {{360, 0.5f}, {830, 0.5f}};
     scene_.materials.push_back(std::move(default_material));
+    constant_textures();
     std::map<string_view, std::uint32_t> named;
     std::map<const Descriptor *, std::uint32_t> inline_materials;
     for (const auto &descriptor : input_.named_materials) {

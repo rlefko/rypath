@@ -142,6 +142,8 @@ struct Scene {
     std::vector<Descriptor> options;
     std::vector<Descriptor> named_materials;
     std::vector<std::shared_ptr<const Descriptor>> inline_materials;
+    std::vector<Descriptor> float_constant_textures;
+    std::vector<Descriptor> spectrum_constant_textures;
     std::vector<Descriptor> lights;
     std::vector<std::shared_ptr<const Descriptor>> area_lights;
     std::vector<Shape> shapes;

@@ -179,6 +179,35 @@ Film progressive(const RenderScene &scene, const RenderSettings &settings) {
     return std::move(rendered.film);
 }
 
+void constant_texture_equivalence(const std::filesystem::path &directory, std::string_view stem) {
+    const auto direct_fixture = std::string(stem) + ".pbrt";
+    const auto texture_fixture = "texture-" + direct_fixture;
+    const auto textured = load(directory / texture_fixture);
+    auto direct = load(directory / direct_fixture);
+    require(textured.instance_materials.size() == 1 && direct.instance_materials.size() == 1,
+            "Expected one material binding in each constant texture comparison scene");
+    const auto &actual = textured.materials.at(textured.instance_materials.front());
+    const auto &expected = direct.materials.at(direct.instance_materials.front());
+    const auto knots_equal = std::ranges::equal(
+        actual.knots, expected.knots, [](const SpectralKnot &a, const SpectralKnot &b) {
+            return a.wavelength == b.wavelength && a.value == b.value;
+        });
+    require(actual.kind == expected.kind && actual.constant == expected.constant &&
+                actual.coefficients == expected.coefficients && knots_equal,
+            texture_fixture + ": translated reflectance payload differs");
+
+    constexpr RenderSettings settings{
+        .width = 8, .height = 8, .samples = 64, .batch_size = 32, .seed = 0x1975bd6a6ea321cfULL};
+    const auto direct_film = progressive(direct, settings);
+    const auto textured_film = progressive(textured, settings);
+    require(direct_film == textured_film, texture_fixture + ": same-seed raw film differs");
+
+    direct.materials.at(direct.instance_materials.front()) = {
+        .kind = SpectralMaterialKind::constant, .constant = 0};
+    require(direct_film != progressive(direct, settings),
+            texture_fixture + ": no pixel received reflected light");
+}
+
 // Coefficients of linear sRGB (1, 0, 0), from the pinned upstream PBRT table.
 constexpr std::array red_coefficients{0x1.5d5e1cp-11f, -0x1.524982p-1f, 0x1.3b3c8p+7f};
 
@@ -378,6 +407,9 @@ int main(int argc, char **argv) {
             return 77;
         }
         require(native.status == GeometryStatus::success && native.scene, native.diagnostic);
+
+        constant_texture_equivalence(directory, "diffuse");
+        constant_texture_equivalence(directory, "ply-external");
 
         auto sky = load(directory / "background.pbrt");
         require(sky.max_depth == 0, "Background fixture must exercise depth zero");
