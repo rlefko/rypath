@@ -330,10 +330,141 @@ MakeNamedMedium "m" "string type" "homogeneous")",
     }
     const auto deferred_texture =
         check(write_file(directory, "deferred-texture.pbrt",
-                         std::string{scene_start} + R"(Texture "t" "spectrum" "constant")"));
+                         std::string{scene_start} + R"(Texture "t" "spectrum" "checkerboard"
+Material "diffuse" "texture reflectance" "t"
+)"));
     require(deferred_texture.exit_code() == 2 && !deferred_texture.scene,
             "recognized texture implementation explicitly outside the profile");
     find_diagnostic(deferred_texture.document, "unsupported-feature");
+}
+
+void constant_texture_tests(const fs::path &directory) {
+    const auto entry = write_file(directory, "constant-entry.pbrt", R"(WorldBegin
+MakeNamedMaterial "m" "string type" "diffuse" "texture reflectance" "shared"
+NamedMaterial "m"
+AttributeBegin
+ColorSpace "rec2020"
+Attribute "texture" "rgb value" [.1 .2 .3] "float value" -2
+ColorSpace "srgb"
+Include "constant-definitions.pbrt"
+AttributeEnd
+Material "diffuse" "texture reflectance" "nested"
+Texture "default-float" "float" "constant"
+Texture "default-spectrum" "spectrum" "constant"
+Texture "sampled" "spectrum" "constant" "spectrum value" [410 -.1 680 1.2]
+Material "diffuse"
+)");
+    const auto included = write_file(directory, "constant-definitions.pbrt", R"(
+Texture "shared" "float" "constant"
+Texture "shared" "spectrum" "constant"
+Texture "nested" "spectrum" "constant" "rgb value" [.9 .9 .9] "spectrum value" [410 .2 680 .4]
+)");
+    Scene scene;
+    {
+        const auto result = check(entry);
+        scene = checked_scene(result);
+    }
+    const auto &floats = scene.float_constant_textures;
+    const auto &spectra = scene.spectrum_constant_textures;
+    require(floats.size() == 2 && spectra.size() == 4,
+            "separate typed namespaces retain every definition including unused ones");
+    require(floats.at(0).authored.arguments.at(0).text == "shared" &&
+                spectra.at(0).authored.arguments.at(0).text == "shared" &&
+                *spectra.at(0).authored.location.file == included.string(),
+            "same-name typed descriptors own their Include source");
+    const auto scalar = floats.at(0).effective_parameter("value");
+    require(scalar.parameter && scalar.parameter->values.at(0).number == -2 &&
+                *scalar.parameter->location.file == entry.string() &&
+                scalar.parameter->location.line == 6,
+            "float value inherits its exact type and source location");
+    const auto inherited = spectra.at(0).effective_parameter("value");
+    require(inherited.parameter && inherited.parameter->type == "rgb" &&
+                inherited.parameter->values.at(1).number == .2 &&
+                inherited.color_space == "rec2020" &&
+                *inherited.parameter->location.file == entry.string() &&
+                spectra.at(0).color_space == "srgb",
+            "inherited spectrum retains its original color space and source");
+    const auto explicit_value = spectra.at(1).effective_parameter("value");
+    require(explicit_value.parameter && explicit_value.parameter->type == "spectrum" &&
+                explicit_value.color_space == "srgb" &&
+                *explicit_value.parameter->location.file == included.string(),
+            "last compatible explicit spectrum wins over earlier types and inherited defaults");
+    require(!floats.at(1).effective_parameter("value").parameter &&
+                !spectra.at(2).effective_parameter("value").parameter &&
+                !scene.inline_materials.at(1)->effective_parameter("reflectance").parameter,
+            "omitted texture values and diffuse reflectance remain absent in preflight");
+    const auto sampled = spectra.at(3).effective_parameter("value");
+    require(sampled.parameter && sampled.parameter->values.at(1).number == -.1 &&
+                sampled.parameter->values.at(3).number == 1.2,
+            "sampled-spectrum reflectance limits remain the translator's responsibility");
+    const auto forward = scene.named_materials.at(0).effective_parameter("reflectance");
+    const auto global = scene.inline_materials.at(0)->effective_parameter("reflectance");
+    require(forward.parameter && forward.parameter->values.at(0).text == "shared" &&
+                global.parameter && global.parameter->values.at(0).text == "nested",
+            "named and inline material references survive forward lookup and scope restoration");
+
+    struct Invalid {
+        std::string_view text;
+        std::string_view code;
+    };
+    constexpr std::array invalid{
+        Invalid{R"(Texture "" "spectrum" "constant")", "duplicate-definition"},
+        Invalid{R"(Texture "t" "float" "constant"
+Texture "t" "float" "imagemap")",
+                "duplicate-definition"},
+        Invalid{R"(Texture "t" "float" "constant" "float value" [1 2])", "invalid-parameter"},
+        Invalid{R"(Texture "t" "float" "constant" "rgb value" [1 1 1])", "invalid-parameter"},
+        Invalid{R"(Texture "t" "spectrum" "constant" "float value" .2)", "invalid-parameter"},
+        Invalid{R"(Texture "t" "spectrum" "constant" "texture value" "other")",
+                "invalid-parameter"},
+        Invalid{R"(Texture "t" "spectrum" "constant" "float unexpected" .2)", "unused-parameter"},
+        Invalid{R"(Texture "t" "spectrum" "constant" "rgb value" [0 1.1 1])", "invalid-parameter"},
+        Invalid{R"(Texture "t" "spectrum" "constant" "spectrum value" [680 .2 410 .2])",
+                "invalid-parameter"},
+        Invalid{R"(Texture "t" "spectrum" "constant" "blackbody value" [-10])",
+                "invalid-parameter"},
+        Invalid{R"(Material "diffuse" "texture reflectance" ["a" "b"])", "invalid-parameter"},
+    };
+    for (const auto &[text, code] : invalid) {
+        const auto result = check(write_file(directory, "invalid-constant.pbrt",
+                                             std::string{scene_start} + std::string{text}));
+        require(result.exit_code() == 1 && !result.scene, report(result));
+        find_diagnostic(result.document, code);
+    }
+
+    constexpr std::array typed_failures{
+        R"(Material "diffuse" "texture reflectance" ""
+)",
+        R"(Material "diffuse" "texture reflectance" "t"
+Texture "t" "float" "constant"
+)",
+        R"(Material "diffuse" "texture displacement" "t"
+Texture "t" "spectrum" "constant"
+)",
+    };
+    for (std::size_t i = 0; i < typed_failures.size(); ++i) {
+        const auto result = check(write_file(directory, "invalid-texture-binding.pbrt",
+                                             std::string{scene_start} + typed_failures.at(i)));
+        require(result.exit_code() == 1 && !result.scene, report(result));
+        const auto &diagnostic = find_diagnostic(result.document, "undefined-reference");
+        require(diagnostic.location.line == 3 &&
+                    diagnostic.message.starts_with(i == 2 ? "Undefined float texture"
+                                                          : "Undefined spectrum texture"),
+                "typed reference errors identify the use and the required channel");
+    }
+
+    constexpr std::array deferred_consumers{
+        R"(Material "diffuse" "texture displacement" "t")",
+        R"(Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "texture alpha" "t")",
+    };
+    for (const auto *consumer : deferred_consumers) {
+        const auto result = check(write_file(
+            directory, "deferred-texture-consumer.pbrt",
+            std::string{scene_start} + "Texture \"t\" \"float\" \"constant\"\n" + consumer));
+        require(result.exit_code() == 2 && !result.scene, report(result));
+        require(find_diagnostic(result.document, "unsupported-parameter").location.line == 4,
+                "valid float references preserve deferred consumer diagnostics");
+    }
 }
 
 void dependency_tests(const fs::path &directory) {
@@ -441,6 +572,49 @@ Material "diffuse"
                 inherited.document.dependencies.at(0).kind == DependencyKind::spectrum &&
                 !inherited.document.dependencies.at(0).exists,
             "effective inherited spectrum is an input with definition provenance");
+
+    write_file(directory, "constant.spd", "400 .1 700 .2\n");
+    const auto file_constant = check(write_file(directory, "file-constant.pbrt", R"(WorldBegin
+Attribute "texture" "spectrum value" "constant.spd"
+Texture "t" "spectrum" "constant"
+)"));
+    require(file_constant.exit_code() == 2 && !file_constant.scene &&
+                file_constant.document.dependencies.size() == 1,
+            "inherited constant spectrum files are inventoried and deferred");
+    const auto &constant_input = file_constant.document.dependencies.front();
+    require(constant_input.kind == DependencyKind::spectrum && constant_input.exists &&
+                !constant_input.visited && constant_input.location.line == 2,
+            "constant spectrum file retains its inherited source");
+    find_diagnostic(file_constant.document, "unsupported-parameter");
+
+    const auto partial_constants =
+        check(write_file(directory, "partial-constants.pbrt", R"(WorldBegin
+Attribute "texture" "spectrum value" "inherited.spd"
+Include "compressed.pbrt.gz"
+Texture "t" "spectrum" "constant" "spectrum value" "constant.spd"
+Texture "shadowed" "spectrum" "constant" "spectrum value" "unused.spd" "rgb value" [1 1 1]
+Texture "default" "spectrum" "constant"
+Material "diffuse" "texture reflectance" "unverified"
+)"));
+    require(partial_constants.exit_code() == 2 && !partial_constants.scene &&
+                partial_constants.document.dependencies.size() == 2,
+            "after an unread Include only effective explicit spectrum paths are inventoried");
+    const auto &partial_input = partial_constants.document.dependencies.at(1);
+    require(partial_input.kind == DependencyKind::spectrum &&
+                partial_input.authored_path == "constant.spd" && partial_input.location.line == 4,
+            "explicit live constant path is found while shadowed and inherited paths are skipped");
+
+    const auto image = check(write_file(directory, "texture-image.pbrt", R"(WorldBegin
+Material "diffuse" "texture reflectance" "image"
+Texture "image" "spectrum" "imagemap" "string filename" "map.exr"
+)"));
+    require(image.exit_code() == 2 && !image.scene && image.document.dependencies.size() == 1,
+            "a resolved image texture reference remains outside the structural profile");
+    const auto &image_input = image.document.dependencies.front();
+    require(image_input.kind == DependencyKind::image && image_input.exists &&
+                !image_input.visited && image_input.location.line == 3,
+            "referenced image textures retain the image asset in the dependency inventory");
+    find_diagnostic(image.document, "unsupported-feature");
 }
 
 void review_regression_tests(const fs::path &directory) {
@@ -481,8 +655,11 @@ Material "diffuse"
 AttributeEnd
 Texture "later-texture" "spectrum" "constant"
 )"));
-    require(inherited_texture.exit_code() == 2,
-            "deferred texture reference owns its source after scope destruction");
+    const auto &textures = checked_scene(inherited_texture);
+    const auto reference = textures.inline_materials.at(0)->effective_parameter("reflectance");
+    require(reference.parameter && reference.parameter->location.line == 3 &&
+                reference.parameter->values.at(0).text == "later-texture",
+            "inherited texture reference owns its source after scope destruction");
 
     std::string paths = "WorldBegin\n";
     constexpr std::size_t path_count = 12;
@@ -528,6 +705,18 @@ void bounded_and_numeric_tests(const fs::path &directory) {
     require(work.exit_code() == 1 && work.document.syntax_complete,
             "inherited validation work is bounded separately from authored tokens");
     find_diagnostic(work.document, "limit-exceeded");
+
+    std::string repeated_constants =
+        "WorldBegin\nAttribute \"texture\" \"spectrum value\" [1 .1 2 .2 3 .3 4 .4]\n";
+    for (std::size_t i = 0; i < 20; ++i) {
+        repeated_constants += "Texture \"" + std::to_string(i) + "\" \"spectrum\" \"constant\"\n";
+    }
+    work_limit.total_values = 100;
+    const auto constant_work = check(
+        write_file(directory, "inherited-constant-work.pbrt", repeated_constants), work_limit);
+    require(constant_work.exit_code() == 1 && constant_work.document.syntax_complete,
+            "repeated inherited texture values charge effective validation work");
+    find_diagnostic(constant_work.document, "limit-exceeded");
 
     const auto mix = check(write_file(directory, "owned-mix.pbrt", R"(WorldBegin
 AttributeBegin
@@ -972,6 +1161,7 @@ int main(int argc, char *argv[]) {
             syntax_tests(directory);
         } else if (group == "state") {
             state_tests(directory);
+            constant_texture_tests(directory);
             triangle_filter_schema(directory);
             sobol_sampler_schema(directory);
             area_light_state(directory);

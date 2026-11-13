@@ -247,6 +247,7 @@ struct Field {
     bool deferred = false;
     Rule rule = Rule::none;
     bool prefer_texture = false;
+    bool allow_texture_reference = false;
 };
 
 constexpr std::array camera_fields{
@@ -301,7 +302,10 @@ constexpr std::array accelerator_fields{
 };
 
 constexpr std::array material_fields{
-    Field{"reflectance", "spectral-texture", 1, false, false, false, Rule::albedo},
+    Field{.name = "reflectance",
+          .type = "spectral-texture",
+          .rule = Rule::albedo,
+          .allow_texture_reference = true},
     Field{"displacement", "float-texture", 1, false, false, true},
     Field{"normalmap", "string", 1, false, false, true},
 };
@@ -311,6 +315,11 @@ constexpr std::array named_material_fields{
     material_fields[0],
     material_fields[1],
     material_fields[2],
+};
+
+constexpr std::array float_constant_fields{Field{"value", "float"}};
+constexpr std::array spectrum_constant_fields{
+    Field{.name = "value", .type = "spectral", .rule = Rule::albedo},
 };
 
 constexpr std::array light_fields{
@@ -517,12 +526,13 @@ class Interpreter {
     void validate_option(const PendingOption &pending);
     void validate_film_bounds(const std::map<string_view, const Parameter *> &fields);
     void material(const Directive &directive);
+    void texture(const Directive &directive);
     void light(const Directive &directive);
     void shape(const Directive &directive);
     void ply_shape(const Directive &directive, Descriptor descriptor);
     void register_mesh(const Location &location, Descriptor descriptor, GeometryMesh mesh);
     bool charge_mesh(std::size_t count, const Location &location);
-    void deferred(const Directive &directive);
+    void medium(const Directive &directive);
     void attribute(const Directive &directive);
     void begin_scope(const Directive &directive, bool object);
     void end_scope(const Directive &directive, bool object);
@@ -773,6 +783,12 @@ void Interpreter::scan_after_include(const Directive &directive) {
     const string_view name = directive.name;
     const string_view argument =
         directive.arguments.empty() ? string_view{} : directive.arguments.front().text;
+    const auto scan_parameter = [&](const Field &field) {
+        if (const auto *parameter = select(directive, {}, field);
+            parameter && charge_validation(parameter->values.size(), parameter->location)) {
+            parameter_dependencies(*parameter);
+        }
+    };
     if (name == "Material" || name == "MakeNamedMaterial" || name == "MakeNamedMedium") {
         const string_view target = name == "MakeNamedMedium" ? "medium" : "material";
         const auto *parameter =
@@ -780,17 +796,21 @@ void Interpreter::scan_after_include(const Directive &directive) {
         const string_view type = parameter ? string_view(parameter->values.front().text) : argument;
         dependencies(directive, target, type);
         if (target == "material" && type == "diffuse") {
-            if (const auto *reflectance = select(directive, {}, material_fields.front())) {
-                if (charge_validation(reflectance->values.size(), reflectance->location)) {
-                    parameter_dependencies(*reflectance);
-                }
-            }
+            scan_parameter(material_fields.front());
             return;
         }
     } else if (name == "Shape") {
         dependencies(directive, "shape", argument);
     } else if (name == "Texture") {
-        dependencies(directive, "texture", directive.arguments[2].text);
+        const string_view channel = directive.arguments[1].text;
+        const string_view type = directive.arguments[2].text;
+        if (type == "constant" && one_of(channel, {"float", "spectrum"})) {
+            if (channel == "spectrum") {
+                scan_parameter(spectrum_constant_fields.front());
+            }
+            return;
+        }
+        dependencies(directive, "texture", type);
     } else if (name == "LightSource" || name == "AreaLightSource") {
         if (name == "AreaLightSource" && argument.empty()) {
             if (!directive.parameters.empty()) {
@@ -802,11 +822,7 @@ void Interpreter::scan_after_include(const Directive &directive) {
         dependencies(directive, "light", argument);
         if ((name == "LightSource" && argument == "infinite") ||
             (name == "AreaLightSource" && argument == "diffuse")) {
-            if (const auto *radiance = select(directive, {}, light_fields.front())) {
-                if (charge_validation(radiance->values.size(), radiance->location)) {
-                    parameter_dependencies(*radiance);
-                }
-            }
+            scan_parameter(light_fields.front());
             return;
         }
     } else if (name == "Camera") {
@@ -900,7 +916,9 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
                 continue;
             }
             effective.emplace(field.name, parameter);
-            if (field.deferred || (parameter->type == "texture" && !inert_texture) ||
+            if (field.deferred ||
+                (parameter->type == "texture" && !inert_texture &&
+                 !field.allow_texture_reference) ||
                 (parameter->type == "spectrum" &&
                  parameter->values.front().kind == ValueKind::string &&
                  !builtin_spectrum(parameter->values.front().text))) {
@@ -1623,9 +1641,38 @@ void Interpreter::state_directive(const Directive &directive) {
     }
 }
 
-void Interpreter::deferred(const Directive &directive) {
-    string_view target;
-    string_view type;
+void Interpreter::texture(const Directive &directive) {
+    const auto &name = directive.arguments.front();
+    const auto &channel = directive.arguments[1];
+    const string_view type = directive.arguments[2].text;
+    if (!one_of(channel.text, {"float", "spectrum"})) {
+        error("unknown-type", channel.location,
+              "Unknown Texture value type \"" + channel.text + "\"");
+        return;
+    }
+    const bool spectrum = channel.text == "spectrum";
+    if (name.text.empty() || !textures_[spectrum].insert(name.text).second) {
+        error("duplicate-definition", name.location,
+              "Empty or duplicate texture definition \"" + name.text + "\"");
+    }
+    if (type == "constant") {
+        Descriptor descriptor = describe(directive, false);
+        validate(descriptor, directive, "texture",
+                 spectrum ? spectrum_constant_fields : float_constant_fields);
+        auto &constants =
+            spectrum ? scene_.spectrum_constant_textures : scene_.float_constant_textures;
+        constants.push_back(std::move(descriptor));
+        return;
+    }
+    const bool known = one_of(type, {"scale", "mix", "directionmix", "bilerp", "imagemap",
+                                     "checkerboard", "dots", "ptex"}) ||
+                       (!spectrum && one_of(type, {"fbm", "wrinkled", "windy"})) ||
+                       (spectrum && type == "marble");
+    dependencies(directive, "texture", type);
+    deferred_type(directive, type, known, "texture");
+}
+
+void Interpreter::medium(const Directive &directive) {
     if (directive.name == "MediumInterface") {
         for (const auto &medium : directive.arguments) {
             if (!medium.text.empty()) {
@@ -1639,44 +1686,23 @@ void Interpreter::deferred(const Directive &directive) {
     }
 
     const auto &name = directive.arguments.front();
-    bool known;
-    if (directive.name == "Texture") {
-        target = "texture";
-        type = directive.arguments[2].text;
-        const auto &channel = directive.arguments[1];
-        if (!one_of(channel.text, {"float", "spectrum"})) {
-            error("unknown-type", channel.location,
-                  "Unknown Texture value type \"" + channel.text + "\"");
-            return;
-        }
-        if (name.text.empty() || !textures_[channel.text == "spectrum"].insert(name.text).second) {
-            error("duplicate-definition", name.location,
-                  "Empty or duplicate texture definition \"" + name.text + "\"");
-        }
-        known = one_of(type, {"constant", "scale", "mix", "directionmix", "bilerp", "imagemap",
-                              "checkerboard", "dots", "ptex"}) ||
-                (channel.text == "float" && one_of(type, {"fbm", "wrinkled", "windy"})) ||
-                (channel.text == "spectrum" && type == "marble");
-    } else {
-        target = "medium";
-        if (name.text.empty() || !media_.insert(name.text).second) {
-            error("duplicate-definition", name.location,
-                  "Empty or duplicate medium definition \"" + name.text + "\"");
-        }
-        const Field field{"type", "string", 1, false, true};
-        const auto *parameter = select(directive, target, field);
-        if (!parameter) {
-            error("missing-parameter", directive.location, "Named medium requires \"string type\"");
-            return;
-        }
-        if (!field_valid(field, *parameter)) {
-            return;
-        }
-        type = parameter->values.front().text;
-        known = one_of(type, {"homogeneous", "uniformgrid", "rgbgrid", "cloud", "nanovdb"});
+    if (name.text.empty() || !media_.insert(name.text).second) {
+        error("duplicate-definition", name.location,
+              "Empty or duplicate medium definition \"" + name.text + "\"");
     }
-    dependencies(directive, target, type);
-    deferred_type(directive, type, known, target);
+    const Field field{"type", "string", 1, false, true};
+    const auto *parameter = select(directive, "medium", field);
+    if (!parameter) {
+        error("missing-parameter", directive.location, "Named medium requires \"string type\"");
+        return;
+    }
+    if (!field_valid(field, *parameter)) {
+        return;
+    }
+    const string_view type = parameter->values.front().text;
+    const bool known = one_of(type, {"homogeneous", "uniformgrid", "rgbgrid", "cloud", "nanovdb"});
+    dependencies(directive, "medium", type);
+    deferred_type(directive, type, known, "medium");
 }
 
 void Interpreter::visit(const Directive &directive) {
@@ -1741,8 +1767,10 @@ void Interpreter::visit(const Directive &directive) {
         shape(directive);
     } else if (name == "ReverseOrientation") {
         state_.reverse = !state_.reverse;
-    } else if (one_of(name, {"Texture", "MakeNamedMedium", "MediumInterface"})) {
-        deferred(directive);
+    } else if (name == "Texture") {
+        texture(directive);
+    } else if (one_of(name, {"MakeNamedMedium", "MediumInterface"})) {
+        medium(directive);
     } else if (name != "Import") {
         state_directive(directive);
     }

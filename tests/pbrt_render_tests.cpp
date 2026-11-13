@@ -703,6 +703,194 @@ LightSource "infinite" "spectrum L" [360 1 830 1]
             "Numeric infinite-light SPD is independent of ColorSpace");
 }
 
+void constant_texture_translation(const fs::path &scratch) {
+    const auto translated = [&](std::string_view body) {
+        return accepted(write(scratch, "constant-texture.pbrt",
+                              std::string(basic) + std::string(body) + std::string(triangle)))
+            .scene;
+    };
+    const auto material = [&](std::string_view body) {
+        const auto scene = translated(body);
+        return scene.materials.at(scene.instance_materials.front());
+    };
+    const auto white = material(R"(ColorSpace "rec2020"
+Texture "paint" "spectrum" "constant"
+Texture "paint" "float" "constant" "float value" [-2]
+Texture "unused" "float" "constant"
+Material "diffuse" "texture reflectance" "paint"
+)");
+    require(white.kind == SpectralMaterialKind::constant && white.constant == 1 &&
+                white.knots.empty(),
+            "Named spectrum texture defaults to one independently of color space and float names");
+    near(spectral_reflectance(material("Material \"diffuse\"\n"), 550.25), 0.5, 0,
+         "Omitted diffuse reflectance retains its separate half-reflectance default");
+
+    const auto direct = material(R"(Material "diffuse" "rgb reflectance" [0.75 0.125 0.25]
+)");
+    constexpr std::array rgb_cases{
+        R"(Texture "paint" "spectrum" "constant" "rgb value" [0.75 0.125 0.25]
+ColorSpace "rec2020"
+)",
+        R"(Attribute "texture" "rgb value" [0.75 0.125 0.25]
+ColorSpace "rec2020"
+Texture "paint" "spectrum" "constant"
+)",
+        R"(ColorSpace "rec2020"
+Attribute "texture" "rgb value" [0.1 0.2 0.3]
+ColorSpace "srgb"
+Texture "paint" "spectrum" "constant" "rgb value" [0.75 0.125 0.25]
+)",
+        R"(Attribute "texture" "spectrum value" [360 0.1 830 0.1]
+Attribute "texture" "rgb value" [0.75 0.125 0.25]
+Texture "paint" "spectrum" "constant"
+)",
+        R"(Texture "paint" "spectrum" "constant"
+    "rgb value" [0.1 0.2 0.3] "rgb value" [0.75 0.125 0.25]
+)",
+    };
+    for (const auto *body : rgb_cases) {
+        const auto named = material(std::string(body) +
+                                    "Material \"diffuse\" \"texture reflectance\" \"paint\"\n");
+        require(named.kind == direct.kind && named.coefficients == direct.coefficients &&
+                    named.knots.empty(),
+                "Texture RGB must use the effective definition value's captured color space");
+        for (const double wavelength : {360., 420.25, 550., 610.5, 829.75}) {
+            near(spectral_reflectance(named, wavelength), spectral_reflectance(direct, wavelength),
+                 0, "Named and direct RGB spectral evaluation after preflight destruction");
+        }
+    }
+    for (const float gray : {0.f, 0.5f, 1.f}) {
+        const auto scalar = std::to_string(gray);
+        const auto named = material("Texture \"paint\" \"spectrum\" \"constant\" \"rgb value\" [" +
+                                    scalar + " " + scalar + " " + scalar +
+                                    "]\n"
+                                    "Material \"diffuse\" \"texture reflectance\" \"paint\"\n");
+        require(named.kind == SpectralMaterialKind::constant && named.constant == gray,
+                "Named black, gray and white retain exact constant spectra");
+    }
+
+    const auto numeric = material(R"(Material "diffuse" "texture reflectance" "later"
+AttributeBegin
+ColorSpace "dci-p3"
+Texture "later" "spectrum" "constant" "spectrum value" [400 0.25 503.5 0.75 700 0.5]
+AttributeEnd
+)");
+    require(numeric.kind == SpectralMaterialKind::sampled && numeric.knots.size() == 3 &&
+                numeric.knots[1].wavelength == 503.5f,
+            "Forward texture binding owns fractional numeric knots after scope and preflight "
+            "destruction");
+    near(spectral_reflectance(numeric, 399.75), 0, 0, "Zero below named spectrum support");
+    near(spectral_reflectance(numeric, 700.25), 0, 0, "Zero above named spectrum support");
+    near(spectral_reflectance(numeric, 451.75), 0.5, 0, "Named spectral interpolation");
+
+    const auto bound = translated(R"(MakeNamedMaterial "named" "string type" "diffuse"
+    "texture reflectance" "shared"
+ObjectBegin "part"
+NamedMaterial "named"
+)" + std::string(triangle) + R"(ObjectEnd
+ObjectInstance "part"
+ObjectInstance "part"
+Material "diffuse" "texture reflectance" "shared"
+)" + std::string(triangle) + R"(Texture "shared" "spectrum" "constant" "rgb value" [0.75 0.125 0.25]
+Material "diffuse" "texture reflectance" "shared"
+)");
+    require(bound.instance_materials.size() == 4 && bound.materials.size() == 2 &&
+                std::ranges::all_of(
+                    bound.instance_materials,
+                    [&](auto index) { return index == bound.instance_materials.front(); }),
+            "Distinct inline/named declarations and object instances reuse one texture payload");
+}
+
+void constant_texture_rejections_and_limits(const fs::path &scratch) {
+    const auto rejected = [&](std::string_view body, int status, std::string_view message,
+                              std::string_view source_token) {
+        const auto source = std::string(basic) + std::string(body) + std::string(triangle);
+        const auto path = write(scratch, "invalid-constant-texture.pbrt", source);
+        const auto offset = source.find(source_token);
+        require(offset != std::string::npos, "Missing expected diagnostic token");
+        const auto line = 1 + static_cast<std::size_t>(std::ranges::count(
+                                  std::string_view(source).substr(0, offset), '\n'));
+        const auto previous_line = source.rfind('\n', offset);
+        const auto column =
+            previous_line == std::string::npos ? offset + 1 : offset - previous_line;
+        const auto result = translation(path);
+        require(result.exit_code() == status && !result.scene &&
+                    std::ranges::any_of(result.diagnostics,
+                                        [&](const Diagnostic &diagnostic) {
+                                            return diagnostic.message.find(message) !=
+                                                       std::string::npos &&
+                                                   fs::path(*diagnostic.location.file) == path &&
+                                                   diagnostic.location.line == line &&
+                                                   diagnostic.location.column == column;
+                                        }),
+                "Unused unsupported/invalid texture must fail at the authored value: " +
+                    std::string(message));
+    };
+    rejected(R"(ColorSpace "rec2020"
+Texture "unused" "spectrum" "constant" "rgb value" [0.2 0.3 0.4]
+)",
+             2, "sRGB", "\"rgb value\"");
+    rejected(R"(ColorSpace "rec2020"
+Attribute "texture" "rgb value" [0.2 0.3 0.4]
+ColorSpace "srgb"
+Texture "unused" "spectrum" "constant"
+)",
+             2, "sRGB", "\"rgb value\"");
+    rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [360 0.2 830 1.1]
+)",
+             2, "Diffuse reflectance must be within [0, 1]", "1.1");
+    rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [360 -0.1 830 0.2]
+)",
+             2, "Diffuse reflectance must be within [0, 1]", "-0.1");
+    rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [360 0.2 1e40 0.5]
+)",
+             1, "wavelength overflows", "1e40");
+    rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [360 0.2 360.00000001 0.5]
+)",
+             1, "increase in binary32", "360.00000001");
+    rejected(R"(Texture "unused" "spectrum" "constant" "blackbody value" [5500]
+)",
+             2, "two numeric", "\"blackbody value\"");
+    rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" "stdillum-D65"
+)",
+             2, "two numeric", "\"spectrum value\"");
+    rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [550 0.5]
+)",
+             2, "two numeric", "\"spectrum value\"");
+    rejected(R"(Texture "unused" "float" "constant" "float value" [1e40]
+)",
+             1, "overflows binary32", "\"float value\"");
+
+    std::string body = "Texture \"shared\" \"spectrum\" \"constant\" \"spectrum value\" [";
+    for (int i = 0; i < 20; ++i) {
+        body += std::to_string(400 + i * 10) + " 0.5 ";
+    }
+    body += "]\nMakeNamedMaterial \"named\" \"string type\" \"diffuse\" "
+            "\"texture reflectance\" \"shared\"\nNamedMaterial \"named\"\n";
+    body += triangle;
+    for (int i = 0; i < 2; ++i) {
+        body += "Material \"diffuse\" \"texture reflectance\" \"shared\"\n";
+        body += triangle;
+    }
+    const auto entry = write(scratch, "bounded-texture.pbrt", std::string(basic) + body);
+    const auto shared = translation(entry, {.total_values = 40});
+    require(shared.exit_code() == 0 && shared.scene && shared.scene->materials.size() == 2 &&
+                shared.scene->materials.back().knots.size() == 20 &&
+                shared.scene->instance_materials == std::vector<std::uint32_t>{1, 1, 1},
+            "One spectral definition is charged and stored once across distinct materials");
+    for (const auto &limits : {Limits{.total_values = 39}, Limits{.list_values = 39}}) {
+        const auto failed = translation(entry, limits);
+        require(failed.exit_code() == 1 && !failed.scene &&
+                    std::ranges::any_of(failed.diagnostics,
+                                        [&](const Diagnostic &diagnostic) {
+                                            return diagnostic.code == "limit-exceeded" &&
+                                                   diagnostic.location.line == 7 &&
+                                                   diagnostic.location.column == 40;
+                                        }),
+                "Insufficient named spectrum budget fails at the definition value");
+    }
+}
+
 void rejects_rgb_values_and_spaces(const fs::path &scratch) {
     const auto rejected = [&](std::string_view body, int status, std::string_view code,
                               std::size_t line, std::size_t column) {
@@ -1066,6 +1254,8 @@ int main(int argc, char **argv) {
         infinite_light_normalization(scratch);
         rgb_material_context(scratch);
         rgb_light_context(scratch);
+        constant_texture_translation(scratch);
+        constant_texture_rejections_and_limits(scratch);
         area_light_translation(scratch);
         rejects_rgb_values_and_spaces(scratch);
         cornell_rgb_parameters(scratch, argv[2]);
