@@ -15,6 +15,13 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
         if (!result.diagnostic.empty()) {
             return result;
         }
+        if (scene.raster_camera) {
+            result.diagnostic = validate_raster_support(*scene.raster_camera, scene.filter,
+                                                        settings.width, settings.height);
+            if (!result.diagnostic.empty()) {
+                return result;
+            }
+        }
         auto built = build_metal_renderer(scene);
         result.device = built.device;
         result.status = built.status;

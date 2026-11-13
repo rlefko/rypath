@@ -51,6 +51,15 @@ class PFMTests(unittest.TestCase):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_triangle_filter_compares_full_frame_and_quadrants(self):
+        self.assertEqual(REGIONS["triangle-filter"], {
+            "full": (0, 0, 8, 8),
+            "top-left": (0, 0, 4, 4),
+            "top-right": (4, 0, 8, 4),
+            "bottom-left": (0, 4, 4, 8),
+            "bottom-right": (4, 4, 8, 8),
+        })
+
     def test_rois_use_top_down_coordinates(self):
         pixels = [(x, y, 8 * y + x) for y in range(8) for x in range(8)]
         self.assertEqual(roi_means(pixels, (4, 0, 8, 4)), (5.5, 1.5, 17.5))

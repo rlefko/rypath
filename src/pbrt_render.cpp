@@ -6,9 +6,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <locale>
 #include <map>
 #include <numbers>
+#include <sstream>
 #include <string_view>
 
 namespace rypath::pbrt {
@@ -275,22 +278,38 @@ void Translator::camera(const Descriptor &descriptor, const Descriptor *film_des
     }
     const RasterCamera raster{origin.value(), packed_corner.value(), packed_dx.value(),
                               packed_dy.value()};
-    const auto c = to_vector(raster.corner);
-    const auto u = to_vector(raster.dx);
-    const auto v = to_vector(raster.dy);
-    for (std::size_t axis = 0; axis < c.size(); ++axis) {
-        // Each component is affine on the raster, so its extrema are at the corners.
-        const std::array extremes{c[axis] + u[axis], c[axis] + v[axis],
-                                  c[axis] + u[axis] + v[axis]};
-        if (!std::ranges::all_of(extremes, float_representable)) {
-            invalid(source, "Camera raster direction overflows binary32 at a film corner");
-            return;
+    if (scene_.filter.kind == PixelFilterKind::box) {
+        const auto c = to_vector(raster.corner);
+        const auto u = to_vector(raster.dx);
+        const auto v = to_vector(raster.dy);
+        for (std::size_t axis = 0; axis < c.size(); ++axis) {
+            // Each component is affine on the raster, so its extrema are at the corners.
+            const std::array extremes{c[axis] + u[axis], c[axis] + v[axis],
+                                      c[axis] + u[axis] + v[axis]};
+            if (!std::ranges::all_of(extremes, float_representable)) {
+                invalid(source, "Camera raster direction overflows binary32 at a film corner");
+                return;
+            }
         }
     }
     scene_.raster_camera = raster;
 }
 
 void Translator::filter(const Descriptor &descriptor) {
+    if (descriptor.authored.arguments.front().text == "triangle") {
+        scene_.filter.kind = PixelFilterKind::triangle;
+        const auto radius = [&](string_view name) {
+            const auto value = narrow(descriptor, name, 2.);
+            if (value && (!std::isnormal(*value) || *value <= 0)) {
+                invalid(location(descriptor, name),
+                        std::string(name) + " must be positive and normal in binary32");
+            }
+            return value.value_or(0.f);
+        };
+        scene_.filter.x_radius = radius("xradius");
+        scene_.filter.y_radius = radius("yradius");
+        return;
+    }
     for (const auto name : {"xradius", "yradius"}) {
         if (number(descriptor, name, 0.5) != 0.5) {
             unsupported(location(descriptor, name), "Box filter radius must be 0.5 on each axis");
@@ -645,11 +664,12 @@ RenderTranslation Translator::run() {
     if (film_descriptor) {
         film(*film_descriptor);
     }
+    const auto *filter_descriptor = required("PixelFilter");
+    if (filter_descriptor) {
+        filter(*filter_descriptor);
+    }
     if (const auto *descriptor = required("Camera")) {
         camera(*descriptor, film_descriptor);
-    }
-    if (const auto *descriptor = required("PixelFilter")) {
-        filter(*descriptor);
     }
     if (const auto *descriptor = required("Sampler")) {
         sampler(*descriptor);
@@ -689,6 +709,14 @@ RenderTranslation Translator::run() {
             diagnostics_.diagnostics,
             [severity](const Diagnostic &diagnostic) { return diagnostic.severity == severity; });
     };
+    if (filter_descriptor && scene_.filter.kind == PixelFilterKind::triangle &&
+        scene_.raster_camera && !has(Severity::error) && !diagnostics_.diagnostics_truncated) {
+        const auto message = validate_raster_support(
+            *scene_.raster_camera, scene_.filter, result_.settings.width, result_.settings.height);
+        if (!message.empty()) {
+            invalid(filter_descriptor->authored.location, message);
+        }
+    }
     if (diagnostics_.diagnostics_truncated || has(Severity::error)) {
         result_.status = 1;
     } else if (has(Severity::unsupported)) {
@@ -698,6 +726,14 @@ RenderTranslation Translator::run() {
         result_.status = 1;
     } else {
         result_.status = 0;
+        std::ostringstream filter_provenance;
+        filter_provenance.imbue(std::locale::classic());
+        filter_provenance << "Pixel filter: "
+                          << (scene_.filter.kind == PixelFilterKind::triangle ? "triangle" : "box")
+                          << std::setprecision(std::numeric_limits<float>::max_digits10)
+                          << " (x radius " << scene_.filter.x_radius << ", y radius "
+                          << scene_.filter.y_radius << ')';
+        result_.provenance.push_back(filter_provenance.str());
         result_.scene = std::move(scene_);
         result_.provenance.push_back("CIE 1931 sensor exposure uses ISO and shutter duration");
     }

@@ -26,7 +26,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | --- | --- | --- | --- |
 | Current v4 directive forms and typed scalar/array parameters | Checked, with owned locations and numeric lexemes | Type/cardinality and supported descriptor schemas checked | Not attempted |
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
-| Perspective camera, RGB film, box filter, independent sampler, path integrator, BVH | Retained | Declared parameter schemas checked | Not translated |
+| Perspective camera, RGB film, box/triangle filter, independent sampler, path integrator, BVH | Retained | Declared parameter schemas checked | Not translated |
 | Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
@@ -62,7 +62,7 @@ capture still occurs at each camera declaration.
 | --- | --- |
 | Perspective camera | `fov`, `lensradius`, `focaldistance`, `frameaspectratio`, four-value `screenwindow`, `shutteropen`, `shutterclose` |
 | RGB film | `filename`, `xresolution`, `yresolution`, four-value `pixelbounds`/`cropwindow`, `diagonal`, `iso`, `whitebalance`, named `sensor`, `savefp16`, `maxcomponentvalue` |
-| Box filter | `xradius`, `yradius` |
+| Box or triangle filter | `xradius`, `yradius` |
 | Independent sampler | `pixelsamples`, `seed` |
 | Path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |

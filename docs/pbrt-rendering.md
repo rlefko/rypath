@@ -30,11 +30,11 @@ diagnosed even when not placed in the image.
 
 | Component | Rendered behavior and limits |
 | --- | --- |
-| Descriptors | Explicit perspective camera, RGB film, box filter, independent sampler, and path integrator; no substitution of omitted PBRT defaults |
+| Descriptors | Explicit perspective camera, RGB film, box or triangle filter, independent sampler, and path integrator; no substitution of omitted PBRT defaults |
 | Camera | Pinhole, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
-| Filter/sampler | Box radii 0.5; independent samples with Philox4x32-10, not PBRT's random sequence |
+| Filter/sampler | Box radii 0.5 or triangle radii defaulting independently to 2; independent samples with Philox4x32-10, not PBRT's random sequence |
 | Integrator | Finite maxdepth 0–1024, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and single-level instances, including affine geometry transforms; at least one placed triangle |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
@@ -55,9 +55,29 @@ textured emitters, emitting object members, textures/external meshes, shading no
 effects, and other cameras/filters/integrators remain unsupported. There is no
 CPU fallback. The unchanged CC0 Cornell fixture remains a negative case; this
 profile does not establish unmodified Cornell or general upstream-corpus rendering.
-The original Cornell still requires Sobol sampling, a triangle filter, normals,
-and UV arrays. A separately named, attributed adaptation exercises supported
-rendering; its [manifest](../tests/fixtures/pbrt-render/README.md) lists every change.
+The original Cornell still requires Sobol sampling, normals, and UV arrays.
+Its triangle filter is supported; the unchanged scene remains unsupported.
+A separately named, attributed adaptation exercises supported rendering; its [manifest](../tests/fixtures/pbrt-render/README.md) lists every change.
+
+## Pixel reconstruction
+
+Triangle filtering samples the normalized separable tent around each pixel center.
+Each radius must narrow to a positive normal binary32 value. Invalid radii and
+unrepresentable camera arithmetic produce source-located errors before device
+acquisition. Radii may exceed film dimensions when the camera arithmetic remains
+supported; the renderer applies no arbitrary radius cap.
+
+Samples retain their originating pixel and unit filter weight, including when
+positions lie outside the image. There is no clipping, splatting, edge
+renormalization, or additional radius factor. The existing camera Philox words
+supply the two uniforms; wavelength and transport dimensions are unchanged.
+The finite uniform grid includes zero and excludes one, so its endpoint symmetry
+and exact sequence differ from PBRT. The [filter validation record](pbrt-filter-validation.md)
+describes inverse sampling, float bounds, and independent acceptance tests.
+Half-pixel box rendering and the demo retain their original camera arithmetic.
+The terminal reports the effective filter and both radii. No new CLI option is
+needed; use `PixelFilter "triangle" "float xradius" [1.5] "float yradius" [.75]`
+in the scene, or omit either radius to use its default of two.
 
 ## Spectral and transport contract
 
@@ -155,11 +175,12 @@ One canonical sRGB table is separately vendored as licensed renderer data; the
 remaining reference build assets stay in the cache. Record toolchain,
 dependency versions, source/submodule identities, and binary hash with each
 comparison. Commands and measured evidence are in the
-[spectral validation record](pbrt-render-validation.md) and
-[sRGB validation record](pbrt-rgb-validation.md), and
-[area-light validation record](pbrt-area-validation.md).
+[spectral validation record](pbrt-render-validation.md),
+[sRGB validation record](pbrt-rgb-validation.md),
+[area-light validation record](pbrt-area-validation.md), and
+[triangle-filter validation record](pbrt-filter-validation.md).
 
-Nine owned fixtures and one labeled CC0 Cornell adaptation cover numeric-spectrum
+Ten owned fixtures and one labeled CC0 Cornell adaptation cover numeric-spectrum
 and RGB backgrounds, diffuse response, area emission, visibility, and asymmetric
 multiple scattering. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
 16 fixed seeds per renderer (rypath 0–15; PBRT 16–31). Each channel/declared

@@ -7,13 +7,14 @@
 [native geometry PR #3](https://github.com/rlefko/rypath/pull/3),
 [progressive image PR #4](https://github.com/rlefko/rypath/pull/4),
 [PBRT preflight PR #5](https://github.com/rlefko/rypath/pull/5),
-[PBRT spectral rendering PR #6](https://github.com/rlefko/rypath/pull/6), and
-[sRGB reconstruction PR #7](https://github.com/rlefko/rypath/pull/7) were reviewed
-and merged. The current PR adds diffuse triangle area lighting.
+[PBRT spectral rendering PR #6](https://github.com/rlefko/rypath/pull/6),
+[sRGB reconstruction PR #7](https://github.com/rlefko/rypath/pull/7), and
+[triangle area-light PR #8](https://github.com/rlefko/rypath/pull/8) were reviewed
+and merged. The current PR adds normalized triangle pixel filtering.
 
 `--render-pbrt SCENE --output IMAGE.png` translates supported sampled spectra and
 linear sRGB colors, diffuse triangles/instances, a pinhole camera, constant environment lighting,
-and directly placed triangle emitters
+directly placed triangle emitters, and box or triangle pixel filters
 into native Metal rendering. It honors authored finite depth, retains calibrated
 raw XYZ, reports complete sample batches, and publishes a final PNG. The
 [rendering profile](pbrt-rendering.md) documents exact semantics and limits.
@@ -28,7 +29,7 @@ labeled CC0 adaptation exercises the supported area-light profile.
 
 ## Validation and review
 
-The [area-light validation record](pbrt-area-validation.md) extends the
+The [triangle-filter validation record](pbrt-filter-validation.md) extends the
 [PBRT render validation record](pbrt-render-validation.md) with portable
 translation checks, M4 Max regressions, pinned upstream CPU comparisons, and
 numerical limitations. Hosted checks, CodeQL findings, and measured CI duration
@@ -46,6 +47,7 @@ required approvals remain zero for maintainer manual review and merge.
 ## Next bounded task
 
 After review and merge, plan the next bounded compatibility slice toward
-faithfully rendered unmodified upstream scenes. The ordered
+faithfully rendered unmodified upstream scenes. Sobol sampling and triangle
+normal/UV attributes still block the unmodified Cornell fixture. The ordered
 [roadmap](roadmap.md) keeps external assets, broader materials, and offline
 completion as separate review boundaries.

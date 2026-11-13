@@ -33,6 +33,7 @@ REGIONS = {
     "area-direct": QUADRANTS,
     "area-mixed": QUADRANTS,
     "cornell-box-adapted": QUADRANTS,
+    "triangle-filter": QUADRANTS,
 }
 
 

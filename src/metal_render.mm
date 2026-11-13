@@ -44,6 +44,8 @@ wire::Point pack(Vec v) {
 
 wire::Point pack(GeometryPoint point) { return {point.x, point.y, point.z}; }
 
+GeometryPoint unpack(wire::Point point) { return {point.x, point.y, point.z}; }
+
 wire::Parameters camera_parameters(const RenderScene &scene) {
     wire::Parameters result{};
     if (scene.model == RenderModel::pbrt) {
@@ -55,6 +57,10 @@ wire::Parameters camera_parameters(const RenderScene &scene) {
         result.up = pack(camera.dy);
         result.model = wire::pbrt_model;
         result.max_depth = scene.max_depth;
+        result.filter_kind = scene.filter.kind == PixelFilterKind::triangle ? wire::triangle_filter
+                                                                            : wire::box_filter;
+        result.filter_x_radius = scene.filter.x_radius;
+        result.filter_y_radius = scene.filter.y_radius;
         return result;
     }
     const auto &camera = scene.camera;
@@ -391,6 +397,17 @@ struct MetalRenderScene::Impl {
         result.diagnostic = validate_request(request);
         if (!result.diagnostic.empty()) {
             return result;
+        }
+        if (parameters.filter_kind == wire::triangle_filter) {
+            const RasterCamera camera{unpack(parameters.origin), unpack(parameters.forward),
+                                      unpack(parameters.right), unpack(parameters.up)};
+            const PixelFilter filter{PixelFilterKind::triangle, parameters.filter_x_radius,
+                                     parameters.filter_y_radius};
+            result.diagnostic =
+                validate_raster_support(camera, filter, request.width, request.height);
+            if (!result.diagnostic.empty()) {
+                return result;
+            }
         }
         const auto max_width = metal::group_width(device, pipeline);
         const auto group_width =

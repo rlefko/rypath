@@ -1,11 +1,11 @@
 # PBRT spectral render fixture manifest
 
-The nine rypath-authored entry points are licensed under GPL-3.0-only.
+The ten rypath-authored entry points are licensed under GPL-3.0-only.
 `cornell-box-adapted.pbrt` is a CC0 derivative of the [pinned Cornell Box
 fixture](../pbrt/README.md) by Benedikt Bitterli, converted to PBRT v4 by Matt
 Pharr. The [upstream notice](../pbrt/LICENSE.txt) applies to the Cornell scene.
 All geometry and spectral values are inline. Each entry point expands to its
-listed size with zero external dependencies (13,345 bytes total).
+listed size with zero external dependencies (14,246 bytes total).
 
 | Entry point | Bytes | SHA-256 | Geometry |
 | --- | ---: | --- | --- |
@@ -19,12 +19,14 @@ listed size with zero external dependencies (13,345 bytes total).
 | `area-direct.pbrt` | 953 | `d9c22f5e038963e3491116b6685b6ed01c6126257cc517a277730ae4011ac94e` | 2 meshes, 7 vertices, 3 triangles, 1 emissive |
 | `area-mixed.pbrt` | 1,726 | `a4cd3482f208a49e56e2672c238adedddd0c18523f12a0a54937b53a4820c176` | 6 meshes, 23 vertices, 11 triangles, 3 emissive |
 | `cornell-box-adapted.pbrt` | 4,293 | `652e63dc4806c5d3a33e6560b654eaf775fa80ef9e1df8243ebe1a9494698aa6` | 8 meshes, 72 vertices, 36 triangles, 2 emissive |
+| `triangle-filter.pbrt` | 901 | `400cdd4baef8603ac2a848271040841f9d8f8a0a92451526713e383ce935d91d` | 2 meshes, 8 vertices, 4 emissive triangles |
 
 Each scene uses a pinhole perspective camera, an 8×8 full-frame sRGB film
 with the CIE 1931 sensor, ISO 100, the default shutter interval
-[0, 1], `savefp16=false`, a box filter of radius 0.5 on both axes, an
-independent sampler, and the path integrator. Cornell preserves its authored
-camera pose. The six background, diffuse, and multibounce fixtures each use
+[0, 1], `savefp16=false`, an independent sampler, and the path integrator.
+`triangle-filter.pbrt` uses a triangle filter with radii (1.5, 0.75). The
+other ten use a box filter with radius 0.5 on each axis. Cornell preserves its
+authored camera pose. The six background, diffuse, and multibounce fixtures each use
 one uniform infinite light. Their RGB variants exercise explicit RGB or omitted
 D65 emission.
 
@@ -40,6 +42,11 @@ D65 emission.
 | `area-direct.pbrt` | 7.15266875° | 1 | A finite off-axis triangle illuminates a diffuse receiver under a sampled spectrum. |
 | `area-mixed.pbrt` | 58° | 5 | Three unequal-area emitting triangles use RGB or omitted D65 emission alongside an RGB environment in an asymmetric room. |
 | `cornell-box-adapted.pbrt` | 19.5° | 65 | Two downward-facing triangles emit from the ceiling fixture above two boxes and colored walls. |
+| `triangle-filter.pbrt` | 53.1301023542° | 0 | Asymmetric RGB emitter edges against a uniform RGB environment exercise anisotropic edge smoothing, orientation, and normalization. |
+
+The native 1×1 coverage oracles separately verify samples beyond the nominal
+film. This reference fixture does not independently detect clamping to the film
+boundary because its outer emitter edges exceed the entire filter footprint.
 
 The Cornell derivative adds an attribution header, replaces Sobol with
 independent sampling (seed 0, 4,096 spp), replaces the radius-1 triangle filter
@@ -62,8 +69,8 @@ binary32 PFM. The rypath harness writes its production film projection in the
 same format.
 
 The comparison uses the full 8×8 frame for every scene and the four top-down
-4×4 quadrants for both multibounce scenes, the three area scenes, and the
-adapted Cornell scene. Each region's R, G, and B means must
+4×4 quadrants for both multibounce scenes, the three area scenes, the
+adapted Cornell scene, and the triangle filter scene. Each region's R, G, and B means must
 agree within five combined standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)
 for the comparison command.

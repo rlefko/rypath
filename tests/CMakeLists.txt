@@ -207,6 +207,22 @@ if(RYPATH_ENABLE_METAL)
     endif()
 endif()
 
+add_executable(rypath_pbrt_filter_tests pbrt_filter_tests.cpp)
+set_target_properties(rypath_pbrt_filter_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+target_link_libraries(rypath_pbrt_filter_tests PRIVATE rypath_pbrt_render rypath_metal_backend)
+rypath_configure_host_target(rypath_pbrt_filter_tests)
+add_test(NAME render.pbrt_filter_reference COMMAND rypath_pbrt_filter_tests
+    --reference "${pbrt_render_fixtures}")
+set_tests_properties(render.pbrt_filter_reference PROPERTIES TIMEOUT 30)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.pbrt_filter COMMAND rypath_pbrt_filter_tests --metal ${ray_tracing_test_options})
+    set_tests_properties(metal.pbrt_filter PROPERTIES TIMEOUT 90)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.pbrt_filter PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
 add_test(NAME cli.render_pbrt COMMAND "${CMAKE_COMMAND}"
     "-Dexecutable=$<TARGET_FILE:rypath>"
     "-Dfixture_directory=${pbrt_render_fixtures}"

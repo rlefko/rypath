@@ -312,6 +312,109 @@ Camera "perspective"
             "Camera corner overflow must identify the authored screen window");
 }
 
+void triangle_filter_translation(const fs::path &scratch) {
+    const auto with_filter = [&](std::string_view filter) {
+        return replaced(basic, R"(PixelFilter "box")", filter) + std::string(triangle);
+    };
+    const auto defaults = accepted(
+        write(scratch, "triangle-filter-defaults.pbrt", with_filter(R"(PixelFilter "triangle")")));
+    require(defaults.scene.filter.kind == PixelFilterKind::triangle &&
+                defaults.scene.filter.x_radius == 2 && defaults.scene.filter.y_radius == 2,
+            "Triangle filter uses PBRT's per-axis defaults");
+    const auto one_axis =
+        accepted(write(scratch, "triangle-filter-one-axis.pbrt",
+                       with_filter(R"(PixelFilter "triangle" "float yradius" 1)")));
+    require(one_axis.scene.filter.x_radius == 2 && one_axis.scene.filter.y_radius == 1,
+            "The omitted triangle axis uses its own default");
+    const auto precedence =
+        accepted(write(scratch, "triangle-filter-precedence.pbrt", with_filter(R"(
+PixelFilter "gaussian"
+PixelFilter "triangle" "float xradius" 1e50 "float xradius" 0.25 "float yradius" 3
+)")));
+    require(precedence.scene.filter.x_radius == 0.25f && precedence.scene.filter.y_radius == 3,
+            "Effective filter and last typed radius win");
+
+    for (const auto value : {"1e50", "1e-40", "1e-50"}) {
+        const auto path =
+            write(scratch, "invalid-triangle-radius.pbrt",
+                  with_filter(std::string(R"(PixelFilter "triangle" "float xradius" )") + value));
+        const auto result = translation(path);
+        require(result.exit_code() == 1 && !result.scene && result.diagnostics.size() == 1 &&
+                    result.diagnostics.front().location.line == 3 &&
+                    result.diagnostics.front().location.column == 24,
+                "Narrowed triangle radius errors identify the authored parameter");
+    }
+    const auto nested = write(scratch, "triangle-filter-include.pbrt",
+                              "PixelFilter \"triangle\"\n    \"float yradius\" 1e-40\n");
+    const auto included =
+        translation(write(scratch, "triangle-filter-entry.pbrt",
+                          with_filter(R"(Include "triangle-filter-include.pbrt")")));
+    require(included.exit_code() == 1 && included.diagnostics.size() == 1 &&
+                included.diagnostics.front().location.line == 2 &&
+                included.diagnostics.front().location.column == 5 &&
+                fs::path(*included.diagnostics.front().location.file) == nested,
+            "Triangle radius narrowing preserves the included source location");
+
+    const auto camera = R"(Rotate 45 0 0 1
+Camera "perspective" "float screenwindow" [0 3e38 0 3e38])";
+    const auto one_pixel = [](const std::string &source) {
+        return replaced(source, R"(Film "rgb")",
+                        R"(Film "rgb" "integer xresolution" 1 "integer yresolution" 1)");
+    };
+    const auto narrow = one_pixel(replaced(
+        with_filter(R"(PixelFilter "triangle" "float xradius" .0625 "float yradius" .0625)"),
+        R"(Camera "perspective")", camera));
+    require(
+        accepted(write(scratch, "triangle-narrow-support.pbrt", narrow)).scene.filter.x_radius ==
+            0.0625f,
+        "Narrow triangle support can avoid overflowing unsampled film corners");
+    const auto wide = one_pixel(
+        replaced(with_filter(R"(PixelFilter "triangle")"), R"(Camera "perspective")", camera));
+    const auto overflow = translation(write(scratch, "triangle-support-overflow.pbrt", wide));
+    require(overflow.exit_code() == 1 && !overflow.scene && overflow.diagnostics.size() == 1 &&
+                overflow.diagnostics.front().location.line == 4 &&
+                overflow.diagnostics.front().message.find("support") != std::string::npos,
+            "Triangle support overflow identifies the filter declaration");
+
+    const PixelFilter filter{.kind = PixelFilterKind::triangle, .x_radius = 1, .y_radius = 2};
+    const RasterCamera ordinary{
+        .origin = {}, .corner = {-1, 1, 1}, .dx = {2, 0, 0}, .dy = {0, -2, 0}};
+    require(validate_raster_support(ordinary, filter, 16'777'217, 1).empty(),
+            "Large width uses the same rounded pixel centers and divisor as Metal");
+    auto nearly_flat = ordinary;
+    nearly_flat.corner.z = std::numeric_limits<float>::min();
+    require(!validate_raster_support(nearly_flat, filter, 8, 8).empty(),
+            "Ray-plane bound rejects a direction that may be flushed to zero");
+    const RasterCamera toward_zero{.origin = {},
+                                   .corner = {-0.5f, -0.5f, 1.f},
+                                   .dx = {1.f, 0.f, 0x1.fffffep-2f},
+                                   .dy = {0.f, 1.f, -0x1.3ffffep+1f}};
+    constexpr auto min_radius = std::numeric_limits<float>::min();
+    const PixelFilter center{
+        .kind = PixelFilterKind::triangle, .x_radius = min_radius, .y_radius = min_radius};
+    // At the center sample, x and y are both 0.5. The exact inner z is
+    // slightly below 1.25. Toward zero it rounds down, then the outer FMA cancels it.
+    require(!validate_raster_support(toward_zero, center, 1, 1).empty(),
+            "Ray-plane bound rejects a direction that vanishes under round-toward-zero");
+    auto dangerous = ordinary;
+    dangerous.corner = {2e38f, 0, 1};
+    dangerous.dx = {2e38f, 0, 0};
+    dangerous.dy = {-1e38f, 1, 0};
+    const PixelFilter cancellation{
+        .kind = PixelFilterKind::triangle, .x_radius = 0.25f, .y_radius = 0.125f};
+    require(!validate_raster_support(dangerous, cancellation, 1, 1).empty(),
+            "The inner FMA can overflow even when every final direction would fit");
+    const RasterCamera dimension_sensitive{
+        .origin = {}, .corner = {0, 0, 1}, .dx = {1e38f, 0, 0}, .dy = {0, 1, 0}};
+    const PixelFilter wider{.kind = PixelFilterKind::triangle, .x_radius = 3, .y_radius = 1};
+    require(!validate_raster_support(dimension_sensitive, wider, 1, 1).empty() &&
+                validate_raster_support(dimension_sensitive, wider, 2, 1).empty(),
+            "The same pixel-space support can be unsafe at one film width and safe at another");
+    auto demo = make_demo_scene();
+    demo.filter = filter;
+    require(!validate_render_scene(demo).empty(), "Demo accepts only its original box filter");
+}
+
 void film_crop_precedence(const fs::path &scratch) {
     const auto full_frame = R"(Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
     "integer pixelbounds" [0 4 0 4]
@@ -804,6 +907,7 @@ int main(int argc, char **argv) {
         material_instances(scratch);
         rejects_unsupported_profile(scratch);
         rejects_camera_corner_overflow(scratch);
+        triangle_filter_translation(scratch);
         film_crop_precedence(scratch);
         bounded_spectra(scratch);
         infinite_light_normalization(scratch);

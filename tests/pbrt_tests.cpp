@@ -828,6 +828,30 @@ AreaLightSource "diffuse" "spectrum L" ["missing-a.spd" "missing-b.spd"]
             "Malformed effective emission retains discoverable spectrum dependencies");
 }
 
+void triangle_filter_schema(const fs::path &directory) {
+    struct RejectedFilter {
+        std::string_view source;
+        std::string_view code;
+    };
+    constexpr std::array rejected{
+        RejectedFilter{R"(PixelFilter "triangle" "float xradius" 0)", "invalid-parameter"},
+        RejectedFilter{R"(PixelFilter "triangle" "float yradius" -1)", "invalid-parameter"},
+        RejectedFilter{R"(PixelFilter "triangle" "float xradius" nan)", "invalid-number"},
+        RejectedFilter{R"(PixelFilter "triangle" "float xradius" [1 2])", "invalid-parameter"},
+        RejectedFilter{R"(PixelFilter "triangle" "integer yradius" 1)", "invalid-parameter"},
+        RejectedFilter{R"(PixelFilter "triangle" "float radius" 1)", "unused-parameter"},
+    };
+    for (const auto &[source, code] : rejected) {
+        const auto path =
+            write_file(directory, "invalid-filter.pbrt", std::string(source) + "\nWorldBegin\n");
+        const auto result = check(path);
+        require(result.exit_code() == 1 && !result.scene, report(result));
+        const auto &diagnostic = find_diagnostic(result.document, code);
+        require(diagnostic.location.line == 1 && *diagnostic.location.file == path.string(),
+                "Triangle filter schema errors retain source location");
+    }
+}
+
 void corpus_tests(const fs::path &fixture_directory) {
     const auto path = fixture_directory / "cornell-box.pbrt";
     const auto result = check(path);
@@ -846,9 +870,8 @@ void corpus_tests(const fs::path &fixture_directory) {
                    *entry.location.file == path.string();
         });
     };
-    require(result.document.diagnostics.size() == 18 &&
+    require(result.document.diagnostics.size() == 17 &&
                 matching("unsupported-feature", "Sampler type \"sobol\"", 4) == 1 &&
-                matching("unsupported-feature", "PixelFilter type \"triangle\"", 6) == 1 &&
                 matching("unsupported-parameter", "Parameter \"N\"") == 8 &&
                 matching("unsupported-parameter", "Parameter \"uv\"") == 8,
             "pinned Cornell Box profile diagnostics");
@@ -865,6 +888,7 @@ int main(int argc, char *argv[]) {
             syntax_tests(directory);
         } else if (group == "state") {
             state_tests(directory);
+            triangle_filter_schema(directory);
             area_light_state(directory);
             review_regression_tests(directory);
             bounded_and_numeric_tests(directory);
