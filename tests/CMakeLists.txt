@@ -1,3 +1,18 @@
+include(cli_availability.cmake)
+get_cli_skip_regex(metal_skip_regex "${metal_skip_marker}" "${RYPATH_ENABLE_METAL}"
+    "${RYPATH_ALLOW_NO_METAL_DEVICE}" OFF)
+get_cli_skip_regex(render_skip_regex "${render_skip_marker}" "${RYPATH_ENABLE_METAL}"
+    "${RYPATH_ALLOW_NO_METAL_DEVICE}" "${RYPATH_ALLOW_NO_METAL_RAY_TRACING}")
+
+add_executable(rypath_availability_fake_cli availability_fake_cli.cpp)
+rypath_configure_host_target(rypath_availability_fake_cli)
+add_test(NAME cli.availability_policy COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath_availability_fake_cli>"
+    "-Dctest=${CMAKE_CTEST_COMMAND}"
+    "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/cli-availability/$<CONFIG>"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_cli_availability.cmake")
+set_tests_properties(cli.availability_policy PROPERTIES TIMEOUT 30)
+
 function(add_cli_test name expected_exit expected_stdout expected_stderr)
     add_test(NAME "cli.${name}"
         COMMAND "${CMAKE_COMMAND}"
@@ -69,11 +84,8 @@ add_test(NAME cli.render_demo
         "-Dallow_no_ray_tracing=${RYPATH_ALLOW_NO_METAL_RAY_TRACING}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/check_render_cli.cmake"
 )
-set_tests_properties(cli.render_demo PROPERTIES TIMEOUT 30)
-if(RYPATH_ENABLE_METAL AND (RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING))
-    set_tests_properties(cli.render_demo PROPERTIES SKIP_REGULAR_EXPRESSION
-        "RYPATH_CTEST_SKIP_RENDER_UNAVAILABLE")
-endif()
+set_tests_properties(cli.render_demo PROPERTIES TIMEOUT 30
+    SKIP_REGULAR_EXPRESSION "${render_skip_regex}")
 
 set(pbrt_fixture_directory "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt")
 set(pbrt_test_directory "${CMAKE_CURRENT_BINARY_DIR}/pbrt")
@@ -112,6 +124,7 @@ foreach(command IN ITEMS metal-info metal-smoke-test)
         WORKING_DIRECTORY "${metal_cli_directory}"
     )
 endforeach()
+set_tests_properties(cli.metal_smoke_test PROPERTIES SKIP_REGULAR_EXPRESSION "${metal_skip_regex}")
 
 add_executable(rypath_metal_tests metal_tests.cpp)
 set_target_properties(rypath_metal_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
@@ -131,9 +144,6 @@ if(RYPATH_ENABLE_METAL)
     if(RYPATH_ALLOW_NO_METAL_DEVICE)
         set_tests_properties(metal.api_smoke metal.missing_library metal.invalid_library
             PROPERTIES SKIP_RETURN_CODE 77)
-        # The CMake CLI validator emits this marker only after checking the no-device result.
-        set_tests_properties(cli.metal_smoke_test PROPERTIES
-            SKIP_REGULAR_EXPRESSION "RYPATH_CTEST_SKIP_NO_METAL_DEVICE")
     endif()
 else()
     add_test(NAME metal.api_stub COMMAND rypath_metal_tests stub)
@@ -260,11 +270,8 @@ add_test(NAME cli.render_pbrt COMMAND "${CMAKE_COMMAND}"
     "-Dallow_no_device=${RYPATH_ALLOW_NO_METAL_DEVICE}"
     "-Dallow_no_ray_tracing=${RYPATH_ALLOW_NO_METAL_RAY_TRACING}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/check_pbrt_render_cli.cmake")
-set_tests_properties(cli.render_pbrt PROPERTIES TIMEOUT 60)
-if(RYPATH_ENABLE_METAL AND (RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING))
-    set_tests_properties(cli.render_pbrt PROPERTIES SKIP_REGULAR_EXPRESSION
-        "RYPATH_CTEST_SKIP_RENDER_UNAVAILABLE")
-endif()
+set_tests_properties(cli.render_pbrt PROPERTIES TIMEOUT 60
+    SKIP_REGULAR_EXPRESSION "${render_skip_regex}")
 
 if(RYPATH_ENABLE_METAL)
     add_test(NAME metal.render COMMAND rypath_render_tests metal ${ray_tracing_test_options})

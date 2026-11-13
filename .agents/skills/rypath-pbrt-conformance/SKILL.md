@@ -5,6 +5,8 @@ description: Implement or review rypath PBRT v4 scene compatibility, OBJ/MTL and
 
 Read the pinned format/profile and compatibility matrix before changing parsing or translation. If they do not exist, establish a small explicit profile as part of the change. Keep syntax acceptance, faithful rendering, approximations, and unsupported features distinct. Parser success is not rendering conformance.
 
+Start with the maintained [structural profile](../../../docs/pbrt-profile.md), [rendering profile](../../../docs/pbrt-rendering.md), and relevant fixture manifest. Consult the [dependency record](../../../docs/dependencies.md) when choosing or adapting a loader; load only records needed for the assigned change.
+
 Resolve semantics using the official format and pinned upstream implementation. PBRT directives represent stateful scene construction, not just a list of objects. Test nested state, transforms/handedness, named definitions, instance references, Include/Import distinctions, resource resolution, and diagnostic source locations. Follow PBRT's actual path rules rather than imposing a generic nested-file-relative convention. Verify environment-map projection and spectral/color conventions when relevant.
 
 Use synthetic fixtures that isolate the changed behavior, then a small pinned external example that exercises it. Compare with the upstream parser or renderer only with matched semantics and explicitly recorded overrides. An image that looks plausible is not sufficient. Preflight should enumerate missing assets and unsupported render features instead of silently degrading them.
@@ -14,6 +16,8 @@ For OBJ/MTL, cover independently indexed attributes, negative indices, omitted c
 For other adapters, verify their real capabilities at the pinned version. Required glTF extensions must be supported or rejected clearly; distinguish geometry import from faithful materials, animation, and scene composition. PLY tests should exercise property ordering/types and supported ASCII/binary variants. Decode malformed inputs with bounded memory and useful errors.
 
 Maintain a corpus manifest with upstream revision, entry point, complete dependency closure, hashes, acquisition size, feature profile, comparison settings, and asset terms. Keep large assets in an external cache; use small owned fixtures in routine CI. Reusing open-source loader code or test scenes requires preserving their own notices, not relabeling them as project-authored assets.
+
+When generated comparison variants move an entry point, stage its declared dependencies under the new entry directory or explicitly preserve the original resolution semantics. If no compatible stock scene fits a focused change, a clearly labeled owned wrapper around an unmodified pinned asset can establish selected asset coverage; it does not establish support for the original upstream scene. Record the wrapper settings and asset provenance separately.
 
 Before reporting completion, list newly supported semantics, intentionally deferred constructs, diagnostic behavior, tests actually run, and exact corpus coverage. Full pinned-corpus support requires every renderable entry point at the pinned upstream revision to be inventoried and validated, not just the compatible selected subset. Selected subsets are appropriate for milestone acceptance; a skipped unsupported scene is not a pass for full coverage.
 

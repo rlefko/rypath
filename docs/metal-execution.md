@@ -4,8 +4,8 @@ This slice establishes device diagnostics, offline shader compilation, resource
 ownership, and a checked compute dispatch. The compute check changes execution
 only. [Native geometry](geometry.md) adds acceleration structures and independent
 ray-query validation. [Progressive rendering](rendering.md) uses those structures
-for a declared spectral transport model and final PNG. Scene ingestion remains
-planned.
+for a declared spectral transport model and final PNG. The separate
+[PBRT rendering profile](pbrt-rendering.md) defines supported scene ingestion.
 
 ## Requirements and commands
 
@@ -86,6 +86,15 @@ produce a visible CTest skip. Backend-disabled builds have their own stub tests.
 Library, pipeline, allocation, command, and output failures never qualify as an
 availability skip. Some sandboxes hide the device, so real hardware acceptance
 must run in a process with GPU access.
+
+CLI validators emit their skip marker only after checking the complete result;
+CTest accepts it only at the beginning of output. Render checks require exactly
+one complete availability status line, its canonical diagnostic, exit code 2,
+the matching opt-in, no completed-sample output, and an unchanged output file.
+The PBRT check additionally requires consistent
+availability across its independent and Sobol attempts. `cli.availability_policy`
+uses a test-only fake CLI to verify pass, failure, and skip classifications through
+the actual validators, including failure diagnostics that contain a skip marker.
 
 The macOS job compiles host code and MSL and runs Apple Clang Static Analyzer on
 the adapter. Linux retains compiled C++ CodeQL coverage. Neither successful

@@ -84,6 +84,17 @@ Hooks check formatting, whitespace, YAML, commit subjects, and prohibited local
 handoff/archive paths. Inspect staged paths and diffs before every commit; ignore
 rules do not protect forced additions or copied content. CI remains authoritative.
 
+The archive guard inspects member names (and TAR link targets) in ZIP and TAR,
+including gzip, bzip2, and xz aliases. Decoder-reported errors and recognized 7z,
+RAR, and Zstandard TAR formats fail with a path-only diagnostic; decoder errors do
+not stop checks of later files. This is not a full archive-integrity or arbitrary
+content scanner. Commit-message checks fold the first paragraph as Git's subject;
+a blank line separates the body. The hook honors configured strip and scissors
+cleanup with fixed comment markers when Git exposes the relevant editor state.
+It preserves draft comment lines with automatic markers. The history check
+validates Git's stored subject and remains authoritative for automatic markers,
+an explicit no-op editor, and invocation-only cleanup options.
+
 ## CI and review protection
 
 Every PR to `main` runs formatting/policy, focused clang-tidy, Linux Clang

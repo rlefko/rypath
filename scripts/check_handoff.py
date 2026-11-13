@@ -1,4 +1,4 @@
-"""Reject reserved local handoff paths and ZIP/TAR archives containing them."""
+"""Check tracked paths and supported archive member names for local handoff material."""
 
 import argparse
 import os
@@ -11,10 +11,18 @@ import zipfile
 
 LOCAL_DIRECTORY = ".rypath-local"
 LOCAL_FILENAMES = {"private-session-setup.txt", "implementation-prompt.txt"}
-ARCHIVE_SUFFIXES = (
-    ".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tbz2",
-    ".tar.xz", ".txz", ".tar.zst", ".tzst", ".7z", ".rar",
-)
+TAR_MODES = {
+    ".tar": "r:",
+    ".tar.gz": "r:gz",
+    ".tgz": "r:gz",
+    ".tar.bz2": "r:bz2",
+    ".tbz": "r:bz2",
+    ".tbz2": "r:bz2",
+    ".tar.xz": "r:xz",
+    ".txz": "r:xz",
+}
+UNSUPPORTED_SUFFIXES = (".tar.zst", ".tzst", ".7z", ".rar")
+ARCHIVE_SUFFIXES = (".zip", *TAR_MODES, *UNSUPPORTED_SUFFIXES)
 FILE_MODES = {b"100644", b"100755"}
 
 
@@ -56,20 +64,19 @@ def range_files(base, head):
         yield from tree_files(tree.decode())
 
 
-def archive_contains_handoff(object_id):
+def archive_contains_handoff(object_id, suffix):
     with tempfile.TemporaryFile() as blob:
-        subprocess.run(["git", "cat-file", "blob", object_id.decode()], stdout=blob, check=True)
+        subprocess.run(
+            ["git", "cat-file", "blob", object_id.decode()],
+            stdout=blob,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
         blob.seek(0)
-        if zipfile.is_zipfile(blob):
+        if suffix == ".zip":
             with zipfile.ZipFile(blob) as archive:
                 return any(reserved_path(name) for name in archive.namelist())
-
-        blob.seek(0)
-        try:
-            archive = tarfile.open(fileobj=blob, mode="r:*")
-        except tarfile.ReadError:
-            return False
-        with archive:
+        with tarfile.open(fileobj=blob, mode=TAR_MODES[suffix]) as archive:
             return any(reserved_path(item.name) or reserved_path(item.linkname) for item in archive)
 
 
@@ -98,16 +105,28 @@ def main():
         if reserved_path(path):
             print(f"Reserved local handoff path: {path!r}", file=sys.stderr)
             valid = False
-        elif mode in FILE_MODES and path.casefold().endswith(ARCHIVE_SUFFIXES):
-            try:
-                contains_handoff = archive_contains_handoff(object_id)
-            except (OSError, tarfile.TarError, zipfile.BadZipFile):
-                print(f"Could not inspect archive: {path!r}", file=sys.stderr)
-                valid = False
-                continue
-            if contains_handoff:
-                print(f"Archive contains a reserved local handoff path: {path!r}", file=sys.stderr)
-                valid = False
+            continue
+        if mode not in FILE_MODES:
+            continue
+        lower_path = path.casefold()
+        suffix = next((item for item in ARCHIVE_SUFFIXES if lower_path.endswith(item)), None)
+        if suffix is None:
+            continue
+        if suffix in UNSUPPORTED_SUFFIXES:
+            print(f"Unsupported archive format: {path!r}", file=sys.stderr)
+            valid = False
+            continue
+        try:
+            contains_handoff = archive_contains_handoff(object_id, suffix)
+        except Exception:
+            # Archive readers can propagate decoder errors as well as format-specific errors.
+            # Their messages and tracebacks can disclose private member names.
+            print(f"Could not inspect archive: {path!r}", file=sys.stderr)
+            valid = False
+            continue
+        if contains_handoff:
+            print(f"Archive contains a reserved local handoff path: {path!r}", file=sys.stderr)
+            valid = False
     return 0 if valid else 1
 
 
