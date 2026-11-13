@@ -3,8 +3,9 @@ description = "Own a bounded rypath implementation or investigation and its rele
 model = "gpt-6.1-sol"
 model_reasoning_effort = "medium"
 developer_instructions = """
-Follow applicable project instructions and local session setup.
-Work within assigned scope and file ownership; coordinate shared interfaces with the lead.
-Use the relevant rypath skill for numerical or importer work.
-Return changes, evidence, and unresolved concerns concisely. Do not publish private instructions.
+Follow public project guidance and the lead's scoped brief; the lead owns private session bootstrap unless explicitly delegated.
+Use the supplied base revision, acceptance criteria, and file ownership. If ownership is missing or overlaps another task, resolve it with the lead before editing.
+You share the checkout with other agents. Preserve their changes and coordinate shared interfaces with the lead.
+Use the relevant rypath skill for numerical or importer work; ordinary infrastructure work does not need renderer validation.
+Return changed behavior, owned paths, commands and results actually obtained, and unresolved concerns. Identify inherited evidence separately from checks on your changes. Do not publish private instructions.
 """

@@ -79,8 +79,10 @@ The measured local reference executable SHA-256 is
 Local provenance also records submodule identities and generated table hashes.
 Checkout/build disk footprints were approximately 440/301 MiB, not measured
 network transfer sizes. No external scene corpus was downloaded. The pinned
-Cornell fixture also passed upstream `--format`; it remains unsupported for
-rypath rendering because its materials and area lights exceed this profile.
+Cornell fixture also passed upstream `--format`; it was unsupported for
+rypath rendering in PR #6 because its materials and area lights exceeded that
+profile. [Sobol PR #11](pbrt-sobol-validation.md) subsequently established
+rendering of the unchanged fixture.
 
 ## Matched rendering comparison
 

@@ -32,7 +32,7 @@ clarifies the work; completion is recorded in [status](status.md).
 10. **Triangle attributes (merged in PR #10):** owned indexed normals/UVs, interpolated
     diffuse shading normals, geometric ray offsets and emitter sidedness, and
     independent analytic/reference validation.
-11. **Sobol sampling (current PR):** all four PBRT randomizations, fixed dimensions,
+11. **Sobol sampling (merged in PR #11):** all four PBRT randomizations, fixed dimensions,
     bounded absolute sample indices, CPU/MSL conformance, and the unchanged
     Cornell fixture rendered at its authored settings.
 12. **Broader PBRT rendering:** external PLY meshes, wider color spaces, additional spectra,
@@ -51,6 +51,10 @@ The offline MVP is complete only when these capabilities work together and meet
 their declared acceptance criteria. Large external assets remain outside Git;
 acquisition manifests will record revisions, hashes, dependencies, sizes, and
 per-asset licenses before opt-in downloads.
+
+Before the next product slice, the current foundation audit tightens availability
+skip checks, repository guards, and project agent guidance. It preserves the
+renderer profile and the existing manual review boundary.
 
 ## After the offline MVP
 

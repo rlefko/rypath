@@ -79,8 +79,9 @@ anisotropic edge smoothing, and normalization. Its outer emitter edges exceed
 the footprint, so the 1×1 native oracles separately establish beyond-film
 coverage. All ten existing fixtures, including the CC0
 Cornell adaptation, remain byte-for-byte unchanged. The original 7,253-byte
-Cornell remains unsupported: one Sobol and eight each normal/UV diagnostics
-(17 total). Its triangle filter is now accepted.
+Cornell was unsupported in PR #9: one Sobol and eight each normal/UV diagnostics
+(17 total). Its triangle filter was accepted. [Sobol PR #11](pbrt-sobol-validation.md)
+subsequently established rendering of the unchanged fixture.
 
 All eleven reference fixtures use 8×8 pixels, 4,096 spp, and sixteen fixed seeds
 per renderer: rypath 0–15, pinned CPU PBRT 16–31. This is 46,137,344 samples per
@@ -133,5 +134,6 @@ renderer performance claims.
 Routine CTest remains offline. The pinned CPU Release/float reference stays in
 an ignored cache and is not a runtime dependency. Commands and dependency
 provenance are in the [spectral validation record](pbrt-render-validation.md).
-Hosted availability and CI duration will be recorded against the final PR
-revision; explicit hosted skips do not replace strict M4 Max execution.
+Hosted availability and CI duration are reported on
+[PR #9](https://github.com/rlefko/rypath/pull/9); explicit hosted skips do not
+replace strict M4 Max execution.
