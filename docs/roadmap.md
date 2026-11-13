@@ -26,19 +26,22 @@ clarifies the work; completion is recorded in [status](status.md).
    independent spectral/CPU/Metal comparisons.
 8. **Triangle area lighting (merged in PR #8):** scoped emission, finite visibility segments,
    matched light-selection/MIS densities, sidedness, and independent validation.
-9. **Triangle pixel filtering (current PR):** normalized separable tent sampling,
+9. **Triangle pixel filtering (merged in PR #9):** normalized separable tent sampling,
    expanded camera-support validation, independent edge-footprint checks, and
    pinned CPU comparisons. The original Cornell remains unsupported.
-10. **Broader PBRT rendering:** wider color spaces, additional spectra,
+10. **Triangle attributes (current PR):** owned indexed normals/UVs, interpolated
+    diffuse shading normals, geometric ray offsets and emitter sidedness, and
+    independent analytic/reference validation. Sobol remains the original Cornell blocker.
+11. **Broader PBRT rendering:** Sobol sampling, wider color spaces, additional spectra,
     assets/textures, filters/samplers and faithfully rendered pinned upstream entry
     points. JSON preflight reports remain follow-up work.
-11. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+12. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-12. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
+13. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
     and dielectric scattering, and independent CPU/Metal numerical comparisons.
-13. **Offline completion:** homogeneous spectral media, linear OpenEXR,
+14. **Offline completion:** homogeneous spectral media, linear OpenEXR,
     checkpoint/resume, cancellation, and long-run accumulation validation.
-14. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+15. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet

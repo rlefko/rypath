@@ -36,7 +36,7 @@ diagnosed even when not placed in the image.
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
 | Filter/sampler | Box radii 0.5 or triangle radii defaulting independently to 2; independent samples with Philox4x32-10, not PBRT's random sequence |
 | Integrator | Finite maxdepth 0–1024, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
-| Geometry | Checked inline triangles and single-level instances, including affine geometry transforms; at least one placed triangle |
+| Geometry | Checked inline triangles with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed triangle |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
 | Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle emitters; numeric/RGB/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
@@ -51,13 +51,20 @@ unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
 Non-sRGB reconstruction, legacy `color` parameters, blackbody and named/file spectra,
-textured emitters, emitting object members, textures/external meshes, shading normals, media, motion, lens
+textured emitters, emitting object members, textures/external meshes, tangents/normal maps, media, motion, lens
 effects, and other cameras/filters/integrators remain unsupported. There is no
 CPU fallback. The unchanged CC0 Cornell fixture remains a negative case; this
 profile does not establish unmodified Cornell or general upstream-corpus rendering.
-The original Cornell still requires Sobol sampling, normals, and UV arrays.
-Its triangle filter is supported; the unchanged scene remains unsupported.
+The original Cornell still requires Sobol sampling. Its triangle filter,
+normals, and UV arrays are supported; the unchanged scene remains unsupported.
 A separately named, attributed adaptation exercises supported rendering; its [manifest](../tests/fixtures/pbrt-render/README.md) lists every change.
+
+Triangle normals retain relative vertex lengths through affine transformation
+and barycentric interpolation. The diffuse frame uses the shading normal; ray
+offsets and area-light Jacobians use the geometric plane. UV arrays remain owned
+and indexed but are inert for the current constant materials and emission.
+Degenerate one-sided emitter orientations and the supported numeric domain are
+specified in [triangle-attribute validation](pbrt-attribute-validation.md).
 
 ## Pixel reconstruction
 
@@ -177,12 +184,13 @@ dependency versions, source/submodule identities, and binary hash with each
 comparison. Commands and measured evidence are in the
 [spectral validation record](pbrt-render-validation.md),
 [sRGB validation record](pbrt-rgb-validation.md),
-[area-light validation record](pbrt-area-validation.md), and
-[triangle-filter validation record](pbrt-filter-validation.md).
+[area-light validation record](pbrt-area-validation.md),
+[triangle-filter validation record](pbrt-filter-validation.md), and
+[triangle-attribute validation record](pbrt-attribute-validation.md).
 
-Ten owned fixtures and one labeled CC0 Cornell adaptation cover numeric-spectrum
-and RGB backgrounds, diffuse response, area emission, visibility, and asymmetric
-multiple scattering. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
+Thirteen owned fixtures and two labeled CC0 Cornell adaptations cover numeric-spectrum
+and RGB backgrounds, diffuse response, area emission, visibility, asymmetric
+multiple scattering, and transformed shading normals. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
 16 fixed seeds per renderer (rypath 0–15; PBRT 16–31). Each channel/declared
 region mean must agree within five combined standard errors plus
 `2e-5 * max(1, abs(reference))`. Thresholds and seeds precede results; failures
