@@ -2,6 +2,7 @@
 #pragma once
 
 #include "geometry.hpp"
+#include "image_texture.hpp"
 
 #include <array>
 #include <cstddef>
@@ -51,6 +52,7 @@ struct Limits {
     std::size_t total_values = 2'000'000;
     std::size_t directives = 100'000;
     std::size_t diagnostics = 100;
+    ImageLimits image{};
 };
 enum class ValueKind { number, integer, boolean, string };
 struct Value {
@@ -138,12 +140,22 @@ struct Placement {
     Transform transform;
     Location location;
 };
+struct CheckedImageSource {
+    std::filesystem::path resolved_path;
+    std::shared_ptr<const DecodedImage> pixels;
+};
+struct SpectrumImageTexture {
+    Descriptor descriptor;
+    std::shared_ptr<const CheckedImageSource> source;
+    ImageTexture texture;
+};
 struct Scene {
     std::vector<Descriptor> options;
     std::vector<Descriptor> named_materials;
     std::vector<std::shared_ptr<const Descriptor>> inline_materials;
     std::vector<Descriptor> float_constant_textures;
     std::vector<Descriptor> spectrum_constant_textures;
+    std::vector<SpectrumImageTexture> spectrum_image_textures;
     std::vector<Descriptor> lights;
     std::vector<std::shared_ptr<const Descriptor>> area_lights;
     std::vector<Shape> shapes;

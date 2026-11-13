@@ -5,6 +5,7 @@
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
 #include "render_wire.h"
+#include "rgb_spectrum.hpp"
 #include "sobol_shared.h"
 #include "triangle_attributes.hpp"
 
@@ -237,8 +238,141 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> emitters = nil;
     id<MTLBuffer> normals = nil;
     id<MTLBuffer> sampling_tables = nil;
+    id<MTLBuffer> texture_uvs = nil;
+    id<MTLBuffer> texture_frames = nil;
+    id<MTLBuffer> image_textures = nil;
+    id<MTLBuffer> image_levels = nil;
+    id<MTLBuffer> image_texels = nil;
+    id<MTLBuffer> image_transfer = nil;
+    id<MTLBuffer> image_spectra = nil;
+    wire::TextureParameters texture_parameters{};
+    std::uint32_t texture_width = 0;
+    std::uint32_t texture_height = 0;
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
+
+    std::string upload_textures(const RenderScene &scene,
+                                std::vector<wire::Instance> &packed_instances) {
+        std::vector<wire::Point2> uvs;
+        std::vector<wire::TextureFrame> frames;
+        std::map<std::uint32_t, wire::Word> uv_offsets;
+        std::map<std::uint32_t, wire::Word> frame_offsets;
+        const auto uv_limit =
+            std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::Point2));
+        const auto frame_limit =
+            std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::TextureFrame));
+        for (std::size_t ordinal = 0; ordinal < packed_instances.size(); ++ordinal) {
+            auto &packed = packed_instances[ordinal];
+            packed.uv_begin = packed.frame_begin = max_index;
+            if (scene.materials[packed.material].kind != SpectralMaterialKind::image) {
+                continue;
+            }
+            const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
+            const auto mesh_index = scene.geometry.instances[source].mesh_index;
+            const auto &mesh = scene.geometry.meshes[mesh_index];
+            if (!mesh.uvs.empty()) {
+                const auto [it, added] =
+                    uv_offsets.try_emplace(mesh_index, static_cast<wire::Word>(uvs.size()));
+                packed.uv_begin = it->second;
+                if (added) {
+                    if (mesh.uvs.size() > uv_limit - uvs.size()) {
+                        return "Metal texture coordinate buffer exceeds device or index limits";
+                    }
+                    for (const auto uv : mesh.uvs) {
+                        uvs.push_back({uv[0], uv[1]});
+                    }
+                }
+            }
+            const auto &source_frames = scene.instance_texture_frames[source];
+            if (!source_frames.empty()) {
+                const auto [it, added] =
+                    frame_offsets.try_emplace(source, static_cast<wire::Word>(frames.size()));
+                packed.frame_begin = it->second;
+                if (added) {
+                    if (source_frames.size() > frame_limit - frames.size()) {
+                        return "Metal texture frame buffer exceeds device or index limits";
+                    }
+                    for (const auto &frame : source_frames) {
+                        frames.push_back({pack(frame.dpdu), pack(frame.dpdv)});
+                    }
+                }
+            }
+        }
+        std::vector<wire::ImageTexture> textures;
+        std::vector<wire::TextureLevel> levels;
+        std::vector<wire::Word> texels;
+        std::map<const ImagePyramid *, wire::Word> pyramid_offsets;
+        const auto texel_limit =
+            std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::Word));
+        const auto level_limit =
+            std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::TextureLevel));
+        if (scene.image_textures.size() > device.maxBufferLength / sizeof(wire::ImageTexture) ||
+            scene.image_textures.size() > max_index) {
+            return "Metal image descriptor buffer exceeds device or index limits";
+        }
+        for (const auto &texture : scene.image_textures) {
+            const auto &image = *texture.image;
+            const auto [it, added] =
+                pyramid_offsets.try_emplace(&image, static_cast<wire::Word>(levels.size()));
+            if (added) {
+                if (image.texels.size() > texel_limit - texels.size() ||
+                    image.levels.size() > level_limit - levels.size()) {
+                    return "Metal image pyramid exceeds device or index limits";
+                }
+                const auto begin = static_cast<wire::Word>(texels.size());
+                for (const auto &level : image.levels) {
+                    levels.push_back({level.width, level.height, begin + level.offset});
+                }
+                texels.insert(texels.end(), image.texels.begin(), image.texels.end());
+            }
+            textures.push_back({it->second, static_cast<wire::Word>(image.levels.size()),
+                                static_cast<wire::Word>(image.wrap),
+                                static_cast<wire::Word>(image.encoding), texture.uscale,
+                                texture.vscale, texture.udelta, texture.vdelta, texture.scale,
+                                static_cast<wire::Word>(texture.invert)});
+        }
+        texture_parameters.texture_count = static_cast<wire::Word>(textures.size());
+        texture_parameters.level_count = static_cast<wire::Word>(levels.size());
+        texture_parameters.texel_count = static_cast<wire::Word>(texels.size());
+        texture_parameters.uv_count = static_cast<wire::Word>(uvs.size());
+        texture_parameters.frame_count = static_cast<wire::Word>(frames.size());
+        std::ranges::copy(scene.texture_camera.world_from_camera,
+                          texture_parameters.world_from_camera);
+        std::ranges::copy(scene.texture_camera.camera_from_world,
+                          texture_parameters.camera_from_world);
+        if (uvs.empty())
+            uvs.emplace_back();
+        if (frames.empty())
+            frames.emplace_back();
+        if (textures.empty())
+            textures.emplace_back();
+        if (levels.empty())
+            levels.emplace_back();
+        if (texels.empty())
+            texels.emplace_back();
+        texture_uvs = upload(device, uvs);
+        texture_frames = upload(device, frames);
+        image_textures = upload(device, textures);
+        image_levels = upload(device, levels);
+        image_texels = upload(device, texels);
+        if (texture_parameters.texture_count != 0) {
+            std::array<float, 512> transfer;
+            std::ranges::copy(image_transfer_table(ImageEncoding::srgb), transfer.begin());
+            std::ranges::copy(image_transfer_table(ImageEncoding::linear), transfer.begin() + 256);
+            image_transfer = upload(device, transfer);
+            image_spectra = upload(device, srgb_reconstruction_table());
+        } else {
+            const std::array<float, 1> empty{};
+            image_transfer = upload(device, empty);
+            image_spectra = upload(device, empty);
+        }
+        if (texture_uvs == nil || texture_frames == nil || image_textures == nil ||
+            image_levels == nil || image_texels == nil || image_transfer == nil ||
+            image_spectra == nil) {
+            return "Metal image texture buffer allocation failed";
+        }
+        return {};
+    }
 
     std::string upload_normals(const RenderScene &scene,
                                std::vector<wire::Instance> &packed_instances) {
@@ -461,6 +595,9 @@ struct MetalRenderScene::Impl {
         if (auto message = upload_normals(scene, packed_instances); !message.empty()) {
             return message;
         }
+        if (auto message = upload_textures(scene, packed_instances); !message.empty()) {
+            return message;
+        }
 
         std::vector<wire::Material> packed_materials(scene.materials.size());
         std::vector<wire::SpectralKnot> packed_knots;
@@ -488,6 +625,10 @@ struct MetalRenderScene::Impl {
             case SpectralMaterialKind::rgb_sigmoid:
                 packed.kind = wire::rgb_sigmoid_material;
                 std::ranges::copy(source.coefficients, packed.coefficients);
+                break;
+            case SpectralMaterialKind::image:
+                packed.kind = wire::image_material;
+                packed.image_texture = source.image_texture;
                 break;
             }
         }
@@ -540,6 +681,30 @@ struct MetalRenderScene::Impl {
         }
 
         auto p = parameters;
+        auto texture_p = texture_parameters;
+        if (texture_p.texture_count != 0) {
+            if (request.total_samples == 0 || request.sample_begin >= request.total_samples ||
+                request.sample_count > request.total_samples - request.sample_begin) {
+                result.diagnostic = "Image texture request requires a fixed total sample budget "
+                                    "containing the sample range";
+                return result;
+            }
+            if (texture_width != request.width || texture_height != request.height) {
+                TextureCameraDifferentials differentials;
+                result.diagnostic = prepare_texture_camera_differentials(
+                    unpack(parameters.forward), unpack(parameters.right), unpack(parameters.up),
+                    request.width, request.height, differentials);
+                if (!result.diagnostic.empty())
+                    return result;
+                texture_parameters.minimum_dx = pack(differentials.minimum_dx);
+                texture_parameters.minimum_dy = pack(differentials.minimum_dy);
+                texture_width = request.width;
+                texture_height = request.height;
+            }
+            texture_p = texture_parameters;
+            texture_p.spp_scale = static_cast<float>(
+                std::max(0.125, 1.0 / std::sqrt(static_cast<double>(request.total_samples))));
+        }
         p.width = request.width;
         p.height = request.height;
         p.pixel_begin = request.pixel_begin;
@@ -598,6 +763,14 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:normals offset:0 atIndex:11];
             [encoder setBuffer:patches offset:0 atIndex:13];
             [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
+            [encoder setBuffer:texture_uvs offset:0 atIndex:15];
+            [encoder setBuffer:texture_frames offset:0 atIndex:16];
+            [encoder setBuffer:image_textures offset:0 atIndex:17];
+            [encoder setBuffer:image_levels offset:0 atIndex:18];
+            [encoder setBuffer:image_texels offset:0 atIndex:19];
+            [encoder setBuffer:image_transfer offset:0 atIndex:20];
+            [encoder setBuffer:image_spectra offset:0 atIndex:21];
+            [encoder setBytes:&texture_p length:sizeof(texture_p) atIndex:22];
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];

@@ -14,6 +14,9 @@ struct RenderRequest {
     std::uint32_t pixel_count = 0;
     std::uint64_t sample_begin = 0;
     std::uint32_t sample_count = 0;
+    // Fixed target budget for texture footprints, independent of dispatch partitioning.
+    // Required for image-textured scenes; zero remains valid for constant scenes.
+    std::uint64_t total_samples = 0;
     // Zero chooses the device width. Other values support scheduling validation.
     std::uint32_t threadgroup_width = 0;
     std::uint32_t emergency_limit = render_emergency_limit;

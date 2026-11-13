@@ -63,6 +63,7 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
                     request.pixel_count = pixel_count;
                     request.sample_begin = completed + sample_offset;
                     request.sample_count = sample_count;
+                    request.total_samples = settings.samples;
                     auto tile = built.scene->sample(request);
                     if (tile.status != GeometryStatus::success) {
                         result.diagnostic = "render batch: " + tile.diagnostic;

@@ -8,8 +8,10 @@
 #include "rgb_spectrum.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <type_traits>
 #include <utility>
 
@@ -250,6 +252,9 @@ bool valid_rgb_coefficients(const std::array<float, 3> &coefficients) {
 
 std::string validate_pbrt_material(const SpectralMaterial &material) {
     constexpr std::array<float, 3> zero_coefficients{};
+    if (material.kind != SpectralMaterialKind::image && material.image_texture != 0) {
+        return "Constant spectral material contains an image binding";
+    }
     switch (material.kind) {
     case SpectralMaterialKind::sampled:
         if (material.constant != 0 || material.coefficients != zero_coefficients) {
@@ -272,8 +277,121 @@ std::string validate_pbrt_material(const SpectralMaterial &material) {
             return "PBRT RGB reflectance requires three finite, evaluable coefficients";
         }
         return {};
+    case SpectralMaterialKind::image:
+        if (!material.knots.empty() || material.constant != 0 ||
+            material.coefficients != zero_coefficients) {
+            return "Image reflectance contains a constant spectral payload";
+        }
+        return {};
     }
     return "Invalid PBRT spectral material kind";
+}
+
+std::string validate_image_textures(const RenderScene &scene) {
+    for (const auto &material : scene.materials) {
+        if (material.kind == SpectralMaterialKind::image &&
+            material.image_texture >= scene.image_textures.size()) {
+            return "Image material references an invalid texture";
+        }
+    }
+    if (scene.image_textures.empty()) {
+        return scene.instance_texture_frames.empty() ? "" : "Texture frames require image textures";
+    }
+    if (scene.model != RenderModel::pbrt ||
+        scene.instance_texture_frames.size() != scene.geometry.instances.size()) {
+        return "Image textures require PBRT and one frame table per source instance";
+    }
+    const auto finite_scalar = [](float v) { return std::isfinite(v); };
+    if (!std::ranges::all_of(scene.texture_camera.world_from_camera, finite_scalar) ||
+        !std::ranges::all_of(scene.texture_camera.camera_from_world, finite_scalar)) {
+        return "Image texture camera matrices must be finite";
+    }
+    const auto &forward = scene.texture_camera.world_from_camera;
+    const auto &inverse = scene.texture_camera.camera_from_world;
+    constexpr double inverse_tolerance = 32 * std::numeric_limits<float>::epsilon();
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t column = 0; column < 3; ++column) {
+            double ab = 0, ba = 0;
+            for (std::size_t k = 0; k < 3; ++k) {
+                ab += static_cast<double>(forward[3 * row + k]) * inverse[3 * k + column];
+                ba += static_cast<double>(inverse[3 * row + k]) * forward[3 * k + column];
+            }
+            const double expected = row == column ? 1 : 0;
+            if (std::abs(ab - expected) > inverse_tolerance ||
+                std::abs(ba - expected) > inverse_tolerance) {
+                return "Image texture camera matrices must be an inverse pair";
+            }
+        }
+    }
+    std::set<const ImagePyramid *> checked;
+    std::size_t remaining = ImageLimits{}.retained_bytes;
+    for (const auto &texture : scene.image_textures) {
+        const std::array mapping{texture.uscale, texture.vscale, texture.udelta, texture.vdelta,
+                                 texture.scale};
+        if (!texture.image || !std::ranges::all_of(mapping, finite_scalar)) {
+            return "Image texture requires an owned pyramid and finite mapping";
+        }
+        const auto &image = *texture.image;
+        if (!checked.insert(&image).second) {
+            continue;
+        }
+        if ((image.encoding != ImageEncoding::srgb && image.encoding != ImageEncoding::linear) ||
+            (image.wrap != ImageWrap::repeat && image.wrap != ImageWrap::clamp &&
+             image.wrap != ImageWrap::black) ||
+            image.levels.empty() || image.levels.size() > 13) {
+            return "Invalid image texture encoding, wrap or mip count";
+        }
+        if (image.texels.size() > remaining / sizeof(std::uint32_t)) {
+            return "Image texture retained memory limit exceeded";
+        }
+        remaining -= image.texels.size() * sizeof(std::uint32_t);
+        if (image.levels.size() > remaining / sizeof(ImageMipLevel)) {
+            return "Image texture retained memory limit exceeded";
+        }
+        remaining -= image.levels.size() * sizeof(ImageMipLevel);
+        std::size_t offset = 0;
+        auto width = image.levels.front().width;
+        auto height = image.levels.front().height;
+        if (!std::has_single_bit(width) || !std::has_single_bit(height) ||
+            width > ImageLimits{}.max_dimension || height > ImageLimits{}.max_dimension) {
+            return "Image mip dimensions must be bounded positive powers of two";
+        }
+        for (const auto &level : image.levels) {
+            if (level.width != width || level.height != height || level.offset != offset ||
+                std::size_t{width} * height > image.texels.size() - offset) {
+                return "Invalid image mip layout";
+            }
+            offset += std::size_t{width} * height;
+            width = std::max(1u, width / 2);
+            height = std::max(1u, height / 2);
+        }
+        if (image.levels.back().width != 1 || image.levels.back().height != 1 ||
+            offset != image.texels.size() ||
+            image.levels.size() != static_cast<std::size_t>(std::bit_width(std::max(
+                                       image.levels.front().width, image.levels.front().height)))) {
+            return "Incomplete image mip chain";
+        }
+    }
+    std::size_t remaining_frames = render_patch_corner_limit;
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        const auto &frames = scene.instance_texture_frames[i];
+        const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];
+        const bool textured =
+            scene.materials[scene.instance_materials[i]].kind == SpectralMaterialKind::image;
+        if (frames.size() != (textured ? mesh.triangles.size() : 0) ||
+            frames.size() > remaining_frames) {
+            return "Invalid or excessive texture triangle frame table";
+        }
+        remaining_frames -= frames.size();
+        for (const auto &frame : frames) {
+            const std::array values{frame.dpdu.x, frame.dpdu.y, frame.dpdu.z,
+                                    frame.dpdv.x, frame.dpdv.y, frame.dpdv.z};
+            if (!std::ranges::all_of(values, finite_scalar)) {
+                return "Texture triangle frame must be finite";
+            }
+        }
+    }
+    return {};
 }
 
 bool valid_film_size(std::uint32_t width, std::uint32_t height) {
@@ -637,6 +755,9 @@ std::string validate_render_scene(const RenderScene &scene) {
                 return "Instance " + std::to_string(i) + ": " + error;
             }
         }
+    }
+    if (auto error = validate_image_textures(scene); !error.empty()) {
+        return error;
     }
     if (scene.model == RenderModel::pbrt) {
         if (!scene.raster_camera || !valid_raster_camera(*scene.raster_camera)) {

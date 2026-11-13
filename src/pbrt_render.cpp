@@ -12,6 +12,7 @@
 #include <limits>
 #include <locale>
 #include <map>
+#include <new>
 #include <numbers>
 #include <sstream>
 #include <string_view>
@@ -118,6 +119,8 @@ class Translator {
                   std::array<float, 471> &dense);
     void light(const Descriptor &descriptor);
     void constant_textures();
+    void image_textures();
+    void texture_frames();
     std::uint32_t reflectance(const Descriptor &descriptor, ReflectanceSource source);
     std::uint32_t material(const Descriptor &descriptor);
     void geometry();
@@ -227,6 +230,14 @@ void Translator::camera(const Descriptor &descriptor, const Descriptor *film_des
                              [](double error) { return std::abs(error) <= tolerance; })) {
         unsupported(descriptor.authored.location, "Camera transform must be rigid");
         return;
+    }
+    if (!input_.spectrum_image_textures.empty()) {
+        const std::array linear{m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
+        if (const auto message = prepare_texture_camera(linear, scene_.texture_camera);
+            !message.empty()) {
+            invalid(descriptor.authored.location, message);
+            return;
+        }
     }
     const auto origin = narrow_point({m[3], m[7], m[11]});
     if (!origin) {
@@ -586,6 +597,83 @@ void Translator::constant_textures() {
     }
 }
 
+void Translator::image_textures() {
+    for (const auto &definition : input_.spectrum_image_textures) {
+        if (diagnostics_.diagnostics_truncated) {
+            return;
+        }
+        const auto index = static_cast<std::uint32_t>(scene_.materials.size());
+        SpectralMaterial material;
+        material.kind = SpectralMaterialKind::image;
+        material.image_texture = static_cast<std::uint32_t>(scene_.image_textures.size());
+        scene_.image_textures.push_back(definition.texture);
+        scene_.materials.push_back(std::move(material));
+        spectrum_textures_.emplace(definition.descriptor.authored.arguments.front().text, index);
+    }
+}
+
+void Translator::texture_frames() {
+    if (scene_.image_textures.empty() || !scene_.raster_camera) {
+        return;
+    }
+    try {
+        scene_.instance_texture_frames.resize(scene_.geometry.instances.size());
+    } catch (const std::bad_alloc &) {
+        issue(Severity::error, "limit-exceeded", entry_, "Cannot allocate instance texture frames");
+        return;
+    }
+    std::size_t remaining = limits_.total_values;
+    std::size_t instance = 0;
+    const auto prepare = [&](const Shape &shape, const Transform &placement,
+                             const Location &source) {
+        auto &frames = scene_.instance_texture_frames[instance];
+        const auto material = scene_.instance_materials[instance++];
+        if (scene_.materials[material].kind != SpectralMaterialKind::image) {
+            return true;
+        }
+        const auto &mesh = input_.geometry.meshes[shape.mesh_index];
+        constexpr std::size_t coordinates_per_frame = 6;
+        if (mesh.triangles.size() > remaining / coordinates_per_frame) {
+            issue(Severity::error, "limit-exceeded", source,
+                  "Expanded triangle texture frame value limit exceeded");
+            return false;
+        }
+        remaining -= mesh.triangles.size() * coordinates_per_frame;
+        try {
+            if (const auto message = prepare_texture_triangle_frames(
+                    mesh, shape.descriptor.transform.values, placement.values, frames,
+                    {scene_.raster_camera->origin.x, scene_.raster_camera->origin.y,
+                     scene_.raster_camera->origin.z});
+                !message.empty()) {
+                invalid(source, message);
+            }
+        } catch (const std::bad_alloc &) {
+            issue(Severity::error, "limit-exceeded", source,
+                  "Cannot allocate triangle texture frames");
+            return false;
+        }
+        return !diagnostics_.diagnostics_truncated;
+    };
+    const Transform identity;
+    // Checked geometry emits the direct shapes before expanding object placements.
+    for (const auto &shape : input_.shapes) {
+        if (!prepare(shape, identity, shape.descriptor.authored.location)) {
+            return;
+        }
+    }
+    std::map<string_view, const Object *> objects;
+    for (const auto &object : input_.objects) {
+        objects.emplace(object.name, &object);
+    }
+    for (const auto &placement : input_.placements) {
+        for (const auto &shape : objects.at(placement.object)->shapes) {
+            if (!prepare(shape, placement.transform, placement.location)) {
+                return;
+            }
+        }
+    }
+}
+
 std::uint32_t Translator::material(const Descriptor &descriptor) {
     const auto *selected = parameter(descriptor, "reflectance");
     if (!selected) {
@@ -610,6 +698,7 @@ void Translator::geometry() {
         input_.named_materials.size() > limits_.directives ||
         input_.float_constant_textures.size() > limits_.directives ||
         input_.spectrum_constant_textures.size() > limits_.directives ||
+        input_.spectrum_image_textures.size() > limits_.directives ||
         input_.area_lights.size() > limits_.directives) {
         issue(Severity::error, "limit-exceeded", entry_,
               "Translated geometry, material, texture, or light limit exceeded");
@@ -642,6 +731,7 @@ void Translator::geometry() {
     default_material.knots = {{360, 0.5f}, {830, 0.5f}};
     scene_.materials.push_back(std::move(default_material));
     constant_textures();
+    image_textures();
     std::map<string_view, std::uint32_t> named;
     std::map<const Descriptor *, std::uint32_t> inline_materials;
     for (const auto &descriptor : input_.named_materials) {
@@ -820,6 +910,10 @@ RenderTranslation Translator::run() {
     if (!diagnostics_.diagnostics_truncated) {
         geometry();
     }
+    if (!diagnostics_.diagnostics_truncated &&
+        scene_.instance_materials.size() == input_.geometry.instances.size()) {
+        texture_frames();
+    }
     const auto &settings = result_.settings;
     std::string sampler_error;
     if (sampler_descriptor && film_descriptor && settings.sampler.kind == SamplerKind::sobol) {
@@ -869,6 +963,10 @@ RenderTranslation Translator::run() {
                           << " (x radius " << scene_.filter.x_radius << ", y radius "
                           << scene_.filter.y_radius << ')';
         result_.provenance.push_back(filter_provenance.str());
+        if (!scene_.image_textures.empty()) {
+            result_.provenance.emplace_back(
+                "Image textures: PNG, UV mapping, mipmapped bilinear filtering");
+        }
         result_.scene = std::move(scene_);
         result_.provenance.push_back("CIE 1931 sensor exposure uses ISO and shutter duration");
     }

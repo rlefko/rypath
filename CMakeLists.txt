@@ -80,7 +80,7 @@ rypath_configure_host_target(rypath_image)
 
 add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp)
 target_include_directories(rypath_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(rypath_pbrt PRIVATE rypath_geometry)
+target_link_libraries(rypath_pbrt PRIVATE rypath_geometry PUBLIC rypath_image)
 rypath_configure_host_target(rypath_pbrt)
 
 include(cmake/CieData.cmake)
@@ -101,10 +101,11 @@ if(NOT rypath_sobol_digest STREQUAL "349a336cd9dff8bdc06cd30490b1cf887c3f041c5fd
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_sobol_tables}")
 
-add_library(rypath_render STATIC src/render.cpp src/sampling.cpp src/triangle_attributes.cpp)
+add_library(rypath_render STATIC src/render.cpp src/sampling.cpp src/triangle_attributes.cpp
+    src/texture_footprint.cpp)
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PRIVATE "${rypath_generated_directory}")
-target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum)
+target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image)
 rypath_configure_host_target(rypath_render)
 
 add_library(rypath_pbrt_render STATIC src/pbrt_render.cpp)

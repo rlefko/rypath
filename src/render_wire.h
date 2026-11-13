@@ -19,7 +19,12 @@ enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_
 enum : Word { demo_model = 0, pbrt_model = 1 };
 enum : Word { box_filter = 0, triangle_filter = 1 };
 enum : Word { independent_sampler = 0, sobol_sampler = 1 };
-enum : Word { sampled_material = 0, constant_material = 1, rgb_sigmoid_material = 2 };
+enum : Word {
+    sampled_material = 0,
+    constant_material = 1,
+    rgb_sigmoid_material = 2,
+    image_material = 3
+};
 enum : Word { no_emission = 0xffffffffu };
 enum : Word { no_normals = 0xffffffffu };
 enum : Word { triangle_primitive = 1, patch_primitive = 2 };
@@ -28,6 +33,43 @@ struct Point {
     float x;
     float y;
     float z;
+};
+struct Point2 {
+    float x;
+    float y;
+};
+struct TextureFrame {
+    Point dpdu;
+    Point dpdv;
+};
+struct TextureLevel {
+    Word width;
+    Word height;
+    Word offset;
+};
+struct ImageTexture {
+    Word level_begin;
+    Word level_count;
+    Word wrap;
+    Word encoding;
+    float uscale;
+    float vscale;
+    float udelta;
+    float vdelta;
+    float scale;
+    Word invert;
+};
+struct TextureParameters {
+    Word texture_count;
+    Word level_count;
+    Word texel_count;
+    Word uv_count;
+    Word frame_count;
+    float spp_scale;
+    float world_from_camera[9];
+    float camera_from_world[9];
+    Point minimum_dx;
+    Point minimum_dy;
 };
 struct Triangle {
     Word vertices[3];
@@ -42,6 +84,7 @@ struct Material {
     Word kind;
     float constant_value;
     float coefficients[3];
+    Word image_texture;
 };
 struct SpectralKnot {
     float wavelength;
@@ -58,6 +101,8 @@ struct Instance {
     Word normal_begin;
     Word patch_begin;
     Word patch_count;
+    Word uv_begin;
+    Word frame_begin;
 };
 struct AreaEmission {
     float radiance[471];
@@ -116,23 +161,36 @@ static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "render wire scalar width
 static_assert(sizeof(Point) == 12 && alignof(Point) == 4, "render point layout");
 static_assert(sizeof(Triangle) == 12 && alignof(Triangle) == 4, "render triangle layout");
 static_assert(sizeof(Patch) == 16 && alignof(Patch) == 4, "render patch layout");
-static_assert(sizeof(Material) == 60 && alignof(Material) == 4 &&
+static_assert(sizeof(Point2) == 8 && alignof(Point2) == 4, "texture coordinate layout");
+static_assert(sizeof(TextureFrame) == 24 && alignof(TextureFrame) == 4, "texture frame layout");
+static_assert(sizeof(TextureLevel) == 12 && alignof(TextureLevel) == 4, "texture level layout");
+static_assert(sizeof(ImageTexture) == 40 && alignof(ImageTexture) == 4 &&
+                  __builtin_offsetof(ImageTexture, uscale) == 16,
+              "image texture layout");
+static_assert(sizeof(TextureParameters) == 120 && alignof(TextureParameters) == 4 &&
+                  __builtin_offsetof(TextureParameters, world_from_camera) == 24 &&
+                  __builtin_offsetof(TextureParameters, minimum_dx) == 96,
+              "texture parameters layout");
+static_assert(sizeof(Material) == 64 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, knot_begin) == 32 &&
                   __builtin_offsetof(Material, knot_count) == 36 &&
                   __builtin_offsetof(Material, kind) == 40 &&
                   __builtin_offsetof(Material, constant_value) == 44 &&
-                  __builtin_offsetof(Material, coefficients) == 48,
+                  __builtin_offsetof(Material, coefficients) == 48 &&
+                  __builtin_offsetof(Material, image_texture) == 60,
               "render material layout");
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 84 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 92 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
                   __builtin_offsetof(Instance, emission) == 68 &&
                   __builtin_offsetof(Instance, normal_begin) == 72 &&
                   __builtin_offsetof(Instance, patch_begin) == 76 &&
-                  __builtin_offsetof(Instance, patch_count) == 80,
+                  __builtin_offsetof(Instance, patch_count) == 80 &&
+                  __builtin_offsetof(Instance, uv_begin) == 84 &&
+                  __builtin_offsetof(Instance, frame_begin) == 88,
               "render instance layout");
 static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
