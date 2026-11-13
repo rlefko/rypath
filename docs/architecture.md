@@ -60,6 +60,15 @@ File expansion, typed parsing, scene interpretation, and reporting are implement
 there is no linked PBRT renderer or runtime dependency. The
 [dependency decision](pbrt-decision.md) records the integration boundary.
 
+External PLY decoding now feeds the same checked geometry and shape bindings.
+Mixed meshes retain triangles and true bilinear patches. Metal requires homogeneous
+primitive structures, so one source mixed mesh uses separate triangle and procedural
+patch structures, and one source placement may expand to two native instances.
+The adapter maps both back to the source placement. Intersection tables belong to
+their respective compute pipelines; accepted patch coordinates travel in an owned
+per-ray payload. The [PLY record](pbrt-ply-validation.md) covers resource limits,
+intersection conditioning, interpolation and area-light densities.
+
 ## Rendering and planned boundaries
 
 The first renderer exercises these boundaries concretely: portable spectral

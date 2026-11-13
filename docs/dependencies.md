@@ -71,3 +71,16 @@ PBRT revision. The 1,024-dimensional direction table and interval matrices are
 checksum-verified at configure time and shared by portable and Metal sampling.
 Their PBRT Apache-2.0 and Leonhard Gruenschloss permission notices are retained.
 No sampler library is linked or downloaded at runtime.
+
+The bounded PLY 1.0 decoder is original C++20 code. The reader APIs and count
+handling in pinned PBRT RPly 1.1.3, tinyply 3.0, and happly were examined before
+choosing this boundary; enforcing allocation and decode-work bounds would require
+changes inside those readers, not just an adapter around their file/stream APIs.
+No new runtime dependency is linked. The bilinear intersection mathematics is
+adapted from pinned PBRT with explicit Apache-2.0 attribution and compensated
+arithmetic for Metal; its independent CPU oracle is test-only. See the
+[PBRT adaptation record](../third_party/pbrt/README.md).
+
+The 412-byte external PLY comparison asset retains its CC BY 2.0 terms and
+upstream attribution in its [manifest](../tests/fixtures/pbrt-render/ply-assets/README.md).
+Owned wrappers and synthetic mesh fixtures have separate GPL-3.0-only terms.

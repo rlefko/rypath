@@ -20,6 +20,7 @@ namespace rypath {
 namespace {
 
 using geometry_wire::Closest;
+using geometry_wire::Patch;
 using geometry_wire::Ray;
 using geometry_wire::Word;
 constexpr auto max_wire_index = std::numeric_limits<Word>::max();
@@ -29,9 +30,14 @@ static_assert(sizeof(GeometryPoint) == 12 && offsetof(GeometryPoint, y) == 4 &&
               offsetof(GeometryPoint, z) == 8);
 static_assert(sizeof(std::array<Word, 3>) == 12);
 static_assert(sizeof(MTLPackedFloat4x3) == 48);
+static_assert(sizeof(MTLAxisAlignedBoundingBox) == 24 &&
+              std::is_trivially_copyable_v<MTLAxisAlignedBoundingBox>);
 static_assert(sizeof(MTLAccelerationStructureInstanceDescriptor) == 64 &&
               std::is_trivially_copyable_v<MTLAccelerationStructureInstanceDescriptor>);
-static_assert(std::is_trivially_copyable_v<Ray> && std::is_trivially_copyable_v<Closest>);
+static_assert(std::is_trivially_copyable_v<Ray> && std::is_trivially_copyable_v<Closest> &&
+              std::is_trivially_copyable_v<Patch>);
+static_assert(static_cast<Word>(PrimitiveKind::triangle) == geometry_wire::triangle &&
+              static_cast<Word>(PrimitiveKind::bilinear_patch) == geometry_wire::bilinear_patch);
 
 template <class T> bool fits_buffer(id<MTLDevice> device, std::size_t count) {
     return count <= device.maxBufferLength / sizeof(T);
@@ -83,8 +89,8 @@ id<MTLAccelerationStructure> build_structure(id<MTLDevice> device, id<MTLCommand
     return diagnostic.empty() ? structure : nil;
 }
 
-id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue> queue,
-                                        const GeometryMesh &mesh, std::string &diagnostic) {
+MTLAccelerationStructureTriangleGeometryDescriptor *
+triangle_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &diagnostic) {
     if (!fits_buffer<GeometryPoint>(device, mesh.positions.size()) ||
         !fits_buffer<std::array<Word, 3>>(device, mesh.triangles.size())) {
         diagnostic = "Metal vertex or index buffer exceeds device size limit";
@@ -105,16 +111,99 @@ id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue
     triangle.indexType = MTLIndexTypeUInt32;
     triangle.triangleCount = mesh.triangles.size();
     triangle.opaque = YES;
+    return triangle;
+}
 
+MTLAccelerationStructureBoundingBoxGeometryDescriptor *
+patch_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &diagnostic) {
+    if (!fits_buffer<MTLAxisAlignedBoundingBox>(device, mesh.patches.size()) ||
+        !fits_buffer<Patch>(device, mesh.patches.size())) {
+        diagnostic = "Metal patch bounds or corner buffer exceeds device size limit";
+        return nil;
+    }
+    std::vector<MTLAxisAlignedBoundingBox> bounds;
+    std::vector<Patch> corners;
+    bounds.reserve(mesh.patches.size());
+    corners.reserve(mesh.patches.size());
+    for (const auto &indices : mesh.patches) {
+        Patch patch{};
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            const auto &p = mesh.positions[indices[i]];
+            patch.corners[i][0] = p.x;
+            patch.corners[i][1] = p.y;
+            patch.corners[i][2] = p.z;
+        }
+        corners.push_back(patch);
+
+        // A bilinear patch lies in the convex hull of its four corners.
+        // Expand planar bounds too, using normal floats if an axis lies at zero.
+        MTLPackedFloat3 lower{}, upper{};
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const auto [lo, hi] = std::minmax({patch.corners[0][axis], patch.corners[1][axis],
+                                               patch.corners[2][axis], patch.corners[3][axis]});
+            const auto max_float = std::numeric_limits<float>::max();
+            const auto min_normal = std::numeric_limits<float>::min();
+            lower[axis] = std::nextafter(lo, -max_float);
+            upper[axis] = std::nextafter(hi, max_float);
+            if (std::abs(lower[axis]) < min_normal) {
+                lower[axis] = -min_normal;
+            }
+            if (std::abs(upper[axis]) < min_normal) {
+                upper[axis] = min_normal;
+            }
+        }
+        bounds.emplace_back(lower, upper);
+    }
+    id<MTLBuffer> bounds_buffer =
+        upload(device, std::span<const MTLAxisAlignedBoundingBox>{bounds});
+    id<MTLBuffer> corner_buffer = upload(device, std::span<const Patch>{corners});
+    if (bounds_buffer == nil || corner_buffer == nil) {
+        diagnostic = "Metal patch bounds or corner buffer allocation failed";
+        return nil;
+    }
+    MTLAccelerationStructureBoundingBoxGeometryDescriptor *box =
+        [MTLAccelerationStructureBoundingBoxGeometryDescriptor descriptor];
+    box.boundingBoxBuffer = bounds_buffer;
+    box.boundingBoxStride = sizeof(MTLAxisAlignedBoundingBox);
+    box.boundingBoxCount = mesh.patches.size();
+    box.primitiveDataBuffer = corner_buffer;
+    box.primitiveDataStride = sizeof(Patch);
+    box.primitiveDataElementSize = sizeof(Patch);
+    box.opaque = NO;
+    return box;
+}
+
+constexpr std::array primitive_kinds{PrimitiveKind::triangle, PrimitiveKind::bilinear_patch};
+
+std::size_t kind_index(PrimitiveKind kind) { return kind == PrimitiveKind::triangle ? 0 : 1; }
+
+std::size_t primitive_count(const GeometryMesh &mesh, PrimitiveKind kind) {
+    return kind == PrimitiveKind::triangle ? mesh.triangles.size() : mesh.patches.size();
+}
+
+// Metal requires all geometry descriptors in a BLAS to have the same type.
+id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue> queue,
+                                        const GeometryMesh &mesh, PrimitiveKind kind,
+                                        std::string &diagnostic) {
+    const bool triangle = kind == PrimitiveKind::triangle;
+    MTLAccelerationStructureGeometryDescriptor *geometry =
+        triangle ? triangle_descriptor(device, mesh, diagnostic)
+                 : patch_descriptor(device, mesh, diagnostic);
+    if (geometry == nil) {
+        return nil;
+    }
     MTLPrimitiveAccelerationStructureDescriptor *descriptor =
         [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-    descriptor.geometryDescriptors = @[ triangle ];
-    return build_structure(device, queue, descriptor, @"rypath mesh", diagnostic);
+    descriptor.geometryDescriptors = @[ geometry ];
+    return build_structure(device, queue, descriptor,
+                           triangle ? @"rypath triangles" : @"rypath bilinear patches", diagnostic);
 }
 
 struct InstanceIndices {
     Word source_index;
     Word mesh_index;
+    PrimitiveKind kind;
+    std::size_t primitive_count;
 };
 
 constexpr std::string_view moved_from = "Metal geometry scene is moved-from";
@@ -126,10 +215,11 @@ struct MetalGeometryScene::Impl {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> closest = nil;
     id<MTLComputePipelineState> occlusion = nil;
+    id<MTLIntersectionFunctionTable> closest_table = nil;
+    id<MTLIntersectionFunctionTable> occlusion_table = nil;
     NSArray<id<MTLAccelerationStructure>> *meshes = nil;
     id<MTLAccelerationStructure> instances = nil;
     std::vector<InstanceIndices> instance_indices;
-    std::vector<std::size_t> triangle_counts;
 
     void bind(id<MTLComputeCommandEncoder> encoder, NSUInteger slot) const {
         [encoder setAccelerationStructure:instances atBufferIndex:slot];
@@ -140,8 +230,10 @@ struct MetalGeometryScene::Impl {
     }
 
     template <class Output>
-    id<MTLBuffer> dispatch(id<MTLComputePipelineState> pipeline, std::span<const GeometryRay> rays,
-                           std::size_t &guard_count, std::string &diagnostic) const {
+    id<MTLBuffer> dispatch(id<MTLComputePipelineState> pipeline,
+                           id<MTLIntersectionFunctionTable> table,
+                           std::span<const GeometryRay> rays, std::size_t &guard_count,
+                           std::string &diagnostic) const {
         const auto width = metal::group_width(device, pipeline);
         if (width == 0 || rays.size() > max_wire_index) {
             diagnostic = "Metal ray dispatch exceeds threadgroup or ray index limits";
@@ -192,6 +284,7 @@ struct MetalGeometryScene::Impl {
         const auto count = static_cast<Word>(rays.size());
         [encoder setBytes:&count length:sizeof(count) atIndex:2];
         bind(encoder, 3);
+        [encoder setIntersectionFunctionTable:table atBufferIndex:4];
         [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
         [encoder endEncoding];
@@ -232,6 +325,11 @@ std::uint32_t MetalGeometryAccess::source_instance(const MetalGeometryScene &sce
     return scene.impl_->instance_indices[ordinal].source_index;
 }
 
+PrimitiveKind MetalGeometryAccess::primitive_kind(const MetalGeometryScene &scene,
+                                                  std::size_t ordinal) {
+    return scene.impl_->instance_indices[ordinal].kind;
+}
+
 void MetalGeometryAccess::bind(const MetalGeometryScene &scene,
                                id<MTLComputeCommandEncoder> encoder, NSUInteger slot) {
     scene.impl_->bind(encoder, slot);
@@ -255,8 +353,8 @@ GeometryClosestResult MetalGeometryScene::closest_hits(std::span<const GeometryR
         }
 
         std::size_t guards = 0;
-        [[clang::objc_precise_lifetime]] id<MTLBuffer> output =
-            impl_->dispatch<Closest>(impl_->closest, rays, guards, result.diagnostic);
+        [[clang::objc_precise_lifetime]] id<MTLBuffer> output = impl_->dispatch<Closest>(
+            impl_->closest, impl_->closest_table, rays, guards, result.diagnostic);
         if (output == nil) {
             return result;
         }
@@ -266,32 +364,47 @@ GeometryClosestResult MetalGeometryScene::closest_hits(std::span<const GeometryR
         for (std::size_t index = 0; index < rays.size(); ++index) {
             Closest hit{};
             std::memcpy(&hit, output_data + index * sizeof(hit), sizeof(hit));
-            if (hit.kind == 0) {
+            if (hit.kind == geometry_wire::miss) {
                 hits.emplace_back();
                 continue;
             }
-            const float w = 1.0f - (hit.u + hit.v);
+            const bool triangle = hit.kind == geometry_wire::triangle;
+            const bool patch = hit.kind == geometry_wire::bilinear_patch;
             const auto &ray = rays[index];
-            if (hit.kind != 1 || hit.geometry != 0 ||
-                hit.instance >= impl_->instance_indices.size() || !std::isfinite(hit.t) ||
-                hit.t < ray.t_min || hit.t > ray.t_max || !std::isfinite(w) ||
+            if ((!triangle && !patch) || hit.instance >= impl_->instance_indices.size() ||
+                !std::isfinite(hit.t) || hit.t < ray.t_min || hit.t > ray.t_max ||
                 !std::isfinite(hit.u) || !std::isfinite(hit.v)) {
                 result.diagnostic =
                     "Metal closest-hit output is invalid at ray " + std::to_string(index);
                 return result;
             }
             const auto instance = impl_->instance_indices[hit.instance];
-            if (hit.primitive >= impl_->triangle_counts[instance.mesh_index]) {
+            if (hit.geometry != 0 || hit.kind != static_cast<Word>(instance.kind) ||
+                hit.primitive >= instance.primitive_count) {
                 result.diagnostic =
                     "Metal closest-hit primitive index is invalid at ray " + std::to_string(index);
                 return result;
             }
-            hits.push_back({true,
-                            instance.mesh_index,
-                            instance.source_index,
-                            hit.primitive,
-                            hit.t,
-                            {w, hit.u, hit.v}});
+            GeometryHit decoded{true, instance.mesh_index, instance.source_index, hit.primitive,
+                                hit.t};
+            if (triangle) {
+                const float w = 1.0f - (hit.u + hit.v);
+                if (!std::isfinite(w)) {
+                    result.diagnostic = "Metal closest-hit barycentrics are invalid at ray " +
+                                        std::to_string(index);
+                    return result;
+                }
+                decoded.barycentric = {w, hit.u, hit.v};
+            } else {
+                if (hit.u < 0 || hit.u > 1 || hit.v < 0 || hit.v > 1) {
+                    result.diagnostic = "Metal closest-hit patch coordinates are invalid at ray " +
+                                        std::to_string(index);
+                    return result;
+                }
+                decoded.kind = PrimitiveKind::bilinear_patch;
+                decoded.patch_uv = {hit.u, hit.v};
+            }
+            hits.push_back(decoded);
         }
         result.hits = std::move(hits);
         result.guard_count = guards;
@@ -318,8 +431,8 @@ GeometryOcclusionResult MetalGeometryScene::occlusion(std::span<const GeometryRa
         }
 
         std::size_t guards = 0;
-        [[clang::objc_precise_lifetime]] id<MTLBuffer> output =
-            impl_->dispatch<Word>(impl_->occlusion, rays, guards, result.diagnostic);
+        [[clang::objc_precise_lifetime]] id<MTLBuffer> output = impl_->dispatch<Word>(
+            impl_->occlusion, impl_->occlusion_table, rays, guards, result.diagnostic);
         if (output == nil) {
             return result;
         }
@@ -364,10 +477,12 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
             return result;
         }
 
-        const auto active_instances = static_cast<std::size_t>(
-            std::ranges::count_if(geometry.instances, [&](const GeometryInstance &instance) {
-                return !geometry.meshes[instance.mesh_index].triangles.empty();
-            }));
+        std::size_t active_instances = 0;
+        for (const auto &instance : geometry.instances) {
+            const auto &mesh = geometry.meshes[instance.mesh_index];
+            active_instances += !mesh.triangles.empty();
+            active_instances += !mesh.patches.empty();
+        }
         if (!metal::fits_instance_limit(active_instances)) {
             result.diagnostic =
                 "Metal instance count exceeds the standard acceleration structure limit";
@@ -379,8 +494,10 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
         }
         if (active_instances != 0) {
             for (std::size_t index = 0; index < geometry.meshes.size(); ++index) {
-                if (!metal::fits_primitive_limit(geometry.meshes[index].triangles.size())) {
-                    result.diagnostic = "Metal triangle count exceeds the standard acceleration "
+                const auto &mesh = geometry.meshes[index];
+                if (!metal::fits_primitive_limit(mesh.triangles.size()) ||
+                    !metal::fits_primitive_limit(mesh.patches.size())) {
+                    result.diagnostic = "Metal primitive count exceeds the standard acceleration "
                                         "structure limit (mesh " +
                                         std::to_string(index) + ")";
                     return result;
@@ -393,8 +510,12 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
         impl->instance_indices.reserve(active_instances);
         for (std::size_t index = 0; index < geometry.instances.size(); ++index) {
             const auto mesh_index = geometry.instances[index].mesh_index;
-            if (!geometry.meshes[mesh_index].triangles.empty()) {
-                impl->instance_indices.push_back({static_cast<Word>(index), mesh_index});
+            for (const auto kind : primitive_kinds) {
+                const auto count = primitive_count(geometry.meshes[mesh_index], kind);
+                if (count != 0) {
+                    impl->instance_indices.push_back(
+                        {static_cast<Word>(index), mesh_index, kind, count});
+                }
             }
         }
         if (!impl->instance_indices.empty()) {
@@ -402,14 +523,29 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
             if (library == nil) {
                 return result;
             }
-            impl->closest =
-                metal::load_pipeline(device, library, @"rypath_closest_hits", result.diagnostic);
+            id<MTLFunction> intersection =
+                metal::load_patch_intersection(library, result.diagnostic);
+            if (intersection == nil) {
+                return result;
+            }
+            impl->closest = metal::load_pipeline(device, library, @"rypath_closest_hits",
+                                                 result.diagnostic, intersection);
             if (impl->closest == nil) {
                 return result;
             }
-            impl->occlusion =
-                metal::load_pipeline(device, library, @"rypath_occlusion", result.diagnostic);
+            impl->closest_table =
+                metal::make_intersection_table(impl->closest, intersection, result.diagnostic);
+            if (impl->closest_table == nil) {
+                return result;
+            }
+            impl->occlusion = metal::load_pipeline(device, library, @"rypath_occlusion",
+                                                   result.diagnostic, intersection);
             if (impl->occlusion == nil) {
+                return result;
+            }
+            impl->occlusion_table =
+                metal::make_intersection_table(impl->occlusion, intersection, result.diagnostic);
+            if (impl->occlusion_table == nil) {
                 return result;
             }
             impl->queue = [device newCommandQueue];
@@ -419,23 +555,26 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
             }
 
             NSMutableArray<id<MTLAccelerationStructure>> *structures = [NSMutableArray array];
-            std::vector<Word> mesh_to_structure(geometry.meshes.size());
+            std::vector<std::array<Word, primitive_kinds.size()>> mesh_to_structure(
+                geometry.meshes.size());
             for (std::size_t index = 0; index < geometry.meshes.size(); ++index) {
                 const auto &mesh = geometry.meshes[index];
-                impl->triangle_counts.push_back(mesh.triangles.size());
-                if (mesh.triangles.empty()) {
-                    continue;
-                }
-                // Release each completed build's temporary descriptors and command resources.
-                @autoreleasepool {
-                    id<MTLAccelerationStructure> structure =
-                        build_mesh(device, impl->queue, mesh, result.diagnostic);
-                    if (structure == nil) {
-                        result.diagnostic += " (mesh " + std::to_string(index) + ")";
-                        return result;
+                for (const auto kind : primitive_kinds) {
+                    if (primitive_count(mesh, kind) == 0) {
+                        continue;
                     }
-                    mesh_to_structure[index] = static_cast<Word>(structures.count);
-                    [structures addObject:structure];
+                    // Release each completed build's descriptors and command resources.
+                    @autoreleasepool {
+                        id<MTLAccelerationStructure> structure =
+                            build_mesh(device, impl->queue, mesh, kind, result.diagnostic);
+                        if (structure == nil) {
+                            result.diagnostic += " (mesh " + std::to_string(index) + ")";
+                            return result;
+                        }
+                        mesh_to_structure[index][kind_index(kind)] =
+                            static_cast<Word>(structures.count);
+                        [structures addObject:structure];
+                    }
                 }
             }
             impl->meshes = [structures copy];
@@ -450,7 +589,8 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
                         MTLPackedFloat3Make(m[column], m[column + 4], m[column + 8]);
                 }
                 instance.mask = geometry_wire::all_visible;
-                instance.accelerationStructureIndex = mesh_to_structure[indices.mesh_index];
+                instance.accelerationStructureIndex =
+                    mesh_to_structure[indices.mesh_index][kind_index(indices.kind)];
                 native_instances.push_back(instance);
             }
             id<MTLBuffer> buffer = upload(

@@ -3,7 +3,7 @@
 // The pbrt source code is licensed under the Apache License, Version 2.0.
 // Modified for rypath. See third_party/pbrt/README.md.
 
-#include "pbrt.hpp"
+#include "pbrt_numeric.hpp"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +37,50 @@ void diagnose(Document &document, const Limits &limits, Severity severity, std::
 
 namespace {
 
+bool is_digit(char c) { return c >= '0' && c <= '9'; }
+
+std::size_t skip_digits(std::string_view text, std::size_t position) {
+    while (position < text.size() && is_digit(text[position])) {
+        ++position;
+    }
+    return position;
+}
+
+} // namespace
+
+bool is_decimal(std::string_view text) {
+    if (text.starts_with('+') || text.starts_with('-')) {
+        text.remove_prefix(1);
+    }
+    std::size_t position = skip_digits(text, 0);
+    bool has_digits = position != 0;
+    if (position < text.size() && text[position] == '.') {
+        ++position;
+        const std::size_t fractional_end = skip_digits(text, position);
+        has_digits = has_digits || fractional_end != position;
+        position = fractional_end;
+    }
+    if (has_digits && position < text.size() && (text[position] == 'e' || text[position] == 'E')) {
+        ++position;
+        if (position < text.size() && (text[position] == '+' || text[position] == '-')) {
+            ++position;
+        }
+        const std::size_t exponent_end = skip_digits(text, position);
+        if (exponent_end == position) {
+            return false;
+        }
+        position = exponent_end;
+    }
+    return has_digits && position == text.size();
+}
+
+bool nonzero_significand(std::string_view text) {
+    return text.substr(0, text.find_first_of("eE")).find_first_of("123456789") !=
+           std::string_view::npos;
+}
+
+namespace {
+
 // A fatal lexical/typed error leaves no reliable token boundary for recovery.
 struct StopParsing {};
 
@@ -48,8 +92,6 @@ struct Token {
 };
 
 bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
-
-bool is_digit(char c) { return c >= '0' && c <= '9'; }
 
 // Adapted from PBRT's decodeEscaped and Tokenizer::Next. Here a token owns its
 // text, and locations share the owning file name with the frame.
@@ -271,39 +313,6 @@ std::string_view take_word(std::string_view &text) {
     return word;
 }
 
-std::size_t skip_digits(std::string_view text, std::size_t position) {
-    while (position < text.size() && is_digit(text[position])) {
-        ++position;
-    }
-    return position;
-}
-
-bool is_decimal(std::string_view text) {
-    if (text.starts_with('+') || text.starts_with('-')) {
-        text.remove_prefix(1);
-    }
-    std::size_t position = skip_digits(text, 0);
-    bool has_digits = position != 0;
-    if (position < text.size() && text[position] == '.') {
-        ++position;
-        const std::size_t fractional_end = skip_digits(text, position);
-        has_digits = has_digits || fractional_end != position;
-        position = fractional_end;
-    }
-    if (has_digits && position < text.size() && (text[position] == 'e' || text[position] == 'E')) {
-        ++position;
-        if (position < text.size() && (text[position] == '+' || text[position] == '-')) {
-            ++position;
-        }
-        const std::size_t exponent_end = skip_digits(text, position);
-        if (exponent_end == position) {
-            return false;
-        }
-        position = exponent_end;
-    }
-    return has_digits && position == text.size();
-}
-
 bool is_decimal_integer(std::string_view text) {
     if (text.starts_with('+') || text.starts_with('-')) {
         text.remove_prefix(1);
@@ -370,11 +379,6 @@ bool valid_hex(std::string_view text) {
         position = end;
     }
     return position == text.size();
-}
-
-bool nonzero_significand(std::string_view text) {
-    return text.substr(0, text.find_first_of("eE")).find_first_of("123456789") !=
-           std::string_view::npos;
 }
 
 enum class LoadResult { unvisited, gzip, text };

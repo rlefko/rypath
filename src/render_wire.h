@@ -22,6 +22,7 @@ enum : Word { independent_sampler = 0, sobol_sampler = 1 };
 enum : Word { sampled_material = 0, constant_material = 1, rgb_sigmoid_material = 2 };
 enum : Word { no_emission = 0xffffffffu };
 enum : Word { no_normals = 0xffffffffu };
+enum : Word { triangle_primitive = 1, patch_primitive = 2 };
 
 struct Point {
     float x;
@@ -30,6 +31,9 @@ struct Point {
 };
 struct Triangle {
     Word vertices[3];
+};
+struct Patch {
+    Word vertices[4];
 };
 struct Material {
     float reflectance[8];
@@ -52,6 +56,8 @@ struct Instance {
     Word reverse_orientation;
     Word emission;
     Word normal_begin;
+    Word patch_begin;
+    Word patch_count;
 };
 struct AreaEmission {
     float radiance[471];
@@ -60,6 +66,7 @@ struct AreaEmission {
 struct Emitter {
     Word instance;
     Word primitive;
+    Word kind;
 };
 struct Parameters {
     Point origin;
@@ -108,6 +115,7 @@ struct Sample {
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "render wire scalar width");
 static_assert(sizeof(Point) == 12 && alignof(Point) == 4, "render point layout");
 static_assert(sizeof(Triangle) == 12 && alignof(Triangle) == 4, "render triangle layout");
+static_assert(sizeof(Patch) == 16 && alignof(Patch) == 4, "render patch layout");
 static_assert(sizeof(Material) == 60 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, knot_begin) == 32 &&
                   __builtin_offsetof(Material, knot_count) == 36 &&
@@ -118,17 +126,20 @@ static_assert(sizeof(Material) == 60 && alignof(Material) == 4 &&
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 76 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 84 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
                   __builtin_offsetof(Instance, emission) == 68 &&
-                  __builtin_offsetof(Instance, normal_begin) == 72,
+                  __builtin_offsetof(Instance, normal_begin) == 72 &&
+                  __builtin_offsetof(Instance, patch_begin) == 76 &&
+                  __builtin_offsetof(Instance, patch_count) == 80,
               "render instance layout");
 static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
               "render area emission layout");
-static_assert(sizeof(Emitter) == 8 && alignof(Emitter) == 4 &&
-                  __builtin_offsetof(Emitter, primitive) == 4,
+static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
+                  __builtin_offsetof(Emitter, primitive) == 4 &&
+                  __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
 static_assert(sizeof(Parameters) == 184 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&

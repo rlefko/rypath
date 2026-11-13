@@ -2,67 +2,54 @@
 
 ## Current milestone
 
-[Foundation PR #1](https://github.com/rlefko/rypath/pull/1),
-[Metal execution PR #2](https://github.com/rlefko/rypath/pull/2),
-[native geometry PR #3](https://github.com/rlefko/rypath/pull/3),
-[progressive image PR #4](https://github.com/rlefko/rypath/pull/4),
-[PBRT preflight PR #5](https://github.com/rlefko/rypath/pull/5),
-[PBRT spectral rendering PR #6](https://github.com/rlefko/rypath/pull/6),
-[sRGB reconstruction PR #7](https://github.com/rlefko/rypath/pull/7),
-[triangle area-light PR #8](https://github.com/rlefko/rypath/pull/8),
-[triangle-filter PR #9](https://github.com/rlefko/rypath/pull/9),
-[triangle-attribute PR #10](https://github.com/rlefko/rypath/pull/10), and
-[Sobol PR #11](https://github.com/rlefko/rypath/pull/11) were reviewed and merged.
-The renderer supports all four PBRT Sobol randomizations and renders the
-unchanged pinned Cornell fixture at its authored settings. Current work audits
-foundation verification and project agent guidance; it adds no rendering features.
+Foundations through [Sobol rendering PR #11](https://github.com/rlefko/rypath/pull/11)
+and the [foundation audit PR #12](https://github.com/rlefko/rypath/pull/12) are merged.
+The current PLY rendering change is ready for review: bounded ASCII/binary PLY
+triangles and faithful bilinear quads, native patch intersection, interpolated
+normals/retained UVs and constant curved emission. Its small pinned external asset
+has a complete dependency/license manifest. It does not establish compatibility
+with the full upstream Sportscar scene or general PBRT scene collection.
 
-`--render-pbrt SCENE --output IMAGE.png` translates supported sampled spectra and
-linear sRGB colors, diffuse triangles/instances with interpolated normals and retained UVs,
-a pinhole camera, constant environment lighting,
-directly placed triangle emitters, box or triangle pixel filters, and independent
-or Sobol sampling
-into native Metal rendering. It honors authored finite depth, retains calibrated
-raw XYZ, reports complete sample batches, and publishes a final PNG. The
-[rendering profile](pbrt-rendering.md) documents exact semantics and limits.
-Portable `--check-pbrt` remains structural analysis and never renders.
+`--render-pbrt SCENE --output IMAGE.png` supports sampled spectra and linear sRGB,
+diffuse triangle/patch instances, a pinhole camera, constant environment and
+directly placed area lights, box/triangle filters, and independent or all four
+Sobol sampling modes. It honors finite depth, retains calibrated raw XYZ and
+complete sample batches, and publishes a final PNG. The [render profile](pbrt-rendering.md)
+defines its numerical and semantic limits; portable `--check-pbrt` never renders.
 
-The demo retains its original relative spectral model and compensated roulette.
-Wider color spaces, positive-power normalization, textured/instanced emitters,
-external meshes/textures, general upstream-scene
-rendering, OpenEXR, checkpointing, and the interactive app remain future work.
-The pinned Cornell fixture completes 1024×1024 × 64 spp with depth 65. This is
-one supported unmodified external entry point; broad corpus support is not established.
+The unchanged pinned Cornell fixture remains a supported external entry point.
+Textures, wider color spaces, positive-power normalization, emitting object
+members, other mesh formats, OpenEXR, checkpointing and the interactive app remain
+future work. The [roadmap](roadmap.md) keeps these as separate review boundaries.
 
-## Validation and review
+## Current validation
 
-The foundation audit adds a 37-case CLI availability classification harness and
-archive/commit-hook regressions. On Apple M4 Max (`applegpu_g16s`), macOS 26.6
-(25G5065a), and Xcode 26.6 (17F113), all 58 tests passed in each of Debug, Release,
-and ASan/UBSan with both availability allowances disabled. Metal API validation
-passed all 10 selected tests. All 24 Python policy/comparison tests passed;
-formatting, skill validation, agent TOML parsing, and four independent guidance
-scenarios also passed. These are foundation regression results; the renderer and
-its numerical thresholds are unchanged.
+On Apple M4 Max (`applegpu_g16s`), macOS 26.6 (25G5065a), Xcode 26.6 (17F113),
+all 64 CTests passed in Debug, Release and ASan/UBSan with both availability
+allowances disabled. All 12 native tests passed Metal API and shader validation;
+54 portable ASan/UBSan tests also passed. LLVM 18 clang-tidy passed 37 native and
+40 Metal-disabled C++ units; Apple static analysis passed six Objective-C++ units.
+All 25 Python policy/comparison tests passed.
 
-The [Sobol validation record](pbrt-sobol-validation.md) records portable
-conformance, exact CPU/MSL sampling checks, deterministic quadrature, M4 Max
-57/57 tests in each build preset, and 222/222 pinned CPU PBRT comparison gates.
-Hosted checks, CodeQL findings, and measured CI duration
-are attached to the PR against its final revision.
+The [PLY validation record](pbrt-ply-validation.md) records independent intersection,
+shared-edge, quadrature, furnace, affine/offset and self-lighting evidence. All
+267 pinned CPU PBRT comparison gates passed across 672 linear PFM outputs, with
+unchanged seeds and thresholds. Independent review prompted the grazing/edge,
+accepted-hit payload, transformation, numeric parsing and resource-budget
+regressions. The three owned wrappers also completed inspected PNG renders.
+Earlier milestones retain their historical evidence in their own validation records.
 
-Linux runs portable Debug, Release, and sanitizer tests plus compiled C++
-CodeQL. macOS uses Xcode 16.4 for Objective-C++/MSL compilation, native static
-analysis, and execution attempts. Explicit missing-capability skips are separate
-from required strict M4 Max passes. CodeQL does not cover Objective-C++ or MSL.
+Hosted Linux/macOS checks and CodeQL are attached to the PR's final revision.
+Hosted macOS permits only explicitly observed missing capabilities to skip;
+those skips remain separate from strict M4 Max results. CodeQL covers portable
+C++, not Objective-C++ or MSL. No performance improvement is claimed.
 
 Main protection retains PRs, current Foundation Gate, resolved discussions,
-CodeQL error/high-security thresholds, and no force pushes or bypasses. Formal
-required approvals remain zero for maintainer manual review and merge.
+CodeQL error/high-security thresholds and no force pushes or bypasses. Required
+formal approvals remain zero for maintainer manual review and merge.
 
 ## Next bounded task
 
-After the foundation audit, plan external PLY mesh ingestion with dependency
-diagnostics and a small pinned asset-backed PBRT entry point. The ordered
-[roadmap](roadmap.md) keeps external assets, broader materials, and offline
-completion as separate review boundaries.
+Plan a constant-texture translation slice before image acquisition/filtering and
+textured emission. Keep broader import formats and material/transport additions
+separately scoped. This PR remains unmerged pending maintainer review.

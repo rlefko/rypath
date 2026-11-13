@@ -84,7 +84,8 @@ id<MTLLibrary> load_library(id<MTLDevice> device, const std::filesystem::path &l
 }
 
 id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> library,
-                                          NSString *name, std::string &diagnostic) {
+                                          NSString *name, std::string &diagnostic,
+                                          id<MTLFunction> intersection) {
     id<MTLFunction> function = [library newFunctionWithName:name];
     if (function == nil) {
         diagnostic = "Metal library function lookup failed for " + utf8(name);
@@ -92,12 +93,53 @@ id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> l
     }
 
     NSError *error = nil;
-    id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function
-                                                                                 error:&error];
+    id<MTLComputePipelineState> pipeline;
+    if (intersection == nil) {
+        pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+    } else {
+        MTLComputePipelineDescriptor *descriptor = [[MTLComputePipelineDescriptor alloc] init];
+        descriptor.computeFunction = function;
+        MTLLinkedFunctions *linked = [MTLLinkedFunctions linkedFunctions];
+        linked.functions = @[ intersection ];
+        descriptor.linkedFunctions = linked;
+        pipeline = [device newComputePipelineStateWithDescriptor:descriptor
+                                                         options:MTLPipelineOptionNone
+                                                      reflection:nil
+                                                           error:&error];
+    }
     if (pipeline == nil) {
         diagnostic = with_error("Metal compute pipeline creation failed", error);
     }
     return pipeline;
+}
+
+id<MTLFunction> load_patch_intersection(id<MTLLibrary> library, std::string &diagnostic) {
+    id<MTLFunction> function = [library newFunctionWithName:@"rypath_patch_intersection"];
+    if (function == nil) {
+        diagnostic = "Metal patch intersection function lookup failed";
+    }
+    return function;
+}
+
+id<MTLIntersectionFunctionTable> make_intersection_table(id<MTLComputePipelineState> pipeline,
+                                                         id<MTLFunction> intersection,
+                                                         std::string &diagnostic) {
+    id<MTLFunctionHandle> handle = [pipeline functionHandleWithFunction:intersection];
+    if (handle == nil) {
+        diagnostic = "Metal patch intersection function handle lookup failed";
+        return nil;
+    }
+    MTLIntersectionFunctionTableDescriptor *descriptor =
+        [MTLIntersectionFunctionTableDescriptor intersectionFunctionTableDescriptor];
+    descriptor.functionCount = 1;
+    id<MTLIntersectionFunctionTable> table =
+        [pipeline newIntersectionFunctionTableWithDescriptor:descriptor];
+    if (table == nil) {
+        diagnostic = "Metal intersection function table allocation failed";
+        return nil;
+    }
+    [table setFunction:handle atIndex:0];
+    return table;
 }
 
 NSUInteger group_width(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {

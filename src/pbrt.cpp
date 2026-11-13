@@ -119,8 +119,12 @@ std::string report(const Result &result) {
         [](const auto &diagnostic) { return diagnostic.severity == Severity::unsupported; });
     output << "Unsupported features: " << unsupported << '\n'
            << "Inventory: " << result.inventory.named_materials << " named materials, "
-           << result.inventory.meshes << " meshes, " << result.inventory.triangles << " triangles, "
-           << result.inventory.instances << " object placements\n"
+           << result.inventory.meshes << " meshes, " << result.inventory.triangles
+           << " triangles, ";
+    if (result.inventory.patches != 0) {
+        output << result.inventory.patches << " bilinear patches, ";
+    }
+    output << result.inventory.instances << " object placements\n"
            << "Rendering was not attempted.\n";
     return output.str();
 }

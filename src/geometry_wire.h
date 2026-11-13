@@ -17,6 +17,12 @@ using Word = std::uint32_t;
 
 // Standard Metal acceleration structures support eight visibility mask bits.
 enum : Word { all_visible = 0xffu };
+enum : Word { miss = 0u, triangle = 1u, bilinear_patch = 2u, invalid_hit = 3u };
+
+// These corners are copied into the acceleration structure as per-primitive data.
+struct Patch {
+    float corners[4][3];
+};
 
 struct Ray {
     float origin[3];
@@ -36,6 +42,7 @@ struct Closest {
 };
 
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "geometry wire scalar width");
+static_assert(sizeof(Patch) == 48 && alignof(Patch) == 4, "geometry wire patch size and alignment");
 static_assert(sizeof(Ray) == 32 && alignof(Ray) == 4, "geometry wire ray size and alignment");
 static_assert(__builtin_offsetof(Ray, direction) == 12 && __builtin_offsetof(Ray, t_min) == 24 &&
                   __builtin_offsetof(Ray, t_max) == 28,

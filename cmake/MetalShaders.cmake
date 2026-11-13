@@ -28,9 +28,14 @@ foreach(shader IN ITEMS smoke geometry render)
     set(shader_dependencies "${source}")
     if(shader STREQUAL "geometry" OR shader STREQUAL "render")
         list(APPEND shader_options -fno-fast-math)
-        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/${shader}_wire.h")
+        list(APPEND shader_dependencies
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/geometry_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bilinear.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/intersection.h"
+        )
     endif()
     if(shader STREQUAL "render")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_probe_wire.h")
     endif()

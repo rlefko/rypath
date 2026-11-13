@@ -37,10 +37,10 @@ diagnosed even when not placed in the image.
 | Filter | Box radii 0.5 or triangle radii defaulting independently to 2 |
 | Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
 | Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
-| Geometry | Checked inline triangles with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed triangle |
+| Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
 | Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
-| Area lighting | Directly placed diffuse triangle emitters; numeric/RGB/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
+| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/RGB/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
 | Output metadata | Filename and FP16 setting explicitly overridden by PNG policy; no bitwise PBRT PNG equivalence |
 
@@ -53,7 +53,7 @@ unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
 Non-sRGB reconstruction, legacy `color` parameters, blackbody and named/file spectra,
-textured emitters, emitting object members, textures/external meshes, tangents/normal maps, media, motion, lens
+textured emitters, emitting object members, textures/other external mesh formats, tangents/normal maps, media, motion, lens
 effects, and other cameras, filters, samplers, and integrators remain unsupported.
 Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
 passes structural preflight and translates with its authored Sobol sampler,
@@ -67,6 +67,33 @@ offsets and area-light Jacobians use the geometric plane. UV arrays remain owned
 and indexed but are inert for the current constant materials and emission.
 Degenerate one-sided emitter orientations and the supported numeric domain are
 specified in [triangle-attribute validation](pbrt-attribute-validation.md).
+
+## External PLY geometry
+
+`Shape "plymesh" "string filename" "mesh.ply" loads the bounded
+[PLY structural profile](pbrt-profile.md#ply-meshes). Quad faces remain bilinear
+patches, including nonplanar geometry, bilinear corner normals and retained UVs.
+Textures remain unsupported. Geometric patch parameters stay separate from UVs.
+The numerical domain requires regular derivatives over the complete parameter
+square and representable world-space reconstruction. World-coordinate ULPs and
+the projected offset budget must remain below 1/1024 of the minimum tangent
+altitude; uncertain transform arithmetic and excessive translations are rejected.
+Singular or unresolved patches fail before GPU execution. This domain does not
+promise visibility accuracy for arbitrarily close distinct surfaces.
+
+Native triangle and procedural patch structures share the same scene-level
+acceleration structure. Mixed meshes expand to separate native instances while
+preserving source identities and graphics state. Accepted patch parameters travel
+back from the intersection function in a ray payload; no second inverse-transform
+intersection is needed.
+
+Uniform square sampling of patch parameters uses the local differential-area
+Jacobian for both light and BSDF-hit MIS weights. This proposal differs from
+PBRT's optimized patch proposal while targeting the same integral. One-sided
+attributed patch emitters require a certified sign of geometric/shading-normal
+alignment across the complete patch; uncertain fields are diagnosed. Two-sided
+emission does not need that sidedness restriction. See the
+[PLY validation record](pbrt-ply-validation.md) for the estimator, bounds and evidence.
 
 ## Sobol sampling
 
@@ -99,7 +126,8 @@ before acquiring a device.
 The matrix bound does not promise subpixel precision at extreme resolutions:
 PBRT's binary32 global-coordinate remapping loses local fraction bits at large
 pixel coordinates. Filtering can introduce further rounding differences between
-renderers. See the [Sobol validation record](pbrt-sobol-validation.md).
+renderers. See the [Sobol validation record](pbrt-sobol-validation.md), and
+[PLY validation record](pbrt-ply-validation.md).
 
 ## Pixel reconstruction
 
@@ -197,13 +225,18 @@ instance/primitive ordering and effective orientation. The authored scene stays
 unchanged.
 
 Each scattering vertex draws one area sample separately from the existing
-environment sample. Real triangles occupy N of M=bit_ceil(N) equally likely
+environment sample. Real primitives occupy N of M=bit_ceil(N) equally likely
 slots; unused slots contribute zero. The area sample and BSDF-hit emission use
 complementary power weights including the exact 1/M selection probability.
-This uniform-area distribution differs from PBRT's BVH light selection and
-spherical-triangle sampling. Finite visibility rays offset both endpoints and
+Triangle samples are uniform in area; patch samples are uniform in parameter
+space with reciprocal area density equal to the local Jacobian. These proposals
+differ from PBRT's BVH light selection and directional shape sampling. Finite visibility rays offset both endpoints and
 retain blockers before the light. Numerical limits, PDFs, and fixed validation
 criteria are recorded in [area-light validation](pbrt-area-validation.md).
+
+Patch validation is bounded before expansion: at most 2,000,000 patch corners
+across placements, additionally capped by the configured PBRT total-value limit.
+Repeated object placement cannot multiply derivative validation without bound.
 
 ## Reference and validation
 
@@ -223,12 +256,14 @@ comparison. Commands and measured evidence are in the
 [area-light validation record](pbrt-area-validation.md),
 [triangle-filter validation record](pbrt-filter-validation.md), and
 [triangle-attribute validation record](pbrt-attribute-validation.md), and
-[Sobol validation record](pbrt-sobol-validation.md).
+[Sobol validation record](pbrt-sobol-validation.md), and
+[PLY validation record](pbrt-ply-validation.md).
 
-Thirteen owned fixtures and five labeled CC0 Cornell derivatives cover
+Sixteen owned wrappers and five labeled CC0 Cornell derivatives cover
 numeric-spectrum and RGB backgrounds, diffuse response, area emission, visibility,
-asymmetric multiple scattering, transformed shading normals, and randomized
-Sobol sampling. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
+asymmetric multiple scattering, transformed shading normals, randomized
+Sobol sampling, mixed PLY primitives and curved emission. The small external PLY
+asset retains its separate CC BY 2.0 license. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
 16 fixed seeds per renderer (rypath 0–15 and PBRT 16–31). Each channel and
 declared region mean must agree within five combined standard errors plus
 `2e-5 * max(1, abs(reference))`. Thresholds and seeds precede results; failures

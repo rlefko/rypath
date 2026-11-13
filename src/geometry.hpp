@@ -27,7 +27,11 @@ struct GeometryMesh {
     std::vector<std::array<std::uint32_t, 3>> triangles;
     std::vector<GeometryPoint> normals{};
     std::vector<std::array<float, 2>> uvs{};
+    // Tensor-product corner order: p00, p10, p01, p11 (cyclic PLY 0,1,3,2).
+    std::vector<std::array<std::uint32_t, 4>> patches{};
 };
+
+enum class PrimitiveKind : std::uint32_t { triangle = 1, bilinear_patch = 2 };
 
 struct GeometryInstance {
     std::uint32_t mesh_index = 0;
@@ -53,6 +57,8 @@ struct GeometryHit {
     std::uint32_t primitive_index = std::numeric_limits<std::uint32_t>::max();
     float t = std::numeric_limits<float>::infinity();
     std::array<float, 3> barycentric{};
+    PrimitiveKind kind = PrimitiveKind::triangle;
+    std::array<float, 2> patch_uv{};
 };
 
 // An empty diagnostic means valid. These checks have no platform dependencies.

@@ -3,6 +3,8 @@
 """Compare fixed linear RGB regions from rypath and a supplied pinned PBRT v4 build."""
 
 import argparse
+import hashlib
+import json
 import math
 from pathlib import Path
 import statistics
@@ -41,6 +43,9 @@ REGIONS = {
     "cornell-box-sobol-fastowen": QUADRANTS,
     "cornell-box-sobol-permutedigits": QUADRANTS,
     "cornell-box-sobol-owen": QUADRANTS,
+    "ply-external": QUADRANTS,
+    "ply-mixed": QUADRANTS,
+    "ply-curved-emitter": QUADRANTS,
 }
 
 
@@ -77,6 +82,24 @@ def roi_means(pixels, bounds):
     return tuple(statistics.mean(values) for values in zip(*roi))
 
 
+def stage_dependencies(fixture, destination):
+    """Keep the declared dependency closure relative to each relocated entry."""
+    manifest = fixture.parent / "dependencies.json"
+    if not manifest.exists():
+        return
+    records = json.loads(manifest.read_text()).get(fixture.stem, [])
+    for record in records:
+        relative = Path(record["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"{manifest}: dependency must be entry-relative")
+        payload = (fixture.parent / relative).read_bytes()
+        if len(payload) != record["bytes"] or hashlib.sha256(payload).hexdigest() != record["sha256"]:
+            raise ValueError(f"{relative}: dependency size or checksum mismatch")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+
+
 def render_replicates(rypath, pbrt, fixture, run_dir, regions):
     source = fixture.read_bytes()
     seed_token = b'"integer seed" [0]'
@@ -87,6 +110,7 @@ def render_replicates(rypath, pbrt, fixture, run_dir, regions):
     for backend, binary, start_seed in (("rypath", rypath, 0), ("pbrt", pbrt, REPLICATES)):
         backend_dir = run_dir / fixture.stem / backend
         backend_dir.mkdir(parents=True)
+        stage_dependencies(fixture, backend_dir)
         measurements[backend] = {name: [] for name in regions}
         for seed in range(start_seed, start_seed + REPLICATES):
             variant = backend_dir / f"{seed:02}.pbrt"
