@@ -347,7 +347,7 @@ void Decoder::check_minimum_payload() {
                              ? 1
                              : scalar_bytes(property.list_count.value_or(property.type));
         }
-        if (element.rows > bytes / row_bytes) {
+        if (row_bytes == 0 || element.rows > bytes / row_bytes) {
             fail("PLY payload is too short for its declared rows and properties");
         }
         bytes -= element.rows * row_bytes;
