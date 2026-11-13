@@ -248,6 +248,11 @@ if(RYPATH_ENABLE_METAL)
 endif()
 
 set(pbrt_render_fixtures "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt-render")
+add_test(NAME cli.image_inputs COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>" "-Dfixture_directory=${pbrt_render_fixtures}"
+    "-Dtest_directory=${pbrt_test_directory}/$<CONFIG>/image-cli"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_image_inputs.cmake")
+set_tests_properties(cli.image_inputs PROPERTIES TIMEOUT 30)
 add_executable(rypath_pbrt_ply_fixture_tests pbrt_ply_fixture_tests.cpp)
 target_link_libraries(rypath_pbrt_ply_fixture_tests PRIVATE rypath_pbrt_render)
 rypath_configure_host_target(rypath_pbrt_ply_fixture_tests)

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [58]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [2]
+WorldBegin
+LightSource "infinite" "rgb L" [1 1 1]
+# The textured panel lies outside the camera frustum, above the floor.
+# Its reflectance contributes through secondary hits from the visible surfaces.
+Material "diffuse" "rgb reflectance" [0.65 0.65 0.65]
+Shape "trianglemesh" "point3 P" [-3 -1.15 5 3 -1.15 5 3 2 5 -3 2 5]
+    "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [-3 -1.15 1 3 -1.15 1 3 -1.15 5 -3 -1.15 5]
+    "integer indices" [0 1 2 0 2 3]
+Texture "panel" "spectrum" "imagemap" "string filename" "image-assets/asymmetric.png"
+    "string wrap" "clamp" "float uscale" [2.1] "float vscale" [1.4]
+    "float udelta" [-0.4] "float vdelta" [-0.2]
+Material "diffuse" "texture reflectance" "panel"
+Shape "trianglemesh" "point3 P" [-3 1.7 0.5 3 1.7 0.5 3 1.7 3 -3 1.7 3]
+    "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1]

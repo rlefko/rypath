@@ -48,6 +48,19 @@ REGIONS = {
     "ply-curved-emitter": QUADRANTS,
     "texture-diffuse": {"full": FULL},
     "texture-ply-external": QUADRANTS,
+    "image-magnified": QUADRANTS,
+    "image-minified": {
+        "full": FULL,
+        "intermediate-mip-left": (0, 0, 2, 8),
+        "intermediate-mip-right": (2, 0, 4, 8),
+        "coarsest-mip": (4, 0, 8, 8),
+    },
+    "image-ply": {
+        **QUADRANTS,
+        "curved-patch": (0, 1, 6, 7),
+        "triangle": (7, 5, 8, 7),
+    },
+    "image-secondary": QUADRANTS,
 }
 
 

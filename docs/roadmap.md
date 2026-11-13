@@ -38,12 +38,15 @@ clarifies the work; completion is recorded in [status](status.md).
 12. **PLY mesh rendering (merged in PR #13):** bounded external PLY decoding, triangles and
     faithful bilinear quads, native intersections, attributed diffuse surfaces and
     curved emission, with pinned asset and independent numerical validation.
-13. **Constant texture rendering (in review):** typed named constants, spectrum
+13. **Constant texture rendering (merged in PR #14):** typed named constants, spectrum
     references in diffuse reflectance, and shared translated material payloads.
     See [constant texture validation](pbrt-texture-validation.md).
-14. **Image texture planning:** scope decoding and filtering for a separate PR.
+14. **PNG image texture rendering:** bounded image decoding, UV mapping and mipmapped
+    bilinear filtering for diffuse reflection on triangles and bilinear quads.
+    See [image texture validation](image-texture-validation.md).
 15. **Broader PBRT rendering:** wider color spaces, additional
-    spectra, filters/samplers and faithfully rendered pinned upstream entry points.
+    spectra, texture filters and formats, filters/samplers, and faithfully rendered
+    pinned upstream entry points.
     JSON preflight reports remain follow-up work.
 16. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.

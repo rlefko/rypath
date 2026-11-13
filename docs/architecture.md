@@ -34,7 +34,8 @@ The portable reader owns source records, decoded tokens, authored numeric lexeme
 typed directives, dependencies, and diagnostics. A separate interpreter tracks
 PBRT scene state and builds checked float/index geometry only within the declared
 [compatibility profile](pbrt-profile.md). It preserves camera, material, and
-typed constant texture descriptors. Incomplete analysis returns diagnostics
+typed texture descriptors. Supported imagemaps retain shared decoded PNGs and
+packed mip pyramids. Incomplete analysis returns diagnostics
 and a partial inventory, without a complete scene handle.
 No spectral reconstruction, light normalization, or renderer defaults are applied.
 
@@ -54,15 +55,22 @@ original relative response while PBRT uses calibrated finite-depth transport.
 The upstream adaptations include the pinned Apache-2.0 tokenizer and sRGB
 spectral reconstruction with its canonical coefficient/D65 data. A portable
 reconstruction module embeds the table and supplies constant or sigmoid material
-payloads; only compact per-material coefficients reach Metal. Numeric material
+payloads for non-image RGB. Numeric material
 knots and dense emission samples retain their separate representations.
 Translation validates all named constant textures and compiles each spectrum
 definition once to an existing diffuse material payload. Inline and named
 material bindings share that payload by index across object instances.
 The shader evaluates the resulting constant, sigmoid, or sampled spectrum
 through the diffuse path described in the [rendering profile](pbrt-rendering.md#constant-textures).
+The translator binds each imagemap by index and prepares per-placement triangle
+partials from the checked shape and placement transforms. The image render
+session owns UVs, triangle partials, texture descriptors, shared mip data,
+transfer tables, and the sRGB reconstruction table. At each textured hit the
+shader computes the footprint, evaluates RGB, and reconstructs albedo at the
+path wavelength. The [image texture record](image-texture-validation.md) describes
+the lookup and its validation.
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
-there is no linked PBRT renderer or runtime dependency. The
+PNG decoding uses the vendored portable LodePNG decoder. The
 [dependency decision](pbrt-decision.md) records the integration boundary.
 
 External PLY decoding now feeds the same checked geometry and shape bindings.
@@ -110,8 +118,7 @@ renderer prepares a deduplicated normal table from each original source
 mesh/linear-transform/orientation combination, before emitter baking. Common
 scaling preserves relative vertex lengths until shader interpolation. Separate
 geometric and shading normals govern ray offsets/emission and diffuse scattering,
-respectively. UVs remain in checked/render data for future spatial texture
-mapping. The [attribute record](pbrt-attribute-validation.md)
+respectively. The [attribute record](pbrt-attribute-validation.md)
 specifies numeric limits, affine instance semantics, and independent checks.
 
 The offline renderer will separate scene ingestion, immutable render data,

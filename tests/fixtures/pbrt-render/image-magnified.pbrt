@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [50]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+LightSource "infinite" "rgb L" [1 1 1]
+# The left card uses default triangle UVs and a mirrored object placement.
+Texture "left" "spectrum" "imagemap" "string filename" "image-assets/asymmetric.png"
+    "string wrap" "clamp" "float udelta" [0.07] "float vdelta" [-0.08]
+Texture "right" "spectrum" "imagemap" "string filename" "image-assets/asymmetric.png"
+    "string encoding" "linear" "string wrap" "repeat" "float uscale" [-1]
+    "float udelta" [0.98] "float scale" [0.78] "bool invert" [true]
+ObjectBegin "card"
+    Material "diffuse" "texture reflectance" "left"
+    Scale 0.94 1.9 1
+    Shape "trianglemesh" "point3 P" [0 -0.5 2 1 -0.5 2 1 0.5 2]
+    Shape "trianglemesh" "point3 P" [1 0.5 2 0 0.5 2 0 -0.5 2]
+ObjectEnd
+AttributeBegin
+    Scale -1 1 1
+    ObjectInstance "card"
+AttributeEnd
+Material "diffuse" "texture reflectance" "right"
+Shape "trianglemesh" "point3 P" [0 -0.95 2 0.94 -0.95 2 0.94 0.95 2 0 0.95 2]
+    "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1]
