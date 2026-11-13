@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [50]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+LightSource "infinite" "spectrum L" [360 0.25 485 0.8 650 1.0 830 0.25]
+MakeNamedMaterial "paint" "string type" "diffuse" "texture reflectance" "sampled"
+Texture "sampled" "spectrum" "constant"
+    "spectrum value" [360 0.1 476 0.8 503.5 0.2 575 0.9 830 0.3]
+NamedMaterial "paint"
+Shape "trianglemesh" "point3 P" [-8 -8 2 8 -8 2 8 8 2 -8 8 2]
+    "integer indices" [0 1 2 0 2 3]

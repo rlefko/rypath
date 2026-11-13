@@ -23,12 +23,19 @@ constant environment and diffuse material. This establishes selected asset
 coverage, not rendering support for the original Sportscar scene. The original
 scene and its other assets are not downloaded.
 
+`../texture-ply-external.pbrt` is a GPL-3.0-only derivative of that wrapper.
+It preserves the geometry, normals, transforms, illumination and render
+settings. Its diffuse material takes the same RGB reflectance from a constant
+spectrum texture. An sRGB `Attribute "texture"` supplies the value before the
+texture is declared under Rec.2020. The entry is 871 bytes with SHA-256
+`add4e04b99470889c5ca4e773b7e23ba2c12216777cf4d53dc03b1100f0d10a8`.
+
 `mixed.ply` and `curved-light.ply` are original GPL-3.0-only fixtures.
 The first combines a nonplanar quad with unequal-length vertex normals and UVs
 and a separate triangle. The second is a nonplanar emitting quad. Their wrappers
 isolate mixed geometry and curved area emission, respectively.
 
-All three wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
+All four wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
 seed comparison protocol. The [dependency manifest](../dependencies.json)
 pins each wrapper's complete input closure, sizes and hashes. The comparison
 script verifies and stages these files under each relocated entry directory.

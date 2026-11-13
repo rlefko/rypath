@@ -39,6 +39,7 @@ diagnosed even when not placed in the image.
 | Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
+| Textures | Named spectrum constants for diffuse reflectance, with the same RGB and numeric spectrum limits; float constants are validated during translation |
 | Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/RGB/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
@@ -52,8 +53,9 @@ camera. Exact full-frame crop/pixel bounds are accepted; other bounds are
 unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
-Non-sRGB reconstruction, legacy `color` parameters, blackbody and named/file spectra,
-textured emitters, emitting object members, textures/other external mesh formats, tangents/normal maps, media, motion, lens
+Non-sRGB reconstruction, legacy `color` parameters, blackbody and named/file
+spectra, image and procedural textures, textured emitters, emitting object
+members, other external mesh formats, tangents/normal maps, media, motion, lens
 effects, and other cameras, filters, samplers, and integrators remain unsupported.
 Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
 passes structural preflight and translates with its authored Sobol sampler,
@@ -68,12 +70,33 @@ and indexed but are inert for the current constant materials and emission.
 Degenerate one-sided emitter orientations and the supported numeric domain are
 specified in [triangle-attribute validation](pbrt-attribute-validation.md).
 
+## Constant textures
+
+```pbrt
+Texture "paint" "spectrum" "constant" "rgb value" [0.5 0.25 0.125]
+Material "diffuse" "texture reflectance" "paint"
+```
+
+Inline and named diffuse materials may refer to a spectrum constant declared
+anywhere in the scene world. Both constant texture types default to one. A
+spectrum value may be linear sRGB or a numeric piecewise-linear spectrum with at
+least two increasing wavelengths and reflectance values in [0,1]. An explicit
+`rgb value` uses the `Texture` declaration's color space. An RGB value inherited
+from `Attribute "texture"` uses the color space captured at that attribute.
+Direct RGB reflectance continues to use the material dictionary's color space.
+
+Translation checks every constant definition, including unused ones, before
+rendering. All references to a spectrum constant share its compiled diffuse
+material payload. Float constants accept signed values that narrow to finite
+binary32. Alpha masking and displacement remain deferred. See the
+[constant texture validation record](pbrt-texture-validation.md).
+
 ## External PLY geometry
 
 `Shape "plymesh" "string filename" "mesh.ply" loads the bounded
 [PLY structural profile](pbrt-profile.md#ply-meshes). Quad faces remain bilinear
 patches, including nonplanar geometry, bilinear corner normals and retained UVs.
-Textures remain unsupported. Geometric patch parameters stay separate from UVs.
+Geometric patch parameters stay separate from UVs.
 The numerical domain requires regular derivatives over the complete parameter
 square and representable world-space reconstruction. World-coordinate ULPs and
 the projected offset budget must remain below 1/1024 of the minimum tangent
@@ -254,15 +277,16 @@ comparison. Commands and measured evidence are in the
 [spectral validation record](pbrt-render-validation.md),
 [sRGB validation record](pbrt-rgb-validation.md),
 [area-light validation record](pbrt-area-validation.md),
-[triangle-filter validation record](pbrt-filter-validation.md), and
-[triangle-attribute validation record](pbrt-attribute-validation.md), and
-[Sobol validation record](pbrt-sobol-validation.md), and
-[PLY validation record](pbrt-ply-validation.md).
+[triangle-filter validation record](pbrt-filter-validation.md),
+[triangle-attribute validation record](pbrt-attribute-validation.md),
+[Sobol validation record](pbrt-sobol-validation.md),
+[PLY validation record](pbrt-ply-validation.md), and
+[constant texture validation record](pbrt-texture-validation.md).
 
-Sixteen owned wrappers and five labeled CC0 Cornell derivatives cover
+Eighteen owned wrappers and five labeled CC0 Cornell derivatives cover
 numeric-spectrum and RGB backgrounds, diffuse response, area emission, visibility,
 asymmetric multiple scattering, transformed shading normals, randomized
-Sobol sampling, mixed PLY primitives and curved emission. The small external PLY
+Sobol sampling, mixed PLY primitives, curved emission and named constant textures. The small external PLY
 asset retains its separate CC BY 2.0 license. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
 16 fixed seeds per renderer (rypath 0–15 and PBRT 16–31). Each channel and
 declared region mean must agree within five combined standard errors plus

@@ -33,9 +33,9 @@ reference independently transforms vertices and scans all triangles. See
 The portable reader owns source records, decoded tokens, authored numeric lexemes,
 typed directives, dependencies, and diagnostics. A separate interpreter tracks
 PBRT scene state and builds checked float/index geometry only within the declared
-[compatibility profile](pbrt-profile.md). It preserves camera and material
-descriptors without translating them to the demo renderer. Incomplete analysis
-returns diagnostics and a partial inventory, without a complete scene handle.
+[compatibility profile](pbrt-profile.md). It preserves camera, material, and
+typed constant texture descriptors. Incomplete analysis returns diagnostics
+and a partial inventory, without a complete scene handle.
 No spectral reconstruction, light normalization, or renderer defaults are applied.
 
 A separate portable translator consumes a complete checked scene and shared
@@ -56,6 +56,11 @@ spectral reconstruction with its canonical coefficient/D65 data. A portable
 reconstruction module embeds the table and supplies constant or sigmoid material
 payloads; only compact per-material coefficients reach Metal. Numeric material
 knots and dense emission samples retain their separate representations.
+Translation validates all named constant textures and compiles each spectrum
+definition once to an existing diffuse material payload. Inline and named
+material bindings share that payload by index across object instances.
+The shader evaluates the resulting constant, sigmoid, or sampled spectrum
+through the diffuse path described in the [rendering profile](pbrt-rendering.md#constant-textures).
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 there is no linked PBRT renderer or runtime dependency. The
 [dependency decision](pbrt-decision.md) records the integration boundary.
@@ -105,8 +110,8 @@ renderer prepares a deduplicated normal table from each original source
 mesh/linear-transform/orientation combination, before emitter baking. Common
 scaling preserves relative vertex lengths until shader interpolation. Separate
 geometric and shading normals govern ray offsets/emission and diffuse scattering,
-respectively. UVs remain in checked/render data for future consumers; no textures
-or tangent frames are implied. The [attribute record](pbrt-attribute-validation.md)
+respectively. UVs remain in checked/render data for future spatial texture
+mapping. The [attribute record](pbrt-attribute-validation.md)
 specifies numeric limits, affine instance semantics, and independent checks.
 
 The offline renderer will separate scene ingestion, immutable render data,
