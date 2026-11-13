@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [30]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+
+# Both panels share a mesh with unequal normal lengths. The right panel is
+# mirrored, sheared, and scaled. A finite emitter distinguishes their normals.
+ObjectBegin "panel"
+    Material "diffuse" "rgb reflectance" [0.7 0.5 0.3]
+    Shape "trianglemesh" "point3 P" [-0.25 -0.6 0 -0.25 0.6 0 0.25 0.6 0 0.25 -0.6 0]
+        "integer indices" [0 1 2 0 2 3]
+        "normal N" [0.5 0 -1 2 1 -1 4 0 -1 1 -1 -1]
+        "point2 uv" [0 0 0 1 1 1 1 0]
+ObjectEnd
+AttributeBegin
+    Translate -0.28 0 2
+    ObjectInstance "panel"
+AttributeEnd
+AttributeBegin
+    Transform [-0.75 0 0 0 0.08 1 0 0 0 0 1.75 0 0.28 0 2 1]
+    ObjectInstance "panel"
+AttributeEnd
+AttributeBegin
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [0.8 1.5 2]
+    Shape "trianglemesh" "point3 P" [-0.45 0.6 1.4 0.55 0.6 1.4 0.3 1.3 1.4]
+        "integer indices" [0 1 2]
+AttributeEnd

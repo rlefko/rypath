@@ -34,6 +34,10 @@ REGIONS = {
     "area-mixed": QUADRANTS,
     "cornell-box-adapted": QUADRANTS,
     "triangle-filter": QUADRANTS,
+    "normals-diffuse": QUADRANTS,
+    "normals-instances": QUADRANTS,
+    "normals-emission": QUADRANTS,
+    "cornell-box-attributes": QUADRANTS,
 }
 
 
