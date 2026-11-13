@@ -26,5 +26,38 @@
       "bytes": 412,
       "sha256": "91fa58d0b64fb8f5d2a49844cd5a1e64e7f71d52f904dd3e20aa76c866b5ba62"
     }
+  ],
+  "image-magnified": [
+    {
+      "path": "image-assets/asymmetric.png",
+      "bytes": 118,
+      "sha256": "41523032aa9abb93896fc5018bf5cb0345e397714955eccab4dff445eff6060c"
+    }
+  ],
+  "image-minified": [
+    {
+      "path": "image-assets/high-frequency.png",
+      "bytes": 185,
+      "sha256": "40f241817a2be40d16afd36eac43eec24f90d784a8a46ff9513988dd1defd4be"
+    }
+  ],
+  "image-ply": [
+    {
+      "path": "image-assets/z03n2c08.png",
+      "bytes": 232,
+      "sha256": "939abfc6e0a3e349bb5bcd8c4e427a6cdb2c7e0c23a773aefa1c4fc9f07e4cb4"
+    },
+    {
+      "path": "ply-assets/mixed.ply",
+      "bytes": 483,
+      "sha256": "7ec55a97b8b6451646abe683645ab19d11c4e9cd5d9b5ea909bf57168c9e5e3f"
+    }
+  ],
+  "image-secondary": [
+    {
+      "path": "image-assets/asymmetric.png",
+      "bytes": 118,
+      "sha256": "41523032aa9abb93896fc5018bf5cb0345e397714955eccab4dff445eff6060c"
+    }
   ]
 }

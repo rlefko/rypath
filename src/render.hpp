@@ -2,7 +2,9 @@
 #pragma once
 
 #include "geometry.hpp"
+#include "image_texture.hpp"
 #include "sampling.hpp"
+#include "texture_footprint.hpp"
 
 #include <functional>
 #include <optional>
@@ -21,7 +23,7 @@ struct SpectralKnot {
     float wavelength = 0;
     float value = 0;
 };
-enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid };
+enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image };
 
 struct SpectralMaterial {
     std::array<float, 8> reflectance{};
@@ -29,6 +31,7 @@ struct SpectralMaterial {
     SpectralMaterialKind kind = SpectralMaterialKind::sampled;
     float constant = 0;
     std::array<float, 3> coefficients{};
+    std::uint32_t image_texture = 0;
 };
 enum class RenderModel { demo, pbrt };
 enum class PixelFilterKind { box, triangle };
@@ -71,6 +74,11 @@ struct RenderScene {
     // Empty or one emission index (or no_area_emission) per source instance.
     std::vector<std::uint32_t> instance_emissions{};
     PixelFilter filter{};
+    std::vector<ImageTexture> image_textures{};
+    TextureCamera texture_camera{};
+    // One entry per source instance when image textures are present. Only textured
+    // triangles need frames; patch tangents are evaluated at the hit coordinate.
+    std::vector<std::vector<TextureTriangleFrame>> instance_texture_frames{};
 };
 struct RenderSettings {
     std::uint32_t width = 256;

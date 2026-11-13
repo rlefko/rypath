@@ -3,8 +3,9 @@
 Original rypath code uses SPDX identifier `GPL-3.0-only`. The repository contains
 the full unmodified GNU GPL v3 text in [LICENSE](../LICENSE).
 
-The portable CLI has no third-party runtime dependencies beyond the C++ standard
-library. The macOS adapters use the SDK's Metal, Foundation, CoreFoundation,
+The portable CLI builds its vendored PNG decoder into the executable and
+requires no external third-party libraries at runtime. The macOS adapters use
+the SDK's Metal, Foundation, CoreFoundation,
 CoreGraphics, and ImageIO frameworks through Objective-C++ with ARC. The project
 does not vendor or fetch metal-cpp.
 Development tooling is separate from the distributed executable:
@@ -57,8 +58,8 @@ dependency notices there. Its renderer and dependency libraries are not linked
 into rypath. One canonical 9,437,440-byte sRGB reconstruction table and the pinned
 D65 spectrum are vendored separately under the PBRT attribution record. CMake
 verifies the binary hash and embeds portable byte chunks without running the
-optimizer or downloading data. The lookup/evaluation adaptation retains upstream
-Apache-2.0 notices. Other translation and Metal code is original project code.
+optimizer or downloading data. The lookup/evaluation, image mip, and footprint
+adaptations retain upstream Apache-2.0 notices.
 Owned comparison scenes are GPL-3.0-only. The separately named Cornell rendering
 adaptation retains CC0 attribution and the unchanged original notice; its
 [render fixture manifest](../tests/fixtures/pbrt-render/README.md) records every
@@ -84,3 +85,18 @@ arithmetic for Metal; its independent CPU oracle is test-only. See the
 The 412-byte external PLY comparison asset retains its CC BY 2.0 terms and
 upstream attribution in its [manifest](../tests/fixtures/pbrt-render/ply-assets/README.md).
 Owned wrappers and synthetic mesh fixtures have separate GPL-3.0-only terms.
+
+Portable PNG input uses the zlib-licensed LodePNG decoder at revision
+`7b2893e35891c0c85bee5595caafaf3c2044b409`. Its in-memory decode API and
+configurable allocation and inflate limits let the preflight reader own file
+I/O and enforce the same profile on Linux and macOS. The static build disables
+the encoder, disk I/O, C++ wrapper, and ancillary metadata decoding. A local
+extension caps work at 65,536 DEFLATE blocks per stream. The reader also checks
+image dimensions, decompressed scanline size, scratch memory, and aggregate
+retained image payloads. The accepted input subset is noninterlaced 8-bit
+grayscale, grayscale with alpha, RGB, and RGBA, with alpha and color metadata
+ignored for diffuse reflectance. The [LodePNG record](../third_party/lodepng/README.md)
+retains the source pin, hashes, modifications, and license.
+
+The unmodified PNGSuite comparison image retains its original notice in the
+[image fixture manifest](../tests/fixtures/pbrt-render/image-assets/README.md).

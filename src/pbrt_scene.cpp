@@ -9,12 +9,16 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <locale>
 #include <map>
+#include <new>
 #include <numbers>
 #include <set>
 #include <span>
+#include <sstream>
 #include <string_view>
 #include <tuple>
 
@@ -224,6 +228,19 @@ bool representable_float(double value) {
     return std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
 }
 
+bool gamma_encoding(string_view encoding) {
+    std::istringstream input{std::string(encoding)};
+    input.imbue(std::locale::classic());
+    std::string name;
+    double gamma = 0;
+    if (!(input >> name >> gamma) || name != "gamma" || !representable_float(gamma) ||
+        static_cast<float>(gamma) == 0) {
+        return false;
+    }
+    input >> std::ws;
+    return input.eof();
+}
+
 enum class Rule {
     none,
     positive,
@@ -320,6 +337,22 @@ constexpr std::array named_material_fields{
 constexpr std::array float_constant_fields{Field{"value", "float"}};
 constexpr std::array spectrum_constant_fields{
     Field{.name = "value", .type = "spectral", .rule = Rule::albedo},
+};
+constexpr std::array imagemap_fields{
+    Field{"filename", "string", 1, false, true},
+    Field{"mapping", "string"},
+    Field{"uscale", "float"},
+    Field{"vscale", "float"},
+    Field{"udelta", "float"},
+    Field{"vdelta", "float"},
+    Field{"encoding", "string"},
+    Field{"filter", "string"},
+    Field{"wrap", "string"},
+    Field{"scale", "float"},
+    Field{"invert", "bool"},
+    Field{"maxanisotropy", "float"},
+    Field{"v1", "vector3", 3},
+    Field{"v2", "vector3", 3},
 };
 
 constexpr std::array light_fields{
@@ -456,10 +489,11 @@ class Interpreter {
   public:
     Interpreter(Document document, const Limits &limits)
         : limits_(limits),
-          ply_remaining_{limits.expanded_bytes -
-                             std::min(limits.expanded_bytes, document.expanded_bytes),
-                         limits.expansions - std::min(limits.expansions, document.expansion_count),
-                         limits.total_values} {
+          asset_remaining_{
+              limits.expanded_bytes - std::min(limits.expanded_bytes, document.expanded_bytes),
+              limits.expansions - std::min(limits.expansions, document.expansion_count),
+              limits.total_values},
+          image_limits_(limits.image) {
         result_.document = std::move(document);
     }
 
@@ -499,7 +533,11 @@ class Interpreter {
     std::map<std::string, Location, std::less<>> material_uses_;
     std::map<std::pair<DependencyKind, std::filesystem::path>, std::size_t> inventoried_paths_;
     std::map<std::size_t, PlyResult> ply_cache_;
-    PlyBudget ply_remaining_;
+    PlyBudget asset_remaining_;
+    std::map<std::size_t, std::shared_ptr<const CheckedImageSource>> decoded_images_;
+    std::map<std::tuple<std::size_t, ImageEncoding, ImageWrap>, std::shared_ptr<const ImagePyramid>>
+        image_pyramids_;
+    ImageLimits image_limits_;
     std::size_t asset_path_bytes_ = 0;
     bool asset_path_budget_exceeded_ = false;
     bool skipped_include_ = false;
@@ -527,6 +565,13 @@ class Interpreter {
     void validate_film_bounds(const std::map<string_view, const Parameter *> &fields);
     void material(const Directive &directive);
     void texture(const Directive &directive);
+    void imagemap(const Directive &directive, bool spectrum, bool unique);
+    std::shared_ptr<const DecodedImage> decode_image(const std::filesystem::path &path,
+                                                     const Location &source);
+    std::shared_ptr<const ImagePyramid> image_pyramid(const std::filesystem::path &path,
+                                                      const Location &location,
+                                                      const DecodedImage &source,
+                                                      ImageEncoding encoding, ImageWrap wrap);
     void light(const Directive &directive);
     void shape(const Directive &directive);
     void ply_shape(const Directive &directive, Descriptor descriptor);
@@ -1458,8 +1503,8 @@ void Interpreter::ply_shape(const Directive &directive, Descriptor descriptor) {
     }
     auto cached = ply_cache_.lower_bound(*index);
     if (cached == ply_cache_.end() || cached->first != *index) {
-        cached = ply_cache_.emplace_hint(cached, *index,
-                                         decode_ply(input.resolved_path, limits_, ply_remaining_));
+        cached = ply_cache_.emplace_hint(
+            cached, *index, decode_ply(input.resolved_path, limits_, asset_remaining_));
         if (const auto *problem = std::get_if<PlyIssue>(&cached->second)) {
             issue(problem->severity, problem->code, filename.location,
                   "PLY \"" + input.resolved_path.string() + "\" " + problem->message);
@@ -1651,7 +1696,8 @@ void Interpreter::texture(const Directive &directive) {
         return;
     }
     const bool spectrum = channel.text == "spectrum";
-    if (name.text.empty() || !textures_[spectrum].insert(name.text).second) {
+    const bool unique = !name.text.empty() && textures_[spectrum].insert(name.text).second;
+    if (!unique) {
         error("duplicate-definition", name.location,
               "Empty or duplicate texture definition \"" + name.text + "\"");
     }
@@ -1664,12 +1710,210 @@ void Interpreter::texture(const Directive &directive) {
         constants.push_back(std::move(descriptor));
         return;
     }
-    const bool known = one_of(type, {"scale", "mix", "directionmix", "bilerp", "imagemap",
-                                     "checkerboard", "dots", "ptex"}) ||
-                       (!spectrum && one_of(type, {"fbm", "wrinkled", "windy"})) ||
-                       (spectrum && type == "marble");
+    if (type == "imagemap") {
+        imagemap(directive, spectrum, unique);
+        return;
+    }
+    const bool known =
+        one_of(type, {"scale", "mix", "directionmix", "bilerp", "checkerboard", "dots", "ptex"}) ||
+        (!spectrum && one_of(type, {"fbm", "wrinkled", "windy"})) || (spectrum && type == "marble");
     dependencies(directive, "texture", type);
     deferred_type(directive, type, known, "texture");
+}
+
+void Interpreter::imagemap(const Directive &directive, bool spectrum, bool unique) {
+    auto descriptor = describe(directive, false);
+    const auto previous_issues = result_.document.diagnostics.size();
+    const auto fields = validate(descriptor, directive, "texture", imagemap_fields);
+    const auto file = fields.find("filename");
+    if (file == fields.end()) {
+        result_.document.dependencies_complete = false;
+        return;
+    }
+    const auto &filename = file->second->values.front();
+    if (filename.text.empty()) {
+        result_.document.dependencies_complete = false;
+        error("missing-parameter", filename.location, "Required imagemap file path is empty");
+        return;
+    }
+    const auto index = dependency(DependencyKind::image, filename);
+    if (!spectrum) {
+        unsupported(directive.location, "Float imagemaps are outside the structural profile");
+    }
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    const auto text = [&](string_view name, string_view fallback,
+                          std::initializer_list<string_view> supported,
+                          std::initializer_list<string_view> deferred) {
+        // NOLINTEND(bugprone-easily-swappable-parameters)
+        const auto found = fields.find(name);
+        if (found == fields.end()) {
+            return fallback;
+        }
+        const auto &value = found->second->values.front();
+        if (one_of(value.text, deferred) || (name == "encoding" && gamma_encoding(value.text))) {
+            unsupported(value.location, "Imagemap " + std::string(name) + " \"" + value.text +
+                                            "\" is outside the structural profile");
+        } else if (!one_of(value.text, supported)) {
+            error("invalid-parameter", value.location,
+                  "Unknown imagemap " + std::string(name) + " \"" + value.text + "\"");
+        }
+        return string_view(value.text);
+    };
+    const auto mapping = text("mapping", "uv", {"uv"}, {"spherical", "cylindrical", "planar"});
+    const auto encoding_name = text("encoding", "sRGB", {"sRGB", "linear"}, {});
+    text("filter", "bilinear", {"bilinear"}, {"point", "trilinear", "ewa", "EWA"});
+    const auto wrap_name =
+        text("wrap", "repeat", {"repeat", "clamp", "black"}, {"octahedralsphere"});
+    if (mapping == "uv") {
+        for (const auto name : {"v1", "v2"}) {
+            if (const auto found = fields.find(name); found != fields.end()) {
+                error("unused-parameter", found->second->location,
+                      "Imagemap parameter \"" + std::string(name) + "\" requires planar mapping");
+            }
+        }
+    }
+
+    ImageTexture texture;
+    const auto set_number = [&](string_view name, float &output) {
+        if (const auto found = fields.find(name); found != fields.end()) {
+            const auto &value = found->second->values.front();
+            if (!representable_float(value.number)) {
+                error("invalid-parameter", value.location,
+                      "Imagemap " + std::string(name) + " overflows binary32");
+            } else {
+                output = static_cast<float>(value.number);
+            }
+        }
+    };
+    set_number("uscale", texture.uscale);
+    set_number("vscale", texture.vscale);
+    set_number("udelta", texture.udelta);
+    set_number("vdelta", texture.vdelta);
+    set_number("scale", texture.scale);
+    if (const auto found = fields.find("invert"); found != fields.end()) {
+        texture.invert = found->second->values.front().boolean;
+    }
+    if (const auto found = fields.find("maxanisotropy");
+        found != fields.end() && !std::isfinite(found->second->values.front().number)) {
+        error("invalid-parameter", found->second->values.front().location,
+              "Imagemap maxanisotropy must be finite");
+    }
+    if (!unique || !index || result_.document.diagnostics_truncated ||
+        previous_issues != result_.document.diagnostics.size()) {
+        return;
+    }
+    auto &input = result_.document.dependencies[*index];
+    if (!input.exists) {
+        return;
+    }
+    auto extension = input.resolved_path.extension().string();
+    std::ranges::transform(extension, extension.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    if (extension != ".png") {
+        unsupported(filename.location, "Only PNG imagemap files are supported");
+        return;
+    }
+    auto [cached, first_source] = decoded_images_.try_emplace(*index);
+    if (first_source) {
+        if (auto pixels = decode_image(input.resolved_path, filename.location)) {
+            cached->second = std::make_shared<const CheckedImageSource>(
+                CheckedImageSource{input.resolved_path, std::move(pixels)});
+            input.visited = true;
+        }
+    }
+    if (!cached->second) {
+        return;
+    }
+    const auto encoding = encoding_name == "linear" ? ImageEncoding::linear : ImageEncoding::srgb;
+    const auto wrap = wrap_name == "black"   ? ImageWrap::black
+                      : wrap_name == "clamp" ? ImageWrap::clamp
+                                             : ImageWrap::repeat;
+    auto [pyramid, first_variant] = image_pyramids_.try_emplace(std::tuple{*index, encoding, wrap});
+    if (first_variant) {
+        pyramid->second = image_pyramid(input.resolved_path, filename.location,
+                                        *cached->second->pixels, encoding, wrap);
+    }
+    if (pyramid->second) {
+        texture.image = pyramid->second;
+        scene_.spectrum_image_textures.push_back(
+            {std::move(descriptor), cached->second, std::move(texture)});
+    }
+}
+
+std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesystem::path &path,
+                                                              const Location &source) {
+    if (asset_remaining_.files == 0) {
+        error("limit-exceeded", source, "Imagemap input file count limit exceeded");
+        return {};
+    }
+    --asset_remaining_.files;
+    std::error_code filesystem_error;
+    const auto size = std::filesystem::file_size(path, filesystem_error);
+    if (filesystem_error) {
+        error("unreadable-file", source, "Cannot size PNG input: " + filesystem_error.message());
+        return {};
+    }
+    if (size > limits_.file_bytes || size > std::vector<std::uint8_t>{}.max_size() ||
+        size > static_cast<std::uintmax_t>(std::numeric_limits<std::streamsize>::max())) {
+        error("limit-exceeded", source, "Imagemap file byte limit exceeded");
+        return {};
+    }
+    if (size > asset_remaining_.bytes) {
+        error("limit-exceeded", source, "Expanded input byte limit exceeded");
+        return {};
+    }
+    asset_remaining_.bytes -= static_cast<std::size_t>(size);
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        error("unreadable-file", source, "Cannot open PNG input");
+        return {};
+    }
+    try {
+        std::vector<std::uint8_t> data(static_cast<std::size_t>(size));
+        if (!stream.read(reinterpret_cast<char *>(data.data()),
+                         static_cast<std::streamsize>(size)) ||
+            stream.peek() != std::char_traits<char>::eof() || stream.bad()) {
+            error("unreadable-file", source, "PNG input changed or could not be read");
+            return {};
+        }
+        auto decoded = decode_png(data, image_limits_);
+        if (!decoded.value) {
+            issue(decoded.unsupported ? Severity::unsupported : Severity::error,
+                  decoded.unsupported      ? "unsupported-feature"
+                  : decoded.limit_exceeded ? "limit-exceeded"
+                                           : "invalid-image",
+                  source, "PNG \"" + path.string() + "\": " + decoded.diagnostic);
+            return {};
+        }
+        image_limits_.retained_bytes -= decoded.value->rgb.size();
+        return std::make_shared<const DecodedImage>(std::move(*decoded.value));
+    } catch (const std::bad_alloc &) {
+        error("limit-exceeded", source, "Cannot allocate PNG input or decoded pixels");
+        return {};
+    }
+}
+
+std::shared_ptr<const ImagePyramid>
+Interpreter::image_pyramid(const std::filesystem::path &path, const Location &location,
+                           const DecodedImage &source, ImageEncoding encoding, ImageWrap wrap) {
+    try {
+        auto pyramid = build_image_pyramid(source, encoding, wrap, image_limits_);
+        if (!pyramid.value) {
+            issue(pyramid.unsupported ? Severity::unsupported : Severity::error,
+                  pyramid.unsupported      ? "unsupported-feature"
+                  : pyramid.limit_exceeded ? "limit-exceeded"
+                                           : "invalid-image",
+                  location, "PNG \"" + path.string() + "\": " + pyramid.diagnostic);
+            return {};
+        }
+        image_limits_.retained_bytes -= pyramid.value->texels.size() * sizeof(std::uint32_t) +
+                                        pyramid.value->levels.size() * sizeof(ImageMipLevel);
+        return std::make_shared<const ImagePyramid>(std::move(*pyramid.value));
+    } catch (const std::bad_alloc &) {
+        error("limit-exceeded", location, "Cannot allocate imagemap mip pyramid");
+        return {};
+    }
 }
 
 void Interpreter::medium(const Directive &directive) {

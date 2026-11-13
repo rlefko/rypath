@@ -29,13 +29,14 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
+| Named spectrum PNG imagemaps | Retained with effective mapping and sampling parameters | Entry-relative image decode and mip validation, including unused definitions | See [PNG imagemaps](pbrt-rendering.md#png-imagemaps) |
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
-| Other external meshes, image/procedural textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
+| Other external meshes, other image and procedural textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
 | Textured area lights, emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
 | Unknown directives / malformed syntax | Source-located error | Stops without line-based recovery | Not attempted |
 | Legacy v3 forms and hexadecimal numbers | Explicit diagnostic | Outside this profile | Unsupported |
@@ -71,6 +72,7 @@ capture still occurs at each camera declaration.
 | Diffuse material | `reflectance`, including a spectrum texture reference; named definitions require `string type` |
 | Float constant texture | Optional scalar `float value` |
 | Spectrum constant texture | Optional `value` of type `rgb`, `spectrum`, or `blackbody`, subject to the narrower render profile |
+| Spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |
 | Constant infinite light | `L`, `scale`, `illuminance` |
 | Diffuse area light | `L`, `scale`, `twosided`, `power`, empty `filename`; nonempty image filenames are inventoried and deferred |
 | Triangle mesh | `P`, `indices`, per-vertex `N` and `uv`; exactly three vertices may omit indices |
@@ -90,7 +92,8 @@ Empty names and duplicate names within a namespace are errors. Inline and named
 diffuse materials resolve `texture reflectance` in the spectrum namespace after
 parsing, including forward references and definitions in closed scopes. An empty
 or missing reference, or a reference defined only in the float namespace, is an
-error. Omitted `value` stays omitted until translation, where it defaults to one.
+error. Omitted constant `value` stays omitted until translation, where it defaults
+to one.
 
 The last compatible explicit parameter takes precedence over inherited defaults.
 rypath accepts mixed compatible explicit types for the same field and selects
@@ -98,6 +101,26 @@ the last one. The pinned PBRT `ReportUnused` only recognizes shadowing within th
 same type and name, so it can reject a shadowed explicit value of a different
 type. This acceptance extension covers parameter selection in preflight. See
 the [pinned parameter dictionary](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/paramdict.cpp).
+
+## PNG imagemap definitions
+
+Named spectrum imagemaps share the spectrum namespace and follow the same
+parameter precedence and diffuse binding rules.
+
+Supported PNG inputs are noninterlaced 8-bit grayscale, grayscale with alpha,
+RGB, and RGBA. Grayscale replicates into RGB, alpha is discarded, and metadata
+does not determine the color transform. Indexed, interlaced, other bit depths
+and animated PNGs are unsupported. A missing, corrupt, or over-limit supported
+input is an error. A dependency is marked visited after successful decoding.
+The decoder provenance and its byte-stream limits are recorded in
+[LodePNG](../third_party/lodepng/README.md).
+
+Asset paths in included files resolve from the entry directory. Distinct
+images and PLY inputs share the file count and expanded byte budget with scene
+files. One successful decode supplies all imagemaps of the same resolved path.
+Mip variants share storage for the same path, encoding, and wrap mode. Aggregate
+retained accounting includes decoded RGB bytes, packed mip texels, and level
+records. Image-specific resource limits are listed below.
 
 ## PLY meshes
 
@@ -204,6 +227,10 @@ The diagnostic limit also marks analysis incomplete.
 | Total authored values | 2,000,000 |
 | Directives | 100,000 |
 | Diagnostics | 100 |
+| Source or mip image axis | 4,096 pixels |
+| Retained decoded RGB and mip payloads per scene | 256 MiB |
+| Scratch per decode or mip build | 256 MiB |
+| DEFLATE blocks per PNG | 65,536 |
 
 Tests inject smaller limits to exercise every boundary cheaply. Translation also
 bounds repeated effective-parameter checks and expanded geometry against the

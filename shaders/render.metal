@@ -6,7 +6,9 @@
 #include "../src/render_wire.h"
 #include "../src/sobol_probe_wire.h"
 #include "../src/sobol_shared.h"
+#include "image_texture.h"
 #include "intersection.h"
+#include "texture_footprint.h"
 
 using namespace metal;
 using namespace metal::raytracing;
@@ -152,6 +154,27 @@ static ray primary_ray(constant wire::Parameters &p, thread const wire::Sample &
         normalize(unpack(p.forward) + (2.0f * x - 1.0f) * aspect * p.film_scale * unpack(p.right) +
                   (1.0f - 2.0f * y) * p.film_scale * unpack(p.up));
     return ray(unpack(p.origin), direction);
+}
+
+static void texture_camera_rays(constant wire::Parameters &p, thread const wire::Sample &sample,
+                                thread float3 &dx, thread float3 &dy) {
+    const float2 uv = camera_uniforms(p, sample);
+    float3 d;
+    if (p.filter_kind == wire::triangle_filter) {
+        const float x = precise::divide((float(sample.pixel % p.width) + 0.5f) +
+                                            triangle_offset(uv.x, p.filter_x_radius),
+                                        float(p.width));
+        const float y = precise::divide((float(sample.pixel / p.width) + 0.5f) +
+                                            triangle_offset(uv.y, p.filter_y_radius),
+                                        float(p.height));
+        d = fma(float3(y), unpack(p.up), fma(float3(x), unpack(p.right), unpack(p.forward)));
+    } else {
+        const float x = (float(sample.pixel % p.width) + uv.x) / float(p.width);
+        const float y = (float(sample.pixel / p.width) + uv.y) / float(p.height);
+        d = unpack(p.forward) + x * unpack(p.right) + y * unpack(p.up);
+    }
+    dx = d + unpack(p.right) / float(p.width);
+    dy = d + unpack(p.up) / float(p.height);
 }
 
 static float demo_reflectance(const device wire::Material &material, constant wire::Parameters &p,
@@ -464,6 +487,107 @@ static bool surface_point(float2 uv, uint kind, const device wire::Instance &ins
                                   normal_count, source, point);
 }
 
+static float3x3 texture_matrix(constant float *m) {
+    return float3x3(float3(m[0], m[3], m[6]), float3(m[1], m[4], m[7]), float3(m[2], m[5], m[8]));
+}
+
+static float3 texture_world_vector(const device wire::Instance &instance, float3 v) {
+    return float3(dot(float3(instance.matrix[0], instance.matrix[1], instance.matrix[2]), v),
+                  dot(float3(instance.matrix[4], instance.matrix[5], instance.matrix[6]), v),
+                  dot(float3(instance.matrix[8], instance.matrix[9], instance.matrix[10]), v));
+}
+
+static bool texture_vertex_uv(const device wire::Point2 *uvs, uint begin, uint vertex_index,
+                              uint count, thread float2 &uv) {
+    if (begin >= count || vertex_index >= count - begin)
+        return false;
+    const auto value = uvs[begin + vertex_index];
+    uv = float2(value.x, value.y);
+    return all(isfinite(uv));
+}
+
+static float
+image_reflectance(const device wire::Instance &instance, uint primitive, uint kind, float2 hit_uv,
+                  thread const SurfacePoint &point, const device wire::Point *positions,
+                  const device wire::Triangle *triangles, const device wire::Patch *patches,
+                  const device wire::Point2 *uvs, const device wire::TextureFrame *frames,
+                  const device wire::ImageTexture &texture, const device wire::TextureLevel *levels,
+                  const device wire::Word *texels, const device float *transfer,
+                  const device float *rgb_table, constant wire::TextureParameters &tp,
+                  constant wire::Parameters &p, thread const wire::Sample &sample,
+                  float3 primary_direction) {
+    float2 st;
+    float3 dpdu, dpdv, local_p;
+    if (kind == wire::triangle_primitive) {
+        const auto triangle = triangles[instance.triangle_begin + primitive];
+        const float3 p0 = unpack(positions[instance.vertex_begin + triangle.vertices[0]]);
+        const float3 p1 = unpack(positions[instance.vertex_begin + triangle.vertices[1]]);
+        const float3 p2 = unpack(positions[instance.vertex_begin + triangle.vertices[2]]);
+        local_p = fma(float3(hit_uv.y), p2 - p0, fma(float3(hit_uv.x), p1 - p0, p0));
+        float2 a(0, 0), b(1, 0), c(1, 1);
+        if (instance.uv_begin != 0xffffffffu &&
+            (!texture_vertex_uv(uvs, instance.uv_begin, triangle.vertices[0], tp.uv_count, a) ||
+             !texture_vertex_uv(uvs, instance.uv_begin, triangle.vertices[1], tp.uv_count, b) ||
+             !texture_vertex_uv(uvs, instance.uv_begin, triangle.vertices[2], tp.uv_count, c)))
+            return NAN;
+        if (!rypath_texture_triangle_uv(float3(1.0f - (hit_uv.x + hit_uv.y), hit_uv.x, hit_uv.y), a,
+                                        b, c, st) ||
+            instance.frame_begin >= tp.frame_count ||
+            primitive >= tp.frame_count - instance.frame_begin)
+            return NAN;
+        const auto frame = frames[instance.frame_begin + primitive];
+        dpdu = unpack(frame.dpdu);
+        dpdv = unpack(frame.dpdv);
+    } else {
+        const auto patch = patches[instance.patch_begin + primitive];
+        float3 v[4];
+        float2 uv[4] = {float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1)};
+        for (uint i = 0; i < 4; ++i) {
+            v[i] = unpack(positions[instance.vertex_begin + patch.vertices[i]]);
+            if (instance.uv_begin != 0xffffffffu &&
+                !texture_vertex_uv(uvs, instance.uv_begin, patch.vertices[i], tp.uv_count, uv[i]))
+                return NAN;
+        }
+        const float3 du = texture_world_vector(instance, mix(v[1] - v[0], v[3] - v[2], hit_uv.y));
+        const float3 dv = texture_world_vector(instance, mix(v[2] - v[0], v[3] - v[1], hit_uv.x));
+        local_p = mix(mix(v[0], v[1], hit_uv.x), mix(v[2], v[3], hit_uv.x), hit_uv.y);
+        if (!rypath_texture_patch_frame(hit_uv, du, dv, instance.uv_begin != 0xffffffffu, uv[0],
+                                        uv[1], uv[2], uv[3], st, dpdu, dpdv))
+            return NAN;
+    }
+    float3 dpdx, dpdy;
+    // Rebase the affine translation before adding local coordinates. Subtracting
+    // the camera from an already-rounded world point loses small surface offsets.
+    const float3 relative_p =
+        texture_world_vector(instance, local_p) +
+        (float3(instance.matrix[3], instance.matrix[7], instance.matrix[11]) - unpack(p.origin));
+    if (!all(isfinite(relative_p)))
+        return NAN;
+    bool primary = false;
+    if (sample.scatterings == 0u) {
+        float3 rx, ry;
+        texture_camera_rays(p, sample, rx, ry);
+        if (!all(isfinite(rx)) || !all(isfinite(ry)))
+            return NAN;
+        primary = rypath_texture_primary_dp(relative_p, point.geometric_normal, primary_direction,
+                                            rx, ry, tp.spp_scale, dpdx, dpdy);
+    }
+    if (!primary) {
+        rypath_texture_approximate_dp(relative_p, point.geometric_normal,
+                                      texture_matrix(tp.world_from_camera),
+                                      texture_matrix(tp.camera_from_world), unpack(tp.minimum_dx),
+                                      unpack(tp.minimum_dy), tp.spp_scale, dpdx, dpdy);
+    }
+    float2 dstdx, dstdy;
+    if (!rypath_texture_uv_derivatives(dpdu, dpdv, dpdx, dpdy, dstdx, dstdy))
+        return NAN;
+    float3 rgb = rypath_image::lookup(texture, levels, texels, transfer, tp, st, dstdx, dstdy);
+    rgb *= texture.scale;
+    if (texture.invert != 0u)
+        rgb = 1.0f - rgb;
+    return rypath_image::spectrum(rgb, sample.wavelength, rgb_table);
+}
+
 static float2 patch_sample_uv(uint u, uint v) {
     // Independent 23-bit midpoint coordinates stay strictly within the square.
     return (float2(u >> 9, v >> 9) + 0.5f) * 0x1.0p-23f;
@@ -578,6 +702,14 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 const device sobol::Tables &tables [[buffer(12)]],
                                 const device wire::Patch *patches [[buffer(13)]],
                                 MixedIntersectionTable intersection_table [[buffer(14)]],
+                                const device wire::Point2 *texture_uvs [[buffer(15)]],
+                                const device wire::TextureFrame *texture_frames [[buffer(16)]],
+                                const device wire::ImageTexture *image_textures [[buffer(17)]],
+                                const device wire::TextureLevel *image_levels [[buffer(18)]],
+                                const device wire::Word *image_texels [[buffer(19)]],
+                                const device float *image_transfer [[buffer(20)]],
+                                const device float *image_spectra [[buffer(21)]],
+                                constant wire::TextureParameters &texture_p [[buffer(22)]],
                                 uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
@@ -585,6 +717,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
     ulong index = 0;
     wire::Sample sample = begin_sample(p, tables, lane, index);
     ray incoming = primary_ray(p, sample);
+    const float3 primary_direction = incoming.direction;
     MixedIntersector closest;
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
     MixedIntersector shadow;
@@ -677,6 +810,12 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const device wire::Material &material = materials[instance.material];
+        if (material.kind == wire::image_material && !emissive &&
+            !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
+                           normals, p.normal_count, PointSource::native_hit, point)) {
+            sample.status = wire::invalid_arithmetic;
+            break;
+        }
         float rho = NAN;
         if (p.model == wire::demo_model && material.kind == wire::sampled_material) {
             rho = demo_reflectance(material, p, sample.wavelength);
@@ -689,6 +828,13 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             rho = material.constant_value;
         } else if (p.model == wire::pbrt_model && material.kind == wire::rgb_sigmoid_material) {
             rho = sigmoid_reflectance(material, sample.wavelength);
+        } else if (p.model == wire::pbrt_model && material.kind == wire::image_material &&
+                   material.image_texture < texture_p.texture_count) {
+            rho = image_reflectance(instance, hit.primitive_id, kind, hit_uv, point, positions,
+                                    triangles, patches, texture_uvs, texture_frames,
+                                    image_textures[material.image_texture], image_levels,
+                                    image_texels, image_transfer, image_spectra, texture_p, p,
+                                    sample, primary_direction);
         } else {
             sample.status = wire::invalid_hit;
             break;
@@ -705,7 +851,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::emergency_depth;
             break;
         }
-        if (!emissive &&
+        if (!emissive && material.kind != wire::image_material &&
             !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
                            normals, p.normal_count, PointSource::native_hit, point)) {
             sample.status = wire::invalid_arithmetic;

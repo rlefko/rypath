@@ -1,4 +1,28 @@
-# PBRT v4 parser source
+# PBRT v4 source and data
+
+## Image texture adaptations
+
+At the same pinned revision below, `src/image_texture.cpp` adapts PNG transfer
+curves, resampling, pyramid generation, and bilinear mip lookup from
+[image.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/image.cpp),
+[color.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/color.cpp),
+and [mipmap.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/mipmap.cpp).
+`shaders/image_texture.h` adapts UV lookup, mip selection, albedo processing,
+and the RGB-to-spectrum lookup to packed Metal buffers. It follows
+[textures.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/textures.cpp),
+`mipmap.cpp`, and the sRGB reconstruction sources below.
+
+`src/texture_footprint.cpp` and `shaders/texture_footprint.h` adapt pinhole
+differentials, triangle and bilinear partials, and the UV derivative solve.
+rypath uses world-space geometry and prepares the camera's fallback differentials
+on the host. The corresponding sources are
+[cameras.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/cameras.cpp),
+[cameras.h](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/cameras.h),
+[shapes.h](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/shapes.h),
+and [interaction.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/interaction.cpp).
+The adaptations retain PBRT's copyright and [Apache-2.0 license](LICENSE.txt).
+The [image texture validation record](../../docs/image-texture-validation.md)
+describes the numerical contract.
 
 ## Bilinear intersection adaptation
 

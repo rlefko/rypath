@@ -2,8 +2,9 @@
 
 This historical record covers the spectral subset delivered in PR #6. The
 [sRGB extension record](pbrt-rgb-validation.md) documents the subsequent validation.
-The current [render profile](pbrt-rendering.md) includes both slices. It is numerical evidence
-for selected owned scenes, not full PBRT conformance or a performance benchmark.
+The [image texture record](image-texture-validation.md) covers PNG diffuse reflectance.
+The current [render profile](pbrt-rendering.md) describes the supported subset.
+This record reports numerical evidence for three owned scenes.
 Hosted results and their final commit identity are recorded on the PR.
 
 ## Local checks

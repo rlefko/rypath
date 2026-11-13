@@ -39,7 +39,7 @@ diagnosed even when not placed in the image.
 | Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
-| Textures | Named spectrum constants for diffuse reflectance, with the same RGB and numeric spectrum limits; float constants are validated during translation |
+| Textures | Named spectrum constants and UV-mapped PNG imagemaps for diffuse reflectance; float constants are validated during translation |
 | Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/RGB/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
@@ -54,7 +54,7 @@ unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
 Non-sRGB reconstruction, legacy `color` parameters, blackbody and named/file
-spectra, image and procedural textures, textured emitters, emitting object
+spectra, other image and procedural textures, textured emitters, emitting object
 members, other external mesh formats, tangents/normal maps, media, motion, lens
 effects, and other cameras, filters, samplers, and integrators remain unsupported.
 Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
@@ -65,8 +65,8 @@ the separately attributed Cornell adaptations used for numerical comparisons.
 
 Triangle normals retain relative vertex lengths through affine transformation
 and barycentric interpolation. The diffuse frame uses the shading normal; ray
-offsets and area-light Jacobians use the geometric plane. UV arrays remain owned
-and indexed but are inert for the current constant materials and emission.
+offsets and area-light Jacobians use the geometric plane. Image reflectance uses
+owned, position-indexed UVs. Constant reflectance and emission are UV-independent.
 Degenerate one-sided emitter orientations and the supported numeric domain are
 specified in [triangle-attribute validation](pbrt-attribute-validation.md).
 
@@ -90,6 +90,41 @@ rendering. All references to a spectrum constant share its compiled diffuse
 material payload. Float constants accept signed values that narrow to finite
 binary32. Alpha masking and displacement remain deferred. See the
 [constant texture validation record](pbrt-texture-validation.md).
+
+## PNG imagemaps
+
+```pbrt
+Texture "paint" "spectrum" "imagemap" "string filename" "paint.png"
+Material "diffuse" "texture reflectance" "paint"
+```
+
+Inline and named diffuse materials may reference imagemaps on triangles and
+bilinear quads, including object instances. Supported settings and defaults
+follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/textures.cpp).
+
+| Parameter | Supported values |
+| --- | --- |
+| `filename` | Required entry-relative or absolute path to a supported [PNG input](pbrt-profile.md#png-imagemap-definitions) |
+| `mapping` | `uv` (default), with `uscale` and `vscale` defaulting to 1 and `udelta` and `vdelta` to 0 |
+| `encoding` | `sRGB` (default) or `linear`; output color primaries are sRGB |
+| `filter` | `bilinear` (default), selecting one mip level |
+| `wrap` | `repeat` (default), `clamp`, or `black`; non-power-of-two images require repeat or clamp |
+| `scale`, `invert` | Multiply filtered RGB by `scale` (default 1), then subtract from one when `invert` is true (default false) |
+| `maxanisotropy` | Accepted finite value, inert with bilinear filtering |
+
+Texture lookup maps the hit UV, flips the vertical coordinate and filters in
+linear RGB. The spectrum uses the existing sRGB albedo reconstruction after
+clamping the scaled or inverted RGB to [0,1]. Explicit texture encoding controls
+byte decoding. PNG gamma, color metadata, and alpha do not affect reflectance.
+Float imagemaps, non-UV mappings, other encodings or filters, alpha masking,
+displacement, and image emission are outside this profile.
+
+Triangle UVs default to `(0,0), (1,0), (1,1)`. Bilinear quads default to patch
+parameters. The footprint uses the geometric tangent plane and the declared
+sample count. Camera ray differentials supply primary footprints. Secondary
+hits and primary projection fallbacks use PBRT's camera footprint approximation.
+The [image texture validation record](image-texture-validation.md) describes
+mip generation, the footprint calculation, and comparison coverage.
 
 ## External PLY geometry
 
@@ -280,14 +315,16 @@ comparison. Commands and measured evidence are in the
 [triangle-filter validation record](pbrt-filter-validation.md),
 [triangle-attribute validation record](pbrt-attribute-validation.md),
 [Sobol validation record](pbrt-sobol-validation.md),
-[PLY validation record](pbrt-ply-validation.md), and
-[constant texture validation record](pbrt-texture-validation.md).
+[PLY validation record](pbrt-ply-validation.md),
+[constant texture validation record](pbrt-texture-validation.md), and
+[image texture validation record](image-texture-validation.md).
 
-Eighteen owned wrappers and five labeled CC0 Cornell derivatives cover
+Twenty-two owned wrappers and five labeled CC0 Cornell derivatives cover
 numeric-spectrum and RGB backgrounds, diffuse response, area emission, visibility,
 asymmetric multiple scattering, transformed shading normals, randomized
-Sobol sampling, mixed PLY primitives, curved emission and named constant textures. The small external PLY
-asset retains its separate CC BY 2.0 license. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
+Sobol sampling, mixed PLY primitives, curved emission, and named constant and PNG
+image textures. The external PLY and PNG inputs retain their own licenses.
+Comparison uses 8×8 pixels, 4,096 samples per pixel, and
 16 fixed seeds per renderer (rypath 0–15 and PBRT 16–31). Each channel and
 declared region mean must agree within five combined standard errors plus
 `2e-5 * max(1, abs(reference))`. Thresholds and seeds precede results; failures

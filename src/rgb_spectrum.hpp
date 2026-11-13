@@ -4,6 +4,7 @@
 
 #include <array>
 #include <optional>
+#include <span>
 
 namespace rypath {
 
@@ -22,5 +23,9 @@ float evaluate_srgb(const RgbSpectrum &spectrum, float wavelength);
 
 // PBRT's luminance-normalized stdillum-D65 sampled at 360, 361, ..., 830 nm.
 const std::array<float, 471> &pbrt_d65();
+
+// Canonical binary32 data: 64 scale nodes followed by 3*64^3 RGB coefficients.
+// Owned immutable storage, decoded once and uploaded only for spatial RGB textures.
+std::span<const float> srgb_reconstruction_table();
 
 } // namespace rypath

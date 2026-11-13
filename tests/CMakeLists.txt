@@ -89,6 +89,39 @@ set_tests_properties(cli.render_demo PROPERTIES TIMEOUT 30
 
 set(pbrt_fixture_directory "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt")
 set(pbrt_test_directory "${CMAKE_CURRENT_BINARY_DIR}/pbrt")
+add_executable(rypath_image_texture_tests image_texture_tests.cpp)
+target_link_libraries(rypath_image_texture_tests PRIVATE rypath_image)
+rypath_configure_host_target(rypath_image_texture_tests)
+add_test(NAME pbrt.png_mipmaps COMMAND rypath_image_texture_tests
+    "${pbrt_test_directory}/$<CONFIG>/png")
+set_tests_properties(pbrt.png_mipmaps PROPERTIES TIMEOUT 30)
+add_executable(rypath_pbrt_image_tests pbrt_image_tests.cpp)
+target_link_libraries(rypath_pbrt_image_tests PRIVATE rypath_pbrt_render)
+rypath_configure_host_target(rypath_pbrt_image_tests)
+add_test(NAME pbrt.image_textures COMMAND rypath_pbrt_image_tests
+    "${pbrt_test_directory}/$<CONFIG>/image")
+set_tests_properties(pbrt.image_textures PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_texture_footprint_tests texture_footprint_tests.cpp)
+target_link_libraries(rypath_texture_footprint_tests PRIVATE rypath_render)
+rypath_configure_host_target(rypath_texture_footprint_tests)
+add_test(NAME render.texture_footprints COMMAND rypath_texture_footprint_tests)
+set_tests_properties(render.texture_footprints PROPERTIES TIMEOUT 30)
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_texture_footprint_probe texture_footprint_probe.mm)
+    target_link_libraries(rypath_texture_footprint_probe PRIVATE rypath_metal_backend rypath_render)
+    rypath_configure_host_target(rypath_texture_footprint_probe)
+    set_target_properties(rypath_texture_footprint_probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_texture_footprint_probe PRIVATE -fobjc-arc)
+    add_test(NAME metal.texture_footprint COMMAND rypath_texture_footprint_probe)
+    set_tests_properties(metal.texture_footprint PROPERTIES TIMEOUT 30)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_texture_footprint_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.texture_footprint PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
 add_test(NAME cli.pbrt_preflight
     COMMAND "${CMAKE_COMMAND}"
         "-Dexecutable=$<TARGET_FILE:rypath>"
@@ -179,6 +212,18 @@ if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
     list(APPEND ray_tracing_test_options --allow-no-ray-tracing)
 endif()
 
+add_executable(rypath_image_render_tests image_render_tests.cpp)
+target_link_libraries(rypath_image_render_tests PRIVATE rypath_metal_backend rypath_render)
+set_target_properties(rypath_image_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+rypath_configure_host_target(rypath_image_render_tests)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.image_render COMMAND rypath_image_render_tests ${ray_tracing_test_options})
+    set_tests_properties(metal.image_render PROPERTIES TIMEOUT 90)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.image_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
 add_executable(rypath_bilinear_tests bilinear_tests.cpp)
 target_link_libraries(rypath_bilinear_tests PRIVATE rypath_metal_backend)
 set_target_properties(rypath_bilinear_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
@@ -203,6 +248,11 @@ if(RYPATH_ENABLE_METAL)
 endif()
 
 set(pbrt_render_fixtures "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt-render")
+add_test(NAME cli.image_inputs COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>" "-Dfixture_directory=${pbrt_render_fixtures}"
+    "-Dtest_directory=${pbrt_test_directory}/$<CONFIG>/image-cli"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_image_inputs.cmake")
+set_tests_properties(cli.image_inputs PROPERTIES TIMEOUT 30)
 add_executable(rypath_pbrt_ply_fixture_tests pbrt_ply_fixture_tests.cpp)
 target_link_libraries(rypath_pbrt_ply_fixture_tests PRIVATE rypath_pbrt_render)
 rypath_configure_host_target(rypath_pbrt_ply_fixture_tests)

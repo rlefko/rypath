@@ -6,13 +6,13 @@ and interactive rendering follow later.
 
 **Current state: progressive Metal rendering and a strict PBRT spectral profile.**
 Render the built-in demo or PBRT files containing supported sampled spectra or
-linear sRGB colors, including named constant textures for diffuse reflectance.
+linear sRGB colors, with named constant and PNG image textures for diffuse reflectance.
 The PBRT profile includes inline triangles, external PLY triangles and bilinear
-quads, per-vertex shading normals and retained UVs, constant environment lighting,
+quads, per-vertex shading normals and UVs, constant environment lighting,
 directly placed diffuse emitters, and box or triangle pixel filtering. Complete batches
 accumulate raw XYZ; separate display conversion saves the final PNG. Portable `--check-pbrt`
-reports scene structure, dependencies, and unsupported features. Image textures,
-broader PBRT materials, textured/instanced emitters, and other external assets
+reports scene structure, dependencies, and unsupported features. Broader PBRT
+materials, textured or instanced emitters, and other external assets
 remain in development.
 
 ## Build and run
@@ -34,7 +34,7 @@ ctest --preset debug --no-tests=error
 ./build/debug/rypath --check-pbrt tests/fixtures/pbrt/cornell-box.pbrt
 ./build/debug/rypath --render-pbrt tests/fixtures/pbrt/cornell-box.pbrt \
   --output build/cornell.png --batch-size 8
-./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/rgb-multibounce.pbrt \
+./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/image-magnified.pbrt \
   --output build/pbrt.png --batch-size 8
 ./build/debug/rypath --render-demo --output build/demo.png \
   --width 256 --height 192 --samples 128 --batch-size 8 --seed 1

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace rypath {
 namespace detail {
@@ -44,6 +45,17 @@ const std::array<float, resolution> &z_nodes() {
 float lerp(float t, float a, float b) { return (1.0f - t) * a + t * b; }
 
 } // namespace
+
+std::span<const float> srgb_reconstruction_table() {
+    static const auto values = [] {
+        std::vector<float> result(64 + 3 * 3 * 64 * 64 * 64);
+        for (std::size_t i = 0; i < result.size(); ++i) {
+            result[i] = table_float(i);
+        }
+        return result;
+    }();
+    return values;
+}
 
 std::optional<RgbSpectrum> reconstruct_srgb(const std::array<float, 3> &rgb) {
     if (!std::all_of(rgb.begin(), rgb.end(), [](float value) {
