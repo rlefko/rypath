@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "render.hpp"
+#include "triangle_attributes.hpp"
 
 #include "cie_xyz_data.hpp"
 #include "rgb_spectrum.hpp"
@@ -468,6 +469,28 @@ std::string validate_render_scene(const RenderScene &scene) {
         }
         if (auto error = validate_area_geometry(mesh, instance.transform); !error.empty()) {
             return "Instance " + std::to_string(i) + ": " + error;
+        }
+    }
+    std::vector<GeometryPoint> normals;
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        const auto &instance = scene.geometry.instances[i];
+        const auto &mesh = scene.geometry.meshes[instance.mesh_index];
+        if (mesh.normals.empty()) {
+            continue;
+        }
+        const bool reverse = !scene.instance_reverse_orientation.empty() &&
+                             scene.instance_reverse_orientation[i] != 0;
+        if (auto error = prepare_shading_normals(mesh, instance.transform, reverse, normals);
+            !error.empty()) {
+            return "Instance " + std::to_string(i) + ": " + error;
+        }
+        if (!scene.instance_emissions.empty() && scene.instance_emissions[i] != no_area_emission) {
+            const auto &emission = scene.area_emissions[scene.instance_emissions[i]];
+            if (auto error = validate_normal_emission(mesh, instance.transform, reverse,
+                                                      emission.two_sided, normals);
+                !error.empty()) {
+                return "Instance " + std::to_string(i) + ": " + error;
+            }
         }
     }
     if (scene.model == RenderModel::pbrt) {

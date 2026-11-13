@@ -25,6 +25,8 @@ struct GeometryTransform {
 struct GeometryMesh {
     std::vector<GeometryPoint> positions;
     std::vector<std::array<std::uint32_t, 3>> triangles;
+    std::vector<GeometryPoint> normals{};
+    std::vector<std::array<float, 2>> uvs{};
 };
 
 struct GeometryInstance {

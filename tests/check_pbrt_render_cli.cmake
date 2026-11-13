@@ -14,6 +14,7 @@ LightSource "infinite" "rgb L" [1 0.7 0.2]
 Material "diffuse" "rgb reflectance" [0.1 0.5 0.3]
 AreaLightSource "diffuse" "bool twosided" true
 Shape "trianglemesh" "point3 P" [-1 -1 3 1 -1 3 0 1 3]
+    "normal N" [-1 0 2 1 0 2 0 1 3] "point2 uv" [-1 0 1 0 0 2]
 ]=])
 
 function(expect_existing_output)
@@ -32,6 +33,16 @@ execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/unsuppo
 if(NOT exit STREQUAL "2" OR NOT stderr MATCHES "unsupported" OR
    NOT stdout MATCHES "Rendering was not attempted" OR stdout MATCHES "Device:|Committed samples|Wrote PNG")
     message(FATAL_ERROR "Unexpected unsupported result ${exit}: ${stdout}${stderr}")
+endif()
+expect_existing_output()
+
+set(cornell "${fixture_directory}/../pbrt/cornell-box.pbrt")
+execute_process(COMMAND "${executable}" --render-pbrt "${cornell}"
+    --output "${output}" RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+if(NOT exit STREQUAL "2" OR NOT stdout MATCHES "Sampler type \"sobol\"" OR
+   NOT stdout MATCHES "Unsupported features: 1\n" OR NOT stderr STREQUAL "" OR
+   NOT stdout MATCHES "Rendering was not attempted" OR stdout MATCHES "Device:|Committed samples|Wrote PNG")
+    message(FATAL_ERROR "Unexpected Cornell result ${exit}: ${stdout}${stderr}")
 endif()
 expect_existing_output()
 

@@ -157,6 +157,24 @@ void check_geometry_validation(const GeometryData &geometry) {
         require_diagnostic(validate_geometry(invalid), diagnostic);
     };
     check([](GeometryData &data) { data.meshes[1].positions[0].x = inf; }, "Mesh 1 vertex 0");
+    check([](GeometryData &data) { data.meshes[1].normals.resize(1); },
+          "Mesh 1 must have one normal per vertex");
+    check([](GeometryData &data) { data.meshes[1].uvs.resize(1); },
+          "Mesh 1 must have one UV per vertex");
+    check(
+        [](GeometryData &data) {
+            auto &mesh = data.meshes[1];
+            mesh.normals.resize(mesh.positions.size());
+            mesh.normals[0].y = inf;
+        },
+        "Mesh 1 normal 0 is nonfinite");
+    check(
+        [](GeometryData &data) {
+            auto &mesh = data.meshes[1];
+            mesh.uvs.resize(mesh.positions.size());
+            mesh.uvs[1][0] = nan;
+        },
+        "Mesh 1 UV 1 is nonfinite");
     check([](GeometryData &data) { data.meshes[1].triangles[0][1] = 42; },
           "triangle 0 has an out-of-range vertex index");
     check([](GeometryData &data) { data.meshes[1].triangles[0][1] = 1; },

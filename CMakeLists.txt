@@ -78,7 +78,7 @@ add_library(rypath_rgb_spectrum STATIC src/rgb_spectrum.cpp "${rypath_rgb_data_s
 target_include_directories(rypath_rgb_spectrum PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_rgb_spectrum)
 
-add_library(rypath_render STATIC src/render.cpp)
+add_library(rypath_render STATIC src/render.cpp src/triangle_attributes.cpp)
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PRIVATE "${rypath_generated_directory}")
 target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum)

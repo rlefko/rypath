@@ -5,6 +5,7 @@
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
 #include "render_wire.h"
+#include "triangle_attributes.hpp"
 
 #import <Foundation/Foundation.h>
 
@@ -13,9 +14,11 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <new>
 #include <numbers>
 #include <ranges>
+#include <tuple>
 #include <type_traits>
 
 namespace rypath {
@@ -130,7 +133,15 @@ std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData 
         return "Metal world-space emitter mesh count exceeds the index limit";
     }
     prepared.meshes.reserve(scene.geometry.meshes.size() + clone_count);
-    prepared.meshes = scene.geometry.meshes;
+    const auto copy_positions_and_triangles = [&](const GeometryMesh &mesh) {
+        GeometryMesh copy;
+        copy.positions = mesh.positions;
+        copy.triangles = mesh.triangles;
+        prepared.meshes.push_back(std::move(copy));
+    };
+    for (const auto &mesh : scene.geometry.meshes) {
+        copy_positions_and_triangles(mesh);
+    }
     prepared.instances = scene.geometry.instances;
     for (std::size_t source = 0; source < prepared.instances.size(); ++source) {
         if (!requires_world_space_emitter(scene, source)) {
@@ -138,7 +149,7 @@ std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData 
         }
         auto &instance = prepared.instances[source];
         if (references[instance.mesh_index] > 1) {
-            prepared.meshes.push_back(scene.geometry.meshes[instance.mesh_index]);
+            copy_positions_and_triangles(scene.geometry.meshes[instance.mesh_index]);
             instance.mesh_index = static_cast<std::uint32_t>(prepared.meshes.size() - 1);
         }
         auto &mesh = prepared.meshes[instance.mesh_index];
@@ -215,8 +226,71 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> knots = nil;
     id<MTLBuffer> area_emissions = nil;
     id<MTLBuffer> emitters = nil;
+    id<MTLBuffer> normals = nil;
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
+
+    std::string upload_normals(const RenderScene &scene,
+                               std::vector<wire::Instance> &packed_instances) {
+        using Key = std::tuple<std::uint32_t, std::array<float, 9>, bool>;
+        std::map<Key, wire::Word> offsets;
+        struct Table {
+            std::uint32_t source;
+            bool reverse_winding;
+        };
+        std::vector<Table> tables;
+        std::vector<wire::Point> packed_normals;
+        std::vector<GeometryPoint> prepared;
+        const auto limit = std::min<std::size_t>(
+            {max_index, device.maxBufferLength / sizeof(wire::Point), packed_normals.max_size()});
+        std::size_t count = 0;
+        for (std::size_t ordinal = 0; ordinal < packed_instances.size(); ++ordinal) {
+            auto &packed = packed_instances[ordinal];
+            packed.normal_begin = wire::no_normals;
+            const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
+            // Native emitter meshes may be baked and cloned. Always key and transform
+            // the authored normals using the original mesh and instance.
+            const auto &instance = scene.geometry.instances[source];
+            const auto &mesh = scene.geometry.meshes[instance.mesh_index];
+            if (mesh.normals.empty()) {
+                continue;
+            }
+            const auto &m = instance.transform.values;
+            const bool reverse_winding = packed.reverse_orientation != 0;
+            const Key key{instance.mesh_index,
+                          {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]},
+                          reverse_winding};
+            const auto [it, added] = offsets.try_emplace(key, static_cast<wire::Word>(count));
+            packed.normal_begin = it->second;
+            if (!added) {
+                continue;
+            }
+            if (mesh.normals.size() > limit - count || mesh.normals.size() > prepared.max_size()) {
+                return "Metal render normal buffer exceeds host, device or index limits";
+            }
+            count += mesh.normals.size();
+            tables.push_back({source, reverse_winding});
+        }
+        packed_normals.reserve(std::max<std::size_t>(1, count));
+        for (const auto [source, reverse_winding] : tables) {
+            const auto &instance = scene.geometry.instances[source];
+            const auto &mesh = scene.geometry.meshes[instance.mesh_index];
+            if (auto message =
+                    prepare_shading_normals(mesh, instance.transform, reverse_winding, prepared);
+                !message.empty()) {
+                return "Metal render instance " + std::to_string(source) + ": " + message;
+            }
+            for (const auto point : prepared) {
+                packed_normals.push_back(pack(point));
+            }
+        }
+        parameters.normal_count = static_cast<wire::Word>(count);
+        if (packed_normals.empty()) {
+            packed_normals.emplace_back();
+        }
+        normals = upload(device, packed_normals);
+        return normals == nil ? "Metal render normal buffer allocation failed" : "";
+    }
 
     std::string upload_area_lighting(const RenderScene &scene,
                                      const std::vector<wire::Instance> &packed_instances) {
@@ -345,6 +419,9 @@ struct MetalRenderScene::Impl {
                                                                : scene.instance_emissions[source];
             packed_instances.push_back(packed);
         }
+        if (auto message = upload_normals(scene, packed_instances); !message.empty()) {
+            return message;
+        }
 
         std::vector<wire::Material> packed_materials(scene.materials.size());
         std::vector<wire::SpectralKnot> packed_knots;
@@ -468,6 +545,7 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:knots offset:0 atIndex:8];
             [encoder setBuffer:area_emissions offset:0 atIndex:9];
             [encoder setBuffer:emitters offset:0 atIndex:10];
+            [encoder setBuffer:normals offset:0 atIndex:11];
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
@@ -542,7 +620,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path) {
     @autoreleasepool {
         RenderBuildResult result;
-        result.diagnostic = validate_render_scene(scene);
+        try {
+            result.diagnostic = validate_render_scene(scene);
+        } catch (const std::bad_alloc &) {
+            result.diagnostic = "Metal render validation allocation failed";
+        }
         if (!result.diagnostic.empty()) {
             return result;
         }
@@ -612,7 +694,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             return result;
         }
         if (impl->parameters.instance_count != 0) {
-            result.diagnostic = impl->upload_shading(scene, geometry_data);
+            try {
+                result.diagnostic = impl->upload_shading(scene, geometry_data);
+            } catch (const std::bad_alloc &) {
+                result.diagnostic = "Metal render shading preparation allocation failed";
+            }
             if (!result.diagnostic.empty()) {
                 return result;
             }

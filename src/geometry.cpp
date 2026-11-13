@@ -101,9 +101,22 @@ std::string validate_geometry(const GeometryData &geometry) {
             !size_fits<std::array<std::uint32_t, 3>>(mesh.triangles.size())) {
             return mesh_name + " exceeds supported vertex or triangle count";
         }
+        if (!mesh.normals.empty() && mesh.normals.size() != mesh.positions.size()) {
+            return mesh_name + " must have one normal per vertex";
+        }
+        if (!mesh.uvs.empty() && mesh.uvs.size() != mesh.positions.size()) {
+            return mesh_name + " must have one UV per vertex";
+        }
         for (std::size_t vertex = 0; vertex < mesh.positions.size(); ++vertex) {
             if (!finite(mesh.positions[vertex])) {
                 return mesh_name + " vertex " + std::to_string(vertex) + " is nonfinite";
+            }
+            if (!mesh.normals.empty() && !finite(mesh.normals[vertex])) {
+                return mesh_name + " normal " + std::to_string(vertex) + " is nonfinite";
+            }
+            if (!mesh.uvs.empty() &&
+                (!std::isfinite(mesh.uvs[vertex][0]) || !std::isfinite(mesh.uvs[vertex][1]))) {
+                return mesh_name + " UV " + std::to_string(vertex) + " is nonfinite";
             }
         }
         for (std::size_t primitive = 0; primitive < mesh.triangles.size(); ++primitive) {
