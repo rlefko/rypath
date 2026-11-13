@@ -323,9 +323,9 @@ constexpr std::array area_light_fields{
 constexpr std::array mesh_fields{
     Field{"P", "point3", 3, true, true},
     Field{"indices", "integer", 3, true},
-    Field{"N", "normal", 3, true, false, true},
+    Field{"N", "normal", 3, true},
     Field{"S", "vector3", 3, true, false, true},
-    Field{"uv", "point2", 2, true, false, true},
+    Field{"uv", "point2", 2, true},
     Field{"faceIndices", "integer", 1, true, false, true},
     Field{"alpha", "float-texture", 1, false, false, true},
 };
@@ -1272,41 +1272,77 @@ void Interpreter::shape(const Directive &directive) {
     }
     const std::size_t index_count = indices ? indices->values.size() : 3;
     const std::size_t triangle_count = index_count / 3;
-    const auto check_count = [&](string_view name, std::size_t expected) {
-        if (const auto found = fields.find(name);
-            found != fields.end() && found->second->values.size() != expected) {
+    const auto check_count = [&](string_view name, std::size_t expected) -> const Parameter * {
+        const auto found = fields.find(name);
+        if (found == fields.end()) {
+            return nullptr;
+        }
+        if (found->second->values.size() != expected) {
             error("invalid-geometry", found->second->location,
                   "Wrong value count for \"" + std::string(name) + "\" relative to mesh size");
+            return nullptr;
         }
+        return found->second;
     };
-    check_count("N", vertex_count * 3);
+    const auto *normals = check_count("N", vertex_count * 3);
     check_count("S", vertex_count * 3);
-    check_count("uv", vertex_count * 2);
+    const auto *uvs = check_count("uv", vertex_count * 2);
     check_count("faceIndices", triangle_count);
-    // A large inherited mesh must not bypass the authored-value limit by being used repeatedly.
-    const auto cost = positions.values.size() + index_count;
-    if (cost > limits_.total_values - mesh_values_) {
-        if (!budget_exceeded_) {
-            error("limit-exceeded", directive.location, "Translated mesh value limit exceeded");
-            budget_exceeded_ = true;
-        }
+    if ((!normals && fields.contains("N")) || (!uvs && fields.contains("uv"))) {
         return;
     }
-    mesh_values_ += cost;
+    // A large inherited mesh must not bypass the authored-value limit by being used repeatedly.
+    std::size_t remaining = limits_.total_values - mesh_values_;
+    for (const auto cost : {positions.values.size(), index_count,
+                            normals ? normals->values.size() : 0, uvs ? uvs->values.size() : 0}) {
+        if (cost > remaining) {
+            if (!budget_exceeded_) {
+                error("limit-exceeded", directive.location, "Translated mesh value limit exceeded");
+                budget_exceeded_ = true;
+            }
+            return;
+        }
+        remaining -= cost;
+    }
+    mesh_values_ = limits_.total_values - remaining;
+
     GeometryMesh mesh;
-    mesh.positions.reserve(vertex_count);
-    for (std::size_t i = 0; i < positions.values.size(); i += 3) {
-        GeometryPoint point;
-        const std::array components{&point.x, &point.y, &point.z};
-        for (std::size_t axis = 0; axis < components.size(); ++axis) {
-            const auto &value = positions.values[i + axis];
-            if (!representable_float(value.number)) {
-                error("invalid-geometry", value.location, "Vertex coordinate overflows binary32");
+    const auto narrow = [&](const Value &value, float &component, string_view name) {
+        if (!representable_float(value.number)) {
+            error("invalid-geometry", value.location, std::string(name) + " overflows binary32");
+            return false;
+        }
+        component = static_cast<float>(value.number);
+        return true;
+    };
+    const auto read_points = [&](const Parameter &parameter, std::vector<GeometryPoint> &points,
+                                 string_view name) {
+        points.reserve(vertex_count);
+        for (std::size_t i = 0; i < parameter.values.size(); i += 3) {
+            GeometryPoint point;
+            if (!narrow(parameter.values[i], point.x, name) ||
+                !narrow(parameter.values[i + 1], point.y, name) ||
+                !narrow(parameter.values[i + 2], point.z, name)) {
+                return false;
+            }
+            points.push_back(point);
+        }
+        return true;
+    };
+    if (!read_points(positions, mesh.positions, "Vertex coordinate") ||
+        (normals && !read_points(*normals, mesh.normals, "Vertex normal component"))) {
+        return;
+    }
+    if (uvs) {
+        mesh.uvs.reserve(vertex_count);
+        for (std::size_t i = 0; i < uvs->values.size(); i += 2) {
+            std::array<float, 2> uv{};
+            if (!narrow(uvs->values[i], uv[0], "UV coordinate") ||
+                !narrow(uvs->values[i + 1], uv[1], "UV coordinate")) {
                 return;
             }
-            *components[axis] = static_cast<float>(value.number);
+            mesh.uvs.push_back(uv);
         }
-        mesh.positions.push_back(point);
     }
     mesh.triangles.reserve(triangle_count);
     if (!indices) {

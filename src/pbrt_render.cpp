@@ -3,6 +3,7 @@
 
 #include "pbrt_numeric.hpp"
 #include "rgb_spectrum.hpp"
+#include "triangle_attributes.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,7 @@
 #include <numbers>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 namespace rypath::pbrt {
 namespace {
@@ -541,18 +543,16 @@ void Translator::geometry() {
     }
     std::size_t remaining = limits_.total_values;
     for (const auto &mesh : geometry.meshes) {
-        if (mesh.positions.size() > remaining / 3) {
-            issue(Severity::error, "limit-exceeded", entry_,
-                  "Translated geometry value limit exceeded");
-            return;
+        for (const auto &[count, width] :
+             {std::pair{mesh.positions.size(), 3U}, std::pair{mesh.triangles.size(), 3U},
+              std::pair{mesh.normals.size(), 3U}, std::pair{mesh.uvs.size(), 2U}}) {
+            if (count > remaining / width) {
+                issue(Severity::error, "limit-exceeded", entry_,
+                      "Translated geometry value limit exceeded");
+                return;
+            }
+            remaining -= count * width;
         }
-        remaining -= mesh.positions.size() * 3;
-        if (mesh.triangles.size() > remaining / 3) {
-            issue(Severity::error, "limit-exceeded", entry_,
-                  "Translated geometry value limit exceeded");
-            return;
-        }
-        remaining -= mesh.triangles.size() * 3;
     }
     if (std::ranges::none_of(geometry.instances, [&](const GeometryInstance &instance) {
             return !geometry.meshes[instance.mesh_index].triangles.empty();
@@ -580,17 +580,15 @@ void Translator::geometry() {
 
     struct MeshBinding {
         std::uint32_t material = 0;
-        bool reverse_orientation = false;
-        const Shape *emissive_shape = nullptr;
+        const Shape *shape = nullptr;
     };
     std::vector<MeshBinding> bindings(geometry.meshes.size());
     std::map<const Descriptor *, std::uint32_t> area_lights;
     const auto bind = [&](const Shape &shape) {
         const auto &binding = shape.material;
         auto &mesh = bindings[shape.mesh_index];
-        mesh.reverse_orientation = shape.reverse_orientation;
+        mesh.shape = &shape;
         if (shape.area_light) {
-            mesh.emissive_shape = &shape;
             area_lights.try_emplace(shape.area_light.get(), no_area_emission);
         }
         if (!binding.name->empty()) {
@@ -637,22 +635,49 @@ void Translator::geometry() {
     if (!area_lights.empty()) {
         scene_.instance_emissions.reserve(geometry.instances.size());
     }
+    // Every placement prepares normals here and during portable scene validation.
+    std::size_t normal_coordinates_remaining = limits_.total_values;
+    std::vector<GeometryPoint> shading_normals;
     for (const auto &instance : geometry.instances) {
+        if (diagnostics_.diagnostics_truncated) {
+            return;
+        }
         const auto &binding = bindings[instance.mesh_index];
+        const auto &mesh = geometry.meshes[instance.mesh_index];
+        const auto &shape = *binding.shape;
         scene_.instance_materials.push_back(binding.material);
         // PBRT applies the mesh and placement transforms to normals. A world-space
         // edge cross product has an additional sign for a mirrored transform.
         const bool mirrored = handedness(instance.transform) < 0;
-        scene_.instance_reverse_orientation.push_back(binding.reverse_orientation != mirrored);
+        const bool reverse_winding = shape.reverse_orientation != mirrored;
+        scene_.instance_reverse_orientation.push_back(reverse_winding);
+
+        if (mesh.normals.size() > normal_coordinates_remaining / 3) {
+            issue(Severity::error, "limit-exceeded", shape.descriptor.authored.location,
+                  "Expanded shading normal value limit exceeded");
+            return;
+        }
+        normal_coordinates_remaining -= mesh.normals.size() * 3;
+        const auto normal_error =
+            prepare_shading_normals(mesh, instance.transform, reverse_winding, shading_normals);
+        if (!normal_error.empty()) {
+            invalid(shape.descriptor.authored.location, normal_error);
+        }
         if (!area_lights.empty()) {
-            const auto *shape = binding.emissive_shape;
-            scene_.instance_emissions.push_back(shape ? area_lights.at(shape->area_light.get())
-                                                      : no_area_emission);
-            if (shape) {
-                const auto message = validate_area_geometry(geometry.meshes[instance.mesh_index],
-                                                            instance.transform);
+            const auto emission_index =
+                shape.area_light ? area_lights.at(shape.area_light.get()) : no_area_emission;
+            scene_.instance_emissions.push_back(emission_index);
+            if (shape.area_light) {
+                const auto message = validate_area_geometry(mesh, instance.transform);
                 if (!message.empty()) {
-                    invalid(shape->descriptor.authored.location, message);
+                    invalid(shape.descriptor.authored.location, message);
+                } else if (normal_error.empty() && emission_index != no_area_emission) {
+                    const auto &area = scene_.area_emissions[emission_index];
+                    const auto normal_message = validate_normal_emission(
+                        mesh, instance.transform, reverse_winding, area.two_sided, shading_normals);
+                    if (!normal_message.empty()) {
+                        unsupported(shape.descriptor.authored.location, normal_message);
+                    }
                 }
             }
         }

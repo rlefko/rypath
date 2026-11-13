@@ -84,6 +84,15 @@ and shading, avoiding observed conditioning failures in highly anisotropic
 object-space parameterizations. This preparation preserves authored records,
 instance/primitive ordering, and effective orientation.
 
+Inline meshes also own optional position-indexed normals and UVs. The native
+renderer prepares a deduplicated normal table from each original source
+mesh/linear-transform/orientation combination, before emitter baking. Common
+scaling preserves relative vertex lengths until shader interpolation. Separate
+geometric and shading normals govern ray offsets/emission and diffuse scattering,
+respectively. UVs remain in checked/render data for future consumers; no textures
+or tangent frames are implied. The [attribute record](pbrt-attribute-validation.md)
+specifies numeric limits, affine instance semantics, and independent checks.
+
 The offline renderer will separate scene ingestion, immutable render data,
 transport, sampling, scattering, media, acceleration, accumulation, and image
 presentation. Concrete APIs will be introduced with the first validated use case,

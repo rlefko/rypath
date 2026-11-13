@@ -460,12 +460,6 @@ AttributeEnd
     require(unknown_scope.exit_code() == 2 && !unknown_scope.scene,
             "an unvisited textual include may contain scope transitions");
 
-    const auto alias = check(write_file(directory, "normal-alias.pbrt",
-                                        std::string{scene_start} + std::string{triangle} +
-                                            R"( "normal3 N" [0 0 1 0 0 1 0 0 1])"));
-    require(alias.exit_code() == 2 && alias.inventory.triangles == 1,
-            "documented normal3 spelling is recognized as deferred mesh data");
-
     Limits diagnostic_limit;
     diagnostic_limit.diagnostics = 2;
     const auto truncated =
@@ -735,6 +729,15 @@ void geometry_tests(const fs::path &directory) {
         Invalid{R"(Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0]
 "integer indices" [0 1 2] "normal N" [0 0 1])",
                 "invalid-geometry"},
+        Invalid{R"(Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0]
+"point2 uv" [0 0 1 1])",
+                "invalid-geometry"},
+        Invalid{R"(Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0]
+"point2 uv" [0 0 1 1 0])",
+                "invalid-list"},
+        Invalid{R"(Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0]
+"float uv" [0 0 1 1 0 1])",
+                "invalid-parameter"},
         Invalid{"Scale 0 1 1", "invalid-transform"},
         Invalid{"LookAt 0 0 0 0 0 1 0 0 1", "invalid-transform"},
     };
@@ -749,6 +752,70 @@ void geometry_tests(const fs::path &directory) {
                          std::string{scene_start} + "Scale 1e-50 1 1\n" + std::string{triangle}));
     require(narrowed.exit_code() == 1 && !narrowed.scene,
             "transform becoming singular after float narrowing fails");
+}
+
+void triangle_attributes(const fs::path &directory) {
+    const auto path = write_file(directory, "triangle-attributes.pbrt", R"(WorldBegin
+Attribute "shape" "normal N" [0 0 2 0 0 3 0 0 4] "point2 uv" [-1 2 0 0 1 1]
+AttributeBegin
+    Attribute "shape" "point2 uv" [0 0 2 0 0 2]
+    ObjectBegin "member"
+        Scale 2 3 4
+        Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0]
+            "normal N" [1e39 0 0]
+            "normal3 N" [0 0 0 1 0 0 0 2 0]
+    ObjectEnd
+AttributeEnd
+Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0]
+ObjectInstance "member"
+Translate 3 0 0
+ObjectInstance "member"
+)");
+    const auto checked = check(path);
+    const auto &geometry = checked_scene(checked).geometry;
+    const auto &member = geometry.meshes.at(0);
+    require(member.normals.size() == 3 && member.normals.at(0).z == 0 &&
+                member.normals.at(1).x == 1 && member.normals.at(2).y == 2 &&
+                member.uvs.at(1) == std::array{2.0f, 0.0f},
+            "Last typed normal and scoped UV defaults retain the authored object-space values");
+    const auto &direct = geometry.meshes.at(1);
+    require(direct.normals.at(0).z == 2 && direct.normals.at(2).z == 4 &&
+                direct.uvs.at(0) == std::array{-1.0f, 2.0f},
+            "Defaults are restored after the nested scope, with UVs outside the unit square");
+    require(geometry.instances.size() == 3 && geometry.instances.at(1).mesh_index == 0 &&
+                geometry.instances.at(2).mesh_index == 0 &&
+                geometry.instances.at(2).transform.values[3] == 3,
+            "Both placements reference one mesh's attributes");
+
+    for (const auto &sample :
+         {R"("normal N" [0 0 1 0 0 1e39 0 0 1])", R"("point2 uv" [0 0 1e39 1 0 1])"}) {
+        const auto invalid_path =
+            write_file(directory, "triangle-attribute-overflow.pbrt",
+                       std::string{scene_start} + std::string{triangle} + sample);
+        const auto rejected = check(invalid_path);
+        const auto &diagnostic = find_diagnostic(rejected.document, "invalid-geometry");
+        require(rejected.exit_code() == 1 && !rejected.scene && diagnostic.location.line == 5 &&
+                    *diagnostic.location.file == invalid_path.string() &&
+                    diagnostic.message.find("overflows binary32") != std::string::npos,
+                "Attribute narrowing failures identify the authored component");
+    }
+
+    const auto inherited = write_file(directory, "triangle-attribute-storage.pbrt", R"(WorldBegin
+Attribute "shape" "point3 P" [0 0 0 1 0 0 0 1 0] "normal N" [0 0 1 0 0 1 0 0 1]
+Shape "trianglemesh"
+Shape "trianglemesh"
+)");
+    Limits limits;
+    limits.total_values = 42;
+    const auto at_limit = check(inherited, limits);
+    require(checked_scene(at_limit).geometry.meshes.size() == 2,
+            "Two expanded attributed meshes fit the exact storage budget");
+    --limits.total_values;
+    const auto over_limit = check(inherited, limits);
+    require(over_limit.exit_code() == 1 && !over_limit.scene &&
+                find_diagnostic(over_limit.document, "limit-exceeded").message ==
+                    "Translated mesh value limit exceeded",
+            "Inherited vertex normals count again when a second mesh owns their values");
 }
 
 void area_light_state(const fs::path &directory) {
@@ -861,19 +928,11 @@ void corpus_tests(const fs::path &fixture_directory) {
     require(result.inventory.named_materials == 8 && result.inventory.meshes == 8 &&
                 result.inventory.triangles == 36 && result.inventory.instances == 0,
             "pinned Cornell Box inventory");
-    const auto matching = [&](std::string_view code, std::string_view message,
-                              std::size_t line = 0) {
-        return std::ranges::count_if(result.document.diagnostics, [&](const Diagnostic &entry) {
-            return entry.severity == Severity::unsupported && entry.code == code &&
-                   entry.message.find(message) != std::string::npos &&
-                   (line == 0 || line == entry.location.line) &&
-                   *entry.location.file == path.string();
-        });
-    };
-    require(result.document.diagnostics.size() == 17 &&
-                matching("unsupported-feature", "Sampler type \"sobol\"", 4) == 1 &&
-                matching("unsupported-parameter", "Parameter \"N\"") == 8 &&
-                matching("unsupported-parameter", "Parameter \"uv\"") == 8,
+    const auto &diagnostic = find_diagnostic(result.document, "unsupported-feature");
+    require(result.document.diagnostics.size() == 1 &&
+                diagnostic.severity == Severity::unsupported && diagnostic.location.line == 4 &&
+                diagnostic.message.find("Sampler type \"sobol\"") != std::string::npos &&
+                *diagnostic.location.file == path.string(),
             "pinned Cornell Box profile diagnostics");
 }
 
@@ -898,6 +957,7 @@ int main(int argc, char *argv[]) {
             limits_tests(directory);
         } else if (group == "geometry") {
             geometry_tests(directory);
+            triangle_attributes(directory);
         } else if (group == "corpus") {
             corpus_tests(fs::canonical(argv[3]));
         } else {

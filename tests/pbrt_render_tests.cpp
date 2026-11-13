@@ -804,11 +804,9 @@ void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
     const auto path = fixtures.parent_path() / "pbrt" / "cornell-box.pbrt";
     const auto checked = check(path);
     require(checked.exit_code() == 2 && checked.document.syntax_complete &&
-                std::ranges::any_of(checked.document.diagnostics,
-                                    [](const Diagnostic &diagnostic) {
-                                        return diagnostic.message.find("Sampler type \"sobol\"") !=
-                                               std::string::npos;
-                                    }),
+                checked.document.diagnostics.size() == 1 &&
+                checked.document.diagnostics.front().message.find("Sampler type \"sobol\"") !=
+                    std::string::npos,
             "The pinned Cornell scene still requires the Sobol sampler");
     const auto result = translate(checked, Location{path.string()});
     require(result.exit_code() == 2 && !result.scene,
@@ -848,6 +846,74 @@ void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
         }
     }
     require(materials == 8 && lights == 1, "Cornell RGB parameter coverage");
+}
+
+void triangle_attribute_translation(const fs::path &scratch) {
+    const auto entry = write(scratch, "triangle-attribute-instance.pbrt", std::string{basic} + R"(
+ObjectBegin "mesh"
+    Scale 2 3 4
+    Shape "trianglemesh" "point3 P" [0 0 2 1 0 2 0 1 2]
+        "normal N" [0 0 1 1 0 2 0 1 3] "point2 uv" [-1 2 0 0 2 -1]
+ObjectEnd
+ObjectInstance "mesh"
+Scale -1 1 1
+ObjectInstance "mesh"
+Translate 3 0 0
+ObjectInstance "mesh"
+Translate 3 0 0
+ObjectInstance "mesh"
+)");
+    const auto scene = accepted(entry).scene;
+    require(scene.geometry.meshes.size() == 1 && scene.geometry.instances.size() == 4 &&
+                scene.instance_reverse_orientation == std::vector<std::uint32_t>{0, 1, 1, 1},
+            "Shared attributed mesh retains per-instance winding");
+    const auto &mesh = scene.geometry.meshes.front();
+    point_near(mesh.normals.at(1), {1, 0, 2}, "Retained object-space normal magnitude");
+    require(mesh.uvs.at(0) == std::array{-1.0f, 2.0f} && mesh.uvs.at(2) == std::array{2.0f, -1.0f},
+            "UVs are retained in vertex order without remapping");
+
+    const auto exact = translation(entry, {.total_values = 36});
+    require(exact.exit_code() == 0 && exact.scene,
+            "Attributed mesh storage and placement work fit exactly");
+    const auto expanded = translation(entry, {.total_values = 35});
+    require(expanded.exit_code() == 1 && !expanded.scene && expanded.diagnostics.size() == 1 &&
+                expanded.diagnostics.front().code == "limit-exceeded" &&
+                expanded.diagnostics.front().location.line == 10 &&
+                expanded.diagnostics.front().message ==
+                    "Expanded shading normal value limit exceeded",
+            "Repeated instance normal processing is bounded at the shape");
+    const auto stored = translation(entry, {.total_values = 26});
+    require(stored.exit_code() == 1 && !stored.scene && stored.diagnostics.size() == 1 &&
+                stored.diagnostics.front().code == "limit-exceeded" &&
+                stored.diagnostics.front().message == "Translated geometry value limit exceeded",
+            "Retained UVs and normals count against mesh storage limits");
+
+    const auto extreme = translation(write(scratch, "triangle-attribute-extreme.pbrt",
+                                           std::string{basic} + std::string{triangle} + R"(
+"normal N" [0 0 1e38 0 0 1e-37 0 0 1]
+)"));
+    require(extreme.exit_code() == 1 && !extreme.scene && extreme.diagnostics.size() == 1 &&
+                extreme.diagnostics.front().code == "invalid-render-value" &&
+                extreme.diagnostics.front().location.line == 7 &&
+                extreme.diagnostics.front().message.find("exceed the GPU normal range") !=
+                    std::string::npos,
+            "Nonrepresentable normal ratios fail before renderer acquisition at the source shape");
+
+    const auto tangent_emitter = [&](std::string_view light) {
+        return translation(write(scratch, "triangle-attribute-emitter.pbrt",
+                                 std::string{basic} + std::string{light} +
+                                     "\nReverseOrientation\n" + std::string{triangle} +
+                                     R"("normal N" [1 0 0 1 0 0 1 0 0])"));
+    };
+    const auto one_sided = tangent_emitter(R"(AreaLightSource "diffuse")");
+    require(one_sided.exit_code() == 2 && !one_sided.scene && one_sided.diagnostics.size() == 1 &&
+                one_sided.diagnostics.front().code == "unsupported-render-feature" &&
+                one_sided.diagnostics.front().location.line == 9 &&
+                one_sided.diagnostics.front().message.find("cannot retain PBRT") !=
+                    std::string::npos,
+            "Conflicting one-sided emitter normals are diagnosed at the source shape");
+    require(tangent_emitter(R"(AreaLightSource "diffuse" "bool twosided" true)").exit_code() == 0,
+            "Two-sided emission supports tangent normals under the same geometry");
 }
 
 void sensor() {
@@ -916,6 +982,7 @@ int main(int argc, char **argv) {
         area_light_translation(scratch);
         rejects_rgb_values_and_spaces(scratch);
         cornell_rgb_parameters(scratch, argv[2]);
+        triangle_attribute_translation(scratch);
         sensor();
         owned_fixtures(argv[2]);
     } catch (const std::exception &error) {

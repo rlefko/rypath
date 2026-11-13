@@ -69,10 +69,11 @@ capture still occurs at each camera declaration.
 | Diffuse material | `reflectance`; named definitions require `string type` |
 | Constant infinite light | `L`, `scale`, `illuminance` |
 | Diffuse area light | `L`, `scale`, `twosided`, `power`, empty `filename`; nonempty image filenames are inventoried and deferred |
-| Triangle mesh | `P`, `indices`; exactly three vertices may omit indices |
+| Triangle mesh | `P`, `indices`, per-vertex `N` and `uv`; exactly three vertices may omit indices |
 
-Triangle normals, tangents, UVs, face indices, and alpha are retained and
-cardinality-checked but remain unsupported. Material displacement/normal maps,
+Triangle normals and UVs are narrowed into owned indexed arrays. Tangents, face
+indices, and alpha are retained and cardinality-checked but remain unsupported.
+Material displacement/normal maps,
 texture-valued reflectance, and infinite-light images/portals are also explicit
 unsupported features. RGB reflectance is checked against PBRT's [0,1] rule;
 sampled spectral values remain authored, without the demo's reflectance limits.

@@ -20,6 +20,7 @@ enum : Word { demo_model = 0, pbrt_model = 1 };
 enum : Word { box_filter = 0, triangle_filter = 1 };
 enum : Word { sampled_material = 0, constant_material = 1, rgb_sigmoid_material = 2 };
 enum : Word { no_emission = 0xffffffffu };
+enum : Word { no_normals = 0xffffffffu };
 
 struct Point {
     float x;
@@ -49,6 +50,7 @@ struct Instance {
     Word material;
     Word reverse_orientation;
     Word emission;
+    Word normal_begin;
 };
 struct AreaEmission {
     float radiance[471];
@@ -86,6 +88,7 @@ struct Parameters {
     Word filter_kind;
     float filter_x_radius;
     float filter_y_radius;
+    Word normal_count;
 };
 struct Sample {
     Word status;
@@ -111,10 +114,11 @@ static_assert(sizeof(Material) == 60 && alignof(Material) == 4 &&
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 72 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 76 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
-                  __builtin_offsetof(Instance, emission) == 68,
+                  __builtin_offsetof(Instance, emission) == 68 &&
+                  __builtin_offsetof(Instance, normal_begin) == 72,
               "render instance layout");
 static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
@@ -122,7 +126,7 @@ static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
 static_assert(sizeof(Emitter) == 8 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 168 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 172 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
                   __builtin_offsetof(Parameters, lane_count) == 120 &&
@@ -133,7 +137,8 @@ static_assert(sizeof(Parameters) == 168 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, emitter_slots) == 152 &&
                   __builtin_offsetof(Parameters, filter_kind) == 156 &&
                   __builtin_offsetof(Parameters, filter_x_radius) == 160 &&
-                  __builtin_offsetof(Parameters, filter_y_radius) == 164,
+                  __builtin_offsetof(Parameters, filter_y_radius) == 164 &&
+                  __builtin_offsetof(Parameters, normal_count) == 168,
               "render parameter layout");
 static_assert(sizeof(Sample) == 44 && alignof(Sample) == 4 &&
                   __builtin_offsetof(Sample, wavelength) == 16 &&

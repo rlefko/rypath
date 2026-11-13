@@ -223,6 +223,29 @@ if(RYPATH_ENABLE_METAL)
     endif()
 endif()
 
+add_executable(rypath_triangle_attributes_tests triangle_attributes_tests.cpp)
+target_link_libraries(rypath_triangle_attributes_tests PRIVATE rypath_render)
+rypath_configure_host_target(rypath_triangle_attributes_tests)
+add_test(NAME render.triangle_attributes COMMAND rypath_triangle_attributes_tests)
+set_tests_properties(render.triangle_attributes PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_pbrt_attribute_tests pbrt_attribute_tests.cpp attribute_reference.cpp)
+set_target_properties(rypath_pbrt_attribute_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+target_link_libraries(rypath_pbrt_attribute_tests PRIVATE rypath_pbrt_render rypath_metal_backend)
+rypath_configure_host_target(rypath_pbrt_attribute_tests)
+add_test(NAME render.pbrt_attribute_reference COMMAND rypath_pbrt_attribute_tests
+    --reference "${pbrt_render_fixtures}")
+set_tests_properties(render.pbrt_attribute_reference PROPERTIES TIMEOUT 30)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.pbrt_attributes COMMAND rypath_pbrt_attribute_tests
+        --metal ${ray_tracing_test_options})
+    set_tests_properties(metal.pbrt_attributes PROPERTIES TIMEOUT 90)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.pbrt_attributes PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
 add_test(NAME cli.render_pbrt COMMAND "${CMAKE_COMMAND}"
     "-Dexecutable=$<TARGET_FILE:rypath>"
     "-Dfixture_directory=${pbrt_render_fixtures}"
