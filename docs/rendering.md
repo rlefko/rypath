@@ -89,7 +89,7 @@ checkpoint/resume remain roadmap work.
 
 ## Sampling, ownership, and batches
 
-The versioned sampler is Philox4x32-10. Its key is the 64-bit seed split into
+The demo and PBRT `independent` sampler use versioned Philox4x32-10. Its key is the 64-bit seed split into
 two words; the counter is `(pixel, sample_low, sample_high, draw_block)`.
 Block zero supplies camera x/y jitter and wavelength. Scattering number `k`,
 starting at zero, uses block `1 + 2*k` for BSDF coordinates and roulette, and
@@ -97,6 +97,15 @@ block `2 + 2*k` for environment coordinates. Uniform floats use the upper 24 bit
 times `2^-24`. Roulette uses an integer comparison with `0xc0000000`.
 The [Random123 construction](https://www.thesalmons.org/john/random123/papers/random123sc11.pdf)
 has a separately retained upstream license and known-answer checks.
+
+PBRT also supports versioned Sobol sampling with `none`, `permutedigits`,
+`fastowen`, and `owen` randomization. Pinned interval mapping and binary32
+camera remapping match PBRT; transport retains rypath's fixed dimension map.
+The [Sobol contract and validation](pbrt-sobol-validation.md) records bounds,
+randomization semantics, deterministic quadrature, and M4 Max evidence.
+Raw film accounting is identical for both sampler families. Sobol points within
+a sequence are correlated; independent-seed statistics operate on complete
+replicates, and deterministic sampling is not labeled an unbiased estimator.
 
 One GPU lane traces a complete `(pixel, absolute sample)` path. A render session
 owns its copied shading data, native geometry owner, pipeline, and Metal

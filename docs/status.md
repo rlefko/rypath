@@ -8,15 +8,18 @@
 [progressive image PR #4](https://github.com/rlefko/rypath/pull/4),
 [PBRT preflight PR #5](https://github.com/rlefko/rypath/pull/5),
 [PBRT spectral rendering PR #6](https://github.com/rlefko/rypath/pull/6),
-[sRGB reconstruction PR #7](https://github.com/rlefko/rypath/pull/7), and
-[triangle area-light PR #8](https://github.com/rlefko/rypath/pull/8), and
-[triangle-filter PR #9](https://github.com/rlefko/rypath/pull/9) were reviewed
-and merged. The current PR adds triangle normals and UVs.
+[sRGB reconstruction PR #7](https://github.com/rlefko/rypath/pull/7),
+[triangle area-light PR #8](https://github.com/rlefko/rypath/pull/8),
+[triangle-filter PR #9](https://github.com/rlefko/rypath/pull/9), and
+[triangle-attribute PR #10](https://github.com/rlefko/rypath/pull/10) were reviewed
+and merged. The current PR adds all four PBRT Sobol randomizations and renders
+the unchanged pinned Cornell fixture at its authored settings.
 
 `--render-pbrt SCENE --output IMAGE.png` translates supported sampled spectra and
 linear sRGB colors, diffuse triangles/instances with interpolated normals and retained UVs,
 a pinhole camera, constant environment lighting,
-directly placed triangle emitters, and box or triangle pixel filters
+directly placed triangle emitters, box or triangle pixel filters, and independent
+or Sobol sampling
 into native Metal rendering. It honors authored finite depth, retains calibrated
 raw XYZ, reports complete sample batches, and publishes a final PNG. The
 [rendering profile](pbrt-rendering.md) documents exact semantics and limits.
@@ -26,15 +29,15 @@ The demo retains its original relative spectral model and compensated roulette.
 Wider color spaces, positive-power normalization, textured/instanced emitters,
 external meshes/textures, general upstream-scene
 rendering, OpenEXR, checkpointing, and the interactive app remain future work.
-The pinned Cornell fixture is still an explicit unsupported case; a separately
-labeled CC0 adaptation exercises the supported area-light profile.
+The pinned Cornell fixture completes 1024×1024 × 64 spp with depth 65. This is
+one supported unmodified external entry point; broad corpus support is not established.
 
 ## Validation and review
 
-The [triangle-attribute validation record](pbrt-attribute-validation.md) extends the
-[PBRT render validation record](pbrt-render-validation.md) with portable
-translation checks, M4 Max regressions, pinned upstream CPU comparisons, and
-numerical limitations. Hosted checks, CodeQL findings, and measured CI duration
+The [Sobol validation record](pbrt-sobol-validation.md) records portable
+conformance, exact CPU/MSL sampling checks, deterministic quadrature, M4 Max
+57/57 tests in each build preset, and 222/222 pinned CPU PBRT comparison gates.
+Hosted checks, CodeQL findings, and measured CI duration
 are attached to the PR against its final revision.
 
 Linux runs portable Debug, Release, and sanitizer tests plus compiled C++
@@ -48,8 +51,7 @@ required approvals remain zero for maintainer manual review and merge.
 
 ## Next bounded task
 
-After review and merge, plan the next bounded compatibility slice toward
-faithfully rendered unmodified upstream scenes. Sobol sampling remains the
-unmodified Cornell fixture's last reported unsupported feature. The ordered
+After review and merge, plan external PLY mesh ingestion with dependency
+diagnostics and a small pinned asset-backed PBRT entry point. The ordered
 [roadmap](roadmap.md) keeps external assets, broader materials, and offline
 completion as separate review boundaries.

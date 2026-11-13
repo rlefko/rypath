@@ -6,6 +6,7 @@
 #include "triangle_attributes.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <iomanip>
 #include <limits>
@@ -320,16 +321,40 @@ void Translator::filter(const Descriptor &descriptor) {
 }
 
 void Translator::sampler(const Descriptor &descriptor) {
-    result_.settings.samples = static_cast<std::uint64_t>(integer(descriptor, "pixelsamples", 4));
-    result_.settings.seed = static_cast<std::uint64_t>(integer(descriptor, "seed", 0));
+    auto &settings = result_.settings;
+    const bool sobol = descriptor.authored.arguments.front().text == "sobol";
+    settings.samples =
+        static_cast<std::uint64_t>(integer(descriptor, "pixelsamples", sobol ? 16 : 4));
+    settings.seed = static_cast<std::uint64_t>(integer(descriptor, "seed", 0));
+    if (!sobol) {
+        return;
+    }
+    settings.sampler.kind = SamplerKind::sobol;
+    const auto randomization = string(descriptor, "randomization").value_or("fastowen");
+    if (randomization == "none") {
+        settings.sampler.randomization = SobolRandomization::none;
+    } else if (randomization == "permutedigits") {
+        settings.sampler.randomization = SobolRandomization::permutedigits;
+    } else if (randomization == "owen") {
+        settings.sampler.randomization = SobolRandomization::owen;
+    }
+    if (!std::has_single_bit(settings.samples)) {
+        issue(Severity::warning, "sobol-non-power-of-two", location(descriptor, "pixelsamples"),
+              "Sobol pixelsamples is not a power of two; rendering the requested " +
+                  std::to_string(settings.samples) + " samples per pixel");
+    }
 }
 
 void Translator::integrator(const Descriptor &descriptor) {
     const auto depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 5));
-    if (depth > render_emergency_limit) {
-        unsupported(location(descriptor, "maxdepth"),
-                    "Path maxdepth exceeds the spectral render profile limit of " +
-                        std::to_string(render_emergency_limit));
+    const bool sobol = result_.settings.sampler.kind == SamplerKind::sobol;
+    const auto limit = sobol ? sobol_max_depth : render_emergency_limit;
+    if (depth > limit) {
+        unsupported(
+            location(descriptor, "maxdepth"),
+            std::string(sobol ? "Sobol path maxdepth exceeds the limit of "
+                              : "Path maxdepth exceeds the spectral render profile limit of ") +
+                std::to_string(limit));
     }
     scene_.max_depth = depth;
     if (boolean(descriptor, "regularize", false)) {
@@ -696,8 +721,9 @@ RenderTranslation Translator::run() {
     if (const auto *descriptor = required("Camera")) {
         camera(*descriptor, film_descriptor);
     }
-    if (const auto *descriptor = required("Sampler")) {
-        sampler(*descriptor);
+    const auto *sampler_descriptor = required("Sampler");
+    if (sampler_descriptor) {
+        sampler(*sampler_descriptor);
     }
     if (const auto *descriptor = required("Integrator")) {
         integrator(*descriptor);
@@ -725,7 +751,22 @@ RenderTranslation Translator::run() {
     if (!diagnostics_.diagnostics_truncated) {
         geometry();
     }
-    if (const auto message = validate_render_settings(result_.settings); !message.empty()) {
+    const auto &settings = result_.settings;
+    std::string sampler_error;
+    if (sampler_descriptor && film_descriptor && settings.sampler.kind == SamplerKind::sobol) {
+        sampler_error = validate_sampler_range(settings.sampler, settings.seed, settings.width,
+                                               settings.height, 0, settings.samples);
+        if (!sampler_error.empty()) {
+            const auto &source =
+                sobol_scale_exponent(settings.width, settings.height) > sobol_max_scale_exponent
+                    ? location(*film_descriptor,
+                               settings.width >= settings.height ? "xresolution" : "yresolution")
+                    : location(*sampler_descriptor, "pixelsamples");
+            invalid(source, sampler_error);
+        }
+    }
+    if (const auto message = validate_render_settings(settings);
+        sampler_error.empty() && !message.empty()) {
         invalid(film_descriptor ? film_descriptor->authored.location : entry_, message);
     }
 

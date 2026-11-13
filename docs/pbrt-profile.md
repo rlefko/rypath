@@ -26,7 +26,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | --- | --- | --- | --- |
 | Current v4 directive forms and typed scalar/array parameters | Checked, with owned locations and numeric lexemes | Type/cardinality and supported descriptor schemas checked | Not attempted |
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
-| Perspective camera, RGB film, box/triangle filter, independent sampler, path integrator, BVH | Retained | Declared parameter schemas checked | Not translated |
+| Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
@@ -64,6 +64,7 @@ capture still occurs at each camera declaration.
 | RGB film | `filename`, `xresolution`, `yresolution`, four-value `pixelbounds`/`cropwindow`, `diagonal`, `iso`, `whitebalance`, named `sensor`, `savefp16`, `maxcomponentvalue` |
 | Box or triangle filter | `xradius`, `yradius` |
 | Independent sampler | `pixelsamples`, `seed` |
+| Sobol sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, `fastowen`, or `owen`) |
 | Path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |
 | Diffuse material | `reflectance`; named definitions require `string type` |
@@ -159,7 +160,7 @@ Portable CTests cover lexical and numeric boundaries, source/include locations,
 parameter precedence and schema errors, transforms/camera capture, scoped and
 global definitions, object composition, dependencies, limits, and narrowed
 geometry. The unmodified [Cornell fixture manifest](../tests/fixtures/pbrt/README.md)
-records the exact selected external coverage and expected unsupported features.
+records the exact selected external coverage and expected inventory.
 A matching upstream `--format` binary was unavailable for preflight PR #5.
 The subsequent [rendering validation](pbrt-render-validation.md) builds the pinned
 CPU reference for selected numerical comparisons; no large scene corpus is

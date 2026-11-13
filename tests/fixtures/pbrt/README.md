@@ -12,8 +12,8 @@
 | Asset terms | CC0, as recorded in the preserved upstream notice |
 | Comparison settings | Byte-for-byte upstream input, structural preflight with default limits, zero rendering overrides |
 | Expected inventory | 8 named materials, 8 indexed triangle meshes, 36 triangles, 0 object placements, 0 input dependencies |
-| Expected result | Complete syntax and dependency inventory, incomplete checked structure, one unsupported diagnostic, exit 2 |
-| Unsupported features | Sobol sampler |
+| Expected preflight result | Complete syntax, dependency inventory, and checked structure, exit 0 |
+| Expected translation | Sobol with `fastowen` and seed 0, 1024×1024 film, 64 samples per pixel, triangle radii 1×1, path maxdepth 65 |
 
 The web-falcor notice and Rendering Resources attribute the scene to Benedikt
 Bitterli. Rendering Resources credits Matt Pharr for converting the PBRT scenes

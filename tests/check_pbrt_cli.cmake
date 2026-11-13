@@ -42,9 +42,9 @@ if(NOT scene_hash STREQUAL "b2fc6654c966468119187d169a76ecec82e169a1058f3344e27e
    OR NOT notice_hash STREQUAL "520b18c04d27fd9abca81364746178a9a3d52cff3c6204de05be5b68e547ee43")
     message(FATAL_ERROR "Pinned Cornell Box fixture or notice has changed")
 endif()
-check_report("${cornell}" 2 "Syntax: complete" "Sampler type \"sobol\"" "Input dependencies: 0"
+check_report("${cornell}" 0 "Syntax: complete" "Checked scene structure: complete" "Input dependencies: 0"
     "Inventory: 8 named materials, 8 meshes, 36 triangles, 0 object placements"
-    "Unsupported features: 1\n")
+    "Unsupported features: 0\n")
 
 file(WRITE "${test_directory}/mixed.pbrt" [=[
 Camera "perspective"

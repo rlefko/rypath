@@ -65,3 +65,9 @@ adaptation retains CC0 attribution and the unchanged original notice; its
 adaptation and both source/derivative hashes. Reference
 provenance and build instructions are recorded in
 [PBRT render validation](pbrt-render-validation.md).
+
+The [Sobol data and routines](../third_party/pbrt/sobol.md) use the same pinned
+PBRT revision. The 1,024-dimensional direction table and interval matrices are
+checksum-verified at configure time and shared by portable and Metal sampling.
+Their PBRT Apache-2.0 and Leonhard Gruenschloss permission notices are retained.
+No sampler library is linked or downloaded at runtime.

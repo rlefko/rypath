@@ -109,7 +109,8 @@ void effective_defaults_and_cameras(const fs::path &scratch) {
     require(scene.model == RenderModel::pbrt && scene.max_depth == 5 && scene.exposure == 1,
             "PBRT model, path maxdepth or sensor exposure default");
     require(defaults.settings.width == 1280 && defaults.settings.height == 720 &&
-                defaults.settings.samples == 4 && defaults.settings.seed == 0,
+                defaults.settings.samples == 4 && defaults.settings.seed == 0 &&
+                defaults.settings.sampler.kind == SamplerKind::independent,
             "PBRT film/sampler defaults");
     const auto &camera = raster_camera(scene);
     point_near(camera.origin, {}, "Default camera position");
@@ -164,6 +165,70 @@ WorldBegin
         replaced(basic, R"(Integrator "path")", R"(Integrator "path" "integer maxdepth" [1024])") +
             std::string(triangle)));
     require(maximum.scene.max_depth == 1024, "PBRT accepts the authored depth limit of 1024");
+}
+
+void sobol_translation(const fs::path &scratch) {
+    const auto source =
+        replaced(basic, R"(Sampler "independent")", R"(Sampler "sobol")") + std::string(triangle);
+    const auto defaults = accepted(write(scratch, "sobol-defaults.pbrt", source));
+    require(defaults.settings.samples == 16 && defaults.settings.seed == 0 &&
+                defaults.settings.sampler.kind == SamplerKind::sobol &&
+                defaults.settings.sampler.randomization == SobolRandomization::fastowen,
+            "PBRT Sobol defaults");
+
+    constexpr std::array modes{
+        std::pair{"none", SobolRandomization::none},
+        std::pair{"permutedigits", SobolRandomization::permutedigits},
+        std::pair{"fastowen", SobolRandomization::fastowen},
+        std::pair{"owen", SobolRandomization::owen},
+    };
+    for (const auto &[name, mode] : modes) {
+        const auto scene = replaced(
+            source, R"(Sampler "sobol")",
+            std::string(R"(Sampler "sobol" "integer seed" -2147483648 "integer pixelsamples" 3
+    "string randomization" ")") +
+                name + '"');
+        const auto path = write(scratch, "sobol-mode.pbrt", scene);
+        const auto result = translation(path);
+        require(result.exit_code() == 0 && result.scene && result.settings.samples == 3 &&
+                    sobol_signed_seed(result.settings.seed) ==
+                        std::numeric_limits<std::int32_t>::min() &&
+                    result.settings.sampler.randomization == mode,
+                "Sobol randomization, signed seed, and exact requested sample count");
+        require(result.diagnostics.size() == 1 &&
+                    result.diagnostics.front().severity == Severity::warning &&
+                    result.diagnostics.front().location.line == 4 &&
+                    *result.diagnostics.front().location.file == path.string(),
+                "Non-power-of-two Sobol request emits a source-located warning");
+    }
+
+    const auto depth_limit =
+        replaced(source, R"(Integrator "path")", R"(Integrator "path" "integer maxdepth" 127)");
+    require(accepted(write(scratch, "sobol-depth-limit.pbrt", depth_limit)).scene.max_depth == 127,
+            "Sobol depth limit is inclusive");
+    const auto depth = translation(write(
+        scratch, "sobol-depth.pbrt", replaced(depth_limit, "maxdepth\" 127", "maxdepth\" 128")));
+    require(depth.exit_code() == 2 && !depth.scene && depth.diagnostics.size() == 1 &&
+                depth.diagnostics.front().location.line == 5 &&
+                depth.diagnostics.front().message.find("127") != std::string::npos,
+            "Sobol depth overflow is diagnosed at the integrator");
+
+    const auto wide_film = replaced(source, R"(Film "rgb")", R"(Film "rgb" "integer yresolution" 1
+    "integer xresolution" 33554432)");
+    const auto last =
+        replaced(wide_film, R"(Sampler "sobol")", R"(Sampler "sobol" "integer pixelsamples" 4)");
+    require(accepted(write(scratch, "sobol-range-limit.pbrt", last)).settings.samples == 4,
+            "Sobol range accepts the last representable sample");
+    const auto extent =
+        translation(write(scratch, "sobol-film.pbrt", replaced(last, "33554432", "33554433")));
+    require(extent.exit_code() == 1 && !extent.scene && extent.diagnostics.size() == 1 &&
+                extent.diagnostics.front().location.line == 3,
+            "Sobol exponent overflow is diagnosed at the larger film resolution");
+    const auto range = translation(
+        write(scratch, "sobol-range.pbrt", replaced(last, "pixelsamples\" 4", "pixelsamples\" 8")));
+    require(range.exit_code() == 1 && !range.scene && range.diagnostics.size() == 1 &&
+                range.diagnostics.front().location.line == 5,
+            "Sobol index overflow is diagnosed at the sampler");
 }
 
 void material_instances(const fs::path &scratch) {
@@ -803,14 +868,17 @@ Scale -2 3 1
 void cornell_rgb_parameters(const fs::path &scratch, const fs::path &fixtures) {
     const auto path = fixtures.parent_path() / "pbrt" / "cornell-box.pbrt";
     const auto checked = check(path);
-    require(checked.exit_code() == 2 && checked.document.syntax_complete &&
-                checked.document.diagnostics.size() == 1 &&
-                checked.document.diagnostics.front().message.find("Sampler type \"sobol\"") !=
-                    std::string::npos,
-            "The pinned Cornell scene still requires the Sobol sampler");
-    const auto result = translate(checked, Location{path.string()});
-    require(result.exit_code() == 2 && !result.scene,
-            "Cornell must remain outside the render profile");
+    require(checked.exit_code() == 0 && checked.document.syntax_complete &&
+                checked.document.diagnostics.empty(),
+            "The pinned Cornell scene passes preflight");
+    const auto result = accepted(path);
+    require(result.settings.width == 1024 && result.settings.height == 1024 &&
+                result.settings.samples == 64 && result.settings.seed == 0 &&
+                result.settings.sampler.kind == SamplerKind::sobol &&
+                result.settings.sampler.randomization == SobolRandomization::fastowen &&
+                result.scene.max_depth == 65 && result.scene.geometry.instances.size() == 8 &&
+                result.scene.area_emissions.size() == 1,
+            "The unmodified Cornell scene translates with authored rendering settings");
 
     // Exercise the authored colors independently with supported descriptors and geometry.
     unsigned materials = 0;
@@ -962,6 +1030,24 @@ void owned_fixtures(const fs::path &fixtures) {
     }
 }
 
+void sobol_cornell_fixtures(const fs::path &fixtures) {
+    constexpr std::array modes{
+        std::pair{"fastowen", SobolRandomization::fastowen},
+        std::pair{"permutedigits", SobolRandomization::permutedigits},
+        std::pair{"owen", SobolRandomization::owen},
+    };
+    for (const auto &[name, mode] : modes) {
+        const auto translated =
+            accepted(fixtures / (std::string("cornell-box-sobol-") + name + ".pbrt"));
+        require(translated.settings.width == 8 && translated.settings.height == 8 &&
+                    translated.settings.samples == 4096 && translated.settings.seed == 0 &&
+                    translated.settings.sampler.kind == SamplerKind::sobol &&
+                    translated.settings.sampler.randomization == mode &&
+                    translated.scene.exposure == 1 && translated.scene.max_depth == 65,
+                "Sobol Cornell comparison settings");
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -970,6 +1056,7 @@ int main(int argc, char **argv) {
         const fs::path scratch(argv[1]);
         fs::create_directories(scratch);
         effective_defaults_and_cameras(scratch);
+        sobol_translation(scratch);
         material_instances(scratch);
         rejects_unsupported_profile(scratch);
         rejects_camera_corner_overflow(scratch);
@@ -985,6 +1072,7 @@ int main(int argc, char **argv) {
         triangle_attribute_translation(scratch);
         sensor();
         owned_fixtures(argv[2]);
+        sobol_cornell_fixtures(argv[2]);
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;

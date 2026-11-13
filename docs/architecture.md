@@ -72,6 +72,13 @@ sample accounting. The [rendering record](rendering.md) specifies the Lambertian
 environment estimator, MIS/roulette, wavelength and sensor conventions, and
 bounded ray-origin behavior.
 
+PBRT Sobol sampling uses a shared integer CPU/MSL implementation and pinned
+direction/interval matrices in an owned read-only Metal buffer. Sampler settings
+travel through the progressive driver and direct request boundary. Checked
+absolute sample indices, fixed dimension assignments, and finite depth bounds
+prevent table reuse or overflow. The demo and independent PBRT sampling retain
+their original Philox sequence. See [Sobol validation](pbrt-sobol-validation.md).
+
 Scoped PBRT area declarations bind independently of materials to directly placed
 triangle meshes. The translator owns deduplicated dense emission tables and
 source-instance bindings. The native session maps these to packed triangle
