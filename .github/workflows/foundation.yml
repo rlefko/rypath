@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           clang-tidy-18 --version
-          jq -ej 'map(.file) | unique[] | ., "\u0000"' build/debug/compile_commands.json |
+          jq -ej 'map(.file) | unique[] | select(endswith("/third_party/lodepng/lodepng.cpp") | not) | ., "\u0000"' build/debug/compile_commands.json |
             xargs -0 clang-tidy-18 -p build/debug
 
   linux:

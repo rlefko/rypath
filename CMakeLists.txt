@@ -62,6 +62,22 @@ add_library(rypath_geometry STATIC src/geometry.cpp src/bilinear.cpp)
 target_include_directories(rypath_geometry PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_geometry)
 
+add_library(rypath_png STATIC third_party/lodepng/lodepng.cpp)
+target_include_directories(rypath_png PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lodepng")
+set_target_properties(rypath_png PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
+target_compile_definitions(rypath_png PUBLIC LODEPNG_NO_COMPILE_ENCODER
+    LODEPNG_NO_COMPILE_DISK LODEPNG_NO_COMPILE_ANCILLARY_CHUNKS LODEPNG_NO_COMPILE_CPP
+    LODEPNG_MAX_ALLOC=134217728 LODEPNG_MAX_BLOCKS=65536)
+if(RYPATH_ENABLE_SANITIZERS)
+    target_compile_options(rypath_png PRIVATE -fsanitize=address,undefined
+        -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    target_link_options(rypath_png PRIVATE -fsanitize=address,undefined)
+endif()
+add_library(rypath_image STATIC src/image_texture.cpp)
+target_include_directories(rypath_image PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(rypath_image PRIVATE rypath_png)
+rypath_configure_host_target(rypath_image)
+
 add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp)
 target_include_directories(rypath_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_pbrt PRIVATE rypath_geometry)

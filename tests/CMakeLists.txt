@@ -89,6 +89,12 @@ set_tests_properties(cli.render_demo PROPERTIES TIMEOUT 30
 
 set(pbrt_fixture_directory "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt")
 set(pbrt_test_directory "${CMAKE_CURRENT_BINARY_DIR}/pbrt")
+add_executable(rypath_image_texture_tests image_texture_tests.cpp)
+target_link_libraries(rypath_image_texture_tests PRIVATE rypath_image)
+rypath_configure_host_target(rypath_image_texture_tests)
+add_test(NAME pbrt.png_mipmaps COMMAND rypath_image_texture_tests
+    "${pbrt_test_directory}/$<CONFIG>/png")
+set_tests_properties(pbrt.png_mipmaps PROPERTIES TIMEOUT 30)
 add_test(NAME cli.pbrt_preflight
     COMMAND "${CMAKE_COMMAND}"
         "-Dexecutable=$<TARGET_FILE:rypath>"
