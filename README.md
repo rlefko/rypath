@@ -6,12 +6,13 @@ and interactive rendering follow later.
 
 **Current state: progressive Metal rendering and a strict PBRT spectral profile.**
 Render the built-in demo or PBRT files containing supported sampled spectra or
-linear sRGB colors, diffuse triangles, constant environment lighting, and directly
-placed triangle emitters, with per-vertex shading normals, retained UVs, and box
+linear sRGB colors, inline or external PLY triangles and bilinear quads, constant
+environment lighting, and directly placed diffuse emitters, with per-vertex
+shading normals, retained UVs, and box
 or triangle pixel filtering. Complete batches
 accumulate raw XYZ; separate display conversion saves the final PNG. Portable `--check-pbrt`
 reports scene structure, dependencies, and unsupported features. Broader PBRT
-materials, textured/instanced emitters, and external assets remain in development.
+materials, textured/instanced emitters, and other external assets remain in development.
 
 ## Build and run
 

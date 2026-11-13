@@ -1,8 +1,9 @@
 # Native geometry queries
 
-The private geometry interface supports static indexed triangle meshes and affine
-instances. It changes geometric and numerical behavior; it adds no transport
-estimator, materials, scene parser, or image output. The CLI is unchanged.
+The private geometry interface supports static indexed triangles, bilinear patches,
+and affine instances. PBRT PLY quads retain their curved bilinear surface. The
+[PLY validation record](pbrt-ply-validation.md) covers their numerical domain and
+rendering integration.
 
 ## Query contract
 
@@ -10,8 +11,9 @@ Positions and transforms use float32, triangle indices use uint32, and transform
 are row-major three-by-four object-to-world affine matrices. Instances refer to
 meshes by ordinal. Triangles are opaque and two-sided, with original vertex order
 preserved under translation, rotation, nonuniform scale, shear, and reflection.
-Normals, orientation overrides, alpha visibility, masks, motion, and refitting
-are deferred.
+Bilinear patches are two-sided and store tensor corners `(p00,p10,p01,p11)`.
+Rendering separately interpolates normals and applies orientation overrides;
+alpha visibility, masks, motion, and refitting remain deferred.
 
 The move-only scene handle owns native acceleration structures containing the
 scene data, together with execution resources. Temporary upload and scratch
@@ -24,7 +26,9 @@ affine instancing does not change this parameterization. Origins and directions
 must be finite, directions nonzero, and bounds satisfy `0 <= t_min < t_max` with
 positive infinity allowed for `t_max`. Closest-hit queries return hit/miss,
 mesh/instance/primitive ordinals, `t`, and barycentric weights in original vertex
-order. Occlusion issues a separate native any-hit query and returns a Boolean.
+order for triangles. Patch hits return a primitive-kind tag and `(u,v)` in the
+closed unit square. Occlusion issues a separate native any-hit query and returns
+a Boolean.
 
 Input validity does not guarantee that the resulting bounds, inverse transforms,
 or hit parameters are representable in Metal's float32 arithmetic. For example,
@@ -56,15 +60,17 @@ Metal, no device, unsupported compute ray tracing, and failures. There is no
 automatic device substitution or CPU traversal fallback. An empty scene still
 requires an available ray-tracing backend.
 
-Each nonempty mesh has a native primitive acceleration structure; the scene has an
-instance structure referencing them. Construction and query stages check command
+Each nonempty primitive kind in a mesh has its own native acceleration structure;
+Metal requires homogeneous triangle or bounding-box descriptors within each
+structure. A mixed mesh placement therefore expands to two native instances.
+The scene instance structure and readback mapping preserve source ordinals. Construction and query stages check command
 completion before consuming results. ARC retains the geometry, structures, and
 execution resources, and the compute encoder declares referenced child structures
 resident. CPU readback occurs only after successful completion. Diagnostics name
 the failed stage and include available Metal errors.
 
 Standard native limits are enforced before construction: at most `2^28`
-triangles per mesh structure and `2^24` active instances. Empty meshes contribute
+primitives per child structure and `2^24` expanded native instances. Empty meshes contribute
 no native structure; source mesh and instance ordinals remain stable.
 
 Explicit host/MSL wire records have compile-time layout checks. Rounded dispatches
@@ -135,5 +141,7 @@ implements traversal internally.
 - [Woop, Benthin, and Wald: Watertight Ray/Triangle Intersection](https://jcgt.org/published/0002/01/05/paper.pdf)
 - [Shewchuk: Adaptive Precision Floating-Point Arithmetic and Fast Robust Predicates](https://people.eecs.berkeley.edu/~jrs/papers/robustr.pdf)
 
-These inform the contracts and tests. Metal owns the production intersection
-algorithm; the portable reference is a small independently written test oracle.
+These inform the contracts and tests. Metal owns triangle intersection and
+traversal. Bilinear boxes use a custom intersection function with embedded corner
+data; an accepted-hit payload preserves the matching primitive and UV tuple
+through traversal. The portable references are independent test oracles.

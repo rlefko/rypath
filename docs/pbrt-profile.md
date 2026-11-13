@@ -31,10 +31,10 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
-| Inline trianglemesh and single-level object instances | Retained | Converted to checked float/index geometry | Not submitted to Metal |
+| Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
-| External meshes, image textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
+| Other external meshes, image textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
 | Textured area lights, emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
 | Unknown directives / malformed syntax | Source-located error | Stops without line-based recovery | Not attempted |
 | Legacy v3 forms and hexadecimal numbers | Explicit diagnostic | Outside this profile | Unsupported |
@@ -78,6 +78,46 @@ Material displacement/normal maps,
 texture-valued reflectance, and infinite-light images/portals are also explicit
 unsupported features. RGB reflectance is checked against PBRT's [0,1] rule;
 sampled spectral values remain authored, without the demo's reflectance limits.
+
+## PLY meshes
+
+`plymesh` requires one nonempty effective `string filename`. The decoder supports
+PLY 1.0 ASCII, binary little-endian and binary big-endian inputs, standard 8/16/32-bit
+signed/unsigned integers, float32/float64, and their conventional aliases. Property
+order is arbitrary. Vertex `x/y/z` and `face.vertex_indices` are required. Triangles
+and cyclic quads are retained; quads use tensor corner order `(0,1,3,2)` and are
+not triangulated. Larger well-formed faces report unsupported; invalid indices,
+malformed data, nonfinite values and resource exhaustion are errors. ASCII
+numbers use decimal syntax; nonzero values underflowing their declared scalar
+type to zero are rejected consistently across standard libraries. PBRT/RPly may
+round those values to zero instead.
+
+Normals require all of `nx/ny/nz`. UV selection follows the first complete pair
+from `u/v`, `s/t`, `texture_u/texture_v`, `texture_s/texture_t`. Partial recognized
+attribute groups without a complete selection are errors. Other properties,
+including `face_indices`, are consumed under the same work limits and remain
+inert in this constant-material profile. This is not general PLY metadata support.
+Explicit alpha and active displacement are unsupported. Alpha resolves the latest
+texture declaration before the float declaration, with an empty texture name
+falling back to float; named references are checked even though masking is deferred.
+Empty displacement is
+inert, and finite `edgelength` is inert without displacement.
+
+Paths use the entry directory even in nested Includes. Unique decoded assets are
+cached by resolved path components for this preflight only (redundant separators
+are equivalent; dot and dot-dot components are preserved); each authored shape keeps
+its own bindings and is charged for its geometry copy. Only successfully decoded,
+validated assets become visited dependencies. Analysis after an unvisited Include
+continues to inventory explicit paths without decoding them.
+
+PLY bytes and unique decode attempts share the scene expansion budgets. Header
+bytes are capped at 256 KiB, header lines at the directive limit, tokens at the
+token-byte limit, and list lengths at the list-value limit. Declared rows and
+aggregate decoded scalar work (including ignored data) are bounded by the total
+value limit. These checks precede allocation and apply to failed attempts as well.
+The translated-geometry budget separately counts copied positions, attributes,
+triangle indices and patch indices. Diagnostics name the PBRT source plus the
+asset's byte, header line or element row.
 
 ## State and numerical behavior
 

@@ -35,16 +35,19 @@ clarifies the work; completion is recorded in [status](status.md).
 11. **Sobol sampling (merged in PR #11):** all four PBRT randomizations, fixed dimensions,
     bounded absolute sample indices, CPU/MSL conformance, and the unchanged
     Cornell fixture rendered at its authored settings.
-12. **Broader PBRT rendering:** external PLY meshes, wider color spaces, additional spectra,
-    assets/textures, filters/samplers and faithfully rendered pinned upstream entry
-    points. JSON preflight reports remain follow-up work.
-13. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+12. **PLY mesh rendering (in review):** bounded external PLY decoding, triangles and
+    faithful bilinear quads, native intersections, attributed diffuse surfaces and
+    curved emission, with pinned asset and independent numerical validation.
+13. **Broader PBRT rendering:** constant/image textures, wider color spaces, additional
+    spectra, filters/samplers and faithfully rendered pinned upstream entry points.
+    JSON preflight reports remain follow-up work.
+14. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-14. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
+15. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
     and dielectric scattering, and independent CPU/Metal numerical comparisons.
-15. **Offline completion:** homogeneous spectral media, linear OpenEXR,
+16. **Offline completion:** homogeneous spectral media, linear OpenEXR,
     checkpoint/resume, cancellation, and long-run accumulation validation.
-16. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+17. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet
@@ -52,9 +55,9 @@ their declared acceptance criteria. Large external assets remain outside Git;
 acquisition manifests will record revisions, hashes, dependencies, sizes, and
 per-asset licenses before opt-in downloads.
 
-Before the next product slice, the current foundation audit tightens availability
-skip checks, repository guards, and project agent guidance. It preserves the
-renderer profile and the existing manual review boundary.
+The foundation audit merged in PR #12, tightening availability checks, repository
+guards, and project agent guidance. The PLY slice preserves the manual review
+boundary and leaves large-corpus acquisition for separately scoped work.
 
 ## After the offline MVP
 

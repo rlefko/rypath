@@ -1,5 +1,18 @@
 # PBRT v4 parser source
 
+## Bilinear intersection adaptation
+
+`shaders/bilinear.h` adapts the bilinear ruling intersection and compensated
+products from `src/pbrt/shapes.h` and `src/pbrt/util/math.h` at the same pinned
+revision below. It retains Apache-2.0 attribution. The Metal adaptation projects
+the surface onto the ray-orthogonal coordinate equations, uses compensated
+polynomial arithmetic and a conditioned ruling selection, and honors explicit
+ray intervals. Host geometry regularity checks and independent test oracles are
+original rypath code. The [validation record](../../docs/pbrt-ply-validation.md)
+documents numerical bounds and differences.
+
+## Parser adaptation
+
 `src/pbrt_parser.cpp` adapts the tokenizer, escape decoding, directive grammar,
 and Include tokenizer-stack behavior from
 [pinned PBRT v4 parser.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/parser.cpp)

@@ -4,13 +4,18 @@
 import contextlib
 import hashlib
 import io
+import json
 from pathlib import Path
 import re
 import struct
 import tempfile
 import unittest
+from unittest import mock
 
-from compare_pbrt import QUADRANTS, REGIONS, compare_regions, read_pfm, roi_means
+from compare_pbrt import (
+    QUADRANTS, REGIONS, compare_regions, read_pfm, roi_means,
+    render_replicates, stage_dependencies,
+)
 
 
 CORNELL_CREDIT = (b"# SPDX-License-Identifier: CC0-1.0\n"
@@ -61,6 +66,41 @@ class PFMTests(unittest.TestCase):
 
 
 class ComparisonTests(unittest.TestCase):
+    def test_relocated_seed_entries_keep_verified_dependencies(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / "ply-test.pbrt"
+            fixture.write_bytes(b'Sampler "independent" "integer seed" [0] '
+                                b'"integer pixelsamples" [4096]\n'
+                                b'Shape "plymesh" "string filename" ["nested/mesh.ply"]\n')
+            asset = root / "nested" / "mesh.ply"
+            asset.parent.mkdir()
+            payload = b"verified dependency bytes\x00\xff"
+            asset.write_bytes(payload)
+            manifest = {fixture.stem: [{"path": "nested/mesh.ply", "bytes": len(payload),
+                                       "sha256": hashlib.sha256(payload).hexdigest()}]}
+            (root / "dependencies.json").write_text(json.dumps(manifest))
+            visited = []
+
+            def render(command, *, check, cwd, timeout):
+                entry, output = map(Path, command[-2:])
+                if command[0] == "pbrt":
+                    output, entry = entry, output
+                self.assertEqual((entry.parent / "nested/mesh.ply").read_bytes(), payload)
+                self.assertEqual(cwd, entry.parent)
+                self.assertIn(b'nested/mesh.ply', entry.read_bytes())
+                output.write_bytes(b"PF\n8 8\n-1\n" + struct.pack("<192f", *([1.] * 192)))
+                visited.append(entry)
+
+            with mock.patch("compare_pbrt.subprocess.run", side_effect=render):
+                result = render_replicates(Path("rypath"), Path("pbrt"), fixture,
+                                           root / "runs", {"full": (0, 0, 8, 8)})
+            self.assertEqual(len(visited), 32)
+            self.assertEqual(result["rypath"]["full"], [(1., 1., 1.)] * 16)
+            asset.write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                stage_dependencies(fixture, root / "invalid")
+
     def test_triangle_filter_compares_full_frame_and_quadrants(self):
         self.assertEqual(REGIONS["triangle-filter"], {
             "full": (0, 0, 8, 8),

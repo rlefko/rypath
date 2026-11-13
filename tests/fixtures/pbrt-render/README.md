@@ -1,13 +1,15 @@
 # PBRT spectral render fixture manifest
 
-The thirteen rypath-authored entry points are licensed under GPL-3.0-only.
+The sixteen rypath-authored entry points are licensed under GPL-3.0-only.
 `cornell-box-adapted.pbrt`, `cornell-box-attributes.pbrt`, and the three
 `cornell-box-sobol-*.pbrt` entry points are CC0 derivatives
 of the [pinned Cornell Box fixture](../pbrt/README.md) by Benedikt Bitterli,
 converted to PBRT v4 by Matt Pharr. The [upstream notice](../pbrt/LICENSE.txt)
 applies to all five derivatives.
-All geometry and spectral values are inline. Each entry point expands to its
-listed size with zero external dependencies (47,983 bytes total).
+The eighteen original fixtures below have inline geometry and spectra, with
+zero external dependencies (47,983 bytes total). The three PLY wrappers and their
+complete input closure are documented in the [PLY asset manifest](ply-assets/README.md);
+`dependencies.json` pins asset hashes and sizes, including separate external licensing.
 
 | Entry point | Bytes | SHA-256 | Geometry |
 | --- | ---: | --- | --- |
@@ -36,7 +38,7 @@ with the CIE 1931 sensor, ISO 100, the default shutter interval
 use the randomization named in the filename. The remaining scenes use independent sampling.
 `triangle-filter.pbrt` uses a triangle filter with radii (1.5, 0.75), and
 `cornell-box-attributes.pbrt` and the three Sobol derivatives preserve the
-authored triangle radii (1, 1). The other thirteen use a box filter with radius
+authored triangle radii (1, 1). The other sixteen use a box filter with radius
 0.5 on each axis. The Cornell derivatives preserve the authored camera pose.
 The six background, diffuse,
 and multibounce fixtures each use one uniform infinite light. Their RGB
@@ -96,7 +98,7 @@ samples.
 The comparison uses the full 8×8 frame for every scene and the four top-down
 4×4 quadrants for both multibounce scenes, the three area scenes, the five
 Cornell derivatives, the triangle filter scene, and the three owned normal
-scenes. Each region's R, G, and B means must agree within five combined
+scenes, and all three PLY wrappers. Each region's R, G, and B means must agree within five combined
 standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)
 for the comparison command.
