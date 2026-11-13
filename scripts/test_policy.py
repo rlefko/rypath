@@ -135,15 +135,23 @@ class CommitSubjectHookTests(GitRepositoryTests):
     def test_does_not_guess_an_automatic_comment_marker(self):
         self.git("config", "commit.cleanup", "strip")
         self.git("config", "core.commentChar", "auto")
-        message = "🔧 Update the fixture\n# A line Git preserves."
+        first_line = "🔧 Update the fixture"
+        hash_line = "# Candidate comment line."
+        message = f"{first_line}\n{hash_line}"
         result = self.commit_with_hook("--edit", "-m", message)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("Remove the ending punctuation", result.stderr)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
 
         self.git("commit", "-q", "--allow-empty", "--edit", "-m", message)
-        self.assertEqual(self.git("log", "-1", "--format=%s"), "🔧 Update the fixture # A line Git preserves.")
-        self.assertEqual(self.check_range().returncode, 1)
+        # Git releases differ in whether the automatic marker removes the hash-prefixed line.
+        stored_subject = self.git("log", "-1", "--format=%s")
+        expected_status = {first_line: 0, f"{first_line} {hash_line}": 1}
+        self.assertIn(stored_subject, expected_status)
+        result = self.check_range()
+        self.assertEqual(result.returncode, expected_status[stored_subject], result.stderr)
+        if expected_status[stored_subject]:
+            self.assertIn("Remove the ending punctuation", result.stderr)
 
 
 class HandoffGuardTests(GitRepositoryTests):
