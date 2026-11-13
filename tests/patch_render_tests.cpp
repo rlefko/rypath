@@ -45,7 +45,7 @@ void add_mesh(RenderScene &scene, GeometryMesh mesh, std::uint32_t material,
               std::uint32_t emission = no_area_emission) {
     const auto index = static_cast<std::uint32_t>(scene.geometry.meshes.size());
     scene.geometry.meshes.push_back(std::move(mesh));
-    scene.geometry.instances.push_back({.mesh_index = index});
+    scene.geometry.instances.push_back({index, {}});
     scene.instance_materials.push_back(material);
     scene.instance_emissions.push_back(emission);
 }
