@@ -320,7 +320,8 @@ std::string validate_render_settings(const RenderSettings &settings) {
     if (settings.samples > std::numeric_limits<std::uint64_t>::max() / pixels) {
         return "Total render sample count exceeds 64-bit capacity";
     }
-    return {};
+    return validate_sampler_range(settings.sampler, settings.seed, settings.width, settings.height,
+                                  0, settings.samples);
 }
 
 std::string validate_raster_support(const RasterCamera &camera, const PixelFilter &filter,

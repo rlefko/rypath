@@ -10,7 +10,17 @@ import struct
 import tempfile
 import unittest
 
-from compare_pbrt import REGIONS, compare_regions, read_pfm, roi_means
+from compare_pbrt import QUADRANTS, REGIONS, compare_regions, read_pfm, roi_means
+
+
+CORNELL_CREDIT = (b"# SPDX-License-Identifier: CC0-1.0\n"
+                  b"# Cornell Box by Benedikt Bitterli, converted to PBRT v4 by Matt Pharr.\n"
+                  b"# Adapted for comparison in rypath. See ../pbrt/README.md and ../pbrt/LICENSE.txt.\n")
+CORNELL_FILM_EDIT = (
+    b'"integer yresolution" [ 1024 ]\n    "integer xresolution" [ 1024 ]',
+    b'"integer yresolution" [8]\n    "integer xresolution" [8]\n'
+    b'    "string sensor" "cie1931"\n    "float iso" [100]\n    "bool savefp16" [false]',
+)
 
 
 class PFMTests(unittest.TestCase):
@@ -92,9 +102,7 @@ class CornellFixtureTests(unittest.TestCase):
              b'Sampler "independent"\n    "integer pixelsamples" [4096]\n    "integer seed" [0]'),
             (b'PixelFilter "triangle"\n    "float xradius" [ 1 ]\n    "float yradius" [ 1 ]',
              b'PixelFilter "box"\n    "float xradius" [0.5]\n    "float yradius" [0.5]'),
-            (b'"integer yresolution" [ 1024 ]\n    "integer xresolution" [ 1024 ]',
-             b'"integer yresolution" [8]\n    "integer xresolution" [8]\n'
-             b'    "string sensor" "cie1931"\n    "float iso" [100]\n    "bool savefp16" [false]'),
+            CORNELL_FILM_EDIT,
         ):
             self.assertEqual(expected.count(old), 1)
             expected = expected.replace(old, new, 1)
@@ -102,11 +110,29 @@ class CornellFixtureTests(unittest.TestCase):
             pattern = rb'(?m)^[ \t]+"' + parameter + rb'"\s*\[[^\]]*\]\n'
             expected, removed = re.subn(pattern, b"", expected)
             self.assertEqual(removed, 8)
-        credit = (b"# SPDX-License-Identifier: CC0-1.0\n"
-                  b"# Cornell Box by Benedikt Bitterli, converted to PBRT v4 by Matt Pharr.\n"
-                  b"# Adapted for comparison in rypath. See ../pbrt/README.md and ../pbrt/LICENSE.txt.\n")
         adapted = (fixtures / "pbrt-render" / "cornell-box-adapted.pbrt").read_bytes()
-        self.assertEqual(adapted, credit + expected)
+        self.assertEqual(adapted, CORNELL_CREDIT + expected)
+
+    def test_sobol_derivatives_preserve_the_original_scene(self):
+        fixtures = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+        original = (fixtures / "pbrt" / "cornell-box.pbrt").read_bytes()
+        film_token = CORNELL_FILM_EDIT[0]
+        samples_token = b'"integer pixelsamples" [ 64 ]'
+        self.assertEqual(original.count(film_token), 1)
+        self.assertEqual(original.count(samples_token), 1)
+        base = original.replace(*CORNELL_FILM_EDIT, 1)
+        for mode in ("fastowen", "permutedigits", "owen"):
+            with self.subTest(mode=mode):
+                scene = f"cornell-box-sobol-{mode}"
+                adapted = (fixtures / "pbrt-render" / f"{scene}.pbrt").read_bytes()
+                expected = base.replace(
+                    samples_token,
+                    b'"integer pixelsamples" [4096]\n    "integer seed" [0]\n'
+                    + f'    "string randomization" "{mode}"'.encode(),
+                    1,
+                )
+                self.assertEqual(adapted, CORNELL_CREDIT + expected)
+                self.assertEqual(REGIONS[scene], QUADRANTS)
 
     def test_all_area_fixtures_compare_full_frame_and_quadrants(self):
         for scene in ("area-visible", "area-direct", "area-mixed", "cornell-box-adapted"):

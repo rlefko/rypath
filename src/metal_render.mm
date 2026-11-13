@@ -5,6 +5,7 @@
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
 #include "render_wire.h"
+#include "sobol_shared.h"
 #include "triangle_attributes.hpp"
 
 #import <Foundation/Foundation.h>
@@ -195,7 +196,8 @@ std::string validate_request(const RenderRequest &request) {
     if (request.emergency_limit == 0 || request.emergency_limit > render_emergency_limit) {
         return "Invalid Metal render emergency depth limit";
     }
-    return {};
+    return validate_sampler_range(request.sampler, request.seed, request.width, request.height,
+                                  request.sample_begin, request.sample_count);
 }
 
 std::string sample_error(wire::Word status) {
@@ -227,6 +229,7 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> area_emissions = nil;
     id<MTLBuffer> emitters = nil;
     id<MTLBuffer> normals = nil;
+    id<MTLBuffer> sampling_tables = nil;
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
 
@@ -475,6 +478,11 @@ struct MetalRenderScene::Impl {
         if (!result.diagnostic.empty()) {
             return result;
         }
+        if (request.sampler.kind == SamplerKind::sobol &&
+            (parameters.model != wire::pbrt_model || parameters.max_depth > sobol_max_depth)) {
+            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most 127";
+            return result;
+        }
         if (parameters.filter_kind == wire::triangle_filter) {
             const RasterCamera camera{unpack(parameters.origin), unpack(parameters.forward),
                                       unpack(parameters.right), unpack(parameters.up)};
@@ -505,6 +513,11 @@ struct MetalRenderScene::Impl {
         p.seed_high = static_cast<wire::Word>(request.seed >> 32);
         p.emergency_limit = request.emergency_limit;
         p.lane_count = request.pixel_count * request.sample_count;
+        p.sampler_kind = static_cast<wire::Word>(request.sampler.kind);
+        p.randomization = static_cast<wire::Word>(request.sampler.randomization);
+        p.sobol_scale_exponent = request.sampler.kind == SamplerKind::sobol
+                                     ? sobol_scale_exponent(request.width, request.height)
+                                     : 0;
 
         const auto group_count = (p.lane_count + group_width - 1) / group_width;
         const auto slots = group_count * group_width + 1;
@@ -548,6 +561,7 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:normals offset:0 atIndex:11];
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
+        [encoder setBuffer:sampling_tables offset:0 atIndex:12];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
         [encoder endEncoding];
@@ -691,6 +705,18 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         impl->environment = upload(impl->device, scene.environment);
         if (impl->environment == nil) {
             result.diagnostic = "Metal render environment buffer allocation failed";
+            return result;
+        }
+        const auto &tables = sobol_tables();
+        if (sizeof(tables) > impl->device.maxBufferLength) {
+            result.diagnostic = "Metal Sobol tables exceed device buffer limit";
+            return result;
+        }
+        impl->sampling_tables = [impl->device newBufferWithBytes:&tables
+                                                          length:sizeof(tables)
+                                                         options:MTLResourceStorageModeShared];
+        if (impl->sampling_tables == nil) {
+            result.diagnostic = "Metal Sobol table buffer allocation failed";
             return result;
         }
         if (impl->parameters.instance_count != 0) {

@@ -30,12 +30,13 @@ diagnosed even when not placed in the image.
 
 | Component | Rendered behavior and limits |
 | --- | --- |
-| Descriptors | Explicit perspective camera, RGB film, box or triangle filter, independent sampler, and path integrator; no substitution of omitted PBRT defaults |
+| Descriptors | Explicit perspective camera, RGB film, box or triangle filter, independent or Sobol sampler, and path integrator; no substitution of omitted PBRT defaults |
 | Camera | Pinhole, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
-| Filter/sampler | Box radii 0.5 or triangle radii defaulting independently to 2; independent samples with Philox4x32-10, not PBRT's random sequence |
-| Integrator | Finite maxdepth 0–1024, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
+| Filter | Box radii 0.5 or triangle radii defaulting independently to 2 |
+| Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
+| Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed triangle |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
 | Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
@@ -44,7 +45,8 @@ diagnosed even when not placed in the image.
 | Output metadata | Filename and FP16 setting explicitly overridden by PNG policy; no bitwise PBRT PNG equivalence |
 
 Supported parameter defaults include film 1280×720, camera FOV 90, shutter [0,1],
-ISO 100, four samples per pixel, seed zero, and depth five. Perspective
+ISO 100, seed zero, and depth five. Independent sampling defaults to four
+samples per pixel. Sobol defaults to 16 samples per pixel and `fastowen`. Perspective
 `focaldistance` is inert with zero lens radius; film `diagonal` is inert for this
 camera. Exact full-frame crop/pixel bounds are accepted; other bounds are
 unsupported. Float narrowing rejects overflow, collapsed spectral knots or
@@ -52,12 +54,12 @@ shutter intervals, and invalid packed camera coefficients.
 
 Non-sRGB reconstruction, legacy `color` parameters, blackbody and named/file spectra,
 textured emitters, emitting object members, textures/external meshes, tangents/normal maps, media, motion, lens
-effects, and other cameras/filters/integrators remain unsupported. There is no
-CPU fallback. The unchanged CC0 Cornell fixture remains a negative case; this
-profile does not establish unmodified Cornell or general upstream-corpus rendering.
-The original Cornell still requires Sobol sampling. Its triangle filter,
-normals, and UV arrays are supported; the unchanged scene remains unsupported.
-A separately named, attributed adaptation exercises supported rendering; its [manifest](../tests/fixtures/pbrt-render/README.md) lists every change.
+effects, and other cameras, filters, samplers, and integrators remain unsupported.
+Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
+passes structural preflight and translates with its authored Sobol sampler,
+1024×1024 film, triangle filter, 64 samples per pixel, and maximum depth 65.
+The [render fixture manifest](../tests/fixtures/pbrt-render/README.md) records
+the separately attributed Cornell adaptations used for numerical comparisons.
 
 Triangle normals retain relative vertex lengths through affine transformation
 and barycentric interpolation. The diffuse frame uses the shading normal; ray
@@ -65,6 +67,39 @@ offsets and area-light Jacobians use the geometric plane. UV arrays remain owned
 and indexed but are inert for the current constant materials and emission.
 Degenerate one-sided emitter orientations and the supported numeric domain are
 specified in [triangle-attribute validation](pbrt-attribute-validation.md).
+
+## Sobol sampling
+
+`Sampler "sobol"` accepts a signed 32-bit seed and `none`, `permutedigits`,
+`fastowen`, or `owen` randomization. Following the [pinned Sobol sampler](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/samplers.h),
+rypath preserves a non-power-of-two sample count and warns at the authored
+`pixelsamples` parameter. The CLI reports the sequence version, effective
+randomization, and signed seed.
+
+The PBRT interval mapping uses the absolute sample index and full-frame pixel
+coordinates. Raw camera variates use the two unscrambled PBRT pixel dimensions
+before reconstruction filtering. Wavelength and path variates use rypath's
+fixed dimension assignments with the selected randomization. This establishes
+the raw camera sequence and gives rypath a reproducible transport sequence
+across progressive batches. PBRT's integrator consumes its own sequence of
+dimensions and may therefore produce different paths for the same seed.
+
+Sequence v1 assigns dimensions 0/1 to camera variates, 2 to wavelength, and
+reserves 3. At zero-based bounce `b`, dimensions `4+8b` through `11+8b` supply
+BSDF x/y, roulette, emitter slot, environment x/y, and area x/y, respectively.
+Roulette compares the raw word with `0xc0000000`. Emitter selection takes the
+high bits for its exact dyadic PMF; area coordinates retain the existing
+high-bit midpoint grids. No dimension wrapping or independent-sampler tail is used.
+
+Let `m = ceil(log2(max(width, height)))`. Sobol requires `m <= 25` and each
+absolute sample index to be less than `2^(52 - 2m)`. The finite Sobol depth
+limit of 127 keeps all path dimensions within the available Sobol table.
+Translation checks these limits at the film, sampler, or integrator declaration
+before acquiring a device.
+The matrix bound does not promise subpixel precision at extreme resolutions:
+PBRT's binary32 global-coordinate remapping loses local fraction bits at large
+pixel coordinates. Filtering can introduce further rounding differences between
+renderers. See the [Sobol validation record](pbrt-sobol-validation.md).
 
 ## Pixel reconstruction
 
@@ -76,10 +111,11 @@ supported; the renderer applies no arbitrary radius cap.
 
 Samples retain their originating pixel and unit filter weight, including when
 positions lie outside the image. There is no clipping, splatting, edge
-renormalization, or additional radius factor. The existing camera Philox words
-supply the two uniforms; wavelength and transport dimensions are unchanged.
-The finite uniform grid includes zero and excludes one, so its endpoint symmetry
-and exact sequence differ from PBRT. The [filter validation record](pbrt-filter-validation.md)
+renormalization, or additional radius factor. The selected sampler supplies the
+two camera uniforms independently of wavelength and transport dimensions.
+The finite uniform grids include zero and exclude one. Philox's sequence differs
+from PBRT; Sobol's raw camera variates match the pinned sampler before filtering.
+The [filter validation record](pbrt-filter-validation.md)
 describes inverse sampling, float bounds, and independent acceptance tests.
 Half-pixel box rendering and the demo retain their original camera arithmetic.
 The terminal reports the effective filter and both radii. No new CLI option is
@@ -186,15 +222,18 @@ comparison. Commands and measured evidence are in the
 [sRGB validation record](pbrt-rgb-validation.md),
 [area-light validation record](pbrt-area-validation.md),
 [triangle-filter validation record](pbrt-filter-validation.md), and
-[triangle-attribute validation record](pbrt-attribute-validation.md).
+[triangle-attribute validation record](pbrt-attribute-validation.md), and
+[Sobol validation record](pbrt-sobol-validation.md).
 
-Thirteen owned fixtures and two labeled CC0 Cornell adaptations cover numeric-spectrum
-and RGB backgrounds, diffuse response, area emission, visibility, asymmetric
-multiple scattering, and transformed shading normals. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
-16 fixed seeds per renderer (rypath 0–15; PBRT 16–31). Each channel/declared
-region mean must agree within five combined standard errors plus
+Thirteen owned fixtures and five labeled CC0 Cornell derivatives cover
+numeric-spectrum and RGB backgrounds, diffuse response, area emission, visibility,
+asymmetric multiple scattering, transformed shading normals, and randomized
+Sobol sampling. Comparison uses 8×8 pixels, 4,096 samples per pixel, and
+16 fixed seeds per renderer (rypath 0–15 and PBRT 16–31). Each channel and
+declared region mean must agree within five combined standard errors plus
 `2e-5 * max(1, abs(reference))`. Thresholds and seeds precede results; failures
-are investigated without retries chosen to pass.
+are investigated without retries chosen to pass. For the three randomized Sobol
+modes, these errors are conditional on the fixed unscrambled camera sequence.
 
 Shared inputs set `savefp16=false`. PBRT writes linear binary32 PFM through its
 output override. The test-only rypath harness uses the production translator,

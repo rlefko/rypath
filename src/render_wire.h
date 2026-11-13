@@ -18,6 +18,7 @@ using Word = std::uint32_t;
 enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_hit = 3 };
 enum : Word { demo_model = 0, pbrt_model = 1 };
 enum : Word { box_filter = 0, triangle_filter = 1 };
+enum : Word { independent_sampler = 0, sobol_sampler = 1 };
 enum : Word { sampled_material = 0, constant_material = 1, rgb_sigmoid_material = 2 };
 enum : Word { no_emission = 0xffffffffu };
 enum : Word { no_normals = 0xffffffffu };
@@ -89,6 +90,9 @@ struct Parameters {
     float filter_x_radius;
     float filter_y_radius;
     Word normal_count;
+    Word sampler_kind;
+    Word randomization;
+    Word sobol_scale_exponent;
 };
 struct Sample {
     Word status;
@@ -126,7 +130,7 @@ static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
 static_assert(sizeof(Emitter) == 8 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 172 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 184 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
                   __builtin_offsetof(Parameters, lane_count) == 120 &&
@@ -138,7 +142,10 @@ static_assert(sizeof(Parameters) == 172 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, filter_kind) == 156 &&
                   __builtin_offsetof(Parameters, filter_x_radius) == 160 &&
                   __builtin_offsetof(Parameters, filter_y_radius) == 164 &&
-                  __builtin_offsetof(Parameters, normal_count) == 168,
+                  __builtin_offsetof(Parameters, normal_count) == 168 &&
+                  __builtin_offsetof(Parameters, sampler_kind) == 172 &&
+                  __builtin_offsetof(Parameters, randomization) == 176 &&
+                  __builtin_offsetof(Parameters, sobol_scale_exponent) == 180,
               "render parameter layout");
 static_assert(sizeof(Sample) == 44 && alignof(Sample) == 4 &&
                   __builtin_offsetof(Sample, wavelength) == 16 &&

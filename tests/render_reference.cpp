@@ -236,7 +236,7 @@ AnalyticMoments analytic_xyz(const SpectralMaterial *floor) {
 }
 
 ReferenceImage reference_image(const RenderScene &scene, const RenderSettings &settings) {
-    const auto &[width, height, samples, batch_size, seed] = settings;
+    const auto &[width, height, samples, batch_size, seed, sampler] = settings;
     const auto mesh = triangles(scene);
     const auto &camera = scene.camera;
     const Vec origin = from_point(camera.origin);

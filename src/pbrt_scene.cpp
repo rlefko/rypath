@@ -233,6 +233,7 @@ enum class Rule {
     screen,
     bvh_split,
     light_sampler,
+    sobol_randomization,
     sensor,
 };
 
@@ -278,6 +279,12 @@ constexpr std::array filter_fields{
 constexpr std::array sampler_fields{
     Field{"pixelsamples", "integer", 1, false, false, false, Rule::positive},
     Field{"seed", "integer"},
+};
+
+constexpr std::array sobol_sampler_fields{
+    sampler_fields[0],
+    sampler_fields[1],
+    Field{"randomization", "string", 1, false, false, false, Rule::sobol_randomization},
 };
 
 constexpr std::array integrator_fields{
@@ -936,6 +943,12 @@ void Interpreter::apply_rule(const Field &field, const Parameter &parameter) {
     case Rule::light_sampler:
         valid = one_of(values.front().text, {"uniform", "power", "bvh", "exhaustive"});
         break;
+    case Rule::sobol_randomization:
+        if (!one_of(values.front().text, {"none", "permutedigits", "fastowen", "owen"})) {
+            error("invalid-parameter", parameter.location,
+                  "Sobol randomization must be none, permutedigits, fastowen, or owen");
+        }
+        break;
     case Rule::sensor:
         valid = values.front().text == "cie1931" || builtin_sensor(values.front().text);
         break;
@@ -1059,9 +1072,10 @@ void Interpreter::validate_option(const PendingOption &pending) {
         known = one_of(type, {"gaussian", "mitchell", "sinc"});
         schema = filter_fields;
     } else if (directive.name == "Sampler") {
-        supported_type = "independent";
-        known = one_of(type, {"zsobol", "paddedsobol", "halton", "sobol", "pmj02bn", "stratified"});
-        schema = sampler_fields;
+        supported_type = type == "sobol" ? "sobol" : "independent";
+        known = one_of(type, {"zsobol", "paddedsobol", "halton", "pmj02bn", "stratified"});
+        schema = type == "sobol" ? std::span<const Field>{sobol_sampler_fields}
+                                 : std::span<const Field>{sampler_fields};
     } else if (directive.name == "Integrator") {
         supported_type = "path";
         known = one_of(type, {"function", "simplepath", "lightpath", "simplevolpath", "volpath",

@@ -919,21 +919,46 @@ void triangle_filter_schema(const fs::path &directory) {
     }
 }
 
+void sobol_sampler_schema(const fs::path &directory) {
+    const auto invalid = write_file(directory, "invalid-sobol.pbrt", R"(Sampler "sobol"
+    "string randomization" "bogus"
+WorldBegin
+)");
+    const auto rejected = check(invalid);
+    const auto &diagnostic = find_diagnostic(rejected.document, "invalid-parameter");
+    require(rejected.exit_code() == 1 && diagnostic.location.line == 2 &&
+                *diagnostic.location.file == invalid.string() &&
+                diagnostic.message.find("Sobol randomization") != std::string::npos,
+            "Unknown Sobol randomization has a source-located diagnostic");
+
+    const auto independent = check(write_file(directory, "independent-randomization.pbrt",
+                                              R"(Sampler "independent" "string randomization" "owen"
+WorldBegin
+)"));
+    require(independent.exit_code() == 1 &&
+                find_diagnostic(independent.document, "unused-parameter").location.line == 1,
+            "Independent sampler does not accept Sobol randomization");
+
+    const auto option_seed = check(write_file(directory, "sobol-option-seed.pbrt",
+                                              R"(Option "integer seed" 17
+Sampler "sobol"
+WorldBegin
+)"));
+    require(option_seed.exit_code() == 2 &&
+                find_diagnostic(option_seed.document, "unsupported-feature").location.line == 1,
+            "Scene-wide Option seed remains unsupported with Sobol");
+}
+
 void corpus_tests(const fs::path &fixture_directory) {
     const auto path = fixture_directory / "cornell-box.pbrt";
     const auto result = check(path);
-    require(result.exit_code() == 2 && result.document.syntax_complete &&
-                result.document.dependencies_complete && result.document.dependencies.empty(),
+    require(result.exit_code() == 0 && result.scene && result.document.syntax_complete &&
+                result.document.dependencies_complete && result.document.dependencies.empty() &&
+                result.document.diagnostics.empty(),
             report(result));
     require(result.inventory.named_materials == 8 && result.inventory.meshes == 8 &&
                 result.inventory.triangles == 36 && result.inventory.instances == 0,
             "pinned Cornell Box inventory");
-    const auto &diagnostic = find_diagnostic(result.document, "unsupported-feature");
-    require(result.document.diagnostics.size() == 1 &&
-                diagnostic.severity == Severity::unsupported && diagnostic.location.line == 4 &&
-                diagnostic.message.find("Sampler type \"sobol\"") != std::string::npos &&
-                *diagnostic.location.file == path.string(),
-            "pinned Cornell Box profile diagnostics");
 }
 
 } // namespace
@@ -948,6 +973,7 @@ int main(int argc, char *argv[]) {
         } else if (group == "state") {
             state_tests(directory);
             triangle_filter_schema(directory);
+            sobol_sampler_schema(directory);
             area_light_state(directory);
             review_regression_tests(directory);
             bounded_and_numeric_tests(directory);

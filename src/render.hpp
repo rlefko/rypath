@@ -2,6 +2,7 @@
 #pragma once
 
 #include "geometry.hpp"
+#include "sampling.hpp"
 
 #include <functional>
 #include <optional>
@@ -74,6 +75,7 @@ struct RenderSettings {
     std::uint64_t samples = 128;
     std::uint64_t batch_size = 8;
     std::uint64_t seed = 1;
+    RenderSampler sampler{};
 };
 struct RenderSample {
     std::uint32_t pixel = 0;
@@ -81,7 +83,7 @@ struct RenderSample {
     float wavelength = 0;
     float radiance = 0;
     std::uint32_t scatterings = 0;
-    // First counter block permits exact CPU/MSL sampler diagnostics.
+    // Raw camera/wavelength words permit exact CPU/MSL sampler diagnostics.
     std::array<std::uint32_t, 4> random_words{};
 };
 struct FilmPixel {

@@ -15,6 +15,11 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
         if (!result.diagnostic.empty()) {
             return result;
         }
+        if (settings.sampler.kind == SamplerKind::sobol &&
+            (scene.model != RenderModel::pbrt || scene.max_depth > sobol_max_depth)) {
+            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most 127";
+            return result;
+        }
         if (scene.raster_camera) {
             result.diagnostic = validate_raster_support(*scene.raster_camera, scene.filter,
                                                         settings.width, settings.height);
@@ -53,6 +58,7 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
                     request.width = settings.width;
                     request.height = settings.height;
                     request.seed = settings.seed;
+                    request.sampler = settings.sampler;
                     request.pixel_begin = pixel_begin;
                     request.pixel_count = pixel_count;
                     request.sample_begin = completed + sample_offset;

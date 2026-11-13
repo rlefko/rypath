@@ -38,6 +38,9 @@ REGIONS = {
     "normals-instances": QUADRANTS,
     "normals-emission": QUADRANTS,
     "cornell-box-attributes": QUADRANTS,
+    "cornell-box-sobol-fastowen": QUADRANTS,
+    "cornell-box-sobol-permutedigits": QUADRANTS,
+    "cornell-box-sobol-owen": QUADRANTS,
 }
 
 
@@ -78,7 +81,7 @@ def render_replicates(rypath, pbrt, fixture, run_dir, regions):
     source = fixture.read_bytes()
     seed_token = b'"integer seed" [0]'
     if source.count(seed_token) != 1 or source.count(b'"integer pixelsamples" [4096]') != 1:
-        raise ValueError(f"{fixture}: expected one independent-sampler seed and 4096 spp")
+        raise ValueError(f"{fixture}: expected one sampler seed and 4096 spp")
 
     measurements = {}
     for backend, binary, start_seed in (("rypath", rypath, 0), ("pbrt", pbrt, REPLICATES)):

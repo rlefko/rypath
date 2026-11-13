@@ -30,19 +30,19 @@ ctest --preset debug --no-tests=error
 ./build/debug/rypath --metal-info
 ./build/debug/rypath --metal-smoke-test
 ./build/debug/rypath --check-pbrt tests/fixtures/pbrt/cornell-box.pbrt
+./build/debug/rypath --render-pbrt tests/fixtures/pbrt/cornell-box.pbrt \
+  --output build/cornell.png --batch-size 8
 ./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/rgb-multibounce.pbrt \
   --output build/pbrt.png --batch-size 8
 ./build/debug/rypath --render-demo --output build/demo.png \
   --width 256 --height 192 --samples 128 --batch-size 8 --seed 1
 ```
 
-The Cornell preflight intentionally returns **2** for features outside the profile;
-it creates no images and does not attempt rendering. Missing or malformed input
-returns **1**; complete analysis within the profile returns **0**.
-The separately attributed `tests/fixtures/pbrt-render/cornell-box-attributes.pbrt`
-is a small renderable adaptation retaining the original geometry, normals, UVs,
-and triangle filter. Its manifest records the independent sampler and comparison
-settings. The unmodified scene remains unsupported because of Sobol sampling.
+The unmodified Cornell fixture passes structural preflight and translates with
+its authored Sobol sampler. Preflight returns **0** for complete analysis within
+the profile, **1** for missing or malformed input, and **2** for unsupported
+features. It creates no images. The [PBRT render profile](docs/pbrt-rendering.md)
+describes Sobol randomizations, limits, and differences in transport sampling.
 
 `release` and `asan-ubsan` provide matching configure, build, and test presets.
 The sanitizer preset requires Clang or GCC with AddressSanitizer and

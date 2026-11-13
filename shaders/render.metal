@@ -4,13 +4,37 @@
 #include <metal_stdlib>
 
 #include "../src/render_wire.h"
+#include "../src/sobol_probe_wire.h"
+#include "../src/sobol_shared.h"
 
 using namespace metal;
 using namespace metal::raytracing;
 namespace wire = rypath::render_wire;
+namespace sobol = rypath::sobol;
 
 constant float pi = 3.14159265358979323846f;
 constant uint all_visible = 0xffu;
+
+kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
+                               const device sobol::Probe *queries [[buffer(1)]],
+                               device sobol::ProbeResult *results [[buffer(2)]],
+                               constant uint &count [[buffer(3)]],
+                               uint lane [[thread_position_in_grid]]) {
+    if (lane >= count) {
+        return;
+    }
+    const auto q = queries[lane];
+    const ulong index =
+        sobol::index(tables, q.exponent, q.x, q.y, (ulong(q.sample_high) << 32) | q.sample_low);
+    const uint value = sobol::word(tables, index, q.dimension, q.mode, q.seed);
+    const uint camera = sobol::word(tables, index, 0, sobol::no_randomization, 0);
+    results[lane] = {uint(index),
+                     uint(index >> 32),
+                     value,
+                     sobol::dimension_hash(q.dimension, q.seed),
+                     sobol::uniform(value),
+                     sobol::camera_uniform(camera, q.exponent, q.x)};
+}
 
 static float3 unpack(wire::Point p) { return float3(p.x, p.y, p.z); }
 
@@ -30,20 +54,57 @@ static uint4 philox(uint4 counter, uint2 key) {
 
 static float u01(uint word) { return float(word >> 8) * 0x1.0p-24f; }
 
-static wire::Sample begin_sample(constant wire::Parameters &p, uint lane) {
+static float sample_uniform(constant wire::Parameters &p, uint word) {
+    return p.sampler_kind == wire::sobol_sampler ? sobol::uniform(word) : u01(word);
+}
+
+static uint4 draw_words(constant wire::Parameters &p, const device sobol::Tables &tables,
+                        thread const wire::Sample &sample, ulong index, uint block) {
+    if (p.sampler_kind == wire::independent_sampler) {
+        return philox(uint4(sample.pixel, sample.sample_low, sample.sample_high, block),
+                      uint2(p.seed_low, p.seed_high));
+    }
+    const uint d = 4 * block;
+    return uint4(sobol::word(tables, index, d, p.randomization, p.seed_low),
+                 sobol::word(tables, index, d + 1, p.randomization, p.seed_low),
+                 sobol::word(tables, index, d + 2, p.randomization, p.seed_low),
+                 sobol::word(tables, index, d + 3, p.randomization, p.seed_low));
+}
+
+static wire::Sample begin_sample(constant wire::Parameters &p, const device sobol::Tables &tables,
+                                 uint lane, thread ulong &index) {
     const uint pixel = p.pixel_begin + lane % p.pixel_count;
     const uint sample_low = p.sample_low + lane / p.pixel_count;
     const uint sample_high = p.sample_high + uint(sample_low < p.sample_low);
-    const uint4 words =
-        philox(uint4(pixel, sample_low, sample_high, 0), uint2(p.seed_low, p.seed_high));
+    uint4 words;
+    if (p.sampler_kind == wire::sobol_sampler) {
+        index = sobol::index(tables, p.sobol_scale_exponent, pixel % p.width, pixel / p.width,
+                             (ulong(sample_high) << 32) | sample_low);
+        words = uint4(sobol::word(tables, index, 0, sobol::no_randomization, 0),
+                      sobol::word(tables, index, 1, sobol::no_randomization, 0),
+                      sobol::word(tables, index, 2, p.randomization, p.seed_low),
+                      sobol::word(tables, index, 3, p.randomization, p.seed_low));
+    } else {
+        words = philox(uint4(pixel, sample_low, sample_high, 0), uint2(p.seed_low, p.seed_high));
+    }
     return wire::Sample{wire::success,
                         pixel,
                         sample_low,
                         sample_high,
-                        360.0f + 470.0f * u01(words.z),
+                        360.0f + 470.0f * sample_uniform(p, words.z),
                         0.0f,
                         0,
                         {words.x, words.y, words.z, words.w}};
+}
+
+static float2 camera_uniforms(constant wire::Parameters &p, thread const wire::Sample &sample) {
+    if (p.sampler_kind == wire::sobol_sampler) {
+        return float2(sobol::camera_uniform(sample.random_words[0], p.sobol_scale_exponent,
+                                            sample.pixel % p.width),
+                      sobol::camera_uniform(sample.random_words[1], p.sobol_scale_exponent,
+                                            sample.pixel / p.width));
+    }
+    return float2(u01(sample.random_words[0]), u01(sample.random_words[1]));
 }
 
 static float triangle_offset(float u, float radius) {
@@ -54,8 +115,9 @@ static float triangle_offset(float u, float radius) {
 }
 
 static ray triangle_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
-    const float ox = triangle_offset(u01(sample.random_words[0]), p.filter_x_radius);
-    const float oy = triangle_offset(u01(sample.random_words[1]), p.filter_y_radius);
+    const float2 uv = camera_uniforms(p, sample);
+    const float ox = triangle_offset(uv.x, p.filter_x_radius);
+    const float oy = triangle_offset(uv.y, p.filter_y_radius);
     const float x = precise::divide((float(sample.pixel % p.width) + 0.5f) + ox, float(p.width));
     const float y = precise::divide((float(sample.pixel / p.width) + 0.5f) + oy, float(p.height));
     const float3 d =
@@ -76,8 +138,9 @@ static ray primary_ray(constant wire::Parameters &p, thread const wire::Sample &
     if (p.filter_kind == wire::triangle_filter) {
         return triangle_primary_ray(p, sample);
     }
-    const float x = (float(sample.pixel % p.width) + u01(sample.random_words[0])) / float(p.width);
-    const float y = (float(sample.pixel / p.width) + u01(sample.random_words[1])) / float(p.height);
+    const float2 uv = camera_uniforms(p, sample);
+    const float x = (float(sample.pixel % p.width) + uv.x) / float(p.width);
+    const float y = (float(sample.pixel / p.width) + uv.y) / float(p.height);
     if (p.model == wire::pbrt_model) {
         const float3 d = unpack(p.forward) + x * unpack(p.right) + y * unpack(p.up);
         const float scale = max(abs(d.x), max(abs(d.y), abs(d.z)));
@@ -359,11 +422,13 @@ static float3 shadow_segment_direction(float3 origin, float3 delta, SurfacePoint
 kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                               device wire::Sample *output [[buffer(1)]],
                               const device float *environment [[buffer(7)]],
+                              const device sobol::Tables &tables [[buffer(12)]],
                               uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
     }
-    wire::Sample sample = begin_sample(p, lane);
+    ulong index = 0;
+    wire::Sample sample = begin_sample(p, tables, lane, index);
     if (p.model == wire::pbrt_model && !all(isfinite(primary_ray(p, sample).direction))) {
         sample.status = wire::invalid_arithmetic;
     }
@@ -383,11 +448,13 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 const device wire::AreaEmission *emissions [[buffer(9)]],
                                 const device wire::Emitter *emitters [[buffer(10)]],
                                 const device wire::Point *normals [[buffer(11)]],
+                                const device sobol::Tables &tables [[buffer(12)]],
                                 uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
     }
-    wire::Sample sample = begin_sample(p, lane);
+    ulong index = 0;
+    wire::Sample sample = begin_sample(p, tables, lane, index);
     ray incoming = primary_ray(p, sample);
     intersector<triangle_data, instancing> closest;
     closest.assume_geometry_type(geometry_type::triangle);
@@ -520,10 +587,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        const uint4 base(sample.pixel, sample.sample_low, sample.sample_high, 0);
-        const uint2 key(p.seed_low, p.seed_high);
-        const uint4 light_words = philox(base + uint4(0, 0, 0, 2 + 2 * bounce), key);
-        const float3 light_direction = sphere(u01(light_words.x), u01(light_words.y));
+        const uint4 light_words = draw_words(p, tables, sample, index, 2 + 2 * bounce);
+        const float3 light_direction =
+            sphere(sample_uniform(p, light_words.x), sample_uniform(p, light_words.y));
         const float light_cosine = dot(n, light_direction);
         if (E > 0.0f && light_cosine > 0.0f) {
             const float3 origin = authored_normals
@@ -540,10 +606,13 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             }
         }
 
-        const uint4 bsdf_words = philox(base + uint4(0, 0, 0, 1 + 2 * bounce), key);
+        const uint4 bsdf_words = draw_words(p, tables, sample, index, 1 + 2 * bounce);
         // A null slot intentionally contributes zero. This gives every emitter
         // an exact dyadic PMF and avoids altering the BSDF and sky streams.
-        const uint selected = bsdf_words.w & (p.emitter_slots - 1u);
+        const uint selected =
+            p.sampler_kind == wire::sobol_sampler
+                ? (p.emitter_slots == 1 ? 0 : bsdf_words.w >> (clz(p.emitter_slots) + 1))
+                : bsdf_words.w & (p.emitter_slots - 1u);
         if (selected < p.emitter_count) {
             const wire::Emitter emitter = emitters[selected];
             if (emitter.instance >= p.instance_count) {
@@ -615,7 +684,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             }
             throughput /= 0.75f;
         }
-        const float3 wi = hemisphere(n, u01(bsdf_words.x), u01(bsdf_words.y));
+        const float3 wi =
+            hemisphere(n, sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y));
         const float cosine = dot(n, wi);
         if (!(cosine > 0.0f)) {
             sample.status = wire::invalid_arithmetic;

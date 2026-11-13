@@ -41,7 +41,7 @@ ctest --preset debug --no-tests=error -R pbrt
 
 Exit 0 means analysis completed within the profile, 2 means recognized features
 are outside the profile, and 1 means an error or resource limit. Errors take
-precedence. The Cornell fixture intentionally returns 2.
+precedence. The unchanged Cornell fixture returns 0 within the current profile.
 
 To render the [supported spectral profile](pbrt-rendering.md):
 

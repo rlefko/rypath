@@ -28,20 +28,23 @@ clarifies the work; completion is recorded in [status](status.md).
    matched light-selection/MIS densities, sidedness, and independent validation.
 9. **Triangle pixel filtering (merged in PR #9):** normalized separable tent sampling,
    expanded camera-support validation, independent edge-footprint checks, and
-   pinned CPU comparisons. The original Cornell remains unsupported.
-10. **Triangle attributes (current PR):** owned indexed normals/UVs, interpolated
+   pinned CPU comparisons.
+10. **Triangle attributes (merged in PR #10):** owned indexed normals/UVs, interpolated
     diffuse shading normals, geometric ray offsets and emitter sidedness, and
-    independent analytic/reference validation. Sobol remains the original Cornell blocker.
-11. **Broader PBRT rendering:** Sobol sampling, wider color spaces, additional spectra,
+    independent analytic/reference validation.
+11. **Sobol sampling (current PR):** all four PBRT randomizations, fixed dimensions,
+    bounded absolute sample indices, CPU/MSL conformance, and the unchanged
+    Cornell fixture rendered at its authored settings.
+12. **Broader PBRT rendering:** external PLY meshes, wider color spaces, additional spectra,
     assets/textures, filters/samplers and faithfully rendered pinned upstream entry
     points. JSON preflight reports remain follow-up work.
-12. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+13. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-13. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
+14. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
     and dielectric scattering, and independent CPU/Metal numerical comparisons.
-14. **Offline completion:** homogeneous spectral media, linear OpenEXR,
+15. **Offline completion:** homogeneous spectral media, linear OpenEXR,
     checkpoint/resume, cancellation, and long-run accumulation validation.
-15. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+16. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet

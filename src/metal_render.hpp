@@ -17,6 +17,7 @@ struct RenderRequest {
     // Zero chooses the device width. Other values support scheduling validation.
     std::uint32_t threadgroup_width = 0;
     std::uint32_t emergency_limit = render_emergency_limit;
+    RenderSampler sampler{};
 };
 struct RenderSamplesResult {
     GeometryStatus status = GeometryStatus::failure;

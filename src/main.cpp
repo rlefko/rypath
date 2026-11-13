@@ -224,17 +224,20 @@ int render_pbrt(int argc, char *argv[]) {
     if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
         return render_error(diagnostic);
     }
+    const bool sobol = settings.sampler.kind == rypath::SamplerKind::sobol;
+    const auto seed = sobol ? std::to_string(rypath::sobol_signed_seed(settings.seed))
+                            : std::to_string(settings.seed);
     std::cout
         << "rypath " RYPATH_VERSION "\n"
         << "Scene: " << entry.string() << '\n'
         << "Render profile: pbrt-spectral-v1\n"
-        << "Sampler: philox4x32-10-v1 (sequence differs from PBRT)\n"
+        << "Sampler: " << rypath::sampler_description(settings.sampler) << '\n'
         << "Light sampling: separate environment and uniform triangle area (differs from PBRT)\n"
         << "Color: calibrated CIE 1931 XYZ / sRGB\n"
         << "Resolution: " << settings.width << 'x' << settings.height << '\n'
         << "Samples per pixel: " << settings.samples << '\n'
         << "Batch size: " << settings.batch_size << '\n'
-        << "Seed: " << settings.seed << '\n'
+        << "Seed: " << seed << '\n'
         << "Finite path maxdepth: " << scene.max_depth << '\n'
         << "Output override: " << output.string()
         << " (Film.filename overridden; PNG; no FP16 intermediate)\n";
