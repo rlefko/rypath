@@ -9,6 +9,9 @@
 
 namespace rypath {
 
+// Bound per-placement patch derivative validation, including reused object meshes.
+inline constexpr std::size_t render_patch_corner_limit = 2'000'000;
+
 inline constexpr std::array<float, 8> spectral_knots{360, 420, 470, 520, 570, 620, 700, 830};
 inline constexpr std::uint32_t render_tile_capacity = 65536;
 inline constexpr std::uint32_t render_emergency_limit = 1024;
@@ -108,6 +111,7 @@ std::string validate_raster_support(const RasterCamera &camera, const PixelFilte
 std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                                                const GeometryTransform &transform);
 std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
+std::string validate_patch_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_render_scene(const RenderScene &scene);
 RenderScene make_demo_scene();
 Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model = RenderModel::demo,

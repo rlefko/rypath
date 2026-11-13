@@ -2,6 +2,8 @@
 
 #include "geometry.hpp"
 
+#include "bilinear.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -98,8 +100,9 @@ std::string validate_geometry(const GeometryData &geometry) {
         const auto &mesh = geometry.meshes[mesh_index];
         const std::string mesh_name = "Mesh " + std::to_string(mesh_index);
         if (!size_fits<GeometryPoint>(mesh.positions.size()) ||
-            !size_fits<std::array<std::uint32_t, 3>>(mesh.triangles.size())) {
-            return mesh_name + " exceeds supported vertex or triangle count";
+            !size_fits<std::array<std::uint32_t, 3>>(mesh.triangles.size()) ||
+            !size_fits<std::array<std::uint32_t, 4>>(mesh.patches.size())) {
+            return mesh_name + " exceeds supported vertex or primitive count";
         }
         if (!mesh.normals.empty() && mesh.normals.size() != mesh.positions.size()) {
             return mesh_name + " must have one normal per vertex";
@@ -128,6 +131,18 @@ std::string validate_geometry(const GeometryData &geometry) {
             }
             if (zero_area(mesh.positions[a], mesh.positions[b], mesh.positions[c])) {
                 return mesh_name + " triangle " + std::to_string(primitive) + " has zero area";
+            }
+        }
+        for (std::size_t primitive = 0; primitive < mesh.patches.size(); ++primitive) {
+            const auto [a, b, c, d] = mesh.patches[primitive];
+            const std::string name = mesh_name + " bilinear patch " + std::to_string(primitive);
+            if (a >= mesh.positions.size() || b >= mesh.positions.size() ||
+                c >= mesh.positions.size() || d >= mesh.positions.size()) {
+                return name + " has an out-of-range vertex index";
+            }
+            if (!bilinear_jacobian_bounds(
+                    {mesh.positions[a], mesh.positions[b], mesh.positions[c], mesh.positions[d]})) {
+                return name + " has a singular or numerically indeterminate Jacobian";
             }
         }
     }

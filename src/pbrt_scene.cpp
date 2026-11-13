@@ -2,6 +2,7 @@
 
 #include "pbrt.hpp"
 #include "pbrt_numeric.hpp"
+#include "ply.hpp"
 
 #include <algorithm>
 #include <array>
@@ -245,6 +246,7 @@ struct Field {
     bool required = false;
     bool deferred = false;
     Rule rule = Rule::none;
+    bool prefer_texture = false;
 };
 
 constexpr std::array camera_fields{
@@ -335,6 +337,13 @@ constexpr std::array mesh_fields{
     Field{"uv", "point2", 2, true},
     Field{"faceIndices", "integer", 1, true, false, true},
     Field{"alpha", "float-texture", 1, false, false, true},
+};
+
+constexpr std::array ply_fields{
+    Field{"filename", "string", 1, false, true},
+    Field{"alpha", "float-texture", 1, false, false, true, Rule::none, true},
+    Field{"displacement", "texture"},
+    Field{"edgelength", "float"},
 };
 
 string_view canonical_type(string_view actual) {
@@ -436,7 +445,12 @@ struct Scope {
 
 class Interpreter {
   public:
-    Interpreter(Document document, const Limits &limits) : limits_(limits) {
+    Interpreter(Document document, const Limits &limits)
+        : limits_(limits),
+          ply_remaining_{limits.expanded_bytes -
+                             std::min(limits.expanded_bytes, document.expanded_bytes),
+                         limits.expansions - std::min(limits.expansions, document.expansion_count),
+                         limits.total_values} {
         result_.document = std::move(document);
     }
 
@@ -474,7 +488,9 @@ class Interpreter {
     std::map<string_view, std::size_t> option_indices_;
     std::optional<std::size_t> current_object_;
     std::map<std::string, Location, std::less<>> material_uses_;
-    std::set<std::pair<DependencyKind, std::filesystem::path>> inventoried_paths_;
+    std::map<std::pair<DependencyKind, std::filesystem::path>, std::size_t> inventoried_paths_;
+    std::map<std::size_t, PlyResult> ply_cache_;
+    PlyBudget ply_remaining_;
     std::size_t asset_path_bytes_ = 0;
     bool asset_path_budget_exceeded_ = false;
     bool skipped_include_ = false;
@@ -503,11 +519,14 @@ class Interpreter {
     void material(const Directive &directive);
     void light(const Directive &directive);
     void shape(const Directive &directive);
+    void ply_shape(const Directive &directive, Descriptor descriptor);
+    void register_mesh(const Location &location, Descriptor descriptor, GeometryMesh mesh);
+    bool charge_mesh(std::size_t count, const Location &location);
     void deferred(const Directive &directive);
     void attribute(const Directive &directive);
     void begin_scope(const Directive &directive, bool object);
     void end_scope(const Directive &directive, bool object);
-    void dependency(DependencyKind kind, const Value &value);
+    std::optional<std::size_t> dependency(DependencyKind kind, const Value &value);
     void dependencies(const Directive &directive, string_view target, string_view type);
     void parameter_dependencies(const Parameter &parameter, string_view texture_channel = {});
     void authored_dependencies(const Directive &directive, DependencyContext context = {});
@@ -542,14 +561,15 @@ void Interpreter::issue(Severity severity, string_view code, const Location &loc
     }
 }
 
-void Interpreter::dependency(DependencyKind kind, const Value &value) {
+std::optional<std::size_t> Interpreter::dependency(DependencyKind kind, const Value &value) {
     if (value.text.empty() || result_.document.diagnostics_truncated ||
         asset_path_budget_exceeded_) {
-        return;
+        return std::nullopt;
     }
     auto path = result_.document.entry_directory / std::filesystem::path(value.text);
-    if (inventoried_paths_.contains({kind, path})) {
-        return;
+    const auto key = std::pair{kind, path};
+    if (const auto found = inventoried_paths_.find(key); found != inventoried_paths_.end()) {
+        return found->second;
     }
     // Match the resolver's path identity without collapsing symlink-sensitive '..' components.
     const std::size_t bytes = path.native().size() * sizeof(std::filesystem::path::value_type);
@@ -557,19 +577,20 @@ void Interpreter::dependency(DependencyKind kind, const Value &value) {
         asset_path_budget_exceeded_ = true;
         result_.document.dependencies_complete = false;
         error("limit-exceeded", value.location, "Resolved asset path byte limit exceeded");
-        return;
+        return std::nullopt;
     }
     asset_path_bytes_ += bytes;
-    inventoried_paths_.emplace(kind, path);
+    const auto index = result_.document.dependencies.size();
+    inventoried_paths_.emplace(key, index);
     std::error_code filesystem_error;
     const bool exists = std::filesystem::is_regular_file(path, filesystem_error);
     result_.document.dependencies.push_back(
         {value.location, kind, value.text, std::move(path), exists, false});
-    result_.document.dependencies_complete = false;
     if (!exists) {
         error("missing-file", value.location,
               "Missing or inaccessible input file \"" + value.text + "\"");
     }
+    return index;
 }
 
 void Interpreter::dependencies(const Directive &directive, string_view target, string_view type) {
@@ -845,7 +866,20 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
 
     std::map<string_view, const Parameter *> effective;
     for (const auto &field : schema) {
-        const auto *parameter = select(directive, target, field, &descriptor);
+        Field lookup = field;
+        if (field.prefer_texture) {
+            // PBRT queries alpha as a texture first and only falls back to float
+            // when the effective texture is absent or names an empty string.
+            lookup.type = "texture";
+            const auto *texture = select(directive, target, lookup);
+            if (!texture || (texture->values.size() == 1 && texture->values.front().text.empty())) {
+                lookup.type = "float";
+                if (texture && !select(directive, target, lookup)) {
+                    lookup.type = "texture";
+                }
+            }
+        }
+        const auto *parameter = select(directive, target, lookup, &descriptor);
         if (!parameter) {
             if (field.required) {
                 error("missing-parameter", directive.location,
@@ -853,17 +887,20 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
             }
         } else {
             const bool valid = field_valid(field, *parameter);
+            const bool inert_texture =
+                lookup.type == "texture" && valid && parameter->values.front().text.empty();
             // A malformed cardinality can still name discoverable inputs. The
             // validation charge bounds this scan even for inherited parameters.
-            if (!validation_exhausted_) {
-                parameter_dependencies(*parameter,
-                                       field.type == "float-texture" ? "float" : "spectrum");
+            if (!validation_exhausted_ && !inert_texture) {
+                parameter_dependencies(*parameter, one_of(field.type, {"float-texture", "texture"})
+                                                       ? "float"
+                                                       : "spectrum");
             }
             if (!valid) {
                 continue;
             }
             effective.emplace(field.name, parameter);
-            if (field.deferred || parameter->type == "texture" ||
+            if (field.deferred || (parameter->type == "texture" && !inert_texture) ||
                 (parameter->type == "spectrum" &&
                  parameter->values.front().kind == ValueKind::string &&
                  !builtin_spectrum(parameter->values.front().text))) {
@@ -1256,22 +1293,23 @@ void Interpreter::light(const Directive &directive) {
 
 void Interpreter::shape(const Directive &directive) {
     const string_view type = directive.arguments.front().text;
-    dependencies(directive, "shape", type);
     if (current_object_ && state_.area_light) {
         unsupported(directive.location,
                     "Diffuse area lights on shapes inside object definitions are unsupported");
     }
-    if (type != "trianglemesh") {
-        if (type == "plymesh") {
-            ++result_.inventory.meshes;
-        }
-        deferred_type(directive, type,
-                      one_of(type, {"sphere", "cylinder", "disk", "bilinearmesh", "curve",
-                                    "plymesh", "loopsubdiv"}));
+    if (!one_of(type, {"trianglemesh", "plymesh"})) {
+        dependencies(directive, "shape", type);
+        deferred_type(
+            directive, type,
+            one_of(type, {"sphere", "cylinder", "disk", "bilinearmesh", "curve", "loopsubdiv"}));
         return;
     }
     ++result_.inventory.meshes;
     Descriptor descriptor = describe(directive);
+    if (type == "plymesh") {
+        ply_shape(directive, std::move(descriptor));
+        return;
+    }
     const auto fields = validate(descriptor, directive, "shape", mesh_fields);
     if (!fields.contains("P")) {
         return;
@@ -1306,19 +1344,12 @@ void Interpreter::shape(const Directive &directive) {
         return;
     }
     // A large inherited mesh must not bypass the authored-value limit by being used repeatedly.
-    std::size_t remaining = limits_.total_values - mesh_values_;
-    for (const auto cost : {positions.values.size(), index_count,
-                            normals ? normals->values.size() : 0, uvs ? uvs->values.size() : 0}) {
-        if (cost > remaining) {
-            if (!budget_exceeded_) {
-                error("limit-exceeded", directive.location, "Translated mesh value limit exceeded");
-                budget_exceeded_ = true;
-            }
-            return;
-        }
-        remaining -= cost;
+    const auto mesh_values = positions.values.size() + index_count +
+                             (normals ? normals->values.size() : 0) +
+                             (uvs ? uvs->values.size() : 0);
+    if (!charge_mesh(mesh_values, directive.location)) {
+        return;
     }
-    mesh_values_ = limits_.total_values - remaining;
 
     GeometryMesh mesh;
     const auto narrow = [&](const Value &value, float &component, string_view name) {
@@ -1383,15 +1414,71 @@ void Interpreter::shape(const Directive &directive) {
               message + " after conversion to binary32");
         return;
     }
-    result_.inventory.triangles += triangle_count;
+    register_mesh(directive.location, std::move(descriptor), std::move(checked.meshes.front()));
+}
+
+void Interpreter::ply_shape(const Directive &directive, Descriptor descriptor) {
+    const auto fields = validate(descriptor, directive, "shape", ply_fields);
+    const auto found = fields.find("filename");
+    if (found == fields.end()) {
+        result_.document.dependencies_complete = false;
+        return;
+    }
+    const auto &filename = found->second->values.front();
+    if (filename.text.empty()) {
+        result_.document.dependencies_complete = false;
+        error("missing-parameter", filename.location, "Required PLY file path is empty");
+        return;
+    }
+    const auto index = dependency(DependencyKind::mesh, filename);
+    if (!index) {
+        return;
+    }
+    auto &input = result_.document.dependencies[*index];
+    if (!input.exists) {
+        return;
+    }
+    auto cached = ply_cache_.lower_bound(*index);
+    if (cached == ply_cache_.end() || cached->first != *index) {
+        cached = ply_cache_.emplace_hint(cached, *index,
+                                         decode_ply(input.resolved_path, limits_, ply_remaining_));
+        if (const auto *problem = std::get_if<PlyIssue>(&cached->second)) {
+            issue(problem->severity, problem->code, filename.location,
+                  "PLY \"" + input.resolved_path.string() + "\" " + problem->message);
+            return;
+        }
+        input.visited = true;
+    }
+    if (const auto *mesh = std::get_if<PlyMesh>(&cached->second);
+        mesh && charge_mesh(mesh->value_count, directive.location)) {
+        register_mesh(directive.location, std::move(descriptor), mesh->geometry);
+    }
+}
+
+bool Interpreter::charge_mesh(std::size_t count, const Location &location) {
+    if (count > limits_.total_values - mesh_values_) {
+        if (!budget_exceeded_) {
+            error("limit-exceeded", location, "Translated mesh value limit exceeded");
+            budget_exceeded_ = true;
+        }
+        return false;
+    }
+    mesh_values_ += count;
+    return true;
+}
+
+void Interpreter::register_mesh(const Location &location, Descriptor descriptor,
+                                GeometryMesh mesh) {
+    result_.inventory.triangles += mesh.triangles.size();
+    result_.inventory.patches += mesh.patches.size();
     const auto mesh_index = static_cast<std::uint32_t>(scene_.geometry.meshes.size());
-    scene_.geometry.meshes.push_back(std::move(checked.meshes.front()));
+    scene_.geometry.meshes.push_back(std::move(mesh));
     Shape checked_shape{std::move(descriptor), state_.material, state_.reverse, mesh_index,
                         state_.area_light};
     if (current_object_) {
         scene_.objects[*current_object_].shapes.push_back(std::move(checked_shape));
     } else {
-        add_instance(mesh_index, checked_shape.descriptor.transform, directive.location);
+        add_instance(mesh_index, checked_shape.descriptor.transform, location);
         scene_.shapes.push_back(std::move(checked_shape));
     }
 }
@@ -1797,6 +1884,8 @@ Result Interpreter::run() {
     if (!result_.document.diagnostics_truncated) {
         resolve_references();
     }
+    result_.document.dependencies_complete &=
+        std::ranges::all_of(result_.document.dependencies, &Dependency::visited);
     const auto &document = result_.document;
     result_.structure_complete =
         !failed_ && document.syntax_complete && document.dependencies_complete &&

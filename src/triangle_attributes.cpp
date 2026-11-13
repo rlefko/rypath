@@ -107,6 +107,72 @@ std::string validate_normal_emission(const GeometryMesh &mesh, const GeometryTra
     if (normals.size() != mesh.positions.size()) {
         return "Prepared normal count must match the emitter vertex count";
     }
+    for (std::size_t primitive = 0; primitive < mesh.patches.size(); ++primitive) {
+        const auto &patch = mesh.patches[primitive];
+        std::array<Vector, 4> p{}, n{}, c{};
+        for (std::size_t k = 0; k < 4; ++k) {
+            if (patch[k] >= normals.size()) {
+                return "Emitter patch normal index is out of range";
+            }
+            const auto world = area_world_vertex(mesh.positions[patch[k]], transform);
+            if (!world) {
+                return "Emitter patch has an unrepresentable world vertex";
+            }
+            p[k] = {world->x, world->y, world->z};
+            const auto packed = normals[patch[k]];
+            n[k] = {packed.x, packed.y, packed.z};
+        }
+        const auto subtract = [](Vector a, Vector b) {
+            return Vector{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+        };
+        const std::array u{subtract(p[1], p[0]), subtract(p[3], p[2])};
+        const std::array v{subtract(p[2], p[0]), subtract(p[3], p[1])};
+        double product_bound = 0;
+        for (std::size_t y = 0; y < 2; ++y) {
+            for (std::size_t x = 0; x < 2; ++x) {
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    const auto a = (axis + 1) % 3, b = (axis + 2) % 3;
+                    c[x + 2 * y][axis] = u[y][a] * v[x][b] - u[y][b] * v[x][a];
+                    product_bound = std::max(product_bound, std::abs(u[y][a] * v[x][b]) +
+                                                                std::abs(u[y][b] * v[x][a]));
+                }
+            }
+        }
+        // C(u,v) is affine and N(u,v) is bilinear. Their dot product's nine
+        // degree-(2,2) Bernstein coefficients certify a stable sign over the
+        // entire square. Mixed or uncertain coefficients are a deliberately
+        // conservative unsupported domain for one-sided attributed emitters.
+        bool positive = true, negative = true;
+        for (std::size_t j = 0; j < 3; ++j) {
+            for (std::size_t i = 0; i < 3; ++i) {
+                double coefficient = 0, absolute_sum = 0, normal_sum = 0;
+                for (std::size_t a = 0; a < 4; ++a) {
+                    for (std::size_t b = 0; b < 4; ++b) {
+                        if (a % 2 + b % 2 != i || a / 2 + b / 2 != j) {
+                            continue;
+                        }
+                        for (std::size_t axis = 0; axis < 3; ++axis) {
+                            const double term = c[a][axis] * n[b][axis];
+                            coefficient += term;
+                            absolute_sum += std::abs(term);
+                            normal_sum += std::abs(n[b][axis]);
+                        }
+                    }
+                }
+                // The omitted positive Bernstein binomial denominator scales
+                // both coefficient and error equally, so cannot change sign.
+                const double uncertainty = 64 * std::numeric_limits<float>::epsilon() *
+                                               (absolute_sum + product_bound * normal_sum) +
+                                           32 * double{std::numeric_limits<float>::min()};
+                positive &= coefficient > uncertainty;
+                negative &= coefficient < -uncertainty;
+            }
+        }
+        if (!positive && !negative) {
+            return "One-sided emitter patch " + std::to_string(primitive) +
+                   " has uncertified shading-normal orientation across its parameter domain";
+        }
+    }
     for (std::size_t primitive = 0; primitive < mesh.triangles.size(); ++primitive) {
         const auto triangle = mesh.triangles[primitive];
         if (std::ranges::any_of(triangle, [&](auto index) { return index >= normals.size(); })) {

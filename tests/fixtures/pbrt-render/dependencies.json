@@ -1,0 +1,23 @@
+{
+  "ply-external": [
+    {
+      "path": "ply-assets/sportscar-quad.ply",
+      "bytes": 412,
+      "sha256": "91fa58d0b64fb8f5d2a49844cd5a1e64e7f71d52f904dd3e20aa76c866b5ba62"
+    }
+  ],
+  "ply-mixed": [
+    {
+      "path": "ply-assets/mixed.ply",
+      "bytes": 483,
+      "sha256": "7ec55a97b8b6451646abe683645ab19d11c4e9cd5d9b5ea909bf57168c9e5e3f"
+    }
+  ],
+  "ply-curved-emitter": [
+    {
+      "path": "ply-assets/curved-light.ply",
+      "bytes": 263,
+      "sha256": "101350551b05451a2f1f76b2ed282f994e32fa0f22e24bf1bae1814a2a456592"
+    }
+  ]
+}

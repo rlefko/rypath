@@ -7,8 +7,12 @@
 #include <bit>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 
 namespace rypath::pbrt {
+
+bool is_decimal(std::string_view text);
+bool nonzero_significand(std::string_view text);
 
 // Exact sign of the linear determinant of a finite binary64 matrix.
 // Each input is a signed integer significand times 2^exponent. The six triple

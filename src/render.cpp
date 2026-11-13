@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "render.hpp"
+#include "bilinear.hpp"
 #include "triangle_attributes.hpp"
 
 #include "cie_xyz_data.hpp"
@@ -354,7 +355,135 @@ std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                          static_cast<float>(point[2])};
 }
 
+std::string validate_patch_geometry(const GeometryMesh &mesh, const GeometryTransform &transform) {
+    for (std::size_t i = 0; i < mesh.patches.size(); ++i) {
+        const auto &patch = mesh.patches[i];
+        std::array<GeometryPoint, 4> world{};
+        for (std::size_t j = 0; j < 4; ++j) {
+            if (patch[j] >= mesh.positions.size()) {
+                return "Bilinear patch index is out of range";
+            }
+            const auto p = area_world_vertex(mesh.positions[patch[j]], transform);
+            if (!p) {
+                return "Bilinear patch has an unrepresentable world vertex";
+            }
+            world[j] = *p;
+        }
+        const auto bounds = bilinear_jacobian_bounds(world);
+        if (!bounds ||
+            (*bounds)[0] * (*bounds)[0] < 4 * double{std::numeric_limits<float>::min()} ||
+            (*bounds)[1] * (*bounds)[1] > double{std::numeric_limits<float>::max()} / 4) {
+            return "Bilinear patch " + std::to_string(i) +
+                   " has singular or unrepresentable world derivatives";
+        }
+        // The shader interpolates local edges before applying the matrix;
+        // rounded world corners alone do not certify that arithmetic. Enclose
+        // each tangent relative to the corresponding world-corner tangent.
+        std::array<Vector, 2> extent{}, error{};
+        constexpr double eps = std::numeric_limits<float>::epsilon();
+        constexpr double floor = 128 * double{std::numeric_limits<float>::min()};
+        const std::array edges{std::array{0U, 1U}, std::array{2U, 3U}, std::array{0U, 2U},
+                               std::array{1U, 3U}};
+        for (std::size_t k = 0; k < edges.size(); ++k) {
+            const auto edge = edges[k];
+            const auto d = difference(to_vector(mesh.positions[patch[edge[1]]]),
+                                      to_vector(mesh.positions[patch[edge[0]]]));
+            const auto w = apply_transform(transform, d, false);
+            const auto baked = difference(to_vector(world[edge[1]]), to_vector(world[edge[0]]));
+            if (!binary32_range(d) || !binary32_range(w)) {
+                return "Bilinear patch tangent exceeds the binary32 rendering range";
+            }
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                double products = 0, matrix_sum = 0;
+                for (std::size_t j = 0; j < 3; ++j) {
+                    const double a = std::abs(transform.values[axis * 4 + j]);
+                    products += a * std::abs(d[j]);
+                    matrix_sum += a;
+                }
+                extent[k / 2][axis] = std::max(extent[k / 2][axis], std::abs(baked[axis]));
+                error[k / 2][axis] = std::max(error[k / 2][axis], std::abs(w[axis] - baked[axis]) +
+                                                                      32 * eps * products +
+                                                                      floor * (1 + matrix_sum));
+            }
+        }
+        Vector cross_error{};
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const auto j = (axis + 1) % 3, k = (axis + 2) % 3;
+            const auto &u = extent[0], &v = extent[1], &eu = error[0], &ev = error[1];
+            cross_error[axis] =
+                u[j] * ev[k] + u[k] * ev[j] + v[j] * eu[k] + v[k] * eu[j] + eu[j] * ev[k] +
+                eu[k] * ev[j] + floor +
+                32 * eps * ((u[j] + eu[j]) * (v[k] + ev[k]) + (u[k] + eu[k]) * (v[j] + ev[j]));
+        }
+        const double uncertainty = std::hypot(cross_error[0], cross_error[1], cross_error[2]);
+        if (!((*bounds)[0] - uncertainty >=
+              2 * std::sqrt(double{std::numeric_limits<float>::min()})) ||
+            !((*bounds)[1] + uncertainty <=
+              std::sqrt(double{std::numeric_limits<float>::max()}) / 2)) {
+            return "Bilinear patch has uncertified transformed tangent arithmetic";
+        }
+        // Require representable outward offsets to stay below 1/1024 of
+        // the minimum tangent altitude. This explicit numerical-domain bound
+        // rejects small sheets at huge normal translations; no geometry-only
+        // bound can certify arbitrary separation from another primitive.
+        const double tangent_max = std::max(std::hypot(extent[0][0], extent[0][1], extent[0][2]),
+                                            std::hypot(extent[1][0], extent[1][1], extent[1][2]));
+        const double altitude = ((*bounds)[0] - uncertainty) / tangent_max;
+        double offset = 0;
+        const auto &matrix = transform.values;
+        const bool identity = matrix[3] == 0 && matrix[7] == 0 && matrix[11] == 0 &&
+                              matrix[0] == 1 && matrix[1] == 0 && matrix[2] == 0 &&
+                              matrix[4] == 0 && matrix[5] == 1 && matrix[6] == 0 &&
+                              matrix[8] == 0 && matrix[9] == 0 && matrix[10] == 1;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            float coordinate = 0;
+            for (const auto p : world) {
+                coordinate = std::max(coordinate, static_cast<float>(std::abs(to_vector(p)[axis])));
+            }
+            const double ulp =
+                double{std::nextafter(coordinate, std::numeric_limits<float>::infinity())} -
+                coordinate;
+            if (!(ulp <= altitude / 1024)) {
+                return "Bilinear patch has insufficient world-coordinate precision for endpoint "
+                       "connections";
+            }
+            const auto j = (axis + 1) % 3, k = (axis + 2) % 3;
+            const double normal = std::min(1.0, (extent[0][j] * extent[1][k] +
+                                                 extent[0][k] * extent[1][j] + cross_error[axis]) /
+                                                    ((*bounds)[0] - uncertainty));
+            double products = std::abs(transform.values[axis * 4 + 3]);
+            for (std::size_t component = 0; component < 3; ++component) {
+                for (const auto index : patch) {
+                    products += std::abs(double{transform.values[axis * 4 + component]} *
+                                         to_vector(mesh.positions[index])[component]);
+                }
+            }
+            if (products > double{std::numeric_limits<float>::max()} / 16) {
+                return "Bilinear patch interpolation exceeds the binary32 rendering range";
+            }
+            const double traversal = identity ? 0 : 8 * eps * products;
+            offset += normal * (4 * ulp + 0x1p-39 * products + traversal + floor);
+        }
+        if (!(offset <= altitude / 1024)) {
+            return "Bilinear patch has insufficient world-coordinate precision for ray offsets";
+        }
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            double absolute_sum = 0;
+            for (const auto index : patch) {
+                absolute_sum += std::abs(to_vector(mesh.positions[index])[axis]);
+            }
+            if (absolute_sum > double{std::numeric_limits<float>::max()} / 16) {
+                return "Bilinear patch interpolation error exceeds the binary32 rendering range";
+            }
+        }
+    }
+    return {};
+}
+
 std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform) {
+    if (auto message = validate_patch_geometry(mesh, transform); !message.empty()) {
+        return message;
+    }
     constexpr double normal_min = std::numeric_limits<float>::min();
     constexpr double finite_max = std::numeric_limits<float>::max();
     const bool transformed = transform.values != GeometryTransform{}.values;
@@ -422,6 +551,21 @@ std::string validate_render_scene(const RenderScene &scene) {
     if (auto error = validate_geometry(scene.geometry); !error.empty()) {
         return error;
     }
+    std::size_t patch_corners_remaining = render_patch_corner_limit;
+    for (const auto &instance : scene.geometry.instances) {
+        const auto &mesh = scene.geometry.meshes[instance.mesh_index];
+        if (mesh.patches.size() > patch_corners_remaining / 4) {
+            return "Expanded patch validation corner limit exceeded";
+        }
+        patch_corners_remaining -= mesh.patches.size() * 4;
+    }
+    for (const auto &instance : scene.geometry.instances) {
+        if (auto error = validate_patch_geometry(scene.geometry.meshes[instance.mesh_index],
+                                                 instance.transform);
+            !error.empty()) {
+            return error;
+        }
+    }
     if (scene.instance_materials.size() != scene.geometry.instances.size()) {
         return "Each render instance requires a material index";
     }
@@ -463,7 +607,7 @@ std::string validate_render_scene(const RenderScene &scene) {
         }
         const auto &instance = scene.geometry.instances[i];
         const auto &mesh = scene.geometry.meshes[instance.mesh_index];
-        emitter_count += mesh.triangles.size();
+        emitter_count += mesh.triangles.size() + mesh.patches.size();
         // Keep bit_ceil(emitter_count) representable as a 32-bit slot count.
         if (emitter_count > (std::uint64_t{1} << 31)) {
             return "Render area emitter count exceeds selection index capacity";

@@ -570,7 +570,8 @@ void Translator::geometry() {
     for (const auto &mesh : geometry.meshes) {
         for (const auto &[count, width] :
              {std::pair{mesh.positions.size(), 3U}, std::pair{mesh.triangles.size(), 3U},
-              std::pair{mesh.normals.size(), 3U}, std::pair{mesh.uvs.size(), 2U}}) {
+              std::pair{mesh.normals.size(), 3U}, std::pair{mesh.uvs.size(), 2U},
+              std::pair{mesh.patches.size(), 4U}}) {
             if (count > remaining / width) {
                 issue(Severity::error, "limit-exceeded", entry_,
                       "Translated geometry value limit exceeded");
@@ -580,9 +581,12 @@ void Translator::geometry() {
         }
     }
     if (std::ranges::none_of(geometry.instances, [&](const GeometryInstance &instance) {
-            return !geometry.meshes[instance.mesh_index].triangles.empty();
+            const auto &mesh = geometry.meshes[instance.mesh_index];
+            return !mesh.triangles.empty() || !mesh.patches.empty();
         })) {
-        unsupported(entry_, "The spectral render profile requires at least one placed triangle");
+        unsupported(
+            entry_,
+            "The spectral render profile requires at least one placed triangle or bilinear patch");
     }
 
     SpectralMaterial default_material;
@@ -662,6 +666,17 @@ void Translator::geometry() {
     }
     // Every placement prepares normals here and during portable scene validation.
     std::size_t normal_coordinates_remaining = limits_.total_values;
+    std::size_t patch_corners_remaining = std::min(limits_.total_values, render_patch_corner_limit);
+    for (const auto &instance : geometry.instances) {
+        const auto &mesh = geometry.meshes[instance.mesh_index];
+        if (mesh.patches.size() > patch_corners_remaining / 4) {
+            issue(Severity::error, "limit-exceeded",
+                  bindings[instance.mesh_index].shape->descriptor.authored.location,
+                  "Expanded patch validation corner limit exceeded");
+            return;
+        }
+        patch_corners_remaining -= mesh.patches.size() * 4;
+    }
     std::vector<GeometryPoint> shading_normals;
     for (const auto &instance : geometry.instances) {
         if (diagnostics_.diagnostics_truncated) {
@@ -670,6 +685,10 @@ void Translator::geometry() {
         const auto &binding = bindings[instance.mesh_index];
         const auto &mesh = geometry.meshes[instance.mesh_index];
         const auto &shape = *binding.shape;
+        if (const auto message = validate_patch_geometry(mesh, instance.transform);
+            !message.empty()) {
+            invalid(shape.descriptor.authored.location, message);
+        }
         scene_.instance_materials.push_back(binding.material);
         // PBRT applies the mesh and placement transforms to normals. A world-space
         // edge cross product has an additional sign for a mirrored transform.

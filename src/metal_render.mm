@@ -92,7 +92,8 @@ bool requires_world_space_emitter(const RenderScene &scene, std::size_t source) 
     return !scene.instance_emissions.empty() &&
            scene.instance_emissions[source] != no_area_emission &&
            instance.transform.values != GeometryTransform{}.values &&
-           !scene.geometry.meshes[instance.mesh_index].triangles.empty();
+           (!scene.geometry.meshes[instance.mesh_index].triangles.empty() ||
+            !scene.geometry.meshes[instance.mesh_index].patches.empty());
 }
 
 std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData &prepared) {
@@ -103,16 +104,19 @@ std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData 
     std::size_t clone_count = 0;
     std::size_t vertex_count = 0;
     std::size_t triangle_count = 0;
+    std::size_t patch_count = 0;
     const auto charge_mesh = [&](const GeometryMesh &mesh) {
-        if (mesh.triangles.empty()) {
+        if (mesh.triangles.empty() && mesh.patches.empty()) {
             return true;
         }
         if (mesh.positions.size() > max_index - vertex_count ||
-            mesh.triangles.size() > max_index - triangle_count) {
+            mesh.triangles.size() > max_index - triangle_count ||
+            mesh.patches.size() > max_index - patch_count) {
             return false;
         }
         vertex_count += mesh.positions.size();
         triangle_count += mesh.triangles.size();
+        patch_count += mesh.patches.size();
         return true;
     };
     for (const auto &mesh : scene.geometry.meshes) {
@@ -138,6 +142,7 @@ std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData 
         GeometryMesh copy;
         copy.positions = mesh.positions;
         copy.triangles = mesh.triangles;
+        copy.patches = mesh.patches;
         prepared.meshes.push_back(std::move(copy));
     };
     for (const auto &mesh : scene.geometry.meshes) {
@@ -220,9 +225,11 @@ struct MetalRenderScene::Impl {
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> pipeline = nil;
+    id<MTLIntersectionFunctionTable> intersection_table = nil;
     id<MTLBuffer> instances = nil;
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> triangles = nil;
+    id<MTLBuffer> patches = nil;
     id<MTLBuffer> materials = nil;
     id<MTLBuffer> environment = nil;
     id<MTLBuffer> knots = nil;
@@ -307,10 +314,11 @@ struct MetalRenderScene::Impl {
         std::size_t emitter_count = 0;
         for (const auto &instance : packed_instances) {
             if (instance.emission != wire::no_emission) {
-                if (instance.triangle_count > emitter_limit - emitter_count) {
+                const auto count = std::size_t{instance.triangle_count} + instance.patch_count;
+                if (count > emitter_limit - emitter_count) {
                     return "Metal area emitter buffer exceeds device size limit";
                 }
-                emitter_count += instance.triangle_count;
+                emitter_count += count;
             }
         }
         parameters.emitter_count = static_cast<wire::Word>(emitter_count);
@@ -330,7 +338,10 @@ struct MetalRenderScene::Impl {
                 continue;
             }
             for (wire::Word primitive = 0; primitive < instance.triangle_count; ++primitive) {
-                packed_emitters.push_back({ordinal, primitive});
+                packed_emitters.push_back({ordinal, primitive, wire::triangle_primitive});
+            }
+            for (wire::Word primitive = 0; primitive < instance.patch_count; ++primitive) {
+                packed_emitters.push_back({ordinal, primitive, wire::patch_primitive});
             }
         }
         if (packed_emitters.empty()) {
@@ -348,25 +359,32 @@ struct MetalRenderScene::Impl {
         const auto &meshes = geometry_data.meshes;
         std::vector<std::size_t> vertex_offsets(meshes.size());
         std::vector<std::size_t> triangle_offsets(meshes.size());
+        std::vector<std::size_t> patch_offsets(meshes.size());
         std::size_t vertex_count = 0;
         std::size_t triangle_count = 0;
+        std::size_t patch_count = 0;
         const auto vertex_limit =
             std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::Point));
         const auto triangle_limit =
             std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::Triangle));
+        const auto patch_limit =
+            std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::Patch));
         for (std::size_t index = 0; index < meshes.size(); ++index) {
             const auto &mesh = meshes[index];
-            if (mesh.triangles.empty()) {
+            if (mesh.triangles.empty() && mesh.patches.empty()) {
                 continue;
             }
             if (mesh.positions.size() > vertex_limit - vertex_count ||
-                mesh.triangles.size() > triangle_limit - triangle_count) {
+                mesh.triangles.size() > triangle_limit - triangle_count ||
+                mesh.patches.size() > patch_limit - patch_count) {
                 return "Metal render shading geometry exceeds buffer or index limits";
             }
             vertex_offsets[index] = vertex_count;
             triangle_offsets[index] = triangle_count;
+            patch_offsets[index] = patch_count;
             vertex_count += mesh.positions.size();
             triangle_count += mesh.triangles.size();
+            patch_count += mesh.patches.size();
         }
         if (scene.materials.size() > max_index ||
             parameters.instance_count > device.maxBufferLength / sizeof(wire::Instance) ||
@@ -391,8 +409,10 @@ struct MetalRenderScene::Impl {
         packed_positions.reserve(vertex_count);
         std::vector<wire::Triangle> packed_triangles;
         packed_triangles.reserve(triangle_count);
+        std::vector<wire::Patch> packed_patches;
+        packed_patches.reserve(patch_count);
         for (const auto &mesh : meshes) {
-            if (mesh.triangles.empty()) {
+            if (mesh.triangles.empty() && mesh.patches.empty()) {
                 continue;
             }
             for (const auto point : mesh.positions) {
@@ -401,6 +421,15 @@ struct MetalRenderScene::Impl {
             for (const auto &triangle : mesh.triangles) {
                 packed_triangles.push_back({{triangle[0], triangle[1], triangle[2]}});
             }
+            for (const auto &patch : mesh.patches) {
+                packed_patches.push_back({{patch[0], patch[1], patch[2], patch[3]}});
+            }
+        }
+        if (packed_triangles.empty()) {
+            packed_triangles.emplace_back();
+        }
+        if (packed_patches.empty()) {
+            packed_patches.emplace_back();
         }
 
         std::vector<wire::Instance> packed_instances;
@@ -413,7 +442,14 @@ struct MetalRenderScene::Impl {
             std::ranges::copy(instance.transform.values, packed.matrix);
             packed.vertex_begin = static_cast<wire::Word>(vertex_offsets[mesh]);
             packed.triangle_begin = static_cast<wire::Word>(triangle_offsets[mesh]);
-            packed.triangle_count = static_cast<wire::Word>(meshes[mesh].triangles.size());
+            const auto kind = MetalGeometryAccess::primitive_kind(*geometry, ordinal);
+            packed.triangle_count = kind == PrimitiveKind::triangle
+                                        ? static_cast<wire::Word>(meshes[mesh].triangles.size())
+                                        : 0;
+            packed.patch_begin = static_cast<wire::Word>(patch_offsets[mesh]);
+            packed.patch_count = kind == PrimitiveKind::bilinear_patch
+                                     ? static_cast<wire::Word>(meshes[mesh].patches.size())
+                                     : 0;
             packed.material = scene.instance_materials[source];
             if (!scene.instance_reverse_orientation.empty()) {
                 packed.reverse_orientation = scene.instance_reverse_orientation[source];
@@ -463,10 +499,11 @@ struct MetalRenderScene::Impl {
         instances = upload(device, packed_instances);
         positions = upload(device, packed_positions);
         triangles = upload(device, packed_triangles);
+        patches = upload(device, packed_patches);
         materials = upload(device, packed_materials);
         knots = upload(device, packed_knots);
         if (instances == nil || positions == nil || triangles == nil || materials == nil ||
-            knots == nil) {
+            knots == nil || patches == nil) {
             return "Metal render shading buffer allocation failed";
         }
         return upload_area_lighting(scene, packed_instances);
@@ -559,6 +596,8 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:area_emissions offset:0 atIndex:9];
             [encoder setBuffer:emitters offset:0 atIndex:10];
             [encoder setBuffer:normals offset:0 atIndex:11];
+            [encoder setBuffer:patches offset:0 atIndex:13];
+            [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];
@@ -698,9 +737,24 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         }
         NSString *entry =
             impl->parameters.instance_count == 0 ? @"rypath_render_sky" : @"rypath_render_paths";
-        impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic);
+        id<MTLFunction> intersection = nil;
+        if (impl->parameters.instance_count != 0) {
+            intersection = metal::load_patch_intersection(library, result.diagnostic);
+            if (intersection == nil) {
+                return result;
+            }
+        }
+        impl->pipeline =
+            metal::load_pipeline(impl->device, library, entry, result.diagnostic, intersection);
         if (impl->pipeline == nil) {
             return result;
+        }
+        if (intersection != nil) {
+            impl->intersection_table =
+                metal::make_intersection_table(impl->pipeline, intersection, result.diagnostic);
+            if (impl->intersection_table == nil) {
+                return result;
+            }
         }
         impl->environment = upload(impl->device, scene.environment);
         if (impl->environment == nil) {

@@ -58,11 +58,11 @@ if(rypath_multi_config)
     string(APPEND rypath_runtime_directory "/$<CONFIG>")
 endif()
 
-add_library(rypath_geometry STATIC src/geometry.cpp)
+add_library(rypath_geometry STATIC src/geometry.cpp src/bilinear.cpp)
 target_include_directories(rypath_geometry PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_geometry)
 
-add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp)
+add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp)
 target_include_directories(rypath_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_pbrt PRIVATE rypath_geometry)
 rypath_configure_host_target(rypath_pbrt)

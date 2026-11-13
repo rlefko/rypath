@@ -154,6 +154,7 @@ struct Inventory {
     std::size_t meshes = 0;
     std::size_t triangles = 0;
     std::size_t instances = 0;
+    std::size_t patches = 0;
 };
 struct Result {
     Document document;

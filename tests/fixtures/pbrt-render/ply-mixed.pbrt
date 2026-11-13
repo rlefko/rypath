@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [34]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [3]
+WorldBegin
+LightSource "infinite" "rgb L" [1 1 1]
+Material "diffuse" "rgb reflectance" [0.6 0.4 0.8]
+Shape "plymesh" "string filename" ["ply-assets/mixed.ply"]

@@ -6,6 +6,7 @@
 #include "../src/render_wire.h"
 #include "../src/sobol_probe_wire.h"
 #include "../src/sobol_shared.h"
+#include "intersection.h"
 
 using namespace metal;
 using namespace metal::raytracing;
@@ -271,16 +272,19 @@ struct SurfacePoint {
     float3 error;
     float3 geometric_normal;
     float3 shading_normal;
-    float area;
+    float inverse_area_pdf;
     float world_extent;
+    bool patch;
 };
 
 enum class PointSource { native_hit, area_sample };
 
-static bool surface_point(float2 uv, const device wire::Instance &instance, uint primitive,
-                          const device wire::Point *positions,
-                          const device wire::Triangle *triangles, const device wire::Point *normals,
-                          uint normal_count, PointSource source, thread SurfacePoint &point) {
+static bool triangle_surface_point(float2 uv, const device wire::Instance &instance, uint primitive,
+                                   const device wire::Point *positions,
+                                   const device wire::Triangle *triangles,
+                                   const device wire::Point *normals, uint normal_count,
+                                   PointSource source, thread SurfacePoint &point) {
+    point.patch = false;
     const wire::Triangle triangle = triangles[instance.triangle_begin + primitive];
     const float3 p0 = unpack(positions[instance.vertex_begin + triangle.vertices[0]]);
     const float3 p1 = unpack(positions[instance.vertex_begin + triangle.vertices[1]]);
@@ -299,7 +303,7 @@ static bool surface_point(float2 uv, const device wire::Instance &instance, uint
         return false;
     }
     const float normal_length = sqrt(normal_squared);
-    point.area = 0.5f * normal_length;
+    point.inverse_area_pdf = 0.5f * normal_length;
     point.world_extent = triangle_extent(world_e1, world_e2);
     point.geometric_normal = cross_edges / normal_length;
     if (instance.reverse_orientation != 0) {
@@ -351,12 +355,135 @@ static bool surface_point(float2 uv, const device wire::Instance &instance, uint
            all(isfinite(point.geometric_normal)) && all(isfinite(point.shading_normal));
 }
 
+// Uniform parameter sampling has area density 1/J. Geometric (u,v) is
+// independent of any authored texture coordinates.
+static bool patch_surface_point(float2 uv, const device wire::Instance &instance, uint primitive,
+                                const device wire::Point *positions,
+                                const device wire::Patch *patches,
+                                const device wire::Point *normals, uint normal_count,
+                                thread SurfacePoint &point) {
+    point.patch = true;
+    const wire::Patch patch = patches[instance.patch_begin + primitive];
+    float3 p[4];
+    for (uint i = 0; i < 4; ++i) {
+        p[i] = unpack(positions[instance.vertex_begin + patch.vertices[i]]);
+    }
+    const float3 ax(instance.matrix[0], instance.matrix[1], instance.matrix[2]);
+    const float3 ay(instance.matrix[4], instance.matrix[5], instance.matrix[6]);
+    const float3 az(instance.matrix[8], instance.matrix[9], instance.matrix[10]);
+    const float3 du = mix(p[1] - p[0], p[3] - p[2], uv.y);
+    const float3 dv = mix(p[2] - p[0], p[3] - p[1], uv.x);
+    const float3 wu(dot(ax, du), dot(ay, du), dot(az, du));
+    const float3 wv(dot(ax, dv), dot(ay, dv), dot(az, dv));
+    const float3 c = cross(wu, wv);
+    const float squared = dot(c, c);
+    if (!(squared >= FLT_MIN) || !isfinite(squared)) {
+        return false;
+    }
+    point.inverse_area_pdf = sqrt(squared);
+    point.geometric_normal = c / point.inverse_area_pdf;
+    if (instance.reverse_orientation != 0) {
+        point.geometric_normal = -point.geometric_normal;
+    }
+    point.shading_normal = point.geometric_normal;
+    if (instance.normal_begin != wire::no_normals) {
+        float3 n[4];
+        for (uint i = 0; i < 4; ++i) {
+            if (instance.normal_begin >= normal_count ||
+                patch.vertices[i] >= normal_count - instance.normal_begin) {
+                return false;
+            }
+            n[i] = unpack(normals[instance.normal_begin + patch.vertices[i]]);
+        }
+        const float3 interpolated = mix(mix(n[0], n[2], uv.y), mix(n[1], n[3], uv.y), uv.x);
+        if (!all(isfinite(interpolated))) {
+            return false;
+        }
+        const float3 a = abs(interpolated);
+        const float scale = max(a.x, max(a.y, a.z));
+        if (scale > 0) {
+            const float3 scaled = precise::divide(interpolated, float3(scale));
+            point.shading_normal = normalize(scaled);
+            if (dot(point.geometric_normal, scaled) < 0) {
+                point.geometric_normal = -point.geometric_normal;
+            }
+        }
+    }
+    // Retain interpolation and affine roundoff in a second float. A bound
+    // proportional to absolute translated coordinates at ordinary precision
+    // can move a small surface across a nearby light before tracing starts.
+    BilinearNumber local[3];
+    float3 magnitude = abs(p[0]) + abs(p[1]) + abs(p[2]) + abs(p[3]);
+    for (uint axis = 0; axis < 3; ++axis) {
+        const auto a =
+            BilinearNumber(p[0][axis]) + (BilinearNumber(p[2][axis]) - p[0][axis]) * uv.y;
+        const auto b =
+            BilinearNumber(p[1][axis]) + (BilinearNumber(p[3][axis]) - p[1][axis]) * uv.y;
+        local[axis] = a + (b - a) * uv.x;
+    }
+    const bool identity = instance.matrix[3] == 0 && instance.matrix[7] == 0 &&
+                          instance.matrix[11] == 0 && all(ax == float3(1, 0, 0)) &&
+                          all(ay == float3(0, 1, 0)) && all(az == float3(0, 0, 1));
+    for (uint axis = 0; axis < 3; ++axis) {
+        BilinearNumber world(instance.matrix[axis * 4 + 3]);
+        float bound = abs(instance.matrix[axis * 4 + 3]);
+        for (uint j = 0; j < 3; ++j) {
+            world = world + local[j] * instance.matrix[axis * 4 + j];
+            bound += magnitude[j] * abs(instance.matrix[axis * 4 + j]);
+        }
+        point.position[axis] = world.high;
+        // Pair operations discard second-order roundoff; 64 eps^2 covers
+        // the nested lerps and matrix sums. Native spawning also encloses
+        // the discrepancy to the committed ray's point.
+        // Native instancing rounds the inverse ray transform independently
+        // of this forward reconstruction. Keep its local-coordinate allowance
+        // for nonidentity maps; host validation bounds its displacement.
+        const float traversal = identity ? 0.0f : 0x1p-20f * bound;
+        point.error[axis] = abs(world.low) + 0x1p-40f * bound + traversal + 128.0f * FLT_MIN;
+    }
+    point.world_extent = 0;
+    for (uint i = 1; i < 4; ++i) {
+        const float3 e = p[i] - p[0];
+        const float3 w = abs(float3(dot(ax, e), dot(ay, e), dot(az, e)));
+        point.world_extent = max(point.world_extent, max(w.x, max(w.y, w.z)));
+    }
+    return all(isfinite(point.position)) && all(isfinite(point.error)) &&
+           all(isfinite(point.geometric_normal)) && all(isfinite(point.shading_normal));
+}
+
+static bool surface_point(float2 uv, uint kind, const device wire::Instance &instance,
+                          uint primitive, const device wire::Point *positions,
+                          const device wire::Triangle *triangles, const device wire::Patch *patches,
+                          const device wire::Point *normals, uint normal_count, PointSource source,
+                          thread SurfacePoint &point) {
+    if (kind == wire::patch_primitive) {
+        return patch_surface_point(uv, instance, primitive, positions, patches, normals,
+                                   normal_count, point);
+    }
+    return triangle_surface_point(uv, instance, primitive, positions, triangles, normals,
+                                  normal_count, source, point);
+}
+
+static float2 patch_sample_uv(uint u, uint v) {
+    // Independent 23-bit midpoint coordinates stay strictly within the square.
+    return (float2(u >> 9, v >> 9) + 0.5f) * 0x1.0p-23f;
+}
+
 static float3 spawn_origin(ray incoming, float t, SurfacePoint point, float3 n) {
-    const float3 ray_position = fma(float3(t), incoming.direction, incoming.origin);
-    // The ray evaluation can cancel near the origin. Bound its rounding error
-    // from the magnitudes of the operands before cancellation.
-    const float3 ray_error =
-        gamma_bound(2.0f) * (abs(t * incoming.direction) + abs(incoming.origin));
+    float3 ray_position = fma(float3(t), incoming.direction, incoming.origin);
+    // Preserve the existing triangle allowance; patch reconstruction retains
+    // its roundoff explicitly so a large translation does not inflate offsets.
+    float3 ray_error = gamma_bound(2.0f) * (abs(t * incoming.direction) + abs(incoming.origin));
+    if (point.patch) {
+        for (uint axis = 0; axis < 3; ++axis) {
+            const auto value = BilinearNumber(t) * incoming.direction[axis] + incoming.origin[axis];
+            ray_position[axis] = value.high;
+            ray_error[axis] =
+                abs(value.low) +
+                0x1p-40f * (abs(t * incoming.direction[axis]) + abs(incoming.origin[axis])) +
+                128.0f * FLT_MIN;
+        }
+    }
     const float3 error = point.error + abs(point.position - ray_position) + ray_error;
     return round_out(point.position + dot(abs(n), error) * n, n);
 }
@@ -449,6 +576,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 const device wire::Emitter *emitters [[buffer(10)]],
                                 const device wire::Point *normals [[buffer(11)]],
                                 const device sobol::Tables &tables [[buffer(12)]],
+                                const device wire::Patch *patches [[buffer(13)]],
+                                MixedIntersectionTable intersection_table [[buffer(14)]],
                                 uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
@@ -456,11 +585,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
     ulong index = 0;
     wire::Sample sample = begin_sample(p, tables, lane, index);
     ray incoming = primary_ray(p, sample);
-    intersector<triangle_data, instancing> closest;
-    closest.assume_geometry_type(geometry_type::triangle);
+    MixedIntersector closest;
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
-    intersector<instancing> shadow;
-    shadow.assume_geometry_type(geometry_type::triangle);
+    MixedIntersector shadow;
     shadow.set_triangle_cull_mode(triangle_cull_mode::none);
     shadow.accept_any_intersection(true);
     float throughput = 1.0f;
@@ -475,21 +602,29 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        const auto hit = closest.intersect(incoming, scene, all_visible);
+        const auto hit = trace_surface(closest, incoming, scene, all_visible, intersection_table);
         if (hit.type == intersection_type::none) {
             sample.radiance += throughput * escape_weight * E;
             break;
         }
         const uint bounce = sample.scatterings;
-        if (hit.type != intersection_type::triangle || hit.instance_id >= p.instance_count ||
-            hit.geometry_id != 0 || !isfinite(hit.distance) ||
-            !all(isfinite(hit.triangle_barycentric_coord))) {
+        const bool patch_hit = hit.type == intersection_type::bounding_box;
+        if (!hit.valid || (!patch_hit && hit.type != intersection_type::triangle) ||
+            hit.instance_id >= p.instance_count || !isfinite(hit.distance)) {
             sample.status = wire::invalid_hit;
             break;
         }
 
         const device wire::Instance &instance = instances[hit.instance_id];
-        if (hit.primitive_id >= instance.triangle_count || instance.material >= p.material_count) {
+        const uint kind = patch_hit ? wire::patch_primitive : wire::triangle_primitive;
+        const uint primitive_count = patch_hit ? instance.patch_count : instance.triangle_count;
+        if (hit.geometry_id != 0 || hit.primitive_id >= primitive_count ||
+            instance.material >= p.material_count) {
+            sample.status = wire::invalid_hit;
+            break;
+        }
+        const float2 hit_uv = hit.coordinates;
+        if (!all(isfinite(hit_uv))) {
             sample.status = wire::invalid_hit;
             break;
         }
@@ -500,9 +635,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 sample.status = wire::invalid_hit;
                 break;
             }
-            if (!surface_point(hit.triangle_barycentric_coord, instance, hit.primitive_id,
-                               positions, triangles, normals, p.normal_count,
-                               PointSource::native_hit, point)) {
+            if (!surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles,
+                               patches, normals, p.normal_count, PointSource::native_hit, point)) {
                 sample.status = wire::invalid_arithmetic;
                 break;
             }
@@ -522,9 +656,14 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     }
                     const float light_cosine =
                         abs(dot(point.geometric_normal, -delta / sqrt(distance_squared)));
-                    weight = area_weights(point.area, light_cosine, previous_bsdf_pdf,
-                                          distance_squared, p.emitter_slots)
-                                 .hit_weight;
+                    // Pinned PBRT reports zero light PDF at an exactly tangent
+                    // endpoint; the BSDF technique then receives full weight.
+                    weight =
+                        patch_hit && light_cosine == 0.0f
+                            ? 1.0f
+                            : area_weights(point.inverse_area_pdf, light_cosine, previous_bsdf_pdf,
+                                           distance_squared, p.emitter_slots)
+                                  .hit_weight;
                 }
                 if (!isfinite(weight)) {
                     sample.status = wire::invalid_arithmetic;
@@ -567,8 +706,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         if (!emissive &&
-            !surface_point(hit.triangle_barycentric_coord, instance, hit.primitive_id, positions,
-                           triangles, normals, p.normal_count, PointSource::native_hit, point)) {
+            !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
+                           normals, p.normal_count, PointSource::native_hit, point)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -581,8 +720,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const float3 n = incident_cosine > 0.0f ? -point.shading_normal : point.shading_normal;
+        const bool directional_offset = authored_normals || patch_hit;
         const float3 area_reference =
-            authored_normals ? point.position : spawn_origin(incoming, hit.distance, point, n);
+            directional_offset ? point.position : spawn_origin(incoming, hit.distance, point, n);
         if (!all(isfinite(area_reference))) {
             sample.status = wire::invalid_arithmetic;
             break;
@@ -592,15 +732,16 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sphere(sample_uniform(p, light_words.x), sample_uniform(p, light_words.y));
         const float light_cosine = dot(n, light_direction);
         if (E > 0.0f && light_cosine > 0.0f) {
-            const float3 origin = authored_normals
+            const float3 origin = directional_offset
                                       ? spawn_toward(incoming, hit.distance, point, light_direction)
                                       : area_reference;
             if (!all(isfinite(origin))) {
                 sample.status = wire::invalid_arithmetic;
                 break;
             }
-            if (shadow.intersect(ray(origin, light_direction), scene, all_visible).type ==
-                intersection_type::none) {
+            if (trace_shadow(shadow, ray(origin, light_direction), scene, all_visible,
+                             intersection_table)
+                    .type == intersection_type::none) {
                 sample.radiance +=
                     throughput * rho * (4.0f * light_cosine) * light_weight(light_cosine) * E;
             }
@@ -620,58 +761,75 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 break;
             }
             const device wire::Instance &light_instance = instances[emitter.instance];
-            if (emitter.primitive >= light_instance.triangle_count ||
-                light_instance.emission >= p.emission_count) {
+            const bool patch_light = emitter.kind == wire::patch_primitive;
+            const uint light_count =
+                patch_light ? light_instance.patch_count : light_instance.triangle_count;
+            if ((!patch_light && emitter.kind != wire::triangle_primitive) ||
+                emitter.primitive >= light_count || light_instance.emission >= p.emission_count) {
                 sample.status = wire::invalid_hit;
                 break;
             }
             const device wire::AreaEmission &emission = emissions[light_instance.emission];
             const float Le = emission.radiance[dense_index(sample.wavelength)];
             // A coplanar connection has zero geometric emitter cosine.
-            const bool same_triangle =
-                emitter.instance == hit.instance_id && emitter.primitive == hit.primitive_id;
+            const bool same_triangle = !patch_hit && !patch_light &&
+                                       emitter.instance == hit.instance_id &&
+                                       emitter.primitive == hit.primitive_id;
             if (Le > 0.0f && !same_triangle) {
                 SurfacePoint target;
-                if (!surface_point(triangle_uv(light_words.z, light_words.w), light_instance,
-                                   emitter.primitive, positions, triangles, normals, p.normal_count,
+                const float2 light_uv = patch_light ? patch_sample_uv(light_words.z, light_words.w)
+                                                    : triangle_uv(light_words.z, light_words.w);
+                if (!surface_point(light_uv, emitter.kind, light_instance, emitter.primitive,
+                                   positions, triangles, patches, normals, p.normal_count,
                                    PointSource::area_sample, target)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
                 const float3 delta = target.position - area_reference;
                 const float distance_squared = dot(delta, delta);
-                if (!(distance_squared >= FLT_MIN) || !isfinite(distance_squared)) {
+                const bool same_patch = patch_hit && patch_light &&
+                                        emitter.instance == hit.instance_id &&
+                                        emitter.primitive == hit.primitive_id;
+                if (!isfinite(distance_squared) ||
+                    (!(distance_squared >= FLT_MIN) && !same_patch)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
-                const float3 direction = delta / sqrt(distance_squared);
-                const float receiver_cosine = dot(n, direction);
-                const float emitter_cosine = dot(target.geometric_normal, -direction);
-                if (receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
-                    (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
-                    const float factor =
-                        area_weights(target.area, abs(emitter_cosine), receiver_cosine / pi,
-                                     distance_squared, p.emitter_slots)
-                            .direct_factor;
-                    const float3 origin =
-                        authored_normals ? spawn_toward(incoming, hit.distance, point, direction)
-                                         : area_reference;
-                    const float3 shadow_delta = authored_normals ? target.position - origin : delta;
-                    const float endpoint_cosine = authored_normals
-                                                      ? dot(target.geometric_normal, -shadow_delta)
-                                                      : emitter_cosine;
-                    const float3 segment =
-                        shadow_segment_direction(origin, shadow_delta, target, endpoint_cosine);
-                    const float progress = dot(segment, direction);
-                    if (!isfinite(factor) || !all(isfinite(segment)) || !(progress > 0.0f) ||
-                        !isfinite(progress)) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    const ray connection(origin, segment, 0.0f, 0x1.fffffep-1f);
-                    if (shadow.intersect(connection, scene, all_visible).type ==
-                        intersection_type::none) {
-                        sample.radiance += (throughput * rho) * (factor * Le);
+                // Two samples of the same patch can round to one endpoint.
+                // Its degenerate connection contributes zero; retain the BSDF
+                // continuation and all noncoincident curved self-lighting.
+                if (distance_squared >= FLT_MIN) {
+                    const float3 direction = delta / sqrt(distance_squared);
+                    const float receiver_cosine = dot(n, direction);
+                    const float emitter_cosine = dot(target.geometric_normal, -direction);
+                    if (receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
+                        (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
+                        const float factor =
+                            area_weights(target.inverse_area_pdf, abs(emitter_cosine),
+                                         receiver_cosine / pi, distance_squared, p.emitter_slots)
+                                .direct_factor;
+                        const float3 origin =
+                            directional_offset
+                                ? spawn_toward(incoming, hit.distance, point, direction)
+                                : area_reference;
+                        const float3 shadow_delta =
+                            directional_offset ? target.position - origin : delta;
+                        const float endpoint_cosine =
+                            directional_offset ? dot(target.geometric_normal, -shadow_delta)
+                                               : emitter_cosine;
+                        const float3 segment =
+                            shadow_segment_direction(origin, shadow_delta, target, endpoint_cosine);
+                        const float progress = dot(segment, direction);
+                        if (!isfinite(factor) || !all(isfinite(segment)) || !(progress > 0.0f) ||
+                            !isfinite(progress)) {
+                            sample.status = wire::invalid_arithmetic;
+                            break;
+                        }
+                        const ray connection(origin, segment, 0.0f, 0x1.fffffep-1f);
+                        if (trace_shadow(shadow, connection, scene, all_visible, intersection_table)
+                                .type == intersection_type::none) {
+                            sample.radiance += (throughput * rho) * (factor * Le);
+                        }
                     }
                 }
             }
@@ -695,7 +853,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         previous_bsdf_pdf = cosine / pi;
         previous_area_reference = area_reference;
         const float3 origin =
-            authored_normals ? spawn_toward(incoming, hit.distance, point, wi) : area_reference;
+            directional_offset ? spawn_toward(incoming, hit.distance, point, wi) : area_reference;
         if (!all(isfinite(origin))) {
             sample.status = wire::invalid_arithmetic;
             break;
