@@ -149,6 +149,12 @@ rypath_configure_host_target(rypath_render_tests)
 add_test(NAME render.cpu_reference COMMAND rypath_render_tests cpu)
 set_tests_properties(render.cpu_reference PROPERTIES TIMEOUT 30)
 
+add_executable(rypath_sampling_tests sampling_tests.cpp)
+target_link_libraries(rypath_sampling_tests PRIVATE rypath_render)
+rypath_configure_host_target(rypath_sampling_tests)
+add_test(NAME render.sobol_sampling COMMAND rypath_sampling_tests)
+set_tests_properties(render.sobol_sampling PROPERTIES TIMEOUT 30)
+
 set(ray_tracing_test_options)
 if(RYPATH_ALLOW_NO_METAL_DEVICE)
     list(APPEND ray_tracing_test_options --allow-no-device)
@@ -265,6 +271,23 @@ if(RYPATH_ENABLE_METAL)
     set_tests_properties(metal.render PROPERTIES TIMEOUT 30)
     if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
         set_tests_properties(metal.render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+
+    add_executable(rypath_sobol_render_tests sobol_render_tests.cpp sobol_probe.mm)
+    set_target_properties(rypath_sobol_render_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_sobol_render_tests PRIVATE
+        "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    target_compile_definitions(rypath_sobol_render_tests PRIVATE
+        "$<$<BOOL:${RYPATH_ALLOW_NO_METAL_DEVICE}>:RYPATH_ALLOW_NO_METAL_DEVICE=1>"
+        "$<$<BOOL:${RYPATH_ALLOW_NO_METAL_RAY_TRACING}>:RYPATH_ALLOW_NO_METAL_RAY_TRACING=1>")
+    target_link_libraries(rypath_sobol_render_tests PRIVATE rypath_metal_backend rypath_pbrt_render)
+    rypath_configure_host_target(rypath_sobol_render_tests)
+    add_test(NAME metal.sobol_render COMMAND rypath_sobol_render_tests)
+    set_tests_properties(metal.sobol_render PROPERTIES TIMEOUT 90)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.sobol_render PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 
     add_executable(rypath_image_output_tests image_output_tests.mm)

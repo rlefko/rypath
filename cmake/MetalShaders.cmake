@@ -30,6 +30,10 @@ foreach(shader IN ITEMS smoke geometry render)
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/${shader}_wire.h")
     endif()
+    if(shader STREQUAL "render")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_shared.h")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_probe_wire.h")
+    endif()
     add_custom_command(
         OUTPUT "${air}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"

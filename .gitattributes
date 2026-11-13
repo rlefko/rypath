@@ -10,3 +10,5 @@ tests/fixtures/pbrt/LICENSE.txt -text
 # Canonical binary32 PBRT sRGB reconstruction data, verified during configuration.
 third_party/pbrt/srgb.bin -text
 third_party/pbrt/d65.inc -text
+third_party/pbrt/sobol_tables.inc -text
+tests/fixtures/pbrt-render/cornell-box-sobol-*.pbrt -text whitespace=-blank-at-eol

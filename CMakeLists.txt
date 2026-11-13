@@ -78,7 +78,14 @@ add_library(rypath_rgb_spectrum STATIC src/rgb_spectrum.cpp "${rypath_rgb_data_s
 target_include_directories(rypath_rgb_spectrum PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_rgb_spectrum)
 
-add_library(rypath_render STATIC src/render.cpp src/triangle_attributes.cpp)
+set(rypath_sobol_tables "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pbrt/sobol_tables.inc")
+file(SHA256 "${rypath_sobol_tables}" rypath_sobol_digest)
+if(NOT rypath_sobol_digest STREQUAL "349a336cd9dff8bdc06cd30490b1cf887c3f041c5fd00ff3bba5ea9e7f38aeab")
+    message(FATAL_ERROR "Unexpected PBRT Sobol data SHA-256: ${rypath_sobol_digest}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_sobol_tables}")
+
+add_library(rypath_render STATIC src/render.cpp src/sampling.cpp src/triangle_attributes.cpp)
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PRIVATE "${rypath_generated_directory}")
 target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum)
