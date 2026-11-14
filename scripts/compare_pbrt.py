@@ -102,6 +102,9 @@ REGIONS = {
     "image-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
     "image-point": {"full": FULL, "nearest": POINT_NEAREST},
     "image-ewa": {"full": FULL, "ellipse": EWA_ELLIPSE},
+    "image16-magnified": QUADRANTS,
+    "image16-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
+    "image16-ewa": {"full": FULL, "ellipse": EWA_ELLIPSE},
     "blackbody-background": {"full": FULL},
     "blackbody-area": QUADRANTS,
     "blackbody-mixed": QUADRANTS,
@@ -279,6 +282,8 @@ def main():
     parser.add_argument("--pbrt", type=Path, required=True, help="pinned upstream pbrt binary")
     parser.add_argument("--fixtures", type=Path, required=True, help="PBRT render fixture directory")
     parser.add_argument("--output-dir", type=Path, required=True, help="cache for variants and PFM outputs")
+    parser.add_argument("--scene", action="append", choices=REGIONS, metavar="NAME",
+                        help="compare one named fixture (repeatable, defaults to all fixtures)")
     args = parser.parse_args()
     try:
         rypath = args.rypath.resolve(strict=True)
@@ -287,9 +292,9 @@ def main():
         run_dir = Path(tempfile.mkdtemp(prefix="pbrt-compare-", dir=args.output_dir.resolve()))
         print(f"Comparison artifacts in {run_dir}", flush=True)
         passed = True
-        for scene, regions in REGIONS.items():
+        for scene in dict.fromkeys(args.scene or REGIONS):
             fixture = args.fixtures / f"{scene}.pbrt"
-            measurements = render_replicates(rypath, pbrt, fixture, run_dir, regions)
+            measurements = render_replicates(rypath, pbrt, fixture, run_dir, REGIONS[scene])
             passed &= compare_regions(scene, measurements)
             if scene in FILTER_CONTROLS:
                 passed &= check_filter_sensitivity(scene, rypath, pbrt, run_dir, measurements)

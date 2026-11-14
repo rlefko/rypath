@@ -116,14 +116,14 @@ kernel void rypath_texture_footprint_probe(
     }
 }
 
-kernel void rypath_ewa_texture_probe(const device wire::ImageTexture *textures [[buffer(1)]],
-                                     const device wire::TextureLevel *levels [[buffer(2)]],
-                                     const device uint *texels [[buffer(3)]],
-                                     const device float *transfer [[buffer(4)]],
-                                     constant wire::TextureParameters &parameters [[buffer(6)]],
-                                     device probe::Result *results [[buffer(7)]],
-                                     constant probe::EwaCase *cases [[buffer(9)]],
-                                     uint2 id [[thread_position_in_grid]]) {
+kernel void rypath_texture_lookup_probe(const device wire::ImageTexture *textures [[buffer(1)]],
+                                        const device wire::TextureLevel *levels [[buffer(2)]],
+                                        const device uint *texels [[buffer(3)]],
+                                        const device float *transfer [[buffer(4)]],
+                                        constant wire::TextureParameters &parameters [[buffer(6)]],
+                                        device probe::Result *results [[buffer(7)]],
+                                        constant probe::EwaCase *cases [[buffer(9)]],
+                                        uint2 id [[thread_position_in_grid]]) {
     const auto test = cases[id.x];
     results[id.y].ewa[id.x] = pack_probe(rypath_image::lookup(
         textures[test.texture], levels, texels, transfer, parameters, float2(test.u, test.v),

@@ -34,8 +34,32 @@ length ratio around 19. The cap of 8 widens the shorter axis, giving a
 fractional EWA LOD near 0.6 that blends the 32×32 and 16×16 mips. This owned
 wrapper provides coverage of the pinned asset.
 
+`asymmetric16.png` is a rypath-authored 4×2 RGB16 image under GPL-3.0-only.
+Each channel has a constant high byte (`01`, `03`, `0b` for R, G, B), and the
+two rows vary each channel's low byte independently. The comparison script
+defines the source samples in top-down order and regenerates the PNG for a
+byte comparison with the checked fixture. [PNG16 comparison script](../../../../scripts/compare_pbrt_image16.py)
+
+`basn2c16.png` (32×32 RGB16) and `basn0g16.png` (32×32 grayscale16) are
+unmodified PNGSuite images by Willem van Schaik at the same pinned stb revision.
+Their original terms are retained. [RGB16 source](https://github.com/nothings/stb/blob/af1a5bc352164740c1cc1354942b1c6b72eacb8a/tests/pngsuite/16bit/basn2c16.png),
+[grayscale16 source](https://github.com/nothings/stb/blob/af1a5bc352164740c1cc1354942b1c6b72eacb8a/tests/pngsuite/16bit/basn0g16.png),
+[PngSuite.LICENSE](PngSuite.LICENSE)
+
+The GPL-3.0-only PNG16 wrappers use the following mappings and comparison regions.
+
+| Entry point | Image and mip footprint | Comparison regions |
+| --- | --- | --- |
+| `image16-magnified.pbrt` | Left and right cards point-sample all eight texels with clamp wrap. The left uses default sRGB and scales the linear values by 128. The right uses linear encoding and scale 16. | Full frame and four quadrants |
+| `image16-trilinear.pbrt` | `basn2c16.png` with default sRGB and repeat wrap. The center footprint blends the 8×8 and 4×4 mips. | Full frame and column 4, rows 3–4 |
+| `image16-ewa.pbrt` | `basn0g16.png` in linear encoding with repeat wrap. The rotated footprint at pixel (4, 3) uses the anisotropy cap of 8 and blends the 32×32 and 16×16 mips near the repeat seam. | Full frame and pixel (4, 3) |
+
+All three use a triangle pixel filter. Radii are 1/16 for trilinear and 1/256
+for the magnified and EWA wrappers. Region coordinates are zero-based and top-down.
+The numerical mip comparison checks both encodings for all three PNG16 assets.
+
 [The dependency manifest](../dependencies.json) records the size and SHA-256
-of each input staged with its entry point. All seven image texture fixtures use
+of each input staged with its entry point. All ten image texture fixtures use
 8×8 linear RGB output and 4,096 samples per pixel. Comparison runs use
 independent seeds per backend and leave PBRT texture filtering enabled.
 The trilinear run compares the full image and the two pixels in column 4,

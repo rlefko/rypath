@@ -209,8 +209,8 @@ void failures(const fs::path &directory) {
              1},
         Case{R"(Texture "t" "spectrum" "imagemap" "string filename" "broken.png")", "invalid-image",
              1},
-        Case{R"(Texture "t" "spectrum" "imagemap" "string filename" "rgb16.png")",
-             "unsupported-feature", 2},
+        Case{R"(Texture "t" "spectrum" "imagemap" "string filename" "broken16.png")",
+             "invalid-image", 1},
         Case{
             R"(Texture "t" "spectrum" "imagemap" "string filename" "npot.png" "string wrap" "black")",
             "unsupported-feature", 2},
@@ -298,6 +298,75 @@ Texture "another" "spectrum" "imagemap" "string filename" "color.png" "string en
 Texture "another" "spectrum" "imagemap" "string filename" "different.png")",
                                            limits);
     diagnostic(second_source, "limit-exceeded");
+}
+
+void sixteen_bit_sources(const fs::path &directory) {
+    const auto path = directory / "image16.pbrt";
+    const auto definition = R"(
+Texture "paint" "spectrum" "imagemap" "string filename" "rgb16.png"
+Texture "point" "spectrum" "imagemap" "string filename" "rgb16.png" "string filter" "point"
+Texture "trilinear" "spectrum" "imagemap" "string filename" "rgb16.png" "string filter" "trilinear"
+Texture "ewa" "spectrum" "imagemap" "string filename" "rgb16.png" "string filter" "ewa"
+Material "diffuse" "texture reflectance" "paint"
+)";
+    write(path, std::string(options) + definition + std::string(triangle));
+    constexpr std::size_t source_bytes = 6;
+    constexpr std::size_t pyramid_bytes = 2 * sizeof(std::uint32_t) + sizeof(ImageMipLevel);
+    Limits limits;
+    limits.image.retained_bytes = source_bytes + pyramid_bytes;
+    const auto checked = check(path, limits);
+    if (checked.exit_code() != 0 || !checked.scene) {
+        throw std::runtime_error(report(checked));
+    }
+    const auto &definitions = checked.scene->spectrum_image_textures;
+    require(checked.document.dependencies.size() == 1 &&
+                checked.document.dependencies.front().visited && definitions.size() == 4,
+            "A 16-bit source is decoded once for all filters");
+    const auto &first = definitions.front();
+    require(first.source->pixels->bit_depth == 16 &&
+                first.source->pixels->rgb == std::vector<std::uint8_t>{128, 0, 64, 0, 32, 0} &&
+                first.texture.image->storage == ImageStorage::linear_half &&
+                first.texture.image->encoding == ImageEncoding::srgb &&
+                first.texture.image->texels.size() == 2,
+            "Checked sources preserve 16-bit channels and half-float mip storage");
+    require(std::ranges::all_of(definitions,
+                                [&](const auto &entry) {
+                                    return entry.source == first.source &&
+                                           entry.texture.image == first.texture.image;
+                                }),
+            "Filter descriptors must share decoded and mip storage at the exact byte limit");
+    --limits.image.retained_bytes;
+    const auto below_limit = check(path, limits);
+    require(below_limit.exit_code() == 1 && !below_limit.scene, report(below_limit));
+    diagnostic(below_limit, "limit-exceeded");
+
+    write(path, std::string(options) + definition + R"(
+Texture "linear" "spectrum" "imagemap" "string filename" "rgb16.png" "string encoding" "linear"
+Texture "clamp" "spectrum" "imagemap" "string filename" "rgb16.png" "string wrap" "clamp"
+)" + std::string(triangle));
+    limits.image.retained_bytes = source_bytes + 3 * pyramid_bytes;
+    const auto variants = check(path, limits);
+    if (variants.exit_code() != 0 || !variants.scene) {
+        throw std::runtime_error(report(variants));
+    }
+    const auto &entries = variants.scene->spectrum_image_textures;
+    require(entries.at(4).source == entries.at(0).source &&
+                entries.at(5).source == entries.at(0).source &&
+                entries.at(4).texture.image != entries.at(0).texture.image &&
+                entries.at(5).texture.image != entries.at(0).texture.image &&
+                entries.at(4).texture.image->texels ==
+                    std::vector<std::uint32_t>{0x34003800, 0x3000},
+            "Encoding and wrap variants share source bytes but retain distinct checked pyramids");
+    --limits.image.retained_bytes;
+    diagnostic(check(path, limits), "limit-exceeded");
+
+    // Translation consumes the immutable checked image; it must not reopen a changed source.
+    write(directory / "rgb16.png", "changed after preflight");
+    const auto translated = translate_scene(checked, path, "bilinear");
+    require(translated.image_textures.front().image == first.texture.image &&
+                validate_render_scene(translated).empty(),
+            "Translated 16-bit bindings retain their checked image lifetime");
+    write_png(directory / "rgb16.png", rgb16_png);
 }
 
 void filter_provenance(const fs::path &directory) {
@@ -488,10 +557,15 @@ int main(int argc, char **argv) {
         write_png(directory / "color.png", rgb_png);
         write_png(directory / "different.png", rgb_png);
         write_png(directory / "broken.png", std::span{rgb_png}.first(40));
+        write_png(directory / "broken16.png", std::span{rgb16_png}.first(40));
         write_png(directory / "npot.png", npot_png);
         write_png(directory / "rgb16.png", rgb16_png);
         bindings_and_frames(directory);
+        write_png(directory / "color.png", rgb16_png);
+        bindings_and_frames(directory);
+        write_png(directory / "color.png", rgb_png);
         failures(directory);
+        sixteen_bit_sources(directory);
         filter_provenance(directory);
         ewa_parameters(directory);
         translated_frames(directory);

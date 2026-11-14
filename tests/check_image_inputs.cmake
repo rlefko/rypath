@@ -23,6 +23,14 @@ execute_process(COMMAND "${executable}" --check-pbrt "${input}"
 if(NOT exit STREQUAL "0" OR NOT stderr STREQUAL "")
     message(FATAL_ERROR "Image preflight failed: ${exit}: ${stdout}${stderr}")
 endif()
+foreach(image IN ITEMS basn2c16.png basn0g16.png)
+    file(COPY_FILE "${fixture_directory}/image-assets/${image}" "${asset}")
+    execute_process(COMMAND "${executable}" --check-pbrt "${input}"
+        RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+    if(NOT exit STREQUAL "0" OR NOT stderr STREQUAL "")
+        message(FATAL_ERROR "16-bit image preflight failed for ${image}: ${exit}: ${stdout}${stderr}")
+    endif()
+endforeach()
 string(REPLACE "\"trilinear\"" "\"ewa\"" ewa "${scene}")
 file(WRITE "${input}" "${ewa}")
 execute_process(COMMAND "${executable}" --check-pbrt "${input}"
@@ -49,7 +57,11 @@ foreach(mode IN ITEMS --check-pbrt --render-pbrt)
     endif()
 endforeach()
 file(WRITE "${input}" "${scene}")
-file(WRITE "${asset}" "invalid PNG")
+# A valid 16-bit PNG with trailing data must fail even in an unused definition.
+file(COPY_FILE "${fixture_directory}/image-assets/basn2c16.png" "${test_directory}/broken16.png")
+file(APPEND "${test_directory}/broken16.png" "invalid trailing bytes")
+file(APPEND "${input}"
+    "\nTexture \"unused\" \"spectrum\" \"imagemap\" \"string filename\" \"broken16.png\"\n")
 foreach(mode IN ITEMS --check-pbrt --render-pbrt)
     set(arguments "${mode}" "${input}")
     if(mode STREQUAL "--render-pbrt")

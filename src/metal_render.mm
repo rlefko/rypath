@@ -329,6 +329,10 @@ struct MetalRenderScene::Impl {
                 return "Invalid image texture filter";
             }
             const auto &image = *texture.image;
+            const wire::Word texel_format =
+                image.storage == ImageStorage::linear_half ? wire::linear_half_texel_format
+                : image.encoding == ImageEncoding::linear  ? wire::linear8_texel_format
+                                                           : wire::srgb8_texel_format;
             const auto [it, added] =
                 pyramid_offsets.try_emplace(&image, static_cast<wire::Word>(levels.size()));
             if (added) {
@@ -342,15 +346,15 @@ struct MetalRenderScene::Impl {
                 }
                 texels.insert(texels.end(), image.texels.begin(), image.texels.end());
             }
-            textures.push_back(
-                {it->second, static_cast<wire::Word>(image.levels.size()),
-                 static_cast<wire::Word>(image.wrap), static_cast<wire::Word>(image.encoding),
-                 texture.uscale, texture.vscale, texture.udelta, texture.vdelta, texture.scale,
-                 static_cast<wire::Word>(texture.invert), filter, texture.max_anisotropy});
+            textures.push_back({it->second, static_cast<wire::Word>(image.levels.size()),
+                                static_cast<wire::Word>(image.wrap), texel_format, texture.uscale,
+                                texture.vscale, texture.udelta, texture.vdelta, texture.scale,
+                                static_cast<wire::Word>(texture.invert), filter,
+                                texture.max_anisotropy});
         }
         texture_parameters.texture_count = static_cast<wire::Word>(textures.size());
         texture_parameters.level_count = static_cast<wire::Word>(levels.size());
-        texture_parameters.texel_count = static_cast<wire::Word>(texels.size());
+        texture_parameters.texel_word_count = static_cast<wire::Word>(texels.size());
         texture_parameters.uv_count = static_cast<wire::Word>(uvs.size());
         texture_parameters.frame_count = static_cast<wire::Word>(frames.size());
         std::ranges::copy(scene.texture_camera.world_from_camera,

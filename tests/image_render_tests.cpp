@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <initializer_list>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -62,6 +64,17 @@ DecodedImage varying_pixels() {
             image.rgb.insert(image.rgb.end(), {static_cast<std::uint8_t>(23 * x + 3 * y),
                                                static_cast<std::uint8_t>(7 * x + 20 * y),
                                                static_cast<std::uint8_t>(250 - 12 * x - 9 * y)});
+        }
+    }
+    return image;
+}
+
+DecodedImage gray16(std::initializer_list<std::uint16_t> samples) {
+    DecodedImage image{static_cast<std::uint32_t>(samples.size()), 1, {}, 16};
+    for (const auto value : samples) {
+        for (unsigned channel = 0; channel < 3; ++channel) {
+            image.rgb.push_back(static_cast<std::uint8_t>(value >> 8));
+            image.rgb.push_back(static_cast<std::uint8_t>(value));
         }
     }
     return image;
@@ -456,11 +469,7 @@ void ewa() {
     }
 }
 
-void filtered_secondary(ImageFilter filter) {
-    auto scene = textured_plane(varying_pixels(), ImageEncoding::srgb, true, 24);
-    if (filter == ImageFilter::ewa) {
-        scene.image_textures.front().vscale = 3;
-    }
+void add_secondary_front(RenderScene &scene) {
     // Camera rays see the white front plane at z=2. Only an indirect ray
     // can hit the textured panel behind the camera.
     scene.max_depth = 2;
@@ -474,6 +483,14 @@ void filtered_secondary(ImageFilter filter) {
     scene.materials.push_back(front.materials.front());
     scene.instance_materials.push_back(1);
     scene.instance_texture_frames.emplace_back();
+}
+
+void filtered_secondary(ImageFilter filter) {
+    auto scene = textured_plane(varying_pixels(), ImageEncoding::srgb, true, 24);
+    if (filter == ImageFilter::ewa) {
+        scene.image_textures.front().vscale = 3;
+    }
+    add_secondary_front(scene);
 
     constexpr RenderRequest request{.width = 8,
                                     .height = 8,
@@ -508,6 +525,99 @@ void filtered_secondary(ImageFilter filter) {
                                                : "trilinear")
               << " changed " << changed_secondary_paths << " of " << secondary_paths
               << " two-hit paths by more than 0.001, maximum " << difference << '\n';
+}
+
+void half_mip_overshoot() {
+    auto scene = textured_plane(gray16({0, 65535, 65535}), ImageEncoding::linear, false, 0,
+                                ImageWrap::clamp);
+    auto &texture = scene.image_textures.front();
+    texture.udelta = 0.625f;
+    texture.vdelta = 0.5f;
+    texture.scale = 0.5f;
+    // Pinned PBRT's clamped 3-to-4 resize stores 0x3c53 at x=2 before
+    // texture scaling. Clamping the mip or lookup first would give 0.5.
+    constexpr float expected_gray = 0x1.14cp-1f;
+    constexpr RenderRequest request{.width = 1,
+                                    .height = 1,
+                                    .seed = seed,
+                                    .pixel_count = 1,
+                                    .sample_count = 128,
+                                    .total_samples = 128};
+    for (const bool patch : {false, true}) {
+        if (patch) {
+            auto &mesh = scene.geometry.meshes.front();
+            mesh.triangles.clear();
+            mesh.patches = {{0, 1, 2, 3}};
+            scene.instance_texture_frames.front().clear();
+        }
+        auto uniform = scene;
+        uniform.image_textures.clear();
+        uniform.instance_texture_frames.clear();
+        uniform.materials.front() = rgb_material({expected_gray, expected_gray, expected_gray});
+        const auto expected = sample(*build(uniform), request);
+        uniform.materials.front() = rgb_material({0.5f, 0.5f, 0.5f});
+        const auto clipped = sample(*build(uniform), request);
+        double max_error = 0, clipping_difference = 0;
+        for (const auto filter : {ImageFilter::point, ImageFilter::bilinear, ImageFilter::trilinear,
+                                  ImageFilter::ewa}) {
+            texture.filter = filter;
+            const auto actual = sample(*build(scene), request);
+            for (std::size_t i = 0; i < actual.samples.size(); ++i) {
+                const auto &a = actual.samples[i];
+                same_path(a, expected.samples[i]);
+                same_path(a, clipped.samples[i]);
+                max_error = std::max(max_error,
+                                     std::abs(double{a.radiance} - expected.samples[i].radiance));
+                clipping_difference =
+                    std::max(clipping_difference,
+                             std::abs(double{a.radiance} - clipped.samples[i].radiance));
+            }
+        }
+        require(max_error < 3e-5 && clipping_difference > 0.02,
+                "Scaled half mip did not preserve resize overshoot");
+        std::cout << (patch ? "Patch" : "Triangle") << " half mip maximum path error " << max_error
+                  << ", early-clipping difference " << clipping_difference << '\n';
+    }
+}
+
+void mixed_texture_secondary() {
+    auto scene = textured_plane(gray16({0x9abc}), ImageEncoding::linear, false, 1);
+    add_secondary_front(scene);
+    const auto front = textured_plane({1, 1, {128, 128, 128}}, ImageEncoding::linear, false, 1);
+    scene.image_textures.insert(scene.image_textures.begin(), front.image_textures.front());
+    scene.image_textures.back().filter = ImageFilter::ewa;
+    scene.materials = {{.kind = SpectralMaterialKind::image, .image_texture = 1},
+                       {.kind = SpectralMaterialKind::image, .image_texture = 0}};
+    scene.instance_texture_frames.back() = front.instance_texture_frames.front();
+
+    // The front gets the one-word encoded8 pyramid. The indirect panel uses a
+    // half pyramid starting at the next word, with 0x9abc / 65535 rounded to half.
+    auto uniform = scene;
+    uniform.image_textures.clear();
+    uniform.instance_texture_frames.clear();
+    uniform.materials = {{.kind = SpectralMaterialKind::constant, .constant = 0x1.358p-1f},
+                         {.kind = SpectralMaterialKind::constant, .constant = 128 / 255.0f}};
+    constexpr RenderRequest request{.width = 8,
+                                    .height = 8,
+                                    .seed = seed,
+                                    .pixel_count = 64,
+                                    .sample_count = 33,
+                                    .total_samples = 33};
+    const auto actual = sample(*build(scene), request);
+    const auto expected = sample(*build(uniform), request);
+    double max_error = 0;
+    std::size_t indirect = 0;
+    for (std::size_t i = 0; i < actual.samples.size(); ++i) {
+        const auto &a = actual.samples[i];
+        same_path(a, expected.samples[i], a.scatterings);
+        indirect += a.scatterings == 2;
+        max_error =
+            std::max(max_error, std::abs(double{a.radiance} - expected.samples[i].radiance));
+    }
+    require(indirect > 100 && indirect < actual.samples.size() && max_error < 3e-5,
+            "Mixed-format packed textures disagreed with the secondary-hit control");
+    std::cout << "Mixed textures maximum path error " << max_error << " across " << indirect
+              << " two-hit paths\n";
 }
 
 void coarsest_mip() {
@@ -551,8 +661,8 @@ Film progressive(const RenderScene &scene, const RenderSettings &settings) {
     return std::move(result.film);
 }
 
-void batch_partition() {
-    auto scene = textured_plane(varying_pixels(), ImageEncoding::linear, true, 40);
+void batch_partition(const DecodedImage &pixels) {
+    auto scene = textured_plane(pixels, ImageEncoding::linear, true, 40);
     for (const auto filter :
          {ImageFilter::bilinear, ImageFilter::trilinear, ImageFilter::point, ImageFilter::ewa}) {
         scene.image_textures.front().filter = filter;
@@ -649,6 +759,18 @@ void validation() {
     wrong_layout.image_textures.front().image = std::move(pyramid);
     invalid(wrong_layout, "mip layout");
 
+    auto invalid_half = textured_plane(gray16({0x9abc}), ImageEncoding::linear, false, 1);
+    const auto valid_half = *invalid_half.image_textures.front().image;
+    for (const auto &words :
+         {std::vector<std::uint32_t>{0}, std::vector<std::uint32_t>{0x7c00, 0},
+          std::vector<std::uint32_t>{0x7e000000, 0}, std::vector<std::uint32_t>{0, 0xbc00},
+          std::vector<std::uint32_t>{0, 0x10000}}) {
+        auto malformed = std::make_shared<ImagePyramid>(valid_half);
+        malformed->texels = words;
+        invalid_half.image_textures.front().image = std::move(malformed);
+        invalid(invalid_half, words.size() == 1 ? "mip layout" : "half image texel");
+    }
+
     auto wrong_filter = valid;
     auto invalid_descriptor = wrong_filter.image_textures.front();
     // Inject a non-enumerator to exercise the native boundary's rejection path.
@@ -720,7 +842,16 @@ int main(int argc, char **argv) {
         filtered_secondary(ImageFilter::point);
         filtered_secondary(ImageFilter::ewa);
         coarsest_mip();
-        batch_partition();
+        half_mip_overshoot();
+        mixed_texture_secondary();
+        auto pixels = varying_pixels();
+        batch_partition(pixels);
+        const auto encoded8 = std::exchange(pixels.rgb, {});
+        pixels.bit_depth = 16;
+        for (const auto value : encoded8) {
+            pixels.rgb.insert(pixels.rgb.end(), {value, value}); // Expand byte v to v * 257.
+        }
+        batch_partition(pixels);
         translated_footprint();
         validation();
         return 0;

@@ -32,7 +32,10 @@ The build compiles the decoder from these sources with disk I/O, the C++ wrapper
 encoding, and ancillary metadata decoding disabled. Allocations in LodePNG are
 individually limited to 128 MiB. rypath checks PNG header and chunk framing, limits
 the expected decompressed scanline size and the aggregate decode scratch, and only
-exposes decoded RGB bytes for the supported texture image profile.
+exposes decoded RGB bytes for the supported texture image profile. At 16 bits,
+each channel retains its most-significant byte followed by its least-significant
+byte; no conversion to eight bits is requested. Depth-dependent scanline,
+conversion, and copy sizes contribute to the same existing allocation budgets.
 
 The decoder checks the exact decompressed scanline length and the Adler-32
 checksum at the end of the concatenated IDAT payload. Final DEFLATE consumption

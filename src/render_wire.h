@@ -24,6 +24,7 @@ enum : Word {
     point_texture_filter = 2,
     ewa_texture_filter = 3,
 };
+enum : Word { srgb8_texel_format = 0, linear8_texel_format = 1, linear_half_texel_format = 2 };
 enum : Word { independent_sampler = 0, sobol_sampler = 1 };
 enum : Word {
     sampled_material = 0,
@@ -52,13 +53,13 @@ struct TextureFrame {
 struct TextureLevel {
     Word width;
     Word height;
-    Word offset;
+    Word offset; // Offset in texel words.
 };
 struct ImageTexture {
     Word level_begin;
     Word level_count;
     Word wrap;
-    Word encoding;
+    Word texel_format;
     float uscale;
     float vscale;
     float udelta;
@@ -71,7 +72,7 @@ struct ImageTexture {
 struct TextureParameters {
     Word texture_count;
     Word level_count;
-    Word texel_count;
+    Word texel_word_count;
     Word uv_count;
     Word frame_count;
     float spp_scale;
@@ -175,6 +176,7 @@ static_assert(sizeof(Point2) == 8 && alignof(Point2) == 4, "texture coordinate l
 static_assert(sizeof(TextureFrame) == 24 && alignof(TextureFrame) == 4, "texture frame layout");
 static_assert(sizeof(TextureLevel) == 12 && alignof(TextureLevel) == 4, "texture level layout");
 static_assert(sizeof(ImageTexture) == 48 && alignof(ImageTexture) == 4 &&
+                  __builtin_offsetof(ImageTexture, texel_format) == 12 &&
                   __builtin_offsetof(ImageTexture, uscale) == 16 &&
                   __builtin_offsetof(ImageTexture, filter) == 40 &&
                   __builtin_offsetof(ImageTexture, max_anisotropy) == 44,

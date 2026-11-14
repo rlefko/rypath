@@ -14,6 +14,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -78,7 +79,7 @@ const std::array<PointCheck, probe::point_case_count> point_checks{{
     {{12, std::nextafter(1.0f, 2.0f), 0.875f, 0}, white, "UV mapping rounds product before add"},
     {{13, 0.25f, 0.75f, 0.3535533905932738f}, bad, "Point selected mip has invalid extent"},
     {{14, 0.25f, 0.75f, 0.5f}, bad, "Point descriptor has invalid wrap"},
-    {{15, 0.25f, 0.75f, 0.5f}, bad, "Point descriptor has invalid encoding"},
+    {{15, 0.25f, 0.75f, 0.5f}, bad, "Point descriptor has invalid texel format"},
     {{16, 0.25f, 0.5f, 0.25f}, red, "Exact higher mip transition"},
     {{16, 0.25f, 0.5f, 0x1.fffffap-3f}, red, "LOD rounds log term before add"},
 }};
@@ -102,12 +103,94 @@ enum EwaTexture : unsigned {
     ewa_cap_high,
     ewa_cap_nan,
     ewa_wrap_invalid,
-    ewa_encoding_invalid,
+    ewa_format_invalid,
     ewa_upper_invalid,
     ewa_top_invalid,
     ewa_subnormal_scale,
     ewa_subnormal_center,
 };
+
+constexpr unsigned half_texture_begin = ewa_subnormal_center + 1;
+constexpr unsigned filter_count = wire::ewa_texture_filter + 1;
+constexpr unsigned half_invalid_begin = half_texture_begin + 3 * filter_count;
+constexpr unsigned half_truncated_begin = half_invalid_begin + filter_count;
+constexpr unsigned half_upper_begin = half_truncated_begin + filter_count;
+constexpr unsigned half_level_begin = 19;
+constexpr unsigned half_upper_level_begin = half_level_begin + 3;
+constexpr unsigned half_truncated_level = half_upper_level_begin + 2;
+
+constexpr unsigned half_texture(unsigned filter, unsigned wrap) {
+    return half_texture_begin + 3 * filter + wrap;
+}
+
+enum class HalfComparison { exact, tolerance, invalid };
+
+struct HalfCheck {
+    probe::EwaCase input;
+    std::string_view name;
+    probe::Vector expected = {};
+    HalfComparison comparison = HalfComparison::exact;
+};
+
+std::vector<HalfCheck> half_checks() {
+    constexpr probe::Vector first{0x1p-24f, 0x1.ff8p-15f, 1.25f, 0};
+    constexpr probe::Vector last{0.5f, 0.25f, 0.125f, 0};
+    constexpr probe::Vector coarse{0.75f, 0.5f, 0.25f, 0};
+    constexpr std::array<probe::Vector, 3> wrapped{last, first, {}};
+    constexpr auto invalid = HalfComparison::invalid;
+    constexpr auto tolerance = HalfComparison::tolerance;
+    std::vector<HalfCheck> checks;
+    for (unsigned filter = 0; filter < filter_count; ++filter) {
+        for (unsigned wrap = 0; wrap < wrapped.size(); ++wrap) {
+            const unsigned texture = half_texture(filter, wrap);
+            checks.push_back({{texture, -0.125f, 0.5f, 0, 0, 0, 0}, "Half wrap", wrapped[wrap]});
+            checks.push_back({{texture, -2, 0.5f, 32, 0, 0, 1}, "Half wide", coarse});
+        }
+        checks.push_back({{half_invalid_begin + filter, 0.125f, 0.5f, 0, 0, 0, 0},
+                          "Invalid texel format",
+                          {},
+                          invalid});
+        checks.push_back({{half_truncated_begin + filter, 0.5f, 0.5f, 0, 0, 0, 0},
+                          "Missing half word",
+                          {},
+                          invalid});
+    }
+    constexpr float standard_width = 0.3535533905932738f, ewa_width = 0.7071067811865476f;
+    constexpr auto trilinear_clamp = half_texture(wire::trilinear_texture_filter, 1);
+    constexpr auto elliptical_clamp = half_texture(wire::ewa_texture_filter, 1);
+    constexpr auto truncated_bilinear = half_truncated_begin + wire::bilinear_texture_filter;
+    constexpr auto truncated_ewa = half_truncated_begin + wire::ewa_texture_filter;
+    constexpr probe::Vector blend{0.5f, 0.375f, 0.25f, 0};
+    checks.insert(
+        checks.end(),
+        {
+            {{trilinear_clamp, 0.5f, 0.5f, standard_width, 0, 0, 0},
+             "Half trilinear blend",
+             blend,
+             tolerance},
+            {{elliptical_clamp, 0.5f, 0.5f, ewa_width, 0, 0, ewa_width},
+             "Half EWA blend",
+             blend,
+             tolerance},
+            {{half_upper_begin, 0.5f, 0.5f, standard_width, 0, 0, 0},
+             "Missing trilinear upper word",
+             {},
+             invalid},
+            {{half_upper_begin + 1, 0.5f, 0.5f, ewa_width, 0, 0, ewa_width},
+             "Missing EWA upper word",
+             {},
+             invalid},
+            {{truncated_bilinear, -2, 0.5f, 32, 0, 0, 1},
+             "Missing standard wide word",
+             {},
+             invalid},
+            {{truncated_ewa, -2, 0.5f, 32, 0, 0, 1}, "Missing EWA wide word", {}, invalid},
+            {{truncated_ewa, 0.5f, 0.5f, 1.5f, 0, 0, 1.5f}, "Missing EWA top word", {}, invalid},
+        });
+    require(checks.size() <= probe::ewa_case_count,
+            "Half cases exceed texture lookup probe capacity");
+    return checks;
+}
 
 constexpr std::array<EwaCheck, probe::ewa_case_count> ewa_checks{{
     {{ewa_repeat, 0.443f, 0.591f, 0.249f, 0.112f, -0.064f, 0.093f}, "Rotated rectangular EWA"},
@@ -142,7 +225,7 @@ constexpr std::array<EwaCheck, probe::ewa_case_count> ewa_checks{{
     {{ewa_cap_high, 0.52f, 0.61f, 16, 0, -0.09f, 0.12f}, "EWA cap above sixteen", true},
     {{ewa_cap_nan, 0.52f, 0.61f, 16, 0, -0.09f, 0.12f}, "Nonfinite EWA cap", true},
     {{ewa_wrap_invalid, 0.52f, 0.61f, 16, 0, -0.09f, 0.12f}, "Invalid EWA wrap", true},
-    {{ewa_encoding_invalid, 0.52f, 0.61f, 16, 0, -0.09f, 0.12f}, "Invalid EWA encoding", true},
+    {{ewa_format_invalid, 0.52f, 0.61f, 16, 0, -0.09f, 0.12f}, "Invalid EWA encoding", true},
     {{ewa_upper_invalid, 0.52f, 0.61f, 0.62f, 0.22f, -0.27f, 0.21f}, "Invalid upper EWA mip", true},
     {{ewa_top_invalid, 0.52f, 0.61f, 16, 0, -0.09f, 0.12f}, "Invalid wide EWA top mip", true},
     {{ewa_repeat, 0.443f, 0.591f, -0.064f, 0.093f, 0.249f, 0.112f}, "Swapped rotated vectors"},
@@ -295,12 +378,12 @@ void run_probe(id<MTLDevice> device) {
     const auto pipeline =
         metal::load_pipeline(device, library, @"rypath_texture_footprint_probe", diagnostic);
     require(pipeline != nil, diagnostic);
-    const auto ewa_pipeline =
-        metal::load_pipeline(device, library, @"rypath_ewa_texture_probe", diagnostic);
-    require(ewa_pipeline != nil, diagnostic);
+    const auto lookup_pipeline =
+        metal::load_pipeline(device, library, @"rypath_texture_lookup_probe", diagnostic);
+    require(lookup_pipeline != nil, diagnostic);
 
     constexpr std::array<std::uint32_t, 4> budgets{1, 4, 64, 256};
-    std::array<wire::ImageTexture, ewa_subnormal_center + 1> textures{{
+    std::array<wire::ImageTexture, half_upper_begin + 2> textures{{
         {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::bilinear_texture_filter, 8},
         {0, 3, 2, 0, 1, 1, 0, 0, 1, 0, wire::bilinear_texture_filter, 8},
         {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter, 8},
@@ -336,7 +419,7 @@ void run_probe(id<MTLDevice> device) {
     textures[ewa_cap_high].max_anisotropy = 16.1f;
     textures[ewa_cap_nan].max_anisotropy = nan;
     textures[ewa_wrap_invalid].wrap = 99;
-    textures[ewa_encoding_invalid].encoding = 99;
+    textures[ewa_format_invalid].texel_format = 99;
     textures[ewa_upper_invalid].level_begin = 15;
     textures[ewa_top_invalid].level_begin = 15;
     textures[ewa_top_invalid].level_count = 3;
@@ -344,14 +427,54 @@ void run_probe(id<MTLDevice> device) {
     textures[ewa_subnormal_scale].udelta = 0.31f;
     textures[ewa_subnormal_center].uscale = 1e-39f;
     textures[ewa_subnormal_center].udelta = 0.05f;
-    constexpr std::size_t texel_count = 191;
-    constexpr std::array<wire::TextureLevel, 19> levels{{
-        {4, 4, 0},   {2, 2, 16},   {1, 1, 20},          {1, 1, texel_count}, {64, 1, 21},
-        {32, 1, 85}, {16, 1, 117}, {8, 1, 133},         {4, 1, 141},         {2, 1, 145},
-        {1, 1, 147}, {8, 4, 148},  {4, 2, 180},         {2, 1, 188},         {1, 1, 190},
-        {8, 4, 148}, {4, 2, 180},  {2, 1, texel_count}, {1, 1, 190},
+    for (unsigned filter = 0; filter < filter_count; ++filter) {
+        wire::ImageTexture texture{
+            half_level_begin, 3, 0, wire::linear_half_texel_format, 1, 1, 0, 0, 1, 0, filter, 8};
+        for (unsigned wrap = 0; wrap < 3; ++wrap) {
+            texture.wrap = wrap;
+            textures[half_texture(filter, wrap)] = texture;
+        }
+        texture.wrap = 1;
+        texture.texel_format = 99;
+        textures[half_invalid_begin + filter] = texture;
+        texture.texel_format = wire::linear_half_texel_format;
+        texture.level_begin = half_truncated_level;
+        texture.level_count = 1;
+        textures[half_truncated_begin + filter] = texture;
+    }
+    textures[half_upper_begin] = textures[half_texture(wire::trilinear_texture_filter, 1)];
+    textures[half_upper_begin].level_begin = half_upper_level_begin;
+    textures[half_upper_begin + 1] = textures[half_texture(wire::ewa_texture_filter, 1)];
+    textures[half_upper_begin + 1].level_begin = half_upper_level_begin;
+    constexpr std::size_t legacy_words = 191, texel_word_count = legacy_words + 15;
+    constexpr std::array<wire::TextureLevel, half_truncated_level + 1> levels{{
+        {4, 4, 0},
+        {2, 2, 16},
+        {1, 1, 20},
+        {1, 1, texel_word_count},
+        {64, 1, 21},
+        {32, 1, 85},
+        {16, 1, 117},
+        {8, 1, 133},
+        {4, 1, 141},
+        {2, 1, 145},
+        {1, 1, 147},
+        {8, 4, 148},
+        {4, 2, 180},
+        {2, 1, 188},
+        {1, 1, 190},
+        {8, 4, 148},
+        {4, 2, 180},
+        {2, 1, texel_word_count},
+        {1, 1, 190},
+        {4, 1, legacy_words},
+        {2, 1, legacy_words + 8},
+        {1, 1, legacy_words + 12},
+        {4, 1, legacy_words},
+        {2, 1, legacy_words + 8},
+        {1, 1, texel_word_count - 1},
     }};
-    std::array<wire::Word, texel_count> texels{};
+    std::array<wire::Word, texel_word_count> texels{};
     texels[0] = 0x00000004u;
     texels[1] = 0x00000400u;
     texels[2] = 0x00040000u;
@@ -361,11 +484,17 @@ void run_probe(id<MTLDevice> device) {
     texels[20] = 0x00000004u;
     texels[142] = 0x00000400u;
     texels[145] = 0x00000004u;
-    for (unsigned i = 148; i < texel_count; ++i) {
+    for (unsigned i = 148; i < legacy_words; ++i) {
         // Asymmetric color pattern and distinct mip contents expose axis and LOD errors.
         texels[i] = ((i * 67u + 1u) & 255u) | (((i * 107u + 79u) & 255u) << 8u) |
                     (((i * 137u + 23u) & 255u) << 16u);
     }
+    constexpr std::array<wire::Word, 15> half_words{
+        0x03ff0001u, 0x3d00u, 0,           0,       0, 0, 0x34003800u, 0x3000u, // 4x1 mip
+        0x34003400u, 0x3400u, 0x34003400u, 0x3400u,                             // 2x1 mip
+        0x38003a00u, 0x3400u, 0x38003a00u, // 1x1 and truncated data
+    };
+    std::ranges::copy(half_words, texels.begin() + legacy_words);
     // Exact synthetic transfer values isolate filtering arithmetic from transfer encoding.
     std::array<float, 512> transfer{};
     for (std::size_t i = 0; i <= 4; ++i) {
@@ -377,7 +506,7 @@ void run_probe(id<MTLDevice> device) {
     wire::TextureParameters parameters{};
     parameters.texture_count = static_cast<wire::Word>(textures.size());
     parameters.level_count = static_cast<wire::Word>(levels.size());
-    parameters.texel_count = static_cast<wire::Word>(texels.size());
+    parameters.texel_word_count = static_cast<wire::Word>(texels.size());
     std::array<probe::PointCase, probe::point_case_count> point_cases{};
     std::ranges::transform(point_checks, point_cases.begin(), &PointCheck::input);
     std::array<probe::EwaCase, probe::ewa_case_count> ewa_cases{};
@@ -391,7 +520,10 @@ void run_probe(id<MTLDevice> device) {
     constexpr std::size_t result_bytes = budgets.size() * sizeof(probe::Result);
     const auto output = [device newBufferWithLength:result_bytes
                                             options:MTLResourceStorageModeShared];
-    require(table_buffer != nil && output != nil, "Texture probe buffer allocation failed");
+    const auto half_output = [device newBufferWithLength:result_bytes
+                                                 options:MTLResourceStorageModeShared];
+    require(table_buffer != nil && output != nil && half_output != nil,
+            "Texture probe buffer allocation failed");
 
     const auto queue = [device newCommandQueue];
     const auto command = [queue commandBuffer];
@@ -409,18 +541,43 @@ void run_probe(id<MTLDevice> device) {
     [encoder setBytes:point_cases.data() length:sizeof(point_cases) atIndex:8];
     [encoder dispatchThreads:MTLSizeMake(budgets.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(budgets.size(), 1, 1)];
-    [encoder setComputePipelineState:ewa_pipeline];
+    [encoder setComputePipelineState:lookup_pipeline];
     [encoder setBytes:ewa_cases.data() length:sizeof(ewa_cases) atIndex:9];
     [encoder dispatchThreads:MTLSizeMake(ewa_cases.size(), budgets.size(), 1)
-        threadsPerThreadgroup:MTLSizeMake(ewa_pipeline.threadExecutionWidth, 1, 1)];
+        threadsPerThreadgroup:MTLSizeMake(lookup_pipeline.threadExecutionWidth, 1, 1)];
+    const auto checks = half_checks();
+    std::vector<probe::EwaCase> half_cases(checks.size());
+    std::ranges::transform(checks, half_cases.begin(), &HalfCheck::input);
+    [encoder setBytes:half_cases.data()
+               length:half_cases.size() * sizeof(probe::EwaCase)
+              atIndex:9];
+    [encoder setBuffer:half_output offset:0 atIndex:7];
+    [encoder dispatchThreads:MTLSizeMake(half_cases.size(), budgets.size(), 1)
+        threadsPerThreadgroup:MTLSizeMake(lookup_pipeline.threadExecutionWidth, 1, 1)];
     [encoder endEncoding];
     diagnostic = metal::complete(command, "Texture footprint probe");
     require(diagnostic.empty(), diagnostic);
     const std::span<const probe::Result> results{
         static_cast<const probe::Result *>(output.contents), budgets.size()};
+    const std::span<const probe::Result> half_results{
+        static_cast<const probe::Result *>(half_output.contents), budgets.size()};
     for (std::size_t i = 0; i < budgets.size(); ++i) {
         check(results[i], budgets[i]);
         check_ewa(results[i], expected_ewa, budgets[i]);
+        for (std::size_t j = 0; j < checks.size(); ++j) {
+            const auto &actual = half_results[i].ewa[j];
+            const auto &check = checks[j];
+            const auto &expected = check.expected;
+            if (check.comparison == HalfComparison::invalid) {
+                require(std::isnan(actual.x) && std::isnan(actual.y) && std::isnan(actual.z),
+                        std::string{check.name} + " was accepted");
+            } else if (check.comparison == HalfComparison::exact) {
+                require(actual.x == expected.x && actual.y == expected.y && actual.z == expected.z,
+                        std::string{check.name} + " changed a decoded channel");
+            } else {
+                compare(actual, expected, check.name, budgets[i]);
+            }
+        }
     }
 }
 

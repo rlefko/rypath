@@ -188,5 +188,26 @@
       "bytes": 126,
       "sha256": "ae209f1f01f6151a1351fe6a8d5a69ffb596e5b9a623af99eac0e0374e04b298"
     }
+  ],
+  "image16-magnified": [
+    {
+      "path": "image-assets/asymmetric16.png",
+      "bytes": 118,
+      "sha256": "b6c6ff910bf5e5f8c7fb0e831cbf313c7003c77c0bd3438f404aeda2a419fe17"
+    }
+  ],
+  "image16-trilinear": [
+    {
+      "path": "image-assets/basn2c16.png",
+      "bytes": 302,
+      "sha256": "1e1c28ec0ee5da6224404b4005076dd30e2335a1a80c0ca722046a245c4a2b3b"
+    }
+  ],
+  "image16-ewa": [
+    {
+      "path": "image-assets/basn0g16.png",
+      "bytes": 167,
+      "sha256": "1a1fe155f40c11d79350b3f84c7eb2b29719037e57073cb7ae2ab9e8323f9360"
+    }
   ]
 }

@@ -59,6 +59,9 @@ and dependency paths listed below.
 | `blackbody-reflectance-ply.pbrt` | 834 | `b6e1657ac03f24645973d7f979183d58b1c1f54ea163a127a2471a100dae5148` | 33.4° | 1 | The transformed Sportscar quad uses an inherited 6500 K spectrum constant texture under a flat sampled infinite light. |
 | `image-point.pbrt` | 1,009 | `9d2fea3e2d7f6059aec2202e0fbbb2492366c50762e7255b38a7a9cabdc8894d` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite image at fractional LOD using point filtering and repeat wrap. |
 | `image-ewa.pbrt` | 1,022 | `a00a6047c9ea81392f806f2d30c840fb1a246dcdbe6505edb34285d7ac7f4bde` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite image with linear encoding, repeat wrap, and a rotated EWA footprint capped at anisotropy 8. |
+| `image16-magnified.pbrt` | 1,308 | `f5fdb0b6770fe9d863d69166adf347a813eed5bd386ab106b36f5b6ac4e27c3d` | 53.1301023542° | 1 | Two cards under D65 illumination point-sample the authored RGB16 fixture with default sRGB and explicit linear encoding. |
+| `image16-trilinear.pbrt` | 965 | `0ff79b9b5985af20aca31944d541d127eae39f1c4e94d9a926ccccbf6a8cd505` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite RGB16 image with repeat wrap and trilinear filtering. |
+| `image16-ewa.pbrt` | 1,019 | `caaf7907c6288d1ebadff4685627aa1d4a7add98aeadb6b6c21b41cf8a313df6` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite grayscale16 image with linear encoding, repeat wrap, and a rotated EWA footprint capped at anisotropy 8. |
 
 Each scene uses a pinhole perspective camera, an 8×8 full-frame sRGB film
 with the CIE 1931 sensor, ISO 100, the default shutter interval
@@ -168,3 +171,9 @@ for each backend, the baseline's red value at that pixel must exceed each
 control's by more than 0.02. One control changes the filter to trilinear and
 the other changes the anisotropy cap to 4. The [image asset manifest](image-assets/README.md)
 records the footprint and texture settings.
+
+The three PNG16 fixtures use the same regional statistical gates and replicate
+seeds. Select them with `--scene image16-magnified --scene image16-trilinear
+--scene image16-ewa` or run them as part of the full comparison. Their texture
+mappings, region bounds, and per-asset licenses are recorded separately.
+[Image asset manifest](image-assets/README.md)
