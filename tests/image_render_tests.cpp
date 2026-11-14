@@ -155,6 +155,77 @@ void same_path(const RenderSample &observed, const RenderSample &expected,
             "Image and control must shade the same hit and wavelength");
 }
 
+void indexed_rgb8_equivalence() {
+    // Project-authored 4x2, two-bit indexed PNG with rows [0, 1, 2, 2] and
+    // [3, 0, 1, 0]. The first two palette entries have alpha 0 and 127.
+    constexpr auto source = std::to_array<std::uint8_t>({
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+        0x44, 0x52, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x02, 0x02, 0x03, 0x00, 0x00,
+        0x00, 0x02, 0xc6, 0x95, 0xf0, 0x00, 0x00, 0x00, 0x0c, 0x50, 0x4c, 0x54, 0x45, 0xd2,
+        0x14, 0x32, 0x19, 0xdc, 0x46, 0x1e, 0x50, 0xeb, 0xe6, 0x96, 0x0f, 0x9b, 0x37, 0x58,
+        0x95, 0x00, 0x00, 0x00, 0x02, 0x74, 0x52, 0x4e, 0x53, 0x00, 0x7f, 0xb6, 0x29, 0xa1,
+        0x95, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x90, 0x62,
+        0x38, 0x02, 0x00, 0x01, 0x16, 0x00, 0xdf, 0xb9, 0x43, 0x15, 0xc1, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    });
+    const DecodedImage rgb8{4, 2, {210, 20,  50, 25,  220, 70, 30, 80,  235, 30,  80, 235,
+                                   230, 150, 15, 210, 20,  50, 25, 220, 70,  210, 20, 50}};
+    const auto decoded = decode_png(source);
+    if (!decoded.value) {
+        throw std::runtime_error(decoded.diagnostic);
+    }
+    const auto &indexed = decoded.value.value();
+
+    struct Case {
+        ImageFilter filter;
+        ImageWrap wrap;
+        float scale;
+        bool patch;
+    };
+    constexpr std::array cases{
+        Case{ImageFilter::point, ImageWrap::black, 4, false},
+        Case{ImageFilter::bilinear, ImageWrap::clamp, 4, true},
+        Case{ImageFilter::trilinear, ImageWrap::repeat, 24, false},
+        Case{ImageFilter::ewa, ImageWrap::repeat, 48, true},
+    };
+    constexpr RenderRequest request{.width = 8,
+                                    .height = 8,
+                                    .seed = seed,
+                                    .pixel_count = 64,
+                                    .sample_count = 16,
+                                    .total_samples = 16};
+    for (const auto encoding : {ImageEncoding::srgb, ImageEncoding::linear}) {
+        for (const auto &test : cases) {
+            const auto render = [&](const DecodedImage &pixels) {
+                auto scene = textured_plane(pixels, encoding, true, test.scale, test.wrap);
+                auto &texture = scene.image_textures.front();
+                texture.filter = test.filter;
+                texture.vscale *= 1.5f;
+                texture.udelta = 0.3f - texture.uscale / 2;
+                texture.vdelta = 0.4f - texture.vscale / 2;
+                if (test.patch) {
+                    auto &mesh = scene.geometry.meshes.front();
+                    mesh.triangles.clear();
+                    mesh.patches = {{0, 1, 2, 3}};
+                    scene.instance_texture_frames.front().clear();
+                }
+                return sample(*build(scene), request);
+            };
+            const auto expected = render(rgb8);
+            const auto actual = render(indexed);
+            bool has_signal = false;
+            for (std::size_t i = 0; i < actual.samples.size(); ++i) {
+                const auto &a = actual.samples[i];
+                const auto &e = expected.samples[i];
+                same_path(a, e, e.scatterings);
+                require(a.radiance == e.radiance, "Indexed and expanded RGB8 radiance must match");
+                has_signal |= e.scatterings == 1 && e.radiance > 0;
+            }
+            require(has_signal, "Indexed equivalence must exercise textured scattering");
+        }
+    }
+}
+
 void bilinear(MetalRenderScene &textured) {
     constexpr RenderRequest request{.width = 8,
                                     .height = 8,
@@ -838,6 +909,7 @@ int main(int argc, char **argv) {
         trilinear();
         point();
         ewa();
+        indexed_rgb8_equivalence();
         filtered_secondary(ImageFilter::trilinear);
         filtered_secondary(ImageFilter::point);
         filtered_secondary(ImageFilter::ewa);

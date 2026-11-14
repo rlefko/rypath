@@ -209,5 +209,19 @@
       "bytes": 167,
       "sha256": "1a1fe155f40c11d79350b3f84c7eb2b29719037e57073cb7ae2ab9e8323f9360"
     }
+  ],
+  "image-indexed-point": [
+    {
+      "path": "image-assets/tp1n3p08.png",
+      "bytes": 1483,
+      "sha256": "50bc927fe6cf1816454a7c27f8c743734be8db45e37e5ee3ede540f4e895e6c5"
+    }
+  ],
+  "image-indexed-trilinear": [
+    {
+      "path": "image-assets/s35n3p04.png",
+      "bytes": 338,
+      "sha256": "cd99fc4cc69bda1ff8e8697d8b423ae8d9e84a58ba1d2b480751953b6869e3b3"
+    }
   ]
 }

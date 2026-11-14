@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -116,6 +117,12 @@ Bytes make_png(std::uint32_t width, std::uint32_t height, std::uint8_t color_typ
     return png;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+Bytes make_indexed_png(std::uint32_t width, std::uint32_t height, std::uint8_t depth,
+                       std::span<const std::uint8_t> scanlines, const Bytes &palette) {
+    return insert_chunk(make_png(width, height, 3, scanlines, depth), 33, "PLTE", palette);
+}
+
 void decode_profiles(const std::filesystem::path &directory) {
     // PNG Sub filter on the second RGB pixel. Rows remain in file order.
     const auto rgb = make_png(2, 2, 2, Bytes{1, 10, 20, 30, 90, 180, 250, 0, 2, 4, 6, 7, 8, 9});
@@ -184,6 +191,134 @@ void decode_16_bit_profiles() {
             "RGBA16 scratch did not account for depth and alpha during inflate");
 }
 
+void require_indexed_mip_equivalence(const DecodedImage &indexed, const DecodedImage &rgb) {
+    for (const auto encoding : {ImageEncoding::srgb, ImageEncoding::linear}) {
+        for (const auto wrap : {ImageWrap::repeat, ImageWrap::clamp, ImageWrap::black}) {
+            auto result = build_image_pyramid(indexed, encoding, wrap);
+            if (wrap == ImageWrap::black &&
+                (!std::has_single_bit(rgb.width) || !std::has_single_bit(rgb.height))) {
+                require(!result.value && result.unsupported && !result.limit_exceeded,
+                        "Indexed NPOT black wrap was accepted");
+                continue;
+            }
+            const auto actual = success(std::move(result));
+            const auto expected = success(build_image_pyramid(rgb, encoding, wrap));
+            require(actual.storage == ImageStorage::encoded8 && actual.texels == expected.texels &&
+                        std::ranges::equal(actual.levels, expected.levels,
+                                           [](const auto &a, const auto &b) {
+                                               return a.width == b.width && a.height == b.height &&
+                                                      a.offset == b.offset;
+                                           }),
+                    "Indexed PNG changed encoded8 mip levels compared with RGB8");
+        }
+    }
+}
+
+void decode_indexed_profiles() {
+    // Width 5 makes each sub-byte row end mid-byte. All row-padding bits are set.
+    struct Case {
+        std::uint8_t depth;
+        Bytes scanlines;
+        Bytes indices;
+    };
+    const std::array cases{
+        Case{1, {0, 0x5f, 0, 0xa7, 0, 0xcf}, {0, 1, 0, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1}},
+        Case{2,
+             {0, 0x19, 0x3f, 0, 0x86, 0x7f, 0, 0x61, 0xbf},
+             {0, 1, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2, 0, 1, 2}},
+        // Rows independently encode None, Sub, Up, Average, and Paeth.
+        Case{4,
+             {0,    0x01, 0x21, 0x0f, 1,    0x20, 0xf2, 0x0d, 2,    0xf2,
+              0xef, 0x10, 3,    0xf8, 0x20, 0xe7, 4,    0x1f, 0xf1, 0x10},
+             {0, 1, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2, 0, 1, 2, 0, 1, 2, 1, 0, 2, 0, 1, 2, 1}},
+        Case{8,
+             {0, 0, 1, 2, 1, 0, 0, 2, 0, 1, 2, 1, 0, 1, 2, 0, 1, 2},
+             {0, 1, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2, 0, 1, 2}},
+    };
+    constexpr std::uint32_t width = 5;
+    for (const auto &test : cases) {
+        const auto height = static_cast<std::uint32_t>(test.indices.size() / width);
+        const Bytes palette = test.depth == 1 ? Bytes{23, 157, 201, 229, 19, 3}
+                                              : Bytes{23, 157, 201, 229, 19, 3, 5, 97, 182};
+        const Bytes alpha = test.depth == 1 ? Bytes{0} : Bytes{0, 91};
+        const auto png = make_indexed_png(width, height, test.depth, test.scanlines, palette);
+        Bytes rgb_scanlines;
+        Bytes rgb;
+        for (std::size_t i = 0; i < test.indices.size(); ++i) {
+            if (i % width == 0) {
+                rgb_scanlines.push_back(0);
+            }
+            const auto *sample = palette.data() + std::size_t{test.indices[i]} * 3;
+            rgb_scanlines.insert(rgb_scanlines.end(), sample, sample + 3);
+            rgb.insert(rgb.end(), sample, sample + 3);
+        }
+        const auto reference = success(decode_png(make_png(width, height, 2, rgb_scanlines)));
+        constexpr std::size_t after_ihdr = 33;
+        constexpr std::size_t chunk_overhead = 12;
+        const auto after_plte = after_ihdr + chunk_overhead + palette.size();
+        for (const auto &bytes : {png, insert_chunk(png, after_plte, "tRNS", {}),
+                                  insert_chunk(png, after_plte, "tRNS", alpha)}) {
+            const auto image = success(decode_png(bytes));
+            require(image.width == width && image.height == height && image.bit_depth == 8 &&
+                        image.rgb == rgb,
+                    "Indexed PNG changed palette RGB, row padding, filtering, or tRNS handling");
+            require_indexed_mip_equivalence(image, reference);
+        }
+        Bytes full_palette(3 * (std::size_t{1} << test.depth));
+        const Bytes last_color{113, 193, 61};
+        std::ranges::copy(last_color, full_palette.end() - 3);
+        require(
+            success(decode_png(make_indexed_png(1, 1, test.depth, Bytes{0, 0xff}, full_palette)))
+                    .rgb == last_color,
+            "Indexed PNG rejected the highest index or largest palette for its depth");
+    }
+
+    const Bytes palette{25, 132, 207, 91, 221, 19};
+    const auto pot =
+        success(decode_png(make_indexed_png(4, 2, 1, Bytes{0, 0x5f, 0, 0xaf}, palette)));
+    const auto rgb_pot = success(decode_png(
+        make_png(4, 2, 2, Bytes{0, 25, 132, 207, 91, 221, 19,  25, 132, 207, 91, 221, 19,
+                                0, 91, 221, 19,  25, 132, 207, 91, 221, 19,  25, 132, 207})));
+    require_indexed_mip_equivalence(pot, rgb_pot);
+}
+
+void indexed_decode_limits() {
+    constexpr auto palette_scratch = std::size_t{2} * 1024;
+    constexpr auto huffman_scratch = std::size_t{256} * 1024;
+    const Bytes palette{15, 131, 217};
+    const auto check_limits = [](const Bytes &png, std::size_t scratch, std::size_t retained) {
+        const auto short_scratch = decode_png(png, {.scratch_bytes = scratch - 1});
+        const auto short_retained = decode_png(png, {.retained_bytes = retained - 1});
+        require(!short_scratch.value && short_scratch.limit_exceeded &&
+                    !short_scratch.unsupported && !short_retained.value &&
+                    short_retained.limit_exceeded && !short_retained.unsupported,
+                "Indexed decoder accepted an undersized budget");
+        const auto exact =
+            success(decode_png(png, {.retained_bytes = retained, .scratch_bytes = scratch}));
+        require(exact.bit_depth == 8 && exact.rgb.size() == retained,
+                "Indexed decoder retained a non-RGB8 payload");
+    };
+    // Inflate dominates for tiny inputs. A 5x3 two-bit image needs two data bytes per row.
+    const Bytes small_scanlines{0, 0, 0x3f, 0, 0, 0x3f, 0, 0, 0x3f};
+    const auto small = make_indexed_png(5, 3, 2, small_scanlines, palette);
+    check_limits(small,
+                 palette_scratch + small.size() + 2 * small_scanlines.size() +
+                     small_scanlines.size() / 2 + 65535 + huffman_scratch,
+                 45);
+
+    // Expansion dominates for one-bit data at this size. Each row has seven
+    // padding bits that would reference a missing palette entry if read as pixels.
+    constexpr std::uint32_t width = 513, height = 513;
+    constexpr auto pixels = std::size_t{width} * height;
+    constexpr std::size_t scanline_size = 66;
+    Bytes large_scanlines(scanline_size * height);
+    for (std::size_t end = scanline_size - 1; end < large_scanlines.size(); end += scanline_size) {
+        large_scanlines[end] = 0x7f;
+    }
+    const auto large = make_indexed_png(width, height, 1, large_scanlines, palette);
+    check_limits(large, palette_scratch + (pixels + 7) / 8 + 3 * pixels, 3 * pixels);
+}
+
 void decode_errors() {
     auto malformed = [](const Bytes &bytes) {
         const auto result = decode_png(bytes);
@@ -237,12 +372,34 @@ void decode_errors() {
     malformed(insert_chunk(make_png(1, 1, 6, Bytes{0, 1, 2, 3, 0}), after_ihdr, "tRNS", rgb_key));
     malformed(insert_chunk(make_png(1, 1, 4, Bytes{0, 1, 0}), after_ihdr, "tRNS", {0, 1}));
     malformed(insert_chunk(make_png(1, 1, 0, Bytes{0, 1}), after_ihdr, "tRNS", rgb_key));
-    const auto indexed = make_png(1, 1, 3, Bytes{0, 0}, 8, 0, "PLTE");
+    const auto no_palette = make_png(1, 1, 3, Bytes{0, 0});
+    const auto indexed = insert_palette(no_palette, after_ihdr, palette);
     malformed(insert_chunk(indexed, after_ihdr, "tRNS", {0}));
     malformed(insert_chunk(indexed, after_ihdr + 15, "tRNS", {0, 0}));
+    malformed(insert_chunk(indexed, indexed.size() - 12, "tRNS", {0}));
+    const auto indexed_alpha = insert_chunk(indexed, after_ihdr + 15, "tRNS", {});
+    malformed(insert_chunk(indexed_alpha, after_ihdr + 15, "tRNS", {0}));
+    malformed(insert_palette(indexed, after_ihdr, palette));
+    malformed(insert_palette(no_palette, no_palette.size() - 12, palette));
+    malformed(make_indexed_png(1, 1, 8, Bytes{0, 0}, Bytes(std::size_t{3} * 257)));
+    malformed(make_indexed_png(1, 1, 8, Bytes{0, 0}, {}));
+    malformed(make_indexed_png(1, 1, 8, Bytes{0, 0}, {1, 2, 3, 4}));
+    malformed(make_indexed_png(1, 1, 16, Bytes{0, 0, 0}, palette));
+    malformed(make_indexed_png(5, 1, 2, Bytes{5, 0, 0}, palette));    // Invalid filter.
+    malformed(make_indexed_png(5, 1, 2, Bytes{0, 0}, palette));       // Truncated row.
+    malformed(make_indexed_png(5, 1, 2, Bytes{0, 0, 0, 0}, palette)); // Oversized row.
+    for (const auto depth : {std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{4}, std::uint8_t{8}}) {
+        // In this 1x3 image, only the final pixel uses an out-of-range index.
+        const auto late_index = make_indexed_png(1, 3, depth, Bytes{0, 0, 0, 0, 0, 0xff}, palette);
+        const auto result = decode_png(late_index);
+        require(!result.value && !result.unsupported && !result.limit_exceeded &&
+                    result.diagnostic.find("pixel index exceeds palette size") != std::string::npos,
+                "Indexed PNG did not diagnose an out-of-range index in its last row");
+    }
 
     for (const auto &unsupported :
-         {make_png(1, 1, 0, Bytes{0, 0x10}, 4), make_png(1, 1, 3, Bytes{0, 0}, 8, 0, "PLTE"),
+         {make_png(1, 1, 0, Bytes{0, 0x10}, 4), make_png(1, 1, 3, Bytes{0, 0}, 4, 1, "PLTE"),
+          insert_chunk(indexed, after_ihdr, "acTL", {0, 0, 0, 1, 0, 0, 0, 0}),
           make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 1),
           make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6}, 16, 1),
           make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 0, "acTL"),
@@ -849,6 +1006,8 @@ int main(int argc, char *argv[]) {
         require(argc == 2, "Expected a temporary test directory argument");
         decode_profiles(argv[1]);
         decode_16_bit_profiles();
+        decode_indexed_profiles();
+        indexed_decode_limits();
         decode_errors();
         deflate_work_limit();
         deflate_allocation_limit();
