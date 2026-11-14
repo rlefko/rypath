@@ -129,3 +129,70 @@ python3 scripts/compare_pbrt.py \
 The reference provenance is retained in the
 [pinned build record](pbrt-render-validation.md#pinned-upstream-reference).
 Routine CTest uses local fixtures and needs no external downloads.
+
+## Measured evidence
+
+Measured November 14, 2026 for implementation `d71f547`, based on main
+`1301d08`, on Apple M4 Max (`applegpu_g16s`), macOS 26.6 (25G5065a),
+Xcode 26.6 (17F113), Apple Clang 21, CMake 4.0.3, and Ninja 1.13.2.
+Both Metal availability allowances were disabled.
+
+- Debug, Release, and ASan/UBSan each passed **74/74 CTests**. The separate
+  Metal-disabled sanitizer build passed **61/61**. Metal API and shader
+  validation passed **15/15**, with no skips.
+- The native probe checked **103 result vectors at each of four sample
+  budgets**, including 39 EWA cases. Independent review found that Metal's
+  subnormal flushing changed both minor-axis widening and center mapping.
+  The corrected implementation retains direct regression cases for both.
+  Splitting the test dispatch and keeping its legacy path on the shared
+  standard-filter implementation reduced cold instrumented compilation from
+  76.55 seconds to 15.16 seconds on this run. The existing 30-second timeout
+  remains. This is validation-tooling evidence, not a renderer speed claim.
+- Triangle and bilinear-patch controls each checked **512 EWA paths** against
+  the independent RGB material. Release maximum path error was **4.52995e-6**
+  for both, within the fixed radiance-scaled bound. Trilinear substitution
+  changed a path by **0.889779**; reducing anisotropy changed one by **0.41118**.
+  The secondary control changed **678 of 1,414 two-hit paths** by more than
+  0.001, with maximum difference **0.82577**. One-hit paths stayed exact.
+  Batch sizes 65, 7, and 1 preserved exact raw films and counts for 133,120
+  samples in each of four filter modes. The invalid EWA arithmetic control
+  rejected its pending batch with zero committed samples.
+- Independent API/shader-validated M4 Max probes matched **400,192 mapped
+  products bit for bit** against CPU binary32 multiplication. **75,000 native
+  lookups** had zero success/failure mismatches; 4,851 correctly rejected
+  overflowing required mapped coordinates. One finite case differed by
+  **1.20401e-5** at a hard LUT-bin boundary. Portable sanitizer stress covered
+  **22,500 EWA lookups**, with no invalid result or sanitizer report. Six
+  differed from the double oracle at LUT boundaries, with maximum **0.00213707**.
+  These boundary observations are outside the stable-vector tolerance; they
+  do not change that tolerance or establish uniform CPU/GPU equality.
+- **180,000 legacy-filter lookups** retained the exact binary32 digest of
+  base `1301d08`. All 128 table entries matched pinned PBRT exactly.
+- The final Release PBRT comparison passed **546 statistical gates and eight
+  sensitivity controls**, across **46 fixtures and 1,480 linear PFM outputs**.
+  The EWA wrapper's largest regional mean difference was **0.004113**, within
+  its fixed gate. EWA-minus-trilinear red was **0.2122** for rypath and **0.2177**
+  for PBRT. Cap-8-minus-cap-4 red was **0.07291** and **0.07395**, respectively.
+  Existing fixtures retained their settings and thresholds.
+- All **55 Python tests**, LLVM 18.1.8 clang-tidy on changed portable units,
+  Apple Clang Static Analyzer on changed native units, formatting, repository
+  hooks, and independent review passed. No actionable review findings remained.
+- The product CLI published an inspected **256×256 PNG at 256 spp**, with those
+  preview overrides recorded in its staged input and the unchanged PNG asset
+  beside it. Batches of seven committed all **16,777,216 samples** and reported
+  EWA filtering.
+
+Full local logs and independent probe sources are retained under
+`build/ewa-texture-validation/`, with reviewer sources and logs in
+`independent-review/`. Hosted checks are reported on the PR separately.
+This is numerical validation, not full-corpus support or a performance study.
+
+SHA-256 artifact identities:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Release rypath reference executable | `e9fcf6cbd4e2924adb434ba06440d503a232df1fff0bba45158a66f0b0027972` |
+| Release Metal library | `0c7aec0ddb3864abbfedf738021b8155a358fc7f1dbd3dc9d7eedf515b999b0e` |
+| Pinned PBRT executable | `4fd27e940f295fdb14f8407dbad7ef2e05dba9e9e2980c4a5cc3cad3da9b43b2` |
+| Final full comparison log | `9d96a12a53a395f77c1dc3c762fa9bc2380ea5d6434fffabc808a89328e0382f` |
+| CLI preview PNG | `02756febe26ef369e16c68b09f431d32626167201128537839fb88f010bc8c57` |
