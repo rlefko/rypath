@@ -64,6 +64,7 @@ and dependency paths listed below.
 | `image16-ewa.pbrt` | 1,019 | `caaf7907c6288d1ebadff4685627aa1d4a7add98aeadb6b6c21b41cf8a313df6` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite grayscale16 image with linear encoding, repeat wrap, and a rotated EWA footprint capped at anisotropy 8. |
 | `image-indexed-point.pbrt` | 945 | `31c89e5f94adf393cd34c38ea9a1cec2e0d29a848e2bc592ea44df828bf25a4c` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination point-samples the pinned PNGSuite indexed8 image, including its fully transparent white texel. |
 | `image-indexed-trilinear.pbrt` | 896 | `331a3e57a259f94a3e76b54e164fe561eca5b7cc0befbedae6ff7446b324dc8c` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination minifies the pinned 35×35 PNGSuite indexed4 image with linear encoding, repeat wrap, and trilinear filtering. |
+| `image-grayscale-point.pbrt` | 945 | `e540a1d2d0852a85fa4d8c8db611f6743fcb7773c665cd217c4859930cbc5e14` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination point-samples the pinned PNGSuite grayscale4 image, including keyed white and intermediate gray texels. |
 
 Each scene uses a pinhole perspective camera, an 8×8 full-frame sRGB film
 with the CIE 1931 sensor, ISO 100, the default shutter interval
@@ -185,3 +186,7 @@ image-indexed-trilinear`. They use the same statistical gates and replicate
 seeds. The point fixture checks the full frame and the pixel at (0, 0), which
 samples fully transparent white. The trilinear fixture checks the full frame
 and the two pixels in column 4, rows 3–4.
+
+Select the grayscale fixture with `--scene image-grayscale-point`. It uses
+the same seeds and regional gates on the full frame, the keyed-white pixel
+at (0, 0), and the intermediate-gray pixel at (6, 4).

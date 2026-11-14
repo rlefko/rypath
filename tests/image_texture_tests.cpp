@@ -191,14 +191,14 @@ void decode_16_bit_profiles() {
             "RGBA16 scratch did not account for depth and alpha during inflate");
 }
 
-void require_indexed_mip_equivalence(const DecodedImage &indexed, const DecodedImage &rgb) {
+void require_rgb8_mip_equivalence(const DecodedImage &image, const DecodedImage &rgb) {
     for (const auto encoding : {ImageEncoding::srgb, ImageEncoding::linear}) {
         for (const auto wrap : {ImageWrap::repeat, ImageWrap::clamp, ImageWrap::black}) {
-            auto result = build_image_pyramid(indexed, encoding, wrap);
+            auto result = build_image_pyramid(image, encoding, wrap);
             if (wrap == ImageWrap::black &&
                 (!std::has_single_bit(rgb.width) || !std::has_single_bit(rgb.height))) {
                 require(!result.value && result.unsupported && !result.limit_exceeded,
-                        "Indexed NPOT black wrap was accepted");
+                        "NPOT black wrap was accepted");
                 continue;
             }
             const auto actual = success(std::move(result));
@@ -209,7 +209,7 @@ void require_indexed_mip_equivalence(const DecodedImage &indexed, const DecodedI
                                                return a.width == b.width && a.height == b.height &&
                                                       a.offset == b.offset;
                                            }),
-                    "Indexed PNG changed encoded8 mip levels compared with RGB8");
+                    "PNG changed encoded8 mip levels compared with RGB8");
         }
     }
 }
@@ -262,7 +262,7 @@ void decode_indexed_profiles() {
             require(image.width == width && image.height == height && image.bit_depth == 8 &&
                         image.rgb == rgb,
                     "Indexed PNG changed palette RGB, row padding, filtering, or tRNS handling");
-            require_indexed_mip_equivalence(image, reference);
+            require_rgb8_mip_equivalence(image, reference);
         }
         Bytes full_palette(3 * (std::size_t{1} << test.depth));
         const Bytes last_color{113, 193, 61};
@@ -279,10 +279,65 @@ void decode_indexed_profiles() {
     const auto rgb_pot = success(decode_png(
         make_png(4, 2, 2, Bytes{0, 25, 132, 207, 91, 221, 19,  25, 132, 207, 91, 221, 19,
                                 0, 91, 221, 19,  25, 132, 207, 91, 221, 19,  25, 132, 207})));
-    require_indexed_mip_equivalence(pot, rgb_pot);
+    require_rgb8_mip_equivalence(pot, rgb_pot);
 }
 
-void indexed_decode_limits() {
+void decode_packed_grayscale_profiles() {
+    // Each odd-width image contains every sample code. Its manually authored
+    // rows use None, Sub, Up, Average, and Paeth, with all padding bits set.
+    struct Case {
+        std::uint8_t depth;
+        Bytes scanlines;
+        Bytes gray8;
+    };
+    const std::array cases{
+        Case{1,
+             {0, 0x57, 1, 0xaf, 2, 0xc0, 3, 0x78, 4, 0xa8},
+             {0, 255, 0,   255, 0,   255, 0,   255, 0,   255, 0,   255, 255,
+              0, 255, 255, 0,   255, 0,   255, 0,   255, 0,   255, 0}},
+        Case{2,
+             {0, 0x1b, 0x3f, 1, 0xe4, 0x1b, 2, 0xb0, 0x00, 3, 0x9a, 0x8e, 4, 0xcd, 0xc0},
+             {0, 85,  170, 255, 0,  255, 170, 85,  0,   255, 170, 85, 85,
+              0, 255, 255, 170, 85, 0,   85,  170, 255, 0,   85,  0}},
+        Case{4,
+             {0,    0x01, 0x23, 0x4f, 1,    0xfe, 0xde, 0xe3, 2,    0x6b,
+              0x7c, 0xc0, 3,    0xfe, 0x0f, 0xb6, 4,    0x79, 0xde, 0xbb},
+             {0,   17,  34, 51, 68, 255, 238, 221, 204, 187, 102, 153, 85,
+              136, 119, 51, 34, 85, 68,  17,  170, 187, 136, 153, 0}},
+    };
+    constexpr std::uint32_t width = 5, height = 5;
+    constexpr std::size_t after_ihdr = 33;
+    for (const auto &test : cases) {
+        Bytes rgb_scanlines;
+        Bytes rgb;
+        for (std::size_t i = 0; i < test.gray8.size(); ++i) {
+            if (i % width == 0) {
+                rgb_scanlines.push_back(0);
+            }
+            rgb_scanlines.insert(rgb_scanlines.end(), 3, test.gray8[i]);
+            rgb.insert(rgb.end(), 3, test.gray8[i]);
+        }
+        const auto reference = success(decode_png(make_png(width, height, 2, rgb_scanlines)));
+        const auto png = make_png(width, height, 0, test.scanlines, test.depth, 0, "gAMA");
+        // Sample 1 is nonblack at every depth. The unused high bits of its key
+        // may be set, and keyed pixels retain the same reflectance.
+        for (const auto &bytes : {png, insert_chunk(png, after_ihdr, "tRNS", {0, 1}),
+                                  insert_chunk(png, after_ihdr, "tRNS", {0xff, 0xf1})}) {
+            const auto image = success(decode_png(bytes));
+            require(image.width == width && image.height == height && image.bit_depth == 8 &&
+                        image.rgb == rgb,
+                    "Packed grayscale changed sample expansion, filtering, padding, or tRNS");
+            require_rgb8_mip_equivalence(image, reference);
+        }
+    }
+
+    const auto pot = success(decode_png(make_png(4, 2, 0, Bytes{0, 0x1b, 0, 0xe4}, 2)));
+    const DecodedImage rgb_pot{4, 2, {0,   0,   0,   85,  85,  85,  170, 170, 170, 255, 255, 255,
+                                      255, 255, 255, 170, 170, 170, 85,  85,  85,  0,   0,   0}};
+    require_rgb8_mip_equivalence(pot, rgb_pot);
+}
+
+void packed_decode_limits() {
     constexpr auto palette_scratch = std::size_t{2} * 1024;
     constexpr auto huffman_scratch = std::size_t{256} * 1024;
     const Bytes palette{15, 131, 217};
@@ -292,11 +347,11 @@ void indexed_decode_limits() {
         require(!short_scratch.value && short_scratch.limit_exceeded &&
                     !short_scratch.unsupported && !short_retained.value &&
                     short_retained.limit_exceeded && !short_retained.unsupported,
-                "Indexed decoder accepted an undersized budget");
+                "Packed PNG decoder accepted an undersized budget");
         const auto exact =
             success(decode_png(png, {.retained_bytes = retained, .scratch_bytes = scratch}));
         require(exact.bit_depth == 8 && exact.rgb.size() == retained,
-                "Indexed decoder retained a non-RGB8 payload");
+                "Packed PNG decoder retained a non-RGB8 payload");
     };
     // Inflate dominates for tiny inputs. A 5x3 two-bit image needs two data bytes per row.
     const Bytes small_scanlines{0, 0, 0x3f, 0, 0, 0x3f, 0, 0, 0x3f};
@@ -317,6 +372,15 @@ void indexed_decode_limits() {
     }
     const auto large = make_indexed_png(width, height, 1, large_scanlines, palette);
     check_limits(large, palette_scratch + (pixels + 7) / 8 + 3 * pixels, 3 * pixels);
+
+    const auto small_gray = make_png(5, 3, 0, small_scanlines, 2);
+    check_limits(small_gray,
+                 small_gray.size() + 2 * small_scanlines.size() + small_scanlines.size() / 2 +
+                     65535 + huffman_scratch,
+                 45);
+    // In the nonindexed path, the RGB8 copy dominates scratch for this fixture.
+    const auto large_gray = make_png(width, height, 0, large_scanlines, 1);
+    check_limits(large_gray, 6 * pixels, 3 * pixels);
 }
 
 void decode_errors() {
@@ -388,6 +452,21 @@ void decode_errors() {
     malformed(make_indexed_png(5, 1, 2, Bytes{5, 0, 0}, palette));    // Invalid filter.
     malformed(make_indexed_png(5, 1, 2, Bytes{0, 0}, palette));       // Truncated row.
     malformed(make_indexed_png(5, 1, 2, Bytes{0, 0, 0, 0}, palette)); // Oversized row.
+    const auto packed_gray = make_png(5, 1, 0, Bytes{0, 0x1b, 0x3f}, 2);
+    const Bytes gray_key{0, 1};
+    const auto keyed_gray = insert_chunk(packed_gray, after_ihdr, "tRNS", gray_key);
+    malformed(insert_chunk(packed_gray, after_ihdr, "tRNS", {1}));
+    malformed(insert_chunk(packed_gray, after_ihdr, "tRNS", {0, 1, 0}));
+    malformed(insert_chunk(keyed_gray, after_ihdr, "tRNS", gray_key));
+    malformed(insert_chunk(packed_gray, packed_gray.size() - 12, "tRNS", gray_key));
+    auto bad_key_crc = keyed_gray;
+    bad_key_crc[after_ihdr + 10] ^= 1u;
+    malformed(bad_key_crc);
+    malformed(insert_palette(packed_gray, after_ihdr, palette));
+    malformed(make_png(5, 1, 0, Bytes{5, 0x1b, 0x3f}, 2));    // Invalid filter.
+    malformed(make_png(5, 1, 0, Bytes{0, 0x1b}, 2));          // Truncated row.
+    malformed(make_png(5, 1, 0, Bytes{0, 0x1b, 0x3f, 0}, 2)); // Oversized row.
+    malformed(make_png(1, 1, 0, Bytes{0, 0}, 3));             // Illegal grayscale depth.
     for (const auto depth : {std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{4}, std::uint8_t{8}}) {
         // In this 1x3 image, only the final pixel uses an out-of-range index.
         const auto late_index = make_indexed_png(1, 3, depth, Bytes{0, 0, 0, 0, 0, 0xff}, palette);
@@ -398,7 +477,8 @@ void decode_errors() {
     }
 
     for (const auto &unsupported :
-         {make_png(1, 1, 0, Bytes{0, 0x10}, 4), make_png(1, 1, 3, Bytes{0, 0}, 4, 1, "PLTE"),
+         {make_png(1, 1, 0, Bytes{0, 0x10}, 4, 1), make_png(1, 1, 0, Bytes{0, 0x10}, 4, 0, "acTL"),
+          make_png(1, 1, 3, Bytes{0, 0}, 4, 1, "PLTE"),
           insert_chunk(indexed, after_ihdr, "acTL", {0, 0, 0, 1, 0, 0, 0, 0}),
           make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 1),
           make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6}, 16, 1),
@@ -1007,7 +1087,8 @@ int main(int argc, char *argv[]) {
         decode_profiles(argv[1]);
         decode_16_bit_profiles();
         decode_indexed_profiles();
-        indexed_decode_limits();
+        decode_packed_grayscale_profiles();
+        packed_decode_limits();
         decode_errors();
         deflate_work_limit();
         deflate_allocation_limit();
