@@ -71,6 +71,10 @@ REGIONS = {
     "named-area": QUADRANTS,
     "named-mixed": QUADRANTS,
     "named-ply-external": QUADRANTS,
+    "file-background": {"full": FULL},
+    "file-area": QUADRANTS,
+    "file-mixed": QUADRANTS,
+    "file-ply-external": QUADRANTS,
 }
 
 

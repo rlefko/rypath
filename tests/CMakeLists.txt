@@ -253,6 +253,11 @@ add_test(NAME cli.image_inputs COMMAND "${CMAKE_COMMAND}"
     "-Dtest_directory=${pbrt_test_directory}/$<CONFIG>/image-cli"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/check_image_inputs.cmake")
 set_tests_properties(cli.image_inputs PROPERTIES TIMEOUT 30)
+add_test(NAME cli.spectrum_inputs COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>"
+    "-Dtest_directory=${pbrt_test_directory}/$<CONFIG>/spectrum-cli"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_spectrum_inputs.cmake")
+set_tests_properties(cli.spectrum_inputs PROPERTIES TIMEOUT 30)
 add_executable(rypath_pbrt_ply_fixture_tests pbrt_ply_fixture_tests.cpp)
 target_link_libraries(rypath_pbrt_ply_fixture_tests PRIVATE rypath_pbrt_render)
 rypath_configure_host_target(rypath_pbrt_ply_fixture_tests)
@@ -281,6 +286,10 @@ add_executable(rypath_pbrt_reference pbrt_reference.cpp)
 set_target_properties(rypath_pbrt_reference PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
 target_link_libraries(rypath_pbrt_reference PRIVATE rypath_pbrt_render rypath_metal_backend)
 rypath_configure_host_target(rypath_pbrt_reference)
+
+add_executable(rypath_pbrt_file_spectrum_probe pbrt_file_spectrum_probe.cpp)
+target_link_libraries(rypath_pbrt_file_spectrum_probe PRIVATE rypath_pbrt_render)
+rypath_configure_host_target(rypath_pbrt_file_spectrum_probe)
 
 add_executable(rypath_pbrt_render_gpu_tests pbrt_render_gpu_tests.cpp)
 set_target_properties(rypath_pbrt_render_gpu_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")

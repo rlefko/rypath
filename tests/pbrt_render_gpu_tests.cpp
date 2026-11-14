@@ -42,6 +42,9 @@ RenderScene load(const std::filesystem::path &file) {
 }
 
 double value_at(const Curve &curve, double wavelength) {
+    if (wavelength < curve.front().first || wavelength > curve.back().first) {
+        return 0;
+    }
     const auto upper = std::ranges::upper_bound(curve, wavelength, {}, &Curve::value_type::first);
     if (upper == curve.end()) {
         return curve.back().second;
@@ -227,35 +230,29 @@ Curve planck_curve(double temperature) {
 }
 
 void emission_paths(MetalRenderScene &native, const Curve &curve, double amplitude,
-                    std::string_view name, std::uint64_t seed, bool check_blue_bins = false) {
+                    std::string_view name, std::uint64_t seed) {
     double normalization = 0;
     for (std::size_t i = 0; i < detail::cie_xyz.size(); ++i) {
         normalization += value_at(curve, 360.0 + static_cast<double>(i)) * detail::cie_xyz[i][1];
     }
     const auto samples = trace(native, analytic_paths, seed);
     double maximum_error = 0;
-    std::array<bool, 5> positive_bins{};
+    std::array<bool, detail::cie_xyz.size()> wavelength_bins{};
     for (const auto &sample : samples.samples) {
         const double nm = std::round(sample.wavelength);
         const double expected = amplitude * value_at(curve, nm) / normalization;
         const double error = std::abs(sample.radiance - expected);
-        if (sample.scatterings != 0 || !(error <= 1e-8 + 2e-6 * std::abs(expected))) {
+        const double tolerance = expected == 0 ? 0 : 1e-8 + 2e-6 * std::abs(expected);
+        if (sample.scatterings != 0 || !(error <= tolerance)) {
             throw std::runtime_error(std::string(name) +
                                      " differs from independently evaluated radiance");
         }
-        if (check_blue_bins && nm >= 360 && nm <= 364) {
-            require(sample.radiance > 0, "MgO-k path in the blue band missed its emitter");
-            positive_bins[static_cast<std::size_t>(nm - 360)] = true;
-        }
-        if (check_blue_bins && nm >= 365) {
-            require(sample.radiance == 0, "MgO-k path outside the blue band must be exactly dark");
-        }
+        require(expected == 0 || sample.radiance > 0, "Positive-band path missed its emitter");
+        wavelength_bins.at(static_cast<std::size_t>(nm - 360)) = true;
         maximum_error = std::max(maximum_error, error);
     }
-    if (check_blue_bins) {
-        require(std::ranges::all_of(positive_bins, [](bool seen) { return seen; }),
-                "MgO-k paths must exercise all five positive wavelength bins");
-    }
+    require(std::ranges::all_of(wavelength_bins, [](bool seen) { return seen; }),
+            "Spectral paths must exercise all wavelength bins");
     std::cout << name << " maximum per-path radiance error " << maximum_error << '\n';
 }
 
@@ -423,7 +420,7 @@ void named_lights(const std::filesystem::path &directory) {
     require(std::abs(moments.mean[1] - 0.8816845) < 2e-7,
             "Continuous wavelength quadrature counts half of the 360 nm bin");
     native = build(sky);
-    emission_paths(*native, magnesia, 1, "MgO-k sky", 0x322a67c32ab401ddULL, true);
+    emission_paths(*native, magnesia, 1, "MgO-k sky", 0x322a67c32ab401ddULL);
     analytic(*native, moments, 0x8e3c58817e778b06ULL, "MgO-k sky", 0);
 
     plane.max_depth = 0;
@@ -447,14 +444,73 @@ void named_lights(const std::filesystem::path &directory) {
     // the translated area light. Exercise both Metal geometry paths.
     plane.area_emissions = {emitters.area_emissions.back()};
     native = build(plane);
-    emission_paths(*native, magnesia, 1, "MgO-k triangles", 0x3a566f6595b8b01bULL, true);
+    emission_paths(*native, magnesia, 1, "MgO-k triangles", 0x3a566f6595b8b01bULL);
     mesh.triangles.clear();
     mesh.patches = {{0, 3, 1, 2}};
     native = build(plane);
-    emission_paths(*native, magnesia, 1, "MgO-k patch", 0x3f89ddf9eb0449ecULL, true);
+    emission_paths(*native, magnesia, 1, "MgO-k patch", 0x3f89ddf9eb0449ecULL);
     analytic(*native, moments, 0x303582f945d2fc5eULL, "MgO-k patch", 0);
 
     mixed_emission_batches(load(directory / "named-mixed.pbrt"), "Named");
+}
+
+void file_lights(const std::filesystem::path &directory) {
+    // Use the authored binary32 knots directly in independent double-precision
+    // interpolation and quadrature. The test never reads the compiled tables.
+    const Curve sky_curve{
+        {420, 0.25}, {470.375, 1.125}, {530.2f, 0.5}, {590.875, 0.125}, {680, 0.25}};
+    constexpr double sky_amplitude = static_cast<double>(1.7f) * 7 / std::numbers::pi;
+    auto sky = build(load(directory / "file-background.pbrt"));
+    emission_paths(*sky, sky_curve, sky_amplitude, "File sky", 0x1f83d9abfb41bd6bULL);
+    analytic(*sky, quadrature(sky_curve, sky_amplitude, {}), 0x5be0cd19137e2179ULL, "File sky", 0);
+
+    const Curve endpoint{{360, 0.5}, {362.75, 0.125}, {364, 0.0625}};
+    const auto area = load(directory / "file-area.pbrt");
+    require(area.area_emissions.size() == 3 && area.instance_emissions.size() == 3 &&
+                area.instance_emissions.back() == 2,
+            "File area fixture lost its scoped endpoint emitter");
+    auto plane = load(directory / "diffuse.pbrt");
+    plane.max_depth = 0;
+    plane.environment.fill(0);
+    plane.area_emissions = {area.area_emissions.back()};
+    plane.instance_emissions = {0};
+    for (auto &triangle : plane.geometry.meshes.front().triangles) {
+        std::swap(triangle[1], triangle[2]);
+    }
+    const auto triangle = build(plane);
+    emission_paths(*triangle, endpoint, 1, "File endpoint triangles", 0xcbbb9d5dc1059ed8ULL);
+    const auto endpoint_moments = quadrature(endpoint, 1, {});
+    double endpoint_sum = 0;
+    for (int nm = 360; nm <= 364; ++nm) {
+        endpoint_sum += value_at(endpoint, nm) * detail::cie_xyz[nm - 360][1];
+    }
+    const double expected_y =
+        1 - 0.5 * endpoint.front().second * detail::cie_xyz[0][1] / endpoint_sum;
+    require(std::abs(endpoint_moments.mean[1] - expected_y) < 1e-12,
+            "The half-width endpoint bin must affect continuous Y");
+    analytic(*triangle, endpoint_moments, 0x629a292a367cd507ULL, "File endpoint triangles", 0);
+
+    auto patch = load(directory / "file-ply-external.pbrt");
+    require(patch.geometry.meshes.size() == 1 && patch.geometry.instances.size() == 1 &&
+                patch.geometry.meshes.front().patches.size() == 1 &&
+                patch.geometry.meshes.front().triangles.empty() && patch.area_emissions.size() == 1,
+            "File PLY fixture must bind emission to the imported patch");
+    patch.max_depth = 0;
+    patch.environment.fill(0);
+    // Expand the imported quad around its translated origin to cover the frame.
+    auto &transform = patch.geometry.instances.front().transform.values;
+    for (std::size_t i = 0; i < transform.size(); ++i) {
+        if (i % 4 != 3) {
+            transform[i] *= 5;
+        }
+    }
+    const Curve cool{{395, 0.15f}, {448.25, 0.9f}, {503.75, 0.5}, {544, 0},
+                     {559, 0},     {585.25, 0.3f}, {640, 0.125}};
+    const auto native_patch = build(patch);
+    emission_paths(*native_patch, cool, 1.25, "File PLY patch", 0x9159015a3070dd17ULL);
+    analytic(*native_patch, quadrature(cool, 1.25, {}), 0x152fecd8f70e5939ULL, "File PLY patch", 0);
+
+    mixed_emission_batches(load(directory / "file-mixed.pbrt"), "File spectrum");
 }
 
 // Coefficients of linear sRGB (1, 0, 0), from the pinned upstream PBRT table.
@@ -661,6 +717,7 @@ int main(int argc, char **argv) {
         constant_texture_equivalence(directory, "ply-external");
         blackbody_lights(directory);
         named_lights(directory);
+        file_lights(directory);
 
         auto sky = load(directory / "background.pbrt");
         require(sky.max_depth == 0, "Background fixture must exercise depth zero");

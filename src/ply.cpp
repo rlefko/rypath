@@ -9,9 +9,7 @@
 #include <cmath>
 #include <fstream>
 #include <limits>
-#include <locale>
 #include <set>
-#include <sstream>
 #include <type_traits>
 
 namespace rypath::pbrt {
@@ -87,25 +85,6 @@ template <typename T> std::optional<T> decimal_integer(string_view token) {
     const auto end = token.data() + token.size();
     const auto [ptr, error] = std::from_chars(token.data(), end, result);
     if (error != std::errc{} || ptr != end) {
-        return std::nullopt;
-    }
-    return result;
-}
-
-template <typename T> std::optional<T> decimal_float(string_view token) {
-    if (!is_decimal(token)) {
-        return std::nullopt;
-    }
-    if (!nonzero_significand(token)) {
-        return token.starts_with('-') ? -T{0} : T{0};
-    }
-    // Floating from_chars is unavailable on the supported macOS deployment target.
-    std::istringstream input{std::string(token)};
-    input.imbue(std::locale::classic());
-    T result = 0;
-    input >> result;
-    if (!input.eof() || !std::isfinite(result) || result == 0 ||
-        (input.fail() && std::fpclassify(result) != FP_SUBNORMAL)) {
         return std::nullopt;
     }
     return result;

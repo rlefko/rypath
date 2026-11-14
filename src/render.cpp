@@ -907,6 +907,27 @@ double pbrt_y_inner_product(const std::array<float, 471> &spectrum) {
     return integral;
 }
 
+double sampled_spectrum(std::span<const SpectralKnot> knots, double wavelength) {
+    if (knots.empty() ||
+        !(wavelength >= knots.front().wavelength && wavelength <= knots.back().wavelength)) {
+        return 0;
+    }
+    const auto next = std::ranges::lower_bound(knots, wavelength, {}, &SpectralKnot::wavelength);
+    if (next == knots.begin()) {
+        return next->value;
+    }
+    const auto &previous = *(next - 1);
+    const double left_distance = wavelength - previous.wavelength;
+    const double right_distance = next->wavelength - wavelength;
+    const double width = double{next->wavelength} - previous.wavelength;
+    // Anchor at the nearer endpoint so a tiny contribution is not lost when
+    // the other interpolation fraction rounds to one across a wide interval.
+    if (right_distance < left_distance) {
+        return std::lerp(double{next->value}, double{previous.value}, right_distance / width);
+    }
+    return std::lerp(double{previous.value}, double{next->value}, left_distance / width);
+}
+
 double spectral_reflectance(const SpectralMaterial &material, double wavelength) {
     switch (material.kind) {
     case SpectralMaterialKind::constant:
@@ -924,19 +945,7 @@ double spectral_reflectance(const SpectralMaterial &material, double wavelength)
         return std::numeric_limits<double>::quiet_NaN();
     }
     if (!material.knots.empty()) {
-        if (!(wavelength >= material.knots.front().wavelength &&
-              wavelength <= material.knots.back().wavelength)) {
-            return 0;
-        }
-        const auto next =
-            std::ranges::lower_bound(material.knots, wavelength, {}, &SpectralKnot::wavelength);
-        if (next == material.knots.begin()) {
-            return next->value;
-        }
-        const auto &previous = *(next - 1);
-        const double fraction =
-            (wavelength - previous.wavelength) / (double{next->wavelength} - previous.wavelength);
-        return std::lerp(double{previous.value}, double{next->value}, fraction);
+        return sampled_spectrum(material.knots, wavelength);
     }
     if (!(wavelength >= spectral_knots.front() && wavelength <= spectral_knots.back())) {
         return 0;

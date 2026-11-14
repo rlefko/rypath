@@ -4,10 +4,12 @@
 #include "geometry.hpp"
 #include "image_texture.hpp"
 #include "sampling.hpp"
+#include "spectral_knot.hpp"
 #include "texture_footprint.hpp"
 
 #include <functional>
 #include <optional>
+#include <span>
 
 namespace rypath {
 
@@ -19,10 +21,6 @@ inline constexpr std::uint32_t render_tile_capacity = 65536;
 inline constexpr std::uint32_t render_emergency_limit = 1024;
 inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
 
-struct SpectralKnot {
-    float wavelength = 0;
-    float value = 0;
-};
 enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image };
 
 struct SpectralMaterial {
@@ -129,6 +127,7 @@ std::array<double, 3> wavelength_xyz(double wavelength);
 std::array<double, 3> pbrt_cie_xyz(double wavelength);
 double pbrt_y_inner_product(const std::array<float, 471> &spectrum);
 double cie_y_integral();
+double sampled_spectrum(std::span<const SpectralKnot> knots, double wavelength);
 double spectral_reflectance(const SpectralMaterial &material, double wavelength);
 std::array<std::uint32_t, 4> sample_words(std::uint64_t seed, std::uint32_t pixel,
                                           std::uint64_t sample, std::uint32_t block);

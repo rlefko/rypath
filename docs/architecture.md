@@ -72,6 +72,12 @@ one-nanometer tables. Structural dependency classification and render translatio
 resolve the same exact names; the existing checked photometric calibration and
 Metal payload handle their emission. The [named-spectrum record](named-spectrum-validation.md)
 documents data provenance and validation.
+File emission is decoded during preflight into shared immutable binary32 knots,
+under the existing combined scene/asset budgets. Translation uses these checked
+knots without reopening files, and shares the numeric-spectrum interpolation and
+light calibration path. File curves retain zero outside their recorded interval.
+The [file-spectrum record](file-spectrum-validation.md) describes parser boundaries,
+numerical adaptations, and independent comparisons.
 The translator binds each imagemap by index and prepares per-placement triangle
 partials from the checked shape and placement transforms. The image render
 session owns UVs, triangle partials, texture descriptors, shared mip data,
