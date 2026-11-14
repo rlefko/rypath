@@ -105,7 +105,8 @@ the [pinned parameter dictionary](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba
 ## PNG imagemap definitions
 
 Named spectrum imagemaps share the spectrum namespace and follow the same
-parameter precedence and diffuse binding rules.
+parameter precedence and diffuse binding rules. Filtering accepts `bilinear`
+(the default) and `trilinear`; point and EWA filters remain unsupported.
 
 Supported PNG inputs are noninterlaced 8-bit grayscale, grayscale with alpha,
 RGB, and RGBA. Grayscale replicates into RGB, alpha is discarded, and metadata
@@ -118,7 +119,8 @@ The decoder provenance and its byte-stream limits are recorded in
 Asset paths in included files resolve from the entry directory. Distinct
 images and PLY inputs share the file count and expanded byte budget with scene
 files. One successful decode supplies all imagemaps of the same resolved path.
-Mip variants share storage for the same path, encoding, and wrap mode. Aggregate
+Mip variants share storage for the same path, encoding, and wrap mode, including
+textures with different filtering modes. Aggregate
 retained accounting includes decoded RGB bytes, packed mip texels, and level
 records. Image-specific resource limits are listed below.
 

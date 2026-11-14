@@ -69,6 +69,10 @@ transfer tables, and the sRGB reconstruction table. At each textured hit the
 shader computes the footprint, evaluates RGB, and reconstructs albedo at the
 path wavelength. The [image texture record](image-texture-validation.md) describes
 the lookup and its validation.
+Each texture selects bilinear or trilinear lookup independently of the shared
+pyramid. Trilinear blends decoded linear RGB across adjacent levels before
+spectral reconstruction; the [trilinear record](trilinear-texture-validation.md)
+defines its pinned PBRT boundary behavior.
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 PNG decoding uses the vendored portable LodePNG decoder. The
 [dependency decision](pbrt-decision.md) records the integration boundary.

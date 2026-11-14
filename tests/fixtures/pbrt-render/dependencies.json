@@ -59,5 +59,12 @@
       "bytes": 118,
       "sha256": "41523032aa9abb93896fc5018bf5cb0345e397714955eccab4dff445eff6060c"
     }
+  ],
+  "image-trilinear": [
+    {
+      "path": "image-assets/z03n2c08.png",
+      "bytes": 232,
+      "sha256": "939abfc6e0a3e349bb5bcd8c4e427a6cdb2c7e0c23a773aefa1c4fc9f07e4cb4"
+    }
   ]
 }

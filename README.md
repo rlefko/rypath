@@ -7,6 +7,7 @@ and interactive rendering follow later.
 **Current state: progressive Metal rendering and a strict PBRT spectral profile.**
 Render the built-in demo or PBRT files containing supported sampled spectra or
 linear sRGB colors, with named constant and PNG image textures for diffuse reflectance.
+PNG textures support bilinear and trilinear mip filtering.
 The PBRT profile includes inline triangles, external PLY triangles and bilinear
 quads, per-vertex shading normals and UVs, constant environment lighting,
 directly placed diffuse emitters, and box or triangle pixel filtering. Complete batches

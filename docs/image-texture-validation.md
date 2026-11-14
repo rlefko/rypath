@@ -1,5 +1,9 @@
 # PBRT image texture validation
 
+This record covers the bilinear PNG profile merged in PR #15. The subsequent
+[trilinear record](trilinear-texture-validation.md) describes adjacent-mip filtering
+and its separate implementation evidence.
+
 ## Reflectance and footprint
 
 PNG imagemaps extend the diffuse albedo model to vary with surface location and
