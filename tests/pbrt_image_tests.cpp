@@ -78,13 +78,20 @@ void diagnostic(const Result &result, string_view code) {
             report(result));
 }
 
-RenderScene translate_scene(const Result &result, const fs::path &path) {
+RenderScene translate_scene(const Result &result, const fs::path &path,
+                            std::string_view expected_filter = {}) {
     auto translated = translate(result, {path.string()});
     for (const auto &issue : translated.diagnostics) {
         std::cerr << format_diagnostic(issue) << '\n';
     }
     if (translated.exit_code() != 0 || !translated.scene) {
         throw std::runtime_error("Imagemap scene must translate");
+    }
+    if (!expected_filter.empty()) {
+        const auto provenance = "Image textures: PNG, UV mapping, mipmapped " +
+                                std::string(expected_filter) + " filtering";
+        require(std::ranges::find(translated.provenance, provenance) != translated.provenance.end(),
+                "Image provenance did not identify the configured filters");
     }
     return std::move(translated.scene.value());
 }
@@ -118,10 +125,11 @@ Include "nested/maps.pbrt"
 Texture "paint" "float" "constant"
 AttributeBegin
 Attribute "texture" "string filename" "color.png" "float uscale" 8 "float vscale" -2
+    "string filter" "trilinear"
 Texture "paint" "spectrum" "imagemap" "float uscale" 3 "float uscale" 4
     "float udelta" 0.25 "float vdelta" -0.5 "bool invert" true "float scale" 0.75
     "float maxanisotropy" 1.5
-Texture "copy" "spectrum" "imagemap" "float uscale" 1
+Texture "copy" "spectrum" "imagemap" "float uscale" 1 "string filter" "bilinear"
 Texture "linear" "spectrum" "imagemap" "string encoding" "linear"
 Texture "clamp" "spectrum" "imagemap" "string wrap" "clamp"
 AttributeEnd
@@ -143,7 +151,7 @@ AttributeEnd
     require(paint.uscale == 4 && paint.vscale == -2 && paint.udelta == 0.25f &&
                 paint.vdelta == -0.5f && paint.scale == 0.75f && paint.invert &&
                 paint.image->encoding == ImageEncoding::srgb &&
-                paint.image->wrap == ImageWrap::repeat,
+                paint.image->wrap == ImageWrap::repeat && paint.filter == ImageFilter::trilinear,
             "Last authored value wins and absent fields inherit or default");
     require(definitions.at(0).source == definitions.at(3).source &&
                 definitions.at(1).texture.image == paint.image &&
@@ -153,8 +161,10 @@ AttributeEnd
                 definitions.at(3).texture.image->wrap == ImageWrap::clamp,
             "One decoded asset supplies each unique encoding and wrap combination");
 
-    const auto translated = translate_scene(checked, path);
-    require(translated.image_textures.at(1).image == paint.image &&
+    const auto translated = translate_scene(checked, path, "bilinear and trilinear");
+    require(translated.image_textures.at(0).filter == ImageFilter::trilinear &&
+                translated.image_textures.at(1).filter == ImageFilter::bilinear &&
+                translated.image_textures.at(1).image == paint.image &&
                 translated.materials.at(translated.instance_materials.at(0)).kind !=
                     SpectralMaterialKind::image &&
                 translated.instance_materials.at(1) == translated.instance_materials.at(2),
@@ -212,6 +222,7 @@ void failures(const fs::path &directory) {
         }
     }
     for (const auto field : {R"("string encoding" "gamma 2.2")", R"("string filter" "ewa")",
+                             R"("string filter" "EWA")", R"("string filter" "point")",
                              R"("string mapping" "planar" "vector3 v1" [1 0 0])",
                              R"("string wrap" "octahedralsphere")"}) {
         const auto checked = check_image(std::string(image) + ' ' + field);
@@ -254,7 +265,7 @@ Texture "paint" "float" "constant")");
     constexpr std::size_t pyramid_bytes = 5 * sizeof(std::uint32_t) + 2 * sizeof(ImageMipLevel);
     limits.image.retained_bytes = source_bytes + pyramid_bytes;
     const auto shared = check_image(std::string(image) + R"(
-Texture "another" "spectrum" "imagemap" "string filename" "color.png")",
+Texture "another" "spectrum" "imagemap" "string filename" "color.png" "string filter" "trilinear")",
                                     limits);
     require(shared.exit_code() == 0, report(shared));
     const auto variant = check_image(std::string(image) + R"(
@@ -280,7 +291,16 @@ WorldBegin
 Material "diffuse" "texture reflectance" "paint"
 )";
     write(path, std::string(settings) + surface + std::string(triangle));
-    const auto centered = translate_scene(check(path), path);
+    const auto centered = translate_scene(check(path), path, "bilinear");
+    require(centered.image_textures.front().filter == ImageFilter::bilinear,
+            "Omitted filter must default to bilinear");
+    write(path, std::string(settings) + std::string(image) +
+                    R"( "string filter" "trilinear"
+Material "diffuse" "texture reflectance" "paint"
+)" + std::string(triangle));
+    const auto trilinear = translate_scene(check(path), path, "trilinear");
+    require(trilinear.image_textures.front().filter == ImageFilter::trilinear,
+            "Authored trilinear filter did not survive translation");
     write(path, "Translate -100000000 0 0\n" + std::string(settings) + surface +
                     "Translate 100000000 0 0\n" + std::string(triangle));
     const auto translated = translate_scene(check(path), path);

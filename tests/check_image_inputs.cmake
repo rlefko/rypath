@@ -13,7 +13,7 @@ PixelFilter "box"
 Sampler "independent" "integer pixelsamples" 1
 Integrator "path" "integer maxdepth" 1
 WorldBegin
-Texture "paint" "spectrum" "imagemap" "string filename" "input.png"
+Texture "paint" "spectrum" "imagemap" "string filename" "input.png" "string filter" "trilinear"
 Material "diffuse" "texture reflectance" "paint"
 Shape "trianglemesh" "point3 P" [-1 -1 2 1 -1 2 0 1 2]
 ]=])
@@ -23,7 +23,7 @@ execute_process(COMMAND "${executable}" --check-pbrt "${input}"
 if(NOT exit STREQUAL "0" OR NOT stderr STREQUAL "")
     message(FATAL_ERROR "Image preflight failed: ${exit}: ${stdout}${stderr}")
 endif()
-string(REPLACE "\"imagemap\"" "\"imagemap\" \"string filter\" \"ewa\"" unsupported "${scene}")
+string(REPLACE "\"trilinear\"" "\"ewa\"" unsupported "${scene}")
 file(WRITE "${input}" "${unsupported}")
 execute_process(COMMAND "${executable}" --render-pbrt "${input}" --output "${output}"
     RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)

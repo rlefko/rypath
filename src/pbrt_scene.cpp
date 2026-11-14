@@ -1761,7 +1761,8 @@ void Interpreter::imagemap(const Directive &directive, bool spectrum, bool uniqu
     };
     const auto mapping = text("mapping", "uv", {"uv"}, {"spherical", "cylindrical", "planar"});
     const auto encoding_name = text("encoding", "sRGB", {"sRGB", "linear"}, {});
-    text("filter", "bilinear", {"bilinear"}, {"point", "trilinear", "ewa", "EWA"});
+    const auto filter_name =
+        text("filter", "bilinear", {"bilinear", "trilinear"}, {"point", "ewa", "EWA"});
     const auto wrap_name =
         text("wrap", "repeat", {"repeat", "clamp", "black"}, {"octahedralsphere"});
     if (mapping == "uv") {
@@ -1774,6 +1775,7 @@ void Interpreter::imagemap(const Directive &directive, bool spectrum, bool uniqu
     }
 
     ImageTexture texture;
+    texture.filter = filter_name == "trilinear" ? ImageFilter::trilinear : ImageFilter::bilinear;
     const auto set_number = [&](string_view name, float &output) {
         if (const auto found = fields.find(name); found != fields.end()) {
             const auto &value = found->second->values.front();

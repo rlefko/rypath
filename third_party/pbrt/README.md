@@ -3,7 +3,7 @@
 ## Image texture adaptations
 
 At the same pinned revision below, `src/image_texture.cpp` adapts PNG transfer
-curves, resampling, pyramid generation, and bilinear mip lookup from
+curves, resampling, pyramid generation, and bilinear/trilinear mip lookup from
 [image.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/image.cpp),
 [color.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/color.cpp),
 and [mipmap.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/mipmap.cpp).

@@ -325,11 +325,13 @@ struct MetalRenderScene::Impl {
                 }
                 texels.insert(texels.end(), image.texels.begin(), image.texels.end());
             }
-            textures.push_back({it->second, static_cast<wire::Word>(image.levels.size()),
-                                static_cast<wire::Word>(image.wrap),
-                                static_cast<wire::Word>(image.encoding), texture.uscale,
-                                texture.vscale, texture.udelta, texture.vdelta, texture.scale,
-                                static_cast<wire::Word>(texture.invert)});
+            textures.push_back(
+                {it->second, static_cast<wire::Word>(image.levels.size()),
+                 static_cast<wire::Word>(image.wrap), static_cast<wire::Word>(image.encoding),
+                 texture.uscale, texture.vscale, texture.udelta, texture.vdelta, texture.scale,
+                 static_cast<wire::Word>(texture.invert),
+                 texture.filter == ImageFilter::trilinear ? wire::trilinear_texture_filter
+                                                          : wire::bilinear_texture_filter});
         }
         texture_parameters.texture_count = static_cast<wire::Word>(textures.size());
         texture_parameters.level_count = static_cast<wire::Word>(levels.size());

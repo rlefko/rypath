@@ -964,8 +964,18 @@ RenderTranslation Translator::run() {
                           << scene_.filter.y_radius << ')';
         result_.provenance.push_back(filter_provenance.str());
         if (!scene_.image_textures.empty()) {
+            const auto has_filter = [&](ImageFilter filter) {
+                return std::ranges::any_of(
+                    scene_.image_textures,
+                    [filter](const ImageTexture &image) { return image.filter == filter; });
+            };
+            const bool bilinear = has_filter(ImageFilter::bilinear);
+            const bool trilinear = has_filter(ImageFilter::trilinear);
+            const auto *mode = bilinear && trilinear ? "bilinear and trilinear"
+                               : bilinear            ? "bilinear"
+                                                     : "trilinear";
             result_.provenance.emplace_back(
-                "Image textures: PNG, UV mapping, mipmapped bilinear filtering");
+                std::string("Image textures: PNG, UV mapping, mipmapped ") + mode + " filtering");
         }
         result_.scene = std::move(scene_);
         result_.provenance.push_back("CIE 1931 sensor exposure uses ISO and shutter duration");

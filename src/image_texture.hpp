@@ -15,6 +15,7 @@ namespace rypath {
 
 enum class ImageEncoding { srgb, linear };
 enum class ImageWrap { repeat, clamp, black };
+enum class ImageFilter { bilinear, trilinear };
 
 struct ImageLimits {
     std::uint32_t max_dimension = 4096;
@@ -54,8 +55,8 @@ ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEn
                                               ImageWrap wrap, const ImageLimits &limits = {});
 const std::array<float, 256> &image_transfer_table(ImageEncoding encoding);
 std::optional<std::array<float, 3>> image_linear_rgb(const ImagePyramid &image, float s, float t,
-                                                     float dsdx, float dtdx, float dsdy,
-                                                     float dtdy);
+                                                     float dsdx, float dtdx, float dsdy, float dtdy,
+                                                     ImageFilter filter = ImageFilter::bilinear);
 
 struct ImageTexture {
     std::shared_ptr<const ImagePyramid> image;
@@ -65,6 +66,7 @@ struct ImageTexture {
     float vdelta = 0;
     float scale = 1;
     bool invert = false;
+    ImageFilter filter = ImageFilter::bilinear;
 };
 
 } // namespace rypath

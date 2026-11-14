@@ -67,7 +67,8 @@ DecodedImage varying_pixels() {
 }
 
 RenderScene textured_plane(const DecodedImage &pixels, ImageEncoding encoding,
-                           bool varying_coordinates, float uv_scale) {
+                           bool varying_coordinates, float uv_scale,
+                           ImageWrap wrap = ImageWrap::repeat) {
     auto scene = plane();
     auto &mesh = scene.geometry.meshes.front();
     if (varying_coordinates) {
@@ -77,7 +78,7 @@ RenderScene textured_plane(const DecodedImage &pixels, ImageEncoding encoding,
     const auto diagnostic = prepare_texture_triangle_frames(mesh, identity, identity,
                                                             scene.instance_texture_frames.front());
     require(diagnostic.empty(), diagnostic);
-    auto pyramid = build_image_pyramid(pixels, encoding, ImageWrap::repeat);
+    auto pyramid = build_image_pyramid(pixels, encoding, wrap);
     if (!pyramid.value) {
         throw std::runtime_error(pyramid.diagnostic);
     }
@@ -97,13 +98,17 @@ RgbSpectrum reconstruct(const Rgb &rgb) {
     return result.value();
 }
 
-RenderScene control(const Rgb &rgb) {
+SpectralMaterial rgb_material(const Rgb &rgb) {
     const auto spectrum = reconstruct(rgb);
+    return {.kind = spectrum.is_constant ? SpectralMaterialKind::constant
+                                         : SpectralMaterialKind::rgb_sigmoid,
+            .constant = spectrum.constant,
+            .coefficients = spectrum.coefficients};
+}
+
+RenderScene control(const Rgb &rgb) {
     auto scene = plane();
-    scene.materials.front() = {.kind = spectrum.is_constant ? SpectralMaterialKind::constant
-                                                            : SpectralMaterialKind::rgb_sigmoid,
-                               .constant = spectrum.constant,
-                               .coefficients = spectrum.coefficients};
+    scene.materials.front() = rgb_material(rgb);
     return scene;
 }
 
@@ -127,10 +132,12 @@ float decode_srgb(double sample) {
                                                 : std::pow((sample + 0.055) / 1.055, 2.4));
 }
 
-void same_path(const RenderSample &observed, const RenderSample &expected) {
+void same_path(const RenderSample &observed, const RenderSample &expected,
+               unsigned scatterings = 1) {
     require(observed.pixel == expected.pixel && observed.sample == expected.sample &&
-                observed.wavelength == expected.wavelength && observed.scatterings == 1 &&
-                expected.scatterings == 1 && observed.random_words == expected.random_words,
+                observed.wavelength == expected.wavelength && observed.scatterings == scatterings &&
+                expected.scatterings == scatterings &&
+                observed.random_words == expected.random_words,
             "Image and control must shade the same hit and wavelength");
 }
 
@@ -203,6 +210,150 @@ void bilinear(MetalRenderScene &textured) {
               << max_encoded_error << ", spectral-blend difference " << max_spectrum_error << '\n';
 }
 
+void trilinear() {
+    // Each source 2x2 block is uniform. The 2x2 mip keeps these colors
+    // exactly, and the sRGB encoding of their linear mean is (138,153,135).
+    constexpr std::array<std::array<std::uint8_t, 3>, 4> blocks{
+        {{245, 110, 120}, {75, 230, 70}, {45, 45, 220}, {30, 150, 25}}};
+    constexpr std::array<std::uint8_t, 3> mean_bytes{138, 153, 135};
+    DecodedImage image{4, 4, {}};
+    for (std::size_t y = 0; y < 4; ++y) {
+        for (std::size_t x = 0; x < 4; ++x) {
+            const auto &texel = blocks[2 * (y / 2) + x / 2];
+            image.rgb.insert(image.rgb.end(), texel.begin(), texel.end());
+        }
+    }
+
+    constexpr RenderRequest request{.width = 1,
+                                    .height = 1,
+                                    .seed = seed,
+                                    .pixel_count = 1,
+                                    .sample_count = 512,
+                                    .total_samples = 512};
+    constexpr float scale = 1.65f;
+    // At the pixel center the camera ray is (0,0,1) and the normalized
+    // differential rays are (1,0,1)/sqrt(2) and (0,-1,1)/sqrt(2).
+    // At z=2 their scaled offset is 2/(7*sqrt(2)+1) world units. The plane
+    // spans eight world units per UV unit, so map to width 2^(-1/2) and LOD 1.5.
+    const float uv_scale = static_cast<float>(14 + std::sqrt(2.0));
+    auto scene = textured_plane(image, ImageEncoding::srgb, true, uv_scale, ImageWrap::black);
+    // Keep the tiny camera footprint inside one triangle, away from the shared diagonal.
+    scene.geometry.instances.front().transform.values[3] = 2;
+    scene.filter = {PixelFilterKind::triangle, 0x1p-22f, 0x1p-22f};
+    auto &bilinear_texture = scene.image_textures.front();
+    bilinear_texture.udelta = 0.25f - 0.25f * uv_scale;
+    bilinear_texture.vdelta = 0.75f - 0.5f * uv_scale;
+    bilinear_texture.scale = scale;
+    bilinear_texture.invert = true;
+    auto trilinear_texture = bilinear_texture;
+    trilinear_texture.filter = ImageFilter::trilinear;
+    // The shader must read descriptor 1 even though both descriptors share mip storage.
+    scene.image_textures.push_back(std::move(trilinear_texture));
+
+    Rgb blended_rgb{}, bilinear_rgb{}, clamped_endpoints_rgb{};
+    const auto transform = [](float value) { return std::clamp(1 - scale * value, 0.f, 1.f); };
+    for (std::size_t c = 0; c < blended_rgb.size(); ++c) {
+        // At (s,t)=(1/4,1/4), the lower mip hits its first texel center;
+        // black addressing leaves 9/16 of the upper 1x1 mip's value.
+        const float lower = decode_srgb(blocks.front()[c] / 255.0);
+        const float upper = (9.f / 16) * decode_srgb(mean_bytes[c] / 255.0);
+        blended_rgb[c] = transform((lower + upper) * 0.5f);
+        bilinear_rgb[c] = transform(lower);
+        clamped_endpoints_rgb[c] = (transform(lower) + transform(upper)) * 0.5f;
+    }
+
+    for (bool patch : {false, true}) {
+        if (patch) {
+            auto &mesh = scene.geometry.meshes.front();
+            mesh.triangles.clear();
+            mesh.patches = {{0, 1, 2, 3}};
+            scene.instance_texture_frames.front().clear();
+        }
+        scene.materials.front().image_texture = 0;
+        const auto bilinear = sample(*build(scene), request);
+        scene.materials.front().image_texture = 1;
+        const auto actual = sample(*build(scene), request);
+        auto uniform = scene;
+        uniform.image_textures.clear();
+        uniform.instance_texture_frames.clear();
+        uniform.materials.front() = rgb_material(blended_rgb);
+        const auto expected = sample(*build(uniform), request);
+        uniform.materials.front() = rgb_material(bilinear_rgb);
+        const auto lower = sample(*build(uniform), request);
+        uniform.materials.front() = rgb_material(clamped_endpoints_rgb);
+        const auto wrong_order = sample(*build(uniform), request);
+        double max_error = 0, max_bilinear_error = 0, mip_difference = 0, order_difference = 0;
+        for (std::size_t i = 0; i < actual.samples.size(); ++i) {
+            const auto &a = actual.samples[i];
+            const auto &e = expected.samples[i];
+            const auto &b = bilinear.samples[i];
+            same_path(a, e);
+            same_path(b, lower.samples[i]);
+            max_error = std::max(max_error, std::abs(double{a.radiance} - e.radiance));
+            max_bilinear_error = std::max(max_bilinear_error,
+                                          std::abs(double{b.radiance} - lower.samples[i].radiance));
+            mip_difference = std::max(mip_difference, std::abs(double{a.radiance} - b.radiance));
+            order_difference = std::max(
+                order_difference, std::abs(double{a.radiance} - wrong_order.samples[i].radiance));
+        }
+        require(max_error < 3e-5 && max_bilinear_error < 3e-5,
+                "Filtered image radiance disagrees with the same-seed RGB controls");
+        require(mip_difference > 0.02 && order_difference > 0.02,
+                "Trilinear fixture does not distinguish mip blending or premature clamping");
+        std::cout << (patch ? "Patch" : "Triangle") << " trilinear maximum path error " << max_error
+                  << ", bilinear error " << max_bilinear_error << ", mip difference "
+                  << mip_difference << ", clamp-order difference " << order_difference << '\n';
+    }
+}
+
+void trilinear_secondary() {
+    auto scene = textured_plane(varying_pixels(), ImageEncoding::srgb, true, 24);
+    // Camera rays see the white front plane at z=2. Only an indirect ray
+    // can hit the textured panel behind the camera.
+    scene.max_depth = 2;
+    auto &panel = scene.geometry.meshes.front();
+    for (auto &position : panel.positions) {
+        position.z = -1;
+    }
+    const auto front = plane();
+    scene.geometry.meshes.push_back(front.geometry.meshes.front());
+    scene.geometry.instances.push_back({1, {}});
+    scene.materials.push_back(front.materials.front());
+    scene.instance_materials.push_back(1);
+    scene.instance_texture_frames.emplace_back();
+
+    constexpr RenderRequest request{.width = 8,
+                                    .height = 8,
+                                    .seed = seed,
+                                    .pixel_count = 64,
+                                    .sample_count = 33,
+                                    .total_samples = 33};
+    const auto bilinear = sample(*build(scene), request);
+    scene.image_textures.front().filter = ImageFilter::trilinear;
+    const auto trilinear = sample(*build(scene), request);
+    double difference = 0;
+    std::size_t secondary_paths = 0, changed_secondary_paths = 0;
+    for (std::size_t i = 0; i < bilinear.samples.size(); ++i) {
+        const auto &b = bilinear.samples[i];
+        const auto &t = trilinear.samples[i];
+        same_path(b, t, b.scatterings);
+        const double delta = std::abs(double{b.radiance} - t.radiance);
+        if (b.scatterings == 2) {
+            ++secondary_paths;
+            changed_secondary_paths += delta > 0.001;
+            difference = std::max(difference, delta);
+        } else {
+            require(b.scatterings == 1 && delta == 0,
+                    "A path without a secondary surface hit changed its radiance");
+        }
+    }
+    require(secondary_paths > 100 && changed_secondary_paths > 100 && difference > 0.01,
+            "Secondary texture fixture did not exercise fractional LOD blending");
+    std::cout << "Secondary trilinear changed " << changed_secondary_paths << " of "
+              << secondary_paths << " two-hit paths by more than 0.001, maximum " << difference
+              << '\n';
+}
+
 void coarsest_mip() {
     constexpr RenderRequest request{.width = 8,
                                     .height = 8,
@@ -245,34 +396,52 @@ Film progressive(const RenderScene &scene, const RenderSettings &settings) {
 }
 
 void batch_partition() {
-    const auto scene = textured_plane(varying_pixels(), ImageEncoding::linear, true, 40);
-    // 2,048 pixels times 65 samples exceeds the 65,536-path dispatch limit.
-    RenderSettings settings{
-        .width = 64, .height = 32, .samples = 65, .batch_size = 65, .seed = seed};
-    const auto full = progressive(scene, settings);
-    settings.batch_size = 7;
-    require(full == progressive(scene, settings),
-            "Batch partition changed raw image-textured film");
-    settings.batch_size = 1;
-    require(full == progressive(scene, settings),
-            "Single-sample batches changed raw image-textured film");
+    auto scene = textured_plane(varying_pixels(), ImageEncoding::linear, true, 40);
+    for (const auto filter : {ImageFilter::bilinear, ImageFilter::trilinear}) {
+        scene.image_textures.front().filter = filter;
+        const float mapping = filter == ImageFilter::trilinear ? 160 : 40;
+        scene.image_textures.front().uscale = mapping;
+        scene.image_textures.front().vscale = mapping;
+        // 2,048 pixels times 65 samples exceeds the 65,536-path dispatch limit.
+        RenderSettings settings{
+            .width = 64, .height = 32, .samples = 65, .batch_size = 65, .seed = seed};
+        const auto full = progressive(scene, settings);
+        settings.batch_size = 7;
+        require(full == progressive(scene, settings),
+                "Batch partition changed raw image-textured film");
+        settings.batch_size = 1;
+        require(full == progressive(scene, settings),
+                "Single-sample batches changed raw image-textured film");
 
-    auto renderer = build(scene);
-    RenderRequest request{.width = 64,
-                          .height = 32,
-                          .seed = seed,
-                          .pixel_count = 2048,
-                          .sample_count = 1,
-                          .total_samples = 65};
-    const auto fine = sample(*renderer, request);
-    request.total_samples = 1;
-    const auto coarse = sample(*renderer, request);
-    require(std::ranges::any_of(fine.samples,
-                                [&](const auto &s) {
-                                    return std::abs(s.radiance - coarse.samples[s.pixel].radiance) >
-                                           1e-3f;
-                                }),
-            "Batch fixture does not exercise sample-budget-dependent LOD");
+        auto renderer = build(scene);
+        RenderRequest request{.width = 64,
+                              .height = 32,
+                              .seed = seed,
+                              .pixel_count = 2048,
+                              .sample_count = 1,
+                              .total_samples = 65};
+        const auto fine = sample(*renderer, request);
+        if (filter == ImageFilter::trilinear) {
+            auto control_scene = scene;
+            control_scene.image_textures.front().filter = ImageFilter::bilinear;
+            const auto single_level = sample(*build(control_scene), request);
+            require(std::ranges::any_of(
+                        fine.samples,
+                        [&](const auto &s) {
+                            return std::abs(s.radiance - single_level.samples[s.pixel].radiance) >
+                                   1e-3f;
+                        }),
+                    "Trilinear batch fixture must blend mips at its fixed sample budget");
+        }
+        request.total_samples = 1;
+        const auto coarse = sample(*renderer, request);
+        require(std::ranges::any_of(fine.samples,
+                                    [&](const auto &s) {
+                                        return std::abs(s.radiance -
+                                                        coarse.samples[s.pixel].radiance) > 1e-3f;
+                                    }),
+                "Batch fixture does not exercise sample-budget-dependent LOD");
+    }
 }
 
 void translated_footprint() {
@@ -312,11 +481,21 @@ void validation() {
     wrong_index.materials.front().image_texture = 1;
     invalid(wrong_index, "invalid texture");
 
-    auto wrong_layout = valid;
-    auto pyramid = std::make_shared<ImagePyramid>(*valid.image_textures.front().image);
+    auto wrong_layout = textured_plane(varying_pixels(), ImageEncoding::linear, true, 40);
+    wrong_layout.image_textures.front().filter = ImageFilter::trilinear;
+    auto pyramid = std::make_shared<ImagePyramid>(*wrong_layout.image_textures.front().image);
     pyramid->levels.back().offset += 1;
     wrong_layout.image_textures.front().image = std::move(pyramid);
     invalid(wrong_layout, "mip layout");
+
+    auto wrong_filter = valid;
+    auto invalid_descriptor = wrong_filter.image_textures.front();
+    // Inject a non-enumerator to exercise the native boundary's rejection path.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    invalid_descriptor.filter = static_cast<ImageFilter>(99);
+    wrong_filter.image_textures.push_back(std::move(invalid_descriptor));
+    wrong_filter.materials.front().image_texture = 1;
+    invalid(wrong_filter, "image texture filter");
 
     auto wrong_frames = valid;
     wrong_frames.instance_texture_frames.front().pop_back();
@@ -357,6 +536,8 @@ int main(int argc, char **argv) {
         }
         require(native.status == GeometryStatus::success && native.scene, native.diagnostic);
         bilinear(*native.scene);
+        trilinear();
+        trilinear_secondary();
         coarsest_mip();
         batch_partition();
         translated_footprint();

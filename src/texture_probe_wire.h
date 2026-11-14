@@ -26,9 +26,18 @@ struct Result {
     Vector wrapped;
     Vector black;
     Vector spectrum;
+    Vector trilinear_base;
+    Vector trilinear_integer;
+    Vector trilinear_middle;
+    Vector trilinear_black;
+    Vector trilinear_coarse;
+    Vector singleton_narrow;
+    Vector singleton_wide;
+    Vector invalid_upper;
+    Vector invalid_filter;
 };
 
-static_assert(sizeof(Result) == 24 * sizeof(Vector) && sizeof(Vector) == 16,
+static_assert(sizeof(Result) == 33 * sizeof(Vector) && sizeof(Vector) == 16,
               "Texture probe result layout");
 
 } // namespace texture_probe
