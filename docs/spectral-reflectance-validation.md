@@ -127,3 +127,71 @@ in the [data record](../third_party/pbrt/README.md#reproducing-and-validating-th
 substituting its source and the output path above. Extended comparisons remain
 separate from offline routine CTest; comparator negative tests run with the
 existing Python test suite.
+
+
+## Measured evidence
+
+Measured November 14, 2026, for implementation `3d437e3`, based on main
+`69399568`. Host: Apple M4 Max (`applegpu_g16s`), macOS 26.6 (25G5065a),
+Xcode 26.6 (17F113), Apple Clang 21, CMake 4.0.3, and Ninja 1.13.2.
+Both Metal availability allowances were disabled.
+
+- Debug, Release, and ASan/UBSan each passed **73/73 CTests**. Metal-disabled
+  ASan/UBSan passed **61/61**. Metal API and shader validation passed **14/14**
+  without skips. The final test-only optional guard was rebuilt and rechecked
+  in all four configurations.
+- The rational oracle passed **273 curves, 140,062 samples, and 109,118 exact
+  zero/one controls**. Maximum absolute reflectance error was `5.7726902e-8`,
+  below the fixed `1e-6` limit. Debug and Release produced identical dumps.
+- All **88 built-in spectra** passed **165,528 quarter-nanometer samples per
+  translation route**, with **3,549 exact zeros and 34,982 exact whites** per
+  route. Maximum absolute error against pinned PBRT was `1.1920929e-7`, below
+  `2e-6`. Direct material and constant texture output matched exactly. Separate
+  probes matched all **4,204 original knot values** and **41,448 existing dense
+  emission values** bit-for-bit; both generated includes reproduced byte-for-byte.
+- Four native white-plane controls covered **131,072 paths**. Maximum per-path
+  radiance errors were `1.29253e-9` (named gold), `1.01784e-9` (signed ramp),
+  `5.90745e-10` (sub-nanometer support), and `1.66007e-9` (wide signed curve).
+  Fixed samples exercised their declared zero/interior/saturated regions.
+  Raw films and complete counts matched at batch sizes 65, 7, and 1.
+- The full pinned image comparison passed **516 statistical gates and two
+  filter-sensitivity gates**, across **42 fixtures and 1,346 PFM outputs**.
+  The two new fixtures contributed 18 statistical gates; maximum regional RGB
+  mean differences were `0.001088` for named diffuse and `0.003889` for the file
+  texture wrapper. Seeds and thresholds were unchanged.
+- Independent review found and verified the retained-capacity fix: a curve
+  with 100 original knots and two generated anchors now retains exactly 102
+  entries, and a 101-entry budget fails without a partial payload. The reviewer
+  reran focused portable/native tests, both numerical oracles, and data
+  regeneration; no actionable findings remain.
+- Review also confirmed the inherited Metal underflow limit using an actual
+  checked file with `(360, 2^-126)` and `(830, 2^-126)`, a diffuse plane, flat
+  numeric environment, scale `1e38`, and eight paths. CPU reflectance remained
+  exactly `2^-126`; the device returned zero radiance while matched white-control
+  paths implied `0.00987–0.01391`. This is explicitly outside a relative-radiance
+  accuracy guarantee, despite meeting the absolute reflectance bound.
+- Focused LLVM 18.1.8 clang-tidy with matching libc++ headers, all **46 Python
+  tests**, formatting, and repository hooks passed. Negative oracle tests reject
+  malformed/truncated/nonfinite output, changed saturation, excess error, and
+  mismatched material/texture routes.
+- The product CLI rendered an inspected 256x256 PNG at 256 spp from the file
+  texture wrapper, with these preview overrides recorded in the staged input.
+  Batches of seven committed all **16,777,216 samples**. Its SHA-256 is
+  `f2901ee5230073e6efad6e06e02a498345b88b43389acba40b57c933c490dc74`.
+
+The Release reference executable SHA-256 is
+`c95c5a549de93a7bddd11a3439207c9f558e201e0270dcdccd598450b2fd1364`;
+the unchanged Metal library is
+`d133c9ac81776189bfb986c689949aeb860b86758e7e821093a473ddc5a45bd4`.
+The clean pinned PBRT executable is
+`4fd27e940f295fdb14f8407dbad7ef2e05dba9e9e2980c4a5cc3cad3da9b43b2`;
+the separately linked reflectance probe is
+`c7a6fed869fa701bc667281c1afd2cd0da6d084b60f68be30a4ce5d2f213516a`.
+The rational-oracle dump is
+`b33350fe60799dbe64d575f37afb6b3d10be20f6080b46e4f49831c477e7d0ad`;
+the PBRT and translated named dumps are
+`f39f60ef36cabd58a901dea55dea0c574a2977497aefb76b971d7dee7c255504`
+and `4e8b6912fe93196049020ab050bf623dfec1137bc57e4e7428338b39d4c90908`.
+Reference source/dependency provenance remains in the
+[reference build record](pbrt-render-validation.md#pinned-upstream-reference).
+Hosted checks are reported separately on the PR. No performance claim is made.
