@@ -227,22 +227,69 @@ Curve planck_curve(double temperature) {
 }
 
 void emission_paths(MetalRenderScene &native, const Curve &curve, double amplitude,
-                    std::string_view name, std::uint64_t seed) {
+                    std::string_view name, std::uint64_t seed, bool check_blue_bins = false) {
     double normalization = 0;
     for (std::size_t i = 0; i < detail::cie_xyz.size(); ++i) {
         normalization += value_at(curve, 360.0 + static_cast<double>(i)) * detail::cie_xyz[i][1];
     }
     const auto samples = trace(native, analytic_paths, seed);
     double maximum_error = 0;
+    std::array<bool, 5> positive_bins{};
     for (const auto &sample : samples.samples) {
-        const double expected =
-            amplitude * value_at(curve, std::round(sample.wavelength)) / normalization;
+        const double nm = std::round(sample.wavelength);
+        const double expected = amplitude * value_at(curve, nm) / normalization;
         const double error = std::abs(sample.radiance - expected);
-        require(sample.scatterings == 0 && error <= 1e-8 + 2e-6 * std::abs(expected),
-                "Blackbody emitted radiance disagrees with independent Planck evaluation");
+        if (sample.scatterings != 0 || !(error <= 1e-8 + 2e-6 * std::abs(expected))) {
+            throw std::runtime_error(std::string(name) +
+                                     " differs from independently evaluated radiance");
+        }
+        if (check_blue_bins && nm >= 360 && nm <= 364) {
+            require(sample.radiance > 0, "MgO-k path in the blue band missed its emitter");
+            positive_bins[static_cast<std::size_t>(nm - 360)] = true;
+        }
+        if (check_blue_bins && nm >= 365) {
+            require(sample.radiance == 0, "MgO-k path outside the blue band must be exactly dark");
+        }
         maximum_error = std::max(maximum_error, error);
     }
+    if (check_blue_bins) {
+        require(std::ranges::all_of(positive_bins, [](bool seen) { return seen; }),
+                "MgO-k paths must exercise all five positive wavelength bins");
+    }
     std::cout << name << " maximum per-path radiance error " << maximum_error << '\n';
+}
+
+void mixed_emission_batches(RenderScene mixed, std::string_view name) {
+    auto settings = RenderSettings{
+        .width = 5, .height = 7, .samples = 65, .batch_size = 65, .seed = 0x6c44198c4a67c2e9ULL};
+    const auto whole = progressive(mixed, settings);
+    for (const auto batch : {7u, 1u}) {
+        settings.batch_size = batch;
+        require(whole == progressive(mixed, settings),
+                std::string(name) + " batch partition changed raw film");
+    }
+    settings.batch_size = 65;
+    auto without_sky = mixed;
+    without_sky.environment.fill(0);
+    require(whole != progressive(without_sky, settings),
+            std::string(name) + " mixed fixture did not receive environment light");
+    auto without_areas = mixed;
+    for (auto &emission : without_areas.area_emissions) {
+        emission.radiance.fill(0);
+    }
+    require(whole != progressive(without_areas, settings),
+            std::string(name) + " mixed fixture did not receive area light");
+    mixed.environment.fill(0);
+    for (auto &emission : mixed.area_emissions) {
+        emission.radiance.fill(0);
+    }
+    const auto dark = progressive(mixed, settings);
+    require(whole != dark && std::ranges::all_of(dark.pixels,
+                                                 [](const auto &pixel) {
+                                                     return pixel.sum == XYZ{} &&
+                                                            pixel.correction == XYZ{};
+                                                 }),
+            std::string(name) + " batch fixture did not depend on its lights");
 }
 
 void blackbody_lights(const std::filesystem::path &directory) {
@@ -299,37 +346,115 @@ void blackbody_lights(const std::filesystem::path &directory) {
     emission_paths(*native, cold_curve, 1, "Cold limiting sky", 0x825c71ada4eda1c2ULL);
     analytic(*native, cold_moments, 0x825c71ada4eda1c2ULL, "Cold limiting sky", 0);
 
-    auto mixed = load(directory / "blackbody-mixed.pbrt");
-    auto settings = RenderSettings{
-        .width = 5, .height = 7, .samples = 65, .batch_size = 65, .seed = 0x6c44198c4a67c2e9ULL};
-    const auto whole = progressive(mixed, settings);
-    for (const auto batch : {7u, 1u}) {
-        settings.batch_size = batch;
-        require(whole == progressive(mixed, settings),
-                "Blackbody batch partition changed raw film");
+    mixed_emission_batches(load(directory / "blackbody-mixed.pbrt"), "Blackbody");
+}
+
+void named_lights(const std::filesystem::path &directory) {
+    // Raw knots from PBRT v4 spectrum.cpp at b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f.
+    // Copyright (c) 1998–2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
+    // Endpoint extension and interpolation here are independent of the compiled light tables.
+    // See third_party/pbrt/README.md and LICENSE.txt for Apache-2.0 and data notices.
+    const Curve fluorescent{
+        {359, 0.91},      {380, 0.91},  {385, 0.63},      {390, 0.46},      {395, 0.37},
+        {400, 1.29},      {405, 12.68}, {410, 1.59},      {415, 1.79},      {420, 2.46},
+        {425, 3.33},      {430, 4.49},  {435, 33.939999}, {440, 12.13},     {445, 6.95},
+        {450, 7.19},      {455, 7.12},  {460, 6.72},      {465, 6.13},      {470, 5.46},
+        {475, 4.79},      {480, 5.66},  {485, 14.29},     {490, 14.96},     {495, 8.97},
+        {500, 4.72},      {505, 2.33},  {510, 1.47},      {515, 1.1},       {520, 0.89},
+        {525, 0.83},      {530, 1.18},  {535, 4.9},       {540, 39.59},     {545, 72.839996},
+        {550, 32.610001}, {555, 7.52},  {560, 2.83},      {565, 1.96},      {570, 1.67},
+        {575, 4.43},      {580, 11.28}, {585, 14.76},     {590, 12.73},     {595, 9.74},
+        {600, 7.33},      {605, 9.72},  {610, 55.27},     {615, 42.580002}, {620, 13.18},
+        {625, 13.16},     {630, 12.26}, {635, 5.11},      {640, 2.07},      {645, 2.34},
+        {650, 3.58},      {655, 3.01},  {660, 2.48},      {665, 2.14},      {670, 1.54},
+        {675, 1.33},      {680, 1.46},  {685, 1.94},      {690, 2},         {695, 1.2},
+        {700, 1.35},      {705, 4.1},   {710, 5.58},      {715, 2.51},      {720, 0.57},
+        {725, 0.27},      {730, 0.23},  {735, 0.21},      {740, 0.24},      {745, 0.24},
+        {750, 0.2},       {755, 0.24},  {760, 0.32},      {765, 0.26},      {770, 0.16},
+        {775, 0.12},      {780, 0.09},  {831, 0.09},
+    };
+    // Glass data from refractiveindex.info, public domain CC0.
+    const Curve glass{
+        {359, 1.7905788948419}, {380, 1.7905788948419}, {401, 1.7776074571692},
+        {422, 1.7673620572474}, {443, 1.7590649148507}, {464, 1.7522127524444},
+        {486, 1.7464635698826}, {507, 1.741575877046},  {528, 1.7373738218659},
+        {549, 1.7337260730259}, {570, 1.7305324562829}, {592, 1.7277151818026},
+        {613, 1.7252129043714}, {634, 1.7229765939984}, {655, 1.7209665988467},
+        {676, 1.719150514229},  {698, 1.7175016091415}, {719, 1.7159976462946},
+        {740, 1.7146199848831}, {761, 1.7133528897994}, {782, 1.7121829937648},
+        {804, 1.7110988742233}, {825, 1.7100907173852}, {846, 1.7091500491754},
+        {867, 1.7082695180523}, {888, 1.7074427184169}, {910, 1.7066640460471},
+    };
+    // PhysLight measurements contributed by Anders Langlands and Luca Fascione.
+    // Copyright (c) 2020, Weta Digital, Ltd.
+    const Curve sensor{
+        {359, 0.000758327000000017},   {380, 0.000758327000000017},  {390, 0.0012576842999999938},
+        {400, 0.010820649800000009},   {410, 0.019205195700000028},  {420, 0.1270513262000001},
+        {430, 0.5104267015999999},     {440, 0.663137615},           {450, 0.7523775822000004},
+        {460, 0.7700025961},           {470, 0.8340607439000001},    {480, 0.8034507821000004},
+        {490, 0.6184450975000001},     {500, 0.4900639065999999},    {510, 0.27514909339999993},
+        {520, 0.19960778159999987},    {530, 0.08455624810000015},   {540, 0.04555814639999995},
+        {550, 0.025387996400000022},   {560, 0.01422116559999999},   {570, 0.007110021499999999},
+        {580, 0.004975033999999996},   {590, 0.003437605000000003},  {600, 0.002285168500000001},
+        {610, 0.0017485192999999995},  {620, 0.001543357100000001},  {630, 0.0014574705999999982},
+        {640, 0.001605848200000001},   {650, 0.0019172778},          {660, 0.0022209515999999977},
+        {670, 0.0022082942000000005},  {680, 0.0017961151000000022}, {690, 0.0009077389000000003},
+        {700, 0.00036932919999999926}, {710, 0.0002659898999999999}, {720, 0.0039319256000000065},
+        {831, 0.0039319256000000065},
+    };
+    // All knots after the zero at 364.968994 nm are zero. The constant
+    // segment includes 360 nm and ends at 361.141998 nm. Keep the upstream
+    // binary32 wavelength for the start and end of the steep decline.
+    const Curve magnesia{{360, 1e-6}, {361.141998f, 1e-6}, {364.968994f, 0}, {830, 0}};
+    constexpr double sky_amplitude = static_cast<double>(1.7f) * 7 / std::numbers::pi;
+    auto sky = load(directory / "named-background.pbrt");
+    auto native = build(sky);
+    emission_paths(*native, fluorescent, sky_amplitude, "F11 sky", 0x33a69a749dff13dcULL);
+    analytic(*native, quadrature(fluorescent, sky_amplitude, {}), 0xec2a5785380647ecULL, "F11 sky",
+             0);
+
+    auto plane = load(directory / "diffuse.pbrt");
+    const auto emitters = load(directory / "named-area.pbrt");
+    require(emitters.area_emissions.size() == 3 && !emitters.area_emissions[0].two_sided &&
+                emitters.area_emissions[1].two_sided && !emitters.area_emissions[2].two_sided,
+            "Named fixture must bind three distinct scoped emitters");
+    sky.environment = emitters.area_emissions.back().radiance;
+    const auto moments = quadrature(magnesia, 1, {});
+    require(std::abs(moments.mean[1] - 0.8816845) < 2e-7,
+            "Continuous wavelength quadrature counts half of the 360 nm bin");
+    native = build(sky);
+    emission_paths(*native, magnesia, 1, "MgO-k sky", 0x322a67c32ab401ddULL, true);
+    analytic(*native, moments, 0x8e3c58817e778b06ULL, "MgO-k sky", 0);
+
+    plane.max_depth = 0;
+    plane.environment.fill(0);
+    plane.area_emissions = {emitters.area_emissions.front()};
+    plane.instance_emissions = {0};
+    auto &mesh = plane.geometry.meshes.front();
+    for (auto &triangle : mesh.triangles) {
+        std::swap(triangle[1], triangle[2]);
     }
-    settings.batch_size = 65;
-    auto without_sky = mixed;
-    without_sky.environment.fill(0);
-    require(whole != progressive(without_sky, settings),
-            "Blackbody mixed fixture did not receive environment light");
-    auto without_areas = mixed;
-    for (auto &emission : without_areas.area_emissions) {
-        emission.radiance.fill(0);
-    }
-    require(whole != progressive(without_areas, settings),
-            "Blackbody mixed fixture did not receive area light");
-    mixed.environment.fill(0);
-    for (auto &emission : mixed.area_emissions) {
-        emission.radiance.fill(0);
-    }
-    const auto dark = progressive(mixed, settings);
-    require(whole != dark && std::ranges::all_of(dark.pixels,
-                                                 [](const auto &pixel) {
-                                                     return pixel.sum == XYZ{} &&
-                                                            pixel.correction == XYZ{};
-                                                 }),
-            "Blackbody batch fixture did not depend on its lights");
+    native = build(plane);
+    emission_paths(*native, glass, 1.75, "Glass-F10 triangles", 0xa96b8af137488124ULL);
+    analytic(*native, quadrature(glass, 1.75, {}), 0x1520b6a0338ea4d2ULL, "Glass-F10 triangles", 0);
+
+    plane.area_emissions = {emitters.area_emissions[1]};
+    native = build(plane);
+    emission_paths(*native, sensor, 1, "EOS 5D blue triangles", 0x7b6eee8136e917bcULL);
+    analytic(*native, quadrature(sensor, 1, {}), 0x35076045d4525f3dULL, "EOS 5D blue triangles", 0);
+
+    // A black environment means the positive-band samples require a hit on
+    // the translated area light. Exercise both Metal geometry paths.
+    plane.area_emissions = {emitters.area_emissions.back()};
+    native = build(plane);
+    emission_paths(*native, magnesia, 1, "MgO-k triangles", 0x3a566f6595b8b01bULL, true);
+    mesh.triangles.clear();
+    mesh.patches = {{0, 3, 1, 2}};
+    native = build(plane);
+    emission_paths(*native, magnesia, 1, "MgO-k patch", 0x3f89ddf9eb0449ecULL, true);
+    analytic(*native, moments, 0x303582f945d2fc5eULL, "MgO-k patch", 0);
+
+    mixed_emission_batches(load(directory / "named-mixed.pbrt"), "Named");
 }
 
 // Coefficients of linear sRGB (1, 0, 0), from the pinned upstream PBRT table.
@@ -535,6 +660,7 @@ int main(int argc, char **argv) {
         constant_texture_equivalence(directory, "diffuse");
         constant_texture_equivalence(directory, "ply-external");
         blackbody_lights(directory);
+        named_lights(directory);
 
         auto sky = load(directory / "background.pbrt");
         require(sky.max_depth == 0, "Background fixture must exercise depth zero");

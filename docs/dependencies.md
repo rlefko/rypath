@@ -73,6 +73,13 @@ checksum-verified at configure time and shared by portable and Metal sampling.
 Their PBRT Apache-2.0 and Leonhard Gruenschloss permission notices are retained.
 No sampler library is linked or downloaded at runtime.
 
+All 88 built-in named spectra from the same pinned PBRT revision are embedded
+as immutable binary32 samples over 360–830 nm. The reproducible extraction
+preserves upstream interpolation, endpoint extension, and illuminant normalization.
+CMake verifies the generated data checksum. The [PBRT record](../third_party/pbrt/README.md)
+retains extraction/oracle commands, PBRT and PhysLight notices, and the glass data's
+refractiveindex.info attribution. These tables add no runtime or build-time network dependency.
+
 The bounded PLY 1.0 decoder is original C++20 code. The reader APIs and count
 handling in pinned PBRT RPly 1.1.3, tinyply 3.0, and happly were examined before
 choosing this boundary; enforcing allocation and decode-work bounds would require

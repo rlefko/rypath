@@ -86,6 +86,8 @@ the scaled knots. All 471 extracted values matched the pinned build's
 `GetNamedSpectrum("stdillum-D65")` at the integer wavelengths bit-for-bit.
 The include has SHA-256
 `5a9a9c41d16cd61a936704cd5194ec0d2ade4f5f64c728419e2befaac566006a`.
+The archived include is a regression reference. The runtime D65 accessor
+and built-in name lookup share the same samples from `named_spectra.inc`.
 
 ### Reproducing the data
 
@@ -113,3 +115,63 @@ chromatic input, the program used
 `(*pbrt::RGBToSpectrumTable::sRGB)(pbrt::RGB(r, g, b))` and evaluated the
 returned polynomial at the listed wavelengths. The normal rypath build
 uses the checked-in data with no Python, PBRT, or network dependency.
+
+## PBRT v4 built-in named spectra
+
+`named_spectra.inc` contains all 88 names in the same pinned PBRT v4
+[spectrum.cpp registry](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/spectrum.cpp#L2661),
+with one row of 471 IEEE 754 binary32 samples for each name at integer
+wavelengths from 360 through 830 nm. The names are case-sensitive. CMake
+checks SHA-256 `1ad23d63bc8e02a3f88e22dfe660c07114d037a32d1f8d8666c9723400c833bc`
+and compiles the checked-in hexadecimal literals into static data.
+
+The extractor follows PBRT's `FromInterleaved` and `PiecewiseLinearSpectrum`
+arithmetic. If the knots leave either visible endpoint uncovered, PBRT
+extends the endpoint value using a knot at 359 or 831 nm. For the 16
+illuminants marked for normalization, it sums the samples weighted by
+PBRT's CIE Y table in binary32 and scales the knots by
+`CIE_Y_integral / InnerProduct` before resampling. This is the upstream
+spectra initialization step. rypath applies its light calibration separately
+when translating a named spectrum used as emission.
+
+The generated include retains PBRT's Apache-2.0 attribution and the
+PhysLight measurements notice for Anders Langlands and Luca Fascione,
+Copyright (c) 2020, Weta Digital, Ltd. The optical glass data are from
+[refractiveindex.info](https://refractiveindex.info) under
+[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+
+### Reproducing and validating the named data
+
+From the repository root, use a CPU Release PBRT build at the pinned
+revision with `PBRT_FLOAT_AS_DOUBLE=OFF`. The following link command applies
+to the macOS PBRT build described above, with OpenEXR exposed through
+`pkg-config`.
+
+```sh
+pbrt_source="$PWD/.cache/pbrt-reference/source"
+pbrt_build="$PWD/.cache/pbrt-reference/build"
+validation_dir=build/named-emission-validation
+mkdir -p "$validation_dir"
+python3 scripts/extract_pbrt_named_spectra.py "$pbrt_source" "$validation_dir/named_spectra.inc"
+cmp third_party/pbrt/named_spectra.inc "$validation_dir/named_spectra.inc"
+
+c++ -std=c++17 -ffp-contract=off -I"$pbrt_source/src" -I"$pbrt_source/src/ext" -I"$pbrt_build" \
+    scripts/pbrt_named_spectrum_probe.cpp "$pbrt_build/libpbrt_lib.a" \
+    "$pbrt_build/src/ext/libdeflate/libdeflate.a" \
+    "$pbrt_build/src/ext/double-conversion/libdouble-conversion.a" \
+    "$pbrt_build/src/ext/utf8proc/libutf8proc.a" \
+    $(pkg-config --libs OpenEXR) -o "$validation_dir/pbrt_named_spectrum_probe"
+
+cmake --preset debug -B build/named-data -DRYPATH_ENABLE_METAL=OFF
+cmake --build build/named-data --target rypath_pbrt_spectra_tests
+python3 scripts/compare_pbrt_named_spectra.py "$pbrt_source" \
+    "$validation_dir/pbrt_named_spectrum_probe" build/named-data/tests/rypath_pbrt_spectra_tests \
+    --output-directory "$validation_dir"
+```
+
+The comparator derives the list of names directly from the pinned source
+and compares the compiled rypath lookup to calls to PBRT's
+`Spectra::Init` and `GetNamedSpectrum`. On Apple M4 Max with the compiler
+and macOS versions above, all 88 names and 41,448 sample words matched
+bit-for-bit. Both output dumps had SHA-256
+`3bcc076b37c15bb3c714937090ecf3ce2b04d8436c25220ab01d1af9c52360ac`.

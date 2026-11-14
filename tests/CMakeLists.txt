@@ -264,6 +264,12 @@ rypath_configure_host_target(rypath_rgb_spectrum_tests)
 add_test(NAME render.rgb_spectrum COMMAND rypath_rgb_spectrum_tests)
 set_tests_properties(render.rgb_spectrum PROPERTIES TIMEOUT 30)
 
+add_executable(rypath_pbrt_spectra_tests pbrt_spectra_tests.cpp)
+target_link_libraries(rypath_pbrt_spectra_tests PRIVATE rypath_rgb_spectrum rypath_pbrt_spectra)
+rypath_configure_host_target(rypath_pbrt_spectra_tests)
+add_test(NAME pbrt.named_spectra COMMAND rypath_pbrt_spectra_tests)
+set_tests_properties(pbrt.named_spectra PROPERTIES TIMEOUT 30)
+
 add_executable(rypath_pbrt_render_tests pbrt_render_tests.cpp)
 target_link_libraries(rypath_pbrt_render_tests PRIVATE rypath_pbrt_render)
 rypath_configure_host_target(rypath_pbrt_render_tests)

@@ -1076,12 +1076,58 @@ AreaLightSource ""
     require(checked_scene(reset).area_lights.size() == 1 && reset.document.dependencies.empty(),
             "Explicit empty filename and reset do not inherit an image dependency");
     const auto malformed = check(write_file(directory, "area-malformed-spectrum.pbrt", R"(WorldBegin
-AreaLightSource "diffuse" "spectrum L" ["missing-a.spd" "missing-b.spd"]
+AreaLightSource "diffuse" "spectrum L" ["missing-a.spd" "stdillum-D65" "missing-b.spd"]
 )"));
     require(malformed.exit_code() == 1 && !malformed.document.dependencies_complete &&
                 malformed.document.dependencies.size() == 2 &&
                 find_diagnostic(malformed.document, "invalid-parameter").location.line == 2,
             "Malformed effective emission retains discoverable spectrum dependencies");
+}
+
+void named_light_dependencies(const fs::path &directory) {
+    // Exact built-in names take precedence even when a same-named file exists.
+    write_file(directory, "stdillum-D65", "file that must not be inventoried");
+    const auto named = check(write_file(directory, "named-light.pbrt", R"(WorldBegin
+Attribute "light" "spectrum L" "shadowed.spd"
+LightSource "infinite" "spectrum L" "stdillum-D65"
+AreaLightSource "diffuse" "spectrum L" ["metal-MgO-k"]
+)"));
+    const auto &scene = checked_scene(named);
+    require(
+        named.document.dependencies.empty() &&
+            scene.lights.front().effective_parameter("L").parameter->values.front().text ==
+                "stdillum-D65" &&
+            scene.area_lights.front()->effective_parameter("L").parameter->values.front().text ==
+                "metal-MgO-k",
+        "Exact built-in names are retained without dependencies or shadowed paths");
+
+    const auto malformed = check(write_file(directory, "named-light-count.pbrt", R"(WorldBegin
+LightSource "infinite" "spectrum L" ["stdillum-D65" "stdillum-A"]
+)"));
+    require(malformed.exit_code() == 1 && malformed.document.dependencies.empty() &&
+                find_diagnostic(malformed.document, "invalid-parameter").location.line == 2,
+            "Infinite light L accepts only one named spectrum");
+
+    const auto off_case = check(write_file(directory, "named-light-off-case.pbrt", R"(WorldBegin
+Attribute "light" "spectrum L" "stdillum-D65"
+LightSource "infinite" "spectrum L" "stdillum-a"
+)"));
+    require(off_case.exit_code() == 1 && off_case.document.dependencies.size() == 1 &&
+                off_case.document.dependencies.front().kind == DependencyKind::spectrum &&
+                !off_case.document.dependencies.front().exists &&
+                find_diagnostic(off_case.document, "missing-file").location.line == 3,
+            "Misspelled spectrum name remains a missing file dependency");
+
+    write_file(directory, "emission.spd", "360 1\n830 1\n");
+    const auto external = check(write_file(directory, "named-light-external.pbrt", R"(WorldBegin
+Attribute "light" "spectrum L" "emission.spd"
+AreaLightSource "diffuse"
+)"));
+    require(external.exit_code() == 2 && external.document.dependencies.size() == 1 &&
+                external.document.dependencies.front().kind == DependencyKind::spectrum &&
+                external.document.dependencies.front().exists &&
+                find_diagnostic(external.document, "unsupported-parameter").location.line == 2,
+            "Existing spectrum files are inventoried and deferred at the inherited source");
 }
 
 void triangle_filter_schema(const fs::path &directory) {
@@ -1165,6 +1211,7 @@ int main(int argc, char *argv[]) {
             triangle_filter_schema(directory);
             sobol_sampler_schema(directory);
             area_light_state(directory);
+            named_light_dependencies(directory);
             review_regression_tests(directory);
             bounded_and_numeric_tests(directory);
         } else if (group == "dependencies") {
