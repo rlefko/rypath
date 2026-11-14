@@ -13,8 +13,8 @@ import unittest
 from unittest import mock
 
 from compare_pbrt import (
-    FILTER_CONTROLS, QUADRANTS, REGIONS, check_filter_sensitivity,
-    compare_regions, make_filter_variant, read_pfm, roi_means,
+    EWA_ELLIPSE, FILTER_CONTROLS, FULL, QUADRANTS, REGIONS, TRILINEAR_BLEND,
+    check_filter_sensitivity, compare_regions, main, make_filter_variant, read_pfm, roi_means,
     render_replicates, stage_dependencies,
 )
 
@@ -27,6 +27,40 @@ CORNELL_FILM_EDIT = (
     b'"integer yresolution" [8]\n    "integer xresolution" [8]\n'
     b'    "string sensor" "cie1931"\n    "float iso" [100]\n    "bool savefp16" [false]',
 )
+
+
+class SceneSelectionTests(unittest.TestCase):
+    def test_named_scenes_keep_fixed_regions_and_stage_png16_dependencies(self):
+        fixtures = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "pbrt-render"
+        scenes = {
+            "image16-magnified": ("asymmetric16.png", QUADRANTS),
+            "image16-trilinear": ("basn2c16.png", {"full": FULL, "blend": TRILINEAR_BLEND}),
+            "image16-ewa": ("basn0g16.png", {"full": FULL, "ellipse": EWA_ELLIPSE}),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selections = [arg for scene in scenes for arg in ("--scene", scene)]
+            # Pass existing paths and mock only renderer execution and result analysis.
+            with mock.patch("sys.argv", ["compare_pbrt.py", "--rypath", __file__,
+                                         "--pbrt", __file__, "--fixtures", str(fixtures),
+                                         "--output-dir", directory, *selections]), \
+                    mock.patch("compare_pbrt.render_replicates") as render, \
+                    mock.patch("compare_pbrt.compare_regions", return_value=True), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(), 0)
+            self.assertEqual(
+                [(args[2].stem, args[4]) for args, _ in render.call_args_list],
+                [(scene, regions) for scene, (_, regions) in scenes.items()],
+            )
+            for scene, (filename, _) in scenes.items():
+                destination = root / scene
+                fixture = fixtures / f"{scene}.pbrt"
+                stage_dependencies(fixture, destination)
+                relative = Path("image-assets") / filename
+                staged = (destination / relative).read_bytes()
+                self.assertEqual(staged, (fixtures / relative).read_bytes())
+                self.assertEqual(staged[24], 16)
+                self.assertIn(str(relative).encode(), fixture.read_bytes())
 
 
 class PFMTests(unittest.TestCase):

@@ -360,10 +360,12 @@ std::string validate_image_textures(const RenderScene &scene) {
             continue;
         }
         if ((image.encoding != ImageEncoding::srgb && image.encoding != ImageEncoding::linear) ||
+            (image.storage != ImageStorage::encoded8 &&
+             image.storage != ImageStorage::linear_half) ||
             (image.wrap != ImageWrap::repeat && image.wrap != ImageWrap::clamp &&
              image.wrap != ImageWrap::black) ||
             image.levels.empty() || image.levels.size() > 13) {
-            return "Invalid image texture encoding, wrap or mip count";
+            return "Invalid image texture encoding, storage, wrap or mip count";
         }
         if (image.texels.size() > remaining / sizeof(std::uint32_t)) {
             return "Image texture retained memory limit exceeded";
@@ -374,6 +376,7 @@ std::string validate_image_textures(const RenderScene &scene) {
         }
         remaining -= image.levels.size() * sizeof(ImageMipLevel);
         std::size_t offset = 0;
+        const std::size_t words_per_texel = image.storage == ImageStorage::linear_half ? 2 : 1;
         auto width = image.levels.front().width;
         auto height = image.levels.front().height;
         if (!std::has_single_bit(width) || !std::has_single_bit(height) ||
@@ -381,11 +384,12 @@ std::string validate_image_textures(const RenderScene &scene) {
             return "Image mip dimensions must be bounded positive powers of two";
         }
         for (const auto &level : image.levels) {
+            const auto words = std::size_t{width} * height * words_per_texel;
             if (level.width != width || level.height != height || level.offset != offset ||
-                std::size_t{width} * height > image.texels.size() - offset) {
+                words > image.texels.size() - offset) {
                 return "Invalid image mip layout";
             }
-            offset += std::size_t{width} * height;
+            offset += words;
             width = std::max(1u, width / 2);
             height = std::max(1u, height / 2);
         }
@@ -394,6 +398,18 @@ std::string validate_image_textures(const RenderScene &scene) {
             image.levels.size() != static_cast<std::size_t>(std::bit_width(std::max(
                                        image.levels.front().width, image.levels.front().height)))) {
             return "Incomplete image mip chain";
+        }
+        if (image.storage == ImageStorage::linear_half) {
+            const auto valid_half = [](std::uint32_t bits) {
+                // Finite nonnegative values have an unsigned encoding below +infinity.
+                return bits < 0x7c00u;
+            };
+            for (std::size_t i = 0; i < image.texels.size(); i += 2) {
+                const auto rg = image.texels[i], b = image.texels[i + 1];
+                if (!valid_half(rg & 0xffffu) || !valid_half(rg >> 16u) || !valid_half(b)) {
+                    return "Invalid linear-half image texel payload";
+                }
+            }
         }
     }
     std::size_t remaining_frames = render_patch_corner_limit;

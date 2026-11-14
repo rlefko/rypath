@@ -120,7 +120,7 @@ void decode_profiles(const std::filesystem::path &directory) {
     // PNG Sub filter on the second RGB pixel. Rows remain in file order.
     const auto rgb = make_png(2, 2, 2, Bytes{1, 10, 20, 30, 90, 180, 250, 0, 2, 4, 6, 7, 8, 9});
     const auto image = success(decode_png(rgb));
-    require(image.width == 2 && image.height == 2 &&
+    require(image.width == 2 && image.height == 2 && image.bit_depth == 8 &&
                 image.rgb == Bytes{10, 20, 30, 100, 200, 24, 2, 4, 6, 7, 8, 9},
             "RGB PNG scanline order or Sub filter changed");
     std::filesystem::create_directories(directory);
@@ -142,6 +142,46 @@ void decode_profiles(const std::filesystem::path &directory) {
     require(success(decode_png(make_png(1, 1, 0, Bytes{0, 132}, 8, 0, "zTXt"))).rgb ==
                 Bytes{132, 132, 132},
             "Compressed metadata reached the decoder");
+}
+
+void decode_16_bit_profiles() {
+    // PNG Sub filter operates on bytes, including each sample's low byte.
+    const auto rgb = success(decode_png(
+        make_png(2, 1, 2, Bytes{1, 0x12, 0xfe, 0xab, 0xcd, 0x00, 0x01, 0, 1, 1, 2, 3, 4}, 16)));
+    require(rgb.width == 2 && rgb.height == 1 && rgb.bit_depth == 16 &&
+                rgb.rgb ==
+                    Bytes{0x12, 0xfe, 0xab, 0xcd, 0x00, 0x01, 0x12, 0xff, 0xac, 0xcf, 0x03, 0x05},
+            "RGB16 PNG changed high or low bytes");
+    const auto rgba = success(
+        decode_png(make_png(1, 1, 6, Bytes{0, 0x12, 0x34, 0xab, 0xcd, 0xfe, 0xdc, 0, 0}, 16)));
+    require(rgba.bit_depth == 16 && rgba.rgb == Bytes{0x12, 0x34, 0xab, 0xcd, 0xfe, 0xdc},
+            "Transparent RGBA16 lost RGB values");
+    const auto gray = make_png(1, 1, 0, Bytes{0, 0x01, 0x23}, 16, 0, "gAMA");
+    const auto gray_transparent = insert_chunk(gray, 33, "tRNS", {0x01, 0x23});
+    const auto gray_alpha = make_png(1, 1, 4, Bytes{0, 0x01, 0x23, 0, 0}, 16);
+    for (const auto &png : {gray, gray_transparent, gray_alpha}) {
+        const auto image = success(decode_png(png, {.retained_bytes = 6}));
+        require(image.bit_depth == 16 && image.rgb == Bytes{0x01, 0x23, 0x01, 0x23, 0x01, 0x23},
+                "Gray16 was not replicated with full precision independently of transparency");
+        require(decode_png(png, {.retained_bytes = 5}).limit_exceeded,
+                "PNG16 ignored its six-byte retained pixel cost");
+    }
+
+    constexpr auto pixels = std::size_t{512} * 512;
+    const auto gray16 = make_png(512, 512, 0, Bytes(pixels * 2 + 512), 16);
+    require(decode_png(gray16, {.scratch_bytes = 12 * pixels - 1}).limit_exceeded &&
+                success(decode_png(gray16, {.scratch_bytes = 12 * pixels})).rgb.size() ==
+                    6 * pixels,
+            "Gray16 scratch did not include both simultaneous RGB16 allocations");
+    constexpr auto rgba16_scanline_bytes = pixels * 8 + 512;
+    const auto rgba16 = make_png(512, 512, 6, Bytes(rgba16_scanline_bytes), 16);
+    constexpr auto huffman_scratch = std::size_t{256} * 1024;
+    const auto inflate_scratch = rgba16.size() + 2 * rgba16_scanline_bytes +
+                                 rgba16_scanline_bytes / 2 + 65535 + huffman_scratch;
+    require(decode_png(rgba16, {.scratch_bytes = inflate_scratch - 1}).limit_exceeded &&
+                success(decode_png(rgba16, {.scratch_bytes = inflate_scratch})).rgb.size() ==
+                    6 * pixels,
+            "RGBA16 scratch did not account for depth and alpha during inflate");
 }
 
 void decode_errors() {
@@ -202,9 +242,11 @@ void decode_errors() {
     malformed(insert_chunk(indexed, after_ihdr + 15, "tRNS", {0, 0}));
 
     for (const auto &unsupported :
-         {make_png(1, 1, 0, Bytes{0, 1, 2}, 16), make_png(1, 1, 3, Bytes{0, 0}, 8, 0, "PLTE"),
+         {make_png(1, 1, 0, Bytes{0, 0x10}, 4), make_png(1, 1, 3, Bytes{0, 0}, 8, 0, "PLTE"),
           make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 1),
-          make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 0, "acTL")}) {
+          make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6}, 16, 1),
+          make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 0, "acTL"),
+          make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6}, 16, 0, "acTL")}) {
         const auto result = decode_png(unsupported);
         require(!result.value && result.unsupported && !result.limit_exceeded,
                 "Unsupported PNG profile was accepted or marked malformed");
@@ -212,6 +254,8 @@ void decode_errors() {
     }
     const auto rgb16 = make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6}, 16);
     malformed(Bytes(rgb16.begin(), rgb16.begin() + after_ihdr));
+    malformed(make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5}, 16));
+    malformed(make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6, 7}, 16));
 
     require(decode_png(valid, {.max_dimension = 0}).limit_exceeded, "PNG ignored axis limit");
     require(decode_png(valid, {.retained_bytes = 2}).limit_exceeded, "PNG ignored retained limit");
@@ -253,6 +297,50 @@ void deflate_work_limit() {
             "The decoder accepted a stream with excessive DEFLATE blocks");
 }
 
+void deflate_allocation_limit() {
+    const auto fixture = [](std::uint32_t width, std::uint32_t height) {
+        // A fixed-Huffman DEFLATE block produces zero scanlines without storing them.
+        const auto scanline_bytes = height * (width * 8 + 1);
+        Bytes zlib{0x78, 0x01};
+        unsigned bit = 0;
+        auto write_code = [&](unsigned code, unsigned length) {
+            // Huffman codes are written most significant bit first, into byte bits 0 through 7.
+            for (unsigned i = length; i > 0; --i) {
+                if (bit == 0) {
+                    zlib.push_back(0);
+                }
+                zlib.back() |= static_cast<std::uint8_t>(((code >> (i - 1)) & 1u) << bit);
+                bit = (bit + 1) % 8;
+            }
+        };
+        write_code(0b110, 3); // BFINAL=1, BTYPE=01 in DEFLATE bit order.
+        write_code(0x30, 8);  // Literal zero.
+        auto remaining = scanline_bytes - 1;
+        for (; remaining >= 258; remaining -= 258) {
+            write_code(0xc5, 8); // Length 258.
+            write_code(0, 5);    // Distance 1.
+        }
+        for (; remaining > 0; --remaining) {
+            write_code(0x30, 8);
+        }
+        write_code(0, 7); // End of block.
+        append_u32(zlib, ((scanline_bytes % 65521u) << 16) | 1u);
+        auto png = make_png(width, height, 6, Bytes{}, 16);
+        png.resize(33);
+        append_chunk(png, "IDAT", zlib);
+        append_chunk(png, "IEND");
+        return png;
+    };
+    require(success(decode_png(fixture(33, 1))).rgb == Bytes(std::size_t{33} * 6),
+            "Fixed-Huffman zero scanline fixture did not decode");
+    // The predicted scratch and retained costs fit. LodePNG's Huffman decoder can still
+    // request growth beyond its per-allocation cap while reserving space for the next code.
+    const auto result = decode_png(fixture(3072, 4096));
+    require(!result.value && !result.unsupported && result.limit_exceeded &&
+                result.diagnostic.find("could not allocate") != std::string::npos,
+            "PNG16 decoder allocation failure was not reported as a resource limit");
+}
+
 DecodedImage gray_strip(std::span<const std::uint8_t> values, bool vertical = false) {
     const auto count = static_cast<std::uint32_t>(values.size());
     DecodedImage image{vertical ? 1u : count, vertical ? count : 1u, {}};
@@ -264,6 +352,7 @@ DecodedImage gray_strip(std::span<const std::uint8_t> values, bool vertical = fa
 
 void require_levels(const ImagePyramid &pyramid, std::span<const ImageMipLevel> levels,
                     std::span<const std::uint8_t> gray_bytes) {
+    require(pyramid.storage == ImageStorage::encoded8, "8-bit PNG mip storage changed");
     require(pyramid.levels.size() == levels.size(), "Wrong mip level count");
     for (std::size_t i = 0; i < levels.size(); ++i) {
         const auto &actual = pyramid.levels[i];
@@ -329,6 +418,147 @@ void mip_pyramid() {
     require(!build_image_pyramid(image, invalid_encoding, ImageWrap::repeat).value &&
                 !build_image_pyramid(image, ImageEncoding::linear, invalid_wrap).value,
             "Invalid image encoding or wrap mode was accepted");
+}
+
+DecodedImage gray16_strip(std::span<const std::uint16_t> values) {
+    DecodedImage image{static_cast<std::uint32_t>(values.size()), 1, {}, 16};
+    for (const auto value : values) {
+        const auto high = static_cast<std::uint8_t>(value >> 8);
+        const auto low = static_cast<std::uint8_t>(value);
+        image.rgb.insert(image.rgb.end(), {high, low, high, low, high, low});
+    }
+    return image;
+}
+
+void require_half_strip(const ImagePyramid &pyramid, std::span<const std::uint16_t> halves) {
+    require(pyramid.storage == ImageStorage::linear_half && pyramid.levels.size() == 3 &&
+                pyramid.texels.size() == 2 * halves.size(),
+            "Unexpected half-float mip pyramid layout");
+    for (std::uint32_t level = 0, width = 4, offset = 0; level < 3; ++level) {
+        const auto &actual = pyramid.levels[level];
+        require(actual.width == width && actual.height == 1 && actual.offset == offset,
+                "Half-float mip offsets must count words");
+        offset += width * 2;
+        width /= 2;
+    }
+    for (std::size_t i = 0; i < halves.size(); ++i) {
+        require(pyramid.texels[2 * i] == halves[i] * 0x10001u &&
+                    pyramid.texels[2 * i + 1] == halves[i],
+                "Half-float gray mip texel changed");
+    }
+}
+
+void mip_pyramid_16_bit() {
+    const auto image = gray16_strip(std::array<std::uint16_t, 4>{1, 1, 255, 0x1235});
+    const auto pyramid =
+        success(build_image_pyramid(image, ImageEncoding::linear, ImageWrap::clamp));
+    // Skipping the source half round or cascading stored halves both yield 0x24ce at the top.
+    require_half_strip(pyramid, std::array<std::uint16_t, 7>{0x0100, 0x0100, 0x1bf8, 0x2c8d, 0x0100,
+                                                             0x28cd, 0x24cd});
+
+    const auto npot = gray16_strip(std::array<std::uint16_t, 3>{65535, 1, 16448});
+    const auto clamp = success(build_image_pyramid(npot, ImageEncoding::linear, ImageWrap::clamp));
+    const auto repeat =
+        success(build_image_pyramid(npot, ImageEncoding::linear, ImageWrap::repeat));
+    // Clamp resize overshoots one at its first texel. Repeat clips an undershoot to zero.
+    require_half_strip(clamp, std::array<std::uint16_t, 7>{0x3c3d, 0x3554, 0x1fdd, 0x3442, 0x3992,
+                                                           0x3061, 0x36ab});
+    require_half_strip(
+        repeat, std::array<std::uint16_t, 7>{0x3bec, 0x35cb, 0, 0x3576, 0x3968, 0x3176, 0x36c6});
+    require(build_image_pyramid(npot, ImageEncoding::linear, ImageWrap::black).unsupported,
+            "PNG16 accepted non-power-of-two black wrapping");
+
+    // The rational PBRT transfer gives blue 0x1bc9 where the sRGB power law gives 0x1bc8.
+    const auto srgb = success(build_image_pyramid({1, 1, {0, 1, 0, 2, 0x0c, 0x69}, 16},
+                                                  ImageEncoding::srgb, ImageWrap::clamp));
+    require(srgb.encoding == ImageEncoding::srgb && srgb.storage == ImageStorage::linear_half &&
+                srgb.texels == std::vector<std::uint32_t>{0x00280014, 0x1bc9},
+            "Continuous sRGB16 decode or binary16 channel packing changed");
+    require(image_linear_rgb(srgb, 0.5f, 0.5f, 0, 0, 0, 0, ImageFilter::point) ==
+                std::array{20 * 0x1p-24f, 40 * 0x1p-24f, 0x1.f24p-9f},
+            "sRGB16 lookup lost subnormals or decoded linear texels twice");
+
+    constexpr auto retained = 3 * sizeof(ImageMipLevel) + 14 * sizeof(std::uint32_t);
+    require(build_image_pyramid(image, ImageEncoding::linear, ImageWrap::clamp,
+                                {.retained_bytes = retained - 1})
+                    .limit_exceeded &&
+                build_image_pyramid(image, ImageEncoding::linear, ImageWrap::clamp,
+                                    {.retained_bytes = retained})
+                    .value.has_value(),
+            "Half-float mip payload ignored its retained byte boundary");
+    constexpr auto scratch = 6 * sizeof(std::array<float, 3>);
+    require(build_image_pyramid(image, ImageEncoding::linear, ImageWrap::clamp,
+                                {.scratch_bytes = scratch - 1})
+                    .limit_exceeded &&
+                build_image_pyramid(image, ImageEncoding::linear, ImageWrap::clamp,
+                                    {.scratch_bytes = scratch})
+                    .value.has_value(),
+            "Half-float mip scratch did not account for both float working levels");
+    for (const auto &malformed :
+         {DecodedImage{1, 1, {0, 1, 2}, 16}, DecodedImage{1, 1, Bytes(7), 16},
+          DecodedImage{1, 1, Bytes(6), 12}}) {
+        const auto result = build_image_pyramid(malformed, ImageEncoding::linear, ImageWrap::clamp);
+        require(!result.value && !result.unsupported && !result.limit_exceeded &&
+                    !result.diagnostic.empty(),
+                "Invalid decoded bit depth or RGB16 payload length was accepted");
+    }
+}
+
+void lookup_16_bit() {
+    using Rgb = std::array<float, 3>;
+    // The same 0/1 signals are stored at independently chosen scales in each half channel.
+    ImagePyramid bytes{ImageEncoding::linear,
+                       ImageWrap::repeat,
+                       {{4, 1, 0}, {2, 1, 4}, {1, 1, 6}},
+                       {0xff00ff, 0x00ffff, 0xff0000, 0x00ff00, 0xffffff, 0x0000ff, 0xffff00}};
+    ImagePyramid halves{ImageEncoding::srgb,
+                        ImageWrap::repeat,
+                        {{4, 1, 0}, {2, 1, 8}, {1, 1, 12}},
+                        {0x00003c00, 1, 0x38003c00, 0, 0, 1, 0x38000000, 0, 0x38003c00, 1,
+                         0x00003c00, 0, 0x38000000, 1},
+                        ImageStorage::linear_half};
+    constexpr Rgb scales{1, 0.5f, 0x1p-24f};
+    for (const auto wrap : {ImageWrap::repeat, ImageWrap::clamp, ImageWrap::black}) {
+        bytes.wrap = halves.wrap = wrap;
+        for (const auto filter : {ImageFilter::point, ImageFilter::bilinear, ImageFilter::trilinear,
+                                  ImageFilter::ewa}) {
+            for (const float s : {-0.125f, 0.125f, 0.625f, 1.125f}) {
+                for (const float width : {0.0f, 0.15f, 0.3f, 0.8f, 2.0f}) {
+                    const auto encoded =
+                        image_linear_rgb(bytes, s, 0.5f, width, 0, 0, width, filter);
+                    const auto linear =
+                        image_linear_rgb(halves, s, 0.5f, width, 0, 0, width, filter);
+                    if (!encoded || !linear) {
+                        throw std::runtime_error("A valid half-float mip sample failed");
+                    }
+                    for (std::size_t c = 0; c < scales.size(); ++c) {
+                        require(std::abs((*linear)[c] / scales[c] - (*encoded)[c]) <= 1e-6f,
+                                "Filtering or wrapping changed with half-float mip storage");
+                    }
+                }
+            }
+        }
+    }
+    const auto sample = [](const ImagePyramid &image, ImageFilter filter, float width) {
+        return image_linear_rgb(image, 0.125f, 0.5f, width, 0, 0, width, filter);
+    };
+    auto malformed = halves;
+    malformed.texels.pop_back();
+    for (const auto filter :
+         {ImageFilter::point, ImageFilter::bilinear, ImageFilter::trilinear, ImageFilter::ewa}) {
+        require(!sample(malformed, filter, 2), "A wide lookup accepted a truncated half texel");
+    }
+    require(!sample(malformed, ImageFilter::trilinear, 0.3f) &&
+                !sample(malformed, ImageFilter::ewa, 0.8f) &&
+                sample(malformed, ImageFilter::point, 0) == Rgb{1, 0, 0x1p-24f},
+            "Half-float payload bounds must validate only the selected mip levels");
+    malformed = halves;
+    malformed.levels[0].offset = 1;
+    require(!sample(malformed, ImageFilter::point, 0), "An unaligned half texel was accepted");
+    malformed = halves;
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    malformed.storage = static_cast<ImageStorage>(-1);
+    require(!sample(malformed, ImageFilter::bilinear, 0), "An invalid mip storage was accepted");
 }
 
 void lookup() {
@@ -618,9 +848,13 @@ int main(int argc, char *argv[]) {
     try {
         require(argc == 2, "Expected a temporary test directory argument");
         decode_profiles(argv[1]);
+        decode_16_bit_profiles();
         decode_errors();
         deflate_work_limit();
+        deflate_allocation_limit();
         mip_pyramid();
+        mip_pyramid_16_bit();
+        lookup_16_bit();
         lookup();
         trilinear_lookup();
         point_lookup();

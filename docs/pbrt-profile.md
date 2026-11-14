@@ -112,13 +112,19 @@ parameter precedence and diffuse binding rules. Filtering accepts `point`,
 are source-located unsupported-feature diagnostics, including unused definitions.
 The other filters retain their inert finite `maxanisotropy` parameter.
 
-Supported PNG inputs are noninterlaced 8-bit grayscale, grayscale with alpha,
+Supported PNG inputs are noninterlaced 8-bit or 16-bit grayscale, grayscale with alpha,
 RGB, and RGBA. Grayscale replicates into RGB, alpha is discarded, and metadata
 does not determine the color transform. Indexed, interlaced, other bit depths
 and animated PNGs are unsupported. A missing, corrupt, or over-limit supported
 input is an error. A dependency is marked visited after successful decoding.
 The decoder provenance and its byte-stream limits are recorded in
 [LodePNG](../third_party/lodepng/README.md).
+
+Sixteen-bit grayscale-alpha and grayscale with `tRNS` are explicit rypath
+extensions: the pinned PBRT decoder rejects conversion of those inputs. Owned
+fixtures validate their channel and alpha-discard semantics; reference rendering
+uses plain grayscale, RGB, and RGBA instead. See the
+[16-bit validation record](image16-texture-validation.md).
 
 Asset paths in included files resolve from the entry directory. Distinct
 images and PLY inputs share the file count and expanded byte budget with scene
@@ -127,6 +133,9 @@ Mip variants share storage for the same path, encoding, and wrap mode, including
 textures with different filtering modes. Aggregate
 retained accounting includes decoded RGB bytes, packed mip texels, and level
 records. Image-specific resource limits are listed below.
+Sixteen-bit sources retain six bytes per pixel and eight bytes per packed RGB
+mip texel. The 4,096-pixel axis ceiling does not override byte limits: a full
+4,096×4,096 RGB16 source and pyramid exceed the combined 256 MiB limit.
 
 ## Spectrum files
 
@@ -272,6 +281,7 @@ The diagnostic limit also marks analysis incomplete.
 | Source or mip image axis | 4,096 pixels |
 | Retained decoded RGB and mip payloads per scene | 256 MiB |
 | Scratch per decode or mip build | 256 MiB |
+| Individual PNG decoder allocation | 128 MiB |
 | DEFLATE blocks per PNG | 65,536 |
 
 Tests inject smaller limits to exercise every boundary cheaply. Translation also

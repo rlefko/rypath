@@ -107,10 +107,10 @@ I/O and enforce the same profile on Linux and macOS. The static build disables
 the encoder, disk I/O, C++ wrapper, and ancillary metadata decoding. A local
 extension caps work at 65,536 DEFLATE blocks per stream. The reader also checks
 image dimensions, decompressed scanline size, scratch memory, and aggregate
-retained image payloads. The accepted input subset is noninterlaced 8-bit
+retained image payloads. The accepted input subset is noninterlaced 8-bit or 16-bit
 grayscale, grayscale with alpha, RGB, and RGBA, with alpha and color metadata
 ignored for diffuse reflectance. The [LodePNG record](../third_party/lodepng/README.md)
 retains the source pin, hashes, modifications, and license.
 
-The unmodified PNGSuite comparison image retains its original notice in the
+The unmodified PNGSuite comparison images retain their original notice in the
 [image fixture manifest](../tests/fixtures/pbrt-render/image-assets/README.md).

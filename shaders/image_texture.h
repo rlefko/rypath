@@ -11,9 +11,25 @@ namespace rypath_image {
 using namespace metal;
 namespace wire = rypath::render_wire;
 
+static float unpack_half(uint bits) {
+    const uint sign = (bits & 0x8000u) << 16u;
+    const uint exponent = bits >> 10u & 31u;
+    const uint mantissa = bits & 1023u;
+    // Construct a binary32 value without half arithmetic, which can flush subnormals.
+    if (exponent == 0u) {
+        if (mantissa == 0u)
+            return as_type<float>(sign);
+        const uint leading = 31u - clz(mantissa);
+        return as_type<float>(sign | ((103u + leading) << 23u) |
+                              ((mantissa << (23u - leading)) & 0x7fffffu));
+    }
+    return as_type<float>(sign | ((exponent == 31u ? 255u : exponent + 112u) << 23u) |
+                          (mantissa << 13u));
+}
+
 static float3 texel(const device wire::Word *texels, const device float *transfer,
                     const device wire::TextureLevel &level, int x, int y, uint wrap,
-                    uint encoding) {
+                    uint texel_format) {
     const int width = int(level.width), height = int(level.height);
     if (wrap == 0u) {
         x = (x % width + width) % width;
@@ -24,16 +40,24 @@ static float3 texel(const device wire::Word *texels, const device float *transfe
     } else if (x < 0 || x >= width || y < 0 || y >= height) {
         return float3(0);
     }
-    const uint value = texels[level.offset + uint(y) * level.width + uint(x)];
-    const uint begin = encoding * 256u;
+    const uint index = uint(y) * level.width + uint(x);
+    if (texel_format == wire::linear_half_texel_format) {
+        const uint word = level.offset + 2u * index;
+        const uint rg = texels[word], b = texels[word + 1u];
+        return float3(unpack_half(rg & 0xffffu), unpack_half(rg >> 16u), unpack_half(b & 0xffffu));
+    }
+    const uint value = texels[level.offset + index];
+    const uint begin = texel_format * 256u;
     return float3(transfer[begin + (value & 255u)], transfer[begin + ((value >> 8) & 255u)],
                   transfer[begin + ((value >> 16) & 255u)]);
 }
 
-static bool valid_level(const device wire::TextureLevel &level, uint texel_count) {
+static bool valid_level(const device wire::TextureLevel &level, uint texel_word_count,
+                        uint texel_format) {
+    const uint words_per_texel = texel_format == wire::linear_half_texel_format ? 2u : 1u;
     return level.width > 0 && level.height > 0 && level.width <= 4096 && level.height <= 4096 &&
-           level.offset <= texel_count &&
-           ulong(level.width) * level.height <= texel_count - level.offset;
+           level.offset <= texel_word_count &&
+           level.width * level.height * words_per_texel <= texel_word_count - level.offset;
 }
 
 static float3 bilinear_texels(const device wire::ImageTexture &texture,
@@ -42,13 +66,14 @@ static float3 bilinear_texels(const device wire::ImageTexture &texture,
                               float2 xy) {
     const int2 base = int2(floor(xy));
     const float2 d = xy - float2(base);
-    const float3 a = texel(texels, transfer, level, base.x, base.y, texture.wrap, texture.encoding);
+    const float3 a =
+        texel(texels, transfer, level, base.x, base.y, texture.wrap, texture.texel_format);
     const float3 b =
-        texel(texels, transfer, level, base.x + 1, base.y, texture.wrap, texture.encoding);
+        texel(texels, transfer, level, base.x + 1, base.y, texture.wrap, texture.texel_format);
     const float3 c =
-        texel(texels, transfer, level, base.x, base.y + 1, texture.wrap, texture.encoding);
+        texel(texels, transfer, level, base.x, base.y + 1, texture.wrap, texture.texel_format);
     const float3 e =
-        texel(texels, transfer, level, base.x + 1, base.y + 1, texture.wrap, texture.encoding);
+        texel(texels, transfer, level, base.x + 1, base.y + 1, texture.wrap, texture.texel_format);
     return (1.0f - d.x) * (1.0f - d.y) * a + d.x * (1.0f - d.y) * b + (1.0f - d.x) * d.y * c +
            d.x * d.y * e;
 }
@@ -89,10 +114,10 @@ static int point_coordinate(float st, float dimension, uint wrap) {
     return int(index);
 }
 
-static bool valid_ewa_level(const device wire::TextureLevel &level, uint texel_count,
-                            uint levels_above) {
-    return valid_level(level, texel_count) && (level.width & (level.width - 1u)) == 0u &&
-           (level.height & (level.height - 1u)) == 0u &&
+static bool valid_ewa_level(const device wire::TextureLevel &level, uint texel_word_count,
+                            uint texel_format, uint levels_above) {
+    return valid_level(level, texel_word_count, texel_format) &&
+           (level.width & (level.width - 1u)) == 0u && (level.height & (level.height - 1u)) == 0u &&
            max(level.width, level.height) == (1u << levels_above);
 }
 
@@ -196,8 +221,8 @@ static float3 ewa_level(const device wire::ImageTexture &texture,
             const float r2 = (dot(d, d) + a * a + b * b) / determinant;
             if (r2 < 1.0f) {
                 const float weight = rypath_ewa::weights[min(uint(128.0f * r2), 127u)];
-                sum +=
-                    weight * texel(texels, transfer, level, x, y, texture.wrap, texture.encoding);
+                sum += weight *
+                       texel(texels, transfer, level, x, y, texture.wrap, texture.texel_format);
                 weight_sum += weight;
             }
         }
@@ -206,13 +231,13 @@ static float3 ewa_level(const device wire::ImageTexture &texture,
 }
 
 static float3 ewa(const device wire::ImageTexture &texture, const device wire::TextureLevel *levels,
-                  const device wire::Word *texels, const device float *transfer, uint texel_count,
-                  float2 uv, float2 dx, float2 dy) {
+                  const device wire::Word *texels, const device float *transfer,
+                  uint texel_word_count, float2 uv, float2 dx, float2 dy) {
 #pragma clang fp contract(off)
     const float cap = texture.max_anisotropy;
     const float2 axis_scale(texture.uscale, texture.vscale), offset(texture.udelta, texture.vdelta);
-    if (texture.level_count > 13u || texture.wrap > 2u || texture.encoding > 1u ||
-        !(cap >= 1.0f && cap <= 16.0f) || !all(isfinite(axis_scale)) || !all(isfinite(offset)))
+    if (texture.level_count > 13u || !(cap >= 1.0f && cap <= 16.0f) || !all(isfinite(axis_scale)) ||
+        !all(isfinite(offset)))
         return float3(NAN);
     dx = float2(ewa_product(dx.x, axis_scale.x), ewa_product(dx.y, axis_scale.y));
     dy = float2(ewa_product(dy.x, axis_scale.x), ewa_product(dy.y, axis_scale.y));
@@ -257,9 +282,9 @@ static float3 ewa(const device wire::ImageTexture &texture, const device wire::T
                 minor *= 0x1p-24f;
         }
         if (minor >= 2.0f) {
-            if (!valid_ewa_level(mips[top], texel_count, 0))
+            if (!valid_ewa_level(mips[top], texel_word_count, texture.texel_format, 0))
                 return float3(NAN);
-            return texel(texels, transfer, mips[top], 0, 0, texture.wrap, texture.encoding);
+            return texel(texels, transfer, mips[top], 0, 0, texture.wrap, texture.texel_format);
         }
     }
     const float2 scaled(ewa_product(uv.x, axis_scale.x), ewa_product(uv.y, axis_scale.y));
@@ -269,7 +294,7 @@ static float3 ewa(const device wire::ImageTexture &texture, const device wire::T
     if (!all(isfinite(st)))
         return float3(NAN);
     if (zero) {
-        if (!valid_ewa_level(mips[0], texel_count, top))
+        if (!valid_ewa_level(mips[0], texel_word_count, texture.texel_format, top))
             return float3(NAN);
         const float2 dimensions(mips[0].width, mips[0].height);
         if (texture.wrap == 2u && ewa_black_disjoint(st, dimensions, float2(1.0f)))
@@ -282,24 +307,26 @@ static float3 ewa(const device wire::ImageTexture &texture, const device wire::T
     // For minor below 2, rounding near the upper boundary can put lod at
     // top+1. The exact level below that boundary is the actual top mip.
     const uint lower = min(uint(floor(lod)), top);
-    if (!valid_ewa_level(mips[lower], texel_count, top - lower))
+    if (!valid_ewa_level(mips[lower], texel_word_count, texture.texel_format, top - lower))
         return float3(NAN);
-    if (lower < top && (!valid_ewa_level(mips[lower + 1u], texel_count, top - lower - 1u) ||
+    if (lower < top && (!valid_ewa_level(mips[lower + 1u], texel_word_count, texture.texel_format,
+                                         top - lower - 1u) ||
                         mips[lower + 1u].width != max(1u, mips[lower].width / 2u) ||
                         mips[lower + 1u].height != max(1u, mips[lower].height / 2u)))
         return float3(NAN);
     const float3 a = ewa_level(texture, mips[lower], texels, transfer, st, dx, dy);
-    const float3 b = lower == top
-                         ? texel(texels, transfer, mips[top], 0, 0, texture.wrap, texture.encoding)
-                         : ewa_level(texture, mips[lower + 1u], texels, transfer, st, dx, dy);
+    const float3 b =
+        lower == top ? texel(texels, transfer, mips[top], 0, 0, texture.wrap, texture.texel_format)
+                     : ewa_level(texture, mips[lower + 1u], texels, transfer, st, dx, dy);
     const float delta = lod - float(lower);
     return (1.0f - delta) * a + delta * b;
 }
 
 static bool valid_lookup(const device wire::ImageTexture &texture, uint level_count, float2 uv,
                          float2 dx, float2 dy) {
-    return all(isfinite(uv)) && all(isfinite(dx)) && all(isfinite(dy)) &&
-           texture.level_count != 0 && texture.level_begin <= level_count &&
+    return all(isfinite(uv)) && all(isfinite(dx)) && all(isfinite(dy)) && texture.wrap <= 2u &&
+           texture.texel_format <= wire::linear_half_texel_format && texture.level_count != 0 &&
+           texture.level_begin <= level_count &&
            texture.level_count <= level_count - texture.level_begin;
 }
 
@@ -311,8 +338,7 @@ static float3 lookup_standard(const device wire::ImageTexture &texture,
     const bool point = texture.filter == wire::point_texture_filter;
     if (!valid_lookup(texture, p.level_count, uv, dx, dy) ||
         (!point && texture.filter != wire::bilinear_texture_filter &&
-         texture.filter != wire::trilinear_texture_filter) ||
-        (point && (texture.wrap > 2u || texture.encoding > 1u)))
+         texture.filter != wire::trilinear_texture_filter))
         return float3(NAN);
     dx *= float2(texture.uscale, texture.vscale);
     dy *= float2(texture.uscale, texture.vscale);
@@ -329,14 +355,15 @@ static float3 lookup_standard(const device wire::ImageTexture &texture,
     const bool wide = lod >= coarsest;
     const uint index = wide ? texture.level_count - 1u : uint(max(0.0f, floor(lod)));
     const device wire::TextureLevel &level = levels[texture.level_begin + index];
-    if (!valid_level(level, p.texel_count))
+    if (!valid_level(level, p.texel_word_count, texture.texel_format))
         return float3(NAN);
     if (wide) {
-        return texel(texels, transfer, level, 0, 0, texture.wrap, texture.encoding);
+        return texel(texels, transfer, level, 0, 0, texture.wrap, texture.texel_format);
     }
     // Pinned PBRT keeps the base level unblended even for 0 <= lod < 1.
     const bool interpolate = texture.filter == wire::trilinear_texture_filter && index > 0;
-    if (interpolate && !valid_level(levels[texture.level_begin + index + 1u], p.texel_count))
+    if (interpolate && !valid_level(levels[texture.level_begin + index + 1u], p.texel_word_count,
+                                    texture.texel_format))
         return float3(NAN);
     const float2 scale(texture.uscale, texture.vscale), offset(texture.udelta, texture.vdelta);
     float2 st = point ? point_mapping(uv, scale, offset) : uv * scale + offset;
@@ -346,7 +373,7 @@ static float3 lookup_standard(const device wire::ImageTexture &texture,
     if (point) {
         const int x = point_coordinate(st.x, float(level.width), texture.wrap);
         const int y = point_coordinate(st.y, float(level.height), texture.wrap);
-        return texel(texels, transfer, level, x, y, texture.wrap, texture.encoding);
+        return texel(texels, transfer, level, x, y, texture.wrap, texture.texel_format);
     }
     // Bound integer conversions even for large, finite authored coordinates.
     if (texture.wrap == 0u)
@@ -373,7 +400,7 @@ static float3 lookup(const device wire::ImageTexture &texture,
         return lookup_standard(texture, levels, texels, transfer, p, uv, dx, dy);
     if (!valid_lookup(texture, p.level_count, uv, dx, dy))
         return float3(NAN);
-    return ewa(texture, levels, texels, transfer, p.texel_count, uv, dx, dy);
+    return ewa(texture, levels, texels, transfer, p.texel_word_count, uv, dx, dy);
 }
 
 static float blend(float t, float a, float b) { return (1.0f - t) * a + t * b; }

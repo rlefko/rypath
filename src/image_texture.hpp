@@ -14,6 +14,7 @@
 namespace rypath {
 
 enum class ImageEncoding { srgb, linear };
+enum class ImageStorage { encoded8, linear_half };
 enum class ImageWrap { repeat, clamp, black };
 enum class ImageFilter { bilinear, trilinear, point, ewa };
 
@@ -27,12 +28,13 @@ struct DecodedImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgb;
+    std::uint32_t bit_depth = 8; // RGB16 samples are stored most significant byte first.
 };
 
 struct ImageMipLevel {
     std::uint32_t width;
     std::uint32_t height;
-    std::uint32_t offset;
+    std::uint32_t offset; // Offset in uint32_t words.
 };
 
 struct ImagePyramid {
@@ -40,6 +42,7 @@ struct ImagePyramid {
     ImageWrap wrap;
     std::vector<ImageMipLevel> levels;
     std::vector<std::uint32_t> texels;
+    ImageStorage storage = ImageStorage::encoded8;
 };
 
 template <typename T> struct ImageResult {
