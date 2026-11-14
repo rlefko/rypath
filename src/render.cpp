@@ -21,6 +21,10 @@ namespace {
 constexpr double wavelength_min = 360;
 constexpr double wavelength_max = 830;
 constexpr double wavelength_span = wavelength_max - wavelength_min;
+// Pinned PBRT v4 Planck and Wien constants in nm K.
+constexpr double planck_exponent_nm_kelvin = 6.62606957e-34 * 299792458. / 1.3806488e-23 * 1e9;
+constexpr double wien_nm_kelvin = 2.8977721e6;
+constexpr double wien_exponent = planck_exponent_nm_kelvin / wien_nm_kelvin;
 
 constexpr double integrate_y() {
     const auto &table = detail::cie_xyz;
@@ -255,6 +259,9 @@ std::string validate_pbrt_material(const SpectralMaterial &material) {
     if (material.kind != SpectralMaterialKind::image && material.image_texture != 0) {
         return "Constant spectral material contains an image binding";
     }
+    if (material.kind != SpectralMaterialKind::blackbody && material.temperature_kelvin != 0) {
+        return "Non-blackbody material contains a temperature payload";
+    }
     switch (material.kind) {
     case SpectralMaterialKind::sampled:
         if (material.constant != 0 || material.coefficients != zero_coefficients) {
@@ -281,6 +288,15 @@ std::string validate_pbrt_material(const SpectralMaterial &material) {
         if (!material.knots.empty() || material.constant != 0 ||
             material.coefficients != zero_coefficients) {
             return "Image reflectance contains a constant spectral payload";
+        }
+        return {};
+    case SpectralMaterialKind::blackbody:
+        if (!(std::isfinite(material.temperature_kelvin) && material.temperature_kelvin > 0)) {
+            return "PBRT blackbody reflectance requires a positive finite temperature";
+        }
+        if (material.reflectance != std::array<float, 8>{} || !material.knots.empty() ||
+            material.constant != 0 || material.coefficients != zero_coefficients) {
+            return "PBRT blackbody reflectance contains another spectral payload";
         }
         return {};
     }
@@ -782,7 +798,7 @@ std::string validate_render_scene(const RenderScene &scene) {
     }
     for (const auto &material : scene.materials) {
         if (material.kind != SpectralMaterialKind::sampled || material.constant != 0 ||
-            material.coefficients != std::array<float, 3>{}) {
+            material.coefficients != std::array<float, 3>{} || material.temperature_kelvin != 0) {
             return "Demo spectral material requires a sampled reflectance";
         }
         if (!std::ranges::all_of(material.reflectance,
@@ -928,6 +944,28 @@ double sampled_spectrum(std::span<const SpectralKnot> knots, double wavelength) 
     return std::lerp(double{previous.value}, double{next->value}, left_distance / width);
 }
 
+double blackbody_reflectance(float temperature_kelvin, double wavelength) {
+    if (!(wavelength >= wavelength_min && wavelength <= wavelength_max)) {
+        return 0;
+    }
+    if (!(std::isfinite(temperature_kelvin) && temperature_kelvin > 0)) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double exponent = planck_exponent_nm_kelvin / (wavelength * temperature_kelvin);
+    // Normalize to the Wien peak and combine the factors before exponentiating.
+    static const double log_peak_factor = std::log(-std::expm1(-wien_exponent));
+    const double log_ratio = 5 * std::log(exponent / wien_exponent) + (wien_exponent - exponent) +
+                             log_peak_factor - std::log(-std::expm1(-exponent));
+    return std::exp(std::min(log_ratio, 0.));
+}
+
+float blackbody_exponent_factor(float temperature_kelvin) {
+    // At exponent 128 and above, the ratio rounds to zero in binary32.
+    // Cap the packed factor so even the smallest positive Kelvin fits.
+    return static_cast<float>(
+        std::min(planck_exponent_nm_kelvin / temperature_kelvin, 128 * wavelength_max));
+}
+
 double spectral_reflectance(const SpectralMaterial &material, double wavelength) {
     switch (material.kind) {
     case SpectralMaterialKind::constant:
@@ -941,6 +979,8 @@ double spectral_reflectance(const SpectralMaterial &material, double wavelength)
                              static_cast<float>(wavelength));
     case SpectralMaterialKind::sampled:
         break;
+    case SpectralMaterialKind::blackbody:
+        return blackbody_reflectance(material.temperature_kelvin, wavelength);
     default:
         return std::numeric_limits<double>::quiet_NaN();
     }

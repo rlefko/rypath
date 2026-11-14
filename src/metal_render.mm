@@ -622,7 +622,11 @@ struct MetalRenderScene::Impl {
                 break;
             case SpectralMaterialKind::constant:
                 packed.kind = wire::constant_material;
-                packed.constant_value = source.constant;
+                packed.scalar_value = source.constant;
+                break;
+            case SpectralMaterialKind::blackbody:
+                packed.kind = wire::blackbody_material;
+                packed.scalar_value = blackbody_exponent_factor(source.temperature_kelvin);
                 break;
             case SpectralMaterialKind::rgb_sigmoid:
                 packed.kind = wire::rgb_sigmoid_material;

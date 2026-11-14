@@ -85,6 +85,13 @@ locate clamp crossings without cancellation. Bounded compiled knots reuse the
 existing CPU/Metal sampled-material payload. The
 [reflectance record](spectral-reflectance-validation.md) defines the binary32
 wavelength contract and its independent validation.
+Blackbody diffuse reflectance retains a checked temperature and evaluates the
+continuous, Wien-normalized Planck spectrum at the path wavelength. Portable
+double and Metal float evaluators use a stable log-domain ratio; a tagged scalar
+in the existing material wire record carries the GPU exponent factor. This
+shares material/constant-texture bindings without changing the diffuse estimator.
+The [blackbody reflectance record](blackbody-reflectance-validation.md) specifies
+numerical tolerances and the device's underflow boundary.
 The translator binds each imagemap by index and prepares per-placement triangle
 partials from the checked shape and placement transforms. The image render
 session owns UVs, triangle partials, texture descriptors, shared mip data,

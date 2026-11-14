@@ -6,7 +6,7 @@ and interactive rendering follow later.
 
 **Current state: progressive Metal rendering and a strict PBRT spectral profile.**
 Render the built-in demo or PBRT files containing supported sampled spectra or
-linear sRGB colors. Diffuse reflectance supports built-in and file spectra,
+linear sRGB colors. Diffuse reflectance supports blackbody, built-in and file spectra,
 named constant textures, and PNG imagemaps.
 PNG textures support bilinear and trilinear mip filtering.
 The PBRT profile includes inline triangles, external PLY triangles and bilinear

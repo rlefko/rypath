@@ -129,6 +129,7 @@ class Translator {
     std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
                                                       string_view name, SpectrumRole role);
     bool supports_rgb_space(string_view color_space, const Location &source);
+    std::optional<float> blackbody_temperature(const Parameter &parameter);
     bool blackbody_emission(const Parameter &parameter, std::optional<float> scale,
                             double light_multiplier, std::array<float, 471> &dense);
     bool emission(const Descriptor &descriptor, double light_multiplier,
@@ -487,24 +488,30 @@ bool Translator::supports_rgb_space(string_view color_space, const Location &sou
     return false;
 }
 
-bool Translator::blackbody_emission(const Parameter &parameter, std::optional<float> scale,
-                                    double light_multiplier, std::array<float, 471> &dense) {
+std::optional<float> Translator::blackbody_temperature(const Parameter &parameter) {
     if (!charge_spectral_values(parameter)) {
-        return false;
+        return std::nullopt;
     }
     const auto &temperature = parameter.values.front();
     if (!float_representable(temperature.number)) {
         invalid(temperature.location, "Blackbody temperature overflows binary32");
-        return false;
+        return std::nullopt;
     }
-    const double kelvin = static_cast<float>(temperature.number);
+    const auto kelvin = static_cast<float>(temperature.number);
     if (!(kelvin > 0)) {
         invalid(temperature.location, "Blackbody temperature must be positive in binary32");
+        return std::nullopt;
+    }
+    return kelvin;
+}
+
+bool Translator::blackbody_emission(const Parameter &parameter, std::optional<float> scale,
+                                    double light_multiplier, std::array<float, 471> &dense) {
+    const auto temperature = blackbody_temperature(parameter);
+    if (!temperature || !scale) {
         return false;
     }
-    if (!scale) {
-        return false;
-    }
+    const double kelvin = *temperature;
 
     // Pinned PBRT v4 Blackbody constants. Express h*c/k in nm K.
     constexpr double c2 = 6.62606957e-34 * 299792458. / 1.3806488e-23 * 1e9;
@@ -704,6 +711,13 @@ std::uint32_t Translator::reflectance(const Descriptor &descriptor, ReflectanceS
                                                  : SpectralMaterialKind::rgb_sigmoid;
         material.constant = reflectance->constant;
         material.coefficients = reflectance->coefficients;
+    } else if (selected->type == "blackbody") {
+        const auto temperature = blackbody_temperature(*selected);
+        if (!temperature) {
+            return 0;
+        }
+        material.kind = SpectralMaterialKind::blackbody;
+        material.temperature_kelvin = *temperature;
     } else if (selected->type == "spectrum" && selected->values.front().kind == ValueKind::string) {
         auto knots = reflectance_curve(descriptor, *selected);
         if (!knots) {

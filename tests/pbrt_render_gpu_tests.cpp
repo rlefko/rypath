@@ -212,19 +212,25 @@ void constant_texture_equivalence(const std::filesystem::path &directory, std::s
             texture_fixture + ": no pixel received reflected light");
 }
 
+struct PlanckSpectrum {
+    double temperature;
+
+    double radiance(double wavelength_nm) const {
+        // Independent absolute Planck radiance for the temperatures used below.
+        constexpr double h = 6.62606957e-34;
+        constexpr double c = 299792458;
+        constexpr double k = 1.3806488e-23;
+        const double wavelength = wavelength_nm * 1e-9;
+        return 2 * h * c * c /
+               (std::pow(wavelength, 5) * std::expm1(h * c / (wavelength * k * temperature)));
+    }
+};
+
 Curve planck_curve(double temperature) {
-    // Independent absolute Planck radiance, rather than the production ratio formula.
-    // Moderate temperatures keep this direct expression well conditioned in double.
-    constexpr double h = 6.62606957e-34;
-    constexpr double c = 299792458;
-    constexpr double k = 1.3806488e-23;
+    const PlanckSpectrum spectrum{temperature};
     Curve curve;
     for (int nm = 360; nm <= 830; ++nm) {
-        const double wavelength = nm * 1e-9;
-        const double radiance =
-            2 * h * c * c /
-            (std::pow(wavelength, 5) * std::expm1(h * c / (wavelength * k * temperature)));
-        curve.emplace_back(nm, radiance);
+        curve.emplace_back(nm, spectrum.radiance(nm));
     }
     return curve;
 }
@@ -634,6 +640,100 @@ RenderScene with_material(RenderScene scene, SpectralMaterial material) {
     return scene;
 }
 
+constexpr std::uint64_t blackbody_seed = 0x6a243a822dc4e571ULL;
+
+struct BlackbodyControl {
+    double temperature;
+    double relative_wavelength_floor;
+    double relative_white_floor;
+};
+
+void blackbody_reflectance_paths(const RenderScene &plane, const RenderSamplesResult &white,
+                                 BlackbodyControl control) {
+    constexpr double wien_nm_kelvin = 2.8977721e6;
+    const PlanckSpectrum spectrum{control.temperature};
+    const double peak = spectrum.radiance(wien_nm_kelvin / control.temperature);
+    const auto observed = trace(*build(plane), analytic_paths, blackbody_seed);
+    std::size_t relative_count = 0;
+    double maximum_absolute = 0;
+    double maximum_relative = 0;
+    double minimum_expected = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < white.samples.size(); ++i) {
+        const auto &reference = white.samples[i];
+        const auto &sample = observed.samples[i];
+        require(reference.wavelength == sample.wavelength && reference.radiance > 0 &&
+                    reference.scatterings == 1,
+                "Blackbody white-plane control must scatter once at the same wavelength");
+        const double rho = std::min(1., spectrum.radiance(sample.wavelength) / peak);
+        const double expected = reference.radiance * rho;
+        const double error = std::abs(sample.radiance - expected);
+        require(sample.scatterings <= 1 && error <= 1e-7 + 2e-5 * reference.radiance,
+                "Blackbody path disagrees with independent Planck reflectance");
+        maximum_absolute = std::max(maximum_absolute, error);
+        // On this plane, each MIS arm contributes at most one white-sky radiance.
+        // Above 1.1 times that radiance, both arms have weights greater than 0.1,
+        // keeping their products comfortably normal in the selected tail.
+        if (sample.wavelength >= control.relative_wavelength_floor &&
+            reference.radiance > control.relative_white_floor) {
+            require(sample.scatterings == 1 && sample.radiance > 0 && error <= 1e-4 * expected,
+                    "Blackbody path lost relative accuracy or vanished");
+            maximum_relative = std::max(maximum_relative, error / expected);
+            minimum_expected = std::min(minimum_expected, expected);
+            ++relative_count;
+        }
+    }
+    require(relative_count > 0 && minimum_expected > 1e-5,
+            "Blackbody control must exercise measurably bright reflected paths");
+    std::cout << "Blackbody " << control.temperature << " K maximum per-path absolute error "
+              << maximum_absolute << ", maximum relative error " << maximum_relative << " over "
+              << relative_count << " paths with expected radiance at least " << minimum_expected
+              << '\n';
+}
+
+void blackbody_materials(const std::filesystem::path &directory) {
+    using Kind = SpectralMaterialKind;
+    constexpr SpectralMaterial white_material{.kind = Kind::constant, .constant = 1};
+    const auto direct = load(directory / "blackbody-reflectance-diffuse.pbrt");
+    const auto ply = load(directory / "blackbody-reflectance-ply.pbrt");
+    const auto &direct_material = direct.materials.at(direct.instance_materials.front());
+    const auto &texture_material = ply.materials.at(ply.instance_materials.front());
+    require(direct_material.kind == Kind::blackbody && direct_material.temperature_kelvin == 3000 &&
+                texture_material.kind == Kind::blackbody &&
+                texture_material.temperature_kelvin == 6500,
+            "Blackbody fixtures must bind both authored temperatures as native materials");
+
+    auto white_plane = with_material(direct, white_material);
+    const auto white = trace(*build(white_plane), analytic_paths, blackbody_seed);
+    const double relative_white_floor = 1.1 * white_plane.environment.front();
+    blackbody_reflectance_paths(direct, white,
+                                {.temperature = 3000,
+                                 .relative_wavelength_floor = 360,
+                                 .relative_white_floor = relative_white_floor});
+    blackbody_reflectance_paths(with_material(direct, texture_material), white,
+                                {.temperature = 6500,
+                                 .relative_wavelength_floor = 360,
+                                 .relative_white_floor = relative_white_floor});
+    spectral_batches(direct, "Direct blackbody reflectance");
+    spectral_batches(ply, "Blackbody constant texture on PLY");
+
+    // For 175 K the red tail at 820–830 nm has x around 100, where an
+    // uncombined exp(x_peak - x) underflows despite normal reflectance.
+    // For 1e12 K the Rayleigh–Jeans tail requires an accurate small-x factor.
+    // HDR lighting makes an erroneously zero reflectance visible in both cases.
+    constexpr float hdr = 1e32f;
+    white_plane.environment.fill(hdr);
+    const auto white_hdr = trace(*build(white_plane), analytic_paths, blackbody_seed);
+    for (const float temperature : {175.0f, 1e12f}) {
+        const auto scene = with_material(
+            white_plane, {.kind = Kind::blackbody, .temperature_kelvin = temperature});
+        blackbody_reflectance_paths(
+            scene, white_hdr,
+            {.temperature = temperature,
+             .relative_wavelength_floor = temperature == 175.0f ? 820. : 360.,
+             .relative_white_floor = 1.1 * hdr});
+    }
+}
+
 void rgb_materials(const RenderScene &plane) {
     using Kind = SpectralMaterialKind;
     constexpr SpectralMaterial white{.kind = Kind::constant, .constant = 1};
@@ -826,6 +926,7 @@ int main(int argc, char **argv) {
         named_lights(directory);
         file_lights(directory);
         string_reflectance(directory);
+        blackbody_materials(directory);
 
         auto sky = load(directory / "background.pbrt");
         require(sky.max_depth == 0, "Background fixture must exercise depth zero");

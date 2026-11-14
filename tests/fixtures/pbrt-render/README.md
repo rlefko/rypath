@@ -6,8 +6,8 @@ The rypath-authored entry points are licensed under GPL-3.0-only.
 of the [pinned Cornell Box fixture](../pbrt/README.md) by Benedikt Bitterli,
 converted to PBRT v4 by Matt Pharr. The [upstream notice](../pbrt/LICENSE.txt)
 applies to all five derivatives.
-The 26 fixtures below use inline geometry and have no external dependencies
-(57,012 bytes total). The [PLY asset manifest](ply-assets/README.md) documents
+The 27 fixtures below use inline geometry and have no external dependencies
+(57,608 bytes total). The [PLY asset manifest](ply-assets/README.md) documents
 the standalone PLY wrappers and their inputs. [`dependencies.json`](dependencies.json)
 pins asset hashes and sizes.
 
@@ -30,6 +30,7 @@ pins asset hashes and sizes.
 | `named-area.pbrt` | 1,306 | `603e24000163099756a1aa50d13506ef558ca31f491c10aa5f46f528af5668c4` | 3 meshes, 11 vertices, 5 emissive triangles |
 | `named-mixed.pbrt` | 2,042 | `1dde89fc9225f547781164e0bf287ac1e569175a662b2e413112e202f7aa0d4a` | Same geometry as `blackbody-mixed.pbrt` |
 | `reflectance-named-diffuse.pbrt` | 603 | `a084cd147ed09469a561b7c0a2a105fbb326af31bbdb1db6b1cba1b67bd2e5e5` | Same geometry as `diffuse.pbrt` |
+| `blackbody-reflectance-diffuse.pbrt` | 596 | `76a61392b9bb168fe3a891d2031569929ab660baa199191bbb060d98a4ee9dd2` | Same geometry as `diffuse.pbrt` |
 | `cornell-box-adapted.pbrt` | 4,293 | `652e63dc4806c5d3a33e6560b654eaf775fa80ef9e1df8243ebe1a9494698aa6` | 8 meshes, 72 vertices, 36 triangles, 2 emissive |
 | `triangle-filter.pbrt` | 901 | `400cdd4baef8603ac2a848271040841f9d8f8a0a92451526713e383ce935d91d` | 2 meshes, 8 vertices, 4 emissive triangles |
 | `normals-diffuse.pbrt` | 1,071 | `18575bec4cc1e7955ac10b3326d24080a724797d7989593c57fa414ebac279fa` | 2 meshes, 7 vertices, 3 triangles, 1 emissive |
@@ -41,8 +42,9 @@ pins asset hashes and sizes.
 | `cornell-box-sobol-owen.pbrt` | 7,570 | `835cacf63c0eb73b3198d65d6d40f8194bdfdda32926332a64c8f2296fbc83e6` | Same geometry as `cornell-box-attributes.pbrt` |
 
 The four file emission entry points use the original
-[spectrum assets](spectrum-assets/README.md). The external PLY wrapper also
-loads the unmodified 412-byte CC BY 2.0 quad by Yasutoshi Mori from the
+[spectrum assets](spectrum-assets/README.md). The file reflectance entries
+also use those assets. The external PLY wrappers load the unmodified
+412-byte CC BY 2.0 quad by Yasutoshi Mori from the
 [pinned Sportscar asset](ply-assets/README.md). Each wrapper uses the settings
 and dependency paths listed below.
 
@@ -54,6 +56,7 @@ and dependency paths listed below.
 | `file-ply-external.pbrt` | 816 | `aaee0bcf9d4b2713a1bb1af881c6f104f9a65ed24a0ac2cc80b496b09d8daa89` | 33.4° | 1 | The transformed quad in `ply-assets/sportscar-quad.ply` emits `cool.spd` at scale 1.25 under a `sky.spd` environment. |
 | `reflectance-file-ply.pbrt` | 798 | `4b32ca7147ce6212a7b985224f806c69dc3d36ab6fc73965fb6703e9c88fce0b` | 33.4° | 1 | The transformed Sportscar quad uses the `paint.spd` constant texture under a flat sampled infinite light. |
 | `reflectance-controls.pbrt` | 904 | `63a5b4322b752e3419990910444eefc59ea95d1956b6b64f687726dfb637ed9f` | 50° | 1 | Three placeholder triangles supply the `clamp.spd`, `narrow.spd`, and `wide.spd` materials for the native controls. |
+| `blackbody-reflectance-ply.pbrt` | 834 | `b6e1657ac03f24645973d7f979183d58b1c1f54ea163a127a2471a100dae5148` | 33.4° | 1 | The transformed Sportscar quad uses an inherited 6500 K spectrum constant texture under a flat sampled infinite light. |
 
 Each scene uses a pinhole perspective camera, an 8×8 full-frame sRGB film
 with the CIE 1931 sensor, ISO 100, the default shutter interval
@@ -86,6 +89,7 @@ variants exercise explicit RGB or omitted D65 emission.
 | `named-area.pbrt` | 45° | 0 | A one-sided `glass-F10` emitter with scale 1.75 faces the camera. A two-sided `canon_eos_5d_b` emitter faces away. An off-camera `metal-MgO-k` emitter provides a narrow-band payload for the native test. |
 | `named-mixed.pbrt` | 58° | 5 | An `illum-acesD60` environment and `stdillum-A`, `stdillum-F8`, and `metal-Au-eta` emitters illuminate an asymmetric room. |
 | `reflectance-named-diffuse.pbrt` | 50° | 1 | Direct `metal-Au-eta` diffuse reflectance on a covering plane under a flat sampled infinite light. |
+| `blackbody-reflectance-diffuse.pbrt` | 50° | 1 | Direct 3000 K blackbody diffuse reflectance on a covering plane under a flat sampled infinite light. |
 | `cornell-box-adapted.pbrt` | 19.5° | 65 | Two downward-facing triangles emit from the ceiling fixture above two boxes and colored walls. |
 | `triangle-filter.pbrt` | 53.1301023542° | 0 | Asymmetric RGB emitter edges against a uniform RGB environment exercise anisotropic edge smoothing, orientation, and normalization. |
 | `normals-diffuse.pbrt` | 7.15266875° | 1 | Unequal-length vertex normals receive light across the geometric plane. |
@@ -143,8 +147,8 @@ sample count equality across batch sizes 65, 7, and 1.
 The comparison uses the full 8×8 frame for every scene. The
 [`REGIONS` table](../../../scripts/compare_pbrt.py) defines additional regions,
 including the four top-down 4×4 quadrants for the blackbody, named-spectrum
-and file-spectrum area, mixed, and PLY scenes, plus the signed file reflectance
-PLY wrapper. Each region's R, G, and B means
+and file-spectrum area, mixed, and PLY scenes, plus the signed file and blackbody
+reflectance PLY wrappers. Each region's R, G, and B means
 must agree within five combined
 standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)

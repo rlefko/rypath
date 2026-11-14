@@ -56,21 +56,25 @@ clarifies the work; completion is recorded in [status](status.md).
 18. **File light emission (merged in PR #19):** bounded plain-text spectrum inputs on supported
     infinite and diffuse area lights, immutable checked sources, and independent
     portable/Metal comparisons. See [file-spectrum validation](file-spectrum-validation.md).
-19. **Named and file reflectance:** original built-in knots and checked signed file
+19. **Named and file reflectance (merged in PR #20):** original built-in knots and checked signed file
     curves on diffuse materials and spectrum constants, with bounded GPU curve
     compilation and independent numerical validation. See
     [spectral reflectance validation](spectral-reflectance-validation.md).
-20. **Broader PBRT rendering:** wider color spaces, additional
+20. **Blackbody diffuse reflectance:** continuous Wien-normalized spectra on
+    diffuse materials and spectrum constant textures, with independent CPU/Metal
+    checks and pinned PBRT comparisons. See
+    [blackbody reflectance validation](blackbody-reflectance-validation.md).
+21. **Broader PBRT rendering:** wider color spaces, additional
     spectra, texture filters and formats, filters/samplers, and faithfully rendered
     pinned upstream entry points.
     JSON preflight reports remain follow-up work.
-21. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+22. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-22. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
+23. **Spectral surfaces:** broader spectra and lighting/MIS, GGX conductor
     and dielectric scattering, and independent CPU/Metal numerical comparisons.
-23. **Offline completion:** homogeneous spectral media, linear OpenEXR,
+24. **Offline completion:** homogeneous spectral media, linear OpenEXR,
     checkpoint/resume, cancellation, and long-run accumulation validation.
-24. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+25. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet
