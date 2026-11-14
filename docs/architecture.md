@@ -118,6 +118,11 @@ linear-half texels in the existing Metal descriptor. Shared buffer offsets count
 widen half subnormals without half-precision arithmetic; filtering remains float.
 The [16-bit record](image16-texture-validation.md) defines quantization, memory
 accounting, and reference coverage.
+Indexed PNGs decode to packed indices, validate every palette reference, and
+expand to the existing RGB8 source representation. Preflight accounts for packed
+and expanded storage before allocation. The existing image caches, mip compiler,
+and Metal payload handle the resulting RGB8 image without an additional format.
+The [indexed record](indexed-texture-validation.md) defines the bounds and evidence.
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 PNG decoding uses the vendored portable LodePNG decoder. The
 [dependency decision](pbrt-decision.md) records the integration boundary.

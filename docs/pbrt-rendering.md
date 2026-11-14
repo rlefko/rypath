@@ -186,6 +186,12 @@ sample decoding. PNG gamma, color metadata, and alpha do not affect reflectance.
 Float imagemaps, non-UV mappings, other encodings or filters, alpha masking,
 displacement, and image emission are outside this profile.
 
+Indexed PNGs expand each palette index into its exact RGB8 entry, including
+fully transparent entries. Palette alpha does not mask geometry or composite
+against a background. Index depth controls packing, not color precision; these
+inputs share the eight-bit mip and filtering path. See
+[indexed PNG validation](indexed-texture-validation.md).
+
 Eight-bit sources retain encoded-byte mip storage. Sixteen-bit samples are
 normalized by `65535.f`, decoded with the selected transfer function, and rounded
 to binary16 before resampling, following pinned PBRT. The sRGB path uses its

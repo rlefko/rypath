@@ -2,12 +2,10 @@
 
 ## Current milestone
 
-[EWA image textures (PR #23)](https://github.com/rlefko/rypath/pull/23) is merged.
-The current slice adds noninterlaced 16-bit PNG diffuse textures, preserving
-source precision through PBRT-compatible binary16 mip storage and float filtering.
-Portable and Metal paths preserve dark half values and shared mixed-format image
-storage. Grayscale-alpha16 and grayscale16 transparency-key inputs are explicitly
-documented extensions beyond the pinned PBRT decoder.
+[16-bit PNG textures (PR #24)](https://github.com/rlefko/rypath/pull/24) is merged.
+The current slice adds noninterlaced indexed PNG diffuse textures at 1-, 2-, 4-,
+and 8-bit index depth. Checked palette expansion preserves RGB8 colors even at
+zero alpha and reuses the existing portable and Metal texture paths.
 
 `--render-pbrt SCENE --output IMAGE.png` supports the declared spectral diffuse
 profile, a pinhole camera, constant environment and directly placed area lights,
@@ -17,29 +15,30 @@ Portable `--check-pbrt` checks scene structure and supported inputs without Meta
 The [render profile](pbrt-rendering.md) defines supported semantics and limitations.
 
 Selected external coverage includes the unchanged Cornell scene, a licensed PLY
-asset in owned wrappers, and unmodified 8-bit and 16-bit PNGSuite images in owned wrappers.
-Textured emission, wider color spaces, additional materials and importers,
-OpenEXR, checkpointing, and the interactive app remain on the [roadmap](roadmap.md).
-The next bounded compatibility task is to scope indexed-color PNG diffuse inputs
-against pinned PBRT, including palette, transparency, and resource-limit behavior.
+asset in owned wrappers, and unmodified RGB, grayscale, and indexed PNGSuite
+images in owned wrappers. Textured emission, wider color spaces, additional
+materials and importers, OpenEXR, checkpointing, and the interactive app remain
+on the [roadmap](roadmap.md). The next bounded compatibility task is to scope
+1-, 2-, and 4-bit grayscale PNG diffuse inputs against pinned PBRT, including
+sample expansion, transparency keys, and resource limits.
 
 ## Validation
 
-The [16-bit PNG record](image16-texture-validation.md) records implementation `28bffc7`
-on Apple M4 Max: 74/74 tests in each of Debug, Release, and ASan/UBSan,
-61/61 with Metal disabled, and 15/15 with Metal API and shader validation,
-without skips. Pinned PBRT matches 540,882 stored RGB half values, covering
-every 16-bit source value under both encodings and selected mip/resize cases.
+The [indexed PNG record](indexed-texture-validation.md) records implementation
+`de970a8` on Apple M4 Max: **74/74 tests** in each of Debug, Release, and
+ASan/UBSan, **61/61** with Metal disabled, and **15/15** with Metal API and
+shader validation, without skips.
 
-Independent review verified all 65,536 native half patterns, 393,304 native
-lookups, failure/retry accounting, and 8,075,112 unchanged encoded8 mip words.
-Non-power-of-two resize rounding differences remain explicit in the record.
-An allocation-cap diagnostic finding is fixed and covered by regression tests.
-The full pinned PBRT comparison passed 573 statistical gates and eight sensitivity
-controls across 49 fixtures and 1,576 linear PFM outputs. All 61 Python tests,
-static analysis, repository hooks, an inspected CLI render, and independent review
-passed. Hosted checks are reported on the PR separately.
+Exact reference checks cover 31,548 source RGB codes, 179,256 within-backend mip
+codes, and 528 selected pinned PBRT mip codes. Native RGB8 controls match 8,192
+path radiances exactly. Independent review covers 344 valid and 276 malformed
+inputs plus resource boundaries; the prior binary16 reference checks also pass.
+The full pinned PBRT suite passes **585 statistical gates and eight sensitivity
+controls** across 51 fixtures and 1,640 linear outputs. All 68 Python tests,
+static analysis, repository hooks, and an inspected CLI preview pass.
+Hosted checks are reported on the PR separately.
 
-The [EWA record](ewa-texture-validation.md) retains historical
-evidence for PR #23. This remains selected coverage, not full-corpus support
-or offline MVP completion.
+The [16-bit record](image16-texture-validation.md) and
+[EWA record](ewa-texture-validation.md) retain historical evidence for PRs #24
+and #23. This remains selected coverage, not full-corpus support or offline
+MVP completion.

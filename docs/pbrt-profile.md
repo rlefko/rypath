@@ -113,9 +113,11 @@ are source-located unsupported-feature diagnostics, including unused definitions
 The other filters retain their inert finite `maxanisotropy` parameter.
 
 Supported PNG inputs are noninterlaced 8-bit or 16-bit grayscale, grayscale with alpha,
-RGB, and RGBA. Grayscale replicates into RGB, alpha is discarded, and metadata
-does not determine the color transform. Indexed, interlaced, other bit depths
-and animated PNGs are unsupported. A missing, corrupt, or over-limit supported
+RGB, and RGBA, plus indexed color at 1-, 2-, 4-, or 8-bit index depth.
+Grayscale replicates into RGB; indexed inputs expand their palette to RGB8.
+Alpha, including palette transparency, is discarded without compositing, and
+metadata does not determine the color transform. Interlaced, animated, and
+1-, 2-, or 4-bit grayscale PNGs are unsupported. A missing, corrupt, or over-limit supported
 input is an error. A dependency is marked visited after successful decoding.
 The decoder provenance and its byte-stream limits are recorded in
 [LodePNG](../third_party/lodepng/README.md).
@@ -125,6 +127,12 @@ extensions: the pinned PBRT decoder rejects conversion of those inputs. Owned
 fixtures validate their channel and alpha-discard semantics; reference rendering
 uses plain grayscale, RGB, and RGBA instead. See the
 [16-bit validation record](image16-texture-validation.md).
+
+Indexed inputs require a valid palette and reject every pixel index outside its
+actual entry count, including unused texture declarations. Row-padding bits are
+not pixels. Decoded palette colors use the existing eight-bit transfer and mip
+path; transparent entries preserve their authored RGB. See
+[indexed PNG validation](indexed-texture-validation.md).
 
 Asset paths in included files resolve from the entry directory. Distinct
 images and PLY inputs share the file count and expanded byte budget with scene
