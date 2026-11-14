@@ -57,6 +57,7 @@ and dependency paths listed below.
 | `reflectance-file-ply.pbrt` | 798 | `4b32ca7147ce6212a7b985224f806c69dc3d36ab6fc73965fb6703e9c88fce0b` | 33.4° | 1 | The transformed Sportscar quad uses the `paint.spd` constant texture under a flat sampled infinite light. |
 | `reflectance-controls.pbrt` | 904 | `63a5b4322b752e3419990910444eefc59ea95d1956b6b64f687726dfb637ed9f` | 50° | 1 | Three placeholder triangles supply the `clamp.spd`, `narrow.spd`, and `wide.spd` materials for the native controls. |
 | `blackbody-reflectance-ply.pbrt` | 834 | `b6e1657ac03f24645973d7f979183d58b1c1f54ea163a127a2471a100dae5148` | 33.4° | 1 | The transformed Sportscar quad uses an inherited 6500 K spectrum constant texture under a flat sampled infinite light. |
+| `image-point.pbrt` | 1,009 | `9d2fea3e2d7f6059aec2202e0fbbb2492366c50762e7255b38a7a9cabdc8894d` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite image at fractional LOD using point filtering and repeat wrap. |
 
 Each scene uses a pinhole perspective camera, an 8×8 full-frame sRGB film
 with the CIE 1931 sensor, ISO 100, the default shutter interval
@@ -153,3 +154,9 @@ must agree within five combined
 standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)
 for the comparison command.
+
+The point fixture uses a triangle filter with radii (1/256, 1/256). It also
+compares the two pixels in column 4, rows 3–4, using zero-based top-down
+coordinates. A same-seed bilinear control must reduce their red mean by more
+than 0.02 on each backend. The [image asset manifest](image-assets/README.md)
+records provenance and the mip footprint.

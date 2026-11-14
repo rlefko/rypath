@@ -306,7 +306,67 @@ void trilinear() {
     }
 }
 
-void trilinear_secondary() {
+void point() {
+    // Fixed UV (0.43,0.61) maps to file coordinates (0.43,0.39):
+    // both round(2*st-0.5) indices are zero, away from every boundary.
+    auto scene = textured_plane(color_pixels(), ImageEncoding::srgb, false, 1);
+    constexpr float scale = 1.65f;
+    auto &texture = scene.image_textures.front();
+    texture.scale = scale;
+    texture.invert = true;
+    auto point_texture = texture;
+    point_texture.filter = ImageFilter::point;
+    scene.image_textures.push_back(std::move(point_texture));
+    Rgb expected_rgb{};
+    for (std::size_t c = 0; c < expected_rgb.size(); ++c) {
+        expected_rgb[c] =
+            std::clamp(1 - scale * decode_srgb(srgb_pixels.front()[c] / 255.0), 0.f, 1.f);
+    }
+    constexpr RenderRequest request{.width = 8,
+                                    .height = 8,
+                                    .seed = seed,
+                                    .pixel_count = 64,
+                                    .sample_count = 128,
+                                    .total_samples = 128};
+    for (bool patch : {false, true}) {
+        if (patch) {
+            auto &mesh = scene.geometry.meshes.front();
+            mesh.triangles.clear();
+            mesh.patches = {{0, 1, 2, 3}};
+            scene.instance_texture_frames.front().clear();
+        }
+        scene.materials.front().image_texture = 0;
+        const auto bilinear = sample(*build(scene), request);
+        // Both descriptors share storage; point must survive packing at index 1.
+        scene.materials.front().image_texture = 1;
+        const auto actual = sample(*build(scene), request);
+        auto uniform = scene;
+        uniform.image_textures.clear();
+        uniform.instance_texture_frames.clear();
+        uniform.materials.front() = rgb_material(expected_rgb);
+        const auto expected = sample(*build(uniform), request);
+        uniform.materials.front() = rgb_material({1, 1, 1});
+        const auto white = sample(*build(uniform), request);
+        double max_error = 0, filter_difference = 0;
+        for (std::size_t i = 0; i < actual.samples.size(); ++i) {
+            const auto &a = actual.samples[i];
+            same_path(a, expected.samples[i]);
+            same_path(a, white.samples[i]);
+            same_path(a, bilinear.samples[i]);
+            const double error = std::abs(double{a.radiance} - expected.samples[i].radiance);
+            require(error <= 1e-7 + 3e-5 * white.samples[i].radiance,
+                    "Point lookup disagrees with the independent RGB reflectance control");
+            max_error = std::max(max_error, error);
+            filter_difference = std::max(
+                filter_difference, std::abs(double{a.radiance} - bilinear.samples[i].radiance));
+        }
+        require(filter_difference > 0.02, "Point control does not distinguish bilinear lookup");
+        std::cout << (patch ? "Patch" : "Triangle") << " point maximum path error " << max_error
+                  << ", bilinear difference " << filter_difference << '\n';
+    }
+}
+
+void filtered_secondary(ImageFilter filter) {
     auto scene = textured_plane(varying_pixels(), ImageEncoding::srgb, true, 24);
     // Camera rays see the white front plane at z=2. Only an indirect ray
     // can hit the textured panel behind the camera.
@@ -329,13 +389,13 @@ void trilinear_secondary() {
                                     .sample_count = 33,
                                     .total_samples = 33};
     const auto bilinear = sample(*build(scene), request);
-    scene.image_textures.front().filter = ImageFilter::trilinear;
-    const auto trilinear = sample(*build(scene), request);
+    scene.image_textures.front().filter = filter;
+    const auto filtered = sample(*build(scene), request);
     double difference = 0;
     std::size_t secondary_paths = 0, changed_secondary_paths = 0;
     for (std::size_t i = 0; i < bilinear.samples.size(); ++i) {
         const auto &b = bilinear.samples[i];
-        const auto &t = trilinear.samples[i];
+        const auto &t = filtered.samples[i];
         same_path(b, t, b.scatterings);
         const double delta = std::abs(double{b.radiance} - t.radiance);
         if (b.scatterings == 2) {
@@ -348,10 +408,10 @@ void trilinear_secondary() {
         }
     }
     require(secondary_paths > 100 && changed_secondary_paths > 100 && difference > 0.01,
-            "Secondary texture fixture did not exercise fractional LOD blending");
-    std::cout << "Secondary trilinear changed " << changed_secondary_paths << " of "
-              << secondary_paths << " two-hit paths by more than 0.001, maximum " << difference
-              << '\n';
+            "Secondary texture fixture did not distinguish the selected filter");
+    std::cout << "Secondary " << (filter == ImageFilter::point ? "point" : "trilinear")
+              << " changed " << changed_secondary_paths << " of " << secondary_paths
+              << " two-hit paths by more than 0.001, maximum " << difference << '\n';
 }
 
 void coarsest_mip() {
@@ -397,7 +457,7 @@ Film progressive(const RenderScene &scene, const RenderSettings &settings) {
 
 void batch_partition() {
     auto scene = textured_plane(varying_pixels(), ImageEncoding::linear, true, 40);
-    for (const auto filter : {ImageFilter::bilinear, ImageFilter::trilinear}) {
+    for (const auto filter : {ImageFilter::bilinear, ImageFilter::trilinear, ImageFilter::point}) {
         scene.image_textures.front().filter = filter;
         const float mapping = filter == ImageFilter::trilinear ? 160 : 40;
         scene.image_textures.front().uscale = mapping;
@@ -537,7 +597,9 @@ int main(int argc, char **argv) {
         require(native.status == GeometryStatus::success && native.scene, native.diagnostic);
         bilinear(*native.scene);
         trilinear();
-        trilinear_secondary();
+        point();
+        filtered_secondary(ImageFilter::trilinear);
+        filtered_secondary(ImageFilter::point);
         coarsest_mip();
         batch_partition();
         translated_footprint();

@@ -362,6 +362,27 @@ float bounded_coordinate(float value, ImageWrap wrap) {
     return 0.0f;
 }
 
+int point_coordinate(float value, ImageWrap wrap, int size) {
+    if (wrap != ImageWrap::repeat) {
+        value = bounded_coordinate(value, wrap);
+    }
+    const float dimension = static_cast<float>(size);
+    const float index = std::round(value * dimension - 0.5f);
+    if (wrap == ImageWrap::repeat) {
+        // Apply repeat after rounding to preserve PBRT's signed half-texel ties.
+        // If scaling overflows, the float's spacing already spans whole periods
+        // of the power-of-two mip, so its wrapped index is zero.
+        return std::isfinite(index) ? static_cast<int>(std::fmod(index, dimension)) : 0;
+    }
+    return static_cast<int>(index);
+}
+
+float point_log_width(float width) {
+    // Force binary32 rounding even when the compiler contracts across statements.
+    const volatile float log_width = std::log(width) * 1.4426950408889634f;
+    return log_width;
+}
+
 std::uint32_t texel_at(std::span<const std::uint32_t> texels, int x, int y, int width, int height,
                        ImageWrap wrap) {
     if (wrap == ImageWrap::black && (x < 0 || y < 0 || x >= width || y >= height)) {
@@ -525,7 +546,8 @@ const std::array<float, 256> &image_transfer_table(ImageEncoding encoding) {
 
 std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t, float dsdx,
                                     float dtdx, float dsdy, float dtdy, ImageFilter filter) {
-    if ((filter != ImageFilter::bilinear && filter != ImageFilter::trilinear) ||
+    if ((filter != ImageFilter::bilinear && filter != ImageFilter::trilinear &&
+         filter != ImageFilter::point) ||
         !valid_profile(image.encoding, image.wrap) || image.levels.empty() || !std::isfinite(s) ||
         !std::isfinite(t) || !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
         !std::isfinite(dtdy)) {
@@ -534,10 +556,11 @@ std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t,
     const float half_width =
         std::max({std::abs(dsdx), std::abs(dtdx), std::abs(dsdy), std::abs(dtdy)});
     // Widths of at least one already select the top mip. Bound the width before doubling.
-    const float width = 2.0f * std::min(half_width, 0.5f);
+    const float width = std::max(2.0f * std::min(half_width, 0.5f), 1e-8f);
     const auto coarsest = image.levels.size() - 1;
-    const float lod =
-        static_cast<float>(coarsest) + std::log(std::max(width, 1e-8f)) * 1.4426950408889634f;
+    const float lod = filter == ImageFilter::point
+                          ? static_cast<float>(coarsest) + point_log_width(width)
+                          : static_cast<float>(coarsest) + std::log(width) * 1.4426950408889634f;
     const bool wide = lod >= static_cast<float>(coarsest);
     const auto &transfer = image_transfer_table(image.encoding);
     const auto sample = [&](const ImageMipLevel &level) -> std::optional<Rgb> {
@@ -551,14 +574,19 @@ std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t,
         if (wide) {
             return decode_texel(texels.front(), transfer);
         }
+        const int w = static_cast<int>(level.width);
+        const int h = static_cast<int>(level.height);
+        if (filter == ImageFilter::point) {
+            const int x = point_coordinate(s, image.wrap, w);
+            const int y = point_coordinate(t, image.wrap, h);
+            return decode_texel(texel_at(texels, x, y, w, h, image.wrap), transfer);
+        }
         const float x = bounded_coordinate(s, image.wrap) * static_cast<float>(level.width) - 0.5f;
         const float y = bounded_coordinate(t, image.wrap) * static_cast<float>(level.height) - 0.5f;
         const auto ix = static_cast<int>(std::floor(x));
         const auto iy = static_cast<int>(std::floor(y));
         const float dx = x - static_cast<float>(ix);
         const float dy = y - static_cast<float>(iy);
-        const int w = static_cast<int>(level.width);
-        const int h = static_cast<int>(level.height);
         const auto a = decode_texel(texel_at(texels, ix, iy, w, h, image.wrap), transfer);
         const auto b = decode_texel(texel_at(texels, ix + 1, iy, w, h, image.wrap), transfer);
         const auto c = decode_texel(texel_at(texels, ix, iy + 1, w, h, image.wrap), transfer);
@@ -574,7 +602,7 @@ std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t,
         wide ? coarsest : static_cast<std::size_t>(std::max(0.0f, std::floor(lod)));
     auto rgb = sample(image.levels[selected]);
     // PBRT uses base-level bilerp throughout the first LOD interval.
-    if (!rgb || filter == ImageFilter::bilinear || wide || selected == 0) {
+    if (!rgb || filter != ImageFilter::trilinear || wide || selected == 0) {
         return rgb;
     }
     const auto upper = sample(image.levels[selected + 1]);

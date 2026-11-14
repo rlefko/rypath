@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 from compare_pbrt import (
-    QUADRANTS, REGIONS, TRILINEAR_BLEND, check_trilinear_sensitivity,
+    QUADRANTS, REGIONS, check_filter_sensitivity,
     compare_regions, read_pfm, roi_means,
     render_replicates, stage_dependencies,
 )
@@ -111,50 +111,74 @@ class ComparisonTests(unittest.TestCase):
             "bottom-right": (4, 4, 8, 8),
         })
 
-    def test_trilinear_sensitivity_uses_each_backends_first_seed_and_red_roi(self):
+    def test_filter_sensitivity_uses_each_backends_first_seed_and_signed_red_roi(self):
+        for filter_name, region, sign in (("trilinear", "blend", 1), ("point", "nearest", -1)):
+            with self.subTest(filter_name=filter_name):
+                self.check_filter_control(filter_name, region, sign)
+
+    def check_filter_control(self, filter_name, region, sign):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            scene = f"image-{filter_name}"
             entries = {"rypath": "00", "pbrt": "16"}
-            measurements = {backend: {"blend": [(0.5, 0.5, 0.5)]}
+            measurements = {backend: {region: [(0.5, 0.5, 0.5)]}
                             for backend in entries}
             for backend, seed in entries.items():
-                entry = root / "image-trilinear" / backend / f"{seed}.pbrt"
+                entry = root / scene / backend / f"{seed}.pbrt"
                 entry.parent.mkdir(parents=True)
                 entry.write_bytes(f'"integer seed" [{int(seed)}]\n'.encode() +
-                                  b'"string filter" "trilinear"\n')
+                                  f'"string filter" "{filter_name}"\n'.encode())
 
             def render(backend, binary, variant, source):
                 seed = entries[backend]
                 self.assertEqual(binary, Path(backend))
-                self.assertEqual(variant, root / "image-trilinear" / backend /
+                self.assertEqual(variant, root / scene / backend /
                                  f"{seed}-bilinear.pbrt")
                 self.assertEqual(source, f'"integer seed" [{int(seed)}]\n'.encode() +
                                  b'"string filter" "bilinear"\n')
-                x0, y0, x1, y1 = TRILINEAR_BLEND
-                red = 0.51 if backend == failing_backend else 0.53
-                return [(red if x0 <= x < x1 and y0 <= y < y1 else 0.5, 0.1, 1.0)
+                margin = failing_margin if backend == failing_backend else 0.03
+                red = 0.5 + sign * margin
+                return [(red if x == 4 and y in (3, 4) else 0.5 + sign * 0.1,
+                         0.5 + sign * 0.1, 0.5 + sign * 0.1)
                         for y in range(8) for x in range(8)]
 
             with (mock.patch("compare_pbrt.render_pfm", side_effect=render),
                   contextlib.redirect_stdout(io.StringIO())):
-                for failing_backend in (None, "rypath", "pbrt"):
-                    with self.subTest(failing_backend=failing_backend):
-                        self.assertEqual(check_trilinear_sensitivity(
-                            Path("rypath"), Path("pbrt"), root, measurements,
+                for failing_backend, failing_margin in ((None, 0), ("rypath", 0.01), ("pbrt", -0.05)):
+                    with self.subTest(failing_backend=failing_backend, failing_margin=failing_margin):
+                        self.assertEqual(check_filter_sensitivity(
+                            scene, Path("rypath"), Path("pbrt"), root, measurements,
                         ), failing_backend is None)
 
-    def test_trilinear_control_rejects_missing_or_duplicate_filter_token(self):
+    def test_point_control_rejects_equality_at_threshold(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            entry = root / "image-trilinear" / "rypath" / "00.pbrt"
-            entry.parent.mkdir(parents=True)
-            for count in (0, 2):
-                with self.subTest(count=count):
-                    entry.write_bytes(b'"string filter" "trilinear"\n' * count)
-                    with (mock.patch("compare_pbrt.render_pfm") as render,
-                          self.assertRaisesRegex(ValueError, "expected one trilinear filter")):
-                        check_trilinear_sensitivity(Path("rypath"), Path("pbrt"), root, {})
-                    render.assert_not_called()
+            for backend, seed in (("rypath", "00"), ("pbrt", "16")):
+                entry = root / "image-point" / backend / f"{seed}.pbrt"
+                entry.parent.mkdir(parents=True)
+                entry.write_bytes(b'"string filter" "point"\n')
+            measurements = {"rypath": {"nearest": [(0.03, 0, 0)]},
+                            "pbrt": {"nearest": [(0.02, 0, 0)]}}
+            with (mock.patch("compare_pbrt.render_pfm", return_value=[(0, 0, 0)] * 64),
+                  contextlib.redirect_stdout(io.StringIO())):
+                self.assertFalse(check_filter_sensitivity(
+                    "image-point", Path("rypath"), Path("pbrt"), root, measurements,
+                ))
+
+    def test_filter_control_rejects_missing_or_duplicate_filter_token(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for filter_name in ("trilinear", "point"):
+                scene = f"image-{filter_name}"
+                entry = root / scene / "rypath" / "00.pbrt"
+                entry.parent.mkdir(parents=True)
+                for count in (0, 2):
+                    with self.subTest(filter_name=filter_name, count=count):
+                        entry.write_bytes(f'"string filter" "{filter_name}"\n'.encode() * count)
+                        with (mock.patch("compare_pbrt.render_pfm") as render,
+                              self.assertRaisesRegex(ValueError, f"expected one {filter_name} filter")):
+                            check_filter_sensitivity(scene, Path("rypath"), Path("pbrt"), root, {})
+                        render.assert_not_called()
 
     def test_rois_use_top_down_coordinates(self):
         pixels = [(x, y, 8 * y + x) for y in range(8) for x in range(8)]

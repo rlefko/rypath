@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -36,6 +37,50 @@ void compare(probe::Vector actual, probe::Vector expected, std::string_view name
                 std::to_string(actual.x) + ", " + std::to_string(actual.y) + ", " +
                 std::to_string(actual.z) + ", " + std::to_string(actual.w) + ")");
 }
+
+struct PointCheck {
+    probe::PointCase input;
+    probe::Vector expected;
+    std::string_view name;
+};
+
+constexpr auto huge = std::numeric_limits<float>::max();
+constexpr auto nan = std::numeric_limits<float>::quiet_NaN();
+constexpr probe::Vector red{1, 0, 0, 0}, green{0, 1, 0, 0}, blue{0, 0, 1, 0}, white{1, 1, 1, 0};
+constexpr probe::Vector mid{0.25f, 0.5f, 0.75f, 0}, bad{nan, nan, nan, 0};
+const std::array<PointCheck, probe::point_case_count> point_checks{{
+    {{7, -0.25f, 0.875f, 0}, blue, "Negative half-texel tie"},
+    {{7, 0.25f, 0.875f, 0}, green, "Positive half-texel tie"},
+    {{7, std::nextafter(0.25f, 0.0f), 0.875f, 0}, red, "Below positive tie"},
+    {{7, std::nextafter(0.25f, 1.0f), 0.875f, 0}, green, "Above positive tie"},
+    {{7, 0, 0.875f, 0}, white, "Repeat at zero"},
+    {{7, 1, 0.875f, 0}, red, "Repeat at one"},
+    {{7, 0x1p-24f, 0.875f, 0}, red, "Repeat inside zero edge"},
+    {{7, std::nextafter(1.0f, 0.0f), 0.875f, 0}, white, "Repeat inside one edge"},
+    {{7, 0.25f, 0.75f, 0.3535533905932738f}, mid, "Fractional nonzero LOD selects a texel"},
+    {{7, 0x1.fffffep28f, 0.875f, 0}, red, "Scaled repeat just below INT_MAX"},
+    {{7, 0x1p29f, 0.875f, 0}, red, "Scaled repeat above INT_MAX"},
+    {{7, -0x1.000002p29f, 0.875f, 0}, red, "Scaled repeat below INT_MIN"},
+    {{7, huge, 0.875f, 0}, red, "Positive repeat scaling overflow"},
+    {{7, -huge, 0.875f, 0}, red, "Negative repeat scaling overflow"},
+    {{8, -huge, 0.875f, 0}, red, "Clamp at negative extreme"},
+    {{8, huge, 0.875f, 0}, white, "Clamp at positive extreme"},
+    {{9, 0, 0.875f, 0}, {}, "Black at zero"},
+    {{9, 1, 0.875f, 0}, {}, "Black at one"},
+    {{9, 0x1p-24f, 0.875f, 0}, red, "Black just inside zero edge"},
+    {{9, std::nextafter(1.0f, 0.0f), 0.875f, 0}, white, "Black just inside one edge"},
+    {{10, 0.0f, 0.5f, 0}, {}, "Narrow black singleton at edge"},
+    {{10, 0.5f, 0.5f, 0}, red, "Narrow black singleton interior"},
+    {{10, 0.0f, 0.5f, 0.5f}, red, "Wide black singleton"},
+    {{11, huge, 0.875f, 0}, bad, "Narrow overflow in mapped coordinate"},
+    {{11, huge, 0.875f, 0.5f}, red, "Wide footprint returns before mapping overflow"},
+    {{12, std::nextafter(1.0f, 2.0f), 0.875f, 0}, white, "UV mapping rounds product before add"},
+    {{13, 0.25f, 0.75f, 0.3535533905932738f}, bad, "Point selected mip has invalid extent"},
+    {{14, 0.25f, 0.75f, 0.5f}, bad, "Point descriptor has invalid wrap"},
+    {{15, 0.25f, 0.75f, 0.5f}, bad, "Point descriptor has invalid encoding"},
+    {{16, 0.25f, 0.5f, 0.25f}, red, "Exact higher mip transition"},
+    {{16, 0.25f, 0.5f, 0x1.fffffap-3f}, red, "LOD rounds log term before add"},
+}};
 
 void check(const probe::Result &r, std::uint32_t budget) {
     const auto scale = static_cast<float>(std::max(0.125, 1 / std::sqrt(budget)));
@@ -86,6 +131,32 @@ void check(const probe::Result &r, std::uint32_t budget) {
         require(std::isnan(invalid.x) && std::isnan(invalid.y) && std::isnan(invalid.z),
                 "Invalid texture filter or upper mip must fail visibly");
     }
+    for (std::size_t i = 0; i < point_checks.size(); ++i) {
+        const auto &test = point_checks[i];
+        auto expected = test.expected;
+        auto actual = r.point[i];
+        if (i == probe::point_lod_seam_case) {
+            // Use the device's logarithm to isolate mip rounding from differences
+            // between CPU and GPU implementations of log.
+            constexpr float inv_log2 = 1.4426950408889634f;
+            require(std::isfinite(actual.w), "Nonfinite device log at point LOD transition");
+            const volatile float log_width = actual.w * inv_log2;
+            const bool upper = 6.0f + log_width >= 5.0f;
+            expected = upper ? red : green;
+            if (budget == 1) {
+                const bool fused_upper = std::fma(actual.w, inv_log2, 6.0f) >= 5.0f;
+                std::cout << "Point LOD transition mip with separate rounding " << (upper ? 5 : 4)
+                          << ", with fused rounding " << (fused_upper ? 5 : 4) << '\n';
+            }
+            actual.w = 0;
+        }
+        const bool matches =
+            std::isnan(expected.x)
+                ? std::isnan(actual.x) && std::isnan(actual.y) && std::isnan(actual.z)
+                : actual.x == expected.x && actual.y == expected.y && actual.z == expected.z &&
+                      actual.w == expected.w;
+        require(matches, std::string{test.name} + " mismatch at budget " + std::to_string(budget));
+    }
 
     const auto spectral = reconstruct_srgb({0.25f, 0.5f, 0.75f});
     require(spectral.has_value(), "CPU spectral reconstruction for probe failed");
@@ -104,7 +175,7 @@ void run_probe(id<MTLDevice> device) {
     require(pipeline != nil, diagnostic);
 
     constexpr std::array<std::uint32_t, 4> budgets{1, 4, 64, 256};
-    constexpr std::array<wire::ImageTexture, 7> textures{{
+    constexpr std::array<wire::ImageTexture, 17> textures{{
         {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::bilinear_texture_filter},
         {0, 3, 2, 0, 1, 1, 0, 0, 1, 0, wire::bilinear_texture_filter},
         {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter},
@@ -112,15 +183,41 @@ void run_probe(id<MTLDevice> device) {
         {2, 1, 2, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter},
         {1, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter},
         {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, 99},
+        {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {0, 3, 1, 0, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {0, 3, 2, 0, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {2, 1, 2, 0, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {0, 3, 2, 0, 2, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {0, 3, 0, 0, 0x1.fffffep-1f, 1, -1, 0, 1, 0, wire::point_texture_filter},
+        {2, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {0, 3, 99, 0, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {0, 3, 0, 99, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
+        {4, 7, 0, 0, 1, 1, 0, 0, 1, 0, wire::point_texture_filter},
     }};
-    constexpr std::array<wire::TextureLevel, 4> levels{
-        {{4, 4, 0}, {2, 2, 16}, {1, 1, 20}, {1, 1, 21}}};
-    std::array<wire::Word, 21> texels{};
+    constexpr std::size_t texel_count = 148;
+    constexpr std::array<wire::TextureLevel, 11> levels{{
+        {4, 4, 0},
+        {2, 2, 16},
+        {1, 1, 20},
+        {1, 1, texel_count},
+        {64, 1, 21},
+        {32, 1, 85},
+        {16, 1, 117},
+        {8, 1, 133},
+        {4, 1, 141},
+        {2, 1, 145},
+        {1, 1, 147},
+    }};
+    std::array<wire::Word, texel_count> texels{};
     texels[0] = 0x00000004u;
     texels[1] = 0x00000400u;
+    texels[2] = 0x00040000u;
+    texels[3] = 0x00040404u;
     texels[4] = 0x00040000u;
     texels[16] = 0x00030201u;
     texels[20] = 0x00000004u;
+    texels[142] = 0x00000400u;
+    texels[145] = 0x00000004u;
     // Exact synthetic transfer values isolate filtering arithmetic from transfer encoding.
     std::array<float, 256> transfer{};
     for (std::size_t i = 0; i <= 4; ++i) {
@@ -130,6 +227,8 @@ void run_probe(id<MTLDevice> device) {
     parameters.texture_count = static_cast<wire::Word>(textures.size());
     parameters.level_count = static_cast<wire::Word>(levels.size());
     parameters.texel_count = static_cast<wire::Word>(texels.size());
+    std::array<probe::PointCase, probe::point_case_count> point_cases{};
+    std::ranges::transform(point_checks, point_cases.begin(), &PointCheck::input);
 
     const auto table = srgb_reconstruction_table();
     const auto table_buffer = [device newBufferWithBytes:table.data()
@@ -153,6 +252,7 @@ void run_probe(id<MTLDevice> device) {
     [encoder setBuffer:table_buffer offset:0 atIndex:5];
     [encoder setBytes:&parameters length:sizeof(parameters) atIndex:6];
     [encoder setBuffer:output offset:0 atIndex:7];
+    [encoder setBytes:point_cases.data() length:sizeof(point_cases) atIndex:8];
     [encoder dispatchThreads:MTLSizeMake(budgets.size(), 1, 1)
         threadsPerThreadgroup:MTLSizeMake(budgets.size(), 1, 1)];
     [encoder endEncoding];

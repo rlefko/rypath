@@ -18,8 +18,15 @@ fractional LOD around 2.5, blending the 8×8 and 4×4 mips. A triangle pixel
 filter with radii (0.0625, 0.0625) keeps the blend region near the red
 transition at repeat coordinates (0.025, 0.5).
 
+The GPL-3.0-only wrapper `../image-point.pbrt` uses the same PNG and
+triangle geometry with a UV mapping that selects the 8×8 mip at LOD 2.625.
+The triangle pixel filter has radii (1/256, 1/256), keeping sample positions
+within their selected mip texels. Column 4 stays near the repeat coordinate
+`s = 0.025`, where point sampling selects the bright red texel and bilinear
+sampling mixes in roughly 30% of the dark texel across the repeat seam.
+
 [The dependency manifest](../dependencies.json) records the size and SHA-256
-of each input staged with its entry point. All five image texture fixtures use
+of each input staged with its entry point. All six image texture fixtures use
 8×8 linear RGB output and 4,096 samples per pixel. Comparison runs use
 independent seeds per backend and leave PBRT texture filtering enabled.
 The trilinear run compares the full image and the two pixels in column 4,
@@ -27,3 +34,6 @@ rows 3–4 (zero-indexed, top-down). It also changes just the texture filter to
 bilinear at the first seed for each backend (rypath 0, PBRT 16) and requires
 the bilinear red mean to exceed the trilinear red mean by more than 0.02 in
 those two pixels.
+The point run uses the same two regions and control seeds. It requires the
+point red mean to exceed the bilinear red mean by more than 0.02 in those
+two pixels.

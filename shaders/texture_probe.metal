@@ -17,7 +17,8 @@ kernel void rypath_texture_footprint_probe(
     const device wire::TextureLevel *levels [[buffer(2)]], const device uint *texels [[buffer(3)]],
     const device float *transfer [[buffer(4)]], const device float *table [[buffer(5)]],
     constant wire::TextureParameters &parameters [[buffer(6)]],
-    device probe::Result *results [[buffer(7)]], uint id [[thread_position_in_grid]]) {
+    device probe::Result *results [[buffer(7)]],
+    constant probe::PointCase *point_cases [[buffer(8)]], uint id [[thread_position_in_grid]]) {
     device auto &result = results[id];
     const float scale = rypath_texture_differential_scale(budgets[id]);
     const float3 i(1, 0, 0), j(0, 1, 0), k(0, 0, 1);
@@ -104,4 +105,13 @@ kernel void rypath_texture_footprint_probe(
         textures[5], levels, texels, transfer, parameters, base, fractional, float2(0)));
     result.invalid_filter = pack_probe(rypath_image::lookup(
         textures[6], levels, texels, transfer, parameters, base, float2(0.5f, 0), float2(0)));
+    for (uint n = 0; n < probe::point_case_count; ++n) {
+        const auto test = point_cases[n];
+        const auto color =
+            rypath_image::lookup(textures[test.texture], levels, texels, transfer, parameters,
+                                 float2(test.u, test.v), float2(test.half_width, 0), float2(0));
+        const float device_log_width =
+            n == probe::point_lod_seam_case ? log(2.0f * test.half_width) : 0.0f;
+        result.point[n] = pack_probe(color, device_log_width);
+    }
 }

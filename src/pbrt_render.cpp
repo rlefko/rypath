@@ -1028,6 +1028,45 @@ void Translator::geometry() {
     }
 }
 
+std::string image_filter_provenance(const RenderScene &scene) {
+    if (scene.image_textures.empty()) {
+        return {};
+    }
+    struct FilterMode {
+        ImageFilter filter;
+        string_view name;
+        bool used = false;
+    };
+    std::array modes{FilterMode{ImageFilter::point, "point"},
+                     FilterMode{ImageFilter::bilinear, "bilinear"},
+                     FilterMode{ImageFilter::trilinear, "trilinear"}};
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        const auto &material = scene.materials[scene.instance_materials[i]];
+        const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];
+        if (material.kind == SpectralMaterialKind::image &&
+            (!mesh.triangles.empty() || !mesh.patches.empty())) {
+            const auto filter = scene.image_textures[material.image_texture].filter;
+            for (auto &mode : modes) {
+                mode.used |= mode.filter == filter;
+            }
+        }
+    }
+    auto remaining = std::ranges::count(modes, true, &FilterMode::used);
+    if (remaining == 0) {
+        return {};
+    }
+    std::string provenance = "Image textures: PNG, UV mapping, mipmapped ";
+    for (const auto &mode : modes) {
+        if (mode.used) {
+            provenance += mode.name;
+            if (--remaining > 0) {
+                provenance += remaining == 1 ? " and " : ", ";
+            }
+        }
+    }
+    return provenance + " filtering";
+}
+
 RenderTranslation Translator::run() {
     const auto *film_descriptor = required("Film");
     if (film_descriptor) {
@@ -1123,19 +1162,8 @@ RenderTranslation Translator::run() {
                           << " (x radius " << scene_.filter.x_radius << ", y radius "
                           << scene_.filter.y_radius << ')';
         result_.provenance.push_back(filter_provenance.str());
-        if (!scene_.image_textures.empty()) {
-            const auto has_filter = [&](ImageFilter filter) {
-                return std::ranges::any_of(
-                    scene_.image_textures,
-                    [filter](const ImageTexture &image) { return image.filter == filter; });
-            };
-            const bool bilinear = has_filter(ImageFilter::bilinear);
-            const bool trilinear = has_filter(ImageFilter::trilinear);
-            const auto *mode = bilinear && trilinear ? "bilinear and trilinear"
-                               : bilinear            ? "bilinear"
-                                                     : "trilinear";
-            result_.provenance.emplace_back(
-                std::string("Image textures: PNG, UV mapping, mipmapped ") + mode + " filtering");
+        if (auto images = image_filter_provenance(scene_); !images.empty()) {
+            result_.provenance.push_back(std::move(images));
         }
         result_.scene = std::move(scene_);
         result_.provenance.push_back("CIE 1931 sensor exposure uses ISO and shutter duration");

@@ -79,7 +79,7 @@ void diagnostic(const Result &result, string_view code) {
 }
 
 RenderScene translate_scene(const Result &result, const fs::path &path,
-                            std::string_view expected_filter = {}) {
+                            std::string_view expected_filter) {
     auto translated = translate(result, {path.string()});
     for (const auto &issue : translated.diagnostics) {
         std::cerr << format_diagnostic(issue) << '\n';
@@ -87,11 +87,15 @@ RenderScene translate_scene(const Result &result, const fs::path &path,
     if (translated.exit_code() != 0 || !translated.scene) {
         throw std::runtime_error("Imagemap scene must translate");
     }
-    if (!expected_filter.empty()) {
-        const auto provenance = "Image textures: PNG, UV mapping, mipmapped " +
-                                std::string(expected_filter) + " filtering";
-        require(std::ranges::find(translated.provenance, provenance) != translated.provenance.end(),
-                "Image provenance did not identify the configured filters");
+    constexpr string_view prefix = "Image textures: PNG, UV mapping, mipmapped ";
+    const auto provenance = std::ranges::find_if(
+        translated.provenance, [prefix](const auto &line) { return line.starts_with(prefix); });
+    if (expected_filter.empty()) {
+        require(provenance == translated.provenance.end(), "Unused image filters in provenance");
+    } else {
+        const auto expected = std::string(prefix) + std::string(expected_filter) + " filtering";
+        require(provenance != translated.provenance.end() && *provenance == expected,
+                "Image provenance did not identify the bound filters");
     }
     return std::move(translated.scene.value());
 }
@@ -125,12 +129,12 @@ Include "nested/maps.pbrt"
 Texture "paint" "float" "constant"
 AttributeBegin
 Attribute "texture" "string filename" "color.png" "float uscale" 8 "float vscale" -2
-    "string filter" "trilinear"
+    "string filter" "point"
 Texture "paint" "spectrum" "imagemap" "float uscale" 3 "float uscale" 4
     "float udelta" 0.25 "float vdelta" -0.5 "bool invert" true "float scale" 0.75
     "float maxanisotropy" 1.5
 Texture "copy" "spectrum" "imagemap" "float uscale" 1 "string filter" "bilinear"
-Texture "linear" "spectrum" "imagemap" "string encoding" "linear"
+Texture "linear" "spectrum" "imagemap" "string encoding" "linear" "string filter" "trilinear"
 Texture "clamp" "spectrum" "imagemap" "string wrap" "clamp"
 AttributeEnd
 )");
@@ -151,7 +155,7 @@ AttributeEnd
     require(paint.uscale == 4 && paint.vscale == -2 && paint.udelta == 0.25f &&
                 paint.vdelta == -0.5f && paint.scale == 0.75f && paint.invert &&
                 paint.image->encoding == ImageEncoding::srgb &&
-                paint.image->wrap == ImageWrap::repeat && paint.filter == ImageFilter::trilinear,
+                paint.image->wrap == ImageWrap::repeat && paint.filter == ImageFilter::point,
             "Last authored value wins and absent fields inherit or default");
     require(definitions.at(0).source == definitions.at(3).source &&
                 definitions.at(1).texture.image == paint.image &&
@@ -161,9 +165,10 @@ AttributeEnd
                 definitions.at(3).texture.image->wrap == ImageWrap::clamp,
             "One decoded asset supplies each unique encoding and wrap combination");
 
-    const auto translated = translate_scene(checked, path, "bilinear and trilinear");
-    require(translated.image_textures.at(0).filter == ImageFilter::trilinear &&
+    const auto translated = translate_scene(checked, path, "point");
+    require(translated.image_textures.at(0).filter == ImageFilter::point &&
                 translated.image_textures.at(1).filter == ImageFilter::bilinear &&
+                translated.image_textures.at(2).filter == ImageFilter::trilinear &&
                 translated.image_textures.at(1).image == paint.image &&
                 translated.materials.at(translated.instance_materials.at(0)).kind !=
                     SpectralMaterialKind::image &&
@@ -221,18 +226,20 @@ void failures(const fs::path &directory) {
                     "Corrupt images stay unvisited");
         }
     }
-    for (const auto field : {R"("string encoding" "gamma 2.2")", R"("string filter" "ewa")",
-                             R"("string filter" "EWA")", R"("string filter" "point")",
-                             R"("string mapping" "planar" "vector3 v1" [1 0 0])",
-                             R"("string wrap" "octahedralsphere")"}) {
+    for (const auto field :
+         {R"("string encoding" "gamma 2.2")", R"("string filter" "ewa")",
+          R"("string filter" "EWA")", R"("string mapping" "planar" "vector3 v1" [1 0 0])",
+          R"("string wrap" "octahedralsphere")"}) {
         const auto checked = check_image(std::string(image) + ' ' + field);
         require(checked.exit_code() == 2 && !checked.document.dependencies.front().visited,
                 report(checked));
         diagnostic(checked, "unsupported-feature");
     }
-    for (const auto field : {R"("string encoding" "gamma nonsense")", R"("string filter" "weird")",
-                             R"("string mapping" "none")", R"("string wrap" "mirror")",
-                             R"("float vscale" [1 2])", R"("float udelta" 1e100)"}) {
+    for (const auto field :
+         {R"("string encoding" "gamma nonsense")", R"("string filter" "weird")",
+          R"("string filter" "Point")", R"("string filter" "")",
+          R"("string filter" ["point" "bilinear"])", R"("string mapping" "none")",
+          R"("string wrap" "mirror")", R"("float vscale" [1 2])", R"("float udelta" 1e100)"}) {
         const auto checked = check_image(std::string(image) + ' ' + field);
         require(checked.exit_code() == 1 && !checked.document.dependencies.front().visited,
                 report(checked));
@@ -265,9 +272,15 @@ Texture "paint" "float" "constant")");
     constexpr std::size_t pyramid_bytes = 5 * sizeof(std::uint32_t) + 2 * sizeof(ImageMipLevel);
     limits.image.retained_bytes = source_bytes + pyramid_bytes;
     const auto shared = check_image(std::string(image) + R"(
-Texture "another" "spectrum" "imagemap" "string filename" "color.png" "string filter" "trilinear")",
+Texture "point" "spectrum" "imagemap" "string filename" "color.png" "string filter" "point"
+Texture "trilinear" "spectrum" "imagemap" "string filename" "color.png" "string filter" "trilinear")",
                                     limits);
-    require(shared.exit_code() == 0, report(shared));
+    require(shared.exit_code() == 0 && shared.scene, report(shared));
+    const auto &definitions = shared.scene->spectrum_image_textures;
+    require(definitions.size() == 3 &&
+                definitions[0].texture.image == definitions[1].texture.image &&
+                definitions[0].texture.image == definitions[2].texture.image,
+            "Point, bilinear and trilinear descriptors must share one pyramid at the byte limit");
     const auto variant = check_image(std::string(image) + R"(
 Texture "another" "spectrum" "imagemap" "string filename" "color.png" "string encoding" "linear")",
                                      limits);
@@ -276,6 +289,50 @@ Texture "another" "spectrum" "imagemap" "string filename" "color.png" "string en
 Texture "another" "spectrum" "imagemap" "string filename" "different.png")",
                                            limits);
     diagnostic(second_source, "limit-exceeded");
+}
+
+void filter_provenance(const fs::path &directory) {
+    const auto path = directory / "filters.pbrt";
+    const auto definitions = std::string(options) + R"(
+Texture "trilinear" "spectrum" "imagemap" "string filename" "color.png" "string filter" "trilinear"
+Texture "bilinear" "spectrum" "imagemap" "string filename" "color.png"
+Texture "point" "spectrum" "imagemap" "string filename" "color.png" "string filter" "point"
+MakeNamedMaterial "unused" "string type" "diffuse" "texture reflectance" "point"
+ObjectBegin "unused"
+NamedMaterial "unused"
+)" + std::string(triangle) + "ObjectEnd\n";
+    constexpr std::array names{string_view{"trilinear"}, string_view{"bilinear"},
+                               string_view{"point"}};
+    constexpr std::array expected{string_view{},
+                                  string_view{"trilinear"},
+                                  string_view{"bilinear"},
+                                  string_view{"bilinear and trilinear"},
+                                  string_view{"point"},
+                                  string_view{"point and trilinear"},
+                                  string_view{"point and bilinear"},
+                                  string_view{"point, bilinear and trilinear"}};
+    for (std::size_t subset = 0; subset < expected.size(); ++subset) {
+        auto source = definitions + std::string(triangle);
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            if ((subset & (1U << i)) != 0) {
+                source += "Material \"diffuse\" \"texture reflectance\" \"";
+                source += names[i];
+                source += "\"\n";
+                source += triangle;
+            }
+        }
+        write(path, source);
+        auto scene = translate_scene(check(path), path, expected[subset]);
+        if (subset == expected.size() - 1) {
+            require(scene.image_textures[2].image == scene.image_textures[0].image,
+                    "Translated descriptors must share their pyramid");
+            // Reject a malformed later descriptor even after its pyramid has been validated.
+            // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+            scene.image_textures[2].filter = static_cast<ImageFilter>(99);
+            require(validate_render_scene(scene) == "Invalid image texture filter",
+                    "A shared pyramid must not bypass descriptor filter validation");
+        }
+    }
 }
 
 void translated_frames(const fs::path &directory) {
@@ -303,7 +360,7 @@ Material "diffuse" "texture reflectance" "paint"
             "Authored trilinear filter did not survive translation");
     write(path, "Translate -100000000 0 0\n" + std::string(settings) + surface +
                     "Translate 100000000 0 0\n" + std::string(triangle));
-    const auto translated = translate_scene(check(path), path);
+    const auto translated = translate_scene(check(path), path, "bilinear");
     const auto &a = centered.instance_texture_frames.front().front();
     const auto &b = translated.instance_texture_frames.front().front();
     const auto coordinates = [](GeometryPoint p) { return std::array{p.x, p.y, p.z}; };
@@ -353,6 +410,7 @@ int main(int argc, char **argv) {
         write_png(directory / "rgb16.png", rgb16_png);
         bindings_and_frames(directory);
         failures(directory);
+        filter_provenance(directory);
         translated_frames(directory);
         frame_limit(directory);
         return 0;

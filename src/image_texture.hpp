@@ -15,7 +15,7 @@ namespace rypath {
 
 enum class ImageEncoding { srgb, linear };
 enum class ImageWrap { repeat, clamp, black };
-enum class ImageFilter { bilinear, trilinear };
+enum class ImageFilter { bilinear, trilinear, point };
 
 struct ImageLimits {
     std::uint32_t max_dimension = 4096;
