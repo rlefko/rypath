@@ -112,13 +112,14 @@ parameter precedence and diffuse binding rules. Filtering accepts `point`,
 are source-located unsupported-feature diagnostics, including unused definitions.
 The other filters retain their inert finite `maxanisotropy` parameter.
 
-Supported PNG inputs are noninterlaced 8-bit or 16-bit grayscale, grayscale with alpha,
-RGB, and RGBA, plus indexed color at 1-, 2-, 4-, or 8-bit index depth.
+Supported PNG inputs are noninterlaced grayscale at 1, 2, 4, 8, or 16 bits;
+grayscale with alpha, RGB, and RGBA at 8 or 16 bits; and indexed color at
+1, 2, 4, or 8 bits.
 Grayscale replicates into RGB; indexed inputs expand their palette to RGB8.
 Alpha, including palette transparency, is discarded without compositing, and
-metadata does not determine the color transform. Interlaced, animated, and
-1-, 2-, or 4-bit grayscale PNGs are unsupported. A missing, corrupt, or over-limit supported
-input is an error. A dependency is marked visited after successful decoding.
+metadata does not determine the color transform. Interlaced and animated PNGs
+are unsupported. A missing, corrupt, or over-limit supported input is an error.
+A dependency is marked visited after successful decoding.
 The decoder provenance and its byte-stream limits are recorded in
 [LodePNG](../third_party/lodepng/README.md).
 
@@ -133,6 +134,10 @@ actual entry count, including unused texture declarations. Row-padding bits are
 not pixels. Decoded palette colors use the existing eight-bit transfer and mip
 path; transparent entries preserve their authored RGB. See
 [indexed PNG validation](indexed-texture-validation.md).
+
+Packed grayscale samples expand exactly to RGB8 using `sample * 255 / (2^depth - 1)`.
+Transparency keys do not change the expanded samples. The existing eight-bit
+transfer and mip path applies; see [grayscale validation](grayscale-texture-validation.md).
 
 Asset paths in included files resolve from the entry directory. Distinct
 images and PLY inputs share the file count and expanded byte budget with scene

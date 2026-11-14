@@ -754,14 +754,12 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
         return result;
     }
     // lodepng_inspect has already checked the legal depths for each color type.
+    if (png.state.info_png.interlace_method != 0) {
+        return png_error("PNG must be noninterlaced", true);
+    }
     const auto depth = color.bitdepth;
     const bool indexed = color.colortype == LCT_PALETTE;
-    if ((!indexed && depth != 8 && depth != 16) || png.state.info_png.interlace_method != 0) {
-        return png_error("PNG must be noninterlaced indexed color (1, 2, 4, or 8 bits), or "
-                         "8- or 16-bit gray, gray-alpha, RGB, or RGBA",
-                         true);
-    }
-    const auto rgb_depth = indexed ? 8u : depth;
+    const auto rgb_depth = std::max(8u, depth);
     const std::size_t pixels = pixel_count(width, height);
     const auto source_bpp = lodepng_get_bpp(&color);
     const std::size_t rgb_bytes = pixels * 3 * (rgb_depth / 8);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "packed_grayscale_fixture.hpp"
 #include "pbrt_render.hpp"
 
 #include <algorithm>
@@ -436,6 +437,49 @@ Material "diffuse" "texture reflectance" "paint"
             "Translated indexed bindings retain expanded RGB8 mip storage");
 }
 
+void grayscale_sources(const fs::path &directory) {
+    const auto path = directory / "grayscale.pbrt";
+    const auto asset = directory / "grayscale.png";
+    write_png(asset, test::grayscale2_png);
+    write(path, std::string(options) + R"(
+Texture "paint" "spectrum" "imagemap" "string filename" "grayscale.png"
+Texture "point" "spectrum" "imagemap" "string filename" "grayscale.png" "string filter" "point"
+Material "diffuse" "texture reflectance" "paint"
+)" + std::string(triangle));
+    constexpr std::size_t pyramid_bytes = 11 * sizeof(std::uint32_t) + 3 * sizeof(ImageMipLevel);
+    Limits limits;
+    limits.image.retained_bytes = test::grayscale2_rgb.size() + pyramid_bytes;
+    auto checked = check(path, limits);
+    if (checked.exit_code() != 0 || !checked.scene) {
+        throw std::runtime_error(report(checked));
+    }
+    const auto &definitions = checked.scene->spectrum_image_textures;
+    require(definitions.size() == 2, "Expected two packed grayscale texture descriptors");
+    const auto &first = definitions.front();
+    require(checked.document.dependencies.size() == 1 &&
+                checked.document.dependencies.front().visited &&
+                first.source->pixels->bit_depth == 8 &&
+                std::ranges::equal(first.source->pixels->rgb, test::grayscale2_rgb) &&
+                first.texture.image->storage == ImageStorage::encoded8 &&
+                definitions[1].source == first.source &&
+                definitions[1].texture.image == first.texture.image,
+            "Packed grayscale must share expanded RGB8 storage at the retained limit");
+    --limits.image.retained_bytes;
+    const auto over_budget = check(path, limits);
+    require(over_budget.exit_code() == 1 && !over_budget.scene, report(over_budget));
+    diagnostic(over_budget, "limit-exceeded");
+    require(fs::remove(asset), "Could not remove checked grayscale PNG");
+    auto translated = translate_scene(checked, path, "bilinear");
+    require(translated.image_textures.size() == 2,
+            "Expected two translated grayscale texture descriptors");
+    require(translated.image_textures.front().image == first.texture.image,
+            "Grayscale translation must reuse the checked pyramid");
+    checked = {};
+    require(validate_render_scene(translated).empty() &&
+                translated.image_textures.front().image->texels.at(3) == 0xffffff,
+            "Translated grayscale must retain transparent white after source destruction");
+}
+
 void filter_provenance(const fs::path &directory) {
     const auto path = directory / "filters.pbrt";
     const auto definitions = std::string(options) + R"(
@@ -634,6 +678,7 @@ int main(int argc, char **argv) {
         failures(directory);
         sixteen_bit_sources(directory);
         indexed_sources(directory);
+        grayscale_sources(directory);
         filter_provenance(directory);
         ewa_parameters(directory);
         translated_frames(directory);

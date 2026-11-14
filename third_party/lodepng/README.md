@@ -43,6 +43,12 @@ to RGB8. It discards palette alpha without compositing. Scanline padding,
 packed indices, the expanded image, and both palette allocations are included
 in the decoder scratch estimate. This requires no additional vendored changes.
 
+For 1-, 2-, and 4-bit grayscale, the adapter requests RGB8 conversion. The
+unfiltered samples expand to `sample * 255 / (2^depth - 1)` in each channel.
+Transparency keys are discarded without compositing. Scratch accounting covers
+packed pixels, padded scanlines, conversion, and both live RGB8 buffers during
+the retained copy; no vendored changes are required.
+
 The decoder checks the exact decompressed scanline length and the Adler-32
 checksum at the end of the concatenated IDAT payload. Final DEFLATE consumption
 follows upstream LodePNG, which can accept unused bytes between the final

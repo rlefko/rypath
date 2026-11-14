@@ -223,5 +223,12 @@
       "bytes": 338,
       "sha256": "cd99fc4cc69bda1ff8e8697d8b423ae8d9e84a58ba1d2b480751953b6869e3b3"
     }
+  ],
+  "image-grayscale-point": [
+    {
+      "path": "image-assets/tbbn0g04.png",
+      "bytes": 429,
+      "sha256": "c5e7eeaffa677bfac002ee968a0423e0fea3be7701d39ccd6a015df1d2d85e40"
+    }
   ]
 }

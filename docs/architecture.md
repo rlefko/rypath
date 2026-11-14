@@ -123,6 +123,10 @@ expand to the existing RGB8 source representation. Preflight accounts for packed
 and expanded storage before allocation. The existing image caches, mip compiler,
 and Metal payload handle the resulting RGB8 image without an additional format.
 The [indexed record](indexed-texture-validation.md) defines the bounds and evidence.
+Packed grayscale PNGs use the existing decoder conversion into RGB8. The same
+source ownership, transfer, mip, and Metal paths apply, with expanded bytes
+charged to the existing resource budgets. The
+[grayscale record](grayscale-texture-validation.md) defines the exact expansion.
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 PNG decoding uses the vendored portable LodePNG decoder. The
 [dependency decision](pbrt-decision.md) records the integration boundary.

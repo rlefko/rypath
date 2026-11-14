@@ -41,6 +41,9 @@ class SceneSelectionTests(unittest.TestCase):
                 "tp1n3p08.png", (8, 3), {"full": FULL, "transparent-texel": (0, 0, 1, 1)}),
             "image-indexed-trilinear": (
                 "s35n3p04.png", (4, 3), {"full": FULL, "blend": TRILINEAR_BLEND}),
+            "image-grayscale-point": (
+                "tbbn0g04.png", (4, 0),
+                {"full": FULL, "transparent-texel": (0, 0, 1, 1), "midgray-texel": (6, 4, 7, 5)}),
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -23,7 +23,7 @@ execute_process(COMMAND "${executable}" --check-pbrt "${input}"
 if(NOT exit STREQUAL "0" OR NOT stderr STREQUAL "")
     message(FATAL_ERROR "Image preflight failed: ${exit}: ${stdout}${stderr}")
 endif()
-foreach(image IN ITEMS s35n3p04.png tp1n3p08.png basn2c16.png basn0g16.png)
+foreach(image IN ITEMS s35n3p04.png tp1n3p08.png basn2c16.png basn0g16.png tbbn0g04.png)
     file(COPY_FILE "${fixture_directory}/image-assets/${image}" "${asset}")
     execute_process(COMMAND "${executable}" --check-pbrt "${input}"
         RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
@@ -60,11 +60,13 @@ file(WRITE "${input}" "${scene}")
 # Invalid or over-limit inputs must fail even in an unused definition.
 file(COPY_FILE "${fixture_directory}/image-assets/basn2c16.png" "${test_directory}/broken16.png")
 file(APPEND "${test_directory}/broken16.png" "invalid trailing bytes")
+file(COPY_FILE "${fixture_directory}/image-assets/tbbn0g04.png" "${test_directory}/broken-gray.png")
+file(APPEND "${test_directory}/broken-gray.png" "invalid trailing bytes")
 file(COPY "${fixture_directory}/image-assets/invalid-index.png"
           "${fixture_directory}/image-assets/over-limit-indexed.png"
     DESTINATION "${test_directory}")
 file(APPEND "${input}" "\nInclude \"unused.pbrt\"\n")
-foreach(image IN ITEMS broken16.png invalid-index.png over-limit-indexed.png)
+foreach(image IN ITEMS broken16.png broken-gray.png invalid-index.png over-limit-indexed.png)
     set(code invalid-image)
     if(image STREQUAL "over-limit-indexed.png")
         set(code limit-exceeded)

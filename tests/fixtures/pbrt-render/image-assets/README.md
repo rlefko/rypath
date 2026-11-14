@@ -75,13 +75,27 @@ and repeat wrap. It resizes the 35×35 image to 64×64 and minifies it at LOD
 approximately 3.49, blending the 8×8 and 4×4 mips. Its triangle filter uses
 radii of 1/16, and its blend region covers column 4, rows 3–4.
 
+`tbbn0g04.png` is an unmodified 32×32 grayscale4 PNGSuite image by Willem
+van Schaik at the same pinned stb revision. Its transparency key is the
+maximum gray sample (encoded RGB8 white). The PNG also contains black
+background and gamma 1.0 metadata. The original terms apply.
+[Grayscale4 source](https://github.com/nothings/stb/blob/af1a5bc352164740c1cc1354942b1c6b72eacb8a/tests/pngsuite/primary/tbbn0g04.png),
+[PngSuite.LICENSE](PngSuite.LICENSE)
+
+The GPL-3.0-only wrapper `../image-grayscale-point.pbrt` uses default sRGB
+encoding and clamp wrap. A triangle filter with radii 1/256 keeps film pixels
+at the centers of base-level texels across source columns 8–15 and rows 0–7.
+The film pixel at (0, 0) samples keyed white, and the pixel at (6, 4) samples
+encoded gray 51 at source texel (14, 4). This owned wrapper covers the pinned
+asset and its declared texture settings.
+
 `invalid-index.png` and `over-limit-indexed.png` are rypath-authored CLI
 preflight fixtures under GPL-3.0-only. The first stores index 1 in a 1×1
 image with one palette entry. The second stores index 0 throughout a
 valid 4097×1 indexed image that exceeds the texture axis limit.
 
 [The dependency manifest](../dependencies.json) records the size and SHA-256
-of each input staged with its entry point. All twelve image texture comparisons use
+of each input staged with its entry point. All thirteen image texture comparisons use
 8×8 linear RGB output and 4,096 samples per pixel. Comparison runs use
 independent seeds per backend and leave PBRT texture filtering enabled.
 The trilinear run compares the full image and the two pixels in column 4,
