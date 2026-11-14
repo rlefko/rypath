@@ -63,6 +63,10 @@ REGIONS = {
     },
     "image-secondary": QUADRANTS,
     "image-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
+    "blackbody-background": {"full": FULL},
+    "blackbody-area": QUADRANTS,
+    "blackbody-mixed": QUADRANTS,
+    "blackbody-ply-external": QUADRANTS,
 }
 
 

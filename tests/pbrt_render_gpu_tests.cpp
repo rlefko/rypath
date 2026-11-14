@@ -8,6 +8,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -206,6 +207,129 @@ void constant_texture_equivalence(const std::filesystem::path &directory, std::s
         .kind = SpectralMaterialKind::constant, .constant = 0};
     require(direct_film != progressive(direct, settings),
             texture_fixture + ": no pixel received reflected light");
+}
+
+Curve planck_curve(double temperature) {
+    // Independent absolute Planck radiance, rather than the production ratio formula.
+    // Moderate temperatures keep this direct expression well conditioned in double.
+    constexpr double h = 6.62606957e-34;
+    constexpr double c = 299792458;
+    constexpr double k = 1.3806488e-23;
+    Curve curve;
+    for (int nm = 360; nm <= 830; ++nm) {
+        const double wavelength = nm * 1e-9;
+        const double radiance =
+            2 * h * c * c /
+            (std::pow(wavelength, 5) * std::expm1(h * c / (wavelength * k * temperature)));
+        curve.emplace_back(nm, radiance);
+    }
+    return curve;
+}
+
+void emission_paths(MetalRenderScene &native, const Curve &curve, double amplitude,
+                    std::string_view name, std::uint64_t seed) {
+    double normalization = 0;
+    for (std::size_t i = 0; i < detail::cie_xyz.size(); ++i) {
+        normalization += value_at(curve, 360.0 + static_cast<double>(i)) * detail::cie_xyz[i][1];
+    }
+    const auto samples = trace(native, analytic_paths, seed);
+    double maximum_error = 0;
+    for (const auto &sample : samples.samples) {
+        const double expected =
+            amplitude * value_at(curve, std::round(sample.wavelength)) / normalization;
+        const double error = std::abs(sample.radiance - expected);
+        require(sample.scatterings == 0 && error <= 1e-8 + 2e-6 * std::abs(expected),
+                "Blackbody emitted radiance disagrees with independent Planck evaluation");
+        maximum_error = std::max(maximum_error, error);
+    }
+    std::cout << name << " maximum per-path radiance error " << maximum_error << '\n';
+}
+
+void blackbody_lights(const std::filesystem::path &directory) {
+    const auto warm = planck_curve(3000);
+    constexpr double sky_amplitude = static_cast<double>(1.7f) * 7 / std::numbers::pi;
+    const auto sky = load(directory / "blackbody-background.pbrt");
+    auto native = build(sky);
+    emission_paths(*native, warm, sky_amplitude, "Blackbody sky", 0x6c4a2952d21d42faULL);
+    analytic(*native, quadrature(warm, sky_amplitude, {}), 0x5ee18472a512ea5aULL, "Blackbody sky",
+             0);
+
+    auto plane = load(directory / "diffuse.pbrt");
+    plane.environment = sky.environment;
+    analytic(*build(plane),
+             quadrature(warm, sky_amplitude,
+                        {{360, 0.1}, {476, 0.8}, {503.5, 0.2}, {575, 0.9}, {830, 0.3}}),
+             0x7ab93b9c54161eb9ULL, "Blackbody diffuse", 1);
+
+    // Put a translated blackbody emitter on a covering plane. Change only its
+    // geometry representation to exercise both native triangle and patch lookups.
+    const auto emitters = load(directory / "blackbody-area.pbrt");
+    require(emitters.area_emissions.size() == 2 && !emitters.area_emissions[0].two_sided &&
+                emitters.area_emissions[1].two_sided,
+            "Blackbody fixture lost its two distinct scoped emitters");
+    plane.max_depth = 0;
+    plane.environment.fill(0);
+    plane.materials.at(plane.instance_materials.front()) = {.kind = SpectralMaterialKind::constant};
+    plane.area_emissions = {emitters.area_emissions.front()};
+    plane.instance_emissions = {0};
+    auto &mesh = plane.geometry.meshes.front();
+    for (auto &triangle : mesh.triangles) {
+        std::swap(triangle[1], triangle[2]);
+    }
+    native = build(plane);
+    emission_paths(*native, warm, 1.75, "Blackbody triangles", 0x87118b411a663a1aULL);
+    analytic(*native, quadrature(warm, 1.75, {}), 0x114e942eca92d78aULL, "Blackbody triangles", 0);
+    mesh.triangles.clear();
+    mesh.patches = {{0, 3, 1, 2}};
+    native = build(plane);
+    emission_paths(*native, warm, 1.75, "Blackbody patch", 0x87118b411a663a1aULL);
+    analytic(*native, quadrature(warm, 1.75, {}), 0x114e942eca92d78aULL, "Blackbody patch", 0);
+
+    // Portable translation separately checks the cold limit. Exercise its dense
+    // payload here: discrete photometric calibration counts the last bin fully,
+    // while continuous uniform wavelength sampling sees only half its width.
+    auto cold = sky;
+    cold.environment.fill(0);
+    cold.environment.back() = static_cast<float>(1 / detail::cie_xyz.back()[1]);
+    const Curve cold_curve{{360, 0}, {829, 0}, {830, 1}};
+    const auto cold_moments = quadrature(cold_curve, 1, {});
+    require(std::abs(cold_moments.mean[1] - 0.5) < 1e-12,
+            "Cold endpoint quadrature must have half-width Y");
+    native = build(cold);
+    emission_paths(*native, cold_curve, 1, "Cold limiting sky", 0x825c71ada4eda1c2ULL);
+    analytic(*native, cold_moments, 0x825c71ada4eda1c2ULL, "Cold limiting sky", 0);
+
+    auto mixed = load(directory / "blackbody-mixed.pbrt");
+    auto settings = RenderSettings{
+        .width = 5, .height = 7, .samples = 65, .batch_size = 65, .seed = 0x6c44198c4a67c2e9ULL};
+    const auto whole = progressive(mixed, settings);
+    for (const auto batch : {7u, 1u}) {
+        settings.batch_size = batch;
+        require(whole == progressive(mixed, settings),
+                "Blackbody batch partition changed raw film");
+    }
+    settings.batch_size = 65;
+    auto without_sky = mixed;
+    without_sky.environment.fill(0);
+    require(whole != progressive(without_sky, settings),
+            "Blackbody mixed fixture did not receive environment light");
+    auto without_areas = mixed;
+    for (auto &emission : without_areas.area_emissions) {
+        emission.radiance.fill(0);
+    }
+    require(whole != progressive(without_areas, settings),
+            "Blackbody mixed fixture did not receive area light");
+    mixed.environment.fill(0);
+    for (auto &emission : mixed.area_emissions) {
+        emission.radiance.fill(0);
+    }
+    const auto dark = progressive(mixed, settings);
+    require(whole != dark && std::ranges::all_of(dark.pixels,
+                                                 [](const auto &pixel) {
+                                                     return pixel.sum == XYZ{} &&
+                                                            pixel.correction == XYZ{};
+                                                 }),
+            "Blackbody batch fixture did not depend on its lights");
 }
 
 // Coefficients of linear sRGB (1, 0, 0), from the pinned upstream PBRT table.
@@ -410,6 +534,7 @@ int main(int argc, char **argv) {
 
         constant_texture_equivalence(directory, "diffuse");
         constant_texture_equivalence(directory, "ply-external");
+        blackbody_lights(directory);
 
         auto sky = load(directory / "background.pbrt");
         require(sky.max_depth == 0, "Background fixture must exercise depth zero");
