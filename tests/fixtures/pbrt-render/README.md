@@ -39,6 +39,19 @@ pins asset hashes and sizes.
 | `cornell-box-sobol-permutedigits.pbrt` | 7,579 | `dd20fb726bbe55a7f4145a9b6803fb33e7379334d01370ccfbf44bff17f53b53` | Same geometry as `cornell-box-attributes.pbrt` |
 | `cornell-box-sobol-owen.pbrt` | 7,570 | `835cacf63c0eb73b3198d65d6d40f8194bdfdda32926332a64c8f2296fbc83e6` | Same geometry as `cornell-box-attributes.pbrt` |
 
+The four file emission entry points use the original
+[spectrum assets](spectrum-assets/README.md). The external PLY wrapper also
+loads the unmodified 412-byte CC BY 2.0 quad by Yasutoshi Mori from the
+[pinned Sportscar asset](ply-assets/README.md). Each wrapper uses the settings
+and dependency paths listed below.
+
+| Entry point | Bytes | SHA-256 | FOV | Path maxdepth | Inputs and coverage |
+| --- | ---: | --- | ---: | ---: | --- |
+| `file-background.pbrt` | 677 | `57040170c696fe3fe7eb5a7f758798987049528e9496e1ea914840a53b43c4ee` | 50° | 0 | `sky.spd` lights the unobstructed background at scale 1.7 and illuminance 7. |
+| `file-area.pbrt` | 1,333 | `8e9961183e9f55a7bb98f5ab896cee7692aef4fe0242d86c58a711e5d2a98659` | 45° | 0 | `warm.spd` at scale 1.75 and two-sided `cool.spd` emit from opposite-facing triangle meshes. An off-camera triangle supplies the `endpoint.spd` payload for the native test. |
+| `file-mixed.pbrt` | 2,126 | `06868f36e9a0625c011b719e4fd695c656728a737628fcbbb506cde2fbdd4c6f` | 58° | 5 | The `sky.spd` environment and three area emitters at scales 3, 1.5 and 0.6 illuminate an asymmetric room. Two emitters share `warm.spd`, and one uses `cool.spd`. |
+| `file-ply-external.pbrt` | 816 | `aaee0bcf9d4b2713a1bb1af881c6f104f9a65ed24a0ac2cc80b496b09d8daa89` | 33.4° | 1 | The transformed quad in `ply-assets/sportscar-quad.ply` emits `cool.spd` at scale 1.25 under a `sky.spd` environment. |
+
 Each scene uses a pinhole perspective camera, an 8×8 full-frame sRGB film
 with the CIE 1931 sensor, ISO 100, the default shutter interval
 [0, 1], `savefp16=false`, and the path integrator. The three Sobol entry points
@@ -119,8 +132,9 @@ film, so the equality check exercises surface reflection.
 
 The comparison uses the full 8×8 frame for every scene. The
 [`REGIONS` table](../../../scripts/compare_pbrt.py) defines additional regions,
-including the four top-down 4×4 quadrants for the blackbody and named-spectrum
-area, mixed, and PLY scenes. Each region's R, G, and B means must agree within five combined
+including the four top-down 4×4 quadrants for the blackbody, named-spectrum
+and file-spectrum area, mixed, and PLY scenes. Each region's R, G, and B means
+must agree within five combined
 standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)
 for the comparison command.

@@ -33,10 +33,11 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
+| File spectra on supported infinite and diffuse area lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
 | Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
-| Other external meshes, other image and procedural textures, file spectra | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
+| Other external meshes, other image and procedural textures, other file-spectrum consumers | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
 | Textured area lights, emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
 | Unknown directives / malformed syntax | Source-located error | Stops without line-based recovery | Not attempted |
 | Legacy v3 forms and hexadecimal numbers | Explicit diagnostic | Outside this profile | Unsupported |
@@ -123,6 +124,39 @@ Mip variants share storage for the same path, encoding, and wrap mode, including
 textures with different filtering modes. Aggregate
 retained accounting includes decoded RGB bytes, packed mip texels, and level
 records. Image-specific resource limits are listed below.
+
+## Emission spectrum files
+
+One bare or bracketed filename in `spectrum L` is supported on infinite and
+diffuse area light declarations. Exact built-in names take precedence over files.
+Effective parameter selection, light defaults, and scope restoration are unchanged;
+shadowed filenames do not become dependencies. Other consumers, including diffuse
+reflectance and constant-texture values, remain unsupported.
+
+Files contain at least two wavelength/value pairs in plain text. Decimal and
+exponent forms, ASCII whitespace, and `#` comments are accepted. Comments may
+immediately follow a number, and the final number need not have a trailing newline.
+Every token must be a complete decimal number. Both columns narrow directly to
+finite binary32; wavelengths must strictly increase after narrowing. Representable
+subnormals are accepted, while nonzero tokens rounding to zero are errors.
+Finite signed values remain checked data; rendering separately requires
+nonnegative emission and a positive finite CIE-Y normalization.
+
+Paths use the entry directory, with no current-directory fallback. Successful and
+failed decode attempts are cached by the existing resolved dependency identity.
+Only successful decoding marks a dependency visited. Descriptors share immutable
+knots; translation never rereads the source. Diagnostics identify the authored
+declaration and the file position. Malformed multi-file parameter lists and
+ambiguous post-Include scans inventory paths without decoding them.
+
+Spectrum files share the PLY/image file-count and expanded-byte budgets, and
+the PLY decoded-scalar budget. The existing per-file, token, and list limits also
+apply. Work already performed by a failed attempt is charged without refund. Repeated light
+translation is separately bounded by the spectral value budget.
+
+The stricter token parser, EOF handling, adjacent comments, and two-pair minimum
+are documented differences from the pinned PBRT reader. See the
+[file-spectrum validation record](file-spectrum-validation.md).
 
 ## PLY meshes
 
