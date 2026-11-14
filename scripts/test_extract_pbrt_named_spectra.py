@@ -6,7 +6,15 @@ import unittest
 from pathlib import Path
 
 from compare_pbrt_named_spectra import upstream_names
-from extract_pbrt_named_spectra import WAVELENGTHS, densify, f32, float_literal, parse_registry
+from extract_pbrt_named_spectra import (
+    WAVELENGTHS,
+    densify,
+    f32,
+    float_literal,
+    make_knots_include,
+    parse_registry,
+    prepare_knots,
+)
 
 
 SYNTHETIC_REGISTRY = """
@@ -46,19 +54,33 @@ class NamedSpectrumExtractionTests(unittest.TestCase):
             for token in line.strip().rstrip(",").split(",")
         ]
         interleaved = [value for pair in zip(WAVELENGTHS, samples, strict=True) for value in pair]
-        self.assertEqual(densify(interleaved, (), None), samples)
+        self.assertEqual(densify(*prepare_knots(interleaved, (), None)), samples)
 
     def test_irregular_knots_and_normalization_use_binary32_operations(self):
         interleaved = [370.125, 0.2, 820.25, 0.8]
-        raw = densify(interleaved, (), None)
-        normalized = densify(interleaved, [f32(0.85)] * len(WAVELENGTHS), f32(106.856895))
+        raw = prepare_knots(interleaved, (), None)
+        normalized = prepare_knots(interleaved, [f32(0.85)] * len(WAVELENGTHS), f32(106.856895))
+        expected_knots = [359.0, 370.125, 820.25, 831.0]
+        self.assertEqual(raw, (expected_knots, [f32(0.2)] * 2 + [f32(0.8)] * 2))
+        self.assertEqual(normalized[0], expected_knots)
+        self.assertEqual(struct.pack(">4f", *normalized[1]).hex(), "3ddac198" * 2 + "3edac198" * 2)
         wavelengths = (360, 400, 555, 830)
-        for samples, expected in (
+        for prepared, expected in (
             (raw, "3e4cccce3e7593f83ee492ad3f4ccccd"),
             (normalized, "3ddac1983e0328133e7426323edac198"),
         ):
+            samples = densify(*prepared)
             selected = [samples[wavelength - 360] for wavelength in wavelengths]
             self.assertEqual(struct.pack(">4f", *selected).hex(), expected)
+
+    def test_prepared_knots_are_emitted_with_registry_ranges(self):
+        first = prepare_knots([359.25, 0.125, 831.5, 1.25], (), None)
+        second = prepare_knots([360.5, 0.125, 831.5, 1.25], (), None)
+        generated = make_knots_include({"first": first, "second": second})
+        self.assertIn('{"first", 0, 2}', generated)
+        self.assertIn('{"second", 2, 3}', generated)
+        self.assertIn("{0x1.674p+8f, 0x1p-3f}", generated)
+        self.assertIn("{0x1.9fcp+9f, 0x1.4p+0f}", generated)
 
     def test_float_literal_preserves_zero_and_binary32_precision(self):
         self.assertEqual(float_literal(0.0), "0x0p+0f")

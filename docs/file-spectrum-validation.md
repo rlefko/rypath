@@ -11,7 +11,7 @@ Preflight owns bounded plain-text decoding, effective-parameter selection,
 dependency accounting, and shared immutable binary32 knots. Paths use the scene
 entry directory without a working-directory fallback. Translation never reopens
 files. Failed attempts are cached and retain their incurred resource charges.
-The [structural profile](pbrt-profile.md#emission-spectrum-files) specifies the
+The [structural profile](pbrt-profile.md#spectrum-files) specifies the
 grammar, limits, and diagnostics.
 
 The semantic reference is PBRT v4

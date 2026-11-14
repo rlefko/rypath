@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Extract the dense binary32 named spectra from pinned PBRT v4."""
+"""Extract the prepared knots and dense binary32 named spectra from pinned PBRT v4."""
 
 import argparse
 import math
@@ -65,7 +65,7 @@ def interpolate(wavelength, knots, values):
     return lerp(f32(offset / width), values[index], values[index + 1])
 
 
-def densify(interleaved, cie_y, cie_y_integral):
+def prepare_knots(interleaved, cie_y, cie_y_integral):
     if len(interleaved) < 2 or len(interleaved) % 2:
         raise ValueError("Invalid interleaved spectrum length")
     knots = list(map(f32, interleaved[::2]))
@@ -75,10 +75,10 @@ def densify(interleaved, cie_y, cie_y_integral):
     if any(not math.isfinite(value) or value < 0 for value in values):
         raise ValueError("Spectrum values must be finite and nonnegative")
     if knots[0] > LAMBDA_MIN:
-        knots.insert(0, LAMBDA_MIN - 1)
+        knots.insert(0, float(LAMBDA_MIN - 1))
         values.insert(0, values[0])
     if knots[-1] < LAMBDA_MAX:
-        knots.append(LAMBDA_MAX + 1)
+        knots.append(float(LAMBDA_MAX + 1))
         values.append(values[-1])
 
     # PBRT extends and normalizes the knots before evaluating the dense spectrum.
@@ -92,10 +92,14 @@ def densify(interleaved, cie_y, cie_y_integral):
             raise ValueError("Cannot normalize a zero-luminance PBRT spectrum")
         scale = f32(cie_y_integral / photometric)
         values = [f32(value * scale) for value in values]
+    return knots, values
+
+
+def densify(knots, values):
     return [interpolate(wavelength, knots, values) for wavelength in WAVELENGTHS]
 
 
-def extract_named_spectra(source, header):
+def extract_named_knots(source, header):
     entries = parse_registry(source)
     normalized_count = sum(normalize for _, normalize in entries.values())
     if len(entries) != SPECTRUM_COUNT or normalized_count != NORMALIZED_COUNT:
@@ -108,7 +112,9 @@ def extract_named_spectra(source, header):
         raise ValueError("PBRT CIE Y integral is missing")
     cie_y_integral = f32(float(integral[1]))
     return {
-        name: densify(array(source, array_name), cie_y, cie_y_integral if normalize else None)
+        name: prepare_knots(
+            array(source, array_name), cie_y, cie_y_integral if normalize else None
+        )
         for name, (array_name, normalize) in entries.items()
     }
 
@@ -118,14 +124,19 @@ def float_literal(value):
     return f"{mantissa.rstrip('0').rstrip('.')}p{exponent}f"
 
 
-def make_include(spectra):
-    lines = [
+def attribution():
+    return [
         "// SPDX-License-Identifier: Apache-2.0",
         "// pbrt is Copyright(c) 1998-2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.",
         "// PhysLight code and measurements contributed by Anders Langlands and Luca Fascione",
         "// Copyright (c) 2020, Weta Digital, Ltd.",
         "// Glass data from https://refractiveindex.info under CC0-1.0.",
         f"// Generated from PBRT v4 {REVISION} by scripts/extract_pbrt_named_spectra.py.",
+    ]
+
+
+def make_include(spectra):
+    lines = attribution() + [
         "// Samples at integer wavelengths 360–830 nm. See third_party/pbrt/README.md.",
         "constexpr auto names = std::to_array<std::string_view>({",
     ]
@@ -140,19 +151,43 @@ def make_include(spectra):
     return "\n".join(lines) + "\n"
 
 
+def make_knots_include(spectra):
+    lines = attribution() + [
+        "// Prepared wavelength and value pairs. See third_party/pbrt/README.md.",
+        "constexpr auto spectrum_knots = std::to_array<SpectralKnot>({",
+    ]
+    ranges = []
+    offset = 0
+    for name, (wavelengths, values) in spectra.items():
+        lines.append(f"    // {name}")
+        for wavelength, value in zip(wavelengths, values, strict=True):
+            lines.append(f"    {{{float_literal(wavelength)}, {float_literal(value)}}},")
+        ranges.append(f'    {{"{name}", {offset}, {len(wavelengths)}}},')
+        offset += len(wavelengths)
+    lines.extend(["});", "", "constexpr auto knot_ranges = std::to_array<KnotRange>({"])
+    lines.extend(ranges)
+    lines.append("});")
+    return "\n".join(lines) + "\n"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "pbrt_source", type=Path, help="PBRT Git checkout containing the pinned revision"
     )
     parser.add_argument("output", type=Path)
+    parser.add_argument("--knots-output", type=Path, help="also write the prepared binary32 knots")
     args = parser.parse_args()
 
-    spectra = extract_named_spectra(
+    prepared = extract_named_knots(
         read_pinned(args.pbrt_source, "spectrum.cpp"), read_pinned(args.pbrt_source, "spectrum.h")
     )
+    spectra = {name: densify(*knots) for name, knots in prepared.items()}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(make_include(spectra).encode("utf-8"))
+    if args.knots_output is not None:
+        args.knots_output.parent.mkdir(parents=True, exist_ok=True)
+        args.knots_output.write_bytes(make_knots_include(prepared).encode("utf-8"))
 
 
 if __name__ == "__main__":

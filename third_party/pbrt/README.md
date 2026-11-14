@@ -125,6 +125,12 @@ wavelengths from 360 through 830 nm. The names are case-sensitive. CMake
 checks SHA-256 `1ad23d63bc8e02a3f88e22dfe660c07114d037a32d1f8d8666c9723400c833bc`
 and compiles the checked-in hexadecimal literals into static data.
 
+The separate `named_spectrum_knots.inc` contains the prepared binary32
+wavelength/value pairs for the same 88 names, including fractional
+wavelengths and knots outside the visible range. Diffuse reflectance uses
+this piecewise-linear representation. CMake checks SHA-256
+`92c84ba72972a7eb2f7d148f39aece27e9860d4d790021878621ca44c4f53cdb`.
+
 The extractor follows PBRT's `FromInterleaved` and `PiecewiseLinearSpectrum`
 arithmetic. If the knots leave either visible endpoint uncovered, PBRT
 extends the endpoint value using a knot at 359 or 831 nm. For the 16
@@ -134,7 +140,7 @@ PBRT's CIE Y table in binary32 and scales the knots by
 spectra initialization step. rypath applies its light calibration separately
 when translating a named spectrum used as emission.
 
-The generated include retains PBRT's Apache-2.0 attribution and the
+Both generated includes retain PBRT's Apache-2.0 attribution and the
 PhysLight measurements notice for Anders Langlands and Luca Fascione,
 Copyright (c) 2020, Weta Digital, Ltd. The optical glass data are from
 [refractiveindex.info](https://refractiveindex.info) under
@@ -152,8 +158,10 @@ pbrt_source="$PWD/.cache/pbrt-reference/source"
 pbrt_build="$PWD/.cache/pbrt-reference/build"
 validation_dir=build/named-emission-validation
 mkdir -p "$validation_dir"
-python3 scripts/extract_pbrt_named_spectra.py "$pbrt_source" "$validation_dir/named_spectra.inc"
+python3 scripts/extract_pbrt_named_spectra.py "$pbrt_source" "$validation_dir/named_spectra.inc" \
+    --knots-output "$validation_dir/named_spectrum_knots.inc"
 cmp third_party/pbrt/named_spectra.inc "$validation_dir/named_spectra.inc"
+cmp third_party/pbrt/named_spectrum_knots.inc "$validation_dir/named_spectrum_knots.inc"
 
 c++ -std=c++17 -ffp-contract=off -I"$pbrt_source/src" -I"$pbrt_source/src/ext" -I"$pbrt_build" \
     scripts/pbrt_named_spectrum_probe.cpp "$pbrt_build/libpbrt_lib.a" \

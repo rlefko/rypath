@@ -33,7 +33,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
-| File spectra on supported infinite and diffuse area lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
+| File spectra on diffuse materials, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
 | Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
@@ -125,13 +125,14 @@ textures with different filtering modes. Aggregate
 retained accounting includes decoded RGB bytes, packed mip texels, and level
 records. Image-specific resource limits are listed below.
 
-## Emission spectrum files
+## Spectrum files
 
-One bare or bracketed filename in `spectrum L` is supported on infinite and
-diffuse area light declarations. Exact built-in names take precedence over files.
+One bare or bracketed filename is supported in `spectrum reflectance` on diffuse
+materials, `spectrum value` on spectrum constant textures, and `spectrum L` on
+infinite and diffuse area lights. Exact built-in names take precedence over files.
 Effective parameter selection, light defaults, and scope restoration are unchanged;
-shadowed filenames do not become dependencies. Other consumers, including diffuse
-reflectance and constant-texture values, remain unsupported.
+shadowed filenames do not become dependencies. Other file-spectrum consumers remain
+unsupported. Unused supported material and texture definitions are checked too.
 
 Files contain at least two wavelength/value pairs in plain text. Decimal and
 exponent forms, ASCII whitespace, and `#` comments are accepted. Comments may
@@ -139,8 +140,9 @@ immediately follow a number, and the final number need not have a trailing newli
 Every token must be a complete decimal number. Both columns narrow directly to
 finite binary32; wavelengths must strictly increase after narrowing. Representable
 subnormals are accepted, while nonzero tokens rounding to zero are errors.
-Finite signed values remain checked data; rendering separately requires
-nonnegative emission and a positive finite CIE-Y normalization.
+Finite signed values remain checked data. Rendering separately requires
+nonnegative emission and a positive finite CIE-Y normalization; diffuse reflection
+clamps the evaluated curve to [0,1] and accepts zero curves.
 
 Paths use the entry directory, with no current-directory fallback. Successful and
 failed decode attempts are cached by the existing resolved dependency identity.
@@ -151,8 +153,9 @@ ambiguous post-Include scans inventory paths without decoding them.
 
 Spectrum files share the PLY/image file-count and expanded-byte budgets, and
 the PLY decoded-scalar budget. The existing per-file, token, and list limits also
-apply. Work already performed by a failed attempt is charged without refund. Repeated light
-translation is separately bounded by the spectral value budget.
+apply. Work already performed by a failed attempt is charged without refund. Light
+translation and compiled reflectance are separately bounded by the spectral value
+budget. Light, material, and texture descriptors share the same successful decode.
 
 The stricter token parser, EOF handling, adjacent comments, and two-pair minimum
 are documented differences from the pinned PBRT reader. See the

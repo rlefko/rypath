@@ -14,6 +14,7 @@
 namespace {
 
 using rypath::pbrt_named_spectrum;
+using rypath::pbrt_named_spectrum_knots;
 using rypath::pbrt_named_spectrum_names;
 
 constexpr std::array<float, 471> previous_d65{
@@ -51,10 +52,43 @@ void check_registry() {
                 "Named spectrum has an invalid sample");
         require(std::ranges::any_of(*spectrum, [](float value) { return value > 0.0f; }),
                 "Named spectrum has no positive samples");
+        const auto knots = pbrt_named_spectrum_knots(name);
+        require(knots.size() >= 2 && knots.front().wavelength <= 360.0f &&
+                    knots.back().wavelength >= 830.0f,
+                "Prepared knots must cover the visible wavelengths");
+        require(std::ranges::all_of(knots,
+                                    [](const auto &knot) {
+                                        return std::isfinite(knot.wavelength) &&
+                                               std::isfinite(knot.value);
+                                    }),
+                "Named spectrum has a nonfinite knot");
+        require(std::ranges::is_sorted(knots, {}, &rypath::SpectralKnot::wavelength) &&
+                    std::ranges::adjacent_find(knots, {}, &rypath::SpectralKnot::wavelength) ==
+                        knots.end(),
+                "Named spectrum wavelengths are not strictly increasing");
     }
     for (const auto name : {"", "STDILLUM-D65", "stdillum-D65.spd", "glass-SF5", "unknown"}) {
         require(pbrt_named_spectrum(name) == nullptr, "Unexpected named spectrum match");
+        require(pbrt_named_spectrum_knots(name).empty(), "Unexpected named knot match");
     }
+}
+
+void check_knots() {
+    const auto d65 = pbrt_named_spectrum_knots("stdillum-D65");
+    require(d65.size() == 107 && d65.front().wavelength == 300.0f &&
+                d65.front().value == 0x1.6993f6p-12f,
+            "D65 prepared knots preserve normalized out-of-band values");
+
+    const auto glass = pbrt_named_spectrum_knots("glass-F5");
+    require(glass.size() == 27 && glass.front().wavelength == 359.0f &&
+                glass[1].wavelength == 370.0f && glass[2].wavelength == 391.0f &&
+                glass.front().value == 0x1.ba8922p+0f && glass.front().value == glass[1].value,
+            "Optical knots preserve their nonunit values and PBRT endpoint padding");
+
+    const auto copper = pbrt_named_spectrum_knots("metal-Cu-k");
+    require(copper.size() == 56 && copper.front().wavelength == 298.757050f &&
+                copper.front().value == 1.662125f,
+            "Copper knots preserve the first fractional wavelength and its paired value");
 }
 
 void check_samples() {
@@ -100,4 +134,5 @@ int main(int argc, char **argv) {
     require(argc == 1, "Usage: rypath_pbrt_spectra_tests [--dump]");
     check_registry();
     check_samples();
+    check_knots();
 }

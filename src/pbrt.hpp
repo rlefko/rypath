@@ -116,7 +116,7 @@ struct Descriptor {
     };
     std::vector<InheritedParameter> inherited;
     std::vector<std::size_t> effective_authored;
-    std::shared_ptr<const CheckedSpectrumSource> emission_file{};
+    std::shared_ptr<const CheckedSpectrumSource> spectrum_file{};
 
     struct EffectiveParameter {
         const Parameter *parameter = nullptr;
