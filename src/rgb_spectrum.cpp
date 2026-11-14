@@ -4,6 +4,8 @@
 
 #include "rgb_spectrum.hpp"
 
+#include "pbrt_spectra.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <climits>
@@ -124,11 +126,6 @@ float evaluate_srgb(const RgbSpectrum &spectrum, float wavelength) {
            0.5f * std::copysign(1.0f / std::sqrt(1.0f + reciprocal * reciprocal), polynomial);
 }
 
-const std::array<float, 471> &pbrt_d65() {
-    static constexpr std::array<float, 471> values{
-#include "../third_party/pbrt/d65.inc"
-    };
-    return values;
-}
+const std::array<float, 471> &pbrt_d65() { return *pbrt_named_spectrum("stdillum-D65"); }
 
 } // namespace rypath

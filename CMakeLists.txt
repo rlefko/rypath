@@ -78,20 +78,29 @@ target_include_directories(rypath_image PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
 target_link_libraries(rypath_image PRIVATE rypath_png)
 rypath_configure_host_target(rypath_image)
 
+include(cmake/RgbSpectrumData.cmake)
+set(rypath_pbrt_spectra_data "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pbrt/named_spectra.inc")
+rypath_verify_spectral_data("${rypath_pbrt_spectra_data}"
+    "1ad23d63bc8e02a3f88e22dfe660c07114d037a32d1f8d8666c9723400c833bc")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_pbrt_spectra_data}")
+add_library(rypath_pbrt_spectra STATIC src/pbrt_spectra.cpp)
+target_include_directories(rypath_pbrt_spectra PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_pbrt_spectra)
+
 add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp)
 target_include_directories(rypath_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(rypath_pbrt PRIVATE rypath_geometry PUBLIC rypath_image)
+target_link_libraries(rypath_pbrt PRIVATE rypath_geometry PUBLIC rypath_image rypath_pbrt_spectra)
 rypath_configure_host_target(rypath_pbrt)
 
 include(cmake/CieData.cmake)
 set(rypath_generated_directory "${CMAKE_CURRENT_BINARY_DIR}/generated")
 rypath_generate_cie_data("${rypath_generated_directory}/cie_xyz_data.hpp")
-include(cmake/RgbSpectrumData.cmake)
 set(rypath_rgb_data_source "${rypath_generated_directory}/rgb_spectrum_data.cpp")
 rypath_generate_rgb_spectrum_data("${rypath_rgb_data_source}")
 
 add_library(rypath_rgb_spectrum STATIC src/rgb_spectrum.cpp "${rypath_rgb_data_source}")
 target_include_directories(rypath_rgb_spectrum PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(rypath_rgb_spectrum PRIVATE rypath_pbrt_spectra)
 rypath_configure_host_target(rypath_rgb_spectrum)
 
 set(rypath_sobol_tables "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pbrt/sobol_tables.inc")

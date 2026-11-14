@@ -2,6 +2,7 @@
 
 #include "pbrt.hpp"
 #include "pbrt_numeric.hpp"
+#include "pbrt_spectra.hpp"
 #include "ply.hpp"
 
 #include <algorithm>
@@ -432,28 +433,7 @@ bool builtin_sensor(string_view name) {
                    "sony_ilce_6400", "sony_ilce_7m3", "sony_ilce_7rm3", "sony_ilce_9"});
 }
 
-bool builtin_spectrum(string_view name) {
-    // Names from Spectra::Init in the pinned PBRT util/spectrum.cpp.
-    if (one_of(name,
-               {"glass-BK7", "glass-BAF10", "glass-FK51A", "glass-LASF9", "glass-F5", "glass-F10",
-                "glass-F11", "stdillum-A", "stdillum-D50", "stdillum-D65", "illum-acesD60"})) {
-        return true;
-    }
-    if (name.starts_with("metal-")) {
-        name.remove_prefix(6);
-        const auto hyphen = name.find('-');
-        return hyphen != string_view::npos &&
-               one_of(name.substr(0, hyphen), {"Ag", "Al", "Au", "Cu", "CuZn", "MgO", "TiO2"}) &&
-               one_of(name.substr(hyphen + 1), {"eta", "k"});
-    }
-    if (name.starts_with("stdillum-F")) {
-        return one_of(name.substr(10),
-                      {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"});
-    }
-    return name.size() > 2 && name[name.size() - 2] == '_' &&
-           one_of(name.substr(name.size() - 1), {"r", "g", "b"}) &&
-           builtin_sensor(name.substr(0, name.size() - 2));
-}
+bool builtin_spectrum(string_view name) { return pbrt_named_spectrum(name) != nullptr; }
 
 struct GraphicsState {
     TransformSet transform{};

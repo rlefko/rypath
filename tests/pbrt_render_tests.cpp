@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "pbrt_render.hpp"
+#include "pbrt_spectra.hpp"
 #include "rgb_spectrum.hpp"
 
 #include <algorithm>
@@ -703,6 +704,134 @@ LightSource "infinite" "spectrum L" [360 1 830 1]
             "Numeric infinite-light SPD is independent of ColorSpace");
 }
 
+void named_light_spectra(const fs::path &scratch) {
+    const auto names = pbrt_named_spectrum_names();
+    require(names.size() == 88, "The pinned PBRT registry contains 88 names");
+    for (const auto name : names) {
+        const auto *spectrum = pbrt_named_spectrum(name);
+        require(spectrum, "Registry entry missing its spectrum: " + std::string(name));
+        const auto parameter = " \"spectrum L\" \"" + std::string(name) + "\"\n";
+        const auto scene =
+            accepted(write(scratch, "named-emission.pbrt",
+                           std::string(basic) + "LightSource \"infinite\"" + parameter +
+                               "AreaLightSource \"diffuse\"" + parameter + std::string(triangle)))
+                .scene;
+        const auto &sky = scene.environment;
+        require(scene.area_emissions.size() == 1 && scene.area_emissions[0].radiance == sky &&
+                    scene.instance_emissions == std::vector<std::uint32_t>{0},
+                "Named environment and area payloads differ: " + std::string(name));
+        const double normalization = pbrt_y_inner_product(*spectrum);
+        for (std::size_t i = 0; i < sky.size(); ++i) {
+            const double expected = (*spectrum)[i] / normalization;
+            near(sky[i], expected, 6e-8 * expected,
+                 std::string(name) + " normalized radiance at " + std::to_string(360 + i) + " nm");
+        }
+        near(pbrt_y_inner_product(sky), 1, 6e-8, std::string(name) + " normalized CIE Y");
+    }
+
+    const auto environment = [&](std::string_view parameters) {
+        return accepted(write(scratch, "named-environment.pbrt",
+                              std::string(basic) + std::string(triangle) +
+                                  "LightSource \"infinite\" " + std::string(parameters)))
+            .scene.environment;
+    };
+    require(environment(R"("spectrum L" "stdillum-D65")") == environment(""),
+            "Explicit stdillum-D65 matches the omitted sRGB illuminant");
+    const auto fluorescent = environment(R"("spectrum L" "stdillum-F11")");
+    const auto scaled =
+        environment(R"("spectrum L" ["stdillum-F11"] "float scale" 2 "float illuminance" 3)");
+    for (std::size_t i = 0; i < fluorescent.size(); ++i) {
+        const double expected = static_cast<double>(fluorescent[i]) * 6 / std::numbers::pi;
+        near(scaled[i], expected, 1.2e-7 * expected, "Named spectrum scale and illuminance");
+    }
+    require(environment(R"("spectrum L" "stdillum-F11" "float illuminance" 0)") == fluorescent &&
+                environment(R"("spectrum L" "stdillum-F11" "float illuminance" -2)") ==
+                    fluorescent &&
+                environment(R"("spectrum L" "metal-MgO-k" "float scale" 0)") ==
+                    std::array<float, 471>{},
+            "Named spectra honor nonpositive illuminance and zero scale");
+
+    const auto magnesia = environment(R"("spectrum L" "metal-MgO-k")");
+    near(magnesia.front(), 60411.3, 0.1, "MgO-k short-wavelength calibrated peak");
+    require(std::all_of(magnesia.begin(), magnesia.begin() + 5,
+                        [](float value) { return value > 0; }) &&
+                std::all_of(magnesia.begin() + 5, magnesia.end(),
+                            [](float value) { return value == 0; }),
+            "MgO-k is zero at every bin except 360–364 nm");
+}
+
+void named_light_context(const fs::path &scratch) {
+    auto source = std::string(basic) + R"(ColorSpace "rec2020"
+Attribute "light" "spectrum L" "stdillum-F11"
+AttributeBegin
+    ColorSpace "aces2065-1"
+    LightSource "infinite"
+    Attribute "light" "spectrum L" "stdillum-A"
+    AreaLightSource "diffuse" "rgb L" [1 0 0] "spectrum L" "stdillum-F11"
+)";
+    source += triangle;
+    source += R"(AttributeEnd
+ColorSpace "dci-p3"
+AreaLightSource "diffuse" "bool twosided" true "float power" -1
+)";
+    source += triangle;
+    source += triangle;
+    const auto entry = write(scratch, "named-light-context.pbrt", source);
+    const auto scene = accepted(entry).scene;
+    require(scene.area_emissions.size() == 2 &&
+                scene.instance_emissions == std::vector<std::uint32_t>{0, 1, 1} &&
+                !scene.area_emissions[0].two_sided && scene.area_emissions[1].two_sided &&
+                scene.area_emissions[0].radiance == scene.environment &&
+                scene.area_emissions[1].radiance == scene.environment,
+            "Named emission follows scope, explicit precedence, and declaration reuse across "
+            "shapes and color spaces");
+
+    constexpr std::size_t values = 3 + 2 * 471;
+    const auto exact = translation(entry, {.list_values = 1, .total_values = values});
+    require(exact.exit_code() == 0 && exact.scene && exact.scene->area_emissions.size() == 2,
+            "One scalar per effective name and one table per placed declaration");
+    const auto table_limit = translation(entry, {.total_values = values - 1});
+    require(table_limit.exit_code() == 1 && !table_limit.scene &&
+                table_limit.diagnostics.back().code == "limit-exceeded" &&
+                table_limit.diagnostics.back().message.find("area light table") !=
+                    std::string::npos,
+            "Named areas consume the existing dense table budget");
+    const auto scalar_limit = translation(entry, {.list_values = 0});
+    require(scalar_limit.exit_code() == 1 && !scalar_limit.scene &&
+                scalar_limit.diagnostics.front().code == "limit-exceeded" &&
+                scalar_limit.diagnostics.front().location.line == 8 &&
+                scalar_limit.diagnostics.front().location.column == 19,
+            "Named spectrum scalar limit points to the inherited parameter");
+
+    const auto area = [&](std::string_view scale, bool placed) {
+        auto body = std::string(basic) + "AreaLightSource \"diffuse\"\n" +
+                    "    \"spectrum L\" \"metal-MgO-k\" \"float scale\" " + std::string(scale) +
+                    "\n";
+        if (!placed) {
+            body += "AreaLightSource \"\"\n";
+        }
+        return translation(write(scratch, "named-area-scale.pbrt", body + std::string(triangle)),
+                           {.list_values = 1, .total_values = placed ? 472u : 12u});
+    };
+    const auto placed = area("1e33", true);
+    require(placed.exit_code() == 0 && placed.scene &&
+                placed.scene->area_emissions.front().radiance.front() > 6e37f,
+            "A large named-emission payload remains representable");
+    const auto unused = area("1e33", false);
+    require(unused.exit_code() == 0 && unused.scene && unused.scene->area_emissions.empty(),
+            "Unused named declaration consumes no dense table budget");
+    for (const bool is_placed : {false, true}) {
+        const auto overflow = area("1e34", is_placed);
+        require(overflow.exit_code() == 1 && !overflow.scene &&
+                    overflow.diagnostics.front().code == "invalid-render-value" &&
+                    overflow.diagnostics.front().message.find("overflows binary32") !=
+                        std::string::npos &&
+                    overflow.diagnostics.front().location.line == 8 &&
+                    overflow.diagnostics.front().location.column == 5,
+                "Named final radiance overflow is source-located even for unused emitters");
+    }
+}
+
 void blackbody_light_spectrum(const fs::path &scratch) {
     const auto environment = [&](std::string_view parameters) {
         return accepted(write(scratch, "blackbody-spectrum.pbrt",
@@ -1101,7 +1230,7 @@ LightSource "infinite"
     rejected("LightSource \"infinite\"\n    \"color L\" [1 0 0]\n", 2, "legacy-parameter", 8, 5);
     rejected("Material \"diffuse\"\n    \"blackbody reflectance\" [5500]\n", 2,
              "unsupported-render-feature", 8, 5);
-    rejected("LightSource \"infinite\"\n    \"spectrum L\" \"stdillum-D65\"\n", 2,
+    rejected("Material \"diffuse\"\n    \"spectrum reflectance\" \"stdillum-D65\"\n", 2,
              "unsupported-render-feature", 8, 5);
     const auto limited_path = write(scratch, "limited-rgb.pbrt",
                                     std::string(basic) +
@@ -1412,6 +1541,8 @@ int main(int argc, char **argv) {
         infinite_light_normalization(scratch);
         rgb_material_context(scratch);
         rgb_light_context(scratch);
+        named_light_spectra(scratch);
+        named_light_context(scratch);
         blackbody_light_spectrum(scratch);
         blackbody_light_context(scratch);
         rejects_blackbody_lights(scratch);

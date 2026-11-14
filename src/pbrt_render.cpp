@@ -2,6 +2,7 @@
 #include "pbrt_render.hpp"
 
 #include "pbrt_numeric.hpp"
+#include "pbrt_spectra.hpp"
 #include "rgb_spectrum.hpp"
 #include "triangle_attributes.hpp"
 
@@ -553,6 +554,17 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
                 dense[i] *= evaluate_srgb(*tint, 360.f + static_cast<float>(i));
             }
         }
+    } else if (selected->type == "spectrum" && selected->values.front().kind == ValueKind::string) {
+        if (!charge_spectral_values(*selected)) {
+            return false;
+        }
+        const auto *named = pbrt_named_spectrum(selected->values.front().text);
+        if (!named) {
+            unsupported(source, "Only built-in named emission spectra are supported");
+            return false;
+        }
+        dense = *named;
+        normalization = pbrt_y_inner_product(dense);
     } else {
         auto knots = spectrum(descriptor, "L", SpectrumRole::emission);
         if (!knots) {
