@@ -174,10 +174,10 @@ follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/b
 | `filename` | Required entry-relative or absolute path to a supported [PNG input](pbrt-profile.md#png-imagemap-definitions) |
 | `mapping` | `uv` (default), with `uscale` and `vscale` defaulting to 1 and `udelta` and `vdelta` to 0 |
 | `encoding` | `sRGB` (default) or `linear`; output color primaries are sRGB |
-| `filter` | `bilinear` (default), selecting one mip level, or `trilinear`, blending adjacent levels |
+| `filter` | `point`, selecting one texel at one mip level; `bilinear` (default), interpolating within one level; or `trilinear`, blending adjacent levels |
 | `wrap` | `repeat` (default), `clamp`, or `black`; non-power-of-two images require repeat or clamp |
 | `scale`, `invert` | Multiply filtered RGB by `scale` (default 1), then subtract from one when `invert` is true (default false) |
-| `maxanisotropy` | Accepted finite value, inert with either supported filter |
+| `maxanisotropy` | Accepted finite value, inert with all supported filters |
 
 Texture lookup maps the hit UV, flips the vertical coordinate and filters in
 linear RGB. The spectrum uses the existing sRGB albedo reconstruction after
@@ -185,6 +185,14 @@ clamping the scaled or inverted RGB to [0,1]. Explicit texture encoding controls
 byte decoding. PNG gamma, color metadata, and alpha do not affect reflectance.
 Float imagemaps, non-UV mappings, other encodings or filters, alpha masking,
 displacement, and image emission are outside this profile.
+
+Point filtering uses the same floor LOD as bilinear, then rounds
+`st * resolution - 0.5` with halfway values away from zero before applying
+repeat, clamp, or black addressing. In particular, negative repeat coordinates
+must not be normalized before rounding. The coarsest-LOD return is independent
+of coordinates; a narrow footprint on a standalone 1×1 image still applies
+wrapping. See [point validation](point-texture-validation.md) for signed seams,
+bounded extreme-coordinate handling, and independent CPU/Metal evidence.
 
 Trilinear filtering follows the pinned PBRT implementation: a selected mip index
 of zero uses base-level bilinear filtering even at fractional LODs below one.

@@ -106,8 +106,8 @@ the [pinned parameter dictionary](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba
 ## PNG imagemap definitions
 
 Named spectrum imagemaps share the spectrum namespace and follow the same
-parameter precedence and diffuse binding rules. Filtering accepts `bilinear`
-(the default) and `trilinear`; point and EWA filters remain unsupported.
+parameter precedence and diffuse binding rules. Filtering accepts `point`,
+`bilinear` (the default), and `trilinear`; EWA remains unsupported.
 
 Supported PNG inputs are noninterlaced 8-bit grayscale, grayscale with alpha,
 RGB, and RGBA. Grayscale replicates into RGB, alpha is discarded, and metadata
