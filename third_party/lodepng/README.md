@@ -37,6 +37,12 @@ each channel retains its most-significant byte followed by its least-significant
 byte; no conversion to eight bits is requested. Depth-dependent scanline,
 conversion, and copy sizes contribute to the same existing allocation budgets.
 
+For indexed color, the adapter disables color conversion and validates the
+unfiltered, tightly packed indices against the decoded palette before expanding
+to RGB8. It discards palette alpha without compositing. Scanline padding,
+packed indices, the expanded image, and both palette allocations are included
+in the decoder scratch estimate. This requires no additional vendored changes.
+
 The decoder checks the exact decompressed scanline length and the Adler-32
 checksum at the end of the concatenated IDAT payload. Final DEFLATE consumption
 follows upstream LodePNG, which can accept unused bytes between the final

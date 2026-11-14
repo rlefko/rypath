@@ -8,7 +8,7 @@ and interactive rendering follow later.
 Render the built-in demo or PBRT files containing supported sampled spectra or
 linear sRGB colors. Diffuse reflectance supports blackbody, built-in and file spectra,
 named constant textures, and PNG imagemaps.
-8-bit and 16-bit PNG textures support point, bilinear, trilinear, and bounded EWA mip filtering.
+Indexed, 8-bit, and 16-bit PNG textures support point, bilinear, trilinear, and bounded EWA mip filtering.
 The PBRT profile includes inline triangles, external PLY triangles and bilinear
 quads, per-vertex shading normals and UVs, constant environment lighting,
 directly placed diffuse emitters with sampled, RGB, blackbody, built-in named, or file emission,

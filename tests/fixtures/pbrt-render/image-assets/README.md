@@ -58,8 +58,30 @@ All three use a triangle pixel filter. Radii are 1/16 for trilinear and 1/256
 for the magnified and EWA wrappers. Region coordinates are zero-based and top-down.
 The numerical mip comparison checks both encodings for all three PNG16 assets.
 
+`s35n3p04.png` (35×35, indexed4) and `tp1n3p08.png` (32×32, indexed8 with
+`tRNS`) are unmodified PNGSuite images by Willem van Schaik at the same pinned
+stb revision. Their original terms apply.
+[Indexed4 source](https://github.com/nothings/stb/blob/af1a5bc352164740c1cc1354942b1c6b72eacb8a/tests/pngsuite/primary/s35n3p04.png),
+[indexed8 source](https://github.com/nothings/stb/blob/af1a5bc352164740c1cc1354942b1c6b72eacb8a/tests/pngsuite/primary/tp1n3p08.png),
+[PngSuite.LICENSE](PngSuite.LICENSE)
+
+The GPL-3.0-only wrapper `../image-indexed-point.pbrt` uses default sRGB
+encoding and clamp wrap. A radius-1/256 triangle filter keeps the top-left
+film pixel at the center of base-level texel (2, 2), whose palette entry
+has RGB (255, 255, 255) and alpha 0. The single-pixel comparison region
+detects any loss of that RGB through alpha compositing.
+The GPL-3.0-only wrapper `../image-indexed-trilinear.pbrt` uses linear encoding
+and repeat wrap. It resizes the 35×35 image to 64×64 and minifies it at LOD
+approximately 3.49, blending the 8×8 and 4×4 mips. Its triangle filter uses
+radii of 1/16, and its blend region covers column 4, rows 3–4.
+
+`invalid-index.png` and `over-limit-indexed.png` are rypath-authored CLI
+preflight fixtures under GPL-3.0-only. The first stores index 1 in a 1×1
+image with one palette entry. The second stores index 0 throughout a
+valid 4097×1 indexed image that exceeds the texture axis limit.
+
 [The dependency manifest](../dependencies.json) records the size and SHA-256
-of each input staged with its entry point. All ten image texture fixtures use
+of each input staged with its entry point. All twelve image texture comparisons use
 8×8 linear RGB output and 4,096 samples per pixel. Comparison runs use
 independent seeds per backend and leave PBRT texture filtering enabled.
 The trilinear run compares the full image and the two pixels in column 4,

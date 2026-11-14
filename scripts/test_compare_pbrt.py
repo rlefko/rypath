@@ -30,12 +30,17 @@ CORNELL_FILM_EDIT = (
 
 
 class SceneSelectionTests(unittest.TestCase):
-    def test_named_scenes_keep_fixed_regions_and_stage_png16_dependencies(self):
+    def test_named_scenes_keep_fixed_regions_and_stage_image_dependencies(self):
         fixtures = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "pbrt-render"
         scenes = {
-            "image16-magnified": ("asymmetric16.png", QUADRANTS),
-            "image16-trilinear": ("basn2c16.png", {"full": FULL, "blend": TRILINEAR_BLEND}),
-            "image16-ewa": ("basn0g16.png", {"full": FULL, "ellipse": EWA_ELLIPSE}),
+            "image16-magnified": ("asymmetric16.png", (16, 2), QUADRANTS),
+            "image16-trilinear": (
+                "basn2c16.png", (16, 2), {"full": FULL, "blend": TRILINEAR_BLEND}),
+            "image16-ewa": ("basn0g16.png", (16, 0), {"full": FULL, "ellipse": EWA_ELLIPSE}),
+            "image-indexed-point": (
+                "tp1n3p08.png", (8, 3), {"full": FULL, "transparent-texel": (0, 0, 1, 1)}),
+            "image-indexed-trilinear": (
+                "s35n3p04.png", (4, 3), {"full": FULL, "blend": TRILINEAR_BLEND}),
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -50,16 +55,16 @@ class SceneSelectionTests(unittest.TestCase):
                 self.assertEqual(main(), 0)
             self.assertEqual(
                 [(args[2].stem, args[4]) for args, _ in render.call_args_list],
-                [(scene, regions) for scene, (_, regions) in scenes.items()],
+                [(scene, regions) for scene, (_, _, regions) in scenes.items()],
             )
-            for scene, (filename, _) in scenes.items():
+            for scene, (filename, format_bytes, _) in scenes.items():
                 destination = root / scene
                 fixture = fixtures / f"{scene}.pbrt"
                 stage_dependencies(fixture, destination)
                 relative = Path("image-assets") / filename
                 staged = (destination / relative).read_bytes()
                 self.assertEqual(staged, (fixtures / relative).read_bytes())
-                self.assertEqual(staged[24], 16)
+                self.assertEqual(tuple(staged[24:26]), format_bytes)
                 self.assertIn(str(relative).encode(), fixture.read_bytes())
 
 

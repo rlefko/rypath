@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <new>
 #include <numbers>
 #include <utility>
 
@@ -752,17 +753,21 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
     if (auto result = inspect_png_chunks(bytes, color); !result.diagnostic.empty()) {
         return result;
     }
+    // lodepng_inspect has already checked the legal depths for each color type.
     const auto depth = color.bitdepth;
-    if ((depth != 8 && depth != 16) || color.colortype == LCT_PALETTE ||
-        png.state.info_png.interlace_method != 0) {
-        return png_error("PNG must be noninterlaced 8- or 16-bit gray, gray-alpha, RGB, or RGBA",
+    const bool indexed = color.colortype == LCT_PALETTE;
+    if ((!indexed && depth != 8 && depth != 16) || png.state.info_png.interlace_method != 0) {
+        return png_error("PNG must be noninterlaced indexed color (1, 2, 4, or 8 bits), or "
+                         "8- or 16-bit gray, gray-alpha, RGB, or RGBA",
                          true);
     }
+    const auto rgb_depth = indexed ? 8u : depth;
     const std::size_t pixels = pixel_count(width, height);
-    const auto channel_bytes = depth / 8;
-    const std::size_t rgb_bytes = pixels * 3 * channel_bytes;
-    const std::size_t raw_bytes = pixels * lodepng_get_channels(&color) * channel_bytes;
-    const std::size_t scanline_bytes = raw_bytes + height;
+    const auto source_bpp = lodepng_get_bpp(&color);
+    const std::size_t rgb_bytes = pixels * 3 * (rgb_depth / 8);
+    const std::size_t raw_bytes = (pixels * source_bpp + 7) / 8;
+    const std::size_t row_bytes = (static_cast<std::size_t>(width) * source_bpp + 7) / 8;
+    const std::size_t scanline_bytes = (row_bytes + 1) * height;
     if (rgb_bytes > std::min(limits.retained_bytes, max_image_bytes)) {
         return budget_error<DecodedImage>("PNG exceeds the decoded image byte budget");
     }
@@ -773,14 +778,25 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
     constexpr auto huffman_scratch_bytes = std::size_t{256} * 1024;
     const auto inflate_scratch = bytes.size() + scanline_bytes * 2 + scanline_bytes / 2 +
                                  max_block_bytes + huffman_scratch_bytes;
-    const auto scratch = std::max(
-        {inflate_scratch, scanline_bytes + raw_bytes, raw_bytes + rgb_bytes, 2 * rgb_bytes});
+    auto scratch = std::max({inflate_scratch, scanline_bytes + raw_bytes, raw_bytes + rgb_bytes});
+    if (indexed) {
+        // Count both of LodePNG's 256-entry RGBA palettes in every stage. Expansion
+        // writes straight to the retained RGB vector while the packed indices are live.
+        scratch += std::size_t{2} * 256 * 4;
+    } else {
+        // The decoder's RGB buffer remains live while copying into the retained vector.
+        scratch = std::max(scratch, 2 * rgb_bytes);
+    }
     if (scratch > std::min(limits.scratch_bytes, max_image_bytes)) {
         return budget_error<DecodedImage>("PNG exceeds the decoder scratch byte budget");
     }
     png.state.decoder.zlibsettings.max_output_size = scanline_bytes;
-    png.state.info_raw.colortype = LCT_RGB;
-    png.state.info_raw.bitdepth = depth;
+    if (indexed) {
+        png.state.decoder.color_convert = 0;
+    } else {
+        png.state.info_raw.colortype = LCT_RGB;
+        png.state.info_raw.bitdepth = rgb_depth;
+    }
     unsigned char *data = nullptr;
     const auto error =
         lodepng_decode(&data, &width, &height, &png.state, bytes.data(), bytes.size());
@@ -795,9 +811,29 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
     if (error != 0) {
         return png_error(error);
     }
+    if (indexed) {
+        DecodedImage image{width, height, {}, rgb_depth};
+        try {
+            image.rgb.resize(rgb_bytes);
+        } catch (const std::bad_alloc &) {
+            return budget_error<DecodedImage>("PNG decoder could not allocate required memory");
+        }
+        // LodePNG removes scanline padding, leaving a single MSB-first index stream.
+        const auto mask = (1u << depth) - 1;
+        for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+            const auto bit = pixel * depth;
+            const auto shift = 8 - depth - (bit % 8);
+            const std::size_t index = (raw.get()[bit / 8] >> shift) & mask;
+            if (index >= color.palettesize) {
+                return png_error("Invalid PNG: pixel index exceeds palette size");
+            }
+            // The fourth palette byte is alpha. Keep the original RGB even at alpha zero.
+            std::copy_n(color.palette + 4 * index, 3, image.rgb.data() + 3 * pixel);
+        }
+        return {.value = std::move(image), .diagnostic = {}};
+    }
     // Conversion removes alpha without compositing and replicates grayscale into RGB.
-    // Include the decoder's RGB buffer while copying into the retained vector.
-    DecodedImage image{width, height, {raw.get(), raw.get() + rgb_bytes}, depth};
+    DecodedImage image{width, height, {raw.get(), raw.get() + rgb_bytes}, rgb_depth};
     return {.value = std::move(image), .diagnostic = {}};
 }
 

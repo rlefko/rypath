@@ -105,6 +105,8 @@ REGIONS = {
     "image16-magnified": QUADRANTS,
     "image16-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
     "image16-ewa": {"full": FULL, "ellipse": EWA_ELLIPSE},
+    "image-indexed-point": {"full": FULL, "transparent-texel": (0, 0, 1, 1)},
+    "image-indexed-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
     "blackbody-background": {"full": FULL},
     "blackbody-area": QUADRANTS,
     "blackbody-mixed": QUADRANTS,

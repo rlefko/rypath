@@ -53,6 +53,17 @@ constexpr auto rgb16_png = std::to_array<unsigned char>({
     0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 });
 
+// Project-authored 2x2 indexed PNG. Indices are [0, 1] and [1, 0].
+constexpr auto indexed_png = std::to_array<unsigned char>({
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+    0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x01, 0x03, 0x00, 0x00, 0x00, 0x48,
+    0x78, 0x9f, 0x67, 0x00, 0x00, 0x00, 0x06, 0x50, 0x4c, 0x54, 0x45, 0x80, 0x40, 0x20, 0xd0,
+    0x9e, 0x1e, 0xdb, 0x52, 0xf5, 0xa7, 0x00, 0x00, 0x00, 0x02, 0x74, 0x52, 0x4e, 0x53, 0x00,
+    0x7f, 0xb6, 0x29, 0xa1, 0x95, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c,
+    0x63, 0x70, 0x60, 0x68, 0x00, 0x00, 0x01, 0x44, 0x00, 0xc1, 0x3a, 0x7a, 0x1c, 0x56, 0x00,
+    0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+});
+
 void require(bool condition, string_view message) {
     if (!condition) {
         throw std::runtime_error(std::string(message));
@@ -369,6 +380,62 @@ Texture "clamp" "spectrum" "imagemap" "string filename" "rgb16.png" "string wrap
     write_png(directory / "rgb16.png", rgb16_png);
 }
 
+void indexed_sources(const fs::path &directory) {
+    const auto path = directory / "indexed.pbrt";
+    const auto asset = directory / "indexed.png";
+    write_png(asset, indexed_png);
+    write(directory / "indexed-maps.pbrt", R"(# These two filters share one checked pyramid.
+Texture "paint" "spectrum" "imagemap" "string filename" "indexed.png"
+Texture "point" "spectrum" "imagemap" "string filename" "indexed.png" "string filter" "point"
+Texture "linear" "spectrum" "imagemap" "string filename" "indexed.png" "string encoding" "linear"
+)");
+    write(path, std::string(options) + R"(Include "indexed-maps.pbrt"
+Material "diffuse" "texture reflectance" "paint"
+)" + std::string(triangle));
+
+    const std::vector<std::uint8_t> rgb{128, 64, 32, 208, 158, 30, 208, 158, 30, 128, 64, 32};
+    constexpr std::size_t pyramid_bytes = 5 * sizeof(std::uint32_t) + 2 * sizeof(ImageMipLevel);
+    Limits limits;
+    limits.image.retained_bytes = rgb.size() + 2 * pyramid_bytes;
+    auto checked = check(path, limits);
+    if (checked.exit_code() != 0 || !checked.scene) {
+        throw std::runtime_error(report(checked));
+    }
+    const auto &definitions = checked.scene->spectrum_image_textures;
+    require(checked.document.dependencies.size() == 2 &&
+                checked.document.dependencies.back().visited && definitions.size() == 3,
+            "One Include and one decoded indexed asset supply three descriptors");
+    const auto &first = definitions.front();
+    require(first.source->pixels->bit_depth == 8 && first.source->pixels->rgb == rgb &&
+                first.texture.image->storage == ImageStorage::encoded8 &&
+                definitions[1].source == first.source && definitions[2].source == first.source &&
+                definitions[1].texture.image == first.texture.image &&
+                definitions[2].texture.image != first.texture.image,
+            "Indexed expansion shares RGB8 source bytes and encoding-specific pyramids");
+
+    --limits.image.retained_bytes;
+    const auto over_budget = check(path, limits);
+    require(over_budget.exit_code() == 1 && !over_budget.scene &&
+                std::ranges::any_of(over_budget.document.diagnostics,
+                                    [](const Diagnostic &issue) {
+                                        return issue.code == "limit-exceeded" &&
+                                               fs::path(*issue.location.file).filename() ==
+                                                   "indexed-maps.pbrt" &&
+                                               issue.location.line == 4;
+                                    }),
+            report(over_budget));
+
+    // Translation retains the checked pyramid after the input and check are gone.
+    require(fs::remove(asset), "Could not remove checked indexed PNG");
+    auto translated = translate_scene(checked, path, "bilinear");
+    require(translated.image_textures.front().image == first.texture.image,
+            "Indexed translation must reuse the exact checked pyramid");
+    checked = {};
+    require(validate_render_scene(translated).empty() &&
+                translated.image_textures.front().image->texels.front() == 0x204080,
+            "Translated indexed bindings retain expanded RGB8 mip storage");
+}
+
 void filter_provenance(const fs::path &directory) {
     const auto path = directory / "filters.pbrt";
     const auto definitions = std::string(options) + R"(
@@ -566,6 +633,7 @@ int main(int argc, char **argv) {
         write_png(directory / "color.png", rgb_png);
         failures(directory);
         sixteen_bit_sources(directory);
+        indexed_sources(directory);
         filter_provenance(directory);
         ewa_parameters(directory);
         translated_frames(directory);
