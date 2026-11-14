@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [45]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [0]
+WorldBegin
+
+# The left emitter faces the camera. The right emitter faces away and is two-sided.
+Material "diffuse" "rgb reflectance" [0 0 0]
+AttributeBegin
+    AreaLightSource "diffuse" "spectrum L" "glass-F10" "float scale" [1.75]
+    Shape "trianglemesh" "point3 P" [-1 -1 2 -1 1 2 0.1 1 2 0.1 -1 2]
+        "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+AttributeBegin
+    AreaLightSource "diffuse" "spectrum L" ["canon_eos_5d_b"]
+        "bool twosided" [true]
+    Shape "trianglemesh" "point3 P" [0.1 -1 2 1 -1 2 1 1 2 0.1 1 2]
+        "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+
+# Outside the frame at depth zero. The native test reuses its translated table
+# on covering triangle and bilinear emitters to exercise its narrow blue band.
+AttributeBegin
+    AreaLightSource "diffuse" "spectrum L" "metal-MgO-k"
+    Shape "trianglemesh" "point3 P" [4 -1 2 4 1 2 5 1 2]
+        "integer indices" [0 1 2]
+AttributeEnd

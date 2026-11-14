@@ -67,6 +67,10 @@ REGIONS = {
     "blackbody-area": QUADRANTS,
     "blackbody-mixed": QUADRANTS,
     "blackbody-ply-external": QUADRANTS,
+    "named-background": {"full": FULL},
+    "named-area": QUADRANTS,
+    "named-mixed": QUADRANTS,
+    "named-ply-external": QUADRANTS,
 }
 
 

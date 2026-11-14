@@ -6,8 +6,8 @@ The rypath-authored entry points are licensed under GPL-3.0-only.
 of the [pinned Cornell Box fixture](../pbrt/README.md) by Benedikt Bitterli,
 converted to PBRT v4 by Matt Pharr. The [upstream notice](../pbrt/LICENSE.txt)
 applies to all five derivatives.
-The 22 fixtures below use inline geometry and have no external dependencies
-(52,395 bytes total). The [PLY asset manifest](ply-assets/README.md) documents
+The 25 fixtures below use inline geometry and have no external dependencies
+(56,409 bytes total). The [PLY asset manifest](ply-assets/README.md) documents
 the standalone PLY wrappers and their inputs. [`dependencies.json`](dependencies.json)
 pins asset hashes and sizes.
 
@@ -26,6 +26,9 @@ pins asset hashes and sizes.
 | `blackbody-background.pbrt` | 657 | `d0b0e19230863d0068b1f0a3e7d58d2677e0532d7bfb941c566581e91fed3b0e` | Same geometry as `rgb-background.pbrt` |
 | `blackbody-area.pbrt` | 956 | `18f3fe8a8ed4ab97d157c91cea13332a52fcc95e98c5a6d8cf210f056df5159e` | Same geometry as `area-visible.pbrt` |
 | `blackbody-mixed.pbrt` | 2,022 | `30ae4424e942608342d96bd7629aff3ce60bbfdabc03b86133453c4e7af4083b` | 7 meshes, 25 vertices, 11 triangles, 3 emissive |
+| `named-background.pbrt` | 666 | `a9b54b9303e1e0342b73e33b8129e7bab9fcf78b8179c89a168a05c21223a64e` | Same geometry as `blackbody-background.pbrt` |
+| `named-area.pbrt` | 1,306 | `603e24000163099756a1aa50d13506ef558ca31f491c10aa5f46f528af5668c4` | 3 meshes, 11 vertices, 5 emissive triangles |
+| `named-mixed.pbrt` | 2,042 | `1dde89fc9225f547781164e0bf287ac1e569175a662b2e413112e202f7aa0d4a` | Same geometry as `blackbody-mixed.pbrt` |
 | `cornell-box-adapted.pbrt` | 4,293 | `652e63dc4806c5d3a33e6560b654eaf775fa80ef9e1df8243ebe1a9494698aa6` | 8 meshes, 72 vertices, 36 triangles, 2 emissive |
 | `triangle-filter.pbrt` | 901 | `400cdd4baef8603ac2a848271040841f9d8f8a0a92451526713e383ce935d91d` | 2 meshes, 8 vertices, 4 emissive triangles |
 | `normals-diffuse.pbrt` | 1,071 | `18575bec4cc1e7955ac10b3326d24080a724797d7989593c57fa414ebac279fa` | 2 meshes, 7 vertices, 3 triangles, 1 emissive |
@@ -63,6 +66,9 @@ variants exercise explicit RGB or omitted D65 emission.
 | `blackbody-background.pbrt` | 50° | 0 | A uniform 3000 K environment uses scale 1.7 and illuminance 7. |
 | `blackbody-area.pbrt` | 45° | 0 | A one-sided 3000 K emitter with scale 1.75 faces the camera. A two-sided 6500 K emitter faces away. |
 | `blackbody-mixed.pbrt` | 58° | 5 | A 5000 K environment and three unequal-area emitters at 2500 K, 6500 K, and 15000 K illuminate the asymmetric room. |
+| `named-background.pbrt` | 50° | 0 | A uniform `stdillum-F11` environment uses scale 1.7 and illuminance 7. |
+| `named-area.pbrt` | 45° | 0 | A one-sided `glass-F10` emitter with scale 1.75 faces the camera. A two-sided `canon_eos_5d_b` emitter faces away. An off-camera `metal-MgO-k` emitter provides a narrow-band payload for the native test. |
+| `named-mixed.pbrt` | 58° | 5 | An `illum-acesD60` environment and `stdillum-A`, `stdillum-F8`, and `metal-Au-eta` emitters illuminate an asymmetric room. |
 | `cornell-box-adapted.pbrt` | 19.5° | 65 | Two downward-facing triangles emit from the ceiling fixture above two boxes and colored walls. |
 | `triangle-filter.pbrt` | 53.1301023542° | 0 | Asymmetric RGB emitter edges against a uniform RGB environment exercise anisotropic edge smoothing, orientation, and normalization. |
 | `normals-diffuse.pbrt` | 7.15266875° | 1 | Unequal-length vertex normals receive light across the geometric plane. |
@@ -113,8 +119,8 @@ film, so the equality check exercises surface reflection.
 
 The comparison uses the full 8×8 frame for every scene. The
 [`REGIONS` table](../../../scripts/compare_pbrt.py) defines additional regions,
-including the four top-down 4×4 quadrants for the blackbody area, mixed, and
-PLY scenes. Each region's R, G, and B means must agree within five combined
+including the four top-down 4×4 quadrants for the blackbody and named-spectrum
+area, mixed, and PLY scenes. Each region's R, G, and B means must agree within five combined
 standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)
 for the comparison command.

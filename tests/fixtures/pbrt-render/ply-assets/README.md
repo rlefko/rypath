@@ -36,12 +36,18 @@ retains the original camera FOV of 33.4°, path depth of 1, material, and
 transformed quad. The entry is 711 bytes with SHA-256
 `26219439c138ce4c8a5a2712b98a9897be919da5040d8071f8b8af9f67858b44`.
 
+`../named-ply-external.pbrt` is a GPL-3.0-only derivative of the same wrapper.
+Its environment uses PBRT's built-in `nikon_d850_g` spectrum. It preserves the
+33.4° camera FOV, path depth of 1, material, and transformed quad. The entry
+is 718 bytes with SHA-256
+`7b0eba7de1dc03bb80658ff7d15973b8bbb42438a9c57841e2e269d13770951c`.
+
 `mixed.ply` and `curved-light.ply` are original GPL-3.0-only fixtures.
 The first combines a nonplanar quad with unequal-length vertex normals and UVs
 and a separate triangle. The second is a nonplanar emitting quad. Their wrappers
 isolate mixed geometry and curved area emission, respectively.
 
-The five wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
+The six wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
 seed comparison protocol. The [dependency manifest](../dependencies.json)
 pins each wrapper's complete input closure, sizes and hashes. The comparison
 script verifies and stages these files under each relocated entry directory.

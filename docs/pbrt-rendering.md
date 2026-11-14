@@ -40,8 +40,8 @@ diagnosed even when not placed in the image.
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
 | Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], or numeric piecewise-linear spectra with at least two increasing knots and values in [0,1] |
 | Textures | Named spectrum constants and UV-mapped PNG imagemaps for diffuse reflectance; float constants are validated during translation |
-| Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, blackbody emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
-| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/RGB/blackbody/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
+| Environment | Zero or one constant infinite light with nonnegative numeric spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
+| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/RGB/blackbody/built-in named/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
 | Output metadata | Filename and FP16 setting explicitly overridden by PNG policy; no bitwise PBRT PNG equivalence |
 
@@ -53,8 +53,8 @@ camera. Exact full-frame crop/pixel bounds are accepted; other bounds are
 unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
-Non-sRGB reconstruction, legacy `color` parameters, blackbody reflectance and named/file
-spectra, other image and procedural textures, textured emitters, emitting object
+Non-sRGB reconstruction, legacy `color` parameters, blackbody or named reflectance,
+file spectra, other image and procedural textures, textured emitters, emitting object
 members, other external mesh formats, tangents/normal maps, media, motion, lens
 effects, and other cameras, filters, samplers, and integrators remain unsupported.
 Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
@@ -231,6 +231,25 @@ multiplier. There is no factor of 683. Light and observer evaluation
 select the nearest integer nanometer, with half-way values rounded upward,
 following the pinned dense spectra.
 
+Named emission accepts one case-sensitive built-in name, for example
+`"spectrum L" "stdillum-F11"`. All 88 names at the pinned PBRT revision are
+available: 16 illuminants, 21 glass/metal optical spectra, and 51 camera-response
+spectra. Using an optical or response curve for emission follows PBRT's general
+named-spectrum lookup; it does not enable those materials or film sensors.
+Preflight and rendering share one registry. Unrecognized names retain their
+entry-relative filename interpretation and existing dependency diagnostics.
+
+The immutable 471-sample tables preserve PBRT's binary32 interpolation, constant
+endpoint extension at 359/831 nm where required, and initialization normalization
+of illuminant knots. Explicit `stdillum-D65` is identical to the existing D65
+table. Named emission is independent of ColorSpace and uses its own CIE-Y inner
+product with the numeric-emission calibration above; it receives no RGB tint,
+reflectance clamp, or additional factor of 683. Checked double-precision scaling
+preserves finite final radiance even when an intermediate PBRT float scale would
+overflow. Final binary32 overflow is still a source-located error, including
+unused area declarations. Named reflectance and constant-texture values remain
+unsupported. See [named-spectrum validation](named-spectrum-validation.md).
+
 Blackbody light emission accepts `"blackbody L" [3000]`, with temperature in
 kelvin. The authored temperature must narrow to a positive finite binary32
 value; overflow and positive values rounding to zero are source-located errors.
@@ -348,11 +367,12 @@ comparison. Commands and measured evidence are in the
 [Sobol validation record](pbrt-sobol-validation.md),
 [PLY validation record](pbrt-ply-validation.md),
 [constant texture validation record](pbrt-texture-validation.md),
-[image texture validation record](image-texture-validation.md), and
-[blackbody validation record](blackbody-light-validation.md).
+[image texture validation record](image-texture-validation.md),
+[blackbody validation record](blackbody-light-validation.md), and
+[named-spectrum validation record](named-spectrum-validation.md).
 
 Owned wrappers and five labeled CC0 Cornell derivatives cover
-numeric-spectrum, RGB, and blackbody lighting, diffuse response, area emission, visibility,
+numeric-spectrum, RGB, blackbody, and built-in named lighting, diffuse response, area emission, visibility,
 asymmetric multiple scattering, transformed shading normals, randomized
 Sobol sampling, mixed PLY primitives, curved emission, and named constant and PNG
 image textures. The external PLY and PNG inputs retain their own licenses.

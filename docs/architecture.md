@@ -67,6 +67,11 @@ radiance tables as numeric spectra. Stable Planck ratios retain double precision
 through photometric normalization; no new shader payload or estimator is needed.
 The [blackbody validation record](blackbody-light-validation.md) describes the
 numerical domain and independent evidence.
+Named emission uses a shared registry of the 88 pinned PBRT spectra and immutable
+one-nanometer tables. Structural dependency classification and render translation
+resolve the same exact names; the existing checked photometric calibration and
+Metal payload handle their emission. The [named-spectrum record](named-spectrum-validation.md)
+documents data provenance and validation.
 The translator binds each imagemap by index and prepares per-placement triangle
 partials from the checked shape and placement transforms. The image render
 session owns UVs, triangle partials, texture descriptors, shared mip data,
