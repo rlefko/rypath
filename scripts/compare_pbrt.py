@@ -18,6 +18,11 @@ WIDTH = HEIGHT = 8
 REPLICATES = 16
 FULL = (0, 0, WIDTH, HEIGHT)
 TRILINEAR_BLEND = (4, 3, 5, 5)
+POINT_NEAREST = (4, 3, 5, 5)
+FILTER_CONTROLS = {
+    "image-trilinear": ("trilinear", "blend", True),
+    "image-point": ("point", "nearest", False),
+}
 QUADRANTS = {
     "full": FULL,
     "top-left": (0, 0, 4, 4),
@@ -63,6 +68,7 @@ REGIONS = {
     },
     "image-secondary": QUADRANTS,
     "image-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
+    "image-point": {"full": FULL, "nearest": POINT_NEAREST},
     "blackbody-background": {"full": FULL},
     "blackbody-area": QUADRANTS,
     "blackbody-mixed": QUADRANTS,
@@ -189,24 +195,28 @@ def compare_regions(scene, measurements):
     return passed
 
 
-def check_trilinear_sensitivity(rypath, pbrt, run_dir, measurements):
+def check_filter_sensitivity(scene, rypath, pbrt, run_dir, measurements):
+    filter_name, region, bilinear_increases_red = FILTER_CONTROLS[scene]
+    filter_token = f'"string filter" "{filter_name}"'.encode()
+    difference_name = f"bilinear-{filter_name}" if bilinear_increases_red else f"{filter_name}-bilinear"
+    minimum = 0.02
     passed = True
     for backend, binary, seed in (("rypath", rypath, 0), ("pbrt", pbrt, REPLICATES)):
-        backend_dir = run_dir / "image-trilinear" / backend
+        backend_dir = run_dir / scene / backend
         source = (backend_dir / f"{seed:02}.pbrt").read_bytes()
-        filter_token = b'"string filter" "trilinear"'
         if source.count(filter_token) != 1:
-            raise ValueError("image-trilinear: expected one trilinear filter for the control")
+            raise ValueError(f"{scene}: expected one {filter_name} filter for the control")
         bilinear = render_pfm(
             backend, binary, backend_dir / f"{seed:02}-bilinear.pbrt",
             source.replace(filter_token, b'"string filter" "bilinear"', 1),
         )
-        delta = roi_means(bilinear, TRILINEAR_BLEND)[0] - measurements[backend]["blend"][0][0]
-        minimum = 0.02
+        bilinear_red = roi_means(bilinear, REGIONS[scene][region])[0]
+        original_red = measurements[backend][region][0][0]
+        delta = bilinear_red - original_red if bilinear_increases_red else original_red - bilinear_red
         ok = delta > minimum
         passed &= ok
         status = "PASS" if ok else "FAIL"
-        print(f"{status} image-trilinear blend R  {backend} bilinear-trilinear={delta:.4g} "
+        print(f"{status} {scene} {region} R  {backend} {difference_name}={delta:.4g} "
               f"minimum={minimum:.4g}")
     return passed
 
@@ -229,8 +239,8 @@ def main():
             fixture = args.fixtures / f"{scene}.pbrt"
             measurements = render_replicates(rypath, pbrt, fixture, run_dir, regions)
             passed &= compare_regions(scene, measurements)
-            if scene == "image-trilinear":
-                passed &= check_trilinear_sensitivity(rypath, pbrt, run_dir, measurements)
+            if scene in FILTER_CONTROLS:
+                passed &= check_filter_sensitivity(scene, rypath, pbrt, run_dir, measurements)
         return 0 if passed else 1
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"compare_pbrt: {error}", file=sys.stderr)

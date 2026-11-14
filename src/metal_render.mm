@@ -311,6 +311,20 @@ struct MetalRenderScene::Impl {
             return "Metal image descriptor buffer exceeds device or index limits";
         }
         for (const auto &texture : scene.image_textures) {
+            wire::Word filter;
+            switch (texture.filter) {
+            case ImageFilter::point:
+                filter = wire::point_texture_filter;
+                break;
+            case ImageFilter::bilinear:
+                filter = wire::bilinear_texture_filter;
+                break;
+            case ImageFilter::trilinear:
+                filter = wire::trilinear_texture_filter;
+                break;
+            default:
+                return "Invalid image texture filter";
+            }
             const auto &image = *texture.image;
             const auto [it, added] =
                 pyramid_offsets.try_emplace(&image, static_cast<wire::Word>(levels.size()));
@@ -325,13 +339,11 @@ struct MetalRenderScene::Impl {
                 }
                 texels.insert(texels.end(), image.texels.begin(), image.texels.end());
             }
-            textures.push_back(
-                {it->second, static_cast<wire::Word>(image.levels.size()),
-                 static_cast<wire::Word>(image.wrap), static_cast<wire::Word>(image.encoding),
-                 texture.uscale, texture.vscale, texture.udelta, texture.vdelta, texture.scale,
-                 static_cast<wire::Word>(texture.invert),
-                 texture.filter == ImageFilter::trilinear ? wire::trilinear_texture_filter
-                                                          : wire::bilinear_texture_filter});
+            textures.push_back({it->second, static_cast<wire::Word>(image.levels.size()),
+                                static_cast<wire::Word>(image.wrap),
+                                static_cast<wire::Word>(image.encoding), texture.uscale,
+                                texture.vscale, texture.udelta, texture.vdelta, texture.scale,
+                                static_cast<wire::Word>(texture.invert), filter});
         }
         texture_parameters.texture_count = static_cast<wire::Word>(textures.size());
         texture_parameters.level_count = static_cast<wire::Word>(levels.size());

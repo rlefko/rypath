@@ -441,6 +441,85 @@ void trilinear_lookup() {
             "Direct top-level lookup accepted an unknown filter");
 }
 
+void point_lookup() {
+    using Rgb = std::array<float, 3>;
+    constexpr Rgb red{1, 0, 0}, green{0, 1, 0}, blue{0, 0, 1}, white{1, 1, 1};
+    ImagePyramid image{ImageEncoding::linear,
+                       ImageWrap::repeat,
+                       {{4, 1, 0}, {2, 1, 4}, {1, 1, 6}},
+                       {0x0000ff, 0x00ff00, 0xff0000, 0xffffff, 0x0080ff, 0x00ffff, 0xff00ff}};
+    const auto sample = [&image](float s, float t = 0.5f, float half_width = 0) {
+        return image_linear_rgb(image, s, t, 0, 0, 0, -half_width, ImageFilter::point);
+    };
+    require(sample(-0.25f) == blue && sample(0.25f) == green,
+            "Point lookup did not round signed ties away from zero");
+    require(sample(std::nextafter(0.25f, 0.0f)) == red &&
+                sample(std::nextafter(0.25f, 1.0f)) == green,
+            "Point lookup changed texels on the wrong side of a tie");
+    require(sample(0) == white && sample(1) == red && sample(0x1p-24f) == red &&
+                sample(std::nextafter(1.0f, 0.0f)) == white,
+            "Point repeat must wrap the rounded index, including at exact UV endpoints");
+    require(sample(0.5f, 0.5f, 0.25f) == Rgb{1, 1, 0} &&
+                sample(0.5f, 0.5f, 0.25f * std::numbers::sqrt2_v<float>) == Rgb{1, 1, 0},
+            "Point lookup did not select one texel at integer and fractional LODs");
+    ImagePyramid lods{ImageEncoding::linear,
+                      ImageWrap::repeat,
+                      {{16, 1, 0}, {8, 1, 16}, {4, 1, 24}, {2, 1, 28}, {1, 1, 30}},
+                      std::vector<std::uint32_t>(31)};
+    lods.texels[25] = 0x00ff00;
+    lods.texels[28] = 0x0000ff;
+    const auto lod_sample = [&lods](float width) {
+        return image_linear_rgb(lods, 0.25f, 0.5f, 0.5f * width, 0, 0, 0, ImageFilter::point);
+    };
+    require(lod_sample(0.5f) == red, "Point lookup missed the exact higher mip transition");
+    constexpr float width_below_transition = 0x1.fffffcp-2f;
+    // Force a separate rounding in the reference. The logf result may vary by libm.
+    const volatile float log_width = std::log(width_below_transition) * 1.4426950408889634f;
+    const auto expected = 4.0f + log_width >= 3.0f ? red : green;
+    require(lod_sample(width_below_transition) == expected,
+            "Point LOD did not round the logarithm term before adding the coarsest mip");
+    const float huge = std::numeric_limits<float>::max();
+    for (const auto s : {0x1.fffffep28f, 0x1p29f, 0x1.000002p29f, huge}) {
+        require(sample(s) == red && sample(-s) == red,
+                "Large point repeat coordinate did not safely wrap to zero");
+    }
+
+    require(sample(0.25f, 0.5f, 0.3f) == Rgb{1, 128.0f / 255.0f, 0},
+            "Point lookup did not use linear transfer decoding");
+    image.encoding = ImageEncoding::srgb;
+    const auto srgb_mid = std::pow((128.0f / 255.0f + 0.055f) / 1.055f, 2.4f);
+    const auto decoded = sample(0.25f, 0.5f, 0.3f);
+    require(decoded && (*decoded)[0] == 1 && std::abs((*decoded)[1] - srgb_mid) < 1e-6f &&
+                (*decoded)[2] == 0,
+            "Point lookup did not use sRGB transfer decoding");
+
+    image.wrap = ImageWrap::clamp;
+    require(sample(0) == red && sample(1) == white && sample(-huge, huge) == red &&
+                sample(huge, -huge) == white,
+            "Point clamp did not retain the first and last texels");
+    image.wrap = ImageWrap::black;
+    require(sample(0) == Rgb{} && sample(1) == Rgb{} && sample(-huge, huge) == Rgb{} &&
+                sample(huge, -huge) == Rgb{} && sample(0x1p-24f) == red &&
+                sample(std::nextafter(1.0f, 0.0f)) == white,
+            "Point black wrapping did not preserve exact and adjacent UV edges");
+    require(sample(huge, -huge, 0.5f) == Rgb{1, 0, 1},
+            "Wide point footprint did not bypass black wrapping");
+
+    const ImagePyramid singleton{ImageEncoding::linear, ImageWrap::black, {{1, 1, 0}}, {0x0000ff}};
+    require(image_linear_rgb(singleton, 0, 0.5f, 0, 0, 0, 0, ImageFilter::point) == Rgb{} &&
+                image_linear_rgb(singleton, 0.5f, 0.5f, 0, 0, 0, 0, ImageFilter::point) == red &&
+                image_linear_rgb(singleton, 0, 0.5f, 0.5f, 0, 0, 0, ImageFilter::point) == red,
+            "Standalone 1x1 point black wrapping did not follow the footprint");
+
+    image.levels.back().offset = 7;
+    require(sample(0.5f, 0.5f, 0.3f) == Rgb{1, 1, 0} && !sample(0.5f, 0.5f, 0.5f),
+            "Point lookup must only read and validate the selected level");
+    image.levels[1].offset = 6;
+    require(!sample(0.5f, 0.5f, 0.3f), "Point lookup accepted an invalid selected mip");
+    require(!sample(std::numeric_limits<float>::infinity()),
+            "Point lookup accepted a nonfinite mapped coordinate");
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -452,6 +531,7 @@ int main(int argc, char *argv[]) {
         mip_pyramid();
         lookup();
         trilinear_lookup();
+        point_lookup();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

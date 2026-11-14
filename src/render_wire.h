@@ -18,7 +18,11 @@ using Word = std::uint32_t;
 enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_hit = 3 };
 enum : Word { demo_model = 0, pbrt_model = 1 };
 enum : Word { box_filter = 0, triangle_filter = 1 };
-enum : Word { bilinear_texture_filter = 0, trilinear_texture_filter = 1 };
+enum : Word {
+    bilinear_texture_filter = 0,
+    trilinear_texture_filter = 1,
+    point_texture_filter = 2,
+};
 enum : Word { independent_sampler = 0, sobol_sampler = 1 };
 enum : Word {
     sampled_material = 0,

@@ -52,15 +52,46 @@ static float3 bilinear(const device wire::ImageTexture &texture,
            d.x * d.y * e;
 }
 
+static float2 point_mapping(float2 uv, float2 scale, float2 offset) {
+    // Pinned PBRT rounds the product before adding the offset. Contracting this
+    // expression can move a coordinate off an exact half-texel tie.
+#pragma clang fp contract(off)
+    const float2 scaled = uv * scale;
+    return scaled + offset;
+}
+
+static float point_lod(float width, float coarsest) {
+    // The floor is sensitive to rounding at integer LOD transitions.
+#pragma clang fp contract(off)
+    const float log_width = log(width) * 1.4426950408889634f;
+    return coarsest + log_width;
+}
+
+static int point_coordinate(float st, float dimension, uint wrap) {
+    if (wrap == 1u)
+        st = clamp(st, 0.0f, 1.0f);
+    else if (wrap == 2u)
+        st = clamp(st, -1.0f, 2.0f);
+    const float index = round(st * dimension - 0.5f);
+    if (wrap == 0u) {
+        // Preserve signed ties and bound the cast. A finite coordinate that
+        // overflows on scaling spans whole periods of the power-of-two mip.
+        return isfinite(index) ? int(fmod(index, dimension)) : 0;
+    }
+    return int(index);
+}
+
 static float3 lookup(const device wire::ImageTexture &texture,
                      const device wire::TextureLevel *levels, const device wire::Word *texels,
                      const device float *transfer, constant wire::TextureParameters &p, float2 uv,
                      float2 dx, float2 dy) {
+    const bool point = texture.filter == wire::point_texture_filter;
     if (!all(isfinite(uv)) || !all(isfinite(dx)) || !all(isfinite(dy)) ||
         texture.level_count == 0 || texture.level_begin > p.level_count ||
         texture.level_count > p.level_count - texture.level_begin ||
-        (texture.filter != wire::bilinear_texture_filter &&
-         texture.filter != wire::trilinear_texture_filter))
+        (!point && texture.filter != wire::bilinear_texture_filter &&
+         texture.filter != wire::trilinear_texture_filter) ||
+        (point && (texture.wrap > 2u || texture.encoding > 1u)))
         return float3(NAN);
     dx *= float2(texture.uscale, texture.vscale);
     dy *= float2(texture.uscale, texture.vscale);
@@ -68,26 +99,34 @@ static float3 lookup(const device wire::ImageTexture &texture,
     // doubling derivatives or mapping coordinates, which may overflow even for
     // finite authored inputs.
     const float extent = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
-    const float lod = extent >= 0.5f ? float(texture.level_count - 1u)
-                                     : float(texture.level_count - 1u) +
-                                           log(max(2.0f * extent, 1e-8f)) * 1.4426950408889634f;
-    const uint index = lod >= float(texture.level_count - 1u) ? texture.level_count - 1u
-                                                              : uint(max(0.0f, floor(lod)));
+    const float coarsest = float(texture.level_count - 1u);
+    float lod = coarsest;
+    if (!(extent >= 0.5f)) {
+        const float width = max(2.0f * extent, 1e-8f);
+        lod = point ? point_lod(width, coarsest) : coarsest + log(width) * 1.4426950408889634f;
+    }
+    const bool wide = lod >= coarsest;
+    const uint index = wide ? texture.level_count - 1u : uint(max(0.0f, floor(lod)));
     const device wire::TextureLevel &level = levels[texture.level_begin + index];
     if (!valid_level(level, p.texel_count))
         return float3(NAN);
-    if (lod >= float(texture.level_count - 1u)) {
+    if (wide) {
         return texel(texels, transfer, level, 0, 0, texture.wrap, texture.encoding);
     }
     // Pinned PBRT keeps the base level unblended even for 0 <= lod < 1.
     const bool interpolate = texture.filter == wire::trilinear_texture_filter && index > 0;
     if (interpolate && !valid_level(levels[texture.level_begin + index + 1u], p.texel_count))
         return float3(NAN);
-    float2 st =
-        uv * float2(texture.uscale, texture.vscale) + float2(texture.udelta, texture.vdelta);
+    const float2 scale(texture.uscale, texture.vscale), offset(texture.udelta, texture.vdelta);
+    float2 st = point ? point_mapping(uv, scale, offset) : uv * scale + offset;
     st.y = 1.0f - st.y;
     if (!all(isfinite(st)))
         return float3(NAN);
+    if (point) {
+        const int x = point_coordinate(st.x, float(level.width), texture.wrap);
+        const int y = point_coordinate(st.y, float(level.height), texture.wrap);
+        return texel(texels, transfer, level, x, y, texture.wrap, texture.encoding);
+    }
     // Bound integer conversions even for large, finite authored coordinates.
     if (texture.wrap == 0u)
         st -= floor(st);

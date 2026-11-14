@@ -9,6 +9,13 @@ struct Vector {
     float x, y, z, w;
 };
 
+struct PointCase {
+    unsigned texture;
+    float u, v, half_width;
+};
+
+enum : unsigned { point_lod_seam_case = 30, point_case_count };
+
 struct Result {
     Vector primary[2];
     Vector parallel;
@@ -35,9 +42,11 @@ struct Result {
     Vector singleton_wide;
     Vector invalid_upper;
     Vector invalid_filter;
+    Vector point[point_case_count];
 };
 
-static_assert(sizeof(Result) == 33 * sizeof(Vector) && sizeof(Vector) == 16,
+static_assert(sizeof(Result) == (33 + point_case_count) * sizeof(Vector) && sizeof(Vector) == 16 &&
+                  sizeof(PointCase) == 16,
               "Texture probe result layout");
 
 } // namespace texture_probe

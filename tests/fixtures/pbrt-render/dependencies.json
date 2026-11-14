@@ -53,6 +53,13 @@
       "sha256": "7ec55a97b8b6451646abe683645ab19d11c4e9cd5d9b5ea909bf57168c9e5e3f"
     }
   ],
+  "image-point": [
+    {
+      "path": "image-assets/z03n2c08.png",
+      "bytes": 232,
+      "sha256": "939abfc6e0a3e349bb5bcd8c4e427a6cdb2c7e0c23a773aefa1c4fc9f07e4cb4"
+    }
+  ],
   "image-secondary": [
     {
       "path": "image-assets/asymmetric.png",
