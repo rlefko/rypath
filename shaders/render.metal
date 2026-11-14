@@ -230,6 +230,43 @@ static float sigmoid_reflectance(const device wire::Material &material, float wa
     return 0.5f + 0.5f * copysign(1.0f / sqrt(1.0f + inverse * inverse), p);
 }
 
+static float blackbody_reflectance(float exponent_factor, float wavelength) {
+    if (!(wavelength >= 360.0f && wavelength <= 830.0f)) {
+        return 0.0f;
+    }
+    if (!(exponent_factor > 0.0f && isfinite(exponent_factor))) {
+        return NAN;
+    }
+    const float x = exponent_factor / wavelength;
+    // The host caps C2/T at 128*830. At x >= 128 the normalized result is
+    // below half the smallest binary32 subnormal throughout the visible range.
+    if (x >= 128.0f) {
+        return 0.0f;
+    }
+    // C2 / (2.8977721e6 nm K), using pinned PBRT's h, c, k and Wien constant.
+    constexpr float x_peak = 4.965114268247028f;
+    constexpr float log_peak_factor = -0.007001607544495994f; // log(1-exp(-x_peak))
+    // Metal has no expm1. This factored series avoids subtracting nearly equal
+    // values for hot spectra; its first omitted relative term is x^5/720.
+    const float factor =
+        x < 0.0625f
+            ? x * (1.0f + x * (-0.5f + x * (1.0f / 6.0f + x * (-1.0f / 24.0f + x / 120.0f))))
+            : 1.0f - exp(-x);
+    // Combine exponents before exp: an intermediate exp(x_peak-x) can flush
+    // even when the final normalized reflectance is a normal binary32 value.
+    const float log_rho = 5.0f * log(x / x_peak) + x_peak - x + log_peak_factor - log(factor);
+    return clamp(exp(log_rho), 0.0f, 1.0f);
+}
+
+kernel void rypath_probe_blackbody(const device float2 *queries [[buffer(0)]],
+                                   device float *results [[buffer(1)]],
+                                   constant uint &count [[buffer(2)]],
+                                   uint lane [[thread_position_in_grid]]) {
+    if (lane < count) {
+        results[lane] = blackbody_reflectance(queries[lane].x, queries[lane].y);
+    }
+}
+
 static uint dense_index(float wavelength) {
     const uint nm = uint(wavelength);
     return nm + uint(wavelength - float(nm) >= 0.5f) - 360u;
@@ -825,7 +862,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             rho = pbrt_reflectance(knots + material.knot_begin, material.knot_count,
                                    sample.wavelength);
         } else if (p.model == wire::pbrt_model && material.kind == wire::constant_material) {
-            rho = material.constant_value;
+            rho = material.scalar_value;
+        } else if (p.model == wire::pbrt_model && material.kind == wire::blackbody_material) {
+            rho = blackbody_reflectance(material.scalar_value, sample.wavelength);
         } else if (p.model == wire::pbrt_model && material.kind == wire::rgb_sigmoid_material) {
             rho = sigmoid_reflectance(material, sample.wavelength);
         } else if (p.model == wire::pbrt_model && material.kind == wire::image_material &&

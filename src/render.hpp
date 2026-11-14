@@ -21,7 +21,7 @@ inline constexpr std::uint32_t render_tile_capacity = 65536;
 inline constexpr std::uint32_t render_emergency_limit = 1024;
 inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
 
-enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image };
+enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image, blackbody };
 
 struct SpectralMaterial {
     std::array<float, 8> reflectance{};
@@ -30,6 +30,7 @@ struct SpectralMaterial {
     float constant = 0;
     std::array<float, 3> coefficients{};
     std::uint32_t image_texture = 0;
+    float temperature_kelvin = 0;
 };
 enum class RenderModel { demo, pbrt };
 enum class PixelFilterKind { box, triangle };
@@ -128,6 +129,9 @@ std::array<double, 3> pbrt_cie_xyz(double wavelength);
 double pbrt_y_inner_product(const std::array<float, 471> &spectrum);
 double cie_y_integral();
 double sampled_spectrum(std::span<const SpectralKnot> knots, double wavelength);
+double blackbody_reflectance(float temperature_kelvin, double wavelength);
+// Pack a validated positive finite temperature for binary32 wavelength evaluation.
+float blackbody_exponent_factor(float temperature_kelvin);
 double spectral_reflectance(const SpectralMaterial &material, double wavelength);
 std::array<std::uint32_t, 4> sample_words(std::uint64_t seed, std::uint32_t pixel,
                                           std::uint64_t sample, std::uint32_t block);

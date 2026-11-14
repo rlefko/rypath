@@ -42,12 +42,19 @@ Its environment uses PBRT's built-in `nikon_d850_g` spectrum. It preserves the
 is 718 bytes with SHA-256
 `7b0eba7de1dc03bb80658ff7d15973b8bbb42438a9c57841e2e269d13770951c`.
 
+`../blackbody-reflectance-ply.pbrt` is a GPL-3.0-only derivative of the same
+wrapper. The quad's diffuse material uses a spectrum constant texture with an
+inherited 6500 K blackbody value under flat sampled infinite illumination. It
+retains the 33.4° camera FOV, path depth of 1, and transformed quad. The entry is
+834 bytes with SHA-256
+`b6e1657ac03f24645973d7f979183d58b1c1f54ea163a127a2471a100dae5148`.
+
 `mixed.ply` and `curved-light.ply` are original GPL-3.0-only fixtures.
 The first combines a nonplanar quad with unequal-length vertex normals and UVs
 and a separate triangle. The second is a nonplanar emitting quad. Their wrappers
 isolate mixed geometry and curved area emission, respectively.
 
-The six wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
+The wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
 seed comparison protocol. The [dependency manifest](../dependencies.json)
 pins each wrapper's complete input closure, sizes and hashes. The comparison
 script verifies and stages these files under each relocated entry directory.

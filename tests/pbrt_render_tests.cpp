@@ -1295,6 +1295,117 @@ void rejects_blackbody_lights(const fs::path &scratch) {
              "unsupported-render-feature", "Positive power", 5);
 }
 
+void blackbody_reflectance_translation(const fs::path &scratch) {
+    auto source = std::string(basic) + R"(ColorSpace "rec2020"
+Attribute "material" "blackbody reflectance" 1e-46
+AttributeBegin
+    Attribute "material" "blackbody reflectance" 6500
+    Material "diffuse"
+)";
+    source += triangle;
+    source += R"(AttributeEnd
+MakeNamedMaterial "named" "string type" "diffuse" "blackbody reflectance" [6500]
+NamedMaterial "named"
+)";
+    source += triangle;
+    source += R"(Attribute "texture" "blackbody value" 1e40
+AttributeBegin
+    Attribute "texture" "blackbody value" 6500
+    ColorSpace "aces2065-1"
+    Texture "shared" "spectrum" "constant"
+AttributeEnd
+MakeNamedMaterial "textured" "string type" "diffuse" "texture reflectance" "shared"
+NamedMaterial "textured"
+)";
+    source += triangle;
+    source += R"(Material "diffuse" "texture reflectance" "shared"
+)";
+    source += triangle;
+    source += R"(Texture "cold" "spectrum" "constant" "blackbody value" 1.401298464324817e-45
+Material "diffuse" "texture reflectance" "cold"
+)";
+    source += triangle;
+    source += R"(Material "diffuse" "blackbody reflectance" 3.4028234663852886e38
+)";
+    source += triangle;
+    const auto scene = accepted(write(scratch, "blackbody-reflectance.pbrt", source)).scene;
+    require(scene.instance_materials.size() == 6 &&
+                scene.instance_materials[2] == scene.instance_materials[3],
+            "Blackbody texture consumers must share the translated material");
+    constexpr std::array temperatures{6500.f,
+                                      6500.f,
+                                      6500.f,
+                                      6500.f,
+                                      std::numeric_limits<float>::denorm_min(),
+                                      std::numeric_limits<float>::max()};
+    for (std::size_t instance = 0; instance < temperatures.size(); ++instance) {
+        const auto &material = scene.materials.at(scene.instance_materials[instance]);
+        const float expected_temperature = temperatures[instance];
+        require(material.kind == SpectralMaterialKind::blackbody && material.knots.empty() &&
+                    material.temperature_kelvin == expected_temperature,
+                "Blackbody reflectance lost its effective temperature or analytic representation");
+        const double value = spectral_reflectance(material, 550.25);
+        const double expected = blackbody_reflectance(expected_temperature, 550.25);
+        require(value == expected && std::isfinite(value),
+                "Blackbody material and texture must evaluate the same spectrum");
+    }
+}
+
+void blackbody_reflectance_diagnostics(const fs::path &scratch) {
+    // The fixture text, expected diagnostic code, and authored token have distinct roles.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    const auto rejected = [&](std::string_view body, std::string_view code,
+                              std::string_view token) {
+        const auto path = write(scratch, "invalid-blackbody-reflectance.pbrt",
+                                std::string(basic) + std::string(body) + std::string(triangle));
+        const auto checked = check(path);
+        const auto translated = translate(checked, Location{path.string()});
+        const auto &diagnostics =
+            checked.exit_code() == 0 ? translated.diagnostics : checked.document.diagnostics;
+        const auto offset = body.find(token);
+        require(
+            offset != std::string_view::npos && translated.exit_code() == 1 && !translated.scene &&
+                std::ranges::any_of(diagnostics,
+                                    [&](const Diagnostic &diagnostic) {
+                                        return diagnostic.code == code &&
+                                               fs::path(*diagnostic.location.file) == path &&
+                                               diagnostic.location.line == 7 &&
+                                               diagnostic.location.column == offset + 1;
+                                    }),
+            "Expected source-located blackbody reflectance diagnostic for " + std::string(body));
+    };
+    rejected("Material \"diffuse\" \"blackbody reflectance\" [-1]\n", "invalid-parameter",
+             "\"blackbody reflectance\"");
+    rejected("Texture \"bad\" \"spectrum\" \"constant\" \"blackbody value\" [3000 6000]\n",
+             "invalid-parameter", "\"blackbody value\"");
+    rejected("Texture \"bad\" \"spectrum\" \"constant\" \"blackbody value\" 1e40\n",
+             "invalid-render-value", "1e40");
+    rejected("Attribute \"material\" \"blackbody reflectance\" 1e-46\n"
+             "MakeNamedMaterial \"unused\" \"string type\" \"diffuse\"\n",
+             "invalid-render-value", "1e-46");
+    rejected("Attribute \"texture\" \"blackbody value\" 1e-46\n"
+             "Texture \"unused\" \"spectrum\" \"constant\"\n",
+             "invalid-render-value", "1e-46");
+
+    std::string source(basic);
+    for (int i = 0; i < 13; ++i) {
+        source += "Texture \"bb" + std::to_string(i) +
+                  "\" \"spectrum\" \"constant\" \"blackbody value\" [6500]\n";
+    }
+    source += "Material \"diffuse\" \"texture reflectance\" \"bb0\"\n";
+    source += triangle;
+    const auto path = write(scratch, "bounded-blackbody-reflectance.pbrt", source);
+    const auto fits = translation(path, {.list_values = 1, .total_values = 13});
+    require(fits.exit_code() == 0 && fits.scene && fits.scene->materials.size() == 14,
+            "Each blackbody constant occupies one spectral value, including unused definitions");
+    const auto failed = translation(path, {.list_values = 1, .total_values = 12});
+    require(failed.exit_code() == 1 && !failed.scene && failed.diagnostics.size() == 1 &&
+                failed.diagnostics.front().code == "limit-exceeded" &&
+                failed.diagnostics.front().location.line == 19 &&
+                failed.diagnostics.front().location.column == 38,
+            "Blackbody material budget failure must point to the excess definition");
+}
+
 void constant_texture_translation(const fs::path &scratch) {
     const auto translated = [&](std::string_view body) {
         return accepted(write(scratch, "constant-texture.pbrt",
@@ -1440,9 +1551,6 @@ Texture "unused" "spectrum" "constant"
     rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [360 0.2 360.00000001 0.5]
 )",
              1, "increase in binary32", "360.00000001");
-    rejected(R"(Texture "unused" "spectrum" "constant" "blackbody value" [5500]
-)",
-             2, "two numeric", "\"blackbody value\"");
     rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [550 0.5]
 )",
              2, "two numeric", "\"spectrum value\"");
@@ -1530,8 +1638,6 @@ LightSource "infinite"
     rejected("Material \"diffuse\"\n    \"color reflectance\" [1 0 0]\n", 2, "legacy-parameter", 8,
              5);
     rejected("LightSource \"infinite\"\n    \"color L\" [1 0 0]\n", 2, "legacy-parameter", 8, 5);
-    rejected("Material \"diffuse\"\n    \"blackbody reflectance\" [5500]\n", 2,
-             "unsupported-render-feature", 8, 5);
     const auto limited_path = write(scratch, "limited-rgb.pbrt",
                                     std::string(basic) +
                                         "ColorSpace \"rec2020\"\n"
@@ -1852,6 +1958,8 @@ int main(int argc, char **argv) {
         blackbody_light_spectrum(scratch);
         blackbody_light_context(scratch);
         rejects_blackbody_lights(scratch);
+        blackbody_reflectance_translation(scratch);
+        blackbody_reflectance_diagnostics(scratch);
         constant_texture_translation(scratch);
         constant_texture_rejections_and_limits(scratch);
         area_light_translation(scratch);

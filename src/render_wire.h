@@ -24,7 +24,8 @@ enum : Word {
     sampled_material = 0,
     constant_material = 1,
     rgb_sigmoid_material = 2,
-    image_material = 3
+    image_material = 3,
+    blackbody_material = 4
 };
 enum : Word { no_emission = 0xffffffffu };
 enum : Word { no_normals = 0xffffffffu };
@@ -84,7 +85,8 @@ struct Material {
     Word knot_begin;
     Word knot_count;
     Word kind;
-    float constant_value;
+    // Constant reflectance, or bounded C2/temperature for blackbody reflectance.
+    float scalar_value;
     float coefficients[3];
     Word image_texture;
 };
@@ -178,7 +180,7 @@ static_assert(sizeof(Material) == 64 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, knot_begin) == 32 &&
                   __builtin_offsetof(Material, knot_count) == 36 &&
                   __builtin_offsetof(Material, kind) == 40 &&
-                  __builtin_offsetof(Material, constant_value) == 44 &&
+                  __builtin_offsetof(Material, scalar_value) == 44 &&
                   __builtin_offsetof(Material, coefficients) == 48 &&
                   __builtin_offsetof(Material, image_texture) == 60,
               "render material layout");

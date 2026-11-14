@@ -208,10 +208,87 @@ void cpu_pbrt_material_payloads() {
     require(valid(), "PBRT sampled material with two knots rejected");
     material.constant = 0.5f;
     require(!valid(), "Sampled material accepted a constant payload");
+    for (auto other :
+         {SpectralMaterial{.knots = {{360, 0}, {830, 1}}}, SpectralMaterial{.kind = Kind::constant},
+          SpectralMaterial{.kind = Kind::rgb_sigmoid}, SpectralMaterial{.kind = Kind::image}}) {
+        other.temperature_kelvin = 6500;
+        material = std::move(other);
+        require(!valid(), "Inactive PBRT material temperature accepted");
+    }
+    constexpr auto coldest = std::numeric_limits<float>::denorm_min();
+    for (auto temperature : {coldest, 6500.f, largest}) {
+        material = {.kind = Kind::blackbody, .temperature_kelvin = temperature};
+        require(valid(), "Positive finite blackbody temperature rejected");
+    }
+    for (auto temperature : {nan, inf, -1.f, 0.f}) {
+        material.temperature_kelvin = temperature;
+        require(!valid(), "Invalid blackbody temperature accepted");
+    }
+    const SpectralMaterial blackbody{.kind = Kind::blackbody, .temperature_kelvin = 6500};
+    material = blackbody;
+    material.reflectance.front() = 0.5f;
+    require(!valid(), "Blackbody material accepted a demo reflectance payload");
+    material = blackbody;
+    material.knots = {{360, 0}, {830, 1}};
+    require(!valid(), "Blackbody material accepted a sampled payload");
+    material = blackbody;
+    material.constant = 0.5f;
+    require(!valid(), "Blackbody material accepted a constant payload");
+    material = blackbody;
+    material.coefficients[2] = 1;
+    require(!valid(), "Blackbody material accepted an RGB payload");
+    material = blackbody;
+    material.image_texture = 1;
+    require(!valid(), "Blackbody material accepted an image binding");
+    auto demo = floor_scene();
+    demo.materials.front().temperature_kelvin = 6500;
+    require(!validate_render_scene(demo).empty(), "Inactive demo material temperature accepted");
     // Deliberately construct an unknown tag to exercise input rejection.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     material = {.kind = static_cast<Kind>(-1)};
     require(!valid(), "Unknown spectral material kind accepted");
+}
+
+void cpu_blackbody_reflectance() {
+    // Evaluate absolute Planck radiance in meters as an independent reference.
+    const auto absolute_radiance = [](double meters, double kelvin) {
+        constexpr double h = 6.62606957e-34;
+        constexpr double c = 299792458.;
+        constexpr double k = 1.3806488e-23;
+        return 2 * h * c * c / (std::pow(meters, 5) * std::expm1(h * c / (meters * k * kelvin)));
+    };
+    const auto compare = [&](float kelvin, double wavelength) {
+        const double peak_meters = 2.8977721e-3 / kelvin;
+        const double expected = std::min(1., absolute_radiance(wavelength * 1e-9, kelvin) /
+                                                 absolute_radiance(peak_meters, kelvin));
+        const SpectralMaterial material{.kind = SpectralMaterialKind::blackbody,
+                                        .temperature_kelvin = kelvin};
+        const double actual = spectral_reflectance(material, wavelength);
+        require(std::isnormal(expected) && actual >= 0 && actual <= 1,
+                "Blackbody comparison must use finite, normal reference reflectance");
+        near(actual, expected, 2e-12 * expected, "Normalized Planck reflectance");
+    };
+    constexpr auto hottest = std::numeric_limits<float>::max();
+    constexpr auto coldest = std::numeric_limits<float>::denorm_min();
+    for (float kelvin : {200.f, 1000.f, 2850.f, 5000.f, 6500.f, 15000.f, 1e12f, hottest}) {
+        for (int quarter_nm = 360 * 4; quarter_nm <= 830 * 4; ++quarter_nm) {
+            compare(kelvin, quarter_nm * 0.25);
+        }
+    }
+    compare(25.f, 830);
+    near(blackbody_reflectance(6500, 2.8977721e6 / 6500), 1, 2e-15,
+         "Blackbody Wien-peak normalization");
+    for (double wavelength : {359.99, 830.01, std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()}) {
+        require(blackbody_reflectance(6500, wavelength) == 0,
+                "Blackbody reflectance outside the visible domain");
+    }
+    require(blackbody_reflectance(coldest, 830) == 0 &&
+                blackbody_exponent_factor(coldest) == 128 * 830 &&
+                std::isnormal(blackbody_exponent_factor(hottest)),
+            "Blackbody extremes must remain finite on the wire");
+    near(blackbody_exponent_factor(6500), 14387769.5998 / 6500, 2e-4,
+         "Blackbody wire exponent factor");
 }
 
 void cpu_film() {
@@ -297,6 +374,7 @@ void run_cpu() {
     cpu_sensor_and_display();
     cpu_validation();
     cpu_pbrt_material_payloads();
+    cpu_blackbody_reflectance();
     cpu_film();
     cpu_reference();
 }
