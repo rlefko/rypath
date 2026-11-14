@@ -39,14 +39,16 @@ foreach(shader IN ITEMS smoke geometry render texture_probe)
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_probe_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_footprint.h"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h")
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
     endif()
     if(shader STREQUAL "texture_probe")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/texture_probe_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_footprint.h"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h")
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
     endif()
     add_custom_command(
         OUTPUT "${air}"

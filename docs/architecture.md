@@ -99,7 +99,7 @@ transfer tables, and the sRGB reconstruction table. At each textured hit the
 shader computes the footprint, evaluates RGB, and reconstructs albedo at the
 path wavelength. The [image texture record](image-texture-validation.md) describes
 the lookup and its validation.
-Each texture selects point, bilinear, or trilinear lookup independently of the shared
+Each texture selects point, bilinear, trilinear, or EWA lookup independently of the shared
 pyramid. Trilinear blends decoded linear RGB across adjacent levels before
 spectral reconstruction; the [trilinear record](trilinear-texture-validation.md)
 defines its pinned PBRT boundary behavior.
@@ -107,6 +107,10 @@ Point lookup preserves signed texel rounding before wrapping and uses separate
 UV scale and offset operations at discontinuities. The
 [point record](point-texture-validation.md) defines its numerical extension for
 extreme coordinates and exact lookup checks.
+EWA descriptors additionally carry a bounded anisotropy limit. Both signed
+derivative vectors feed elliptical filtering of the shared mip pyramid; the
+[EWA record](ewa-texture-validation.md) defines stable arithmetic, bounded scan
+work, and edge handling.
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 PNG decoding uses the vendored portable LodePNG decoder. The
 [dependency decision](pbrt-decision.md) records the integration boundary.

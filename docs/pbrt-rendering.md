@@ -174,10 +174,10 @@ follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/b
 | `filename` | Required entry-relative or absolute path to a supported [PNG input](pbrt-profile.md#png-imagemap-definitions) |
 | `mapping` | `uv` (default), with `uscale` and `vscale` defaulting to 1 and `udelta` and `vdelta` to 0 |
 | `encoding` | `sRGB` (default) or `linear`; output color primaries are sRGB |
-| `filter` | `point`, selecting one texel at one mip level; `bilinear` (default), interpolating within one level; or `trilinear`, blending adjacent levels |
+| `filter` | `point`, `bilinear` (default), `trilinear`, or elliptical `ewa`/`EWA` |
 | `wrap` | `repeat` (default), `clamp`, or `black`; non-power-of-two images require repeat or clamp |
 | `scale`, `invert` | Multiply filtered RGB by `scale` (default 1), then subtract from one when `invert` is true (default false) |
-| `maxanisotropy` | Accepted finite value, inert with all supported filters |
+| `maxanisotropy` | EWA accepts 1–16, default 8; finite values remain inert with other filters |
 
 Texture lookup maps the hit UV, flips the vertical coordinate and filters in
 linear RGB. The spectrum uses the existing sRGB albedo reconstruction after
@@ -201,6 +201,15 @@ mip retains wrap handling during this blend; only LODs at or above the coarsest
 level return its texel directly. Filter variants share the same mip storage.
 See [trilinear validation](trilinear-texture-validation.md) for boundary and
 independent reference checks.
+
+EWA retains both signed footprint vectors, widens the shorter vector to respect
+the anisotropy limit, and blends elliptical weighted averages at adjacent mip
+levels. A zero shorter vector selects base-level bilinear. The actual 1×1 mip
+still applies wrapping; only levels beyond it return the sole texel directly.
+Black exterior taps contribute weight but zero RGB. The bounded anisotropy
+profile and checked arithmetic prevent unbounded scans without truncating taps
+or substituting another filter. See [EWA validation](ewa-texture-validation.md)
+for numerical adaptations, coordinate limits, and reference evidence.
 
 Triangle UVs default to `(0,0), (1,0), (1,1)`. Bilinear quads default to patch
 parameters. The footprint uses the geometric tangent plane and the declared

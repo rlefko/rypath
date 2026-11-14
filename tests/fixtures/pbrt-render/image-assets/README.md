@@ -25,8 +25,17 @@ within their selected mip texels. Column 4 stays near the repeat coordinate
 `s = 0.025`, where point sampling selects the bright red texel and bilinear
 sampling mixes in roughly 30% of the dark texel across the repeat seam.
 
+The GPL-3.0-only wrapper `../image-ewa.pbrt` uses the same PNG and triangle
+geometry with linear encoding, repeat wrap, EWA filtering, and an explicit
+anisotropy cap of 8. Its radius-1/256 triangle pixel filter keeps pixel (4, 3)
+near flipped UV (0.025, 0.6). The approximate flipped UV differentials
+(0.075, −0.370) and (0.018, 0.008) give a rotated ellipse with a derivative
+length ratio around 19. The cap of 8 widens the shorter axis, giving a
+fractional EWA LOD near 0.6 that blends the 32×32 and 16×16 mips. This owned
+wrapper provides coverage of the pinned asset.
+
 [The dependency manifest](../dependencies.json) records the size and SHA-256
-of each input staged with its entry point. All six image texture fixtures use
+of each input staged with its entry point. All seven image texture fixtures use
 8×8 linear RGB output and 4,096 samples per pixel. Comparison runs use
 independent seeds per backend and leave PBRT texture filtering enabled.
 The trilinear run compares the full image and the two pixels in column 4,
@@ -37,3 +46,7 @@ those two pixels.
 The point run uses the same two regions and control seeds. It requires the
 point red mean to exceed the bilinear red mean by more than 0.02 in those
 two pixels.
+The EWA run compares the full image and pixel (4, 3) using the same fixed
+replicates and statistical gates. At the first seed for each backend, the EWA
+red value at that pixel must exceed the trilinear control and the EWA cap-4
+control by more than 0.02 each. Each control changes only its named parameter.

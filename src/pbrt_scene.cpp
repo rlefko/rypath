@@ -1784,7 +1784,7 @@ void Interpreter::imagemap(const Directive &directive, bool spectrum, bool uniqu
     const auto mapping = text("mapping", "uv", {"uv"}, {"spherical", "cylindrical", "planar"});
     const auto encoding_name = text("encoding", "sRGB", {"sRGB", "linear"}, {});
     const auto filter_name =
-        text("filter", "bilinear", {"point", "bilinear", "trilinear"}, {"ewa", "EWA"});
+        text("filter", "bilinear", {"point", "bilinear", "trilinear", "ewa", "EWA"}, {});
     const auto wrap_name =
         text("wrap", "repeat", {"repeat", "clamp", "black"}, {"octahedralsphere"});
     if (mapping == "uv") {
@@ -1801,6 +1801,8 @@ void Interpreter::imagemap(const Directive &directive, bool spectrum, bool uniqu
         texture.filter = ImageFilter::point;
     } else if (filter_name == "trilinear") {
         texture.filter = ImageFilter::trilinear;
+    } else if (one_of(filter_name, {"ewa", "EWA"})) {
+        texture.filter = ImageFilter::ewa;
     }
     const auto set_number = [&](string_view name, float &output) {
         if (const auto found = fields.find(name); found != fields.end()) {
@@ -1821,10 +1823,17 @@ void Interpreter::imagemap(const Directive &directive, bool spectrum, bool uniqu
     if (const auto found = fields.find("invert"); found != fields.end()) {
         texture.invert = found->second->values.front().boolean;
     }
-    if (const auto found = fields.find("maxanisotropy");
-        found != fields.end() && !std::isfinite(found->second->values.front().number)) {
-        error("invalid-parameter", found->second->values.front().location,
-              "Imagemap maxanisotropy must be finite");
+    if (const auto found = fields.find("maxanisotropy"); found != fields.end()) {
+        const auto &value = found->second->values.front();
+        if (!std::isfinite(value.number)) {
+            error("invalid-parameter", value.location, "Imagemap maxanisotropy must be finite");
+        } else if (texture.filter == ImageFilter::ewa) {
+            if (value.number < 1 || value.number > 16) {
+                unsupported(value.location, "Imagemap EWA maxanisotropy must be in [1, 16]");
+            } else {
+                texture.max_anisotropy = static_cast<float>(value.number);
+            }
+        }
     }
     if (!unique || !index || result_.document.diagnostics_truncated ||
         previous_issues != result_.document.diagnostics.size()) {

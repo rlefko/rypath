@@ -70,48 +70,62 @@ kernel void rypath_texture_footprint_probe(
 
     const float2 base(0.25f, 0.75f);
     const float2 outside(-0.75f, 0.75f);
-    const float3 fine = rypath_image::lookup(textures[0], levels, texels, transfer, parameters,
-                                             base, float2(0), float2(0));
-    const float3 middle = rypath_image::lookup(textures[0], levels, texels, transfer, parameters,
-                                               base, float2(0.3f, 0), float2(0));
+    const float3 fine = rypath_image::lookup_standard(textures[0], levels, texels, transfer,
+                                                      parameters, base, float2(0), float2(0));
+    const float3 middle = rypath_image::lookup_standard(
+        textures[0], levels, texels, transfer, parameters, base, float2(0.3f, 0), float2(0));
     result.fine = pack_probe(fine);
     result.middle = pack_probe(middle);
-    result.coarse = pack_probe(rypath_image::lookup(
+    result.coarse = pack_probe(rypath_image::lookup_standard(
         textures[1], levels, texels, transfer, parameters, outside, float2(0.5f, 0), float2(0)));
-    result.wrapped = pack_probe(rypath_image::lookup(textures[0], levels, texels, transfer,
-                                                     parameters, outside, float2(0), float2(0)));
-    result.black = pack_probe(rypath_image::lookup(textures[1], levels, texels, transfer,
-                                                   parameters, outside, float2(0), float2(0)));
+    result.wrapped = pack_probe(rypath_image::lookup_standard(
+        textures[0], levels, texels, transfer, parameters, outside, float2(0), float2(0)));
+    result.black = pack_probe(rypath_image::lookup_standard(
+        textures[1], levels, texels, transfer, parameters, outside, float2(0), float2(0)));
     result.spectrum = {
         rypath_image::spectrum(middle, 460, table), rypath_image::spectrum(middle, 550, table),
         rypath_image::spectrum(middle, 610, table), rypath_image::spectrum(fine, 550, table)};
 
     const float2 fractional(0.3535533905932738f, 0); // Four-wide pyramid: LOD 1.5.
-    result.trilinear_base = pack_probe(rypath_image::lookup(
+    result.trilinear_base = pack_probe(rypath_image::lookup_standard(
         textures[2], levels, texels, transfer, parameters, base, fractional * 0.5f, float2(0)));
-    result.trilinear_integer = pack_probe(rypath_image::lookup(
+    result.trilinear_integer = pack_probe(rypath_image::lookup_standard(
         textures[2], levels, texels, transfer, parameters, base, float2(0.25f, 0), float2(0)));
-    result.trilinear_middle = pack_probe(rypath_image::lookup(
+    result.trilinear_middle = pack_probe(rypath_image::lookup_standard(
         textures[2], levels, texels, transfer, parameters, base, fractional, float2(0)));
-    result.trilinear_black = pack_probe(rypath_image::lookup(
+    result.trilinear_black = pack_probe(rypath_image::lookup_standard(
         textures[3], levels, texels, transfer, parameters, base, fractional, float2(0)));
-    result.trilinear_coarse = pack_probe(rypath_image::lookup(
+    result.trilinear_coarse = pack_probe(rypath_image::lookup_standard(
         textures[3], levels, texels, transfer, parameters, outside, float2(0.5f, 0), float2(0)));
-    result.singleton_narrow = pack_probe(rypath_image::lookup(
+    result.singleton_narrow = pack_probe(rypath_image::lookup_standard(
         textures[4], levels, texels, transfer, parameters, float2(0, 0.5f), float2(0), float2(0)));
-    result.singleton_wide = pack_probe(rypath_image::lookup(
+    result.singleton_wide = pack_probe(rypath_image::lookup_standard(
         textures[4], levels, texels, transfer, parameters, outside, float2(0.5f, 0), float2(0)));
-    result.invalid_upper = pack_probe(rypath_image::lookup(
+    result.invalid_upper = pack_probe(rypath_image::lookup_standard(
         textures[5], levels, texels, transfer, parameters, base, fractional, float2(0)));
-    result.invalid_filter = pack_probe(rypath_image::lookup(
+    result.invalid_filter = pack_probe(rypath_image::lookup_standard(
         textures[6], levels, texels, transfer, parameters, base, float2(0.5f, 0), float2(0)));
     for (uint n = 0; n < probe::point_case_count; ++n) {
         const auto test = point_cases[n];
-        const auto color =
-            rypath_image::lookup(textures[test.texture], levels, texels, transfer, parameters,
-                                 float2(test.u, test.v), float2(test.half_width, 0), float2(0));
+        const auto color = rypath_image::lookup_standard(
+            textures[test.texture], levels, texels, transfer, parameters, float2(test.u, test.v),
+            float2(test.half_width, 0), float2(0));
         const float device_log_width =
             n == probe::point_lod_seam_case ? log(2.0f * test.half_width) : 0.0f;
         result.point[n] = pack_probe(color, device_log_width);
     }
+}
+
+kernel void rypath_ewa_texture_probe(const device wire::ImageTexture *textures [[buffer(1)]],
+                                     const device wire::TextureLevel *levels [[buffer(2)]],
+                                     const device uint *texels [[buffer(3)]],
+                                     const device float *transfer [[buffer(4)]],
+                                     constant wire::TextureParameters &parameters [[buffer(6)]],
+                                     device probe::Result *results [[buffer(7)]],
+                                     constant probe::EwaCase *cases [[buffer(9)]],
+                                     uint2 id [[thread_position_in_grid]]) {
+    const auto test = cases[id.x];
+    results[id.y].ewa[id.x] = pack_probe(rypath_image::lookup(
+        textures[test.texture], levels, texels, transfer, parameters, float2(test.u, test.v),
+        float2(test.dsdx, test.dtdx), float2(test.dsdy, test.dtdy)));
 }

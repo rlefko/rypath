@@ -16,6 +16,13 @@ struct PointCase {
 
 enum : unsigned { point_lod_seam_case = 30, point_case_count };
 
+struct EwaCase {
+    unsigned texture;
+    float u, v, dsdx, dtdx, dsdy, dtdy;
+};
+
+enum : unsigned { ewa_case_count = 39 };
+
 struct Result {
     Vector primary[2];
     Vector parallel;
@@ -43,10 +50,12 @@ struct Result {
     Vector invalid_upper;
     Vector invalid_filter;
     Vector point[point_case_count];
+    Vector ewa[ewa_case_count];
 };
 
-static_assert(sizeof(Result) == (33 + point_case_count) * sizeof(Vector) && sizeof(Vector) == 16 &&
-                  sizeof(PointCase) == 16,
+static_assert(sizeof(Result) == (33 + point_case_count + ewa_case_count) * sizeof(Vector) &&
+                  sizeof(Vector) == 16 && sizeof(PointCase) == 16 && sizeof(EwaCase) == 28 &&
+                  __builtin_offsetof(EwaCase, dsdx) == 12,
               "Texture probe result layout");
 
 } // namespace texture_probe

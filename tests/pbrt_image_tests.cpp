@@ -227,8 +227,7 @@ void failures(const fs::path &directory) {
         }
     }
     for (const auto field :
-         {R"("string encoding" "gamma 2.2")", R"("string filter" "ewa")",
-          R"("string filter" "EWA")", R"("string mapping" "planar" "vector3 v1" [1 0 0])",
+         {R"("string encoding" "gamma 2.2")", R"("string mapping" "planar" "vector3 v1" [1 0 0])",
           R"("string wrap" "octahedralsphere")"}) {
         const auto checked = check_image(std::string(image) + ' ' + field);
         require(checked.exit_code() == 2 && !checked.document.dependencies.front().visited,
@@ -237,7 +236,7 @@ void failures(const fs::path &directory) {
     }
     for (const auto field :
          {R"("string encoding" "gamma nonsense")", R"("string filter" "weird")",
-          R"("string filter" "Point")", R"("string filter" "")",
+          R"("string filter" "Point")", R"("string filter" "Ewa")", R"("string filter" "")",
           R"("string filter" ["point" "bilinear"])", R"("string mapping" "none")",
           R"("string wrap" "mirror")", R"("float vscale" [1 2])", R"("float udelta" 1e100)"}) {
         const auto checked = check_image(std::string(image) + ' ' + field);
@@ -273,14 +272,24 @@ Texture "paint" "float" "constant")");
     limits.image.retained_bytes = source_bytes + pyramid_bytes;
     const auto shared = check_image(std::string(image) + R"(
 Texture "point" "spectrum" "imagemap" "string filename" "color.png" "string filter" "point"
-Texture "trilinear" "spectrum" "imagemap" "string filename" "color.png" "string filter" "trilinear")",
+Texture "trilinear" "spectrum" "imagemap" "string filename" "color.png" "string filter" "trilinear"
+Texture "ewa" "spectrum" "imagemap" "string filename" "color.png" "string filter" "ewa"
+Texture "cap" "spectrum" "imagemap" "string filename" "color.png" "string filter" "EWA" "float maxanisotropy" 16)",
                                     limits);
     require(shared.exit_code() == 0 && shared.scene, report(shared));
     const auto &definitions = shared.scene->spectrum_image_textures;
-    require(definitions.size() == 3 &&
-                definitions[0].texture.image == definitions[1].texture.image &&
-                definitions[0].texture.image == definitions[2].texture.image,
-            "Point, bilinear and trilinear descriptors must share one pyramid at the byte limit");
+    require(definitions.size() == 5 &&
+                std::ranges::all_of(definitions,
+                                    [&](const auto &definition) {
+                                        return definition.texture.image ==
+                                               definitions.front().texture.image;
+                                    }),
+            "All filters and anisotropy caps must share one pyramid at the byte limit");
+    require(definitions[3].texture.filter == ImageFilter::ewa &&
+                definitions[3].texture.max_anisotropy == 8 &&
+                definitions[4].texture.filter == ImageFilter::ewa &&
+                definitions[4].texture.max_anisotropy == 16,
+            "EWA aliases must preserve the default and authored cap");
     const auto variant = check_image(std::string(image) + R"(
 Texture "another" "spectrum" "imagemap" "string filename" "color.png" "string encoding" "linear")",
                                      limits);
@@ -297,12 +306,13 @@ void filter_provenance(const fs::path &directory) {
 Texture "trilinear" "spectrum" "imagemap" "string filename" "color.png" "string filter" "trilinear"
 Texture "bilinear" "spectrum" "imagemap" "string filename" "color.png"
 Texture "point" "spectrum" "imagemap" "string filename" "color.png" "string filter" "point"
+Texture "ewa" "spectrum" "imagemap" "string filename" "color.png" "string filter" "EWA"
 MakeNamedMaterial "unused" "string type" "diffuse" "texture reflectance" "point"
 ObjectBegin "unused"
 NamedMaterial "unused"
 )" + std::string(triangle) + "ObjectEnd\n";
     constexpr std::array names{string_view{"trilinear"}, string_view{"bilinear"},
-                               string_view{"point"}};
+                               string_view{"point"}, string_view{"ewa"}};
     constexpr std::array expected{string_view{},
                                   string_view{"trilinear"},
                                   string_view{"bilinear"},
@@ -310,7 +320,15 @@ NamedMaterial "unused"
                                   string_view{"point"},
                                   string_view{"point and trilinear"},
                                   string_view{"point and bilinear"},
-                                  string_view{"point, bilinear and trilinear"}};
+                                  string_view{"point, bilinear and trilinear"},
+                                  string_view{"ewa"},
+                                  string_view{"trilinear and ewa"},
+                                  string_view{"bilinear and ewa"},
+                                  string_view{"bilinear, trilinear and ewa"},
+                                  string_view{"point and ewa"},
+                                  string_view{"point, trilinear and ewa"},
+                                  string_view{"point, bilinear and ewa"},
+                                  string_view{"point, bilinear, trilinear and ewa"}};
     for (std::size_t subset = 0; subset < expected.size(); ++subset) {
         auto source = definitions + std::string(triangle);
         for (std::size_t i = 0; i < names.size(); ++i) {
@@ -324,14 +342,78 @@ NamedMaterial "unused"
         write(path, source);
         auto scene = translate_scene(check(path), path, expected[subset]);
         if (subset == expected.size() - 1) {
-            require(scene.image_textures[2].image == scene.image_textures[0].image,
+            require(scene.image_textures[3].image == scene.image_textures[0].image,
                     "Translated descriptors must share their pyramid");
+            scene.image_textures[3].max_anisotropy = 0;
+            require(validate_render_scene(scene) ==
+                        "Image texture EWA maxanisotropy must be in [1, 16]",
+                    "A shared pyramid must not bypass EWA cap validation");
+            scene.image_textures[3].max_anisotropy = 8;
             // Reject a malformed later descriptor even after its pyramid has been validated.
             // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
             scene.image_textures[2].filter = static_cast<ImageFilter>(99);
             require(validate_render_scene(scene) == "Invalid image texture filter",
                     "A shared pyramid must not bypass descriptor filter validation");
         }
+    }
+}
+
+void ewa_parameters(const fs::path &directory) {
+    const auto path = directory / "ewa-parameters.pbrt";
+    const auto attributes = directory / "ewa-attrib.pbrt";
+    const auto source = std::string(options) + std::string(image) +
+                        "\nAttributeBegin\nInclude \"ewa-attrib.pbrt\"\n";
+    constexpr string_view definition =
+        R"(Texture "inherited" "spectrum" "imagemap" "string filename" "color.png")";
+    const auto write_scene = [&](string_view cap, string_view local) {
+        write(attributes,
+              std::string(R"(Attribute "texture" "string filter" "EWA" "float maxanisotropy" )") +
+                  std::string(cap) + '\n');
+        write(path,
+              source + std::string(definition) + std::string(local) +
+                  "\nAttributeEnd\nMaterial \"diffuse\" \"texture reflectance\" \"inherited\"\n" +
+                  std::string(triangle));
+    };
+    write_scene("1", "");
+    auto checked = check(path);
+    auto translated = translate_scene(checked, path, "ewa");
+    require(translated.image_textures[1].filter == ImageFilter::ewa &&
+                translated.image_textures[1].max_anisotropy == 1,
+            "EWA cap and filter inherit from a texture attribute");
+    write_scene("17", R"( "float maxanisotropy" 4)");
+    translated = translate_scene(check(path), path, "ewa");
+    require(translated.image_textures[1].max_anisotropy == 4,
+            "Local cap overrides an inherited unsupported value");
+    for (const auto filter : {"point", "bilinear", "trilinear"}) {
+        const auto local = std::string(R"( "string filter" ")") + filter + "\"";
+        for (const auto cap : {"-1e100", "1e100"}) {
+            write_scene(cap, local);
+            translated = translate_scene(check(path), path, filter);
+            require(translated.image_textures[1].max_anisotropy == 8,
+                    "Inert finite caps must not alter non-EWA descriptors");
+        }
+    }
+    for (const auto cap : {"0.999999999", "16.000000001", "1e300"}) {
+        write_scene(cap, "");
+        checked = check(path);
+        require(checked.exit_code() == 2 && !checked.scene &&
+                    checked.document.diagnostics.size() == 1,
+                report(checked));
+        const auto &issue = checked.document.diagnostics.front();
+        const auto column =
+            std::string_view(R"(Attribute "texture" "string filter" "EWA" "float maxanisotropy" )")
+                .size() +
+            1;
+        require(issue.code == "unsupported-feature" &&
+                    issue.message.find("EWA maxanisotropy") != std::string::npos &&
+                    *issue.location.file == attributes.string() && issue.location.line == 1 &&
+                    issue.location.column == column,
+                "Out-of-range inherited cap must diagnose the effective value token");
+    }
+    for (const auto cap : {"[1 2]", "1e999"}) {
+        write_scene(cap, "");
+        checked = check(path);
+        require(checked.exit_code() == 1 && !checked.scene, report(checked));
     }
 }
 
@@ -411,6 +493,7 @@ int main(int argc, char **argv) {
         bindings_and_frames(directory);
         failures(directory);
         filter_provenance(directory);
+        ewa_parameters(directory);
         translated_frames(directory);
         frame_limit(directory);
         return 0;

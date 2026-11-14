@@ -13,8 +13,8 @@ import unittest
 from unittest import mock
 
 from compare_pbrt import (
-    QUADRANTS, REGIONS, check_filter_sensitivity,
-    compare_regions, read_pfm, roi_means,
+    FILTER_CONTROLS, QUADRANTS, REGIONS, check_filter_sensitivity,
+    compare_regions, make_filter_variant, read_pfm, roi_means,
     render_replicates, stage_dependencies,
 )
 
@@ -176,9 +176,74 @@ class ComparisonTests(unittest.TestCase):
                     with self.subTest(filter_name=filter_name, count=count):
                         entry.write_bytes(f'"string filter" "{filter_name}"\n'.encode() * count)
                         with (mock.patch("compare_pbrt.render_pfm") as render,
-                              self.assertRaisesRegex(ValueError, f"expected one {filter_name} filter")):
+                              self.assertRaisesRegex(ValueError, 'expected one "string filter"')):
                             check_filter_sensitivity(scene, Path("rypath"), Path("pbrt"), root, {})
                         render.assert_not_called()
+
+    def test_ewa_controls_use_independent_variants_and_signed_first_seed_roi(self):
+        scene = "image-ewa"
+        self.assertEqual(REGIONS[scene], {"full": (0, 0, 8, 8), "ellipse": (4, 3, 5, 4)})
+        entries = {"rypath": "00", "pbrt": "16"}
+        source = (b'"string filter"\n  [ "ewa" ] # "string filter" "ewa"\n'
+                  b'"float maxanisotropy" [ 8 ] # "float maxanisotropy" [8]\n'
+                  rb'"string label" "escaped \"float maxanisotropy\" [8]"' b"\n")
+        variants = {
+            "trilinear": source.replace(b'[ "ewa" ]', b'[ "trilinear" ]'),
+            "ewa4": source.replace(b'[ 8 ]', b'[ 4 ]'),
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            measurements = {backend: {"ellipse": [(0, 0, 0), (1, 0, 0)]}
+                            for backend in entries}
+            for backend, seed in entries.items():
+                entry = root / scene / backend / f"{seed}.pbrt"
+                entry.parent.mkdir(parents=True)
+                seed_token = f'"integer seed" [{int(seed)}]\n'.encode()
+                entry.write_bytes(seed_token + source)
+
+            def render(backend, binary, variant, entry_source):
+                seed = entries[backend]
+                control = variant.stem.split("-", 1)[1]
+                self.assertEqual(binary, Path(backend))
+                self.assertEqual(variant, root / scene / backend / f"{seed}-{control}.pbrt")
+                self.assertEqual(entry_source, f'"integer seed" [{int(seed)}]\n'.encode() +
+                                 variants[control])
+                visited.add((backend, control))
+                red = -failing_margin if (backend, control) == failing_control else -0.03
+                return [(red if (x, y) == (4, 3) else -1, -1, -1)
+                        for y in range(8) for x in range(8)]
+
+            with (mock.patch("compare_pbrt.render_pfm", side_effect=render),
+                  contextlib.redirect_stdout(io.StringIO())):
+                for failing_control, failing_margin in (
+                    (None, 0), (("rypath", "trilinear"), 0.01),
+                    (("pbrt", "trilinear"), -0.05), (("rypath", "ewa4"), -0.05),
+                    (("pbrt", "ewa4"), 0.02),
+                ):
+                    with self.subTest(failing_control=failing_control, failing_margin=failing_margin):
+                        visited = set()
+                        self.assertEqual(check_filter_sensitivity(
+                            scene, Path("rypath"), Path("pbrt"), root, measurements,
+                        ), failing_control is None)
+                        self.assertEqual(visited, {(backend, control) for backend in entries
+                                                   for control in variants})
+
+    def test_ewa_control_rejects_missing_duplicate_or_wrong_parameters(self):
+        scene = "image-ewa"
+        trilinear, ewa4 = FILTER_CONTROLS[scene]
+        for control, source in (
+            (trilinear, b'# "string filter" "ewa"'),
+            (trilinear, b'"string filter" "ewa" "string  filter" "bilinear"'),
+            (trilinear, b'"string filter" ["ewa" "point"]'),
+            (trilinear, b'"string filter" "ewax"'),
+            (ewa4, b'# "float maxanisotropy" [8]'),
+            (ewa4, b'"float maxanisotropy" [8] "float maxanisotropy" [4]'),
+            (ewa4, b'"float maxanisotropy" [80]'),
+            (ewa4, b'"float maxanisotropy" [8'),
+        ):
+            with self.subTest(control=control.alternate_name, source=source):
+                with self.assertRaisesRegex(ValueError, "expected one"):
+                    make_filter_variant(scene, source, control)
 
     def test_rois_use_top_down_coordinates(self):
         pixels = [(x, y, 8 * y + x) for y in range(8) for x in range(8)]

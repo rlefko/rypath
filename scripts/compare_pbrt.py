@@ -7,11 +7,13 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 import struct
 import subprocess
 import sys
 import tempfile
+from typing import NamedTuple
 
 
 WIDTH = HEIGHT = 8
@@ -19,10 +21,40 @@ REPLICATES = 16
 FULL = (0, 0, WIDTH, HEIGHT)
 TRILINEAR_BLEND = (4, 3, 5, 5)
 POINT_NEAREST = (4, 3, 5, 5)
+EWA_ELLIPSE = (4, 3, 5, 4)
+
+
+class FilterControl(NamedTuple):
+    region: str
+    parameter: bytes
+    original_value: bytes
+    alternate_value: bytes
+    alternate_name: str
+    difference_name: str
+    original_increases_red: bool
+
+
 FILTER_CONTROLS = {
-    "image-trilinear": ("trilinear", "blend", True),
-    "image-point": ("point", "nearest", False),
+    "image-trilinear": (
+        FilterControl("blend", b'"string filter"', b'"trilinear"', b'"bilinear"',
+                      "bilinear", "bilinear-trilinear", False),
+    ),
+    "image-point": (
+        FilterControl("nearest", b'"string filter"', b'"point"', b'"bilinear"',
+                      "bilinear", "point-bilinear", True),
+    ),
+    "image-ewa": (
+        FilterControl("ellipse", b'"string filter"', b'"ewa"', b'"trilinear"',
+                      "trilinear", "ewa-trilinear", True),
+        FilterControl("ellipse", b'"float maxanisotropy"', b'8', b'4',
+                      "ewa4", "ewa8-ewa4", True),
+    ),
 }
+
+# Scan the fixed fixture entries without treating comments, escaped quotes, or
+# pieces of other values as parameter tokens.
+PBRT_TOKEN = re.compile(rb'#[^\r\n]*|"(?:\\.|[^"\\])*"|[\[\]]|[^\s"#\[\]]+')
+
 QUADRANTS = {
     "full": FULL,
     "top-left": (0, 0, 4, 4),
@@ -69,6 +101,7 @@ REGIONS = {
     "image-secondary": QUADRANTS,
     "image-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
     "image-point": {"full": FULL, "nearest": POINT_NEAREST},
+    "image-ewa": {"full": FULL, "ellipse": EWA_ELLIPSE},
     "blackbody-background": {"full": FULL},
     "blackbody-area": QUADRANTS,
     "blackbody-mixed": QUADRANTS,
@@ -195,29 +228,48 @@ def compare_regions(scene, measurements):
     return passed
 
 
+def make_filter_variant(scene, source, control):
+    tokens = [token for token in PBRT_TOKEN.finditer(source) if not token[0].startswith(b"#")]
+    parameter_words = control.parameter[1:-1].split()
+    indices = [i for i, token in enumerate(tokens)
+               if token[0].startswith(b'"') and token[0][1:-1].split() == parameter_words]
+    expected = (f"{scene}: expected one {control.parameter.decode()} "
+                f"with value {control.original_value.decode()}")
+    if len(indices) != 1 or indices[0] + 1 == len(tokens):
+        raise ValueError(expected)
+    value_index = indices[0] + 1
+    if tokens[value_index][0] == b"[":
+        value_index += 1
+        if value_index + 1 >= len(tokens) or tokens[value_index + 1][0] != b"]":
+            raise ValueError(expected)
+    value = tokens[value_index]
+    if value[0] != control.original_value:
+        raise ValueError(expected)
+    return source[:value.start()] + control.alternate_value + source[value.end():]
+
+
 def check_filter_sensitivity(scene, rypath, pbrt, run_dir, measurements):
-    filter_name, region, bilinear_increases_red = FILTER_CONTROLS[scene]
-    filter_token = f'"string filter" "{filter_name}"'.encode()
-    difference_name = f"bilinear-{filter_name}" if bilinear_increases_red else f"{filter_name}-bilinear"
+    controls = FILTER_CONTROLS[scene]
     minimum = 0.02
     passed = True
     for backend, binary, seed in (("rypath", rypath, 0), ("pbrt", pbrt, REPLICATES)):
         backend_dir = run_dir / scene / backend
         source = (backend_dir / f"{seed:02}.pbrt").read_bytes()
-        if source.count(filter_token) != 1:
-            raise ValueError(f"{scene}: expected one {filter_name} filter for the control")
-        bilinear = render_pfm(
-            backend, binary, backend_dir / f"{seed:02}-bilinear.pbrt",
-            source.replace(filter_token, b'"string filter" "bilinear"', 1),
-        )
-        bilinear_red = roi_means(bilinear, REGIONS[scene][region])[0]
-        original_red = measurements[backend][region][0][0]
-        delta = bilinear_red - original_red if bilinear_increases_red else original_red - bilinear_red
-        ok = delta > minimum
-        passed &= ok
-        status = "PASS" if ok else "FAIL"
-        print(f"{status} {scene} {region} R  {backend} {difference_name}={delta:.4g} "
-              f"minimum={minimum:.4g}")
+        variants = [make_filter_variant(scene, source, control) for control in controls]
+        for control, variant in zip(controls, variants):
+            pixels = render_pfm(
+                backend, binary, backend_dir / f"{seed:02}-{control.alternate_name}.pbrt", variant,
+            )
+            alternate_red = roi_means(pixels, REGIONS[scene][control.region])[0]
+            original_red = measurements[backend][control.region][0][0]
+            delta = original_red - alternate_red
+            if not control.original_increases_red:
+                delta = -delta
+            ok = delta > minimum
+            passed &= ok
+            status = "PASS" if ok else "FAIL"
+            print(f"{status} {scene} {control.region} R  {backend} {control.difference_name}={delta:.4g} "
+                  f"minimum={minimum:.4g}")
     return passed
 
 

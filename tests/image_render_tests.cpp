@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "ewa_reference.hpp"
 #include "metal_render.hpp"
 #include "rgb_spectrum.hpp"
 
@@ -366,8 +367,100 @@ void point() {
     }
 }
 
+void ewa() {
+    DecodedImage pixels{8, 8, {}};
+    for (unsigned y = 0; y < 8; ++y) {
+        for (unsigned x = 0; x < 8; ++x) {
+            pixels.rgb.insert(pixels.rgb.end(),
+                              {static_cast<std::uint8_t>(y == 2 || y == 3 ? 240 : 20),
+                               static_cast<std::uint8_t>(x == 2 || x == 3 ? 180 : 40),
+                               static_cast<std::uint8_t>(50 * ((x + 2 * y) % 5))});
+        }
+    }
+    auto scene = textured_plane(pixels, ImageEncoding::srgb, true, 48);
+    scene.geometry.instances.front().transform.values[3] = 2;
+    // Every float camera sample rounds to the pixel center. Analytic primary
+    // differentials are independent of the randomly sampled path wavelength.
+    scene.filter = {PixelFilterKind::triangle, 0x1p-27f, 0x1p-27f};
+    auto &texture = scene.image_textures.front();
+    texture.vscale = 2;
+    texture.udelta = -11.71875f;
+    texture.vdelta = -0.421875f;
+    texture.scale = 1.2f;
+    texture.invert = true;
+    auto elliptical = texture;
+    elliptical.filter = ImageFilter::ewa;
+    elliptical.max_anisotropy = 8;
+    scene.image_textures.push_back(elliptical);
+    auto limited = elliptical;
+    limited.max_anisotropy = 4;
+    scene.image_textures.push_back(limited);
+
+    // At the center ray (0,0,1), the two offset normalized pinhole rays
+    // intersect z=2 after their 1/8 differential scaling at these offsets.
+    const double dp = 2 / (7 * std::sqrt(2.) + 1);
+    const auto rgb =
+        test::ewa_reference(*elliptical.image, 0.28125, 0.421875, 6 * dp, 0, 0, -0.25 * dp, 8);
+    Rgb expected_rgb{};
+    for (std::size_t c = 0; c < 3; ++c) {
+        expected_rgb[c] = static_cast<float>(std::clamp(1 - 1.2 * rgb[c], 0., 1.));
+    }
+    constexpr RenderRequest request{.width = 1,
+                                    .height = 1,
+                                    .seed = seed,
+                                    .pixel_count = 1,
+                                    .sample_count = 512,
+                                    .total_samples = 512};
+    for (bool patch : {false, true}) {
+        if (patch) {
+            auto &mesh = scene.geometry.meshes.front();
+            mesh.triangles.clear();
+            mesh.patches = {{0, 1, 2, 3}};
+            scene.instance_texture_frames.front().clear();
+        }
+        scene.materials.front().image_texture = 1;
+        const auto actual = sample(*build(scene), request);
+        scene.materials.front().image_texture = 2;
+        const auto capped = sample(*build(scene), request);
+        scene.materials.front().image_texture = 0;
+        scene.image_textures.front().filter = ImageFilter::trilinear;
+        const auto isotropic = sample(*build(scene), request);
+        auto uniform = scene;
+        uniform.image_textures.clear();
+        uniform.instance_texture_frames.clear();
+        uniform.materials.front() = rgb_material(expected_rgb);
+        const auto expected = sample(*build(uniform), request);
+        uniform.materials.front() = rgb_material({1, 1, 1});
+        const auto white = sample(*build(uniform), request);
+        double error = 0, filter_difference = 0, cap_difference = 0;
+        for (std::size_t i = 0; i < actual.samples.size(); ++i) {
+            const auto &a = actual.samples[i];
+            same_path(a, expected.samples[i]);
+            same_path(a, white.samples[i]);
+            same_path(a, capped.samples[i]);
+            same_path(a, isotropic.samples[i]);
+            const double delta = std::abs(double{a.radiance} - expected.samples[i].radiance);
+            require(delta <= 1e-7 + 3e-5 * white.samples[i].radiance,
+                    "EWA transport disagrees with the independent RGB control");
+            error = std::max(error, delta);
+            filter_difference = std::max(
+                filter_difference, std::abs(double{a.radiance} - isotropic.samples[i].radiance));
+            cap_difference =
+                std::max(cap_difference, std::abs(double{a.radiance} - capped.samples[i].radiance));
+        }
+        require(filter_difference > 0.02 && cap_difference > 0.02,
+                "EWA transport must distinguish isotropic filtering and anisotropy limits");
+        std::cout << (patch ? "Patch" : "Triangle") << " EWA maximum path error " << error
+                  << ", trilinear difference " << filter_difference << ", anisotropy difference "
+                  << cap_difference << '\n';
+    }
+}
+
 void filtered_secondary(ImageFilter filter) {
     auto scene = textured_plane(varying_pixels(), ImageEncoding::srgb, true, 24);
+    if (filter == ImageFilter::ewa) {
+        scene.image_textures.front().vscale = 3;
+    }
     // Camera rays see the white front plane at z=2. Only an indirect ray
     // can hit the textured panel behind the camera.
     scene.max_depth = 2;
@@ -409,7 +502,10 @@ void filtered_secondary(ImageFilter filter) {
     }
     require(secondary_paths > 100 && changed_secondary_paths > 100 && difference > 0.01,
             "Secondary texture fixture did not distinguish the selected filter");
-    std::cout << "Secondary " << (filter == ImageFilter::point ? "point" : "trilinear")
+    std::cout << "Secondary "
+              << (filter == ImageFilter::point ? "point"
+                  : filter == ImageFilter::ewa ? "EWA"
+                                               : "trilinear")
               << " changed " << changed_secondary_paths << " of " << secondary_paths
               << " two-hit paths by more than 0.001, maximum " << difference << '\n';
 }
@@ -457,11 +553,16 @@ Film progressive(const RenderScene &scene, const RenderSettings &settings) {
 
 void batch_partition() {
     auto scene = textured_plane(varying_pixels(), ImageEncoding::linear, true, 40);
-    for (const auto filter : {ImageFilter::bilinear, ImageFilter::trilinear, ImageFilter::point}) {
+    for (const auto filter :
+         {ImageFilter::bilinear, ImageFilter::trilinear, ImageFilter::point, ImageFilter::ewa}) {
         scene.image_textures.front().filter = filter;
         const float mapping = filter == ImageFilter::trilinear ? 160 : 40;
         scene.image_textures.front().uscale = mapping;
         scene.image_textures.front().vscale = mapping;
+        if (filter == ImageFilter::ewa) {
+            scene.image_textures.front().uscale = 160;
+            scene.image_textures.front().vscale = 12;
+        }
         // 2,048 pixels times 65 samples exceeds the 65,536-path dispatch limit.
         RenderSettings settings{
             .width = 64, .height = 32, .samples = 65, .batch_size = 65, .seed = seed};
@@ -481,7 +582,7 @@ void batch_partition() {
                               .sample_count = 1,
                               .total_samples = 65};
         const auto fine = sample(*renderer, request);
-        if (filter == ImageFilter::trilinear) {
+        if (filter == ImageFilter::trilinear || filter == ImageFilter::ewa) {
             auto control_scene = scene;
             control_scene.image_textures.front().filter = ImageFilter::bilinear;
             const auto single_level = sample(*build(control_scene), request);
@@ -491,7 +592,7 @@ void batch_partition() {
                             return std::abs(s.radiance - single_level.samples[s.pixel].radiance) >
                                    1e-3f;
                         }),
-                    "Trilinear batch fixture must blend mips at its fixed sample budget");
+                    "Filtered batch fixture must differ from bilinear at its fixed budget");
         }
         request.total_samples = 1;
         const auto coarse = sample(*renderer, request);
@@ -571,6 +672,22 @@ void validation() {
     auto demo = make_demo_scene();
     demo.image_textures.emplace_back();
     invalid(demo, "Image textures require PBRT");
+
+    auto overflow = valid;
+    overflow.filter = {PixelFilterKind::triangle, 0x1p-27f, 0x1p-27f};
+    auto &texture = overflow.image_textures.front();
+    texture.filter = ImageFilter::ewa;
+    texture.uscale = 3e38f;
+    texture.udelta = 3e38f;
+    texture.vscale = 0;
+    // The exact-center footprint has a zero minor axis: it needs base lookup
+    // and cannot use the center-independent wide-footprint shortcut.
+    const auto failed = render_progressive(
+        overflow, {.width = 1, .height = 1, .samples = 8, .batch_size = 8, .seed = seed});
+    require(failed.status == GeometryStatus::failure &&
+                failed.diagnostic.find("arithmetic") != std::string::npos &&
+                failed.film.pixels.size() == 1 && failed.film.pixels.front().count == 0,
+            "EWA arithmetic failure committed a partial or substituted sample batch");
 }
 
 } // namespace
@@ -598,8 +715,10 @@ int main(int argc, char **argv) {
         bilinear(*native.scene);
         trilinear();
         point();
+        ewa();
         filtered_secondary(ImageFilter::trilinear);
         filtered_secondary(ImageFilter::point);
+        filtered_secondary(ImageFilter::ewa);
         coarsest_mip();
         batch_partition();
         translated_footprint();

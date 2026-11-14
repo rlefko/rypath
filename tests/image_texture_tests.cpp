@@ -2,6 +2,8 @@
 
 #include "image_texture.hpp"
 
+#include "ewa_reference.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -520,6 +522,96 @@ void point_lookup() {
             "Point lookup accepted a nonfinite mapped coordinate");
 }
 
+void ewa_lookup() {
+    using Rgb = std::array<float, 3>;
+    ImagePyramid image{ImageEncoding::srgb,
+                       ImageWrap::repeat,
+                       {{16, 4, 0}, {8, 2, 64}, {4, 1, 80}, {2, 1, 84}, {1, 1, 86}},
+                       std::vector<std::uint32_t>(87)};
+    for (unsigned i = 0; i < image.texels.size(); ++i) {
+        image.texels[i] = (i * 0x03182fu) & 0xffffffu;
+    }
+    constexpr float huge = std::numeric_limits<float>::max();
+    constexpr float tiny = std::numeric_limits<float>::min();
+    struct Case {
+        ImageWrap wrap;
+        float s;
+        float t;
+        float dsdx;
+        float dtdx;
+        float dsdy;
+        float dtdy;
+        float cap;
+        std::string_view label;
+    };
+    const std::array cases{
+        Case{ImageWrap::repeat, 0.283f, 0.41f, 0.019f, 0.037f, 0.46f, -0.21f, 8, "axis order"},
+        Case{ImageWrap::repeat, 0.283f, 0.41f, 0.46f, -0.21f, 0.019f, 0.037f, 3, "cap"},
+        Case{ImageWrap::repeat, -0.041f, 1.125f, 0.31f, -0.26f, 0.043f, -0.036f, 16,
+             "negative center and nearly collinear axes"},
+        Case{ImageWrap::repeat, 0.223f, 0.58f, 0.375f, -0.125f, 0.09375f, -0.03125f, 8,
+             "collinear nonzero axes"},
+        Case{ImageWrap::repeat, 0.223f, 0.58f, 0.375f, -0.125f, 0, 0, 8, "zero minor"},
+        Case{ImageWrap::repeat, 0.459f, 0.722f, 0.03f, 0.05f, -0.016f, 0.014f, 8, "LOD zero"},
+        Case{ImageWrap::repeat, 0.283f, 0.41f, 0.23f, 0.07f, 0, -0.087f, 8, "first LOD blend"},
+        Case{ImageWrap::repeat, -65.12890625f, 71.87890625f, 0.23f, 0.07f, 0, -0.087f, 8,
+             "signed distant repeat phase"},
+        Case{ImageWrap::clamp, -65.12890625f, 0.519f, 0.23f, 0.07f, 0, -0.087f, 8,
+             "distant low clamp phase"},
+        Case{ImageWrap::clamp, 65.12890625f, 0.519f, 0.23f, 0.07f, 0, -0.087f, 8,
+             "distant high clamp phase"},
+        Case{ImageWrap::clamp, 1.03f, 0.519f, 0.23f, 0.07f, 0, -0.087f, 8, "near clamp edge"},
+        Case{ImageWrap::black, -0.11f, 0.476f, 0.23f, 0.07f, 0, -0.087f, 8, "black overlap"},
+        Case{ImageWrap::black, -3.0f, 0.476f, 0.23f, 0.07f, 0, -0.087f, 8, "black outside"},
+        Case{ImageWrap::black, huge, -huge, 0.23f, 0.07f, 0, -0.087f, 8, "black huge"},
+        Case{ImageWrap::clamp, huge, 0.37f, 0.23f, 0.07f, 0, -0.087f, 8, "clamp huge"},
+        Case{ImageWrap::repeat, huge, -huge, 0.23f, 0.07f, 0, -0.087f, 8, "repeat huge"},
+        Case{ImageWrap::black, -0.165f, 0.291f, 8.0f, 0.3f, 0, -1.0f, 16, "actual top"},
+        Case{ImageWrap::black, -0.165f, 0.291f, 8.0f, 0.3f, 0, -1.44f, 16, "top blend"},
+        Case{ImageWrap::black, huge, huge, 0, -2.0f, 4.0f, 0, 8, "wide boundary"},
+        Case{ImageWrap::black, huge, huge, huge, -huge, tiny, tiny, 16, "wide overflow guard"},
+        Case{ImageWrap::black, 0.223f, 0.58f, huge, -huge, 0, 0, 16, "zero before wide"},
+        Case{ImageWrap::repeat, 0.43f, 0.53f, 0.46f, -0.21f, -tiny, tiny, 8, "cap with tiny minor"},
+    };
+    for (const auto &test : cases) {
+        image.wrap = test.wrap;
+        const auto got = image_linear_rgb(image, test.s, test.t, test.dsdx, test.dtdx, test.dsdy,
+                                          test.dtdy, ImageFilter::ewa, test.cap);
+        const auto expected = rypath::test::ewa_reference(
+            image, test.s, test.t, test.dsdx, test.dtdx, test.dsdy, test.dtdy, test.cap);
+        if (!got) {
+            throw std::runtime_error(std::string(test.label));
+        }
+        const auto actual = *got;
+        for (std::size_t c = 0; c < expected.size(); ++c) {
+            require(std::abs(actual[c] - expected[c]) <= 2e-6, test.label);
+        }
+    }
+    const ImagePyramid singleton{ImageEncoding::linear, ImageWrap::black, {{1, 1, 0}}, {0x0000ff}};
+    const auto sample = [&](float minor) {
+        return image_linear_rgb(singleton, -8.0f, 0.5f, 2.0f, 0, 0, minor, ImageFilter::ewa);
+    };
+    require(sample(0.5f) == Rgb{} && sample(1.0f) == Rgb{} && sample(2.0f) == Rgb{1, 0, 0},
+            "Black 1x1 EWA must only bypass wrapping past the final mip");
+    const auto half = sample(std::numbers::sqrt2_v<float>);
+    require(half && std::abs((*half)[0] - 0.5f) <= 2e-6f,
+            "The final black EWA mip must blend with the direct wide return");
+    auto malformed = image;
+    malformed.levels[1].height = 4;
+    require(!image_linear_rgb(malformed, 0.25f, 0.5f, 0.06f, 0, 0, 0.04f, ImageFilter::ewa),
+            "A malformed adjacent mip must fail even when its blend weight is zero");
+    malformed = image;
+    malformed.levels.back().width = 2;
+    require(!image_linear_rgb(malformed, 0.25f, 0.5f, 2, 0, 0, 2, ImageFilter::ewa),
+            "A direct wide EWA lookup must validate the top dimensions");
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    require(!image_linear_rgb(image, 0, 0, 1, inf, 0, 1, ImageFilter::ewa) &&
+                !image_linear_rgb(image, inf, 0, 1, 0, 0, 1, ImageFilter::ewa) &&
+                !image_linear_rgb(image, 0, 0, 1, 0, 0, 1, ImageFilter::ewa, nan),
+            "EWA must reject nonfinite needed inputs");
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -532,6 +624,7 @@ int main(int argc, char *argv[]) {
         lookup();
         trilinear_lookup();
         point_lookup();
+        ewa_lookup();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
