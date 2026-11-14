@@ -192,6 +192,11 @@ against a background. Index depth controls packing, not color precision; these
 inputs share the eight-bit mip and filtering path. See
 [indexed PNG validation](indexed-texture-validation.md).
 
+Packed 1-, 2-, and 4-bit grayscale expands to RGB8 before the selected transfer
+function. All grayscale samples retain their value, including those matching a
+transparency key. These sources share the eight-bit mip and filtering path; see
+[grayscale validation](grayscale-texture-validation.md).
+
 Eight-bit sources retain encoded-byte mip storage. Sixteen-bit samples are
 normalized by `65535.f`, decoded with the selected transfer function, and rounded
 to binary16 before resampling, following pinned PBRT. The sRGB path uses its

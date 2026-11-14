@@ -107,8 +107,9 @@ I/O and enforce the same profile on Linux and macOS. The static build disables
 the encoder, disk I/O, C++ wrapper, and ancillary metadata decoding. A local
 extension caps work at 65,536 DEFLATE blocks per stream. The reader also checks
 image dimensions, decompressed scanline size, scratch memory, and aggregate
-retained image payloads. The accepted input subset is noninterlaced 8-bit or 16-bit
-grayscale, grayscale with alpha, RGB, and RGBA, plus indexed color at 1/2/4/8 bits.
+retained image payloads. The accepted input subset is noninterlaced grayscale
+at 1/2/4/8/16 bits, grayscale with alpha/RGB/RGBA at 8/16 bits, and indexed
+color at 1/2/4/8 bits. Packed grayscale expands to RGB8 using the decoder.
 The adapter validates packed palette indices before RGB8 expansion. Alpha and
 color metadata are ignored for diffuse reflectance. The [LodePNG record](../third_party/lodepng/README.md)
 retains the source pin, hashes, modifications, and license.
