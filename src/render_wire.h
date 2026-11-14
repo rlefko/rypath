@@ -22,6 +22,7 @@ enum : Word {
     bilinear_texture_filter = 0,
     trilinear_texture_filter = 1,
     point_texture_filter = 2,
+    ewa_texture_filter = 3,
 };
 enum : Word { independent_sampler = 0, sobol_sampler = 1 };
 enum : Word {
@@ -65,6 +66,7 @@ struct ImageTexture {
     float scale;
     Word invert;
     Word filter;
+    float max_anisotropy;
 };
 struct TextureParameters {
     Word texture_count;
@@ -172,9 +174,10 @@ static_assert(sizeof(Patch) == 16 && alignof(Patch) == 4, "render patch layout")
 static_assert(sizeof(Point2) == 8 && alignof(Point2) == 4, "texture coordinate layout");
 static_assert(sizeof(TextureFrame) == 24 && alignof(TextureFrame) == 4, "texture frame layout");
 static_assert(sizeof(TextureLevel) == 12 && alignof(TextureLevel) == 4, "texture level layout");
-static_assert(sizeof(ImageTexture) == 44 && alignof(ImageTexture) == 4 &&
+static_assert(sizeof(ImageTexture) == 48 && alignof(ImageTexture) == 4 &&
                   __builtin_offsetof(ImageTexture, uscale) == 16 &&
-                  __builtin_offsetof(ImageTexture, filter) == 40,
+                  __builtin_offsetof(ImageTexture, filter) == 40 &&
+                  __builtin_offsetof(ImageTexture, max_anisotropy) == 44,
               "image texture layout");
 static_assert(sizeof(TextureParameters) == 120 && alignof(TextureParameters) == 4 &&
                   __builtin_offsetof(TextureParameters, world_from_camera) == 24 &&

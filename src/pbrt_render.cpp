@@ -1037,9 +1037,9 @@ std::string image_filter_provenance(const RenderScene &scene) {
         string_view name;
         bool used = false;
     };
-    std::array modes{FilterMode{ImageFilter::point, "point"},
-                     FilterMode{ImageFilter::bilinear, "bilinear"},
-                     FilterMode{ImageFilter::trilinear, "trilinear"}};
+    std::array modes{
+        FilterMode{ImageFilter::point, "point"}, FilterMode{ImageFilter::bilinear, "bilinear"},
+        FilterMode{ImageFilter::trilinear, "trilinear"}, FilterMode{ImageFilter::ewa, "ewa"}};
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
         const auto &material = scene.materials[scene.instance_materials[i]];
         const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];

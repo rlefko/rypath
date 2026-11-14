@@ -3,7 +3,7 @@
 ## Image texture adaptations
 
 At the same pinned revision below, `src/image_texture.cpp` adapts PNG transfer
-curves, resampling, pyramid generation, and point/bilinear/trilinear mip lookup from
+curves, resampling, pyramid generation, and point/bilinear/trilinear/EWA mip lookup from
 [image.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/image.cpp),
 [color.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/color.cpp),
 and [mipmap.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/mipmap.cpp).
@@ -11,6 +11,9 @@ and [mipmap.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932
 and the RGB-to-spectrum lookup to packed Metal buffers. It follows
 [textures.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/textures.cpp),
 `mipmap.cpp`, and the sRGB reconstruction sources below.
+`src/ewa_weights.h` retains the pinned 128-entry EWA weight table for both
+backends. Stable covariance arithmetic and bounded coordinate handling are
+rypath numerical adaptations described in the [EWA record](../../docs/ewa-texture-validation.md).
 
 `src/texture_footprint.cpp` and `shaders/texture_footprint.h` adapt pinhole
 differentials, triangle and bilinear partials, and the UV derivative solve.

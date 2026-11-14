@@ -3,6 +3,7 @@
 // Modified for rypath. See third_party/pbrt/README.md.
 #pragma once
 
+#include "../src/ewa_weights.h"
 #include "../src/render_wire.h"
 #include <metal_stdlib>
 
@@ -35,10 +36,10 @@ static bool valid_level(const device wire::TextureLevel &level, uint texel_count
            ulong(level.width) * level.height <= texel_count - level.offset;
 }
 
-static float3 bilinear(const device wire::ImageTexture &texture,
-                       const device wire::TextureLevel &level, const device wire::Word *texels,
-                       const device float *transfer, float2 st) {
-    const float2 xy = st * float2(level.width, level.height) - 0.5f;
+static float3 bilinear_texels(const device wire::ImageTexture &texture,
+                              const device wire::TextureLevel &level,
+                              const device wire::Word *texels, const device float *transfer,
+                              float2 xy) {
     const int2 base = int2(floor(xy));
     const float2 d = xy - float2(base);
     const float3 a = texel(texels, transfer, level, base.x, base.y, texture.wrap, texture.encoding);
@@ -50,6 +51,13 @@ static float3 bilinear(const device wire::ImageTexture &texture,
         texel(texels, transfer, level, base.x + 1, base.y + 1, texture.wrap, texture.encoding);
     return (1.0f - d.x) * (1.0f - d.y) * a + d.x * (1.0f - d.y) * b + (1.0f - d.x) * d.y * c +
            d.x * d.y * e;
+}
+
+static float3 bilinear(const device wire::ImageTexture &texture,
+                       const device wire::TextureLevel &level, const device wire::Word *texels,
+                       const device float *transfer, float2 st) {
+    return bilinear_texels(texture, level, texels, transfer,
+                           st * float2(level.width, level.height) - 0.5f);
 }
 
 static float2 point_mapping(float2 uv, float2 scale, float2 offset) {
@@ -81,14 +89,227 @@ static int point_coordinate(float st, float dimension, uint wrap) {
     return int(index);
 }
 
-static float3 lookup(const device wire::ImageTexture &texture,
-                     const device wire::TextureLevel *levels, const device wire::Word *texels,
-                     const device float *transfer, constant wire::TextureParameters &p, float2 uv,
-                     float2 dx, float2 dy) {
+static bool valid_ewa_level(const device wire::TextureLevel &level, uint texel_count,
+                            uint levels_above) {
+    return valid_level(level, texel_count) && (level.width & (level.width - 1u)) == 0u &&
+           (level.height & (level.height - 1u)) == 0u &&
+           max(level.width, level.height) == (1u << levels_above);
+}
+
+static float ewa_center(float st, float dimension, uint wrap) {
+#pragma clang fp contract(off)
+    if (abs(st) <= 64.0f || wrap == 2u)
+        return st * dimension - 0.5f;
+    const float phase = fmod(st, 1.0f) * dimension;
+    if (wrap == 0u)
+        return phase - 0.5f;
+    // Keep distant clamp taps on the same edge and preserve subtexel phase.
+    return (st < 0.0f ? -64.0f : dimension + 64.0f) + phase - 0.5f;
+}
+
+static bool ewa_black_disjoint(float2 st, float2 dimensions, float2 radius) {
+    // Work in UV space for large coordinates where conversion to texel space
+    // could overflow. The ordinary-coordinate test uses the integer tap bounds.
+    return any((abs(st) > 64.0f) & ((st < (0.5f - radius) / dimensions) |
+                                    (st > (dimensions - 0.5f + radius) / dimensions)));
+}
+
+static float cross2(float2 a, float2 b) { return a.x * b.y - a.y * b.x; }
+
+static uint magnitude_bits(float value) { return as_type<uint>(value) & 0x7fffffffu; }
+
+static bool subnormal_bits(uint magnitude) { return magnitude != 0u && magnitude < 0x00800000u; }
+
+static float ewa_product(float value, float scale) {
+    const float mapped = value * scale;
+    const uint a = magnitude_bits(value), b = magnitude_bits(scale);
+    if (a == 0u || b == 0u ||
+        (magnitude_bits(mapped) != 0u && !subnormal_bits(a) && !subnormal_bits(b)))
+        return mapped;
+
+    // Metal may flush binary32 subnormals even with fast math disabled. Only
+    // denormal operands and products flushed to zero need exact reconstruction.
+    const int a_exp = int(a >> 23), b_exp = int(b >> 23);
+    const uint a_sig = (a & 0x007fffffu) | (a_exp == 0 ? 0u : 0x00800000u);
+    const uint b_sig = (b & 0x007fffffu) | (b_exp == 0 ? 0u : 0x00800000u);
+    const ulong product = ulong(a_sig) * b_sig;
+    const int exponent = max(1, a_exp) + max(1, b_exp) - 300;
+    const int leading = 63 - int(clz(product));
+    const uint sign = (as_type<uint>(value) ^ as_type<uint>(scale)) & 0x80000000u;
+    if (exponent + leading > 127)
+        return as_type<float>(sign | 0x7f800000u);
+    const int shift = max(leading - 23, -149 - exponent);
+    if (shift > 48)
+        return as_type<float>(sign);
+    uint rounded;
+    if (shift <= 0) {
+        rounded = uint(product << -shift);
+    } else {
+        const ulong halfway = 1ul << (shift - 1);
+        const ulong truncated = product >> shift;
+        // Round to nearest with ties to even before encoding. The significand
+        // carry advances the packed exponent at normal and denormal seams.
+        rounded = uint((product + halfway - 1ul + (truncated & 1ul)) >> shift);
+    }
+    return as_type<float>(sign | ((uint(exponent + shift + 149) << 23) + rounded));
+}
+
+static float lift_derivative(float value) {
+    const uint magnitude = magnitude_bits(value);
+    if (subnormal_bits(magnitude))
+        return copysign(float(magnitude) * 0x1p-125f, value);
+    return value * 0x1p24f;
+}
+
+static float3 ewa_level(const device wire::ImageTexture &texture,
+                        const device wire::TextureLevel &level, const device wire::Word *texels,
+                        const device float *transfer, float2 st, float2 dx, float2 dy) {
+    const float2 dimensions(level.width, level.height);
+    const float2 u = dx * dimensions, v = dy * dimensions;
+    const float area = cross2(u, v);
+    // The footprint covariance is I + uuᵀ + vvᵀ. The determinant and adjugate
+    // quadratic below avoid cancellation for nearly collinear derivatives.
+    const float determinant = 1.0f + dot(u, u) + dot(v, v) + area * area;
+    const float2 radius = sqrt(1.0f + u * u + v * v);
+    if (texture.wrap == 2u && ewa_black_disjoint(st, dimensions, radius))
+        return float3(0);
+    const float2 center(ewa_center(st.x, dimensions.x, texture.wrap),
+                        ewa_center(st.y, dimensions.y, texture.wrap));
+    const float2 begin = ceil(center - radius), end = floor(center + radius);
+    // Bound conversions and loop work before converting floating tap bounds.
+    // The supported cap and mip selection require at most 2152 candidates.
+    const float2 count = end - begin + 1.0f;
+    if (!all(isfinite(begin)) || !all(isfinite(end)) || any(abs(begin) > 0x1p19f) ||
+        any(abs(end) > 0x1p19f) || any(count <= 0.0f) || count.x * count.y > 4096.0f)
+        return float3(NAN);
+    if (texture.wrap == 2u && (any(end < 0.0f) || any(begin >= dimensions)))
+        return float3(0);
+    const int2 first = int2(begin), last = int2(end);
+    float3 sum(0);
+    float weight_sum = 0;
+#pragma clang loop unroll(disable)
+    for (int y = first.y; y <= last.y; ++y) {
+#pragma clang loop unroll(disable)
+        for (int x = first.x; x <= last.x; ++x) {
+            const float2 d = float2(x, y) - center;
+            const float a = cross2(u, d), b = cross2(v, d);
+            const float r2 = (dot(d, d) + a * a + b * b) / determinant;
+            if (r2 < 1.0f) {
+                const float weight = rypath_ewa::weights[min(uint(128.0f * r2), 127u)];
+                sum +=
+                    weight * texel(texels, transfer, level, x, y, texture.wrap, texture.encoding);
+                weight_sum += weight;
+            }
+        }
+    }
+    return isfinite(weight_sum) && weight_sum > 0.0f ? sum / weight_sum : float3(NAN);
+}
+
+static float3 ewa(const device wire::ImageTexture &texture, const device wire::TextureLevel *levels,
+                  const device wire::Word *texels, const device float *transfer, uint texel_count,
+                  float2 uv, float2 dx, float2 dy) {
+#pragma clang fp contract(off)
+    const float cap = texture.max_anisotropy;
+    const float2 axis_scale(texture.uscale, texture.vscale), offset(texture.udelta, texture.vdelta);
+    if (texture.level_count > 13u || texture.wrap > 2u || texture.encoding > 1u ||
+        !(cap >= 1.0f && cap <= 16.0f) || !all(isfinite(axis_scale)) || !all(isfinite(offset)))
+        return float3(NAN);
+    dx = float2(ewa_product(dx.x, axis_scale.x), ewa_product(dx.y, axis_scale.y));
+    dy = float2(ewa_product(dy.x, axis_scale.x), ewa_product(dy.y, axis_scale.y));
+    if (!all(isfinite(dx)) || !all(isfinite(dy)))
+        return float3(NAN);
+    const uint top = texture.level_count - 1u;
+    const device wire::TextureLevel *mips = levels + texture.level_begin;
+    const uint x_bits = max(magnitude_bits(dx.x), magnitude_bits(dx.y));
+    const uint y_bits = max(magnitude_bits(dy.x), magnitude_bits(dy.y));
+    const bool zero = x_bits == 0u || y_bits == 0u;
+    float minor = 0.0f;
+    if (!zero) {
+        // A major axis of at least 32 forces the capped minor to at least 2.
+        // Check this before taking lengths, whose intermediates could overflow.
+        if (max(x_bits, y_bits) >= as_type<uint>(32.0f))
+            minor = 2.0f;
+        else {
+            const bool lifted =
+                subnormal_bits(magnitude_bits(dx.x)) || subnormal_bits(magnitude_bits(dx.y)) ||
+                subnormal_bits(magnitude_bits(dy.x)) || subnormal_bits(magnitude_bits(dy.y));
+            const float2 a = lifted ? float2(lift_derivative(dx.x), lift_derivative(dx.y)) : dx;
+            const float2 b = lifted ? float2(lift_derivative(dy.x), lift_derivative(dy.y)) : dy;
+            const float x_scale = max(abs(a.x), abs(a.y)), y_scale = max(abs(b.x), abs(b.y));
+            const float2 x = a / x_scale, y = b / y_scale;
+            const float x_norm = length(x), y_norm = length(y);
+            const float x_length = x_scale * x_norm, y_length = y_scale * y_norm;
+            const bool x_major = x_length >= y_length;
+            const float major = x_major ? x_length : y_length;
+            minor = x_major ? y_length : x_length;
+            const float capped = major / cap;
+            if (minor < capped) {
+                const float actual = lifted ? capped * 0x1p-24f : capped;
+                if (x_major)
+                    dy = (y / y_norm) * actual;
+                else
+                    dx = (x / x_norm) * actual;
+                minor = capped;
+            }
+            // If rescaling flushes a subnormal length, the base mip is still
+            // selected. Only its direction and exact nonzero status were needed.
+            if (lifted)
+                minor *= 0x1p-24f;
+        }
+        if (minor >= 2.0f) {
+            if (!valid_ewa_level(mips[top], texel_count, 0))
+                return float3(NAN);
+            return texel(texels, transfer, mips[top], 0, 0, texture.wrap, texture.encoding);
+        }
+    }
+    const float2 scaled(ewa_product(uv.x, axis_scale.x), ewa_product(uv.y, axis_scale.y));
+    float2 st = scaled + offset;
+    // PBRT flips the mapped V center while keeping the signed V derivatives.
+    st.y = 1.0f - st.y;
+    if (!all(isfinite(st)))
+        return float3(NAN);
+    if (zero) {
+        if (!valid_ewa_level(mips[0], texel_count, top))
+            return float3(NAN);
+        const float2 dimensions(mips[0].width, mips[0].height);
+        if (texture.wrap == 2u && ewa_black_disjoint(st, dimensions, float2(1.0f)))
+            return float3(0);
+        const float2 center(ewa_center(st.x, dimensions.x, texture.wrap),
+                            ewa_center(st.y, dimensions.y, texture.wrap));
+        return bilinear_texels(texture, mips[0], texels, transfer, center);
+    }
+    const float lod = max(0.0f, float(top) + log2(minor));
+    // For minor below 2, rounding near the upper boundary can put lod at
+    // top+1. The exact level below that boundary is the actual top mip.
+    const uint lower = min(uint(floor(lod)), top);
+    if (!valid_ewa_level(mips[lower], texel_count, top - lower))
+        return float3(NAN);
+    if (lower < top && (!valid_ewa_level(mips[lower + 1u], texel_count, top - lower - 1u) ||
+                        mips[lower + 1u].width != max(1u, mips[lower].width / 2u) ||
+                        mips[lower + 1u].height != max(1u, mips[lower].height / 2u)))
+        return float3(NAN);
+    const float3 a = ewa_level(texture, mips[lower], texels, transfer, st, dx, dy);
+    const float3 b = lower == top
+                         ? texel(texels, transfer, mips[top], 0, 0, texture.wrap, texture.encoding)
+                         : ewa_level(texture, mips[lower + 1u], texels, transfer, st, dx, dy);
+    const float delta = lod - float(lower);
+    return (1.0f - delta) * a + delta * b;
+}
+
+static bool valid_lookup(const device wire::ImageTexture &texture, uint level_count, float2 uv,
+                         float2 dx, float2 dy) {
+    return all(isfinite(uv)) && all(isfinite(dx)) && all(isfinite(dy)) &&
+           texture.level_count != 0 && texture.level_begin <= level_count &&
+           texture.level_count <= level_count - texture.level_begin;
+}
+
+static float3 lookup_standard(const device wire::ImageTexture &texture,
+                              const device wire::TextureLevel *levels,
+                              const device wire::Word *texels, const device float *transfer,
+                              constant wire::TextureParameters &p, float2 uv, float2 dx,
+                              float2 dy) {
     const bool point = texture.filter == wire::point_texture_filter;
-    if (!all(isfinite(uv)) || !all(isfinite(dx)) || !all(isfinite(dy)) ||
-        texture.level_count == 0 || texture.level_begin > p.level_count ||
-        texture.level_count > p.level_count - texture.level_begin ||
+    if (!valid_lookup(texture, p.level_count, uv, dx, dy) ||
         (!point && texture.filter != wire::bilinear_texture_filter &&
          texture.filter != wire::trilinear_texture_filter) ||
         (point && (texture.wrap > 2u || texture.encoding > 1u)))
@@ -142,6 +363,17 @@ static float3 lookup(const device wire::ImageTexture &texture,
         bilinear(texture, levels[texture.level_begin + index + 1u], texels, transfer, st);
     const float delta = lod - float(index);
     return (1.0f - delta) * lower + delta * upper;
+}
+
+static float3 lookup(const device wire::ImageTexture &texture,
+                     const device wire::TextureLevel *levels, const device wire::Word *texels,
+                     const device float *transfer, constant wire::TextureParameters &p, float2 uv,
+                     float2 dx, float2 dy) {
+    if (texture.filter != wire::ewa_texture_filter)
+        return lookup_standard(texture, levels, texels, transfer, p, uv, dx, dy);
+    if (!valid_lookup(texture, p.level_count, uv, dx, dy))
+        return float3(NAN);
+    return ewa(texture, levels, texels, transfer, p.texel_count, uv, dx, dy);
 }
 
 static float blend(float t, float a, float b) { return (1.0f - t) * a + t * b; }

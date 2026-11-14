@@ -343,8 +343,12 @@ std::string validate_image_textures(const RenderScene &scene) {
     std::size_t remaining = ImageLimits{}.retained_bytes;
     for (const auto &texture : scene.image_textures) {
         if (texture.filter != ImageFilter::point && texture.filter != ImageFilter::bilinear &&
-            texture.filter != ImageFilter::trilinear) {
+            texture.filter != ImageFilter::trilinear && texture.filter != ImageFilter::ewa) {
             return "Invalid image texture filter";
+        }
+        if (texture.filter == ImageFilter::ewa &&
+            !(texture.max_anisotropy >= 1 && texture.max_anisotropy <= 16)) {
+            return "Image texture EWA maxanisotropy must be in [1, 16]";
         }
         const std::array mapping{texture.uscale, texture.vscale, texture.udelta, texture.vdelta,
                                  texture.scale};

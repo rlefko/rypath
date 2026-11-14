@@ -4,6 +4,8 @@
 
 #include "image_texture.hpp"
 
+#include "ewa_weights.h"
+
 #include <lodepng.h>
 
 #include <algorithm>
@@ -392,6 +394,253 @@ std::uint32_t texel_at(std::span<const std::uint32_t> texels, int x, int y, int 
     return texels[index];
 }
 
+struct MipSampler {
+    std::span<const std::uint32_t> texels;
+    const std::array<float, 256> &transfer;
+    int width;
+    int height;
+    ImageWrap wrap;
+
+    Rgb texel(int x, int y) const {
+        return decode_texel(texel_at(texels, x, y, width, height, wrap), transfer);
+    }
+};
+
+std::optional<MipSampler> mip_sampler(const ImagePyramid &image, std::size_t index) {
+    const auto &level = image.levels[index];
+    if (level.width == 0 || level.height == 0 || !dimensions_fit(level.width, level.height, {}) ||
+        level.offset > image.texels.size() ||
+        pixel_count(level.width, level.height) > image.texels.size() - level.offset) {
+        return std::nullopt;
+    }
+    return MipSampler{
+        std::span(image.texels).subspan(level.offset, pixel_count(level.width, level.height)),
+        image_transfer_table(image.encoding), static_cast<int>(level.width),
+        static_cast<int>(level.height), image.wrap};
+}
+
+struct TexturePoint {
+    float x;
+    float y;
+};
+
+Rgb bilerp(const MipSampler &mip, TexturePoint center) {
+    const auto ix = static_cast<int>(std::floor(center.x));
+    const auto iy = static_cast<int>(std::floor(center.y));
+    const float dx = center.x - static_cast<float>(ix);
+    const float dy = center.y - static_cast<float>(iy);
+    const auto a = mip.texel(ix, iy);
+    const auto b = mip.texel(ix + 1, iy);
+    const auto c = mip.texel(ix, iy + 1);
+    const auto d = mip.texel(ix + 1, iy + 1);
+    Rgb rgb{};
+    for (std::size_t channel = 0; channel < rgb.size(); ++channel) {
+        rgb[channel] = (1.0f - dx) * (1.0f - dy) * a[channel] + dx * (1.0f - dy) * b[channel] +
+                       (1.0f - dx) * dy * c[channel] + dx * dy * d[channel];
+    }
+    return rgb;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+Rgb blend_mips(Rgb lower, const Rgb &upper, float weight) {
+    for (std::size_t channel = 0; channel < lower.size(); ++channel) {
+        lower[channel] = (1.0f - weight) * lower[channel] + weight * upper[channel];
+    }
+    return lower;
+}
+
+float largest_component(TexturePoint v) { return std::max(std::abs(v.x), std::abs(v.y)); }
+
+float length_squared(TexturePoint v) { return v.x * v.x + v.y * v.y; }
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+float cross(TexturePoint a, TexturePoint b) { return a.x * b.y - a.y * b.x; }
+
+struct ScaledGradient {
+    TexturePoint scaled;
+    float scaled_length;
+    float length;
+};
+
+ScaledGradient scaled_gradient(TexturePoint v, float scale) {
+    const TexturePoint scaled{v.x / scale, v.y / scale};
+    const float scaled_length = std::sqrt(length_squared(scaled));
+    return {scaled, scaled_length, scale * scaled_length};
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+float ewa_center(float coordinate, int size, ImageWrap wrap) {
+    const float dimension = static_cast<float>(size);
+    if (std::abs(coordinate) <= 64.0f || wrap == ImageWrap::black) {
+        return coordinate * dimension - 0.5f;
+    }
+    const float phase = std::fmod(coordinate, 1.0f) * dimension - 0.5f;
+    if (wrap == ImageWrap::repeat) {
+        return phase;
+    }
+    // Translate by whole texels and keep every sample beyond the same clamp edge.
+    const float anchor = coordinate < 0.0f ? -64.0f : dimension + 64.0f;
+    return anchor + phase;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+bool outside_black_axis(float coordinate, float radius, int size) {
+    const float dimension = static_cast<float>(size);
+    return std::abs(coordinate) > 64.0f && (coordinate < (0.5f - radius) / dimension ||
+                                            coordinate > (dimension - 0.5f + radius) / dimension);
+}
+
+std::optional<MipSampler> ewa_mip(const ImagePyramid &image, std::size_t index) {
+    auto mip = mip_sampler(image, index);
+    const auto levels_above = image.levels.size() - 1 - index;
+    if (!mip || !std::has_single_bit(static_cast<unsigned>(mip->width)) ||
+        !std::has_single_bit(static_cast<unsigned>(mip->height)) ||
+        std::max(mip->width, mip->height) != (1 << levels_above)) {
+        return std::nullopt;
+    }
+    return mip;
+}
+
+std::optional<Rgb> ewa_bilerp(const ImagePyramid &image, TexturePoint st) {
+    const auto mip = ewa_mip(image, 0);
+    if (!mip) {
+        return std::nullopt;
+    }
+    if (image.wrap == ImageWrap::black && (outside_black_axis(st.x, 1.0f, mip->width) ||
+                                           outside_black_axis(st.y, 1.0f, mip->height))) {
+        return Rgb{};
+    }
+    return bilerp(*mip, {ewa_center(st.x, mip->width, image.wrap),
+                         ewa_center(st.y, mip->height, image.wrap)});
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+std::optional<Rgb> ewa_level(const ImagePyramid &image, std::size_t index, TexturePoint st,
+                             TexturePoint major, TexturePoint minor) {
+    const auto mip = ewa_mip(image, std::min(index, image.levels.size() - 1));
+    if (!mip) {
+        return std::nullopt;
+    }
+    if (index >= image.levels.size()) {
+        return decode_texel(mip->texels.front(), mip->transfer);
+    }
+    const float w = static_cast<float>(mip->width);
+    const float h = static_cast<float>(mip->height);
+    const TexturePoint u{major.x * w, major.y * h};
+    const TexturePoint v{minor.x * w, minor.y * h};
+    const TexturePoint radius{std::sqrt(1.0f + u.x * u.x + v.x * v.x),
+                              std::sqrt(1.0f + u.y * u.y + v.y * v.y)};
+    if (image.wrap == ImageWrap::black && (outside_black_axis(st.x, radius.x, mip->width) ||
+                                           outside_black_axis(st.y, radius.y, mip->height))) {
+        return Rgb{};
+    }
+    const TexturePoint center{ewa_center(st.x, mip->width, image.wrap),
+                              ewa_center(st.y, mip->height, image.wrap)};
+    const float x0 = std::ceil(center.x - radius.x);
+    const float y0 = std::ceil(center.y - radius.y);
+    const float x1 = std::floor(center.x + radius.x);
+    const float y1 = std::floor(center.y + radius.y);
+    // Check both the signed bounds and the iteration count before integer conversion.
+    constexpr float coordinate_bound = 64.0f * max_image_dimension + 64.0f;
+    const float candidates = (x1 - x0 + 1.0f) * (y1 - y0 + 1.0f);
+    if (!(x0 >= -coordinate_bound && y0 >= -coordinate_bound && x1 <= coordinate_bound &&
+          y1 <= coordinate_bound && x1 >= x0 && y1 >= y0 && candidates <= 4096.0f)) {
+        return std::nullopt;
+    }
+    if (image.wrap == ImageWrap::black && (x1 < 0.0f || y1 < 0.0f || x0 >= w || y0 >= h)) {
+        return Rgb{};
+    }
+    // Expand the covariance determinant as a sum of squares to avoid cancellation
+    // when the two texel-space gradients are nearly collinear.
+    const float area = cross(u, v);
+    const float determinant = 1.0f + length_squared(u) + length_squared(v) + area * area;
+    if (!std::isfinite(determinant)) {
+        return std::nullopt;
+    }
+    Rgb sum{};
+    float total_weight = 0.0f;
+    for (int y = static_cast<int>(y0); y <= static_cast<int>(y1); ++y) {
+        for (int x = static_cast<int>(x0); x <= static_cast<int>(x1); ++x) {
+            const TexturePoint d{static_cast<float>(x) - center.x,
+                                 static_cast<float>(y) - center.y};
+            const float ud = cross(u, d);
+            const float vd = cross(v, d);
+            const float r2 = (length_squared(d) + ud * ud + vd * vd) / determinant;
+            if (r2 < 1.0f) {
+                const float weight =
+                    rypath_ewa::weights[std::min(static_cast<int>(r2 * 128.0f), 127)];
+                total_weight += weight;
+                const auto sample = mip->texel(x, y);
+                for (std::size_t channel = 0; channel < sum.size(); ++channel) {
+                    sum[channel] += weight * sample[channel];
+                }
+            }
+        }
+    }
+    if (!(total_weight > 0.0f) || !std::isfinite(total_weight)) {
+        return std::nullopt;
+    }
+    for (auto &channel : sum) {
+        channel /= total_weight;
+    }
+    return sum;
+}
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+std::optional<Rgb> ewa_rgb(const ImagePyramid &image, TexturePoint st, TexturePoint dx,
+                           TexturePoint dy, float max_anisotropy) {
+    if (!(max_anisotropy >= 1.0f && max_anisotropy <= 16.0f) ||
+        image.levels.size() > std::bit_width(max_image_dimension)) {
+        return std::nullopt;
+    }
+    const float scale_x = largest_component(dx);
+    const float scale_y = largest_component(dy);
+    const bool finite_center = std::isfinite(st.x) && std::isfinite(st.y);
+    if (scale_x == 0.0f || scale_y == 0.0f) {
+        return finite_center ? ewa_bilerp(image, st) : std::nullopt;
+    }
+    // With nonzero gradients and a cap of at most 16, a major length of
+    // at least 32 guarantees a post-cap minor length of at least two.
+    const auto past_top = image.levels.size();
+    if (std::max(scale_x, scale_y) >= 32.0f) {
+        return ewa_level(image, past_top, st, dx, dy);
+    }
+    auto major = scaled_gradient(dx, scale_x);
+    auto minor = scaled_gradient(dy, scale_y);
+    if (major.length < minor.length) {
+        std::swap(major, minor);
+        std::swap(dx, dy);
+    }
+    const float capped_minor_length = major.length / max_anisotropy;
+    if (minor.length < capped_minor_length) {
+        dy = {(minor.scaled.x / minor.scaled_length) * capped_minor_length,
+              (minor.scaled.y / minor.scaled_length) * capped_minor_length};
+        minor.length = capped_minor_length;
+    }
+    if (minor.length >= 2.0f) {
+        return ewa_level(image, past_top, st, dx, dy);
+    }
+    if (!finite_center) {
+        return std::nullopt;
+    }
+    const float lod = std::max(0.0f, static_cast<float>(past_top - 1) + std::log2(minor.length));
+    const auto lower_level = std::min(static_cast<std::size_t>(std::floor(lod)), past_top - 1);
+    if (lower_level + 1 < past_top) {
+        const auto &lower = image.levels[lower_level];
+        const auto &upper = image.levels[lower_level + 1];
+        if (upper.width != std::max(1u, lower.width / 2u) ||
+            upper.height != std::max(1u, lower.height / 2u)) {
+            return std::nullopt;
+        }
+    }
+    const auto lower = ewa_level(image, lower_level, st, dx, dy);
+    const auto upper = ewa_level(image, lower_level + 1, st, dx, dy);
+    if (!lower || !upper) {
+        return std::nullopt;
+    }
+    return blend_mips(*lower, *upper, lod - static_cast<float>(lower_level));
+}
+
 } // namespace
 
 ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
@@ -545,12 +794,19 @@ const std::array<float, 256> &image_transfer_table(ImageEncoding encoding) {
 }
 
 std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t, float dsdx,
-                                    float dtdx, float dsdy, float dtdy, ImageFilter filter) {
+                                    float dtdx, float dsdy, float dtdy, ImageFilter filter,
+                                    float max_anisotropy) {
+    if (!valid_profile(image.encoding, image.wrap) || image.levels.empty() ||
+        !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
+        !std::isfinite(dtdy)) {
+        return std::nullopt;
+    }
+    if (filter == ImageFilter::ewa) {
+        return ewa_rgb(image, {s, t}, {dsdx, dtdx}, {dsdy, dtdy}, max_anisotropy);
+    }
     if ((filter != ImageFilter::bilinear && filter != ImageFilter::trilinear &&
          filter != ImageFilter::point) ||
-        !valid_profile(image.encoding, image.wrap) || image.levels.empty() || !std::isfinite(s) ||
-        !std::isfinite(t) || !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
-        !std::isfinite(dtdy)) {
+        !std::isfinite(s) || !std::isfinite(t)) {
         return std::nullopt;
     }
     const float half_width =
@@ -562,58 +818,35 @@ std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t,
                           ? static_cast<float>(coarsest) + point_log_width(width)
                           : static_cast<float>(coarsest) + std::log(width) * 1.4426950408889634f;
     const bool wide = lod >= static_cast<float>(coarsest);
-    const auto &transfer = image_transfer_table(image.encoding);
-    const auto sample = [&](const ImageMipLevel &level) -> std::optional<Rgb> {
-        if (level.width == 0 || level.height == 0 ||
-            !dimensions_fit(level.width, level.height, {}) || level.offset > image.texels.size() ||
-            pixel_count(level.width, level.height) > image.texels.size() - level.offset) {
+    const auto sample = [&](std::size_t index) -> std::optional<Rgb> {
+        const auto mip = mip_sampler(image, index);
+        if (!mip) {
             return std::nullopt;
         }
-        const auto texels =
-            std::span(image.texels).subspan(level.offset, pixel_count(level.width, level.height));
         if (wide) {
-            return decode_texel(texels.front(), transfer);
+            return decode_texel(mip->texels.front(), mip->transfer);
         }
-        const int w = static_cast<int>(level.width);
-        const int h = static_cast<int>(level.height);
         if (filter == ImageFilter::point) {
-            const int x = point_coordinate(s, image.wrap, w);
-            const int y = point_coordinate(t, image.wrap, h);
-            return decode_texel(texel_at(texels, x, y, w, h, image.wrap), transfer);
+            const int x = point_coordinate(s, image.wrap, mip->width);
+            const int y = point_coordinate(t, image.wrap, mip->height);
+            return mip->texel(x, y);
         }
-        const float x = bounded_coordinate(s, image.wrap) * static_cast<float>(level.width) - 0.5f;
-        const float y = bounded_coordinate(t, image.wrap) * static_cast<float>(level.height) - 0.5f;
-        const auto ix = static_cast<int>(std::floor(x));
-        const auto iy = static_cast<int>(std::floor(y));
-        const float dx = x - static_cast<float>(ix);
-        const float dy = y - static_cast<float>(iy);
-        const auto a = decode_texel(texel_at(texels, ix, iy, w, h, image.wrap), transfer);
-        const auto b = decode_texel(texel_at(texels, ix + 1, iy, w, h, image.wrap), transfer);
-        const auto c = decode_texel(texel_at(texels, ix, iy + 1, w, h, image.wrap), transfer);
-        const auto d = decode_texel(texel_at(texels, ix + 1, iy + 1, w, h, image.wrap), transfer);
-        Rgb rgb{};
-        for (std::size_t channel = 0; channel < rgb.size(); ++channel) {
-            rgb[channel] = (1.0f - dx) * (1.0f - dy) * a[channel] + dx * (1.0f - dy) * b[channel] +
-                           (1.0f - dx) * dy * c[channel] + dx * dy * d[channel];
-        }
-        return rgb;
+        return bilerp(*mip,
+                      {bounded_coordinate(s, image.wrap) * static_cast<float>(mip->width) - 0.5f,
+                       bounded_coordinate(t, image.wrap) * static_cast<float>(mip->height) - 0.5f});
     };
     const auto selected =
         wide ? coarsest : static_cast<std::size_t>(std::max(0.0f, std::floor(lod)));
-    auto rgb = sample(image.levels[selected]);
+    auto rgb = sample(selected);
     // PBRT uses base-level bilerp throughout the first LOD interval.
     if (!rgb || filter != ImageFilter::trilinear || wide || selected == 0) {
         return rgb;
     }
-    const auto upper = sample(image.levels[selected + 1]);
+    const auto upper = sample(selected + 1);
     if (!upper) {
         return std::nullopt;
     }
-    const float weight = lod - static_cast<float>(selected);
-    for (std::size_t channel = 0; channel < rgb->size(); ++channel) {
-        (*rgb)[channel] = (1.0f - weight) * (*rgb)[channel] + weight * (*upper)[channel];
-    }
-    return rgb;
+    return blend_mips(*rgb, *upper, lod - static_cast<float>(selected));
 }
 
 } // namespace rypath

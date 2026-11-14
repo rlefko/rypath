@@ -107,7 +107,10 @@ the [pinned parameter dictionary](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba
 
 Named spectrum imagemaps share the spectrum namespace and follow the same
 parameter precedence and diffuse binding rules. Filtering accepts `point`,
-`bilinear` (the default), and `trilinear`; EWA remains unsupported.
+`bilinear` (the default), `trilinear`, and `ewa`/`EWA`. EWA supports finite
+`maxanisotropy` from 1 through 16, defaulting to 8. Values outside that interval
+are source-located unsupported-feature diagnostics, including unused definitions.
+The other filters retain their inert finite `maxanisotropy` parameter.
 
 Supported PNG inputs are noninterlaced 8-bit grayscale, grayscale with alpha,
 RGB, and RGBA. Grayscale replicates into RGB, alpha is discarded, and metadata

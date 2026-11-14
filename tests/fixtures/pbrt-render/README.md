@@ -58,6 +58,7 @@ and dependency paths listed below.
 | `reflectance-controls.pbrt` | 904 | `63a5b4322b752e3419990910444eefc59ea95d1956b6b64f687726dfb637ed9f` | 50° | 1 | Three placeholder triangles supply the `clamp.spd`, `narrow.spd`, and `wide.spd` materials for the native controls. |
 | `blackbody-reflectance-ply.pbrt` | 834 | `b6e1657ac03f24645973d7f979183d58b1c1f54ea163a127a2471a100dae5148` | 33.4° | 1 | The transformed Sportscar quad uses an inherited 6500 K spectrum constant texture under a flat sampled infinite light. |
 | `image-point.pbrt` | 1,009 | `9d2fea3e2d7f6059aec2202e0fbbb2492366c50762e7255b38a7a9cabdc8894d` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite image at fractional LOD using point filtering and repeat wrap. |
+| `image-ewa.pbrt` | 1,022 | `a00a6047c9ea81392f806f2d30c840fb1a246dcdbe6505edb34285d7ac7f4bde` | 53.1301023542° | 1 | A covering triangle pair under D65 illumination samples the pinned PNGSuite image with linear encoding, repeat wrap, and a rotated EWA footprint capped at anisotropy 8. |
 
 Each scene uses a pinhole perspective camera, an 8×8 full-frame sRGB film
 with the CIE 1931 sensor, ISO 100, the default shutter interval
@@ -160,3 +161,10 @@ compares the two pixels in column 4, rows 3–4, using zero-based top-down
 coordinates. A same-seed bilinear control must reduce their red mean by more
 than 0.02 on each backend. The [image asset manifest](image-assets/README.md)
 records provenance and the mip footprint.
+
+The EWA fixture uses the same triangle filter radii. It compares the full
+frame and pixel (4, 3) with the standard statistical gate. At the first seed
+for each backend, the baseline's red value at that pixel must exceed each
+control's by more than 0.02. One control changes the filter to trilinear and
+the other changes the anisotropy cap to 4. The [image asset manifest](image-assets/README.md)
+records the footprint and texture settings.
