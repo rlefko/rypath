@@ -1,15 +1,15 @@
 # PBRT spectral render fixture manifest
 
-The eighteen rypath-authored entry points are licensed under GPL-3.0-only.
+The rypath-authored entry points are licensed under GPL-3.0-only.
 `cornell-box-adapted.pbrt`, `cornell-box-attributes.pbrt`, and the three
 `cornell-box-sobol-*.pbrt` entry points are CC0 derivatives
 of the [pinned Cornell Box fixture](../pbrt/README.md) by Benedikt Bitterli,
 converted to PBRT v4 by Matt Pharr. The [upstream notice](../pbrt/LICENSE.txt)
 applies to all five derivatives.
-The nineteen fixtures below have inline geometry and spectra, with
-zero external dependencies (48,760 bytes total). The four PLY wrappers and their
-complete input closure are documented in the [PLY asset manifest](ply-assets/README.md);
-`dependencies.json` pins asset hashes and sizes, including separate external licensing.
+The 22 fixtures below use inline geometry and have no external dependencies
+(52,395 bytes total). The [PLY asset manifest](ply-assets/README.md) documents
+the standalone PLY wrappers and their inputs. [`dependencies.json`](dependencies.json)
+pins asset hashes and sizes.
 
 | Entry point | Bytes | SHA-256 | Geometry |
 | --- | ---: | --- | --- |
@@ -23,6 +23,9 @@ complete input closure are documented in the [PLY asset manifest](ply-assets/REA
 | `area-visible.pbrt` | 983 | `34d08504ae1eb4b19b960bfb19a5c2614effb0062c932e701211ff3ff50c4389` | 2 meshes, 8 vertices, 4 emissive triangles |
 | `area-direct.pbrt` | 953 | `d9c22f5e038963e3491116b6685b6ed01c6126257cc517a277730ae4011ac94e` | 2 meshes, 7 vertices, 3 triangles, 1 emissive |
 | `area-mixed.pbrt` | 1,726 | `a4cd3482f208a49e56e2672c238adedddd0c18523f12a0a54937b53a4820c176` | 6 meshes, 23 vertices, 11 triangles, 3 emissive |
+| `blackbody-background.pbrt` | 657 | `d0b0e19230863d0068b1f0a3e7d58d2677e0532d7bfb941c566581e91fed3b0e` | Same geometry as `rgb-background.pbrt` |
+| `blackbody-area.pbrt` | 956 | `18f3fe8a8ed4ab97d157c91cea13332a52fcc95e98c5a6d8cf210f056df5159e` | Same geometry as `area-visible.pbrt` |
+| `blackbody-mixed.pbrt` | 2,022 | `30ae4424e942608342d96bd7629aff3ce60bbfdabc03b86133453c4e7af4083b` | 7 meshes, 25 vertices, 11 triangles, 3 emissive |
 | `cornell-box-adapted.pbrt` | 4,293 | `652e63dc4806c5d3a33e6560b654eaf775fa80ef9e1df8243ebe1a9494698aa6` | 8 meshes, 72 vertices, 36 triangles, 2 emissive |
 | `triangle-filter.pbrt` | 901 | `400cdd4baef8603ac2a848271040841f9d8f8a0a92451526713e383ce935d91d` | 2 meshes, 8 vertices, 4 emissive triangles |
 | `normals-diffuse.pbrt` | 1,071 | `18575bec4cc1e7955ac10b3326d24080a724797d7989593c57fa414ebac279fa` | 2 meshes, 7 vertices, 3 triangles, 1 emissive |
@@ -39,7 +42,7 @@ with the CIE 1931 sensor, ISO 100, the default shutter interval
 use the randomization named in the filename. The remaining scenes use independent sampling.
 `triangle-filter.pbrt` uses a triangle filter with radii (1.5, 0.75), and
 `cornell-box-attributes.pbrt` and the three Sobol derivatives preserve the
-authored triangle radii (1, 1). The other eighteen use a box filter with radius
+authored triangle radii (1, 1). The remaining inline fixtures use a box filter with radius
 0.5 on each axis. The Cornell derivatives preserve the authored camera pose.
 The six background, diffuse,
 and multibounce fixtures each use one uniform infinite light. Their RGB
@@ -57,6 +60,9 @@ variants exercise explicit RGB or omitted D65 emission.
 | `area-visible.pbrt` | 45° | 0 | A one-sided RGB emitter faces the camera and a two-sided sampled-spectrum emitter faces away. |
 | `area-direct.pbrt` | 7.15266875° | 1 | A finite off-axis triangle illuminates a diffuse receiver under a sampled spectrum. |
 | `area-mixed.pbrt` | 58° | 5 | Three unequal-area emitting triangles use RGB or omitted D65 emission alongside an RGB environment in an asymmetric room. |
+| `blackbody-background.pbrt` | 50° | 0 | A uniform 3000 K environment uses scale 1.7 and illuminance 7. |
+| `blackbody-area.pbrt` | 45° | 0 | A one-sided 3000 K emitter with scale 1.75 faces the camera. A two-sided 6500 K emitter faces away. |
+| `blackbody-mixed.pbrt` | 58° | 5 | A 5000 K environment and three unequal-area emitters at 2500 K, 6500 K, and 15000 K illuminate the asymmetric room. |
 | `cornell-box-adapted.pbrt` | 19.5° | 65 | Two downward-facing triangles emit from the ceiling fixture above two boxes and colored walls. |
 | `triangle-filter.pbrt` | 53.1301023542° | 0 | Asymmetric RGB emitter edges against a uniform RGB environment exercise anisotropic edge smoothing, orientation, and normalization. |
 | `normals-diffuse.pbrt` | 7.15266875° | 1 | Unequal-length vertex normals receive light across the geometric plane. |
@@ -105,10 +111,10 @@ and sample counts at the same seed, using 8×8 pixels, 64 samples per pixel and
 32-sample batches. Zeroing the direct material's reflectance must change the
 film, so the equality check exercises surface reflection.
 
-The comparison uses the full 8×8 frame for every scene and the four top-down
-4×4 quadrants for both multibounce scenes, the three area scenes, the five
-Cornell derivatives, the triangle filter scene, the three owned normal
-scenes, and all four PLY wrappers. Each region's R, G, and B means must agree within five combined
+The comparison uses the full 8×8 frame for every scene. The
+[`REGIONS` table](../../../scripts/compare_pbrt.py) defines additional regions,
+including the four top-down 4×4 quadrants for the blackbody area, mixed, and
+PLY scenes. Each region's R, G, and B means must agree within five combined
 standard errors plus
 `2e-5 * max(1, abs(reference))`. See the [render profile](../../../docs/pbrt-rendering.md)
 for the comparison command.

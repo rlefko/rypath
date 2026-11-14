@@ -62,6 +62,11 @@ definition once to an existing diffuse material payload. Inline and named
 material bindings share that payload by index across object instances.
 The shader evaluates the resulting constant, sigmoid, or sampled spectrum
 through the diffuse path described in the [rendering profile](pbrt-rendering.md#constant-textures).
+Blackbody environment and area emission compile on the CPU into the same dense
+radiance tables as numeric spectra. Stable Planck ratios retain double precision
+through photometric normalization; no new shader payload or estimator is needed.
+The [blackbody validation record](blackbody-light-validation.md) describes the
+numerical domain and independent evidence.
 The translator binds each imagemap by index and prepares per-placement triangle
 partials from the checked shape and placement transforms. The image render
 session owns UVs, triangle partials, texture descriptors, shared mip data,

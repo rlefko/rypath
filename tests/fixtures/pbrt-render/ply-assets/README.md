@@ -30,12 +30,18 @@ spectrum texture. An sRGB `Attribute "texture"` supplies the value before the
 texture is declared under Rec.2020. The entry is 871 bytes with SHA-256
 `add4e04b99470889c5ca4e773b7e23ba2c12216777cf4d53dc03b1100f0d10a8`.
 
+`../blackbody-ply-external.pbrt` is a GPL-3.0-only derivative of that wrapper.
+It replaces the environment's white RGB emission with a 6500 K blackbody and
+retains the original camera FOV of 33.4°, path depth of 1, material, and
+transformed quad. The entry is 711 bytes with SHA-256
+`26219439c138ce4c8a5a2712b98a9897be919da5040d8071f8b8af9f67858b44`.
+
 `mixed.ply` and `curved-light.ply` are original GPL-3.0-only fixtures.
 The first combines a nonplanar quad with unequal-length vertex normals and UVs
 and a separate triangle. The second is a nonplanar emitting quad. Their wrappers
 isolate mixed geometry and curved area emission, respectively.
 
-All four wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
+The five wrappers use 8×8 pixels, 4,096 spp and the existing fixed independent
 seed comparison protocol. The [dependency manifest](../dependencies.json)
 pins each wrapper's complete input closure, sizes and hashes. The comparison
 script verifies and stages these files under each relocated entry directory.
