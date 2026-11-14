@@ -77,6 +77,8 @@ REGIONS = {
     "file-ply-external": QUADRANTS,
     "reflectance-named-diffuse": {"full": FULL},
     "reflectance-file-ply": QUADRANTS,
+    "blackbody-reflectance-diffuse": {"full": FULL},
+    "blackbody-reflectance-ply": QUADRANTS,
 }
 
 

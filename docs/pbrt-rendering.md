@@ -38,7 +38,7 @@ diagnosed even when not placed in the image.
 | Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
 | Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
-| Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], or built-in/file spectra clamped after interpolation |
+| Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Textures | Named spectrum constants and UV-mapped PNG imagemaps for diffuse reflectance; float constants are validated during translation |
 | Environment | Zero or one constant infinite light with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
@@ -53,7 +53,7 @@ camera. Exact full-frame crop/pixel bounds are accepted; other bounds are
 unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
-Non-sRGB reconstruction, legacy `color` parameters, blackbody reflectance,
+Non-sRGB reconstruction, legacy `color` parameters,
 other image and procedural textures, textured emitters, emitting object
 members, other external mesh formats, tangents/normal maps, media, motion, lens
 effects, and other cameras, filters, samplers, and integrators remain unsupported.
@@ -80,7 +80,8 @@ Material "diffuse" "texture reflectance" "paint"
 Inline and named diffuse materials may refer to a spectrum constant declared
 anywhere in the scene world. Both constant texture types default to one. A
 spectrum value may be linear sRGB, an inline numeric spectrum with at least two
-increasing wavelengths and values in [0,1], or a built-in name or spectrum file.
+increasing wavelengths and values in [0,1], blackbody temperature, or a built-in
+name or spectrum file.
 Named and file curves follow the diffuse contract below. An explicit
 `rgb value` uses the `Texture` declaration's color space. An RGB value inherited
 from `Attribute "texture"` uses the color space captured at that attribute.
@@ -91,6 +92,31 @@ rendering. All references to a spectrum constant share its compiled diffuse
 material payload. Float constants accept signed values that narrow to finite
 binary32. Alpha masking and displacement remain deferred. See the
 [constant texture validation record](pbrt-texture-validation.md).
+
+## Blackbody reflectance
+
+```pbrt
+Material "diffuse" "blackbody reflectance" [3000]
+Texture "paint" "spectrum" "constant" "blackbody value" [6500]
+Material "diffuse" "texture reflectance" "paint"
+```
+
+Inline and named diffuse materials and spectrum constants accept a temperature
+that narrows to positive finite binary32 kelvin. Effective inherited values and
+shared texture references follow the same rules as other spectra, independently
+of ColorSpace. Invalid values, including unused definitions, produce source-located
+errors before GPU acquisition. Each effective temperature consumes one spectral
+scalar; references share the compiled material.
+
+At each path wavelength, evaluate the continuous Planck spectrum normalized at
+PBRT's Wien peak, which may lie outside the visible interval, then clamp to [0,1].
+This reflectance receives no light scale or CIE-Y calibration. CPU evaluation
+uses double precision; Metal uses a stable float log-ratio and a bounded packed
+exponent factor. The declared model is continuous, with separate CPU and device
+numerical tolerances. Extremely small results and transport intermediates may
+flush to zero on the device, so arbitrary HDR illumination does not establish
+relative radiance accuracy for those tails. See the
+[validation record](blackbody-reflectance-validation.md) for the exact contract.
 
 ## Named and file reflectance
 
@@ -288,8 +314,9 @@ product with the numeric-emission calibration above; it receives no RGB tint,
 reflectance clamp, or additional factor of 683. Checked double-precision scaling
 preserves finite final radiance even when an intermediate PBRT float scale would
 overflow. Final binary32 overflow is still a source-located error, including
-unused area declarations. Named reflectance and constant-texture values remain
-unsupported. See [named-spectrum validation](named-spectrum-validation.md).
+unused area declarations. Named diffuse and constant-texture reflectance use the
+separate [original-knot path](#named-and-file-reflectance). See
+[named-spectrum validation](named-spectrum-validation.md) for emission evidence.
 
 File emission accepts `"spectrum L" "lights/key.spd"` or a single bracketed
 filename. Preflight resolves and retains the checked binary32 knots under the
@@ -423,8 +450,9 @@ comparison. Commands and measured evidence are in the
 [image texture validation record](image-texture-validation.md),
 [blackbody validation record](blackbody-light-validation.md),
 [named-spectrum validation record](named-spectrum-validation.md),
-[file-spectrum validation record](file-spectrum-validation.md), and
-[spectral reflectance validation](spectral-reflectance-validation.md).
+[file-spectrum validation record](file-spectrum-validation.md),
+[spectral reflectance validation](spectral-reflectance-validation.md), and
+[blackbody reflectance validation](blackbody-reflectance-validation.md).
 
 Owned wrappers and five labeled CC0 Cornell derivatives cover
 numeric-spectrum, file, RGB, blackbody, and built-in named lighting, diffuse response, area emission, visibility,
