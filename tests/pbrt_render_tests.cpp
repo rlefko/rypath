@@ -703,6 +703,164 @@ LightSource "infinite" "spectrum L" [360 1 830 1]
             "Numeric infinite-light SPD is independent of ColorSpace");
 }
 
+void blackbody_light_spectrum(const fs::path &scratch) {
+    const auto environment = [&](std::string_view parameters) {
+        return accepted(write(scratch, "blackbody-spectrum.pbrt",
+                              std::string(basic) + std::string(triangle) +
+                                  "LightSource \"infinite\" \"blackbody L\" " +
+                                  std::string(parameters)))
+            .scene.environment;
+    };
+    const auto check_shape = [&](const std::array<float, 471> &actual, const auto &radiance) {
+        std::array<double, 471> expected{};
+        double y = 0;
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            const double wavelength = 360. + static_cast<double>(i);
+            expected[i] = radiance(wavelength);
+            y += expected[i] * pbrt_cie_xyz(wavelength)[1];
+        }
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            const double normalized = expected[i] / y;
+            near(actual[i], normalized, 6e-8 * normalized,
+                 "Normalized blackbody radiance at " + std::to_string(360 + i) + " nm");
+        }
+        near(pbrt_y_inner_product(actual), 1, 6e-8, "Blackbody CIE Y normalization");
+    };
+    for (const int temperature : {1000, 2850, 6500, 15000}) {
+        // Evaluate Planck's law directly in meters at ordinary temperatures,
+        // independently of the relative-radiance formula used by translation.
+        check_shape(environment(std::to_string(temperature)), [temperature](double wavelength) {
+            constexpr double c = 299792458.;
+            constexpr double h = 6.62606957e-34;
+            constexpr double k = 1.3806488e-23;
+            const double meters = wavelength * 1e-9;
+            return 2 * h * c * c /
+                   (std::pow(meters, 5) * std::expm1(h * c / (meters * k * temperature)));
+        });
+    }
+    check_shape(environment("1.401298464324817e-45"),
+                [](double wavelength) { return wavelength == 830. ? 1. : 0.; });
+    check_shape(environment("3.4028234663852886e38"),
+                [](double wavelength) { return 1 / std::pow(wavelength, 4); });
+
+    const auto dim_tail = environment(R"(0.2 "float scale" 1e32)");
+    // The 829 nm relative weight is 3.948366768e-46 at the narrowed temperature.
+    // Its final radiance rounds to a nonzero float once scale and normalization apply.
+    near(dim_tail[469], 8.73899847e-8, 6e-15, "Blackbody tail survives final scaling");
+    near(pbrt_y_inner_product(dim_tail) / static_cast<float>(1e32), 1, 6e-8,
+         "Cold high-scale blackbody CIE Y normalization");
+
+    const auto baseline = environment("2850");
+    const auto scaled = environment(R"(2850 "float scale" 2 "float illuminance" 3)");
+    for (std::size_t i = 0; i < baseline.size(); ++i) {
+        const double expected = static_cast<double>(baseline[i]) * 6 / std::numbers::pi;
+        near(scaled[i], expected, 1.2e-7 * expected, "Blackbody scale and illuminance");
+    }
+    require(environment(R"(2850 "float illuminance" 0)") == baseline &&
+                environment(R"(2850 "float illuminance" -2)") == baseline &&
+                environment(R"(2850 "float scale" 0 "float illuminance" 3)") ==
+                    std::array<float, 471>{},
+            "Blackbody uses existing scale and nonpositive-illuminance conventions");
+}
+
+void blackbody_light_context(const fs::path &scratch) {
+    auto source = std::string(basic) + R"(ColorSpace "rec2020"
+Attribute "light" "blackbody L" 2850
+AttributeBegin
+    ColorSpace "aces2065-1"
+    LightSource "infinite"
+    Attribute "light" "blackbody L" 6500
+    AreaLightSource "diffuse" "rgb L" [1 0 0] "blackbody L" 2850
+)";
+    source += triangle;
+    source += R"(AttributeEnd
+ColorSpace "dci-p3"
+AreaLightSource "diffuse" "bool twosided" true "float power" -1
+)";
+    source += triangle;
+    const auto entry = write(scratch, "blackbody-context.pbrt", source);
+    const auto scene = accepted(entry).scene;
+    require(scene.area_emissions.size() == 2 &&
+                scene.instance_emissions == std::vector<std::uint32_t>{0, 1} &&
+                !scene.area_emissions[0].two_sided && scene.area_emissions[1].two_sided &&
+                scene.area_emissions[0].radiance == scene.environment &&
+                scene.area_emissions[1].radiance == scene.environment,
+            "Effective blackbody L is shared by infinite and area lights across color spaces, "
+            "with scoped inheritance and last explicit parameter precedence");
+
+    constexpr std::size_t table_size = 471;
+    constexpr std::size_t values = 3 + 2 * table_size;
+    const auto exact = translation(entry, {.list_values = 1, .total_values = values});
+    require(exact.exit_code() == 0 && exact.scene && exact.scene->area_emissions.size() == 2,
+            "Each effective blackbody temperature charges one spectral value");
+    const auto table_limit = translation(entry, {.total_values = values - 1});
+    require(table_limit.exit_code() == 1 && !table_limit.scene &&
+                table_limit.diagnostics.back().code == "limit-exceeded" &&
+                table_limit.diagnostics.back().message.find("area light table") !=
+                    std::string::npos,
+            "Placed blackbody tables consume the existing dense table budget");
+    for (const auto &limits : {Limits{.list_values = 0}, Limits{.total_values = 0}}) {
+        const auto temperature_limit = translation(entry, limits);
+        require(temperature_limit.exit_code() == 1 && !temperature_limit.scene &&
+                    temperature_limit.diagnostics.front().code == "limit-exceeded" &&
+                    temperature_limit.diagnostics.front().location.line == 8 &&
+                    temperature_limit.diagnostics.front().location.column == 19,
+                "A blackbody temperature budget failure points to the inherited parameter");
+    }
+    const auto unused =
+        translation(write(scratch, "blackbody-unused.pbrt",
+                          std::string(basic) + R"(AreaLightSource "diffuse" "blackbody L" 2850
+AreaLightSource ""
+)" + std::string(triangle)),
+                    {.list_values = 1, .total_values = 12});
+    require(unused.exit_code() == 0 && unused.scene && unused.scene->area_emissions.empty(),
+            "An unused blackbody area declaration charges its temperature only");
+}
+
+void rejects_blackbody_lights(const fs::path &scratch) {
+    // All cases place their diagnostic on the second line of the supplied body.
+    const auto rejected = [&](std::string_view body, int status, std::string_view code,
+                              std::string_view message, std::size_t column) {
+        const auto path = write(scratch, "rejected-blackbody.pbrt",
+                                std::string(basic) + std::string(body) + std::string(triangle));
+        const auto checked = check(path);
+        const auto result = translate(checked, Location{path.string()});
+        const auto &diagnostics =
+            checked.exit_code() == 0 ? result.diagnostics : checked.document.diagnostics;
+        require(result.exit_code() == status && !result.scene &&
+                    std::ranges::any_of(diagnostics,
+                                        [&](const Diagnostic &diagnostic) {
+                                            return diagnostic.code == code &&
+                                                   diagnostic.message.find(message) !=
+                                                       std::string::npos &&
+                                                   fs::path(*diagnostic.location.file) == path &&
+                                                   diagnostic.location.line == 8 &&
+                                                   diagnostic.location.column == column;
+                                        }),
+                "Expected source-located blackbody diagnostic for " + std::string(body));
+    };
+    for (const auto temperature : {"0", "-1", "[-0]", "[1000 2000]"}) {
+        rejected(std::string("LightSource \"infinite\"\n    \"blackbody L\" ") + temperature + "\n",
+                 1, "invalid-parameter", "\"L\"", 5);
+    }
+    for (const auto temperature : {"inf", "1e400"}) {
+        rejected(std::string("LightSource \"infinite\"\n    \"blackbody L\" ") + temperature + "\n",
+                 1, "invalid-number", "floating-point", 19);
+    }
+    rejected("LightSource \"infinite\"\n    \"blackbody L\" 3.402823466385289e38\n", 1,
+             "invalid-render-value", "temperature overflows binary32", 19);
+    rejected("ColorSpace \"rec2020\"\nAttribute \"light\" \"blackbody L\" 1e-46\n"
+             "LightSource \"infinite\"\n",
+             1, "invalid-render-value", "temperature must be positive in binary32", 33);
+    rejected("LightSource \"infinite\" \"float scale\" 2e32\n    \"blackbody L\" 0.2\n", 1,
+             "invalid-render-value", "Normalized emission spectrum overflows binary32", 5);
+    rejected("AreaLightSource \"diffuse\" \"float scale\" 2e32\n    \"blackbody L\" 0.2\n"
+             "AreaLightSource \"\"\n",
+             1, "invalid-render-value", "Normalized emission spectrum overflows binary32", 5);
+    rejected("AreaLightSource \"diffuse\" \"blackbody L\" 2850\n    \"float power\" 1e-46\n", 2,
+             "unsupported-render-feature", "Positive power", 5);
+}
+
 void constant_texture_translation(const fs::path &scratch) {
     const auto translated = [&](std::string_view body) {
         return accepted(write(scratch, "constant-texture.pbrt",
@@ -1254,6 +1412,9 @@ int main(int argc, char **argv) {
         infinite_light_normalization(scratch);
         rgb_material_context(scratch);
         rgb_light_context(scratch);
+        blackbody_light_spectrum(scratch);
+        blackbody_light_context(scratch);
+        rejects_blackbody_lights(scratch);
         constant_texture_translation(scratch);
         constant_texture_rejections_and_limits(scratch);
         area_light_translation(scratch);

@@ -115,6 +115,8 @@ class Translator {
     std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
                                                       string_view name, SpectrumRole role);
     bool supports_rgb_space(string_view color_space, const Location &source);
+    bool blackbody_emission(const Parameter &parameter, std::optional<float> scale,
+                            double light_multiplier, std::array<float, 471> &dense);
     bool emission(const Descriptor &descriptor, double light_multiplier,
                   std::array<float, 471> &dense);
     void light(const Descriptor &descriptor);
@@ -454,10 +456,64 @@ bool Translator::supports_rgb_space(string_view color_space, const Location &sou
     return false;
 }
 
+bool Translator::blackbody_emission(const Parameter &parameter, std::optional<float> scale,
+                                    double light_multiplier, std::array<float, 471> &dense) {
+    if (!charge_spectral_values(parameter)) {
+        return false;
+    }
+    const auto &temperature = parameter.values.front();
+    if (!float_representable(temperature.number)) {
+        invalid(temperature.location, "Blackbody temperature overflows binary32");
+        return false;
+    }
+    const double kelvin = static_cast<float>(temperature.number);
+    if (!(kelvin > 0)) {
+        invalid(temperature.location, "Blackbody temperature must be positive in binary32");
+        return false;
+    }
+    if (!scale) {
+        return false;
+    }
+
+    // Pinned PBRT v4 Blackbody constants. Express h*c/k in nm K.
+    constexpr double c2 = 6.62606957e-34 * 299792458. / 1.3806488e-23 * 1e9;
+    constexpr double reference = 830.;
+    const double reference_factor = -std::expm1(-(c2 / reference) / kelvin);
+    std::array<double, 471> shape{};
+    double normalization = 0;
+    for (std::size_t i = 0; i < shape.size(); ++i) {
+        const double wavelength = 360. + static_cast<double>(i);
+        // Divide Planck radiance by its 830 nm value. Factoring the exponentials
+        // keeps the exponent nonpositive without subtracting large exponents.
+        const double delta = c2 * (reference - wavelength) / (reference * wavelength);
+        shape[i] = std::pow(reference / wavelength, 5) * std::exp(-delta / kelvin) *
+                   reference_factor / -std::expm1(-(c2 / wavelength) / kelvin);
+        normalization += shape[i] * pbrt_cie_xyz(wavelength)[1];
+    }
+    if (!(normalization > 0 && std::isfinite(normalization))) {
+        invalid(parameter.location,
+                "Emission spectrum requires a positive finite CIE Y inner product");
+        return false;
+    }
+    const double amplitude = *scale * light_multiplier / normalization;
+    for (std::size_t i = 0; i < dense.size(); ++i) {
+        const double normalized = shape[i] * amplitude;
+        if (!float_representable(normalized)) {
+            invalid(parameter.location, "Normalized emission spectrum overflows binary32");
+            return false;
+        }
+        dense[i] = static_cast<float>(normalized);
+    }
+    return true;
+}
+
 bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
                           std::array<float, 471> &dense) {
     const auto scale = narrow(descriptor, "scale", 1);
     const auto [selected, color_space] = descriptor.effective_parameter("L");
+    if (selected && selected->type == "blackbody") {
+        return blackbody_emission(*selected, scale, light_multiplier, dense);
+    }
     const auto &source = selected ? selected->location : descriptor.authored.location;
     double normalization = 0;
     float rgb_scale = 1;
