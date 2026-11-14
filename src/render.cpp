@@ -326,6 +326,9 @@ std::string validate_image_textures(const RenderScene &scene) {
     std::set<const ImagePyramid *> checked;
     std::size_t remaining = ImageLimits{}.retained_bytes;
     for (const auto &texture : scene.image_textures) {
+        if (texture.filter != ImageFilter::bilinear && texture.filter != ImageFilter::trilinear) {
+            return "Invalid image texture filter";
+        }
         const std::array mapping{texture.uscale, texture.vscale, texture.udelta, texture.vdelta,
                                  texture.scale};
         if (!texture.image || !std::ranges::all_of(mapping, finite_scalar)) {

@@ -74,6 +74,18 @@ void check(const probe::Result &r, std::uint32_t budget) {
     compare(r.coarse, {1, 0, 0, 0}, "Coarsest texel outside black wrap", budget);
     compare(r.wrapped, fine, "Negative repeat coordinate", budget);
     compare(r.black, {}, "Black border at base level", budget);
+    compare(r.trilinear_base, fine, "Trilinear keeps LOD 0.5 at the base level", budget);
+    compare(r.trilinear_integer, {0.25f, 0.5f, 0.75f, 0}, "Integer trilinear LOD", budget);
+    compare(r.trilinear_middle, {0.625f, 0.25f, 0.375f, 0}, "Halfway adjacent-mip blend", budget);
+    // At (.25,.25), black addressing weights the upper 1x1 red texel by .75 squared.
+    compare(r.trilinear_black, {0.40625f, 0.25f, 0.375f, 0}, "Black-wrapped upper mip", budget);
+    compare(r.trilinear_coarse, {1, 0, 0, 0}, "Trilinear coarsest texel", budget);
+    compare(r.singleton_narrow, {0.5f, 0, 0, 0}, "Narrow singleton black border", budget);
+    compare(r.singleton_wide, {1, 0, 0, 0}, "Wide singleton coarsest texel", budget);
+    for (const auto invalid : {r.invalid_upper, r.invalid_filter}) {
+        require(std::isnan(invalid.x) && std::isnan(invalid.y) && std::isnan(invalid.z),
+                "Invalid texture filter or upper mip must fail visibly");
+    }
 
     const auto spectral = reconstruct_srgb({0.25f, 0.5f, 0.75f});
     require(spectral.has_value(), "CPU spectral reconstruction for probe failed");
@@ -92,11 +104,17 @@ void run_probe(id<MTLDevice> device) {
     require(pipeline != nil, diagnostic);
 
     constexpr std::array<std::uint32_t, 4> budgets{1, 4, 64, 256};
-    constexpr std::array<wire::ImageTexture, 2> textures{{
-        {0, 3, 0, 0, 1, 1, 0, 0, 1, 0},
-        {0, 3, 2, 0, 1, 1, 0, 0, 1, 0},
+    constexpr std::array<wire::ImageTexture, 7> textures{{
+        {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::bilinear_texture_filter},
+        {0, 3, 2, 0, 1, 1, 0, 0, 1, 0, wire::bilinear_texture_filter},
+        {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter},
+        {0, 3, 2, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter},
+        {2, 1, 2, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter},
+        {1, 3, 0, 0, 1, 1, 0, 0, 1, 0, wire::trilinear_texture_filter},
+        {0, 3, 0, 0, 1, 1, 0, 0, 1, 0, 99},
     }};
-    constexpr std::array<wire::TextureLevel, 3> levels{{{4, 4, 0}, {2, 2, 16}, {1, 1, 20}}};
+    constexpr std::array<wire::TextureLevel, 4> levels{
+        {{4, 4, 0}, {2, 2, 16}, {1, 1, 20}, {1, 1, 21}}};
     std::array<wire::Word, 21> texels{};
     texels[0] = 0x00000004u;
     texels[1] = 0x00000400u;

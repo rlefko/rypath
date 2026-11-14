@@ -13,7 +13,8 @@ import unittest
 from unittest import mock
 
 from compare_pbrt import (
-    QUADRANTS, REGIONS, compare_regions, read_pfm, roi_means,
+    QUADRANTS, REGIONS, TRILINEAR_BLEND, check_trilinear_sensitivity,
+    compare_regions, read_pfm, roi_means,
     render_replicates, stage_dependencies,
 )
 
@@ -109,6 +110,51 @@ class ComparisonTests(unittest.TestCase):
             "bottom-left": (0, 4, 4, 8),
             "bottom-right": (4, 4, 8, 8),
         })
+
+    def test_trilinear_sensitivity_uses_each_backends_first_seed_and_red_roi(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            entries = {"rypath": "00", "pbrt": "16"}
+            measurements = {backend: {"blend": [(0.5, 0.5, 0.5)]}
+                            for backend in entries}
+            for backend, seed in entries.items():
+                entry = root / "image-trilinear" / backend / f"{seed}.pbrt"
+                entry.parent.mkdir(parents=True)
+                entry.write_bytes(f'"integer seed" [{int(seed)}]\n'.encode() +
+                                  b'"string filter" "trilinear"\n')
+
+            def render(backend, binary, variant, source):
+                seed = entries[backend]
+                self.assertEqual(binary, Path(backend))
+                self.assertEqual(variant, root / "image-trilinear" / backend /
+                                 f"{seed}-bilinear.pbrt")
+                self.assertEqual(source, f'"integer seed" [{int(seed)}]\n'.encode() +
+                                 b'"string filter" "bilinear"\n')
+                x0, y0, x1, y1 = TRILINEAR_BLEND
+                red = 0.51 if backend == failing_backend else 0.53
+                return [(red if x0 <= x < x1 and y0 <= y < y1 else 0.5, 0.1, 1.0)
+                        for y in range(8) for x in range(8)]
+
+            with (mock.patch("compare_pbrt.render_pfm", side_effect=render),
+                  contextlib.redirect_stdout(io.StringIO())):
+                for failing_backend in (None, "rypath", "pbrt"):
+                    with self.subTest(failing_backend=failing_backend):
+                        self.assertEqual(check_trilinear_sensitivity(
+                            Path("rypath"), Path("pbrt"), root, measurements,
+                        ), failing_backend is None)
+
+    def test_trilinear_control_rejects_missing_or_duplicate_filter_token(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            entry = root / "image-trilinear" / "rypath" / "00.pbrt"
+            entry.parent.mkdir(parents=True)
+            for count in (0, 2):
+                with self.subTest(count=count):
+                    entry.write_bytes(b'"string filter" "trilinear"\n' * count)
+                    with (mock.patch("compare_pbrt.render_pfm") as render,
+                          self.assertRaisesRegex(ValueError, "expected one trilinear filter")):
+                        check_trilinear_sensitivity(Path("rypath"), Path("pbrt"), root, {})
+                    render.assert_not_called()
 
     def test_rois_use_top_down_coordinates(self):
         pixels = [(x, y, 8 * y + x) for y in range(8) for x in range(8)]

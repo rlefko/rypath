@@ -107,10 +107,10 @@ follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/b
 | `filename` | Required entry-relative or absolute path to a supported [PNG input](pbrt-profile.md#png-imagemap-definitions) |
 | `mapping` | `uv` (default), with `uscale` and `vscale` defaulting to 1 and `udelta` and `vdelta` to 0 |
 | `encoding` | `sRGB` (default) or `linear`; output color primaries are sRGB |
-| `filter` | `bilinear` (default), selecting one mip level |
+| `filter` | `bilinear` (default), selecting one mip level, or `trilinear`, blending adjacent levels |
 | `wrap` | `repeat` (default), `clamp`, or `black`; non-power-of-two images require repeat or clamp |
 | `scale`, `invert` | Multiply filtered RGB by `scale` (default 1), then subtract from one when `invert` is true (default false) |
-| `maxanisotropy` | Accepted finite value, inert with bilinear filtering |
+| `maxanisotropy` | Accepted finite value, inert with either supported filter |
 
 Texture lookup maps the hit UV, flips the vertical coordinate and filters in
 linear RGB. The spectrum uses the existing sRGB albedo reconstruction after
@@ -118,6 +118,14 @@ clamping the scaled or inverted RGB to [0,1]. Explicit texture encoding controls
 byte decoding. PNG gamma, color metadata, and alpha do not affect reflectance.
 Float imagemaps, non-UV mappings, other encodings or filters, alpha masking,
 displacement, and image emission are outside this profile.
+
+Trilinear filtering follows the pinned PBRT implementation: a selected mip index
+of zero uses base-level bilinear filtering even at fractional LODs below one.
+Higher fractional LODs blend two bilinear results in linear RGB. The upper 1×1
+mip retains wrap handling during this blend; only LODs at or above the coarsest
+level return its texel directly. Filter variants share the same mip storage.
+See [trilinear validation](trilinear-texture-validation.md) for boundary and
+independent reference checks.
 
 Triangle UVs default to `(0,0), (1,0), (1,1)`. Bilinear quads default to patch
 parameters. The footprint uses the geometric tangent plane and the declared

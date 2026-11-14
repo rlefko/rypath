@@ -29,13 +29,38 @@ static float3 texel(const device wire::Word *texels, const device float *transfe
                   transfer[begin + ((value >> 16) & 255u)]);
 }
 
+static bool valid_level(const device wire::TextureLevel &level, uint texel_count) {
+    return level.width > 0 && level.height > 0 && level.width <= 4096 && level.height <= 4096 &&
+           level.offset <= texel_count &&
+           ulong(level.width) * level.height <= texel_count - level.offset;
+}
+
+static float3 bilinear(const device wire::ImageTexture &texture,
+                       const device wire::TextureLevel &level, const device wire::Word *texels,
+                       const device float *transfer, float2 st) {
+    const float2 xy = st * float2(level.width, level.height) - 0.5f;
+    const int2 base = int2(floor(xy));
+    const float2 d = xy - float2(base);
+    const float3 a = texel(texels, transfer, level, base.x, base.y, texture.wrap, texture.encoding);
+    const float3 b =
+        texel(texels, transfer, level, base.x + 1, base.y, texture.wrap, texture.encoding);
+    const float3 c =
+        texel(texels, transfer, level, base.x, base.y + 1, texture.wrap, texture.encoding);
+    const float3 e =
+        texel(texels, transfer, level, base.x + 1, base.y + 1, texture.wrap, texture.encoding);
+    return (1.0f - d.x) * (1.0f - d.y) * a + d.x * (1.0f - d.y) * b + (1.0f - d.x) * d.y * c +
+           d.x * d.y * e;
+}
+
 static float3 lookup(const device wire::ImageTexture &texture,
                      const device wire::TextureLevel *levels, const device wire::Word *texels,
                      const device float *transfer, constant wire::TextureParameters &p, float2 uv,
                      float2 dx, float2 dy) {
     if (!all(isfinite(uv)) || !all(isfinite(dx)) || !all(isfinite(dy)) ||
         texture.level_count == 0 || texture.level_begin > p.level_count ||
-        texture.level_count > p.level_count - texture.level_begin)
+        texture.level_count > p.level_count - texture.level_begin ||
+        (texture.filter != wire::bilinear_texture_filter &&
+         texture.filter != wire::trilinear_texture_filter))
         return float3(NAN);
     dx *= float2(texture.uscale, texture.vscale);
     dy *= float2(texture.uscale, texture.vscale);
@@ -49,12 +74,15 @@ static float3 lookup(const device wire::ImageTexture &texture,
     const uint index = lod >= float(texture.level_count - 1u) ? texture.level_count - 1u
                                                               : uint(max(0.0f, floor(lod)));
     const device wire::TextureLevel &level = levels[texture.level_begin + index];
-    if (level.width == 0 || level.height == 0 || level.offset > p.texel_count ||
-        ulong(level.width) * level.height > p.texel_count - level.offset)
+    if (!valid_level(level, p.texel_count))
         return float3(NAN);
     if (lod >= float(texture.level_count - 1u)) {
         return texel(texels, transfer, level, 0, 0, texture.wrap, texture.encoding);
     }
+    // Pinned PBRT keeps the base level unblended even for 0 <= lod < 1.
+    const bool interpolate = texture.filter == wire::trilinear_texture_filter && index > 0;
+    if (interpolate && !valid_level(levels[texture.level_begin + index + 1u], p.texel_count))
+        return float3(NAN);
     float2 st =
         uv * float2(texture.uscale, texture.vscale) + float2(texture.udelta, texture.vdelta);
     st.y = 1.0f - st.y;
@@ -67,18 +95,14 @@ static float3 lookup(const device wire::ImageTexture &texture,
         st = clamp(st, float2(0), float2(1));
     else if (any(st < -1.0f) || any(st > 2.0f))
         return float3(0);
-    const float2 xy = st * float2(level.width, level.height) - 0.5f;
-    const int2 base = int2(floor(xy));
-    const float2 d = xy - float2(base);
-    const float3 a = texel(texels, transfer, level, base.x, base.y, texture.wrap, texture.encoding);
-    const float3 b =
-        texel(texels, transfer, level, base.x + 1, base.y, texture.wrap, texture.encoding);
-    const float3 c =
-        texel(texels, transfer, level, base.x, base.y + 1, texture.wrap, texture.encoding);
-    const float3 e =
-        texel(texels, transfer, level, base.x + 1, base.y + 1, texture.wrap, texture.encoding);
-    return (1.0f - d.x) * (1.0f - d.y) * a + d.x * (1.0f - d.y) * b + (1.0f - d.x) * d.y * c +
-           d.x * d.y * e;
+    const float3 lower = bilinear(texture, level, texels, transfer, st);
+    if (!interpolate)
+        return lower;
+    // The upper 1x1 mip still uses wrap-aware bilinear sampling below the coarsest LOD.
+    const float3 upper =
+        bilinear(texture, levels[texture.level_begin + index + 1u], texels, transfer, st);
+    const float delta = lod - float(index);
+    return (1.0f - delta) * lower + delta * upper;
 }
 
 static float blend(float t, float a, float b) { return (1.0f - t) * a + t * b; }

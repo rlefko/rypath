@@ -17,6 +17,7 @@ import tempfile
 WIDTH = HEIGHT = 8
 REPLICATES = 16
 FULL = (0, 0, WIDTH, HEIGHT)
+TRILINEAR_BLEND = (4, 3, 5, 5)
 QUADRANTS = {
     "full": FULL,
     "top-left": (0, 0, 4, 4),
@@ -61,6 +62,7 @@ REGIONS = {
         "triangle": (7, 5, 8, 7),
     },
     "image-secondary": QUADRANTS,
+    "image-trilinear": {"full": FULL, "blend": TRILINEAR_BLEND},
 }
 
 
@@ -115,6 +117,16 @@ def stage_dependencies(fixture, destination):
         target.write_bytes(payload)
 
 
+def render_pfm(backend, binary, variant, source):
+    output = variant.with_suffix(".pfm")
+    variant.write_bytes(source)
+    command = [str(binary), str(variant), str(output)]
+    if backend == "pbrt":
+        command = [str(binary), "--quiet", "--outfile", str(output), str(variant)]
+    subprocess.run(command, check=True, cwd=variant.parent, timeout=120)
+    return read_pfm(output)
+
+
 def render_replicates(rypath, pbrt, fixture, run_dir, regions):
     source = fixture.read_bytes()
     seed_token = b'"integer seed" [0]'
@@ -129,13 +141,10 @@ def render_replicates(rypath, pbrt, fixture, run_dir, regions):
         measurements[backend] = {name: [] for name in regions}
         for seed in range(start_seed, start_seed + REPLICATES):
             variant = backend_dir / f"{seed:02}.pbrt"
-            output = variant.with_suffix(".pfm")
-            variant.write_bytes(source.replace(seed_token, f'"integer seed" [{seed}]'.encode(), 1))
-            command = [str(binary), str(variant), str(output)]
-            if backend == "pbrt":
-                command = [str(binary), "--quiet", "--outfile", str(output), str(variant)]
-            subprocess.run(command, check=True, cwd=backend_dir, timeout=120)
-            pixels = read_pfm(output)
+            pixels = render_pfm(
+                backend, binary, variant,
+                source.replace(seed_token, f'"integer seed" [{seed}]'.encode(), 1),
+            )
             for name, bounds in regions.items():
                 measurements[backend][name].append(roi_means(pixels, bounds))
     return measurements
@@ -164,6 +173,28 @@ def compare_regions(scene, measurements):
     return passed
 
 
+def check_trilinear_sensitivity(rypath, pbrt, run_dir, measurements):
+    passed = True
+    for backend, binary, seed in (("rypath", rypath, 0), ("pbrt", pbrt, REPLICATES)):
+        backend_dir = run_dir / "image-trilinear" / backend
+        source = (backend_dir / f"{seed:02}.pbrt").read_bytes()
+        filter_token = b'"string filter" "trilinear"'
+        if source.count(filter_token) != 1:
+            raise ValueError("image-trilinear: expected one trilinear filter for the control")
+        bilinear = render_pfm(
+            backend, binary, backend_dir / f"{seed:02}-bilinear.pbrt",
+            source.replace(filter_token, b'"string filter" "bilinear"', 1),
+        )
+        delta = roi_means(bilinear, TRILINEAR_BLEND)[0] - measurements[backend]["blend"][0][0]
+        minimum = 0.02
+        ok = delta > minimum
+        passed &= ok
+        status = "PASS" if ok else "FAIL"
+        print(f"{status} image-trilinear blend R  {backend} bilinear-trilinear={delta:.4g} "
+              f"minimum={minimum:.4g}")
+    return passed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rypath", type=Path, required=True, help="rypath_pbrt_reference binary")
@@ -182,6 +213,8 @@ def main():
             fixture = args.fixtures / f"{scene}.pbrt"
             measurements = render_replicates(rypath, pbrt, fixture, run_dir, regions)
             passed &= compare_regions(scene, measurements)
+            if scene == "image-trilinear":
+                passed &= check_trilinear_sensitivity(rypath, pbrt, run_dir, measurements)
         return 0 if passed else 1
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"compare_pbrt: {error}", file=sys.stderr)

@@ -524,8 +524,9 @@ const std::array<float, 256> &image_transfer_table(ImageEncoding encoding) {
 }
 
 std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t, float dsdx,
-                                    float dtdx, float dsdy, float dtdy) {
-    if (!valid_profile(image.encoding, image.wrap) || image.levels.empty() || !std::isfinite(s) ||
+                                    float dtdx, float dsdy, float dtdy, ImageFilter filter) {
+    if ((filter != ImageFilter::bilinear && filter != ImageFilter::trilinear) ||
+        !valid_profile(image.encoding, image.wrap) || image.levels.empty() || !std::isfinite(s) ||
         !std::isfinite(t) || !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
         !std::isfinite(dtdy)) {
         return std::nullopt;
@@ -537,37 +538,52 @@ std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t,
     const auto coarsest = image.levels.size() - 1;
     const float lod =
         static_cast<float>(coarsest) + std::log(std::max(width, 1e-8f)) * 1.4426950408889634f;
-    const auto selected = lod >= static_cast<float>(coarsest)
-                              ? coarsest
-                              : static_cast<std::size_t>(std::max(0.0f, std::floor(lod)));
-    const auto &level = image.levels[selected];
-    if (level.width == 0 || level.height == 0 || !dimensions_fit(level.width, level.height, {}) ||
-        level.offset > image.texels.size() ||
-        pixel_count(level.width, level.height) > image.texels.size() - level.offset) {
+    const bool wide = lod >= static_cast<float>(coarsest);
+    const auto &transfer = image_transfer_table(image.encoding);
+    const auto sample = [&](const ImageMipLevel &level) -> std::optional<Rgb> {
+        if (level.width == 0 || level.height == 0 ||
+            !dimensions_fit(level.width, level.height, {}) || level.offset > image.texels.size() ||
+            pixel_count(level.width, level.height) > image.texels.size() - level.offset) {
+            return std::nullopt;
+        }
+        const auto texels =
+            std::span(image.texels).subspan(level.offset, pixel_count(level.width, level.height));
+        if (wide) {
+            return decode_texel(texels.front(), transfer);
+        }
+        const float x = bounded_coordinate(s, image.wrap) * static_cast<float>(level.width) - 0.5f;
+        const float y = bounded_coordinate(t, image.wrap) * static_cast<float>(level.height) - 0.5f;
+        const auto ix = static_cast<int>(std::floor(x));
+        const auto iy = static_cast<int>(std::floor(y));
+        const float dx = x - static_cast<float>(ix);
+        const float dy = y - static_cast<float>(iy);
+        const int w = static_cast<int>(level.width);
+        const int h = static_cast<int>(level.height);
+        const auto a = decode_texel(texel_at(texels, ix, iy, w, h, image.wrap), transfer);
+        const auto b = decode_texel(texel_at(texels, ix + 1, iy, w, h, image.wrap), transfer);
+        const auto c = decode_texel(texel_at(texels, ix, iy + 1, w, h, image.wrap), transfer);
+        const auto d = decode_texel(texel_at(texels, ix + 1, iy + 1, w, h, image.wrap), transfer);
+        Rgb rgb{};
+        for (std::size_t channel = 0; channel < rgb.size(); ++channel) {
+            rgb[channel] = (1.0f - dx) * (1.0f - dy) * a[channel] + dx * (1.0f - dy) * b[channel] +
+                           (1.0f - dx) * dy * c[channel] + dx * dy * d[channel];
+        }
+        return rgb;
+    };
+    const auto selected =
+        wide ? coarsest : static_cast<std::size_t>(std::max(0.0f, std::floor(lod)));
+    auto rgb = sample(image.levels[selected]);
+    // PBRT uses base-level bilerp throughout the first LOD interval.
+    if (!rgb || filter == ImageFilter::bilinear || wide || selected == 0) {
+        return rgb;
+    }
+    const auto upper = sample(image.levels[selected + 1]);
+    if (!upper) {
         return std::nullopt;
     }
-    const auto texels =
-        std::span(image.texels).subspan(level.offset, pixel_count(level.width, level.height));
-    const auto &transfer = image_transfer_table(image.encoding);
-    if (lod >= static_cast<float>(coarsest)) {
-        return decode_texel(texels.front(), transfer);
-    }
-    const float x = bounded_coordinate(s, image.wrap) * static_cast<float>(level.width) - 0.5f;
-    const float y = bounded_coordinate(t, image.wrap) * static_cast<float>(level.height) - 0.5f;
-    const auto ix = static_cast<int>(std::floor(x));
-    const auto iy = static_cast<int>(std::floor(y));
-    const float dx = x - static_cast<float>(ix);
-    const float dy = y - static_cast<float>(iy);
-    const int w = static_cast<int>(level.width);
-    const int h = static_cast<int>(level.height);
-    const auto a = decode_texel(texel_at(texels, ix, iy, w, h, image.wrap), transfer);
-    const auto b = decode_texel(texel_at(texels, ix + 1, iy, w, h, image.wrap), transfer);
-    const auto c = decode_texel(texel_at(texels, ix, iy + 1, w, h, image.wrap), transfer);
-    const auto d = decode_texel(texel_at(texels, ix + 1, iy + 1, w, h, image.wrap), transfer);
-    Rgb rgb{};
-    for (std::size_t channel = 0; channel < rgb.size(); ++channel) {
-        rgb[channel] = (1.0f - dx) * (1.0f - dy) * a[channel] + dx * (1.0f - dy) * b[channel] +
-                       (1.0f - dx) * dy * c[channel] + dx * dy * d[channel];
+    const float weight = lod - static_cast<float>(selected);
+    for (std::size_t channel = 0; channel < rgb->size(); ++channel) {
+        (*rgb)[channel] = (1.0f - weight) * (*rgb)[channel] + weight * (*upper)[channel];
     }
     return rgb;
 }

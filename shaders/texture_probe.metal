@@ -84,4 +84,24 @@ kernel void rypath_texture_footprint_probe(
     result.spectrum = {
         rypath_image::spectrum(middle, 460, table), rypath_image::spectrum(middle, 550, table),
         rypath_image::spectrum(middle, 610, table), rypath_image::spectrum(fine, 550, table)};
+
+    const float2 fractional(0.3535533905932738f, 0); // Four-wide pyramid: LOD 1.5.
+    result.trilinear_base = pack_probe(rypath_image::lookup(
+        textures[2], levels, texels, transfer, parameters, base, fractional * 0.5f, float2(0)));
+    result.trilinear_integer = pack_probe(rypath_image::lookup(
+        textures[2], levels, texels, transfer, parameters, base, float2(0.25f, 0), float2(0)));
+    result.trilinear_middle = pack_probe(rypath_image::lookup(
+        textures[2], levels, texels, transfer, parameters, base, fractional, float2(0)));
+    result.trilinear_black = pack_probe(rypath_image::lookup(
+        textures[3], levels, texels, transfer, parameters, base, fractional, float2(0)));
+    result.trilinear_coarse = pack_probe(rypath_image::lookup(
+        textures[3], levels, texels, transfer, parameters, outside, float2(0.5f, 0), float2(0)));
+    result.singleton_narrow = pack_probe(rypath_image::lookup(
+        textures[4], levels, texels, transfer, parameters, float2(0, 0.5f), float2(0), float2(0)));
+    result.singleton_wide = pack_probe(rypath_image::lookup(
+        textures[4], levels, texels, transfer, parameters, outside, float2(0.5f, 0), float2(0)));
+    result.invalid_upper = pack_probe(rypath_image::lookup(
+        textures[5], levels, texels, transfer, parameters, base, fractional, float2(0)));
+    result.invalid_filter = pack_probe(rypath_image::lookup(
+        textures[6], levels, texels, transfer, parameters, base, float2(0.5f, 0), float2(0)));
 }

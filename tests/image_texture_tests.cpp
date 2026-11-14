@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <numbers>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -369,6 +370,77 @@ void lookup() {
             "Huge finite gradient did not select the coarsest mip");
 }
 
+void trilinear_lookup() {
+    using Rgb = std::array<float, 3>;
+    // Explicit encoded texels isolate filtering from pyramid generation.
+    const ImagePyramid image{
+        ImageEncoding::srgb,
+        ImageWrap::black,
+        {{8, 1, 0}, {4, 1, 8}, {2, 1, 12}, {1, 1, 14}},
+        {0x000000, 0x0000ff, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0xff0000,
+         0x000000, 0x000000, 0x000000, 0x00ff00, 0x000000, 0x800080},
+    };
+    const auto sample = [&image](float half_width, float s = 0.25f) {
+        return image_linear_rgb(image, s, 0.5f, 0, 0, -half_width, 0, ImageFilter::trilinear);
+    };
+    const auto half_value = std::pow((128.0f / 255.0f + 0.055f) / 1.055f, 2.4f);
+    require(sample(0) == Rgb{0.5f, 0, 0}, "Trilinear magnification did not bilerp the base");
+    require(sample(0.0625f * std::numbers::sqrt2_v<float>) == Rgb{0.5f, 0, 0},
+            "Trilinear blended the base LOD interval");
+    require(sample(0.125f) == Rgb{0, 0, 0.5f}, "Wrong trilinear result at integer LOD one");
+    const auto interior = sample(0.125f * std::exp2(0.25f));
+    require(interior && (*interior)[0] == 0 && std::abs((*interior)[1] - 0.25f) < 1e-6f &&
+                std::abs((*interior)[2] - 0.375f) < 1e-6f,
+            "Wrong trilinear weights between interior mips");
+    const float fractional_width = 0.25f * std::numbers::sqrt2_v<float>;
+    const auto blended = sample(fractional_width);
+    // LOD 2.5 blends equal weights. At s=0.25 the 1x1 lookup contributes
+    // three quarters of its decoded value because the fourth quarter is black.
+    require(blended && std::abs((*blended)[0] - 0.375f * half_value) < 1e-6f &&
+                std::abs((*blended)[1] - 0.5f) < 1e-6f &&
+                std::abs((*blended)[2] - 0.375f * half_value) < 1e-6f,
+            "Trilinear did not blend two bilinear samples in linear RGB");
+    require(sample(fractional_width, -2.0f) == Rgb{}, "Upper 1x1 mip ignored black wrap");
+    require(sample(0.5f, -2.0f) == Rgb{image_transfer_table(ImageEncoding::srgb)[128], 0,
+                                       image_transfer_table(ImageEncoding::srgb)[128]},
+            "Trilinear did not return the top texel directly at the coarsest LOD");
+
+    auto linear = image;
+    linear.encoding = ImageEncoding::linear;
+    // At s=1.25, repeat samples the green lower texel and clamp samples the black one.
+    // Both wrap modes sample the sole upper texel at full strength.
+    for (const auto wrap : {ImageWrap::repeat, ImageWrap::clamp}) {
+        linear.wrap = wrap;
+        const auto result = image_linear_rgb(linear, 1.25f, 0.5f, fractional_width, 0, 0, 0,
+                                             ImageFilter::trilinear);
+        const float green = wrap == ImageWrap::repeat ? 0.5f : 0.0f;
+        require(result && std::abs((*result)[0] - 64.0f / 255.0f) < 1e-6f &&
+                    std::abs((*result)[1] - green) < 1e-6f &&
+                    std::abs((*result)[2] - 64.0f / 255.0f) < 1e-6f,
+                "Wrong trilinear result for linear encoding with repeat or clamp");
+    }
+
+    const auto singleton =
+        success(build_image_pyramid({1, 1, {255, 0, 0}}, ImageEncoding::linear, ImageWrap::black));
+    require(image_linear_rgb(singleton, 0, 0, 0, 0, 0, 0, ImageFilter::trilinear) ==
+                    Rgb{0.25f, 0, 0} &&
+                image_linear_rgb(singleton, 0, 0, 0.5f, 0, 0, 0, ImageFilter::trilinear) ==
+                    Rgb{1, 0, 0},
+            "Singleton black wrap must follow the footprint");
+
+    auto malformed = image;
+    malformed.levels.back().offset = static_cast<std::uint32_t>(image.texels.size());
+    require(!image_linear_rgb(malformed, 0.25f, 0.5f, fractional_width, 0, 0, 0,
+                              ImageFilter::trilinear),
+            "Trilinear accepted an out-of-bounds upper mip");
+    require(image_linear_rgb(malformed, 0.25f, 0.5f, fractional_width, 0, 0, 0) == Rgb{0, 1, 0},
+            "Bilinear must only read the selected mip");
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    const auto invalid_filter = static_cast<ImageFilter>(-1);
+    require(!image_linear_rgb(image, 0.25f, 0.5f, 0.5f, 0, 0, 0, invalid_filter),
+            "Direct top-level lookup accepted an unknown filter");
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -379,6 +451,7 @@ int main(int argc, char *argv[]) {
         deflate_work_limit();
         mip_pyramid();
         lookup();
+        trilinear_lookup();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
