@@ -182,9 +182,20 @@ follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/b
 Texture lookup maps the hit UV, flips the vertical coordinate and filters in
 linear RGB. The spectrum uses the existing sRGB albedo reconstruction after
 clamping the scaled or inverted RGB to [0,1]. Explicit texture encoding controls
-byte decoding. PNG gamma, color metadata, and alpha do not affect reflectance.
+sample decoding. PNG gamma, color metadata, and alpha do not affect reflectance.
 Float imagemaps, non-UV mappings, other encodings or filters, alpha masking,
 displacement, and image emission are outside this profile.
+
+Eight-bit sources retain encoded-byte mip storage. Sixteen-bit samples are
+normalized by `65535.f`, decoded with the selected transfer function, and rounded
+to binary16 before resampling, following pinned PBRT. The sRGB path uses its
+continuous transfer approximation rather than the eight-bit lookup table.
+Resizing and downsampling propagate float working values; each stored level is
+rounded independently to binary16. Resizing may produce values above one, which
+remain available to filtering and texture scaling before the reflectance clamp.
+Portable and Metal lookup widen stored halves to float, including half subnormals.
+This texture storage policy is separate from film accumulation and PNG output's
+`savefp16` override. See [16-bit validation](image16-texture-validation.md).
 
 Point filtering uses the same floor LOD as bilinear, then rounds
 `st * resolution - 0.5` with halfway values away from zero before applying

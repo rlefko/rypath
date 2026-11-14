@@ -111,6 +111,13 @@ EWA descriptors additionally carry a bounded anisotropy limit. Both signed
 derivative vectors feed elliptical filtering of the shared mip pyramid; the
 [EWA record](ewa-texture-validation.md) defines stable arithmetic, bounded scan
 work, and edge handling.
+Sixteen-bit PNG sources retain their original channel bytes and compile to linear
+binary16 mip storage. A private format discriminator selects sRGB8, linear8, or
+linear-half texels in the existing Metal descriptor. Shared buffer offsets count
+32-bit words: one per encoded-byte texel or two per half RGB texel. Both backends
+widen half subnormals without half-precision arithmetic; filtering remains float.
+The [16-bit record](image16-texture-validation.md) defines quantization, memory
+accounting, and reference coverage.
 File expansion, typed parsing, scene interpretation, and reporting are implemented in rypath;
 PNG decoding uses the vendored portable LodePNG decoder. The
 [dependency decision](pbrt-decision.md) records the integration boundary.
