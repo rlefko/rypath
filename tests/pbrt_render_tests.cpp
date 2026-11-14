@@ -888,7 +888,7 @@ void file_light_spectra(const fs::path &scratch) {
     if (!checked.scene) {
         throw std::runtime_error("Translation discarded the checked scene");
     }
-    checked.scene->lights.front().emission_file.reset();
+    checked.scene->lights.front().spectrum_file.reset();
     const auto missing = translate(checked, Location{compare_entry.string()});
     require(missing.exit_code() == 1 && !missing.scene &&
                 missing.diagnostics.front().code == "invalid-render-value" &&
@@ -965,20 +965,6 @@ AreaLightSource ""
     rejected("479.5 0\n480.5 1.40129846e-45\n", 1, "positive finite CIE Y");
     rejected("-10 -1\n360 1\n830 1\n", 2, "must be nonnegative");
     rejected("360 1\n360.5 0\n", 1, "overflows binary32", 1e35);
-
-    write(scratch, "unsupported-reflectance.spd", "360 0.25\n830 0.5\n");
-    for (
-        const auto declaration : {
-            R"(Material "diffuse" "spectrum reflectance" "unsupported-reflectance.spd")",
-            R"(Texture "paint" "spectrum" "constant" "spectrum value" "unsupported-reflectance.spd")",
-        }) {
-        const auto entry = write(scratch, "unsupported-reflectance.pbrt",
-                                 std::string(basic) + declaration + "\n" + std::string(triangle));
-        const auto checked = check(entry);
-        require(checked.exit_code() == 2 &&
-                    translate(checked, Location{entry.string()}).exit_code() == 2,
-                "File spectrum support is restricted to emission");
-    }
 }
 
 void file_light_limits(const fs::path &scratch) {
@@ -1009,6 +995,146 @@ AreaLightSource "diffuse"
     limited({.total_values = descriptor_values - 1}, 7);
     limited({.total_values = 2 * descriptor_values - 1}, 8);
     limited({.total_values = 3 * descriptor_values - 1}, 10);
+}
+
+void string_reflectance(const fs::path &scratch) {
+    const auto asset = write(scratch, "reflectance.spd", "499.25 -1\n500.75 2\n");
+    write(scratch, "zero-reflectance.spd", "360 -0\n830 0\n");
+    const auto entry =
+        write(scratch, "string-reflectance.pbrt", std::string(basic) + R"(ColorSpace "rec2020"
+AttributeBegin
+    Attribute "material" "spectrum reflectance" ["reflectance.spd"]
+    ColorSpace "aces2065-1"
+    MakeNamedMaterial "file" "string type" "diffuse"
+    NamedMaterial "file"
+)" + std::string(triangle) + R"(AttributeEnd
+AttributeBegin
+    Attribute "texture" "spectrum value" "reflectance.spd"
+    ColorSpace "dci-p3"
+    Texture "file-paint" "spectrum" "constant"
+AttributeEnd
+Texture "named-paint" "spectrum" "constant" "spectrum value" ["metal-Au-eta"]
+Texture "unused-black" "spectrum" "constant" "spectrum value" "zero-reflectance.spd"
+Material "diffuse" "texture reflectance" "file-paint"
+)" + std::string(triangle) + R"(Material "diffuse" "texture reflectance" "file-paint"
+)" + std::string(triangle) + R"(Material "diffuse" "spectrum reflectance" "metal-Au-eta"
+)" + std::string(triangle) + R"(Material "diffuse" "texture reflectance" "named-paint"
+)" + std::string(triangle));
+    auto checked = check(entry);
+    if (checked.exit_code() != 0 || !checked.scene) {
+        throw std::runtime_error(report(checked));
+    }
+    auto &source = checked.scene.value();
+    auto &texture = source.spectrum_constant_textures.at(0);
+    auto &named = source.named_materials.front();
+    const auto retained = texture.spectrum_file;
+    require(retained && retained == named.spectrum_file && retained->knots.size() == 2 &&
+                retained->knots[0].value == -1 && retained->knots[1].value == 2,
+            "Checked material and texture must share the signed raw file source");
+    write(scratch, "reflectance.spd", "499.25 0\n500.75 0\n");
+    fs::remove(asset);
+
+    const Location location{entry.string()};
+    const auto translated = translate(checked, location);
+    if (translated.exit_code() != 0 || !translated.scene) {
+        throw std::runtime_error("Non-sRGB material and texture spectra must translate using "
+                                 "retained data after removal");
+    }
+    const auto &scene = translated.scene.value();
+    const auto &bindings = scene.instance_materials;
+    require(bindings.size() == 5 && bindings[1] == bindings[2] && bindings[0] != bindings[1],
+            "Inline materials referencing one constant texture must reuse its material index");
+    const auto &direct_file = scene.materials.at(bindings[0]);
+    const auto &textured_file = scene.materials.at(bindings[1]);
+    const auto &direct_named = scene.materials.at(bindings[3]);
+    const auto &textured_named = scene.materials.at(bindings[4]);
+    for (const auto *material : {&direct_file, &textured_file}) {
+        require(material->kind == SpectralMaterialKind::sampled,
+                "File reflectance must retain the sampled material representation");
+        for (const auto wavelength :
+             {std::nextafter(499.25f, 0.f), 499.25f, std::nextafter(499.75f, 0.f), 499.75f, 500.f,
+              500.25f, std::nextafter(500.25f, 501.f), 500.75f, std::nextafter(500.75f, 501.f)}) {
+            const double expected = wavelength < 499.25f || wavelength > 500.75f
+                                        ? 0
+                                        : std::clamp(2. * (wavelength - 499.75), 0., 1.);
+            near(spectral_reflectance(*material, wavelength), expected,
+                 expected == 0 || expected == 1 ? 0 : 1e-6,
+                 "File reflectance support and clamp-after-interpolation");
+        }
+    }
+    // Independently use the two surrounding binary32 gold eta knots from pinned PBRT spectrum.cpp.
+    const double fractional =
+        0.916f + (0.7545f - 0.916f) * ((500.25 - 495.936707f) / (506.057861f - 495.936707f));
+    for (const auto *material : {&direct_named, &textured_named}) {
+        require(material->kind == SpectralMaterialKind::sampled,
+                "Named reflectance must retain the sampled material representation");
+        near(spectral_reflectance(*material, 500.25f), fractional, 1e-6,
+             "Named reflectance at a fractional wavelength");
+        near(spectral_reflectance(*material, 450), 1, 0, "Named reflectance saturation");
+    }
+
+    const auto reject_tampering = [&](const std::shared_ptr<const CheckedSpectrumSource> &payload) {
+        texture.spectrum_file = payload;
+        const auto result = translate(checked, location);
+        require(result.exit_code() == 1 && !result.scene && result.diagnostics.size() == 1 &&
+                    result.diagnostics.front().code == "invalid-render-value" &&
+                    result.diagnostics.front().location.line == 17 &&
+                    result.diagnostics.front().location.column == 25,
+                "Tampered checked texture payload must fail at its inherited spectrum value");
+    };
+    reject_tampering({});
+    auto invalid = std::make_shared<CheckedSpectrumSource>(*retained);
+    invalid->knots[1].wavelength = invalid->knots[0].wavelength;
+    reject_tampering(invalid);
+    invalid = std::make_shared<CheckedSpectrumSource>(*retained);
+    invalid->knots[0].value = std::numeric_limits<float>::infinity();
+    reject_tampering(invalid);
+
+    const auto unused = write(scratch, "missing-unused-reflectance.pbrt",
+                              std::string(basic) + R"(Texture "unused" "spectrum" "constant"
+    "spectrum value" "missing-unused-reflectance.spd"
+)" + std::string(triangle));
+    const auto missing = check(unused);
+    require(missing.exit_code() == 1 && !missing.scene && !missing.document.diagnostics.empty(),
+            "Even unused file-backed textures require a checked input");
+}
+
+void string_reflectance_limits(const fs::path &scratch) {
+    write(scratch, "bounded-reflectance.spd", "499.25 -1\n500.75 2\n");
+    for (const auto source : {"bounded-reflectance.spd", "metal-Au-eta"}) {
+        const auto entry = write(
+            scratch, "bounded-string-reflectance.pbrt",
+            std::string(basic) +
+                "Texture \"shared\" \"spectrum\" \"constant\"\n    \"spectrum value\" \"" + source +
+                R"("
+ObjectBegin "sample"
+    Material "diffuse" "texture reflectance" "shared"
+)" + std::string(triangle) +
+                R"(ObjectEnd
+ObjectInstance "sample"
+ObjectInstance "sample"
+)");
+        const auto unlimited = accepted(entry);
+        const auto &scene = unlimited.scene;
+        const auto binding = scene.instance_materials.front();
+        const auto compiled_count = 2 * scene.materials.at(binding).knots.size();
+        const auto named_count = pbrt_named_spectrum_knots(source).size();
+        const std::size_t source_count = named_count == 0 ? 4 : 2 * named_count;
+        const auto budget = 1 + source_count + compiled_count;
+        const auto exact = translation(entry, {.total_values = budget});
+        require(exact.exit_code() == 0 && exact.scene &&
+                    exact.scene->instance_materials == std::vector{binding, binding},
+                "A shared texture consumes one authored, raw, and compiled spectral charge");
+        for (const auto &limit :
+             {Limits{.list_values = source_count - 1}, Limits{.total_values = budget - 1}}) {
+            const auto limited = translation(entry, limit);
+            require(limited.exit_code() == 1 && !limited.scene && limited.diagnostics.size() == 1 &&
+                        limited.diagnostics.front().code == "limit-exceeded" &&
+                        limited.diagnostics.front().location.line == 8 &&
+                        limited.diagnostics.front().location.column == 5,
+                    "Raw list and compiled total budget failures must point to the texture value");
+        }
+    }
 }
 
 void blackbody_light_spectrum(const fs::path &scratch) {
@@ -1317,9 +1443,6 @@ Texture "unused" "spectrum" "constant"
     rejected(R"(Texture "unused" "spectrum" "constant" "blackbody value" [5500]
 )",
              2, "two numeric", "\"blackbody value\"");
-    rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" "stdillum-D65"
-)",
-             2, "two numeric", "\"spectrum value\"");
     rejected(R"(Texture "unused" "spectrum" "constant" "spectrum value" [550 0.5]
 )",
              2, "two numeric", "\"spectrum value\"");
@@ -1408,8 +1531,6 @@ LightSource "infinite"
              5);
     rejected("LightSource \"infinite\"\n    \"color L\" [1 0 0]\n", 2, "legacy-parameter", 8, 5);
     rejected("Material \"diffuse\"\n    \"blackbody reflectance\" [5500]\n", 2,
-             "unsupported-render-feature", 8, 5);
-    rejected("Material \"diffuse\"\n    \"spectrum reflectance\" \"stdillum-D65\"\n", 2,
              "unsupported-render-feature", 8, 5);
     const auto limited_path = write(scratch, "limited-rgb.pbrt",
                                     std::string(basic) +
@@ -1672,7 +1793,8 @@ void sensor() {
 }
 
 void owned_fixtures(const fs::path &fixtures) {
-    for (const auto name : {"background.pbrt", "diffuse.pbrt", "multibounce.pbrt"}) {
+    for (const auto name : {"background.pbrt", "diffuse.pbrt", "multibounce.pbrt",
+                            "reflectance-named-diffuse.pbrt", "reflectance-file-ply.pbrt"}) {
         const auto translated = accepted(fixtures / name);
         require(translated.settings.width == 8 && translated.settings.height == 8 &&
                     translated.settings.samples == 4096 && translated.settings.seed == 0 &&
@@ -1725,6 +1847,8 @@ int main(int argc, char **argv) {
         file_light_spectra(scratch);
         file_light_rejections(scratch);
         file_light_limits(scratch);
+        string_reflectance(scratch);
+        string_reflectance_limits(scratch);
         blackbody_light_spectrum(scratch);
         blackbody_light_context(scratch);
         rejects_blackbody_lights(scratch);

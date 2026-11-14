@@ -83,6 +83,10 @@ set(rypath_pbrt_spectra_data "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pbrt/named
 rypath_verify_spectral_data("${rypath_pbrt_spectra_data}"
     "1ad23d63bc8e02a3f88e22dfe660c07114d037a32d1f8d8666c9723400c833bc")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_pbrt_spectra_data}")
+set(rypath_pbrt_knot_data "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pbrt/named_spectrum_knots.inc")
+rypath_verify_spectral_data("${rypath_pbrt_knot_data}"
+    "92c84ba72972a7eb2f7d148f39aece27e9860d4d790021878621ca44c4f53cdb")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_pbrt_knot_data}")
 add_library(rypath_pbrt_spectra STATIC src/pbrt_spectra.cpp)
 target_include_directories(rypath_pbrt_spectra PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_pbrt_spectra)
@@ -112,7 +116,7 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_sobol_tables}")
 
 add_library(rypath_render STATIC src/render.cpp src/sampling.cpp src/triangle_attributes.cpp
-    src/texture_footprint.cpp)
+    src/texture_footprint.cpp src/reflectance_curve.cpp)
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PRIVATE "${rypath_generated_directory}")
 target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image)

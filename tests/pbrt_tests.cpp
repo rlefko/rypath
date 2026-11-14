@@ -580,14 +580,15 @@ Material "diffuse"
 Attribute "texture" "spectrum value" "constant.spd"
 Texture "t" "spectrum" "constant"
 )"));
-    require(file_constant.exit_code() == 2 && !file_constant.scene &&
-                file_constant.document.dependencies.size() == 1,
-            "inherited constant spectrum files are inventoried and deferred");
+    const auto &constant_source =
+        checked_scene(file_constant).spectrum_constant_textures.front().spectrum_file;
+    require(file_constant.document.dependencies.size() == 1 && constant_source &&
+                constant_source->knots.size() == 2 && constant_source->knots[0].wavelength == 400,
+            "an unused constant with an inherited file retains its original support");
     const auto &constant_input = file_constant.document.dependencies.front();
     require(constant_input.kind == DependencyKind::spectrum && constant_input.exists &&
-                !constant_input.visited && constant_input.location.line == 2,
+                constant_input.visited && constant_input.location.line == 2,
             "constant spectrum file retains its inherited source");
-    find_diagnostic(file_constant.document, "unsupported-parameter");
 
     const auto partial_constants =
         check(write_file(directory, "partial-constants.pbrt", R"(WorldBegin
@@ -672,7 +673,9 @@ Texture "later-texture" "spectrum" "constant"
                  "\"\nMaterial \"diffuse\"\nAttributeEnd\n";
     }
     const auto owned_paths = check(write_file(directory, "owned-dependencies.pbrt", paths));
-    require(owned_paths.exit_code() == 2 && owned_paths.document.dependencies.size() == path_count,
+    require(checked_scene(owned_paths).inline_materials.size() == path_count &&
+                owned_paths.document.dependencies.size() == path_count &&
+                std::ranges::all_of(owned_paths.document.dependencies, &Dependency::visited),
             "dependency source identity survives destroyed and reused inherited storage");
 
     const auto inherited_shape = check(write_file(directory, "preworld-attribute.pbrt", R"(
@@ -1125,7 +1128,7 @@ LightSource "infinite" "spectrum L" "stdillum-a"
 Attribute "light" "spectrum L" "emission.spd"
 AreaLightSource "diffuse"
 )"));
-    const auto &file_source = checked_scene(external).area_lights.front()->emission_file;
+    const auto &file_source = checked_scene(external).area_lights.front()->spectrum_file;
     require(file_source && file_source->knots.size() == 2 &&
                 external.document.dependencies.size() == 1 &&
                 external.document.dependencies.front().kind == DependencyKind::spectrum &&
@@ -1146,22 +1149,37 @@ LightSource "infinite"
 AreaLightSource "diffuse" "spectrum L" "shadowed.spd" "spectrum L" "./curve.spd"
 AreaLightSource "diffuse" "spectrum L" "stdillum-D65"
 AreaLightSource "diffuse" "rgb L" [1 1 1]
+AttributeBegin
+Attribute "material" "spectrum reflectance" "curve.spd"
+Material "diffuse"
+MakeNamedMaterial "file" "string type" "diffuse" "spectrum reflectance" ["curve.spd"]
+Material "diffuse" "spectrum reflectance" "shadowed.spd" "spectrum reflectance" "stdillum-D65"
+AttributeEnd
+Attribute "texture" "spectrum value" "curve.spd"
+Texture "file" "spectrum" "constant"
+Texture "named" "spectrum" "constant" "spectrum value" "stdillum-D65"
 )");
     const auto entry = write_file(directory, "spectra.pbrt", R"(WorldBegin
 Include "nested/lights.pbrt"
 )");
     const auto result = check(entry);
     const auto &scene = checked_scene(result);
-    const auto &source = scene.lights.front().emission_file;
+    const auto &source = scene.lights.front().spectrum_file;
     require(source && source->resolved_path == spectrum && source->knots.size() == 3 &&
                 source->knots[0].wavelength == 360 && source->knots[0].value == -.5f &&
                 source->knots[1].wavelength == 500 && source->knots[1].value == 0 &&
                 source->knots[2].wavelength == 830 &&
                 std::bit_cast<std::uint32_t>(source->knots[2].value) == 1,
             "Entry-relative decoding preserves signed samples, decimal syntax and EOF token");
-    require(scene.area_lights[0]->emission_file && !scene.area_lights[1]->emission_file &&
-                !scene.area_lights[2]->emission_file,
+    require(scene.area_lights[0]->spectrum_file && !scene.area_lights[1]->spectrum_file &&
+                !scene.area_lights[2]->spectrum_file,
             "Only effective file-backed L retains checked knots");
+    require(scene.inline_materials[0]->spectrum_file == source &&
+                scene.named_materials[0].spectrum_file == source &&
+                scene.spectrum_constant_textures[0].spectrum_file == source &&
+                !scene.inline_materials[1]->spectrum_file &&
+                !scene.spectrum_constant_textures[1].spectrum_file,
+            "Lights, inline and named materials, and constants share the checked source");
     const auto &dependencies = result.document.dependencies;
     require(dependencies.size() == 3 && dependencies[0].resolved_path == include &&
                 dependencies[1].resolved_path == spectrum &&
@@ -1188,14 +1206,26 @@ AreaLightSource "diffuse" "spectrum L" "invalid.spd"
                 skipped.document.diagnostics.size() == 1,
             "An ambiguous Include suffix inventories authored spectra without decoding");
 
-    const auto reflectance = check(write_file(directory, "reflectance.pbrt", R"(WorldBegin
-Material "diffuse" "spectrum reflectance" "invalid.spd"
+    const auto unsupported = check(write_file(directory, "conductor.pbrt", R"(WorldBegin
+Material "conductor" "spectrum eta" "invalid.spd"
 )"));
-    require(reflectance.exit_code() == 2 && reflectance.document.dependencies.size() == 1 &&
-                !reflectance.document.dependencies.front().visited &&
-                reflectance.document.diagnostics.size() == 1,
-            "File-backed reflectance remains an unchecked dependency");
-    find_diagnostic(reflectance.document, "unsupported-parameter");
+    require(unsupported.exit_code() == 2 && unsupported.document.dependencies.size() == 1 &&
+                !unsupported.document.dependencies.front().visited &&
+                unsupported.document.diagnostics.size() == 1,
+            "Files on deferred material types remain unchecked dependencies");
+    find_diagnostic(unsupported.document, "unsupported-feature");
+
+    const auto unused = check(write_file(directory, "unused.pbrt", R"(WorldBegin
+MakeNamedMaterial "unused" "string type" "diffuse" "spectrum reflectance" "invalid.spd"
+Texture "unused" "spectrum" "constant" "spectrum value" "curve.spd"
+)"));
+    const auto &error = find_diagnostic(unused.document, "invalid-spectrum-file");
+    require(unused.exit_code() == 1 && unused.document.dependencies.size() == 2 &&
+                !unused.document.dependencies[0].visited &&
+                unused.document.dependencies[1].visited && error.location.line == 2 &&
+                error.message.find((directory / "invalid.spd").string() + "\":1:1:") !=
+                    std::string::npos,
+            "An unused named material reports the authored declaration and file position");
 }
 
 void spectrum_file_errors(const fs::path &directory) {
@@ -1250,19 +1280,22 @@ void spectrum_file_limits(const fs::path &directory) {
     const auto spectrum = write_file(directory, "limit.spd",
                                      "# " + std::string(512, '-') +
                                          "\n"
-                                         "360 1\n500 1\n600 1\n830 +1.0000000000000000000");
+                                         "360 1\n400 1\n500 1\n600 1\n700 1\n"
+                                         "830 +1.00000000000000000000");
     const auto entry = write_file(directory, "limits-spectrum.pbrt", R"(WorldBegin
 LightSource "infinite" "spectrum L" "limit.spd"
 AreaLightSource "diffuse" "spectrum L" "limit.spd"
+Material "diffuse" "spectrum reflectance" "limit.spd"
+Texture "file" "spectrum" "constant" "spectrum value" "limit.spd"
 )");
     struct Boundary {
         std::size_t Limits::*member;
         std::size_t exact;
     };
     const std::array boundaries{
-        Boundary{&Limits::token_bytes, 22},
-        Boundary{&Limits::list_values, 8},
-        Boundary{&Limits::total_values, 8},
+        Boundary{&Limits::token_bytes, 23},
+        Boundary{&Limits::list_values, 12},
+        Boundary{&Limits::total_values, 12},
         Boundary{&Limits::expansions, 2},
         Boundary{&Limits::file_bytes, fs::file_size(spectrum)},
         Boundary{&Limits::expanded_bytes, fs::file_size(spectrum) + fs::file_size(entry)},
@@ -1272,12 +1305,16 @@ AreaLightSource "diffuse" "spectrum L" "limit.spd"
         limits.*member = exact;
         const auto accepted = check(entry, limits);
         const auto &scene = checked_scene(accepted);
-        require(scene.lights.front().emission_file &&
-                    scene.lights.front().emission_file ==
-                        scene.area_lights.front()->emission_file &&
+        require(scene.lights.front().spectrum_file &&
+                    scene.lights.front().spectrum_file ==
+                        scene.area_lights.front()->spectrum_file &&
+                    scene.lights.front().spectrum_file ==
+                        scene.inline_materials.front()->spectrum_file &&
+                    scene.lights.front().spectrum_file ==
+                        scene.spectrum_constant_textures.front().spectrum_file &&
                     accepted.document.dependencies.size() == 1 &&
                     accepted.document.dependencies.front().visited,
-                "A unique spectrum is decoded once and shared between light declarations");
+                "A unique spectrum is decoded once and shared between consumers");
         --(limits.*member);
         const auto rejected = check(entry, limits);
         const auto &diagnostic = find_diagnostic(rejected.document, "limit-exceeded");
@@ -1290,11 +1327,11 @@ AreaLightSource "diffuse" "spectrum L" "limit.spd"
     const auto bad = write_file(directory, "bad.spd", "360 1\n800 invalid");
     const auto mixed = write_file(directory, "failed-budget.pbrt", R"(WorldBegin
 LightSource "infinite" "spectrum L" "bad.spd"
-AreaLightSource "diffuse" "spectrum L" "bad.spd"
-AreaLightSource "diffuse" "spectrum L" "limit.spd"
+Texture "bad" "spectrum" "constant" "spectrum value" "bad.spd"
+Material "diffuse" "spectrum reflectance" "limit.spd"
 )");
     const std::array mixed_boundaries{
-        Boundary{&Limits::total_values, 12},
+        Boundary{&Limits::total_values, 16},
         Boundary{&Limits::expansions, 3},
         Boundary{&Limits::expanded_bytes,
                  fs::file_size(mixed) + fs::file_size(bad) + fs::file_size(spectrum)},
@@ -1336,7 +1373,7 @@ LightSource "infinite" "spectrum L" "limit.spd"
 Shape "plymesh" "string filename" "triangle.ply"
 )");
     constexpr std::size_t ply_values = std::size_t{3} * 3 + 1 + 3;
-    constexpr std::size_t spectrum_values = std::size_t{4} * 2;
+    constexpr std::size_t spectrum_values = std::size_t{6} * 2;
     Limits limits;
     limits.total_values = ply_values + spectrum_values;
     const auto accepted = check(with_mesh, limits);

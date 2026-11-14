@@ -75,6 +75,8 @@ REGIONS = {
     "file-area": QUADRANTS,
     "file-mixed": QUADRANTS,
     "file-ply-external": QUADRANTS,
+    "reflectance-named-diffuse": {"full": FULL},
+    "reflectance-file-ply": QUADRANTS,
 }
 
 

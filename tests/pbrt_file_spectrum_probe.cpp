@@ -16,7 +16,7 @@ int main(int argc, char **argv) {
     using namespace rypath;
     std::map<std::string, std::shared_ptr<const pbrt::CheckedSpectrumSource>> sources;
     const auto collect = [&](const pbrt::Descriptor &descriptor) {
-        if (const auto &source = descriptor.emission_file) {
+        if (const auto &source = descriptor.spectrum_file) {
             sources.try_emplace(source->resolved_path.filename().string(), source);
         }
     };

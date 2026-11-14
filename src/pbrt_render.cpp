@@ -3,6 +3,7 @@
 
 #include "pbrt_numeric.hpp"
 #include "pbrt_spectra.hpp"
+#include "reflectance_curve.hpp"
 #include "rgb_spectrum.hpp"
 #include "triangle_attributes.hpp"
 
@@ -123,6 +124,8 @@ class Translator {
     void spectral_limit(const Location &source);
     bool charge_spectral_values(const Parameter &parameter);
     bool charge_file_spectrum(const Location &source, std::size_t knots, std::size_t samples);
+    std::optional<std::vector<SpectralKnot>> reflectance_curve(const Descriptor &descriptor,
+                                                               const Parameter &selected);
     std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
                                                       string_view name, SpectrumRole role);
     bool supports_rgb_space(string_view color_space, const Location &source);
@@ -590,11 +593,11 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
             dense = *named;
             normalization = pbrt_y_inner_product(dense);
         } else {
-            if (!descriptor.emission_file) {
+            if (!descriptor.spectrum_file) {
                 invalid(source, "Emission spectrum filename requires a checked spectrum file");
                 return false;
             }
-            const auto &knots = descriptor.emission_file->knots;
+            const auto &knots = descriptor.spectrum_file->knots;
             if (!charge_file_spectrum(source, knots.size(), dense.size())) {
                 return false;
             }
@@ -639,6 +642,40 @@ void Translator::light(const Descriptor &descriptor) {
     emission(descriptor, multiplier, scene_.environment);
 }
 
+std::optional<std::vector<SpectralKnot>> Translator::reflectance_curve(const Descriptor &descriptor,
+                                                                       const Parameter &selected) {
+    if (!charge_spectral_values(selected)) {
+        return std::nullopt;
+    }
+    auto raw = pbrt_named_spectrum_knots(selected.values.front().text);
+    if (raw.empty()) {
+        if (!descriptor.spectrum_file) {
+            invalid(selected.location, "Reflectance filename requires a checked spectrum file");
+            return std::nullopt;
+        }
+        raw = descriptor.spectrum_file->knots;
+    }
+    // Account for source processing and generated storage separately, including
+    // unused definitions. Constant-texture references share the resulting payload.
+    if (!charge_file_spectrum(selected.location, raw.size(), 0)) {
+        return std::nullopt;
+    }
+    const auto capacity =
+        std::min(limits_.list_values / 2, (limits_.total_values - spectral_values_) / 2);
+    auto compiled = compile_reflectance_curve(raw, capacity);
+    if (compiled.error == ReflectanceCurveError::limit_exceeded) {
+        spectral_limit(selected.location);
+        return std::nullopt;
+    }
+    if (compiled.error != ReflectanceCurveError::none) {
+        invalid(selected.location,
+                "Reflectance requires at least two finite, strictly increasing spectrum knots");
+        return std::nullopt;
+    }
+    spectral_values_ += 2 * compiled.knots.size();
+    return std::move(compiled.knots);
+}
+
 std::uint32_t Translator::reflectance(const Descriptor &descriptor, ReflectanceSource source) {
     const string_view name = source == ReflectanceSource::texture ? "value" : "reflectance";
     const auto [selected, value_space] = descriptor.effective_parameter(name);
@@ -667,6 +704,12 @@ std::uint32_t Translator::reflectance(const Descriptor &descriptor, ReflectanceS
                                                  : SpectralMaterialKind::rgb_sigmoid;
         material.constant = reflectance->constant;
         material.coefficients = reflectance->coefficients;
+    } else if (selected->type == "spectrum" && selected->values.front().kind == ValueKind::string) {
+        auto knots = reflectance_curve(descriptor, *selected);
+        if (!knots) {
+            return 0;
+        }
+        material.knots = std::move(*knots);
     } else {
         auto knots = spectrum(descriptor, name, SpectrumRole::reflectance);
         if (!knots) {
@@ -889,7 +932,7 @@ void Translator::geometry() {
             placed == area_lights.end()) {
             continue;
         }
-        const auto uncharged_samples = descriptor->emission_file ? 0 : area.radiance.size();
+        const auto uncharged_samples = descriptor->spectrum_file ? 0 : area.radiance.size();
         if (uncharged_samples > limits_.total_values - spectral_values_ ||
             scene_.area_emissions.size() >= no_area_emission) {
             issue(Severity::error, "limit-exceeded", descriptor->authored.location,

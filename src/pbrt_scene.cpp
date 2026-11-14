@@ -267,6 +267,7 @@ struct Field {
     Rule rule = Rule::none;
     bool prefer_texture = false;
     bool allow_texture_reference = false;
+    bool allow_spectrum_file = false;
 };
 
 constexpr std::array camera_fields{
@@ -324,7 +325,8 @@ constexpr std::array material_fields{
     Field{.name = "reflectance",
           .type = "spectral-texture",
           .rule = Rule::albedo,
-          .allow_texture_reference = true},
+          .allow_texture_reference = true,
+          .allow_spectrum_file = true},
     Field{"displacement", "float-texture", 1, false, false, true},
     Field{"normalmap", "string", 1, false, false, true},
 };
@@ -338,7 +340,7 @@ constexpr std::array named_material_fields{
 
 constexpr std::array float_constant_fields{Field{"value", "float"}};
 constexpr std::array spectrum_constant_fields{
-    Field{.name = "value", .type = "spectral", .rule = Rule::albedo},
+    Field{.name = "value", .type = "spectral", .rule = Rule::albedo, .allow_spectrum_file = true},
 };
 constexpr std::array imagemap_fields{
     Field{"filename", "string", 1, false, true},
@@ -358,7 +360,7 @@ constexpr std::array imagemap_fields{
 };
 
 constexpr std::array light_fields{
-    Field{"L", "spectral", 1, false, false, false, Rule::emission},
+    Field{.name = "L", .type = "spectral", .rule = Rule::emission, .allow_spectrum_file = true},
     Field{"scale", "float", 1, false, false, false, Rule::nonnegative},
     Field{"illuminance", "float"},
     Field{"portal", "point3", 3, true, false, true},
@@ -555,7 +557,7 @@ class Interpreter {
                                                       const DecodedImage &source,
                                                       ImageEncoding encoding, ImageWrap wrap);
     void light(const Directive &directive);
-    std::shared_ptr<const CheckedSpectrumSource> emission_file(const Value &filename);
+    std::shared_ptr<const CheckedSpectrumSource> spectrum_file(const Value &filename);
     void shape(const Directive &directive);
     void ply_shape(const Directive &directive, Descriptor descriptor);
     void register_mesh(const Location &location, Descriptor descriptor, GeometryMesh mesh);
@@ -939,12 +941,10 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
             const bool file_spectrum = valid && parameter->type == "spectrum" &&
                                        parameter->values.front().kind == ValueKind::string &&
                                        !builtin_spectrum(parameter->values.front().text);
-            // These schemas are used only for infinite and diffuse area lights.
-            const bool file_emission = file_spectrum && target == "light" && field.name == "L";
             // A malformed cardinality can still name discoverable inputs. The
             // validation charge bounds this scan even for inherited parameters.
-            if (file_emission) {
-                descriptor.emission_file = emission_file(parameter->values.front());
+            if (file_spectrum && field.allow_spectrum_file) {
+                descriptor.spectrum_file = spectrum_file(parameter->values.front());
             } else if (!validation_exhausted_ && !inert_texture) {
                 parameter_dependencies(*parameter, one_of(field.type, {"float-texture", "texture"})
                                                        ? "float"
@@ -957,7 +957,7 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
             if (field.deferred ||
                 (parameter->type == "texture" && !inert_texture &&
                  !field.allow_texture_reference) ||
-                (file_spectrum && !file_emission)) {
+                (file_spectrum && !field.allow_spectrum_file)) {
                 issue(Severity::unsupported, "unsupported-parameter", parameter->location,
                       "Parameter \"" + parameter->name +
                           "\" uses a feature outside the structural profile");
@@ -1345,7 +1345,7 @@ void Interpreter::light(const Directive &directive) {
     scene_.lights.push_back(std::move(descriptor));
 }
 
-std::shared_ptr<const CheckedSpectrumSource> Interpreter::emission_file(const Value &filename) {
+std::shared_ptr<const CheckedSpectrumSource> Interpreter::spectrum_file(const Value &filename) {
     if (filename.text.empty()) {
         result_.document.dependencies_complete = false;
         error("missing-parameter", filename.location, "Spectrum file path is empty");

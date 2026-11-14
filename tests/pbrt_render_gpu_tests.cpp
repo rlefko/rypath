@@ -256,31 +256,37 @@ void emission_paths(MetalRenderScene &native, const Curve &curve, double amplitu
     std::cout << name << " maximum per-path radiance error " << maximum_error << '\n';
 }
 
-void mixed_emission_batches(RenderScene mixed, std::string_view name) {
-    auto settings = RenderSettings{
-        .width = 5, .height = 7, .samples = 65, .batch_size = 65, .seed = 0x6c44198c4a67c2e9ULL};
-    const auto whole = progressive(mixed, settings);
+constexpr RenderSettings spectral_batch_settings{
+    .width = 5, .height = 7, .samples = 65, .batch_size = 65, .seed = 0x6c44198c4a67c2e9ULL};
+
+Film spectral_batches(const RenderScene &scene, std::string_view name) {
+    auto settings = spectral_batch_settings;
+    auto whole = progressive(scene, settings);
     for (const auto batch : {7u, 1u}) {
         settings.batch_size = batch;
-        require(whole == progressive(mixed, settings),
+        require(whole == progressive(scene, settings),
                 std::string(name) + " batch partition changed raw film");
     }
-    settings.batch_size = 65;
+    return whole;
+}
+
+void mixed_emission_batches(RenderScene mixed, std::string_view name) {
+    const auto whole = spectral_batches(mixed, name);
     auto without_sky = mixed;
     without_sky.environment.fill(0);
-    require(whole != progressive(without_sky, settings),
+    require(whole != progressive(without_sky, spectral_batch_settings),
             std::string(name) + " mixed fixture did not receive environment light");
     auto without_areas = mixed;
     for (auto &emission : without_areas.area_emissions) {
         emission.radiance.fill(0);
     }
-    require(whole != progressive(without_areas, settings),
+    require(whole != progressive(without_areas, spectral_batch_settings),
             std::string(name) + " mixed fixture did not receive area light");
     mixed.environment.fill(0);
     for (auto &emission : mixed.area_emissions) {
         emission.radiance.fill(0);
     }
-    const auto dark = progressive(mixed, settings);
+    const auto dark = progressive(mixed, spectral_batch_settings);
     require(whole != dark && std::ranges::all_of(dark.pixels,
                                                  [](const auto &pixel) {
                                                      return pixel.sum == XYZ{} &&
@@ -513,6 +519,107 @@ void file_lights(const std::filesystem::path &directory) {
     mixed_emission_batches(load(directory / "file-mixed.pbrt"), "File spectrum");
 }
 
+template <typename Reflectance>
+void reflectance_paths(const RenderScene &plane, const RenderSamplesResult &white,
+                       std::uint64_t seed, std::string_view name, Reflectance expected_reflectance,
+                       bool expect_zero, bool expect_one) {
+    const auto observed = trace(*build(plane), analytic_paths, seed);
+    std::size_t zero_count = 0;
+    std::size_t one_count = 0;
+    std::size_t intermediate_count = 0;
+    double maximum_error = 0;
+    for (std::size_t i = 0; i < white.samples.size(); ++i) {
+        const auto &reference = white.samples[i];
+        const auto &sample = observed.samples[i];
+        require(reference.wavelength == sample.wavelength && reference.radiance > 0 &&
+                    reference.scatterings == 1,
+                "White-plane control must scatter once at the same wavelength");
+        const double rho = expected_reflectance(sample.wavelength);
+        const double expected = reference.radiance * rho;
+        const double error = std::abs(sample.radiance - expected);
+        if (rho == 0) {
+            require(sample.radiance == 0 && sample.scatterings == 0,
+                    std::string(name) + " zero reflectance must terminate with exact zero");
+            ++zero_count;
+        } else if (rho == 1) {
+            require(sample.radiance == reference.radiance && sample.scatterings == 1,
+                    std::string(name) + " saturation must match the white control exactly");
+            ++one_count;
+        } else {
+            require(sample.scatterings == 1 && sample.radiance > 0 &&
+                        error <= 1e-7 + 2e-5 * std::abs(reference.radiance),
+                    std::string(name) + " differs from independent reflectance at " +
+                        std::to_string(sample.wavelength) + " nm");
+            ++intermediate_count;
+        }
+        maximum_error = std::max(maximum_error, error);
+    }
+    require((zero_count > 0) == expect_zero && (one_count > 0) == expect_one &&
+                intermediate_count > 0,
+            std::string(name) + " control must exercise the expected wavelength ranges");
+    std::cout << name << " maximum per-path radiance error " << maximum_error << " over "
+              << white.samples.size() << " paths (" << zero_count << " exact zero, " << one_count
+              << " exact white)\n";
+}
+
+void string_reflectance(const std::filesystem::path &directory) {
+    auto plane = load(directory / "reflectance-named-diffuse.pbrt");
+    const auto binding = plane.instance_materials.front();
+    const auto named = plane.materials.at(binding);
+    plane.materials.at(binding) = {.kind = SpectralMaterialKind::constant, .constant = 1};
+    constexpr std::uint64_t seed = 0x64a1953f3805eb1aULL;
+    const auto white = trace(*build(plane), analytic_paths, seed);
+    const auto files = load(directory / "reflectance-controls.pbrt");
+    require(files.instance_materials.size() == 3, "File reflectance control bindings");
+    const auto material = [&](std::size_t index) -> const SpectralMaterial & {
+        return files.materials.at(files.instance_materials.at(index));
+    };
+    for (const auto *reflectance : {&named, &material(0), &material(1), &material(2)}) {
+        require(reflectance->kind == SpectralMaterialKind::sampled,
+                "Native reflectance control must use sampled materials");
+        plane.materials.at(binding) = *reflectance;
+        spectral_batches(plane, "Sampled reflectance");
+    }
+
+    // Fractional knots from Au_eta in PBRT v4 spectrum.cpp,
+    // b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f. Copyright (c) 1998–2020 Matt Pharr, Wenzel Jakob,
+    // and Greg Humphreys. Earlier knots are above one. See third_party/pbrt/README.md and
+    // LICENSE.txt.
+    const Curve gold{
+        {486.212463f, 1.086750f}, {495.936707f, 0.916000f}, {506.057861f, 0.754500f},
+        {516.600769f, 0.608000f}, {527.592224f, 0.491750f}, {539.061646f, 0.402000f},
+        {551.040771f, 0.345500f}, {563.564453f, 0.306000f}, {576.670593f, 0.267625f},
+        {590.400818f, 0.236000f}, {604.800842f, 0.212375f}, {619.920898f, 0.194000f},
+        {635.816284f, 0.177750f}, {652.548279f, 0.166000f}, {670.184753f, 0.161000f},
+        {688.800964f, 0.160000f}, {708.481018f, 0.160875f}, {729.318665f, 0.164000f},
+        {751.419250f, 0.169500f}, {774.901123f, 0.176000f}, {799.897949f, 0.181375f},
+        {826.561157f, 0.188000f}, {855.063293f, 0.198125f},
+    };
+    plane.materials.at(binding) = named;
+    reflectance_paths(
+        plane, white, seed, "Named gold eta reflectance",
+        [&](double nm) { return nm < gold.front().first ? 1. : std::min(1., value_at(gold, nm)); },
+        false, true);
+
+    plane.materials.at(binding) = material(0);
+    reflectance_paths(
+        plane, white, seed, "Signed narrow ramp reflectance",
+        [](double nm) { return nm > 500.75 ? 0. : std::clamp(2 * (nm - 499.75), 0., 1.); }, true,
+        true);
+
+    const Curve narrow{{503.25, 0.25}, {503.5, 0.75}, {503.75, 0.5}};
+    plane.materials.at(binding) = material(1);
+    reflectance_paths(
+        plane, white, seed, "Subnanometer support reflectance",
+        [&](double nm) { return value_at(narrow, nm); }, true, false);
+
+    // Equal and opposite powers of two define a line through the origin with slope 2^-9.
+    plane.materials.at(binding) = material(2);
+    reflectance_paths(
+        plane, white, seed, "Wide signed reflectance",
+        [](double nm) { return std::min(1., nm / 512); }, false, true);
+}
+
 // Coefficients of linear sRGB (1, 0, 0), from the pinned upstream PBRT table.
 constexpr std::array red_coefficients{0x1.5d5e1cp-11f, -0x1.524982p-1f, 0x1.3b3c8p+7f};
 
@@ -718,6 +825,7 @@ int main(int argc, char **argv) {
         blackbody_lights(directory);
         named_lights(directory);
         file_lights(directory);
+        string_reflectance(directory);
 
         auto sky = load(directory / "background.pbrt");
         require(sky.max_depth == 0, "Background fixture must exercise depth zero");

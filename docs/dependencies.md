@@ -73,16 +73,17 @@ checksum-verified at configure time and shared by portable and Metal sampling.
 Their PBRT Apache-2.0 and Leonhard Gruenschloss permission notices are retained.
 No sampler library is linked or downloaded at runtime.
 
-The bounded emission-spectrum file decoder is original C++20 code using the
+The bounded spectrum file decoder is original C++20 code using the
 existing locale-independent numeric policy. Its syntax and curve support were
 checked against pinned PBRT's `ReadFloatFile` and `PiecewiseLinearSpectrum::Read`.
 The independent validation probe links the cached PBRT reference only; the product
 adds no runtime dependency. Spectrum fixtures are original project assets.
 
 All 88 built-in named spectra from the same pinned PBRT revision are embedded
-as immutable binary32 samples over 360–830 nm. The reproducible extraction
+as immutable binary32 samples over 360–830 nm for lights and original prepared
+knots for diffuse reflectance. The reproducible extraction
 preserves upstream interpolation, endpoint extension, and illuminant normalization.
-CMake verifies the generated data checksum. The [PBRT record](../third_party/pbrt/README.md)
+CMake verifies both generated data checksums. The [PBRT record](../third_party/pbrt/README.md)
 retains extraction/oracle commands, PBRT and PhysLight notices, and the glass data's
 refractiveindex.info attribution. These tables add no runtime or build-time network dependency.
 

@@ -138,5 +138,34 @@
       "bytes": 412,
       "sha256": "91fa58d0b64fb8f5d2a49844cd5a1e64e7f71d52f904dd3e20aa76c866b5ba62"
     }
+  ],
+  "reflectance-file-ply": [
+    {
+      "path": "spectrum-assets/paint.spd",
+      "bytes": 107,
+      "sha256": "5e781838297b7540ceeebef40b453f5c098881670e0834a977a004b1e9d5bc45"
+    },
+    {
+      "path": "ply-assets/sportscar-quad.ply",
+      "bytes": 412,
+      "sha256": "91fa58d0b64fb8f5d2a49844cd5a1e64e7f71d52f904dd3e20aa76c866b5ba62"
+    }
+  ],
+  "reflectance-controls": [
+    {
+      "path": "spectrum-assets/clamp.spd",
+      "bytes": 59,
+      "sha256": "8d5eca7f673e3a87a08633ee7eec66886c793c2ad3a18a8fe7337e4c087c9722"
+    },
+    {
+      "path": "spectrum-assets/narrow.spd",
+      "bytes": 74,
+      "sha256": "52456b9b9c3ab21c67b4ea0e4360ddafe898cc4ac632480ebd31a548b91b4f60"
+    },
+    {
+      "path": "spectrum-assets/wide.spd",
+      "bytes": 126,
+      "sha256": "ae209f1f01f6151a1351fe6a8d5a69ffb596e5b9a623af99eac0e0374e04b298"
+    }
   ]
 }

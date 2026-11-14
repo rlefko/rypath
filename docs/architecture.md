@@ -78,6 +78,13 @@ knots without reopening files, and shares the numeric-spectrum interpolation and
 light calibration path. File curves retain zero outside their recorded interval.
 The [file-spectrum record](file-spectrum-validation.md) describes parser boundaries,
 numerical adaptations, and independent comparisons.
+Diffuse materials and spectrum constants share that checked-file ownership and
+can also use original built-in knots. A portable curve compiler applies the
+diffuse model's clamp after interpolation, using exact-product expansions to
+locate clamp crossings without cancellation. Bounded compiled knots reuse the
+existing CPU/Metal sampled-material payload. The
+[reflectance record](spectral-reflectance-validation.md) defines the binary32
+wavelength contract and its independent validation.
 The translator binds each imagemap by index and prepares per-placement triangle
 partials from the checked shape and placement transforms. The image render
 session owns UVs, triangle partials, texture descriptors, shared mip data,
