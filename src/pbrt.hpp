@@ -3,6 +3,7 @@
 
 #include "geometry.hpp"
 #include "image_texture.hpp"
+#include "spectral_knot.hpp"
 
 #include <array>
 #include <cstddef>
@@ -101,6 +102,10 @@ struct Document {
 struct Transform {
     std::array<double, 16> values{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 };
+struct CheckedSpectrumSource {
+    std::filesystem::path resolved_path;
+    std::vector<SpectralKnot> knots;
+};
 struct Descriptor {
     Directive authored;
     Transform transform;
@@ -111,6 +116,7 @@ struct Descriptor {
     };
     std::vector<InheritedParameter> inherited;
     std::vector<std::size_t> effective_authored;
+    std::shared_ptr<const CheckedSpectrumSource> emission_file{};
 
     struct EffectiveParameter {
         const Parameter *parameter = nullptr;

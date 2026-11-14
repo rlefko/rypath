@@ -15,6 +15,7 @@
 #include <map>
 #include <new>
 #include <numbers>
+#include <span>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -58,6 +59,13 @@ const Location &location(const Descriptor &descriptor, string_view name) {
 
 bool float_representable(double value) {
     return std::abs(value) <= std::numeric_limits<float>::max();
+}
+
+double resample_emission(std::span<const SpectralKnot> knots, std::array<float, 471> &dense) {
+    for (std::size_t i = 0; i < dense.size(); ++i) {
+        dense[i] = static_cast<float>(sampled_spectrum(knots, 360. + static_cast<double>(i)));
+    }
+    return pbrt_y_inner_product(dense);
 }
 
 double dot(const Vector &a, const Vector &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -112,7 +120,9 @@ class Translator {
     void filter(const Descriptor &descriptor);
     void sampler(const Descriptor &descriptor);
     void integrator(const Descriptor &descriptor);
+    void spectral_limit(const Location &source);
     bool charge_spectral_values(const Parameter &parameter);
+    bool charge_file_spectrum(const Location &source, std::size_t knots, std::size_t samples);
     std::optional<std::vector<SpectralKnot>> spectrum(const Descriptor &descriptor,
                                                       string_view name, SpectrumRole role);
     bool supports_rgb_space(string_view color_space, const Location &source);
@@ -385,17 +395,34 @@ void Translator::integrator(const Descriptor &descriptor) {
     }
 }
 
+void Translator::spectral_limit(const Location &source) {
+    if (!spectral_limit_exceeded_) {
+        issue(Severity::error, "limit-exceeded", source,
+              "Translated spectrum or texture value limit exceeded");
+        spectral_limit_exceeded_ = true;
+    }
+}
+
 bool Translator::charge_spectral_values(const Parameter &parameter) {
     const auto count = parameter.values.size();
     if (count > limits_.list_values || count > limits_.total_values - spectral_values_) {
-        if (!spectral_limit_exceeded_) {
-            issue(Severity::error, "limit-exceeded", parameter.location,
-                  "Translated spectrum or texture value limit exceeded");
-            spectral_limit_exceeded_ = true;
-        }
+        spectral_limit(parameter.location);
         return false;
     }
     spectral_values_ += count;
+    return true;
+}
+
+bool Translator::charge_file_spectrum(const Location &source, std::size_t knots,
+                                      std::size_t samples) {
+    const auto remaining = limits_.total_values - spectral_values_;
+    // Each knot consumes two decoded scalars. Charge the dense pass even for unplaced lights.
+    if (knots > limits_.list_values / 2 || samples > remaining ||
+        knots > (remaining - samples) / 2) {
+        spectral_limit(source);
+        return false;
+    }
+    spectral_values_ += 2 * knots + samples;
     return true;
 }
 
@@ -555,28 +582,35 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
             }
         }
     } else if (selected->type == "spectrum" && selected->values.front().kind == ValueKind::string) {
-        if (!charge_spectral_values(*selected)) {
-            return false;
-        }
         const auto *named = pbrt_named_spectrum(selected->values.front().text);
-        if (!named) {
-            unsupported(source, "Only built-in named emission spectra are supported");
-            return false;
+        if (named) {
+            if (!charge_spectral_values(*selected)) {
+                return false;
+            }
+            dense = *named;
+            normalization = pbrt_y_inner_product(dense);
+        } else {
+            if (!descriptor.emission_file) {
+                invalid(source, "Emission spectrum filename requires a checked spectrum file");
+                return false;
+            }
+            const auto &knots = descriptor.emission_file->knots;
+            if (!charge_file_spectrum(source, knots.size(), dense.size())) {
+                return false;
+            }
+            if (std::ranges::any_of(knots,
+                                    [](const SpectralKnot &knot) { return knot.value < 0; })) {
+                unsupported(source, "Emission spectrum must be nonnegative");
+                return false;
+            }
+            normalization = resample_emission(knots, dense);
         }
-        dense = *named;
-        normalization = pbrt_y_inner_product(dense);
     } else {
         auto knots = spectrum(descriptor, "L", SpectrumRole::emission);
         if (!knots) {
             return false;
         }
-        SpectralMaterial curve;
-        curve.knots = std::move(*knots);
-        for (std::size_t i = 0; i < dense.size(); ++i) {
-            dense[i] =
-                static_cast<float>(spectral_reflectance(curve, 360. + static_cast<double>(i)));
-        }
-        normalization = pbrt_y_inner_product(dense);
+        normalization = resample_emission(*knots, dense);
     }
     if (!scale) {
         return false;
@@ -855,13 +889,14 @@ void Translator::geometry() {
             placed == area_lights.end()) {
             continue;
         }
-        if (area.radiance.size() > limits_.total_values - spectral_values_ ||
+        const auto uncharged_samples = descriptor->emission_file ? 0 : area.radiance.size();
+        if (uncharged_samples > limits_.total_values - spectral_values_ ||
             scene_.area_emissions.size() >= no_area_emission) {
             issue(Severity::error, "limit-exceeded", descriptor->authored.location,
                   "Translated area light table limit exceeded");
             return;
         }
-        spectral_values_ += area.radiance.size();
+        spectral_values_ += uncharged_samples;
         placed->second = static_cast<std::uint32_t>(scene_.area_emissions.size());
         scene_.area_emissions.push_back(area);
     }

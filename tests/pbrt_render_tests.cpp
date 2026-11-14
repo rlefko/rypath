@@ -832,6 +832,185 @@ AreaLightSource "diffuse" "bool twosided" true "float power" -1
     }
 }
 
+void file_light_spectra(const fs::path &scratch) {
+    const auto spd = write(scratch, "light-payload.spd", "479 2\n480.5 5\n482 2\n");
+    const auto source = [&](std::string_view parameter) {
+        return std::string(basic) + "ColorSpace \"rec2020\"\nLightSource \"infinite\" " +
+               std::string(parameter) + "\nAreaLightSource \"diffuse\" " + std::string(parameter) +
+               "\n" + std::string(triangle);
+    };
+    constexpr std::string_view file = R"("spectrum L" ["light-payload.spd"])";
+    const auto compare_entry = write(scratch, "file-emission.pbrt", source(file));
+    const auto translated = accepted(compare_entry).scene;
+    const auto inlined = accepted(write(scratch, "file-emission-inline.pbrt",
+                                        source(R"("spectrum L" [479 2 480.5 5 482 2])")))
+                             .scene;
+    require(translated.environment == inlined.environment &&
+                translated.area_emissions.size() == 1 &&
+                translated.area_emissions[0].radiance == translated.environment &&
+                inlined.area_emissions[0].radiance == translated.environment,
+            "File and inline emission produce identical environment and area radiance");
+
+    // Piecewise-linear values and tabulated CIE Y at 479, 480, 481, and 482 nm.
+    constexpr std::array shape{2., 4., 4., 2.};
+    constexpr double y = 2 * 0.1334528 + 4 * 0.1390200 + 4 * 0.1446764 + 2 * 0.1504693;
+    const std::string scaled_parameter = std::string(file) + R"( "float scale" 2)";
+    const auto scaled =
+        accepted(write(scratch, "file-emission-scaled.pbrt",
+                       std::string(basic) + "LightSource \"infinite\" " + scaled_parameter +
+                           R"( "float illuminance" 3)" + "\nAreaLightSource \"diffuse\" " +
+                           scaled_parameter + "\n" + std::string(triangle)))
+            .scene;
+    const auto black = accepted(write(scratch, "file-emission-black.pbrt",
+                                      source(std::string(file) + R"( "float scale" 0)")))
+                           .scene;
+    for (std::size_t i = 0; i < translated.environment.size(); ++i) {
+        const double expected = i >= 119 && i < 123 ? shape[i - 119] / y : 0.;
+        near(translated.environment[i], expected, 6e-8 * expected,
+             "File spectrum interpolation and inclusive endpoints");
+        near(scaled.environment[i], expected * 6 / std::numbers::pi, 1.2e-7 * expected,
+             "File spectrum illuminance and scale");
+        near(scaled.area_emissions[0].radiance[i], 2 * expected, 1.2e-7 * expected,
+             "File area spectrum scale");
+        require(black.environment[i] == 0 && black.area_emissions[0].radiance[i] == 0,
+                "Zero scale produces black file-backed lights");
+    }
+
+    auto checked = check(compare_entry);
+    require(checked.exit_code() == 0 && checked.scene,
+            "Preflight retains a checked file-backed scene");
+    fs::remove(spd);
+    const auto retained = translate(checked, Location{compare_entry.string()});
+    require(retained.exit_code() == 0 && retained.scene &&
+                retained.scene->environment == translated.environment &&
+                retained.scene->area_emissions[0].radiance == translated.environment,
+            "Translation uses only the preflight-owned spectrum after removal");
+    if (!checked.scene) {
+        throw std::runtime_error("Translation discarded the checked scene");
+    }
+    checked.scene->lights.front().emission_file.reset();
+    const auto missing = translate(checked, Location{compare_entry.string()});
+    require(missing.exit_code() == 1 && !missing.scene &&
+                missing.diagnostics.front().code == "invalid-render-value" &&
+                missing.diagnostics.front().location.line == 8 &&
+                missing.diagnostics.front().message.find("checked spectrum file") !=
+                    std::string::npos,
+            "Translation requires a checked source for a file-backed light");
+
+    write(scratch, "light-wide.spd", "-3e38 0\n3e38 2\n");
+    const auto wide = accepted(write(scratch, "file-emission-wide.pbrt",
+                                     source(R"("spectrum L" "light-wide.spd")")))
+                          .scene;
+    const auto unit =
+        accepted(write(scratch, "file-emission-unit.pbrt", source(R"("spectrum L" [360 1 830 1])")))
+            .scene.environment;
+    require(wide.environment == unit,
+            "Wavelengths on opposite sides of binary32 range interpolate in double precision");
+
+    // Discrete CIE Y sums of (830 - wavelength) and (wavelength - 360), respectively,
+    // using the published 1 nm table. Narrowing the interpolated wide curves yields those
+    // exact integer values, including both endpoints of the renderer's sampled domain.
+    for (const bool falling : {true, false}) {
+        write(scratch, "light-wide-slope.spd",
+              falling ? "-3e38 3e38\n830 0\n" : "360 0\n3e38 3e38\n");
+        const auto slope = accepted(write(scratch, "file-emission-wide-slope.pbrt",
+                                          source(R"("spectrum L" "light-wide-slope.spd")")))
+                               .scene;
+        const auto reference = accepted(write(scratch, "file-emission-inline-slope.pbrt",
+                                              source(falling ? R"("spectrum L" [360 470 830 0])"
+                                                             : R"("spectrum L" [360 0 830 470])")))
+                                   .scene;
+        require(slope.environment == reference.environment &&
+                    slope.area_emissions.at(0).radiance == reference.area_emissions.at(0).radiance,
+                "Wide asymmetric file spectra match their equivalent inline ramps");
+        const double normalization = falling ? 28830.8652373512378 : 21391.8858001995552;
+        for (std::size_t i = 0; i < slope.environment.size(); ++i) {
+            const double raw = static_cast<double>(falling ? 470 - i : i);
+            const double expected = raw / normalization;
+            near(slope.environment[i], expected, 6e-8 * expected,
+                 "Wide asymmetric slope preserves near-endpoint emission");
+        }
+    }
+
+    write(scratch, "light-subnormal.spd", "360 1.40129846e-45\n830 1.40129846e-45\n");
+    const auto subnormal = accepted(write(scratch, "file-emission-subnormal.pbrt",
+                                          source(R"("spectrum L" "light-subnormal.spd")")))
+                               .scene;
+    require(subnormal.environment == unit && subnormal.area_emissions[0].radiance == unit,
+            "Subnormal input intensity cancels in double-precision calibration");
+}
+
+void file_light_rejections(const fs::path &scratch) {
+    const auto rejected = [&](std::string_view data, int status, std::string_view hint,
+                              double scale = 1) {
+        write(scratch, "invalid-light.spd", data);
+        const auto source = std::string(basic) + "AreaLightSource \"diffuse\" \"float scale\" " +
+                            std::to_string(scale) + R"(
+    "spectrum L" "invalid-light.spd"
+AreaLightSource ""
+)" + std::string(triangle);
+        const auto entry = write(scratch, "invalid-file-light.pbrt", source);
+        const auto result = translation(entry);
+        require(result.exit_code() == status && !result.scene && result.diagnostics.size() == 1 &&
+                    result.diagnostics.front().code ==
+                        (status == 1 ? "invalid-render-value" : "unsupported-render-feature") &&
+                    result.diagnostics.front().location.line == 8 &&
+                    result.diagnostics.front().location.column == 5 &&
+                    result.diagnostics.front().message.find(hint) != std::string::npos,
+                "Unused file-backed declaration rejects " + std::string(hint));
+    };
+    rejected("360 0\n830 0\n", 1, "positive finite CIE Y", 0);
+    rejected("100 1\n359 1\n", 1, "positive finite CIE Y");
+    rejected("479.25 1\n479.75 1\n", 1, "positive finite CIE Y");
+    rejected("479.5 0\n480.5 1.40129846e-45\n", 1, "positive finite CIE Y");
+    rejected("-10 -1\n360 1\n830 1\n", 2, "must be nonnegative");
+    rejected("360 1\n360.5 0\n", 1, "overflows binary32", 1e35);
+
+    write(scratch, "unsupported-reflectance.spd", "360 0.25\n830 0.5\n");
+    for (
+        const auto declaration : {
+            R"(Material "diffuse" "spectrum reflectance" "unsupported-reflectance.spd")",
+            R"(Texture "paint" "spectrum" "constant" "spectrum value" "unsupported-reflectance.spd")",
+        }) {
+        const auto entry = write(scratch, "unsupported-reflectance.pbrt",
+                                 std::string(basic) + declaration + "\n" + std::string(triangle));
+        const auto checked = check(entry);
+        require(checked.exit_code() == 2 &&
+                    translate(checked, Location{entry.string()}).exit_code() == 2,
+                "File spectrum support is restricted to emission");
+    }
+}
+
+void file_light_limits(const fs::path &scratch) {
+    write(scratch, "repeated-light.spd", "360 1\n600 3\n830 4\n");
+    auto source = std::string(basic) + R"(LightSource "infinite" "spectrum L" "repeated-light.spd"
+AreaLightSource "diffuse" "spectrum L" "repeated-light.spd"
+AreaLightSource ""
+Attribute "light" "spectrum L" "repeated-light.spd"
+AreaLightSource "diffuse"
+)";
+    source += triangle;
+    source += triangle;
+    const auto entry = write(scratch, "file-light-limits.pbrt", source);
+    constexpr std::size_t descriptor_values = 6 + 471;
+    const auto exact =
+        translation(entry, {.list_values = 6, .total_values = 3 * descriptor_values});
+    require(exact.exit_code() == 0 && exact.scene && exact.scene->area_emissions.size() == 1 &&
+                exact.scene->instance_emissions == std::vector<std::uint32_t>{0, 0},
+            "The placed file spectrum consumes one dense charge across multiple shapes");
+    const auto limited = [&](const Limits &limits, std::size_t expected_line) {
+        const auto result = translation(entry, limits);
+        require(result.exit_code() == 1 && !result.scene && result.diagnostics.size() == 1 &&
+                    result.diagnostics.front().code == "limit-exceeded" &&
+                    result.diagnostics.front().location.line == expected_line,
+                "File spectrum translation charges each descriptor at its effective L location");
+    };
+    limited({.list_values = 5}, 7);
+    limited({.total_values = descriptor_values - 1}, 7);
+    limited({.total_values = 2 * descriptor_values - 1}, 8);
+    limited({.total_values = 3 * descriptor_values - 1}, 10);
+}
+
 void blackbody_light_spectrum(const fs::path &scratch) {
     const auto environment = [&](std::string_view parameters) {
         return accepted(write(scratch, "blackbody-spectrum.pbrt",
@@ -1543,6 +1722,9 @@ int main(int argc, char **argv) {
         rgb_light_context(scratch);
         named_light_spectra(scratch);
         named_light_context(scratch);
+        file_light_spectra(scratch);
+        file_light_rejections(scratch);
+        file_light_limits(scratch);
         blackbody_light_spectrum(scratch);
         blackbody_light_context(scratch);
         rejects_blackbody_lights(scratch);

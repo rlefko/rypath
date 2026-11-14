@@ -4,6 +4,7 @@
 #include "pbrt_numeric.hpp"
 #include "pbrt_spectra.hpp"
 #include "ply.hpp"
+#include "spectrum_file.hpp"
 
 #include <algorithm>
 #include <array>
@@ -513,6 +514,7 @@ class Interpreter {
     std::map<std::string, Location, std::less<>> material_uses_;
     std::map<std::pair<DependencyKind, std::filesystem::path>, std::size_t> inventoried_paths_;
     std::map<std::size_t, PlyResult> ply_cache_;
+    std::map<std::size_t, std::shared_ptr<const CheckedSpectrumSource>> decoded_spectra_;
     PlyBudget asset_remaining_;
     std::map<std::size_t, std::shared_ptr<const CheckedImageSource>> decoded_images_;
     std::map<std::tuple<std::size_t, ImageEncoding, ImageWrap>, std::shared_ptr<const ImagePyramid>>
@@ -553,6 +555,7 @@ class Interpreter {
                                                       const DecodedImage &source,
                                                       ImageEncoding encoding, ImageWrap wrap);
     void light(const Directive &directive);
+    std::shared_ptr<const CheckedSpectrumSource> emission_file(const Value &filename);
     void shape(const Directive &directive);
     void ply_shape(const Directive &directive, Descriptor descriptor);
     void register_mesh(const Location &location, Descriptor descriptor, GeometryMesh mesh);
@@ -623,7 +626,10 @@ std::optional<std::size_t> Interpreter::dependency(DependencyKind kind, const Va
         {value.location, kind, value.text, std::move(path), exists, false});
     if (!exists) {
         error("missing-file", value.location,
-              "Missing or inaccessible input file \"" + value.text + "\"");
+              kind == DependencyKind::spectrum
+                  ? "Missing or inaccessible spectrum file \"" +
+                        result_.document.dependencies.back().resolved_path.string() + "\":1:1"
+                  : "Missing or inaccessible input file \"" + value.text + "\"");
     }
     return index;
 }
@@ -930,9 +936,16 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
             const bool valid = field_valid(field, *parameter);
             const bool inert_texture =
                 lookup.type == "texture" && valid && parameter->values.front().text.empty();
+            const bool file_spectrum = valid && parameter->type == "spectrum" &&
+                                       parameter->values.front().kind == ValueKind::string &&
+                                       !builtin_spectrum(parameter->values.front().text);
+            // These schemas are used only for infinite and diffuse area lights.
+            const bool file_emission = file_spectrum && target == "light" && field.name == "L";
             // A malformed cardinality can still name discoverable inputs. The
             // validation charge bounds this scan even for inherited parameters.
-            if (!validation_exhausted_ && !inert_texture) {
+            if (file_emission) {
+                descriptor.emission_file = emission_file(parameter->values.front());
+            } else if (!validation_exhausted_ && !inert_texture) {
                 parameter_dependencies(*parameter, one_of(field.type, {"float-texture", "texture"})
                                                        ? "float"
                                                        : "spectrum");
@@ -944,9 +957,7 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
             if (field.deferred ||
                 (parameter->type == "texture" && !inert_texture &&
                  !field.allow_texture_reference) ||
-                (parameter->type == "spectrum" &&
-                 parameter->values.front().kind == ValueKind::string &&
-                 !builtin_spectrum(parameter->values.front().text))) {
+                (file_spectrum && !file_emission)) {
                 issue(Severity::unsupported, "unsupported-parameter", parameter->location,
                       "Parameter \"" + parameter->name +
                           "\" uses a feature outside the structural profile");
@@ -1332,6 +1343,37 @@ void Interpreter::light(const Directive &directive) {
               "An infinite light cannot specify both L and a filename without a portal");
     }
     scene_.lights.push_back(std::move(descriptor));
+}
+
+std::shared_ptr<const CheckedSpectrumSource> Interpreter::emission_file(const Value &filename) {
+    if (filename.text.empty()) {
+        result_.document.dependencies_complete = false;
+        error("missing-parameter", filename.location, "Spectrum file path is empty");
+        return {};
+    }
+    const auto index = dependency(DependencyKind::spectrum, filename);
+    if (!index) {
+        return {};
+    }
+    auto &input = result_.document.dependencies[*index];
+    if (!input.exists) {
+        return {};
+    }
+    auto [cached, first_attempt] = decoded_spectra_.try_emplace(*index);
+    if (first_attempt) {
+        auto decoded = decode_spectrum_file(input.resolved_path, limits_, asset_remaining_);
+        if (const auto *problem = std::get_if<SpectrumFileIssue>(&decoded)) {
+            error(problem->code, filename.location,
+                  "Spectrum file \"" + input.resolved_path.string() +
+                      "\":" + std::to_string(problem->line) + ":" +
+                      std::to_string(problem->column) + ": " + problem->message);
+        } else {
+            cached->second =
+                std::get<std::shared_ptr<const CheckedSpectrumSource>>(std::move(decoded));
+            input.visited = true;
+        }
+    }
+    return cached->second;
 }
 
 void Interpreter::shape(const Directive &directive) {

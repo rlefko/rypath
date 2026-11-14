@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1123,11 +1125,229 @@ LightSource "infinite" "spectrum L" "stdillum-a"
 Attribute "light" "spectrum L" "emission.spd"
 AreaLightSource "diffuse"
 )"));
-    require(external.exit_code() == 2 && external.document.dependencies.size() == 1 &&
+    const auto &file_source = checked_scene(external).area_lights.front()->emission_file;
+    require(file_source && file_source->knots.size() == 2 &&
+                external.document.dependencies.size() == 1 &&
                 external.document.dependencies.front().kind == DependencyKind::spectrum &&
-                external.document.dependencies.front().exists &&
-                find_diagnostic(external.document, "unsupported-parameter").location.line == 2,
-            "Existing spectrum files are inventoried and deferred at the inherited source");
+                external.document.dependencies.front().visited &&
+                external.document.dependencies.front().location.line == 2,
+            "Unused diffuse area lights check inherited spectrum files at the inherited source");
+}
+
+void spectrum_file_dependencies(const fs::path &directory) {
+    const auto spectrum = write_file(directory, "curve.spd",
+                                     "# Header\r\n+.36e3 -.5#adjacent comment\r\n"
+                                     "5e2\v+0.\r830.\t1.401298464324817e-45");
+    write_file(directory, "nested/curve.spd", "invalid");
+    write_file(directory, "stdillum-D65", "invalid");
+    const auto include =
+        write_file(directory, "nested/lights.pbrt", R"(Attribute "light" "spectrum L" "curve.spd"
+LightSource "infinite"
+AreaLightSource "diffuse" "spectrum L" "shadowed.spd" "spectrum L" "./curve.spd"
+AreaLightSource "diffuse" "spectrum L" "stdillum-D65"
+AreaLightSource "diffuse" "rgb L" [1 1 1]
+)");
+    const auto entry = write_file(directory, "spectra.pbrt", R"(WorldBegin
+Include "nested/lights.pbrt"
+)");
+    const auto result = check(entry);
+    const auto &scene = checked_scene(result);
+    const auto &source = scene.lights.front().emission_file;
+    require(source && source->resolved_path == spectrum && source->knots.size() == 3 &&
+                source->knots[0].wavelength == 360 && source->knots[0].value == -.5f &&
+                source->knots[1].wavelength == 500 && source->knots[1].value == 0 &&
+                source->knots[2].wavelength == 830 &&
+                std::bit_cast<std::uint32_t>(source->knots[2].value) == 1,
+            "Entry-relative decoding preserves signed samples, decimal syntax and EOF token");
+    require(scene.area_lights[0]->emission_file && !scene.area_lights[1]->emission_file &&
+                !scene.area_lights[2]->emission_file,
+            "Only effective file-backed L retains checked knots");
+    const auto &dependencies = result.document.dependencies;
+    require(dependencies.size() == 3 && dependencies[0].resolved_path == include &&
+                dependencies[1].resolved_path == spectrum &&
+                dependencies[2].authored_path == "./curve.spd" &&
+                std::ranges::all_of(dependencies, &Dependency::visited),
+            "Only effective non-built-in names enter the dependency inventory");
+
+    write_file(directory, "invalid.spd", "invalid");
+    const auto malformed = check(write_file(directory, "malformed.pbrt", R"(WorldBegin
+LightSource "infinite" "spectrum L" ["invalid.spd" "stdillum-D65" "curve.spd"]
+)"));
+    require(malformed.exit_code() == 1 && malformed.document.dependencies.size() == 2 &&
+                std::ranges::none_of(malformed.document.dependencies, &Dependency::visited) &&
+                malformed.document.diagnostics.size() == 1,
+            "Malformed L inventories every file and decodes none");
+    find_diagnostic(malformed.document, "invalid-parameter");
+
+    const auto skipped = check(write_file(directory, "skipped.pbrt", R"(WorldBegin
+Include "missing.pbrt"
+AreaLightSource "diffuse" "spectrum L" "invalid.spd"
+)"));
+    require(skipped.exit_code() == 1 && skipped.document.dependencies.size() == 2 &&
+                !skipped.document.dependencies[1].visited &&
+                skipped.document.diagnostics.size() == 1,
+            "An ambiguous Include suffix inventories authored spectra without decoding");
+
+    const auto reflectance = check(write_file(directory, "reflectance.pbrt", R"(WorldBegin
+Material "diffuse" "spectrum reflectance" "invalid.spd"
+)"));
+    require(reflectance.exit_code() == 2 && reflectance.document.dependencies.size() == 1 &&
+                !reflectance.document.dependencies.front().visited &&
+                reflectance.document.diagnostics.size() == 1,
+            "File-backed reflectance remains an unchecked dependency");
+    find_diagnostic(reflectance.document, "unsupported-parameter");
+}
+
+void spectrum_file_errors(const fs::path &directory) {
+    const auto entry = write_file(directory, "invalid-spectrum.pbrt", R"(WorldBegin
+Attribute "light" "spectrum L" "invalid.spd"
+AreaLightSource "diffuse"
+)");
+    struct InvalidSpectrum {
+        std::string_view contents;
+        std::string_view position;
+    };
+    constexpr std::array cases{
+        InvalidSpectrum{"# Empty", "1:8"},
+        InvalidSpectrum{"360 1\n", "2:1"},
+        InvalidSpectrum{"360 1\n830", "2:4"},
+        InvalidSpectrum{"360 1\n830 0x1p0", "2:5"},
+        InvalidSpectrum{"360 1\n830 1junk", "2:5"},
+        InvalidSpectrum{"360 1\n830 1e+", "2:5"},
+        InvalidSpectrum{"360 1\n830 nan", "2:5"},
+        InvalidSpectrum{"360 1\n830 1e39", "2:5"},
+        InvalidSpectrum{"360 1\n830 1e-1000", "2:5"},
+        InvalidSpectrum{"360 1\n360.000001 2", "2:1"},
+        InvalidSpectrum{"830 1\n360 2", "2:1"},
+    };
+    for (const auto &test : cases) {
+        const auto asset = write_file(directory, "invalid.spd", test.contents);
+        const auto result = check(entry);
+        const auto &diagnostic = find_diagnostic(result.document, "invalid-spectrum-file");
+        require(result.exit_code() == 1 && !result.document.dependencies.front().visited &&
+                    *diagnostic.location.file == entry.string() && diagnostic.location.line == 2 &&
+                    diagnostic.message.find(asset.string() + "\":" + std::string(test.position) +
+                                            ":") != std::string::npos,
+                report(result));
+    }
+    const auto cwd = fs::current_path();
+    const auto decoy = write_file(directory, "cwd-decoy/cwd-decoy.spd", "360 1\n830 1");
+    const auto missing_entry = write_file(directory, "missing-spectrum.pbrt", R"(WorldBegin
+LightSource "infinite" "spectrum L" "cwd-decoy.spd"
+)");
+    fs::current_path(decoy.parent_path());
+    const auto missing = check(missing_entry);
+    fs::current_path(cwd);
+    const auto &diagnostic = find_diagnostic(missing.document, "missing-file");
+    require(missing.exit_code() == 1 && missing.document.dependencies.size() == 1 &&
+                !missing.document.dependencies.front().exists && diagnostic.location.line == 2 &&
+                diagnostic.message.find((directory / "cwd-decoy.spd").string()) !=
+                    std::string::npos,
+            "A missing relative spectrum gets no current-working-directory fallback");
+}
+
+void spectrum_file_limits(const fs::path &directory) {
+    const auto spectrum = write_file(directory, "limit.spd",
+                                     "# " + std::string(512, '-') +
+                                         "\n"
+                                         "360 1\n500 1\n600 1\n830 +1.0000000000000000000");
+    const auto entry = write_file(directory, "limits-spectrum.pbrt", R"(WorldBegin
+LightSource "infinite" "spectrum L" "limit.spd"
+AreaLightSource "diffuse" "spectrum L" "limit.spd"
+)");
+    struct Boundary {
+        std::size_t Limits::*member;
+        std::size_t exact;
+    };
+    const std::array boundaries{
+        Boundary{&Limits::token_bytes, 22},
+        Boundary{&Limits::list_values, 8},
+        Boundary{&Limits::total_values, 8},
+        Boundary{&Limits::expansions, 2},
+        Boundary{&Limits::file_bytes, fs::file_size(spectrum)},
+        Boundary{&Limits::expanded_bytes, fs::file_size(spectrum) + fs::file_size(entry)},
+    };
+    for (const auto &[member, exact] : boundaries) {
+        Limits limits;
+        limits.*member = exact;
+        const auto accepted = check(entry, limits);
+        const auto &scene = checked_scene(accepted);
+        require(scene.lights.front().emission_file &&
+                    scene.lights.front().emission_file ==
+                        scene.area_lights.front()->emission_file &&
+                    accepted.document.dependencies.size() == 1 &&
+                    accepted.document.dependencies.front().visited,
+                "A unique spectrum is decoded once and shared between light declarations");
+        --(limits.*member);
+        const auto rejected = check(entry, limits);
+        const auto &diagnostic = find_diagnostic(rejected.document, "limit-exceeded");
+        require(rejected.exit_code() == 1 && !rejected.document.dependencies.front().visited &&
+                    rejected.document.diagnostics.size() == 1 && diagnostic.location.line == 2 &&
+                    diagnostic.message.find(spectrum.string()) != std::string::npos,
+                report(rejected));
+    }
+
+    const auto bad = write_file(directory, "bad.spd", "360 1\n800 invalid");
+    const auto mixed = write_file(directory, "failed-budget.pbrt", R"(WorldBegin
+LightSource "infinite" "spectrum L" "bad.spd"
+AreaLightSource "diffuse" "spectrum L" "bad.spd"
+AreaLightSource "diffuse" "spectrum L" "limit.spd"
+)");
+    const std::array mixed_boundaries{
+        Boundary{&Limits::total_values, 12},
+        Boundary{&Limits::expansions, 3},
+        Boundary{&Limits::expanded_bytes,
+                 fs::file_size(mixed) + fs::file_size(bad) + fs::file_size(spectrum)},
+    };
+    for (const auto &[member, exact] : mixed_boundaries) {
+        Limits limits;
+        limits.*member = exact;
+        const auto accepted = check(mixed, limits);
+        require(accepted.exit_code() == 1 && accepted.document.diagnostics.size() == 1 &&
+                    find_diagnostic(accepted.document, "invalid-spectrum-file").location.line ==
+                        2 &&
+                    !accepted.document.dependencies[0].visited &&
+                    accepted.document.dependencies[1].visited,
+                "Repeated malformed spectrum attempts are cached and charged once");
+        --(limits.*member);
+        const auto rejected = check(mixed, limits);
+        require(rejected.exit_code() == 1 && rejected.document.diagnostics.size() == 2 &&
+                    find_diagnostic(rejected.document, "limit-exceeded").location.line == 4 &&
+                    !rejected.document.dependencies[1].visited,
+                "Failed spectrum decoding also consumes the shared budget");
+    }
+
+    write_file(directory, "triangle.ply", R"(ply
+format ascii 1.0
+element vertex 3
+property float x
+property float y
+property float z
+element face 1
+property list uchar int vertex_indices
+end_header
+0 0 0
+1 0 0
+0 1 0
+3 0 1 2
+)");
+    const auto with_mesh = write_file(directory, "mixed-assets.pbrt", R"(WorldBegin
+LightSource "infinite" "spectrum L" "limit.spd"
+Shape "plymesh" "string filename" "triangle.ply"
+)");
+    constexpr std::size_t ply_values = std::size_t{3} * 3 + 1 + 3;
+    constexpr std::size_t spectrum_values = std::size_t{4} * 2;
+    Limits limits;
+    limits.total_values = ply_values + spectrum_values;
+    const auto accepted = check(with_mesh, limits);
+    require(checked_scene(accepted).geometry.meshes.size() == 1,
+            "PLY and spectrum decoding fit their exact shared value budget");
+    --limits.total_values;
+    const auto rejected = check(with_mesh, limits);
+    require(rejected.exit_code() == 1 && rejected.document.dependencies[0].visited &&
+                !rejected.document.dependencies[1].visited &&
+                find_diagnostic(rejected.document, "limit-exceeded").location.line == 3,
+            "PLY and spectrum decoding draw from the same value budget");
 }
 
 void triangle_filter_schema(const fs::path &directory) {
@@ -1216,8 +1436,11 @@ int main(int argc, char *argv[]) {
             bounded_and_numeric_tests(directory);
         } else if (group == "dependencies") {
             dependency_tests(directory);
+            spectrum_file_dependencies(directory / "spectra");
+            spectrum_file_errors(directory / "spectra");
         } else if (group == "limits") {
             limits_tests(directory);
+            spectrum_file_limits(directory / "spectra");
         } else if (group == "geometry") {
             geometry_tests(directory);
             triangle_attributes(directory);

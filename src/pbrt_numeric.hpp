@@ -5,14 +5,36 @@
 
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <limits>
+#include <locale>
+#include <sstream>
 #include <string_view>
 
 namespace rypath::pbrt {
 
 bool is_decimal(std::string_view text);
 bool nonzero_significand(std::string_view text);
+
+template <typename T> std::optional<T> decimal_float(std::string_view token) {
+    if (!is_decimal(token)) {
+        return std::nullopt;
+    }
+    if (!nonzero_significand(token)) {
+        return token.starts_with('-') ? -T{0} : T{0};
+    }
+    // Floating from_chars is unavailable on the supported macOS deployment target.
+    std::istringstream input{std::string(token)};
+    input.imbue(std::locale::classic());
+    T result = 0;
+    input >> result;
+    if (!input.eof() || !std::isfinite(result) || result == 0 ||
+        (input.fail() && std::fpclassify(result) != FP_SUBNORMAL)) {
+        return std::nullopt;
+    }
+    return result;
+}
 
 // Exact sign of the linear determinant of a finite binary64 matrix.
 // Each input is a signed integer significand times 2^exponent. The six triple
