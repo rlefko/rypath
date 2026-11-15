@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Standalone oracle linked to unmodified pinned PBRT b0bdf461 binary32.
+#include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <pbrt/bxdfs.h>

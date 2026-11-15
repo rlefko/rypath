@@ -4,6 +4,7 @@
 #pragma once
 #include "conductor_reference.hpp"
 #include "dielectric_reference.hpp"
+#include <limits>
 #include <random>
 namespace layered_reference {
 using V = dielectric_reference::V;

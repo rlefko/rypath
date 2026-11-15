@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 namespace table_fixture {
 inline void u(std::vector<unsigned char> &b, std::uint64_t v, unsigned n = 4) {

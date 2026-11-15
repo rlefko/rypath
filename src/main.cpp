@@ -6,6 +6,7 @@
 #include "pbrt.hpp"
 #include "pbrt_render.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <exception>
 #include <iomanip>

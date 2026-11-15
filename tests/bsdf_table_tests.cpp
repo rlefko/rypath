@@ -2,6 +2,7 @@
 #include "bsdf_table.hpp"
 #include "bsdf_table_fixture.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
