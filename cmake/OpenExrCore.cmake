@@ -17,6 +17,13 @@ add_library(rypath_openexr_core STATIC ${_rypath_exr_sources})
 set_target_properties(rypath_openexr_core PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES
   C_EXTENSIONS NO POSITION_INDEPENDENT_CODE YES)
 target_compile_definitions(rypath_openexr_core PRIVATE _FILE_OFFSET_BITS=64)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Strict C11 hides the POSIX file APIs and glibc's endian/strings declarations
+  # used by upstream Core. Expose those APIs without enabling C extensions or
+  # exporting feature-test policy to C++ consumers.
+  target_compile_definitions(rypath_openexr_core PRIVATE
+    _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+endif()
 target_include_directories(rypath_openexr_core SYSTEM PUBLIC "${_rypath_exr_core}")
 target_link_libraries(rypath_openexr_core PUBLIC Threads::Threads)
 if(UNIX)

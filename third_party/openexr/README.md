@@ -28,6 +28,14 @@ PIZ, PXR24, B44, B44A, DWAA and DWAB remain compiled. B44/DWA use upstream's
 fixed tables and thread-safe once initialization. The Core and libdeflate
 allocations use the caller's bounded allocation callbacks.
 
+On Linux, the target privately defines `_POSIX_C_SOURCE=200809L` and
+`_DEFAULT_SOURCE` before including system headers. Strict C11 otherwise hides
+Core's POSIX file APIs such as `O_CLOEXEC` and glibc's endian conversions and
+`strcasecmp` declaration (the latter is included by `<string.h>` through
+`<strings.h>` with the default feature set). This keeps C extensions disabled,
+leaves the pinned upstream sources unchanged, and does not propagate feature
+test macros into rypath's C++ consumers.
+
 1. `src/lib/OpenEXRCore/openexr_config.h` replaces upstream's generated-config
    dependencies with a static-library export policy, enabled C/pthread once
    initialization, and `IMATH_VERSION_MAJOR=0`. This selects Core's existing
