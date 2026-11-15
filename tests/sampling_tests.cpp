@@ -240,11 +240,41 @@ bool validation() {
     return pass;
 }
 
+bool dielectric_dimensions() {
+    bool pass = true;
+    std::array<bool, 1024> used{};
+    for (Word dimension = 0; dimension < 4; ++dimension)
+        used[dimension] = true;
+    for (Word bounce = 0; bounce < sobol_dielectric_max_depth; ++bounce) {
+        for (Word offset = 0; offset < 8; ++offset) {
+            const Word dimension = 4 + 8 * bounce + offset;
+            pass &= check(!used[dimension], "Legacy transport dimension is unique");
+            used[dimension] = true;
+        }
+    }
+    for (Word bounce = 0; bounce < sobol_dielectric_max_depth; ++bounce) {
+        const auto dimension = sampling_contract::dielectric_lobe_dimension(bounce);
+        pass &= check(dimension == 908 + bounce && dimension < used.size() && !used[dimension],
+                      "Dielectric lobe dimensions are disjoint from all legacy streams");
+        used[dimension] = true;
+        const auto block = sampling_contract::dielectric_lobe_block(bounce);
+        pass &= check(block == (0x80000000u | bounce) && block > 2 * render_emergency_limit,
+                      "Philox dielectric block is outside all legacy bounce blocks");
+    }
+    pass &= check(!used[1021] && !used[1022] && !used[1023], "Sobol tail keeps reserved words");
+    pass &= check(sampler_description({}) == "philox4x32-10-v1 (sequence differs from PBRT)" &&
+                      sampler_description({}, true) ==
+                          "philox4x32-10-v1+dielectric-v1 (sequence differs from PBRT)",
+                  "Sampler provenance identifies dielectric extension without renaming legacy");
+    return pass;
+}
+
 } // namespace
 
 int main() {
     const bool known = known_answers();
     const bool interval = interval_properties();
     const bool valid = validation();
-    return known && interval && valid ? 0 : 1;
+    const bool dielectric = dielectric_dimensions();
+    return known && interval && valid && dielectric ? 0 : 1;
 }

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [28]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [5]
+WorldBegin
+LightSource "infinite" "float scale" [1]
+Material "dielectric" "spectrum eta" "assets/eta.spd" "float roughness" [0.12] "bool remaproughness" [false]
+Translate 0.08 -0.04 2
+Rotate 13 0 0 1
+Scale 6 0.07 1
+Shape "plymesh" "string filename" "assets/sportscar-quad.ply"

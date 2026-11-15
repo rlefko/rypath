@@ -228,3 +228,14 @@ rypath adaptations, independently tested against double equations and pinned
 PBRT over the ordinary domain. `scripts/pbrt_conductor_probe.cpp` is an optional
 external oracle linked to the cached CPU reference; no PBRT renderer dependency
 is introduced into the product. See the [validation record](../../docs/conductor-validation.md).
+
+## Dielectric adaptation
+
+`shaders/dielectric.h` adapts the same pinned PBRT `DielectricBxDF`, Fresnel and
+Snell equations, retaining Apache-2.0 attribution and reusing the conductor's
+checked GGX helpers. The original scalar-wavelength transport samples one
+independent Fresnel lobe choice per interface. Compensated critical-angle
+arithmetic and rationalized refraction are rypath numerical adaptations.
+`scripts/pbrt_dielectric_probe.cpp` is an opt-in oracle against the external
+pinned CPU build, not a production dependency. See
+[dielectric validation](../../docs/dielectric-validation.md).

@@ -1283,11 +1283,12 @@ void Translator::rebase_texture_mappings() {
 }
 
 void Translator::texture_frames() {
-    const bool conductor = std::ranges::any_of(scene_.materials, [](const auto &material) {
-        return material.scattering == ScatteringKind::conductor;
+    const bool framed_material = std::ranges::any_of(scene_.materials, [](const auto &material) {
+        return material.scattering == ScatteringKind::conductor ||
+               material.scattering == ScatteringKind::dielectric;
     });
     if (!scene_.raster_camera ||
-        (scene_.image_textures.empty() && scene_.texture_graph.nodes.empty() && !conductor)) {
+        (scene_.image_textures.empty() && scene_.texture_graph.nodes.empty() && !framed_material)) {
         return;
     }
     try {
@@ -1355,6 +1356,25 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
     const auto *selected = parameter(descriptor, name);
     OpticalSpectrum result;
     result.extend_endpoints = true;
+    const auto type = descriptor.authored.name == "MakeNamedMaterial"
+                          ? string(descriptor, "type").value_or("")
+                          : string_view(descriptor.authored.arguments.front().text);
+    const bool dielectric = type == "dielectric";
+    const std::string label = dielectric ? "Dielectric" : "Conductor";
+    if (dielectric && (!selected || selected->type == "float")) {
+        const double eta = selected ? selected->values.front().number : 1.5;
+        if (!std::isfinite(eta) || eta < 0 || !float_representable(eta) ||
+            (eta != 0 && static_cast<float>(eta) == 0)) {
+            invalid(location(descriptor, name),
+                    "Dielectric eta must be finite, nonnegative, and representable in binary32");
+            return std::nullopt;
+        }
+        if (!charge_file_spectrum(location(descriptor, name), 2, 0)) {
+            return std::nullopt;
+        }
+        result.knots = {{360, static_cast<float>(eta)}, {830, static_cast<float>(eta)}};
+        return result;
+    }
     if (!selected) {
         const auto knots = pbrt_named_spectrum_knots(name == "eta" ? "metal-Cu-eta" : "metal-Cu-k");
         if (!charge_file_spectrum(descriptor.authored.location, knots.size(), 0)) {
@@ -1362,7 +1382,7 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
         }
         result.knots.assign(knots.begin(), knots.end());
     } else if (selected->type != "spectrum") {
-        unsupported(selected->location, "Conductor " + std::string(name) +
+        unsupported(selected->location, label + " " + std::string(name) +
                                             " requires a named, numeric, or file spectrum; RGB, "
                                             "blackbody, and textures are unsupported");
         return std::nullopt;
@@ -1372,7 +1392,7 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
             const auto *file = descriptor.checked_spectrum(name);
             if (!file) {
                 invalid(selected->location,
-                        "Conductor optical spectrum requires a checked spectrum file");
+                        label + " optical spectrum requires a checked spectrum file");
                 return std::nullopt;
             }
             knots = file->knots;
@@ -1383,6 +1403,16 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
         }
         result.knots.assign(knots.begin(), knots.end());
     } else {
+        for (std::size_t i = 1; i < selected->values.size(); i += 2) {
+            const auto value = selected->values[i].number;
+            if (value < 0 || (dielectric && value != 0 && float_representable(value) &&
+                              static_cast<float>(value) == 0)) {
+                invalid(selected->values[i].location,
+                        label +
+                            " optical constants must be nonnegative and representable in binary32");
+                return std::nullopt;
+            }
+        }
         result.extend_endpoints = false;
         auto knots = spectrum(descriptor, name, SpectrumRole::graph_operand);
         if (!knots) {
@@ -1393,7 +1423,7 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
     for (const auto &knot : result.knots) {
         if (!std::isfinite(knot.value) || knot.value < 0) {
             invalid(location(descriptor, name),
-                    "Conductor optical constants must be finite and nonnegative");
+                    label + " optical constants must be finite and nonnegative");
             return std::nullopt;
         }
     }
@@ -1408,19 +1438,21 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
     const auto type = descriptor.authored.name == "MakeNamedMaterial"
                           ? string(descriptor, "type").value_or("")
                           : string_view(descriptor.authored.arguments.front().text);
-    if (type == "conductor") {
+    if (type == "conductor" || type == "dielectric") {
+        const bool dielectric = type == "dielectric";
         if (selected) {
             unsupported(selected->location,
                         "Conductor reflectance shortcut is unsupported; provide eta and k spectra");
             return 0;
         }
         auto eta = optical(descriptor, "eta");
-        auto k = optical(descriptor, "k");
+        auto k = dielectric ? std::optional<OpticalSpectrum>(OpticalSpectrum{})
+                            : optical(descriptor, "k");
         if (!eta || !k) {
             return 0;
         }
         SpectralMaterial value;
-        value.scattering = ScatteringKind::conductor;
+        value.scattering = dielectric ? ScatteringKind::dielectric : ScatteringKind::conductor;
         value.eta = std::move(*eta);
         value.k = std::move(*k);
         value.bump_root = bump;
@@ -1433,8 +1465,10 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
                 return {0, UINT32_MAX};
             if (rough->type == "texture")
                 return {0, float_binding(descriptor, field)};
-            if (!float_representable(rough->values.front().number)) {
-                invalid(rough->location, "Conductor roughness overflows binary32");
+            if (rough->values.front().number < 0 ||
+                !float_representable(rough->values.front().number)) {
+                invalid(rough->location,
+                        "Material roughness must be nonnegative and representable in binary32");
                 return {0, UINT32_MAX};
             }
             return {static_cast<float>(rough->values.front().number), UINT32_MAX};
@@ -1444,7 +1478,9 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
         value.u_roughness_root = u.second;
         value.v_roughness = v.first;
         value.v_roughness_root = v.second;
-        if (const auto message = validate_conductor_material(value); !message.empty()) {
+        if (const auto message = dielectric ? validate_dielectric_material(value)
+                                            : validate_conductor_material(value);
+            !message.empty()) {
             invalid(descriptor.authored.location, message);
             return 0;
         }
@@ -1785,8 +1821,9 @@ RenderTranslation Translator::run() {
     if (sampler_descriptor) {
         sampler(*sampler_descriptor);
     }
-    if (const auto *descriptor = required("Integrator")) {
-        integrator(*descriptor);
+    const auto *integrator_descriptor = required("Integrator");
+    if (integrator_descriptor) {
+        integrator(*integrator_descriptor);
     }
     for (const auto &option : input_.options) {
         if (option.authored.name != "Accelerator") {
@@ -1816,6 +1853,12 @@ RenderTranslation Translator::run() {
         texture_frames();
     }
     const auto &settings = result_.settings;
+    if (integrator_descriptor && settings.sampler.kind == SamplerKind::sobol &&
+        scene_has_dielectrics(scene_) && scene_.max_depth > sobol_dielectric_max_depth) {
+        unsupported(location(*integrator_descriptor, "maxdepth"),
+                    "Sobol dielectric path maxdepth exceeds the limit of " +
+                        std::to_string(sobol_dielectric_max_depth));
+    }
     std::string sampler_error;
     if (sampler_descriptor && film_descriptor && settings.sampler.kind == SamplerKind::sobol) {
         sampler_error = validate_sampler_range(settings.sampler, settings.seed, settings.width,

@@ -631,3 +631,42 @@ add_test(NAME cli.conductor_rejection COMMAND "${CMAKE_COMMAND}"
     -Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/conductor-cli
     -P "${CMAKE_CURRENT_SOURCE_DIR}/check_conductor_cli.cmake")
 set_tests_properties(cli.conductor_rejection PROPERTIES TIMEOUT 30)
+
+add_test(NAME cli.dielectric_rejection COMMAND "${CMAKE_COMMAND}"
+    -Dexecutable=$<TARGET_FILE:rypath>
+    -Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/dielectric-cli
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_dielectric_cli.cmake")
+set_tests_properties(cli.dielectric_rejection PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_dielectric_scene_tests dielectric_scene_tests.cpp)
+target_link_libraries(rypath_dielectric_scene_tests PRIVATE rypath_pbrt_render)
+rypath_configure_host_target(rypath_dielectric_scene_tests)
+add_test(NAME pbrt.dielectric_scene COMMAND rypath_dielectric_scene_tests)
+set_tests_properties(pbrt.dielectric_scene PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_dielectric_render_tests dielectric_render_tests.cpp)
+target_link_libraries(rypath_dielectric_render_tests PRIVATE rypath_metal_backend rypath_pbrt_render)
+set_target_properties(rypath_dielectric_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+rypath_configure_host_target(rypath_dielectric_render_tests)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.dielectric_render COMMAND rypath_dielectric_render_tests
+        "${CMAKE_CURRENT_BINARY_DIR}/dielectric-render"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt-render/dielectric" ${ray_tracing_test_options})
+    set_tests_properties(metal.dielectric_render PROPERTIES TIMEOUT 180)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.dielectric_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    add_executable(rypath_dielectric_probe dielectric_probe.mm)
+    target_link_libraries(rypath_dielectric_probe PRIVATE rypath_metal_backend rypath_render)
+    rypath_configure_host_target(rypath_dielectric_probe)
+    set_target_properties(rypath_dielectric_probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_dielectric_probe PRIVATE -fobjc-arc)
+    add_test(NAME metal.dielectric_bsdf COMMAND rypath_dielectric_probe "${rypath_metal_library}")
+    set_tests_properties(metal.dielectric_bsdf PROPERTIES TIMEOUT 60)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_dielectric_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.dielectric_bsdf PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()

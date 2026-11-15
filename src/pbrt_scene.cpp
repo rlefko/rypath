@@ -364,6 +364,26 @@ constexpr std::array named_conductor_fields{
     conductor_fields[8],
 };
 
+constexpr std::array dielectric_fields{
+    Field{.name = "eta", .type = "dielectric-eta", .allow_spectrum_file = true},
+    conductor_fields[2],
+    conductor_fields[3],
+    conductor_fields[4],
+    conductor_fields[5],
+    material_fields[1],
+    material_fields[2],
+};
+constexpr std::array named_dielectric_fields{
+    Field{"type", "string", 1, false, true},
+    dielectric_fields[0],
+    dielectric_fields[1],
+    dielectric_fields[2],
+    dielectric_fields[3],
+    dielectric_fields[4],
+    dielectric_fields[5],
+    dielectric_fields[6],
+};
+
 constexpr std::array float_constant_fields{Field{"value", "float"}};
 constexpr std::array spectrum_constant_fields{
     Field{.name = "value", .type = "spectral", .rule = Rule::albedo, .allow_spectrum_file = true},
@@ -450,6 +470,9 @@ string_view canonical_type(string_view actual) {
 
 bool accepts_type(string_view allowed, string_view actual) {
     actual = canonical_type(actual);
+    if (allowed == "dielectric-eta") {
+        return actual == "float" || accepts_type("spectral-texture", actual);
+    }
     if (allowed == "spectral" || allowed == "spectral-texture") {
         return one_of(actual, {"rgb", "blackbody", "spectrum"}) ||
                (allowed == "spectral-texture" && actual == "texture");
@@ -867,7 +890,12 @@ void Interpreter::scan_after_include(const Directive &directive) {
     const string_view argument =
         directive.arguments.empty() ? string_view{} : directive.arguments.front().text;
     const auto scan_parameter = [&](const Field &field) {
-        if (const auto *parameter = select(directive, {}, field);
+        Field lookup = field;
+        if (field.type == "dielectric-eta") {
+            lookup.type =
+                select(directive, {}, Field{field.name, "float"}) ? "float" : "spectral-texture";
+        }
+        if (const auto *parameter = select(directive, {}, lookup);
             parameter && charge_validation(parameter->values.size(), parameter->location)) {
             parameter_dependencies(*parameter);
         }
@@ -882,8 +910,10 @@ void Interpreter::scan_after_include(const Directive &directive) {
             scan_parameter(material_fields.front());
             return;
         }
-        if (target == "material" && type == "conductor") {
-            for (const auto &field : conductor_fields) {
+        if (target == "material" && one_of(type, {"conductor", "dielectric"})) {
+            for (const auto &field : type == "conductor"
+                                         ? std::span<const Field>(conductor_fields)
+                                         : std::span<const Field>(dielectric_fields)) {
                 scan_parameter(field);
             }
             return;
@@ -972,6 +1002,12 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
     std::map<string_view, const Parameter *> effective;
     for (const auto &field : schema) {
         Field lookup = field;
+        if (field.type == "dielectric-eta") {
+            // PBRT asks for float eta first, independently of spectral declaration order.
+            lookup.type = select(directive, target, Field{field.name, "float"})
+                              ? "float"
+                              : "spectral-texture";
+        }
         if (field.prefer_texture) {
             // PBRT queries alpha as a texture first and only falls back to float
             // when the effective texture is absent or names an empty string.
@@ -1335,7 +1371,7 @@ void Interpreter::material(const Directive &directive) {
         }
     }
     dependencies(directive, "material", type);
-    if (type != "diffuse" && type != "conductor") {
+    if (type != "diffuse" && type != "conductor" && type != "dielectric") {
         if (type == "mix") {
             if (const auto *materials =
                     select(directive, "material", Field{"materials", "string", 2});
@@ -1355,10 +1391,12 @@ void Interpreter::material(const Directive &directive) {
 
     Descriptor descriptor = describe(directive, false);
     validate(descriptor, directive, "material",
-             type == "conductor" ? (named ? std::span<const Field>(named_conductor_fields)
-                                          : std::span<const Field>(conductor_fields))
-                                 : (named ? std::span<const Field>(named_material_fields)
-                                          : std::span<const Field>(material_fields)));
+             type == "dielectric"  ? (named ? std::span<const Field>(named_dielectric_fields)
+                                            : std::span<const Field>(dielectric_fields))
+             : type == "conductor" ? (named ? std::span<const Field>(named_conductor_fields)
+                                            : std::span<const Field>(conductor_fields))
+                                   : (named ? std::span<const Field>(named_material_fields)
+                                            : std::span<const Field>(material_fields)));
     native_image(descriptor, "normalmap", ImageEncoding::linear, ImageWrap::repeat);
     if (named) {
         scene_.named_materials.push_back(std::move(descriptor));

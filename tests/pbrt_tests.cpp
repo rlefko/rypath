@@ -1205,8 +1205,8 @@ AreaLightSource "diffuse" "spectrum L" "invalid.spd"
                 skipped.document.diagnostics.size() == 1,
             "An ambiguous Include suffix inventories authored spectra without decoding");
 
-    const auto unsupported = check(write_file(directory, "conductor.pbrt", R"(WorldBegin
-Material "dielectric" "spectrum eta" "invalid.spd"
+    const auto unsupported = check(write_file(directory, "deferred-material.pbrt", R"(WorldBegin
+Material "thindielectric" "spectrum eta" "invalid.spd"
 )"));
     require(unsupported.exit_code() == 2 && unsupported.document.dependencies.size() == 1 &&
                 !unsupported.document.dependencies.front().visited &&

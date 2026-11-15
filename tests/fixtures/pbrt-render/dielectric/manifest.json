@@ -1,0 +1,34 @@
+{
+  "smooth-environment": {
+    "bytes": 579,
+    "sha256": "03a5a6a3e1c29f90c0e810e0adc36f94cb3e89f046c302415dc89f525b569ac8"
+  },
+  "smooth-area": {
+    "bytes": 782,
+    "sha256": "40653eb74d357a6340176f55eeba0d7eff041f8fda7819764ce0f7270d2b05de"
+  },
+  "rough-isotropic": {
+    "bytes": 826,
+    "sha256": "102b29d87da3dbc2cae50eb3538da06e248a59d95858aafe882a4b986e88eb41"
+  },
+  "anisotropic": {
+    "bytes": 853,
+    "sha256": "bb3dca2d50a44b6f3b47159091f95b2947eaf0543cf55d7defa9e3c7e87419bd"
+  },
+  "anisotropy-rotated": {
+    "bytes": 853,
+    "sha256": "fd18adb1598d8734f0430ed88d5f9814e2acdbaacbf4543e5210e38c6115c211"
+  },
+  "numeric-file-optical": {
+    "bytes": 617,
+    "sha256": "7b5be045b65c1173e55ea8b9810d317556692dc8b4c485115ed71e5ca615e73f"
+  },
+  "detail-alpha": {
+    "bytes": 1176,
+    "sha256": "bdb6f209e79d07fc60d426a6ee48c8e3cb438ff14f5944ee0f1fbcd56e0fd6f9"
+  },
+  "roughness-graph": {
+    "bytes": 935,
+    "sha256": "8005e08e3d93bcc9abc3a3e13eaa9b7e071aca9968a25f07d59e0cac2a20665d"
+  }
+}

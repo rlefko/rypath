@@ -258,6 +258,8 @@ bool valid_rgb_coefficients(const std::array<float, 3> &coefficients) {
 std::string validate_pbrt_material(const SpectralMaterial &material) {
     if (material.scattering == ScatteringKind::conductor)
         return validate_conductor_material(material);
+    if (material.scattering == ScatteringKind::dielectric)
+        return validate_dielectric_material(material);
     if (material.scattering != ScatteringKind::diffuse || !material.eta.knots.empty() ||
         !material.k.knots.empty() || material.u_roughness != 0 || material.v_roughness != 0 ||
         material.u_roughness_root != UINT32_MAX || material.v_roughness_root != UINT32_MAX)
@@ -396,9 +398,10 @@ std::string validate_image_textures(const RenderScene &scene) {
             return "Invisible emitter binding must match a zero constant alpha";
         }
         const auto &material = scene.materials[scene.instance_materials[i]];
-        if ((material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX) &&
+        if ((material.scattering == ScatteringKind::dielectric ||
+             material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX) &&
             scene.instance_surface_transforms.empty()) {
-            return "Surface detail requires definition and placement transforms";
+            return "Dielectric or mapped surfaces require definition and placement transforms";
         }
     }
     for (const auto &emission : scene.area_emissions) {
@@ -439,9 +442,11 @@ std::string validate_image_textures(const RenderScene &scene) {
                 return "Surface detail transform must be finite and affine";
         }
     }
-    const bool conductors = std::ranges::any_of(
-        scene.materials, [](const auto &m) { return m.scattering == ScatteringKind::conductor; });
-    if (scene.image_textures.empty() && scene.texture_graph.nodes.empty() && !conductors) {
+    const bool microfacets = std::ranges::any_of(scene.materials, [](const auto &m) {
+        return m.scattering == ScatteringKind::conductor ||
+               m.scattering == ScatteringKind::dielectric;
+    });
+    if (scene.image_textures.empty() && scene.texture_graph.nodes.empty() && !microfacets) {
         return scene.instance_texture_frames.empty() ? "" : "Texture frames require image textures";
     }
     if (scene.model != RenderModel::pbrt ||
@@ -707,6 +712,38 @@ std::string validate_conductor_material(const SpectralMaterial &material) {
     return {};
 }
 
+std::string validate_dielectric_material(const SpectralMaterial &material) {
+    if (material.scattering != ScatteringKind::dielectric)
+        return "Expected dielectric scattering";
+    if (material.eta.knots.size() < 2)
+        return "Dielectric eta requires at least two knots";
+    float previous = -std::numeric_limits<float>::infinity();
+    for (const auto [wavelength, value] : material.eta.knots) {
+        if (!std::isfinite(wavelength) || wavelength <= previous || !std::isfinite(value) ||
+            value < 0)
+            return "Dielectric eta requires increasing finite wavelengths and finite "
+                   "nonnegative values";
+        previous = wavelength;
+    }
+    if (!std::isfinite(material.u_roughness) || material.u_roughness < 0 ||
+        !std::isfinite(material.v_roughness) || material.v_roughness < 0)
+        return "Dielectric roughness must be finite and nonnegative";
+    if (!material.k.knots.empty() || material.k.extend_endpoints || !material.knots.empty() ||
+        material.reflectance != std::array<float, 8>{} || material.constant != 0 ||
+        material.coefficients != std::array<float, 3>{} || material.temperature_kelvin != 0 ||
+        material.image_texture != 0 || material.texture_root != UINT32_MAX ||
+        (material.kind != SpectralMaterialKind::sampled &&
+         material.kind != SpectralMaterialKind::constant))
+        return "Dielectric contains an unrelated scattering payload";
+    return {};
+}
+
+bool scene_has_dielectrics(const RenderScene &scene) {
+    return std::ranges::any_of(scene.materials, [](const auto &material) {
+        return material.scattering == ScatteringKind::dielectric;
+    });
+}
+
 std::string validate_image_light(const ImagePyramid &image) {
     if (!image.native_base || image.levels.size() != 1 || image.source_channels != 3)
         return "Image lights require a native RGB image";
@@ -965,6 +1002,7 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
         !scene.instance_emissions.empty() && scene.instance_emissions[index] != no_area_emission &&
         scene.area_emissions[scene.instance_emissions[index]].image_texture != UINT32_MAX;
     return material.scattering == ScatteringKind::conductor ||
+           material.scattering == ScatteringKind::dielectric ||
            material.kind == SpectralMaterialKind::image ||
            material.kind == SpectralMaterialKind::texture_graph ||
            material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||

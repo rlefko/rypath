@@ -1,0 +1,27 @@
+{
+  "smooth-environment": [],
+  "smooth-area": [],
+  "rough-isotropic": [],
+  "anisotropic": [],
+  "anisotropy-rotated": [],
+  "numeric-file-optical": [
+    {
+      "path": "assets/eta.spd",
+      "bytes": 106,
+      "sha256": "f68b74653914a50a9d9a2bebd48de330c382d228ff0d82d1bd658e09f3071524"
+    },
+    {
+      "path": "assets/sportscar-quad.ply",
+      "bytes": 412,
+      "sha256": "91fa58d0b64fb8f5d2a49844cd5a1e64e7f71d52f904dd3e20aa76c866b5ba62"
+    }
+  ],
+  "detail-alpha": [
+    {
+      "path": "assets/normal-tilted.png",
+      "bytes": 72,
+      "sha256": "cc774bd0d451c82df41259b1ee219ffe13e57b384cb2d8627ea9eb7cab53a49c"
+    }
+  ],
+  "roughness-graph": []
+}

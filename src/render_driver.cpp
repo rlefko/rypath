@@ -15,9 +15,12 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
         if (!result.diagnostic.empty()) {
             return result;
         }
+        const auto depth_limit =
+            scene_has_dielectrics(scene) ? sobol_dielectric_max_depth : sobol_max_depth;
         if (settings.sampler.kind == SamplerKind::sobol &&
-            (scene.model != RenderModel::pbrt || scene.max_depth > sobol_max_depth)) {
-            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most 127";
+            (scene.model != RenderModel::pbrt || scene.max_depth > depth_limit)) {
+            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most " +
+                                std::to_string(depth_limit);
             return result;
         }
         if (scene.raster_camera) {

@@ -257,6 +257,7 @@ struct MetalRenderScene::Impl {
     std::uint32_t texture_height = 0;
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
+    bool dielectrics = false;
 
     std::string upload_textures(const RenderScene &scene,
                                 std::vector<wire::Instance> &packed_instances) {
@@ -443,6 +444,7 @@ struct MetalRenderScene::Impl {
         const bool detail = graph_parameters.alpha_enabled ||
                             std::ranges::any_of(scene.materials, [](const SpectralMaterial &m) {
                                 return m.scattering == ScatteringKind::conductor ||
+                                       m.scattering == ScatteringKind::dielectric ||
                                        m.bump_root != max_index || m.normal_map != max_index;
                             });
         std::map<std::uint32_t, wire::Word> offsets;
@@ -842,8 +844,9 @@ struct MetalRenderScene::Impl {
             packed.texture_root = source.texture_root;
             packed.bump_root = source.bump_root;
             packed.normal_map = source.normal_map;
-            if (source.scattering == ScatteringKind::conductor) {
-                packed.scattering = 1;
+            if (source.scattering == ScatteringKind::conductor ||
+                source.scattering == ScatteringKind::dielectric) {
+                packed.scattering = source.scattering == ScatteringKind::conductor ? 1 : 2;
                 packed.eta_begin = static_cast<wire::Word>(packed_knots.size());
                 packed.eta_count = static_cast<wire::Word>(source.eta.knots.size());
                 for (const auto [wavelength, value] : source.eta.knots)
@@ -921,9 +924,11 @@ struct MetalRenderScene::Impl {
         if (!result.diagnostic.empty()) {
             return result;
         }
+        const auto depth_limit = dielectrics ? sobol_dielectric_max_depth : sobol_max_depth;
         if (request.sampler.kind == SamplerKind::sobol &&
-            (parameters.model != wire::pbrt_model || parameters.max_depth > sobol_max_depth)) {
-            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most 127";
+            (parameters.model != wire::pbrt_model || parameters.max_depth > depth_limit)) {
+            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most " +
+                                std::to_string(depth_limit);
             return result;
         }
         if (parameters.filter_kind == wire::triangle_filter) {
@@ -1193,6 +1198,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             return result;
         }
         impl->parameters = parameters;
+        impl->dielectrics = scene_has_dielectrics(scene);
         impl->parameters.instance_count =
             static_cast<wire::Word>(MetalGeometryAccess::instance_count(*impl->geometry));
 
@@ -1220,9 +1226,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             scene.environment_image != max_index,
             std::ranges::any_of(scene.area_emissions,
                                 [](const auto &e) { return e.image_texture != max_index; }),
-            std::ranges::any_of(scene.materials, [](const auto &m) {
-                return m.scattering == ScatteringKind::conductor;
-            })};
+            std::ranges::any_of(
+                scene.materials,
+                [](const auto &m) { return m.scattering == ScatteringKind::conductor; }),
+            impl->dielectrics};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];
