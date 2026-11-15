@@ -253,14 +253,37 @@ inline float tb_density(const device uint *t, uint d, float2 p, float phi, float
                   z.y);
     return v * float((w - 1) * (h - 1));
 }
+// Cache lookups interpolate the same normalized slices as tb_vertex. Integration
+// is linear in those parameter weights, so cumulative rows preserve the model.
+inline float tb_cumulative(const device uint *t, uint d, uint x, uint y, float phi, float theta,
+                           bool marginal) {
+    uint slot =
+        d == RYPATH_TABLE_VNDF ? RYPATH_TABLE_VNDF_CONDITIONAL : RYPATH_TABLE_LUMINANCE_CONDITIONAL;
+    uint width = marginal ? 1 : t[d], height = t[d + 1], base = t[slot + (marginal ? 1 : 0)];
+    TbLinear p = tb_linear(t, t[5], t[1], phi), q = tb_linear(t, t[6], t[2], theta);
+    float value = 0;
+    for (uint a = 0; a < 2; ++a)
+        for (uint b = 0; b < 2; ++b) {
+            float weight = (a ? p.u : 1 - p.u) * (b ? q.u : 1 - q.u);
+            if (weight == 0)
+                continue;
+            uint slice = (p.i + a) * t[2] + q.i + b;
+            value +=
+                weight * tb_f(t, base + slice * width * height + y * width + (marginal ? 0 : x));
+        }
+    return value;
+}
 inline float tb_row_mass(const device uint *t, uint d, uint y, float phi, float theta) {
-    float sum = 0;
-    for (uint x = 0; x < t[d] - 1; ++x)
-        sum +=
-            .5f * (tb_vertex(t, d, x, y, phi, theta, 0) + tb_vertex(t, d, x + 1, y, phi, theta, 0));
-    return sum;
+    return tb_cumulative(t, d, t[d] - 1, y, phi, theta, false);
+}
+inline float tb_conditional(const device uint *t, uint d, uint x, uint y, float z, float phi,
+                            float theta) {
+    return mix(tb_cumulative(t, d, x, y, phi, theta, false),
+               tb_cumulative(t, d, x, y + 1, phi, theta, false), z);
 }
 inline float tb_linear_inverse(float mass, float v0, float v1) {
+    if (mass <= 0)
+        return 0;
     if (abs(v1 - v0) < 1e-4f * (v0 + v1))
         return 2 * mass / (v0 + v1);
     return 2 * mass / (v0 + sqrt(max(0.f, v0 * v0 + 2 * mass * (v1 - v0))));
@@ -286,44 +309,39 @@ inline TbWarp tb_warp(const device uint *t, uint d, float2 u, float phi, float t
         r1 = tb_row_mass(t, d, y + 1, phi, theta);
     } else {
         u = clamp(u, 0x1p-24f, 1.f - 0x1p-24f);
-        float mass = u.y, acc = 0;
-        y = h - 2;
-        r0 = 0;
-        r1 = 0;
-        for (uint row = 0; row < h - 1; ++row) {
-            float a = tb_row_mass(t, d, row, phi, theta),
-                  b = tb_row_mass(t, d, row + 1, phi, theta), s = .5f * (a + b);
-            if (mass < acc + s || row == h - 2) {
-                y = row;
-                r0 = a;
-                r1 = b;
-                mass -= acc;
-                break;
-            }
-            acc += s;
+        uint low = 0, high = h - 1;
+        while (low + 1 < high) {
+            uint middle = (low + high) / 2;
+            if (tb_cumulative(t, d, 0, middle, phi, theta, true) < u.y)
+                low = middle;
+            else
+                high = middle;
         }
+        y = min(low, h - 2);
+        r0 = tb_row_mass(t, d, y, phi, theta);
+        r1 = tb_row_mass(t, d, y + 1, phi, theta);
+        float mass = u.y - tb_cumulative(t, d, 0, y, phi, theta, true);
         if (!(r0 + r1 > 0))
-            return {float2(0), 0, false};
+            return {float2(0), 0, true};
         z.y = clamp(tb_linear_inverse(mass, r0, r1), 0.f, 1.f);
-        float target = u.x * mix(r0, r1, z.y), sum = 0;
-        x = w - 2;
-        for (uint col = 0; col < w - 1; ++col) {
-            float a = mix(tb_vertex(t, d, col, y, phi, theta, 0),
-                          tb_vertex(t, d, col, y + 1, phi, theta, 0), z.y),
-                  b = mix(tb_vertex(t, d, col + 1, y, phi, theta, 0),
-                          tb_vertex(t, d, col + 1, y + 1, phi, theta, 0), z.y);
-            float s = .5f * (a + b);
-            if (target < sum + s || col == w - 2) {
-                x = col;
-                target -= sum;
-                c0 = a;
-                c1 = b;
-                break;
-            }
-            sum += s;
+        float target = u.x * mix(r0, r1, z.y);
+        low = 0;
+        high = w - 1;
+        while (low + 1 < high) {
+            uint middle = (low + high) / 2;
+            if (tb_conditional(t, d, middle, y, z.y, phi, theta) < target)
+                low = middle;
+            else
+                high = middle;
         }
+        x = min(low, w - 2);
+        target -= tb_conditional(t, d, x, y, z.y, phi, theta);
+        c0 = mix(tb_vertex(t, d, x, y, phi, theta, 0), tb_vertex(t, d, x, y + 1, phi, theta, 0),
+                 z.y);
+        c1 = mix(tb_vertex(t, d, x + 1, y, phi, theta, 0),
+                 tb_vertex(t, d, x + 1, y + 1, phi, theta, 0), z.y);
         if (!(c0 + c1 > 0))
-            return {float2(0), 0, false};
+            return {float2(0), 0, true};
         z.x = clamp(tb_linear_inverse(target, c0, c1), 0.f, 1.f);
     }
     c0 = mix(tb_vertex(t, d, x, y, phi, theta, 0), tb_vertex(t, d, x, y + 1, phi, theta, 0), z.y);
@@ -332,15 +350,8 @@ inline TbWarp tb_warp(const device uint *t, uint d, float2 u, float phi, float t
     float pdf = mix(c0, c1, z.x) * float((w - 1) * (h - 1));
     if (!inverse)
         return {(float2(x, y) + z) / float2(w - 1, h - 1), pdf, isfinite(pdf) && pdf >= 0};
-    float sx = z.x * (c0 + .5f * z.x * (c1 - c0));
-    for (uint col = 0; col < x; ++col)
-        sx += .5f * (mix(tb_vertex(t, d, col, y, phi, theta, 0),
-                         tb_vertex(t, d, col, y + 1, phi, theta, 0), z.y) +
-                     mix(tb_vertex(t, d, col + 1, y, phi, theta, 0),
-                         tb_vertex(t, d, col + 1, y + 1, phi, theta, 0), z.y));
-    float sy = z.y * (r0 + .5f * z.y * (r1 - r0));
-    for (uint row = 0; row < y; ++row)
-        sy += .5f * (tb_row_mass(t, d, row, phi, theta) + tb_row_mass(t, d, row + 1, phi, theta));
+    float sx = z.x * (c0 + .5f * z.x * (c1 - c0)) + tb_conditional(t, d, x, y, z.y, phi, theta);
+    float sy = z.y * (r0 + .5f * z.y * (r1 - r0)) + tb_cumulative(t, d, 0, y, phi, theta, true);
     float rowmass = mix(r0, r1, z.y);
     return {float2(rowmass > 0 ? sx / rowmass : 0, sy), pdf, isfinite(pdf) && pdf >= 0};
 }
@@ -378,8 +389,12 @@ inline TableBsdfSample tb_measured_sample(const device uint *t, float3 wo, float
     if (flip)
         wo = -wo;
     float phi = atan2(wo.y, wo.x), theta = acos(clamp(wo.z, -1.f, 1.f));
-    TbWarp lum = tb_warp(t, RYPATH_TABLE_LUMINANCE, u, phi, theta, false),
-           normal = tb_warp(t, RYPATH_TABLE_VNDF, lum.p, phi, theta, false);
+    TbWarp lum = tb_warp(t, RYPATH_TABLE_LUMINANCE, u, phi, theta, false);
+    if (lum.valid && lum.pdf == 0)
+        return {float3(0), float3(0), 0, false, false, true};
+    TbWarp normal = tb_warp(t, RYPATH_TABLE_VNDF, lum.p, phi, theta, false);
+    if (normal.valid && normal.pdf == 0)
+        return {float3(0), float3(0), 0, false, false, true};
     if (!lum.valid || !normal.valid)
         return {float3(0), float3(0), 0, false, false, false};
     float tm = normal.p.x * normal.p.x * 1.5707963267948966f,

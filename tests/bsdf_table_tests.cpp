@@ -38,6 +38,15 @@ int main() {
             bad = *good.table;
             bad.working_bytes = 0;
             require(!validate_bsdf_table(bad).empty(), "packed accounting mutation");
+            if (kind == BsdfTableKind::measured)
+                for (unsigned slot = 28; slot < 32; ++slot) {
+                    bad = *good.table;
+                    bad.words[slot] = 0xffffffff;
+                    require(!validate_bsdf_table(bad).empty(), "CDF cache offset mutation");
+                    bad = *good.table;
+                    bad.words[bad.words[slot] + 1] ^= 1;
+                    require(!validate_bsdf_table(bad).empty(), "CDF cache value mutation");
+                }
             require(good.table->source_bytes == bytes.size(), "source accounting");
             require(good.table->working_bytes == bytes.size() + 4 * good.table->words.size(),
                     "working accounting");
@@ -96,6 +105,22 @@ int main() {
             auto r = read_bsdf_table(path, BsdfTableKind::measured);
             require(bool(r.table), r.diagnostic.c_str());
         }
+        auto density_heavy = table_fixture::measured(1, false, 64);
+        table_fixture::write(path, density_heavy);
+        require(bool(read_bsdf_table(path, BsdfTableKind::measured).table),
+                "Density-heavy table accepted within default budget");
+        auto cache_budget = read_bsdf_table(path, BsdfTableKind::measured,
+                                            {.remaining_budget = 3 * density_heavy.size()});
+        require(!cache_budget.table &&
+                    cache_budget.diagnostic.find("decode scratch") != std::string::npos,
+                "Cache and decode peak checked before allocation");
+        table_fixture::write(path, table_fixture::measured(1, true));
+        auto plateau = read_bsdf_table(path, BsdfTableKind::measured);
+        require(bool(plateau.table), "zero-density plateau fixture");
+        auto marginal = plateau.table->words[29];
+        require(std::bit_cast<float>(plateau.table->words[marginal + 1]) == .5f &&
+                    std::bit_cast<float>(plateau.table->words[marginal + 2]) == .5f,
+                "CDF plateau retained exactly");
         auto tensor_offset = [](const std::vector<unsigned char> &bytes, const std::string &name) {
             auto it = std::search(bytes.begin(), bytes.end(), name.begin(), name.end());
             if (it == bytes.end())

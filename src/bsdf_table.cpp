@@ -113,7 +113,7 @@ struct Field {
     std::size_t off, count;
     std::vector<std::size_t> shape;
 };
-void measured(Reader &r, BsdfTable &t) {
+void measured(Reader &r, BsdfTable &t, std::size_t budget) {
     r.magic("tensor_file", 12);
     r.magic("\1\0", 2);
     auto n = r.integer(4);
@@ -176,6 +176,24 @@ void measured(Reader &r, BsdfTable &t) {
         throw std::runtime_error("invalid jacobian field");
     if (phi.size() > 2 && std::abs(phi.back() - phi.front() - 6.283185307179586) > 1e-4)
         throw std::runtime_error("reduced azimuth measured tensors unsupported");
+    const char *names[] = {"ndf", "sigma", "vndf", "luminance", "spectra"};
+    const auto grid_words = phi.size() + theta.size() + wave.size();
+    std::size_t packed_words = 32 + grid_words, max_decode_bytes = 0;
+    for (unsigned k = 0; k < 5; ++k) {
+        const auto &f = field(names[k], k < 2 ? 2 : k == 4 ? 5 : 4, 10);
+        packed_words += f.count / 4;
+        max_decode_bytes = std::max(max_decode_bytes, f.count);
+        if (k == 2 || k == 3)
+            packed_words += f.count / 4 + f.count / 4 / f.shape.back();
+    }
+    // Reserve the complete canonical payload once. Caches are generated in place,
+    // so the only bulk scratch is one decoded field plus the parameter grids.
+    // The source is bounded before this plan; all field byte ranges are disjoint.
+    if (packed_words > 512ULL * 1024 * 1024 / 4 ||
+        t.source_bytes + 4 * packed_words + max_decode_bytes + 4 * grid_words + 128 > budget)
+        throw std::runtime_error(
+            "measured canonical payload and decode scratch exceed working byte limit");
+    t.words.reserve(packed_words);
     t.words[0] = RYPATH_TABLE_MEASURED;
     t.words[1] = static_cast<std::uint32_t>(phi.size());
     t.words[2] = static_cast<std::uint32_t>(theta.size());
@@ -184,7 +202,6 @@ void measured(Reader &r, BsdfTable &t) {
     t.words[5] = append(t, phi);
     t.words[6] = append(t, theta);
     t.words[7] = append(t, wave);
-    const char *names[] = {"ndf", "sigma", "vndf", "luminance", "spectra"};
     std::size_t lumsize = 0;
     for (unsigned k = 0; k < 5; ++k) {
         auto &f = field(names[k], k < 2 ? 2 : k == 4 ? 5 : 4, 10);
@@ -227,13 +244,42 @@ void measured(Reader &r, BsdfTable &t) {
         t.words[d + 1] = static_cast<std::uint32_t>(h);
         t.words[d + 2] = static_cast<std::uint32_t>(slices);
         t.words[d + 3] = append(t, v);
+        if (k == 2 || k == 3) {
+            const auto count = w * h * slices, marginal_count = h * slices;
+            const auto conditional = t.words.size(), marginal = conditional + count;
+            t.words.resize(marginal + marginal_count);
+            for (std::size_t z = 0; z < slices; ++z) {
+                for (std::size_t y = 0; y < h; ++y) {
+                    double sum = 0;
+                    const auto base = z * w * h + y * w;
+                    for (std::size_t x = 1; x < w; ++x) {
+                        sum += .5 * (double(v[base + x - 1]) + v[base + x]);
+                        t.words[conditional + base + x] =
+                            std::bit_cast<std::uint32_t>(static_cast<float>(sum));
+                    }
+                }
+                double sum = 0;
+                for (std::size_t y = 1; y < h; ++y) {
+                    sum +=
+                        .5 *
+                        (double(
+                             std::bit_cast<float>(t.words[conditional + z * w * h + y * w - 1])) +
+                         std::bit_cast<float>(t.words[conditional + z * w * h + (y + 1) * w - 1]));
+                    t.words[marginal + z * h + y] =
+                        std::bit_cast<std::uint32_t>(static_cast<float>(sum));
+                }
+            }
+            const auto cache = 28 + 2 * (k - 2);
+            t.words[cache] = static_cast<std::uint32_t>(conditional);
+            t.words[cache + 1] = static_cast<std::uint32_t>(marginal);
+        }
     }
 }
 } // namespace
 std::string validate_bsdf_table(const BsdfTable &t) {
     try {
         const auto &v = t.words;
-        if (v.size() < 32 || v.size() > 128ULL * 1024 * 1024 / 4)
+        if (v.size() < 32 || v.size() > 512ULL * 1024 * 1024 / 4)
             throw std::runtime_error("invalid packed table word count");
         auto scalar = [&](std::size_t i) {
             if (i >= v.size())
@@ -320,9 +366,6 @@ std::string validate_bsdf_table(const BsdfTable &t) {
                 throw std::runtime_error("invalid packed measured header");
             if (std::size_t(v[1]) > v.size() / v[2] || std::size_t(v[1]) * v[2] > v.size() / v[3])
                 throw std::runtime_error("packed measured parameter product overflow");
-            for (unsigned i = 28; i < 32; ++i)
-                if (v[i])
-                    throw std::runtime_error("nonzero reserved measured header word");
             parameter(v[5], v[1]);
             parameter(v[6], v[2]);
             parameter(v[7], v[3]);
@@ -344,6 +387,38 @@ std::string validate_bsdf_table(const BsdfTable &t) {
                 for (std::size_t i = 0; i < w * h * slices; ++i)
                     if (scalar(v[d + 3] + i) < 0 || (k == 1 && scalar(v[d + 3] + i) <= 0))
                         throw std::runtime_error("invalid packed measured density");
+                if (k == 2 || k == 3) {
+                    const unsigned cache = 28 + 2 * (k - 2);
+                    const auto c = v[cache], m = v[cache + 1];
+                    range(c, w * h * slices);
+                    range(m, h * slices);
+                    for (std::size_t z = 0; z < slices; ++z) {
+                        for (std::size_t y = 0; y < h; ++y) {
+                            const auto a = v[d + 3] + z * w * h + y * w, b = c + z * w * h + y * w;
+                            if (scalar(b) != 0)
+                                throw std::runtime_error("invalid measured conditional CDF origin");
+                            double sum = 0;
+                            for (std::size_t x = 1; x < w; ++x) {
+                                sum += .5 * (double(scalar(a + x - 1)) + scalar(a + x));
+                                if (scalar(b + x) != static_cast<float>(sum) ||
+                                    scalar(b + x) < scalar(b + x - 1))
+                                    throw std::runtime_error(
+                                        "measured conditional CDF disagrees with density");
+                            }
+                        }
+                        if (scalar(m + z * h) != 0)
+                            throw std::runtime_error("invalid measured marginal CDF origin");
+                        double sum = 0;
+                        for (std::size_t y = 1; y < h; ++y) {
+                            sum += .5 * (double(scalar(c + z * w * h + y * w - 1)) +
+                                         scalar(c + z * w * h + (y + 1) * w - 1));
+                            if (scalar(m + z * h + y) != static_cast<float>(sum) ||
+                                scalar(m + z * h + y) < scalar(m + z * h + y - 1))
+                                throw std::runtime_error(
+                                    "measured marginal CDF disagrees with row integral");
+                        }
+                    }
+                }
                 if (k == 2 || k == 3)
                     for (std::size_t z = 0; z < slices; ++z) {
                         double sum = 0;
@@ -370,7 +445,8 @@ std::string validate_bsdf_table(const BsdfTable &t) {
         if (end != v.size())
             throw std::runtime_error("unused packed table words");
         if (t.source_bytes > 128ULL * 1024 * 1024 ||
-            t.working_bytes != t.source_bytes + 4 * v.size())
+            t.working_bytes != t.source_bytes + 4 * v.size() ||
+            t.working_bytes > 512ULL * 1024 * 1024)
             throw std::runtime_error("invalid packed resource accounting");
         return {};
     } catch (const std::exception &e) {
@@ -405,7 +481,7 @@ BsdfTableResult read_bsdf_table(const std::filesystem::path &path, BsdfTableKind
         if (kind == BsdfTableKind::fourier)
             fourier(r, *t);
         else
-            measured(r, *t);
+            measured(r, *t, budget);
         t->working_bytes = size + t->words.size() * 4;
         if (t->working_bytes > budget)
             throw std::runtime_error("BSDF table exceeds aggregate working byte limit");

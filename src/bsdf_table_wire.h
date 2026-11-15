@@ -14,3 +14,9 @@
 #define RYPATH_TABLE_VNDF 16
 #define RYPATH_TABLE_LUMINANCE 20
 #define RYPATH_TABLE_SPECTRA 24
+// Measured distribution caches: per-slice cumulative row integrals (width*height)
+// and cumulative marginal integrals (height), with the same phi/theta slice order.
+#define RYPATH_TABLE_VNDF_CONDITIONAL 28
+#define RYPATH_TABLE_VNDF_MARGINAL 29
+#define RYPATH_TABLE_LUMINANCE_CONDITIONAL 30
+#define RYPATH_TABLE_LUMINANCE_MARGINAL 31

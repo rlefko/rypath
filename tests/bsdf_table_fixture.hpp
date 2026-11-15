@@ -57,7 +57,8 @@ inline std::vector<unsigned char> fourier(unsigned channels = 1, bool harmonic =
     }
     return b;
 }
-inline std::vector<unsigned char> measured(unsigned np = 1) {
+inline std::vector<unsigned char> measured(unsigned np = 1, bool plateau = false,
+                                           unsigned normal_resolution = 0) {
     struct F {
         std::string name;
         unsigned type;
@@ -79,15 +80,26 @@ inline std::vector<unsigned char> measured(unsigned np = 1) {
     add("wavelengths", {2}, {400, 700});
     add("ndf", {2, 2}, {1, 1, 1, 1});
     add("sigma", {2, 2}, {1, 1, 1, 1});
-    add("vndf", {np, 2, 2, 2}, std::vector<float>(np * 8, 1));
-    add("luminance", {np, 2, 2, 2}, std::vector<float>(np * 8, 1));
-    std::vector<float> spectra(np * 16);
+    const unsigned resolution = plateau ? 4 : 2;
+    std::vector<float> density(np * 2 * resolution * resolution, 1);
+    if (plateau)
+        for (unsigned i = 0; i < density.size(); ++i) {
+            unsigned x = i % resolution, y = (i / resolution) % resolution;
+            density[i] = (x == 0 || x == 3) && (y == 0 || y == 3) ? 1.f : 0.f;
+        }
+    if (normal_resolution)
+        add("vndf", {np, 2, normal_resolution, normal_resolution},
+            std::vector<float>(np * 2 * normal_resolution * normal_resolution, 1));
+    else
+        add("vndf", {np, 2, resolution, resolution}, density);
+    add("luminance", {np, 2, resolution, resolution}, density);
+    std::vector<float> spectra(np * 4 * resolution * resolution);
     for (unsigned p = 0; p < np; ++p)
         for (unsigned t = 0; t < 2; ++t)
             for (unsigned l = 0; l < 2; ++l)
-                for (unsigned v = 0; v < 4; ++v)
-                    spectra[((p * 2 + t) * 2 + l) * 4 + v] = l ? 2.f : .5f;
-    add("spectra", {np, 2, 2, 2, 2}, spectra);
+                for (unsigned v = 0; v < resolution * resolution; ++v)
+                    spectra[((p * 2 + t) * 2 + l) * resolution * resolution + v] = l ? 2.f : .5f;
+    add("spectra", {np, 2, 2, resolution, resolution}, spectra);
     fields.push_back({"description", 1, {1}, {0}});
     fields.push_back({"jacobian", 1, {1}, {0}});
     std::size_t off = 18;
