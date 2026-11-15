@@ -223,11 +223,6 @@ void failures(const fs::path &directory) {
              1},
         Case{R"(Texture "t" "spectrum" "imagemap" "string filename" "broken16.png")",
              "invalid-image", 1},
-        Case{
-            R"(Texture "t" "spectrum" "imagemap" "string filename" "npot.png" "string wrap" "black")",
-            "unsupported-feature", 2},
-        Case{R"(Texture "t" "float" "imagemap" "string filename" "color.png")",
-             "unsupported-feature", 2},
     };
     for (const auto &test : cases) {
         const auto checked = check_image(test.definition);
@@ -238,14 +233,17 @@ void failures(const fs::path &directory) {
                     "Corrupt images stay unvisited");
         }
     }
-    for (const auto field :
-         {R"("string encoding" "gamma 2.2")", R"("string mapping" "planar" "vector3 v1" [1 0 0])",
-          R"("string wrap" "octahedralsphere")"}) {
+    for (const auto field : {R"("string encoding" "gamma 2.2")",
+                             R"("string mapping" "planar" "vector3 v1" [1 0 0])"}) {
         const auto checked = check_image(std::string(image) + ' ' + field);
-        require(checked.exit_code() == 2 && !checked.document.dependencies.front().visited,
+        require(checked.exit_code() == 0 && checked.document.dependencies.front().visited,
                 report(checked));
-        diagnostic(checked, "unsupported-feature");
     }
+    const auto octahedral =
+        check_image(std::string(image) + R"( "string wrap" "octahedralsphere")");
+    require(octahedral.exit_code() == 2 && !octahedral.document.dependencies.front().visited,
+            report(octahedral));
+    diagnostic(octahedral, "unsupported-feature");
     for (const auto field :
          {R"("string encoding" "gamma nonsense")", R"("string filter" "weird")",
           R"("string filter" "Point")", R"("string filter" "Ewa")", R"("string filter" "")",

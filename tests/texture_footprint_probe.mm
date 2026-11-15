@@ -335,7 +335,7 @@ void check_ewa(const probe::Result &result, std::span<const probe::Vector> expec
 }
 
 wire::ImageTexture ewa_descriptor() {
-    return {11, 4, 0, 1, 1, 1, 0, 0, 1, 0, wire::ewa_texture_filter, 8.0f};
+    return {11, 4, 0, 1, 1, 1, 0, 0, 1, 0, wire::ewa_texture_filter, 8.0f, 256};
 }
 
 auto ewa_expectations(std::span<const wire::ImageTexture> textures,
@@ -507,6 +507,7 @@ void run_probe(id<MTLDevice> device) {
     parameters.texture_count = static_cast<wire::Word>(textures.size());
     parameters.level_count = static_cast<wire::Word>(levels.size());
     parameters.texel_word_count = static_cast<wire::Word>(texels.size());
+    parameters.transfer_count = static_cast<wire::Word>(transfer.size());
     std::array<probe::PointCase, probe::point_case_count> point_cases{};
     std::ranges::transform(point_checks, point_cases.begin(), &PointCheck::input);
     std::array<probe::EwaCase, probe::ewa_case_count> ewa_cases{};

@@ -21,7 +21,7 @@ set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cach
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
 set(rypath_metal_air_files)
-foreach(shader IN ITEMS smoke geometry render texture_probe texture_graph_probe masked_probe surface_detail_probe)
+foreach(shader IN ITEMS smoke geometry render texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe)
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
     set(air "${rypath_runtime_directory}/CMakeFiles/rypath-${shader}.air")
     set(shader_options)
@@ -40,6 +40,12 @@ foreach(shader IN ITEMS smoke geometry render texture_probe texture_graph_probe 
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_probe_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_footprint.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_graph.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/masked_intersection.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/alpha_hash.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_lighting.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface_detail.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/texture_graph_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
     endif()
     if(shader STREQUAL "texture_probe")
@@ -59,17 +65,25 @@ foreach(shader IN ITEMS smoke geometry render texture_probe texture_graph_probe 
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
     endif()
-    if(shader STREQUAL "masked_probe")
-        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/masked_probe_wire.h"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/masked_intersection.h"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/alpha_hash.h")
-    endif()
     if(shader STREQUAL "surface_detail_probe")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface_detail.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_footprint.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/texture_graph_wire.h")
+    endif()
+    if(shader STREQUAL "image_lighting_probe")
+        list(APPEND shader_options -fno-fast-math)
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_lighting.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/image_lighting_probe_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
+    endif()
+    if(shader STREQUAL "masked_probe")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/masked_probe_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/masked_intersection.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/alpha_hash.h")
     endif()
     add_custom_command(
         OUTPUT "${air}"

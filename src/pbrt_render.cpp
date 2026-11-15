@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "pbrt_render.hpp"
 
+#include "mesh_displacement.hpp"
 #include "pbrt_numeric.hpp"
 #include "pbrt_spectra.hpp"
 #include "reflectance_curve.hpp"
 #include "rgb_spectrum.hpp"
+#include "texture_graph.hpp"
 #include "triangle_attributes.hpp"
 
 #include <algorithm>
@@ -16,6 +18,7 @@
 #include <map>
 #include <new>
 #include <numbers>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string_view>
@@ -26,7 +29,8 @@ namespace {
 
 using std::string_view;
 using Vector = std::array<double, 3>;
-enum class SpectrumRole { reflectance, emission };
+namespace graph = texture_graph_wire;
+enum class SpectrumRole { reflectance, emission, graph_operand };
 enum class ReflectanceSource { material, texture };
 
 const Parameter *parameter(const Descriptor &descriptor, string_view name) {
@@ -109,7 +113,16 @@ class Translator {
     RenderScene scene_;
     std::size_t spectral_values_ = 0;
     bool spectral_limit_exceeded_ = false;
+    std::size_t displacement_work_remaining_ = DisplacementLimits{}.evaluation_work;
     std::map<string_view, std::uint32_t> spectrum_textures_;
+    std::map<string_view, std::uint32_t> image_indices_;
+    std::map<string_view, std::uint32_t> float_image_indices_;
+    std::array<std::map<string_view, std::uint32_t>, 2> texture_roots_;
+    std::set<string_view> nested_spectra_;
+    std::set<string_view> direct_spectra_;
+    std::map<const ImagePyramid *, std::uint32_t> native_images_;
+    std::map<const ImagePyramid *, bool> image_formats_;
+    std::vector<const Descriptor *> graph_mapping_sources_;
 
     void issue(Severity severity, string_view code, const Location &source, std::string message);
     void unsupported(const Location &source, std::string message);
@@ -135,10 +148,26 @@ class Translator {
     bool emission(const Descriptor &descriptor, double light_multiplier,
                   std::array<float, 471> &dense);
     void light(const Descriptor &descriptor);
+    std::optional<float> image_emission(const Descriptor &descriptor, float illuminance = -1);
+    std::uint32_t native_image(const Descriptor &descriptor);
     void constant_textures();
     void image_textures();
+    void compile_textures();
+    std::uint32_t append_node(const graph::Node &node, const Descriptor *mapping = nullptr);
+    std::uint32_t append_material(SpectralMaterial material);
+    std::uint32_t spectrum_leaf(const SpectralMaterial &material);
+    std::uint32_t spectrum_leaf(std::span<const SpectralKnot> knots);
+    std::uint32_t raw_spectrum_operand(const Descriptor &descriptor, const Parameter &selected);
+    std::uint32_t operand(const Descriptor &descriptor, string_view name, bool spectrum,
+                          float fallback);
+    std::uint32_t float_binding(const Descriptor &descriptor, string_view name);
+    std::uint32_t compile_texture(const Descriptor &descriptor);
+    void displace_geometry(std::size_t remaining);
+    void rebase_texture_mappings();
     void texture_frames();
-    std::uint32_t reflectance(const Descriptor &descriptor, ReflectanceSource source);
+    std::optional<SpectralMaterial> reflectance(const Descriptor &descriptor,
+                                                ReflectanceSource source, string_view name,
+                                                float fallback);
     std::uint32_t material(const Descriptor &descriptor);
     void geometry();
 };
@@ -248,13 +277,11 @@ void Translator::camera(const Descriptor &descriptor, const Descriptor *film_des
         unsupported(descriptor.authored.location, "Camera transform must be rigid");
         return;
     }
-    if (!input_.spectrum_image_textures.empty()) {
-        const std::array linear{m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
-        if (const auto message = prepare_texture_camera(linear, scene_.texture_camera);
-            !message.empty()) {
-            invalid(descriptor.authored.location, message);
-            return;
-        }
+    const std::array linear{m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]};
+    if (const auto message = prepare_texture_camera(linear, scene_.texture_camera);
+        !message.empty()) {
+        invalid(descriptor.authored.location, message);
+        return;
     }
     const auto origin = narrow_point({m[3], m[7], m[11]});
     if (!origin) {
@@ -465,7 +492,8 @@ std::optional<std::vector<SpectralKnot>> Translator::spectrum(const Descriptor &
             invalid(wavelength.location, "Spectrum wavelengths must increase in binary32");
             return std::nullopt;
         }
-        if (!outside_range && (value.number < 0 || value.number > maximum)) {
+        if (role != SpectrumRole::graph_operand && !outside_range &&
+            (value.number < 0 || value.number > maximum)) {
             outside_range = &value;
         }
         knots.push_back({lambda, static_cast<float>(value.number)});
@@ -600,11 +628,12 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
             dense = *named;
             normalization = pbrt_y_inner_product(dense);
         } else {
-            if (!descriptor.spectrum_file) {
+            const auto *file = descriptor.checked_spectrum("L");
+            if (!file) {
                 invalid(source, "Emission spectrum filename requires a checked spectrum file");
                 return false;
             }
-            const auto &knots = descriptor.spectrum_file->knots;
+            const auto &knots = file->knots;
             if (!charge_file_spectrum(source, knots.size(), dense.size())) {
                 return false;
             }
@@ -642,11 +671,100 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
     return true;
 }
 
+std::uint32_t Translator::native_image(const Descriptor &descriptor) {
+    if (!descriptor.native_image) {
+        return graph::no_texture;
+    }
+    auto [entry, inserted] = native_images_.try_emplace(
+        descriptor.native_image.get(), static_cast<std::uint32_t>(scene_.image_textures.size()));
+    if (inserted) {
+        scene_.image_textures.push_back({descriptor.native_image});
+    }
+    return entry->second;
+}
+
+std::optional<float> Translator::image_emission(const Descriptor &descriptor, float illuminance) {
+    const auto scale = narrow(descriptor, "scale", 1);
+    if (!scale) {
+        return std::nullopt;
+    }
+    double amplitude = *scale / pbrt_y_inner_product(pbrt_d65());
+    if (illuminance > 0) {
+        // PBRT integrates the upper hemisphere of its equal-area image in light space.
+        // Only the mapping's z component is needed for this cosine-weighted sum.
+        const auto &image = *descriptor.native_image;
+        const auto &base = image.levels.front();
+        double sum = 0;
+        // The Y row of the inverse of the PBRT film's D65-based sRGB matrix.
+        constexpr std::array<double, 3> luminance{0.212673499227, 0.715151622536, 0.072174878238};
+        for (std::uint32_t y = 0; y < base.height; ++y) {
+            const float t = (static_cast<float>(y) + 0.5f) / static_cast<float>(base.height);
+            for (std::uint32_t x = 0; x < base.width; ++x) {
+                const float s = (static_cast<float>(x) + 0.5f) / static_cast<float>(base.width);
+                const double radius = std::abs(2. * s - 1) + std::abs(2. * t - 1);
+                if (radius >= 1) {
+                    continue;
+                }
+                const auto rgb = image_base_linear_rgb(image, s, t);
+                if (!rgb) {
+                    invalid(location(descriptor, "filename"), "Infinite light image lookup failed");
+                    return std::nullopt;
+                }
+                const auto &[r, g, b] = *rgb;
+                const double y_value = r * luminance[0] + g * luminance[1] + b * luminance[2];
+                const double z = 1 - radius * radius;
+                sum += y_value * z;
+            }
+        }
+        const double integral =
+            sum * 2 * std::numbers::pi / (static_cast<double>(base.width) * base.height);
+        if (!(integral > 0)) {
+            invalid(location(descriptor, "illuminance"),
+                    "Image light illuminance requires positive upper-hemisphere image luminance");
+            return std::nullopt;
+        }
+        amplitude *= illuminance / integral;
+    }
+    // RGBIlluminant reconstruction multiplies the final amplitude by up to 2.
+    if (!float_representable(amplitude * 2)) {
+        invalid(location(descriptor, "scale"), "Image emission scale overflows binary32");
+        return std::nullopt;
+    }
+    return static_cast<float>(amplitude);
+}
+
 void Translator::light(const Descriptor &descriptor) {
     const auto illuminance = narrow(descriptor, "illuminance", -1);
-    const double multiplier =
-        illuminance && *illuminance > 0 ? *illuminance / std::numbers::pi : 1.;
-    emission(descriptor, multiplier, scene_.environment);
+    if (descriptor.native_image) {
+        const auto &m = descriptor.transform.values;
+        const Vector x{m[0], m[4], m[8]}, y{m[1], m[5], m[9]}, z{m[2], m[6], m[10]};
+        constexpr double tolerance = 64 * std::numeric_limits<float>::epsilon();
+        const std::array gram_errors{dot(x, x) - 1, dot(y, y) - 1, dot(z, z) - 1,
+                                     dot(x, y),     dot(x, z),     dot(y, z)};
+        if (!std::ranges::all_of(gram_errors,
+                                 [](double error) { return std::abs(error) <= tolerance; })) {
+            unsupported(descriptor.authored.location,
+                        "Infinite image light transform must have an orthonormal linear part");
+            return;
+        }
+        if (illuminance) {
+            if (const auto scale = image_emission(descriptor, *illuminance)) {
+                scene_.environment_image = native_image(descriptor);
+                scene_.environment_image_scale = *scale;
+                scene_.environment_texture_from_world.values = {
+                    static_cast<float>(m[0]),  static_cast<float>(m[4]),
+                    static_cast<float>(m[8]),  0,
+                    static_cast<float>(m[1]),  static_cast<float>(m[5]),
+                    static_cast<float>(m[9]),  0,
+                    static_cast<float>(m[2]),  static_cast<float>(m[6]),
+                    static_cast<float>(m[10]), 0};
+            }
+        }
+    } else {
+        const double multiplier =
+            illuminance && *illuminance > 0 ? *illuminance / std::numbers::pi : 1.;
+        emission(descriptor, multiplier, scene_.environment);
+    }
 }
 
 std::optional<std::vector<SpectralKnot>> Translator::reflectance_curve(const Descriptor &descriptor,
@@ -656,11 +774,12 @@ std::optional<std::vector<SpectralKnot>> Translator::reflectance_curve(const Des
     }
     auto raw = pbrt_named_spectrum_knots(selected.values.front().text);
     if (raw.empty()) {
-        if (!descriptor.spectrum_file) {
+        const auto *file = descriptor.checked_spectrum(selected.name);
+        if (!file) {
             invalid(selected.location, "Reflectance filename requires a checked spectrum file");
             return std::nullopt;
         }
-        raw = descriptor.spectrum_file->knots;
+        raw = file->knots;
     }
     // Account for source processing and generated storage separately, including
     // unused definitions. Constant-texture references share the resulting payload.
@@ -683,21 +802,21 @@ std::optional<std::vector<SpectralKnot>> Translator::reflectance_curve(const Des
     return std::move(compiled.knots);
 }
 
-std::uint32_t Translator::reflectance(const Descriptor &descriptor, ReflectanceSource source) {
-    const string_view name = source == ReflectanceSource::texture ? "value" : "reflectance";
+std::optional<SpectralMaterial> Translator::reflectance(const Descriptor &descriptor,
+                                                        ReflectanceSource source, string_view name,
+                                                        float fallback) {
     const auto [selected, value_space] = descriptor.effective_parameter(name);
     // Named textures use captured value provenance; inline RGB uses its material dictionary.
     const string_view color_space =
         source == ReflectanceSource::texture ? value_space : descriptor.color_space;
     SpectralMaterial material;
     if (!selected) {
-        // Named constant textures default to one, independently of the material default.
         material.kind = SpectralMaterialKind::constant;
-        material.constant = 1;
-    } else if (selected->type == "rgb") {
+        material.constant = fallback;
+    } else if (selected->type == "rgb" || selected->type == "color") {
         if (!charge_spectral_values(*selected) ||
             !supports_rgb_space(color_space, selected->location)) {
-            return 0;
+            return std::nullopt;
         }
         std::array<float, 3> rgb{};
         std::ranges::transform(selected->values, rgb.begin(),
@@ -705,7 +824,7 @@ std::uint32_t Translator::reflectance(const Descriptor &descriptor, ReflectanceS
         const auto reflectance = reconstruct_srgb(rgb);
         if (!reflectance) {
             invalid(selected->location, "Diffuse RGB reflectance reconstruction failed");
-            return 0;
+            return std::nullopt;
         }
         material.kind = reflectance->is_constant ? SpectralMaterialKind::constant
                                                  : SpectralMaterialKind::rgb_sigmoid;
@@ -714,69 +833,454 @@ std::uint32_t Translator::reflectance(const Descriptor &descriptor, ReflectanceS
     } else if (selected->type == "blackbody") {
         const auto temperature = blackbody_temperature(*selected);
         if (!temperature) {
-            return 0;
+            return std::nullopt;
         }
         material.kind = SpectralMaterialKind::blackbody;
         material.temperature_kelvin = *temperature;
     } else if (selected->type == "spectrum" && selected->values.front().kind == ValueKind::string) {
         auto knots = reflectance_curve(descriptor, *selected);
         if (!knots) {
-            return 0;
+            return std::nullopt;
         }
         material.knots = std::move(*knots);
     } else {
         auto knots = spectrum(descriptor, name, SpectrumRole::reflectance);
         if (!knots) {
-            return 0;
+            return std::nullopt;
         }
         material.knots = std::move(*knots);
     }
+    return material;
+}
+
+std::uint32_t Translator::append_material(SpectralMaterial material) {
     const auto index = static_cast<std::uint32_t>(scene_.materials.size());
     scene_.materials.push_back(std::move(material));
     return index;
 }
 
-void Translator::constant_textures() {
-    for (const auto &descriptor : input_.float_constant_textures) {
-        if (diagnostics_.diagnostics_truncated) {
-            return;
-        }
-        if (const auto *selected = parameter(descriptor, "value");
-            selected && charge_spectral_values(*selected)) {
-            // Float consumers remain unsupported, but unused definitions are checked too.
-            narrow(descriptor, "value", 1);
-        }
+std::uint32_t Translator::append_node(const graph::Node &node, const Descriptor *mapping) {
+    const auto index = static_cast<std::uint32_t>(scene_.texture_graph.nodes.size());
+    scene_.texture_graph.nodes.push_back(node);
+    graph_mapping_sources_.push_back(node.mapping.kind == graph::uv ? nullptr : mapping);
+    return index;
+}
+
+std::uint32_t Translator::spectrum_leaf(const SpectralMaterial &material) {
+    graph::Node node;
+    node.type = graph::spectrum;
+    switch (material.kind) {
+    case SpectralMaterialKind::sampled:
+        return spectrum_leaf(material.knots);
+    case SpectralMaterialKind::constant:
+        node.values[0] = material.constant;
+        break;
+    case SpectralMaterialKind::rgb_sigmoid:
+        node.kind = graph::rgb_sigmoid;
+        std::ranges::copy(material.coefficients, node.values);
+        break;
+    case SpectralMaterialKind::blackbody:
+        node.kind = graph::blackbody;
+        node.values[0] = material.temperature_kelvin;
+        break;
+    default:
+        return graph::no_texture;
     }
+    return append_node(node);
+}
+
+std::uint32_t Translator::spectrum_leaf(std::span<const SpectralKnot> knots) {
+    graph::Node node;
+    node.type = graph::spectrum;
+    node.kind = graph::knots;
+    node.payload[0] = static_cast<std::uint32_t>(scene_.texture_graph.knots.size());
+    node.payload[1] = static_cast<std::uint32_t>(knots.size());
+    for (const auto &knot : knots) {
+        scene_.texture_graph.knots.push_back({knot.wavelength, knot.value});
+    }
+    return append_node(node);
+}
+
+std::uint32_t Translator::raw_spectrum_operand(const Descriptor &descriptor,
+                                               const Parameter &selected) {
+    if (selected.values.front().kind != ValueKind::string) {
+        const auto knots = spectrum(descriptor, selected.name, SpectrumRole::graph_operand);
+        return knots ? spectrum_leaf(*knots) : graph::no_texture;
+    }
+    if (!charge_spectral_values(selected)) {
+        return graph::no_texture;
+    }
+    auto knots = pbrt_named_spectrum_knots(selected.values.front().text);
+    if (knots.empty()) {
+        const auto *file = descriptor.checked_spectrum(selected.name);
+        if (!file) {
+            invalid(selected.location, "Reflectance filename requires a checked spectrum file");
+            return graph::no_texture;
+        }
+        knots = file->knots;
+    }
+    if (!charge_file_spectrum(selected.location, knots.size(), 0)) {
+        return graph::no_texture;
+    }
+    float previous = -std::numeric_limits<float>::infinity();
+    for (const auto &knot : knots) {
+        if (!(knot.wavelength > previous) || !std::isfinite(knot.wavelength) ||
+            !std::isfinite(knot.value)) {
+            invalid(selected.location,
+                    "Spectrum operand requires finite, strictly increasing knots");
+            return graph::no_texture;
+        }
+        previous = knot.wavelength;
+    }
+    if (knots.size() < 2) {
+        invalid(selected.location, "Spectrum operand requires at least two knots");
+        return graph::no_texture;
+    }
+    return spectrum_leaf(knots);
+}
+
+void Translator::constant_textures() {
     for (const auto &descriptor : input_.spectrum_constant_textures) {
         if (diagnostics_.diagnostics_truncated) {
             return;
         }
-        const auto index = reflectance(descriptor, ReflectanceSource::texture);
-        spectrum_textures_.emplace(descriptor.authored.arguments.front().text, index);
+        const auto &name = descriptor.authored.arguments.front().text;
+        const auto *selected = parameter(descriptor, "value");
+        if (selected && selected->type == "spectrum" && nested_spectra_.contains(name) &&
+            !direct_spectra_.contains(name)) {
+            continue; // Only the graph consumes this unclipped curve.
+        }
+        auto value = reflectance(descriptor, ReflectanceSource::texture, "value", 1);
+        spectrum_textures_.emplace(name, value ? append_material(std::move(*value)) : 0);
     }
 }
 
 void Translator::image_textures() {
+    const auto add_image = [&](const auto &definition, bool spectrum) {
+        const auto &name = definition.descriptor.authored.arguments.front().text;
+        const auto index = static_cast<std::uint32_t>(scene_.image_textures.size());
+        scene_.image_textures.push_back(definition.texture);
+        image_formats_.try_emplace(definition.texture.image.get(), definition.source->pixels->jpeg);
+        if (spectrum) {
+            image_indices_.emplace(name, index);
+            if (definition.descriptor.texture_mapping.kind == graph::uv) {
+                SpectralMaterial material;
+                material.kind = SpectralMaterialKind::image;
+                material.image_texture = index;
+                spectrum_textures_.emplace(name, append_material(std::move(material)));
+            }
+        } else {
+            float_image_indices_.emplace(name, index);
+        }
+    };
     for (const auto &definition : input_.spectrum_image_textures) {
+        add_image(definition, true);
+    }
+    for (const auto &definition : input_.float_image_textures) {
+        add_image(definition, false);
+    }
+}
+
+std::uint32_t Translator::operand(const Descriptor &descriptor, string_view name, bool spectrum,
+                                  float fallback) {
+    const auto *selected = parameter(descriptor, name);
+    if (selected && selected->type == "texture") {
+        const auto found = texture_roots_[spectrum].find(selected->values.front().text);
+        return found == texture_roots_[spectrum].end() ? graph::no_texture : found->second;
+    }
+    if (spectrum) {
+        if (selected && selected->type == "spectrum") {
+            return raw_spectrum_operand(descriptor, *selected);
+        }
+        // Bilerp reads standalone spectra. Texture-valued operands use the
+        // declaration's color space for inline RGB, as diffuse reflectance does.
+        const auto source = name == "v00" || name == "v01" || name == "v10" || name == "v11"
+                                ? ReflectanceSource::texture
+                                : ReflectanceSource::material;
+        const auto value = reflectance(descriptor, source, name, fallback);
+        return value ? spectrum_leaf(*value) : graph::no_texture;
+    }
+    if (selected && !charge_spectral_values(*selected)) {
+        return graph::no_texture;
+    }
+    const auto value = narrow(descriptor, name, fallback);
+    if (!value) {
+        return graph::no_texture;
+    }
+    graph::Node node;
+    node.values[0] = *value;
+    return append_node(node);
+}
+
+std::uint32_t Translator::float_binding(const Descriptor &descriptor, string_view name) {
+    const auto *selected = parameter(descriptor, name);
+    if (!selected || (selected->type == "texture" && selected->values.front().text.empty())) {
+        return graph::no_texture;
+    }
+    return operand(descriptor, name, false, 0);
+}
+
+std::uint32_t Translator::compile_texture(const Descriptor &descriptor) {
+    const auto &arguments = descriptor.authored.arguments;
+    const auto &name = arguments.front().text;
+    const auto &type = arguments[2].text;
+    const bool spectrum = arguments[1].text == "spectrum";
+    if (type == "constant") {
+        if (!spectrum) {
+            return operand(descriptor, "value", false, 1);
+        }
+        if (nested_spectra_.contains(name)) {
+            if (const auto *selected = parameter(descriptor, "value");
+                selected && selected->type == "spectrum") {
+                return raw_spectrum_operand(descriptor, *selected);
+            }
+        }
+        const auto found = spectrum_textures_.find(name);
+        return found == spectrum_textures_.end() || found->second == 0
+                   ? graph::no_texture
+                   : spectrum_leaf(scene_.materials[found->second]);
+    }
+    graph::Node node;
+    node.type = spectrum ? graph::spectrum : graph::scalar;
+    node.mapping = descriptor.texture_mapping;
+    bool valid = true;
+    const auto child = [&](std::size_t index, string_view field, float fallback,
+                           bool scalar = false) {
+        node.children[index] = operand(descriptor, field, spectrum && !scalar, fallback);
+        valid &= node.children[index] != graph::no_texture;
+    };
+    if (type == "imagemap") {
+        node.kind = graph::image;
+        node.payload[0] = spectrum ? image_indices_.at(name) : float_image_indices_.at(name);
+    } else if (type == "scale") {
+        node.kind = graph::scale;
+        child(0, "tex", 1);
+        child(1, "scale", 1, true);
+        if (valid) {
+            // PBRT folds an identity scalar and merges a constant factor with an
+            // image's scale before inversion and spectrum reconstruction.
+            const auto fold_image =
+                [&](std::uint32_t image_index,
+                    std::uint32_t factor_index) -> std::optional<std::uint32_t> {
+                const auto &factor = scene_.texture_graph.nodes[factor_index];
+                if (factor.kind != graph::constant_node || factor.type != graph::scalar) {
+                    return std::nullopt;
+                }
+                if (factor.values[0] == 1) {
+                    return image_index;
+                }
+                auto leaf = scene_.texture_graph.nodes[image_index];
+                if (leaf.kind != graph::image) {
+                    return std::nullopt;
+                }
+                auto image = scene_.image_textures[leaf.payload[0]];
+                image.scale *= factor.values[0];
+                if (!std::isfinite(image.scale)) {
+                    invalid(location(descriptor, "scale"),
+                            "Scaled imagemap scale overflows binary32");
+                    return graph::no_texture;
+                }
+                leaf.payload[0] = static_cast<std::uint32_t>(scene_.image_textures.size());
+                scene_.image_textures.push_back(std::move(image));
+                return append_node(leaf, graph_mapping_sources_[image_index]);
+            };
+            if (auto folded = fold_image(node.children[0], node.children[1])) {
+                return *folded;
+            }
+            if (!spectrum) {
+                if (auto folded = fold_image(node.children[1], node.children[0])) {
+                    return *folded;
+                }
+            }
+        }
+    } else if (type == "mix" || type == "directionmix" || type == "checkerboard") {
+        const bool checker = type == "checkerboard";
+        node.kind = checker         ? graph::checkerboard
+                    : type == "mix" ? graph::mix
+                                    : graph::directionmix;
+        child(0, "tex1", checker ? 1 : 0);
+        child(1, "tex2", checker ? 0 : 1);
+        if (type == "mix") {
+            child(2, "amount", 0.5f, true);
+        } else if (!checker) {
+            std::ranges::copy(descriptor.texture_direction, node.values);
+        }
+    } else if (type == "bilerp") {
+        node.kind = graph::bilerp;
+        child(0, "v00", 0);
+        child(1, "v01", 1);
+        child(2, "v10", 0);
+        child(3, "v11", 1);
+    } else if (type == "dots") {
+        node.kind = graph::dots;
+        // The pinned constructors' positional arguments reverse the named operands.
+        child(0, "inside", 1);
+        child(1, "outside", 0);
+    } else if (type == "windy") {
+        node.kind = graph::windy;
+    } else {
+        node.kind = type == "fbm"        ? graph::fbm
+                    : type == "wrinkled" ? graph::wrinkled
+                                         : graph::marble;
+        node.payload[0] = static_cast<std::uint32_t>(integer(descriptor, "octaves", 8));
+        node.values[0] = static_cast<float>(number(descriptor, "roughness", 0.5));
+        if (type == "marble") {
+            node.values[1] = static_cast<float>(number(descriptor, "scale", 1));
+            node.values[2] = static_cast<float>(number(descriptor, "variation", 0.2));
+        }
+    }
+    return valid ? append_node(node, &descriptor) : graph::no_texture;
+}
+
+void Translator::compile_textures() {
+    const auto mark_direct_spectrum = [&](const Descriptor &material) {
+        if (const auto *value = parameter(material, "reflectance");
+            value && value->type == "texture") {
+            direct_spectra_.insert(value->values.front().text);
+        }
+    };
+    std::ranges::for_each(input_.named_materials, mark_direct_spectrum);
+    for (const auto &descriptor : input_.inline_materials) {
+        mark_direct_spectrum(*descriptor);
+    }
+    for (const auto &descriptor : input_.procedural_textures) {
+        if (descriptor.authored.arguments[1].text != "spectrum") {
+            continue;
+        }
+        for (const auto field : {"tex", "tex1", "tex2", "inside", "outside"}) {
+            if (const auto *operand = parameter(descriptor, field);
+                operand && operand->type == "texture") {
+                nested_spectra_.insert(operand->values.front().text);
+            }
+        }
+    }
+    constant_textures();
+    image_textures();
+    for (const auto ref : input_.texture_order) {
         if (diagnostics_.diagnostics_truncated) {
             return;
         }
-        const auto index = static_cast<std::uint32_t>(scene_.materials.size());
-        SpectralMaterial material;
-        material.kind = SpectralMaterialKind::image;
-        material.image_texture = static_cast<std::uint32_t>(scene_.image_textures.size());
-        scene_.image_textures.push_back(definition.texture);
-        scene_.materials.push_back(std::move(material));
-        spectrum_textures_.emplace(definition.descriptor.authored.arguments.front().text, index);
+        const auto &descriptor = input_.texture_descriptor(ref);
+        const auto &arguments = descriptor.authored.arguments;
+        const auto root = compile_texture(descriptor);
+        if (root != graph::no_texture) {
+            texture_roots_[arguments[1].text == "spectrum"].emplace(arguments.front().text, root);
+        }
+    }
+}
+
+void Translator::displace_geometry(std::size_t remaining) {
+    std::vector<graph::Word> work;
+    const auto prepare = [&](const Shape &shape) {
+        const auto &descriptor = shape.descriptor;
+        const auto displacement = string(descriptor, "displacement");
+        if (!displacement || displacement->empty() || diagnostics_.diagnostics_truncated) {
+            return;
+        }
+        const auto root = float_binding(descriptor, "displacement");
+        if (root == graph::no_texture) {
+            return;
+        }
+        if (work.empty()) {
+            const auto message =
+                validate_texture_graph(scene_.texture_graph, scene_.image_textures.size(), &work);
+            if (!message.empty()) {
+                invalid(location(descriptor, "displacement"), message);
+                return;
+            }
+        }
+        const auto edge_length = narrow(descriptor, "edgelength", 1);
+        if (!edge_length) {
+            return;
+        }
+        const float scaled_length = *edge_length * input_.displacement_edge_scale;
+        const TextureImageSampler images{
+            &scene_.image_textures,
+            [](const void *user, graph::Word image, bool spectrum, graph::Mapped2D coordinates,
+               float) -> std::optional<float> {
+                const auto &textures = *static_cast<const std::vector<ImageTexture> *>(user);
+                if (spectrum || image >= textures.size()) {
+                    return std::nullopt;
+                }
+                const auto &texture = textures[image];
+                const auto value =
+                    image_linear_scalar(*texture.image, coordinates.s, 1 - coordinates.t,
+                                        coordinates.dsdx, coordinates.dtdx, coordinates.dsdy,
+                                        coordinates.dtdy, texture.filter, texture.max_anisotropy);
+                if (!value) {
+                    return std::nullopt;
+                }
+                const float scaled = *value * texture.scale;
+                return texture.invert ? std::max(0.f, 1 - scaled) : scaled;
+            }};
+        auto &mesh = scene_.geometry.meshes[shape.mesh_index];
+        const auto original_values = 3 * (mesh.positions.size() + mesh.normals.size() +
+                                          mesh.triangles.size() + mesh.tangents.size()) +
+                                     2 * mesh.uvs.size() + 4 * mesh.patches.size();
+        const auto evaluate = [&](GeometryPoint p, std::array<float, 2> uv) {
+            graph::Context context{};
+            context.p = {p.x, p.y, p.z};
+            context.u = uv[0];
+            context.v = uv[1];
+            return evaluate_texture_graph(scene_.texture_graph, root, context, 550, images);
+        };
+        DisplacementLimits limits;
+        limits.scalar_values = remaining + original_values;
+        limits.evaluation_work = displacement_work_remaining_;
+        limits.work_per_vertex = work[root];
+        auto result =
+            displace_mesh(mesh, descriptor.transform.values, scaled_length, evaluate, limits);
+        displacement_work_remaining_ -= result.evaluation_work;
+        if (!result.mesh) {
+            issue(Severity::error,
+                  result.limit_exceeded ? "limit-exceeded" : "invalid-render-value",
+                  location(descriptor, "displacement"), std::move(result.diagnostic));
+            return;
+        }
+        remaining = limits.scalar_values - result.scalar_values;
+        mesh = std::move(*result.mesh);
+    };
+    std::ranges::for_each(input_.shapes, prepare);
+    for (const auto &object : input_.objects) {
+        std::ranges::for_each(object.shapes, prepare);
+    }
+}
+
+void Translator::rebase_texture_mappings() {
+    if (!scene_.raster_camera) {
+        return;
+    }
+    const auto origin = to_vector(scene_.raster_camera->origin);
+    for (std::size_t i = 0; i < graph_mapping_sources_.size(); ++i) {
+        const auto *descriptor = graph_mapping_sources_[i];
+        if (!descriptor) {
+            continue;
+        }
+        const auto &inverse = descriptor->texture_from_world.values;
+        auto &matrix = scene_.texture_graph.nodes[i].mapping.texture_from_render;
+        for (std::size_t row = 0; row < origin.size(); ++row) {
+            const auto offset = 4 * row;
+            const auto translation =
+                inverse[offset + 3] +
+                dot({inverse[offset], inverse[offset + 1], inverse[offset + 2]}, origin);
+            if (!float_representable(translation)) {
+                invalid(descriptor->authored.location,
+                        "Camera-relative texture transform overflows binary32");
+                break;
+            }
+            matrix[offset + 3] = static_cast<float>(translation);
+        }
     }
 }
 
 void Translator::texture_frames() {
-    if (scene_.image_textures.empty() || !scene_.raster_camera) {
+    if (!scene_.raster_camera ||
+        (scene_.image_textures.empty() && scene_.texture_graph.nodes.empty())) {
         return;
     }
     try {
         scene_.instance_texture_frames.resize(scene_.geometry.instances.size());
+        scene_.instance_surface_transforms.resize(scene_.geometry.instances.size());
     } catch (const std::bad_alloc &) {
         issue(Severity::error, "limit-exceeded", entry_, "Cannot allocate instance texture frames");
         return;
@@ -785,12 +1289,14 @@ void Translator::texture_frames() {
     std::size_t instance = 0;
     const auto prepare = [&](const Shape &shape, const Transform &placement,
                              const Location &source) {
-        auto &frames = scene_.instance_texture_frames[instance];
-        const auto material = scene_.instance_materials[instance++];
-        if (scene_.materials[material].kind != SpectralMaterialKind::image) {
+        const auto index = instance++;
+        if (!instance_uses_texture_context(scene_, index)) {
             return true;
         }
-        const auto &mesh = input_.geometry.meshes[shape.mesh_index];
+        auto &frames = scene_.instance_texture_frames[index];
+        scene_.instance_surface_transforms[index] = {shape.descriptor.transform.values,
+                                                     placement.values, shape.reverse_orientation};
+        const auto &mesh = scene_.geometry.meshes[shape.mesh_index];
         constexpr std::size_t coordinates_per_frame = 6;
         if (mesh.triangles.size() > remaining / coordinates_per_frame) {
             issue(Severity::error, "limit-exceeded", source,
@@ -835,18 +1341,39 @@ void Translator::texture_frames() {
 
 std::uint32_t Translator::material(const Descriptor &descriptor) {
     const auto *selected = parameter(descriptor, "reflectance");
-    if (!selected) {
-        return 0;
-    }
-    if (selected->type == "texture") {
-        const auto found = spectrum_textures_.find(selected->values.front().text);
-        if (found == spectrum_textures_.end()) {
+    const auto authored_bump = float_binding(descriptor, "displacement");
+    const auto normal = native_image(descriptor);
+    const auto bump = normal == graph::no_texture ? authored_bump : graph::no_texture;
+    std::uint32_t existing = 0;
+    std::optional<SpectralMaterial> value;
+    if (selected && selected->type == "texture") {
+        const auto &name = selected->values.front().text;
+        if (const auto found = spectrum_textures_.find(name); found != spectrum_textures_.end()) {
+            existing = found->second;
+        } else if (const auto root = texture_roots_[true].find(name);
+                   root != texture_roots_[true].end()) {
+            value.emplace();
+            value->kind = SpectralMaterialKind::texture_graph;
+            value->texture_root = root->second;
+        } else {
             invalid(selected->location, "Diffuse reflectance requires a checked spectrum texture");
             return 0;
         }
-        return found->second;
+    } else if (selected) {
+        value = reflectance(descriptor, ReflectanceSource::material, "reflectance", 0.5f);
+        if (!value) {
+            return 0;
+        }
     }
-    return reflectance(descriptor, ReflectanceSource::material);
+    if (!value && bump == graph::no_texture && normal == graph::no_texture) {
+        return existing;
+    }
+    if (!value) {
+        value = scene_.materials[existing];
+    }
+    value->bump_root = bump;
+    value->normal_map = normal;
+    return append_material(std::move(*value));
 }
 
 void Translator::geometry() {
@@ -857,7 +1384,7 @@ void Translator::geometry() {
         input_.named_materials.size() > limits_.directives ||
         input_.float_constant_textures.size() > limits_.directives ||
         input_.spectrum_constant_textures.size() > limits_.directives ||
-        input_.spectrum_image_textures.size() > limits_.directives ||
+        input_.texture_order.size() > limits_.directives ||
         input_.area_lights.size() > limits_.directives) {
         issue(Severity::error, "limit-exceeded", entry_,
               "Translated geometry, material, texture, or light limit exceeded");
@@ -868,7 +1395,7 @@ void Translator::geometry() {
         for (const auto &[count, width] :
              {std::pair{mesh.positions.size(), 3U}, std::pair{mesh.triangles.size(), 3U},
               std::pair{mesh.normals.size(), 3U}, std::pair{mesh.uvs.size(), 2U},
-              std::pair{mesh.patches.size(), 4U}}) {
+              std::pair{mesh.patches.size(), 4U}, std::pair{mesh.tangents.size(), 3U}}) {
             if (count > remaining / width) {
                 issue(Severity::error, "limit-exceeded", entry_,
                       "Translated geometry value limit exceeded");
@@ -889,8 +1416,7 @@ void Translator::geometry() {
     SpectralMaterial default_material;
     default_material.knots = {{360, 0.5f}, {830, 0.5f}};
     scene_.materials.push_back(std::move(default_material));
-    constant_textures();
-    image_textures();
+    compile_textures();
     std::map<string_view, std::uint32_t> named;
     std::map<const Descriptor *, std::uint32_t> inline_materials;
     for (const auto &descriptor : input_.named_materials) {
@@ -909,6 +1435,8 @@ void Translator::geometry() {
     struct MeshBinding {
         std::uint32_t material = 0;
         const Shape *shape = nullptr;
+        std::uint32_t alpha = graph::no_texture;
+        bool invisible_emitter = false;
     };
     std::vector<MeshBinding> bindings(geometry.meshes.size());
     std::map<const Descriptor *, std::uint32_t> area_lights;
@@ -916,6 +1444,17 @@ void Translator::geometry() {
         const auto &binding = shape.material;
         auto &mesh = bindings[shape.mesh_index];
         mesh.shape = &shape;
+        mesh.alpha = float_binding(shape.descriptor, "alpha");
+        if (mesh.alpha != graph::no_texture) {
+            const auto &alpha = scene_.texture_graph.nodes[mesh.alpha];
+            if (alpha.kind == graph::constant_node) {
+                if (alpha.values[0] == 1) {
+                    mesh.alpha = graph::no_texture;
+                } else if (alpha.values[0] == 0 && shape.area_light) {
+                    mesh.invisible_emitter = true;
+                }
+            }
+        }
         if (shape.area_light) {
             area_lights.try_emplace(shape.area_light.get(), no_area_emission);
         }
@@ -942,11 +1481,26 @@ void Translator::geometry() {
         AreaEmission area;
         area.two_sided = boolean(*descriptor, "twosided", false);
         const auto placed = area_lights.find(descriptor.get());
-        if (!emission(*descriptor, 1., area.radiance) || positive_power ||
-            placed == area_lights.end()) {
+        bool emitted = false;
+        if (descriptor->native_image) {
+            if (supports_rgb_space(descriptor->color_space, descriptor->authored.location)) {
+                if (const auto scale = image_emission(*descriptor)) {
+                    area.image_scale = *scale;
+                    if (placed != area_lights.end() && !positive_power) {
+                        area.image_texture = native_image(*descriptor);
+                    }
+                    emitted = true;
+                }
+            }
+        } else {
+            emitted = emission(*descriptor, 1., area.radiance);
+        }
+        if (!emitted || positive_power || placed == area_lights.end()) {
             continue;
         }
-        const auto uncharged_samples = descriptor->spectrum_file ? 0 : area.radiance.size();
+        const auto uncharged_samples = descriptor->checked_spectrum("L") || descriptor->native_image
+                                           ? 0
+                                           : area.radiance.size();
         if (uncharged_samples > limits_.total_values - spectral_values_ ||
             scene_.area_emissions.size() >= no_area_emission) {
             issue(Severity::error, "limit-exceeded", descriptor->authored.location,
@@ -959,6 +1513,17 @@ void Translator::geometry() {
     }
 
     scene_.geometry = geometry;
+    displace_geometry(remaining);
+    rebase_texture_mappings();
+    const bool has_alpha = std::ranges::any_of(
+        bindings, [](const MeshBinding &binding) { return binding.alpha != graph::no_texture; });
+    const bool has_invisible = std::ranges::any_of(bindings, &MeshBinding::invisible_emitter);
+    if (has_alpha) {
+        scene_.instance_alpha_roots.reserve(geometry.instances.size());
+    }
+    if (has_invisible) {
+        scene_.instance_invisible_emitters.reserve(geometry.instances.size());
+    }
     scene_.instance_materials.reserve(geometry.instances.size());
     scene_.instance_reverse_orientation.reserve(geometry.instances.size());
     if (!area_lights.empty()) {
@@ -968,7 +1533,7 @@ void Translator::geometry() {
     std::size_t normal_coordinates_remaining = limits_.total_values;
     std::size_t patch_corners_remaining = std::min(limits_.total_values, render_patch_corner_limit);
     for (const auto &instance : geometry.instances) {
-        const auto &mesh = geometry.meshes[instance.mesh_index];
+        const auto &mesh = scene_.geometry.meshes[instance.mesh_index];
         if (mesh.patches.size() > patch_corners_remaining / 4) {
             issue(Severity::error, "limit-exceeded",
                   bindings[instance.mesh_index].shape->descriptor.authored.location,
@@ -983,13 +1548,19 @@ void Translator::geometry() {
             return;
         }
         const auto &binding = bindings[instance.mesh_index];
-        const auto &mesh = geometry.meshes[instance.mesh_index];
+        const auto &mesh = scene_.geometry.meshes[instance.mesh_index];
         const auto &shape = *binding.shape;
         if (const auto message = validate_patch_geometry(mesh, instance.transform);
             !message.empty()) {
             invalid(shape.descriptor.authored.location, message);
         }
         scene_.instance_materials.push_back(binding.material);
+        if (has_alpha) {
+            scene_.instance_alpha_roots.push_back(binding.alpha);
+        }
+        if (has_invisible) {
+            scene_.instance_invisible_emitters.push_back(binding.invisible_emitter);
+        }
         // PBRT applies the mesh and placement transforms to normals. A world-space
         // edge cross product has an additional sign for a mirrored transform.
         const bool mirrored = handedness(instance.transform) < 0;
@@ -1028,7 +1599,8 @@ void Translator::geometry() {
     }
 }
 
-std::string image_filter_provenance(const RenderScene &scene) {
+std::string image_filter_provenance(const RenderScene &scene,
+                                    const std::map<const ImagePyramid *, bool> &formats) {
     if (scene.image_textures.empty()) {
         return {};
     }
@@ -1040,14 +1612,20 @@ std::string image_filter_provenance(const RenderScene &scene) {
     std::array modes{
         FilterMode{ImageFilter::point, "point"}, FilterMode{ImageFilter::bilinear, "bilinear"},
         FilterMode{ImageFilter::trilinear, "trilinear"}, FilterMode{ImageFilter::ewa, "ewa"}};
+    bool png = false;
+    bool jpeg = false;
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
         const auto &material = scene.materials[scene.instance_materials[i]];
         const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];
         if (material.kind == SpectralMaterialKind::image &&
             (!mesh.triangles.empty() || !mesh.patches.empty())) {
-            const auto filter = scene.image_textures[material.image_texture].filter;
+            const auto &texture = scene.image_textures[material.image_texture];
+            const auto format = formats.find(texture.image.get());
+            const bool is_jpeg = format != formats.end() && format->second;
+            jpeg |= is_jpeg;
+            png |= !is_jpeg;
             for (auto &mode : modes) {
-                mode.used |= mode.filter == filter;
+                mode.used |= mode.filter == texture.filter;
             }
         }
     }
@@ -1055,7 +1633,9 @@ std::string image_filter_provenance(const RenderScene &scene) {
     if (remaining == 0) {
         return {};
     }
-    std::string provenance = "Image textures: PNG, UV mapping, mipmapped ";
+    std::string provenance = "Image textures: ";
+    provenance += png && jpeg ? "PNG and JPEG" : jpeg ? "JPEG" : "PNG";
+    provenance += ", UV mapping, mipmapped ";
     for (const auto &mode : modes) {
         if (mode.used) {
             provenance += mode.name;
@@ -1162,7 +1742,7 @@ RenderTranslation Translator::run() {
                           << " (x radius " << scene_.filter.x_radius << ", y radius "
                           << scene_.filter.y_radius << ')';
         result_.provenance.push_back(filter_provenance.str());
-        if (auto images = image_filter_provenance(scene_); !images.empty()) {
+        if (auto images = image_filter_provenance(scene_, image_formats_); !images.empty()) {
             result_.provenance.push_back(std::move(images));
         }
         result_.scene = std::move(scene_);

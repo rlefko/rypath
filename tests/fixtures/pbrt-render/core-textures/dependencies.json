@@ -1,0 +1,34 @@
+{
+  "core-texture-graph": [
+    {
+      "path": "assets/gray-pattern.png",
+      "bytes": 85,
+      "sha256": "ba886bbed9b605f835dabc804db2c2a2b3f926382cc967c2eae54530c9bbe137"
+    },
+    {
+      "path": "assets/cool.spd",
+      "bytes": 78,
+      "sha256": "784d3e0e18078e2c16656253527c85ff043478f13df45be4d393b2807a400bf5"
+    }
+  ],
+  "core-texture-alpha": [],
+  "core-texture-detail": [
+    {
+      "path": "assets/normal-tilted.png",
+      "bytes": 72,
+      "sha256": "cc774bd0d451c82df41259b1ee219ffe13e57b384cb2d8627ea9eb7cab53a49c"
+    }
+  ],
+  "core-texture-lights": [
+    {
+      "path": "assets/environment.png",
+      "bytes": 111,
+      "sha256": "74d825a40ded95962b31da75bd63e4a1ea0e534347741dccf92e8a67e70562a1"
+    },
+    {
+      "path": "assets/emission.png",
+      "bytes": 79,
+      "sha256": "0c967fe6f786d9d5423f80a594070d8f5229c961f6c8a64385f55d4b5d363958"
+    }
+  ]
+}

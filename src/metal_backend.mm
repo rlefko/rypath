@@ -85,14 +85,18 @@ id<MTLLibrary> load_library(id<MTLDevice> device, const std::filesystem::path &l
 
 id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> library,
                                           NSString *name, std::string &diagnostic,
-                                          id<MTLFunction> intersection) {
-    id<MTLFunction> function = [library newFunctionWithName:name];
+                                          id<MTLFunction> intersection,
+                                          MTLFunctionConstantValues *constants) {
+    NSError *error = nil;
+    id<MTLFunction> function = constants ? [library newFunctionWithName:name
+                                                         constantValues:constants
+                                                                  error:&error]
+                                         : [library newFunctionWithName:name];
     if (function == nil) {
-        diagnostic = "Metal library function lookup failed for " + utf8(name);
+        diagnostic = with_error("Metal library function lookup failed for " + utf8(name), error);
         return nil;
     }
 
-    NSError *error = nil;
     id<MTLComputePipelineState> pipeline;
     if (intersection == nil) {
         pipeline = [device newComputePipelineStateWithFunction:function error:&error];

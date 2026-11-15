@@ -245,6 +245,13 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> image_texels = nil;
     id<MTLBuffer> image_transfer = nil;
     id<MTLBuffer> image_spectra = nil;
+    id<MTLBuffer> graph_nodes = nil;
+    id<MTLBuffer> graph_knots = nil;
+    id<MTLBuffer> surface_vertices = nil;
+    id<MTLBuffer> surface_transforms = nil;
+    id<MTLBuffer> environment_cdf = nil;
+    id<MTLBuffer> illuminant = nil;
+    wire::TextureGraphParameters graph_parameters{.environment_image = max_index};
     wire::TextureParameters texture_parameters{};
     std::uint32_t texture_width = 0;
     std::uint32_t texture_height = 0;
@@ -264,10 +271,10 @@ struct MetalRenderScene::Impl {
         for (std::size_t ordinal = 0; ordinal < packed_instances.size(); ++ordinal) {
             auto &packed = packed_instances[ordinal];
             packed.uv_begin = packed.frame_begin = max_index;
-            if (scene.materials[packed.material].kind != SpectralMaterialKind::image) {
+            const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
+            if (!instance_uses_texture_context(scene, source)) {
                 continue;
             }
-            const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
             const auto mesh_index = scene.geometry.instances[source].mesh_index;
             const auto &mesh = scene.geometry.meshes[mesh_index];
             if (!mesh.uvs.empty()) {
@@ -301,6 +308,10 @@ struct MetalRenderScene::Impl {
         std::vector<wire::ImageTexture> textures;
         std::vector<wire::TextureLevel> levels;
         std::vector<wire::Word> texels;
+        std::vector<float> transfer(512);
+        std::ranges::copy(image_transfer_table(ImageEncoding::srgb), transfer.begin());
+        std::ranges::copy(image_transfer_table(ImageEncoding::linear), transfer.begin() + 256);
+        std::map<const std::array<float, 256> *, wire::Word> transfer_offsets;
         std::map<const ImagePyramid *, wire::Word> pyramid_offsets;
         const auto texel_limit =
             std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::Word));
@@ -331,8 +342,23 @@ struct MetalRenderScene::Impl {
             const auto &image = *texture.image;
             const wire::Word texel_format =
                 image.storage == ImageStorage::linear_half ? wire::linear_half_texel_format
-                : image.encoding == ImageEncoding::linear  ? wire::linear8_texel_format
+                : image.encoding != ImageEncoding::srgb    ? wire::linear8_texel_format
                                                            : wire::srgb8_texel_format;
+            wire::Word transfer_offset = image.encoding == ImageEncoding::srgb ? 0 : 256;
+            if (image.custom_transfer) {
+                const auto [found, fresh] = transfer_offsets.try_emplace(
+                    image.custom_transfer.get(), static_cast<wire::Word>(transfer.size()));
+                transfer_offset = found->second;
+                if (fresh) {
+                    if (transfer.size() >
+                        std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(float)) -
+                            256) {
+                        return "Metal image transfer tables exceed device or index limits";
+                    }
+                    transfer.insert(transfer.end(), image.custom_transfer->begin(),
+                                    image.custom_transfer->end());
+                }
+            }
             const auto [it, added] =
                 pyramid_offsets.try_emplace(&image, static_cast<wire::Word>(levels.size()));
             if (added) {
@@ -350,13 +376,14 @@ struct MetalRenderScene::Impl {
                                 static_cast<wire::Word>(image.wrap), texel_format, texture.uscale,
                                 texture.vscale, texture.udelta, texture.vdelta, texture.scale,
                                 static_cast<wire::Word>(texture.invert), filter,
-                                texture.max_anisotropy});
+                                texture.max_anisotropy, transfer_offset, image.source_channels});
         }
         texture_parameters.texture_count = static_cast<wire::Word>(textures.size());
         texture_parameters.level_count = static_cast<wire::Word>(levels.size());
         texture_parameters.texel_word_count = static_cast<wire::Word>(texels.size());
         texture_parameters.uv_count = static_cast<wire::Word>(uvs.size());
         texture_parameters.frame_count = static_cast<wire::Word>(frames.size());
+        texture_parameters.transfer_count = static_cast<wire::Word>(transfer.size());
         std::ranges::copy(scene.texture_camera.world_from_camera,
                           texture_parameters.world_from_camera);
         std::ranges::copy(scene.texture_camera.camera_from_world,
@@ -376,21 +403,196 @@ struct MetalRenderScene::Impl {
         image_textures = upload(device, textures);
         image_levels = upload(device, levels);
         image_texels = upload(device, texels);
-        if (texture_parameters.texture_count != 0) {
-            std::array<float, 512> transfer;
-            std::ranges::copy(image_transfer_table(ImageEncoding::srgb), transfer.begin());
-            std::ranges::copy(image_transfer_table(ImageEncoding::linear), transfer.begin() + 256);
-            image_transfer = upload(device, transfer);
+        image_transfer = upload(device, transfer);
+        if (texture_parameters.texture_count != 0 || !scene.texture_graph.nodes.empty()) {
             image_spectra = upload(device, srgb_reconstruction_table());
         } else {
             const std::array<float, 1> empty{};
-            image_transfer = upload(device, empty);
             image_spectra = upload(device, empty);
         }
         if (texture_uvs == nil || texture_frames == nil || image_textures == nil ||
             image_levels == nil || image_texels == nil || image_transfer == nil ||
             image_spectra == nil) {
             return "Metal image texture buffer allocation failed";
+        }
+        return {};
+    }
+
+    std::string upload_graph(const RenderScene &scene) {
+        auto nodes = scene.texture_graph.nodes;
+        auto values = scene.texture_graph.knots;
+        if (nodes.size() > max_index || values.size() > max_index) {
+            return "Metal texture graph exceeds index limits";
+        }
+        graph_parameters.node_count = static_cast<wire::Word>(nodes.size());
+        graph_parameters.knot_count = static_cast<wire::Word>(values.size());
+        graph_parameters.alpha_enabled = std::ranges::any_of(
+            scene.instance_alpha_roots, [](std::uint32_t root) { return root != max_index; });
+        graph_parameters.environment_image = scene.environment_image;
+        graph_parameters.environment_scale = scene.environment_image_scale;
+        if (nodes.empty())
+            nodes.emplace_back();
+        if (values.empty())
+            values.emplace_back();
+        graph_nodes = upload(device, nodes);
+        graph_knots = upload(device, values);
+        illuminant = upload(device, pbrt_d65());
+        std::vector<wire::SurfaceVertex> vertices;
+        std::vector<wire::SurfaceTransform> transforms;
+        const bool detail = graph_parameters.alpha_enabled ||
+                            std::ranges::any_of(scene.materials, [](const SpectralMaterial &m) {
+                                return m.bump_root != max_index || m.normal_map != max_index;
+                            });
+        std::map<std::uint32_t, wire::Word> offsets;
+        const auto vertex_limit =
+            std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::SurfaceVertex));
+        const auto matrices = [](const std::array<double, 16> &m, float *linear, float *normal) {
+            const double a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8],
+                         h = m[9], i = m[10];
+            const double cof[9] = {e * i - f * h, f * g - d * i, d * h - e * g,
+                                   c * h - b * i, a * i - c * g, b * g - a * h,
+                                   b * f - c * e, c * d - a * f, a * e - b * d};
+            const double determinant = a * cof[0] + b * cof[1] + c * cof[2];
+            if (determinant == 0 || !std::isfinite(determinant))
+                return false;
+            for (unsigned row = 0; row < 3; ++row) {
+                for (unsigned col = 0; col < 3; ++col) {
+                    linear[3 * row + col] = static_cast<float>(m[4 * row + col]);
+                    normal[3 * row + col] = static_cast<float>(cof[3 * row + col] / determinant);
+                    if (!std::isfinite(linear[3 * row + col]) ||
+                        !std::isfinite(normal[3 * row + col]))
+                        return false;
+                }
+            }
+            return true;
+        };
+        if (detail) {
+            for (std::size_t ordinal = 0; ordinal < parameters.instance_count; ++ordinal) {
+                const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
+                const auto mesh_index = scene.geometry.instances[source].mesh_index;
+                const auto &mesh = scene.geometry.meshes[mesh_index];
+                const auto [entry, added] =
+                    offsets.try_emplace(mesh_index, static_cast<wire::Word>(vertices.size()));
+                if (added) {
+                    if (mesh.positions.size() > vertex_limit - vertices.size())
+                        return "Metal surface attributes exceed device or index limits";
+                    for (std::size_t v = 0; v < mesh.positions.size(); ++v) {
+                        vertices.push_back(
+                            {pack(mesh.positions[v]),
+                             pack(mesh.normals.empty() ? GeometryPoint{} : mesh.normals[v]),
+                             pack(mesh.tangents.empty() ? GeometryPoint{} : mesh.tangents[v])});
+                    }
+                }
+                wire::SurfaceTransform packed{};
+                packed.vertex_begin = entry->second;
+                packed.vertex_count = static_cast<wire::Word>(mesh.positions.size());
+                packed.has_normals = !mesh.normals.empty();
+                packed.has_tangents = !mesh.tangents.empty();
+                SurfaceTransforms fallback;
+                std::ranges::copy(scene.geometry.instances[source].transform.values,
+                                  fallback.shape.begin());
+                const auto &input = scene.instance_surface_transforms.empty()
+                                        ? fallback
+                                        : scene.instance_surface_transforms[source];
+                if (!matrices(input.shape, packed.shape, packed.shape_normal) ||
+                    !matrices(input.placement, packed.placement, packed.placement_normal)) {
+                    return "Surface frame transforms are not representable";
+                }
+                const auto &m = input.shape;
+                const double determinant = m[0] * (m[5] * m[10] - m[6] * m[9]) -
+                                           m[1] * (m[4] * m[10] - m[6] * m[8]) +
+                                           m[2] * (m[4] * m[9] - m[5] * m[8]);
+                packed.authored_reverse = input.authored_reverse;
+                packed.shape_reverse_winding = input.authored_reverse != (determinant < 0);
+                packed.definition_translation = {
+                    static_cast<float>(input.shape[3] - parameters.origin.x),
+                    static_cast<float>(input.shape[7] - parameters.origin.y),
+                    static_cast<float>(input.shape[11] - parameters.origin.z)};
+                if (!finite(packed.definition_translation))
+                    return "Alpha definition position is not representable";
+                transforms.push_back(packed);
+            }
+        }
+        graph_parameters.surface_vertex_count = static_cast<wire::Word>(vertices.size());
+        if (vertices.empty())
+            vertices.emplace_back();
+        if (transforms.empty())
+            transforms.emplace_back();
+        surface_vertices = upload(device, vertices);
+        surface_transforms = upload(device, transforms);
+        std::vector<float> cdf;
+        if (scene.environment_image != max_index) {
+            const auto &image = *scene.image_textures[scene.environment_image].image;
+            const auto source_width = image.levels.front().width;
+            const auto width = std::min(wire::Word(wire::environment_grid_limit), source_width);
+            graph_parameters.environment_width = width;
+            const auto count = std::size_t(width + 1) * (width + 1);
+            if (count > max_index || count > device.maxBufferLength / sizeof(float) ||
+                count > ImageLimits{}.retained_bytes / sizeof(float)) {
+                return "Environment sampling table exceeds resource limits";
+            }
+            cdf.assign(count, 0);
+            std::vector<double> sums(width);
+            std::vector<double> row(width + 1);
+            double total = 0;
+            for (std::uint32_t y = 0; y < width; ++y) {
+                row[0] = 0;
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    // Area-average native texels into a bounded proposal grid.
+                    // Fractional overlap preserves NPOT source mass at bin edges;
+                    // native radiance retains every original pixel.
+                    const double x0 = double(x) * source_width / width,
+                                 x1 = double(x + 1) * source_width / width;
+                    const double y0 = double(y) * source_width / width,
+                                 y1 = double(y + 1) * source_width / width;
+                    double mass = 0;
+                    for (auto sy = static_cast<std::uint32_t>(y0);
+                         sy < std::min(source_width, static_cast<std::uint32_t>(std::ceil(y1)));
+                         ++sy) {
+                        const double wy = std::min(y1, double(sy + 1)) - std::max(y0, double(sy));
+                        for (auto sx = static_cast<std::uint32_t>(x0);
+                             sx < std::min(source_width, static_cast<std::uint32_t>(std::ceil(x1)));
+                             ++sx) {
+                            const double wx =
+                                std::min(x1, double(sx + 1)) - std::max(x0, double(sx));
+                            const auto rgb = image_base_texel_linear_rgb(image, sx, sy);
+                            if (!rgb)
+                                return "Environment sampling texel is invalid";
+                            mass += wx * wy * (double((*rgb)[0]) + (*rgb)[1] + (*rgb)[2]) / 3;
+                        }
+                    }
+                    row[x + 1] = row[x] + mass;
+                }
+                sums[y] = row.back();
+                total += sums[y];
+                const auto begin = std::size_t(width + 1) * (y + 1);
+                for (std::uint32_t x = 1; x <= width; ++x) {
+                    cdf[begin + x] = sums[y] > 0 ? static_cast<float>(row[x] / sums[y])
+                                                 : float(x) / float(width);
+                }
+            }
+            double accumulated = 0;
+            for (std::uint32_t y = 0; y < width; ++y) {
+                accumulated += sums[y];
+                cdf[y + 1] = total > 0 ? static_cast<float>(accumulated / total)
+                                       : float(y + 1) / float(width);
+            }
+            const auto &m = scene.environment_texture_from_world.values;
+            for (unsigned row_index = 0; row_index < 3; ++row_index) {
+                for (unsigned col = 0; col < 3; ++col) {
+                    const auto value = m[4 * row_index + col];
+                    graph_parameters.environment_from_world[3 * row_index + col] = value;
+                    graph_parameters.world_from_environment[3 * col + row_index] = value;
+                }
+            }
+        }
+        graph_parameters.environment_cdf_count = static_cast<wire::Word>(cdf.size());
+        if (cdf.empty())
+            cdf.emplace_back();
+        environment_cdf = upload(device, cdf);
+        if (graph_nodes == nil || graph_knots == nil || surface_vertices == nil ||
+            surface_transforms == nil || environment_cdf == nil || illuminant == nil) {
+            return "Metal texture graph or consumer buffer allocation failed";
         }
         return {};
     }
@@ -484,6 +686,8 @@ struct MetalRenderScene::Impl {
             const auto &source = scene.area_emissions[i];
             std::ranges::copy(source.radiance, packed_emissions[i].radiance);
             packed_emissions[i].two_sided = source.two_sided;
+            packed_emissions[i].image_texture = source.image_texture;
+            packed_emissions[i].image_scale = source.image_scale;
         }
         std::vector<wire::Emitter> packed_emitters;
         packed_emitters.reserve(std::max<std::size_t>(1, emitter_count));
@@ -611,6 +815,11 @@ struct MetalRenderScene::Impl {
             }
             packed.emission = scene.instance_emissions.empty() ? wire::no_emission
                                                                : scene.instance_emissions[source];
+            packed.alpha_root =
+                scene.instance_alpha_roots.empty() ? max_index : scene.instance_alpha_roots[source];
+            packed.invisible_emitter = scene.instance_invisible_emitters.empty()
+                                           ? 0
+                                           : scene.instance_invisible_emitters[source];
             packed_instances.push_back(packed);
         }
         if (auto message = upload_normals(scene, packed_instances); !message.empty()) {
@@ -626,6 +835,9 @@ struct MetalRenderScene::Impl {
         for (std::size_t index = 0; index < scene.materials.size(); ++index) {
             const auto &source = scene.materials[index];
             auto &packed = packed_materials[index];
+            packed.texture_root = source.texture_root;
+            packed.bump_root = source.bump_root;
+            packed.normal_map = source.normal_map;
             switch (source.kind) {
             case SpectralMaterialKind::sampled:
                 packed.kind = wire::sampled_material;
@@ -655,6 +867,9 @@ struct MetalRenderScene::Impl {
                 packed.kind = wire::image_material;
                 packed.image_texture = source.image_texture;
                 break;
+            case SpectralMaterialKind::texture_graph:
+                packed.kind = wire::graph_material;
+                break;
             }
         }
         // The shared kernel always binds a knot buffer, even with no authored knots.
@@ -672,7 +887,9 @@ struct MetalRenderScene::Impl {
             knots == nil || patches == nil) {
             return "Metal render shading buffer allocation failed";
         }
-        return upload_area_lighting(scene, packed_instances);
+        if (auto error = upload_area_lighting(scene, packed_instances); !error.empty())
+            return error;
+        return upload_graph(scene);
     }
 
     RenderSamplesResult sample(const RenderRequest &request) {
@@ -707,7 +924,7 @@ struct MetalRenderScene::Impl {
 
         auto p = parameters;
         auto texture_p = texture_parameters;
-        if (texture_p.texture_count != 0) {
+        if (texture_p.texture_count != 0 || graph_parameters.node_count != 0) {
             if (request.total_samples == 0 || request.sample_begin >= request.total_samples ||
                 request.sample_count > request.total_samples - request.sample_begin) {
                 result.diagnostic = "Image texture request requires a fixed total sample budget "
@@ -796,6 +1013,23 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:image_transfer offset:0 atIndex:20];
             [encoder setBuffer:image_spectra offset:0 atIndex:21];
             [encoder setBytes:&texture_p length:sizeof(texture_p) atIndex:22];
+            [encoder setBuffer:graph_nodes offset:0 atIndex:23];
+            [encoder setBuffer:graph_knots offset:0 atIndex:24];
+            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:25];
+            [encoder setBuffer:surface_vertices offset:0 atIndex:26];
+            [encoder setBuffer:surface_transforms offset:0 atIndex:27];
+            [encoder setBuffer:environment_cdf offset:0 atIndex:28];
+            [encoder setBuffer:illuminant offset:0 atIndex:29];
+        }
+        if (p.instance_count == 0 && graph_parameters.environment_image != max_index) {
+            [encoder setBuffer:image_textures offset:0 atIndex:17];
+            [encoder setBuffer:image_levels offset:0 atIndex:18];
+            [encoder setBuffer:image_texels offset:0 atIndex:19];
+            [encoder setBuffer:image_transfer offset:0 atIndex:20];
+            [encoder setBuffer:image_spectra offset:0 atIndex:21];
+            [encoder setBytes:&texture_p length:sizeof(texture_p) atIndex:22];
+            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:25];
+            [encoder setBuffer:illuminant offset:0 atIndex:29];
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];
@@ -905,6 +1139,16 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 return result;
             }
         }
+        const bool alpha = std::ranges::any_of(
+            scene.instance_alpha_roots, [](std::uint32_t root) { return root != max_index; });
+        if (alpha) {
+            if (prepared.instances.empty()) {
+                prepared = scene.geometry;
+            }
+            for (std::size_t i = 0; i < prepared.instances.size(); ++i) {
+                prepared.instances[i].non_opaque = scene.instance_alpha_roots[i] != max_index;
+            }
+        }
         const auto &geometry_data = prepared.instances.empty() ? scene.geometry : prepared;
         auto built = build_metal_geometry(geometry_data, library_path);
         result.device = std::move(built.device);
@@ -942,8 +1186,23 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 return result;
             }
         }
-        impl->pipeline =
-            metal::load_pipeline(impl->device, library, entry, result.diagnostic, intersection);
+        const bool features[] = {!scene.texture_graph.nodes.empty(),
+                                 std::ranges::any_of(scene.instance_alpha_roots,
+                                                     [](auto root) { return root != max_index; }),
+                                 std::ranges::any_of(scene.materials,
+                                                     [](const auto &m) {
+                                                         return m.bump_root != max_index ||
+                                                                m.normal_map != max_index;
+                                                     }),
+                                 scene.environment_image != max_index,
+                                 std::ranges::any_of(scene.area_emissions, [](const auto &e) {
+                                     return e.image_texture != max_index;
+                                 })};
+        MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
+        for (NSUInteger i = 0; i < std::size(features); ++i)
+            [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];
+        impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,
+                                              intersection, constants);
         if (impl->pipeline == nil) {
             return result;
         }
@@ -971,9 +1230,16 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             result.diagnostic = "Metal Sobol table buffer allocation failed";
             return result;
         }
-        if (impl->parameters.instance_count != 0) {
+        if (impl->parameters.instance_count != 0 || scene.environment_image != max_index) {
             try {
-                result.diagnostic = impl->upload_shading(scene, geometry_data);
+                if (impl->parameters.instance_count != 0)
+                    result.diagnostic = impl->upload_shading(scene, geometry_data);
+                else {
+                    std::vector<wire::Instance> empty_instances;
+                    result.diagnostic = impl->upload_textures(scene, empty_instances);
+                    if (result.diagnostic.empty())
+                        result.diagnostic = impl->upload_graph(scene);
+                }
             } catch (const std::bad_alloc &) {
                 result.diagnostic = "Metal render shading preparation allocation failed";
             }
