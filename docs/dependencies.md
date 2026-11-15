@@ -3,8 +3,9 @@
 Original rypath code uses SPDX identifier `GPL-3.0-only`. The repository contains
 the full unmodified GNU GPL v3 text in [LICENSE](../LICENSE).
 
-The portable CLI builds its vendored PNG and JPEG decoders into the executable and
-requires no external third-party libraries at runtime. The macOS adapters use
+The portable CLI builds its vendored PNG, JPEG, and OpenEXR decoders into the executable and
+requires no external third-party libraries at runtime. Its OpenEXRCore and
+embedded libdeflate subset also uses C11 and platform threading support. The macOS adapters use
 the SDK's Metal, Foundation, CoreFoundation,
 CoreGraphics, and ImageIO frameworks through Objective-C++ with ARC. The project
 does not vendor or fetch metal-cpp.
@@ -126,3 +127,27 @@ hardening rejects incomplete component/scan/restart data and widens vulnerable
 IDCT arithmetic. Source hashes, patch boundaries, and license are in the
 [stb record](../third_party/stb/README.md). It adds no runtime or build-time network
 dependency. Owned JPEG fixtures record their source recipe and hashes separately.
+
+
+Portable EXR input and output statically compile OpenEXRCore 3.5.4 at
+`86687e5f34e3a164820c5e280259550e3ca87c92`, including upstream's embedded
+libdeflate 1.26. OpenEXR's BSD-3-Clause terms, contributors and patent grant,
+and libdeflate's MIT license remain in [the dependency record](../third_party/openexr/README.md).
+CMake verifies shipped file hashes and builds an explicit C11 source subset;
+it does not discover or download installed OpenEXR, Imath, zlib, OpenJPH or zstd.
+The C++ SDK and newer compression dependencies are excluded. The wrapper owns
+bounded memory, channel/color validation and positioned I/O. The local adaptation
+record identifies disabled codecs and the checked decompressor-allocation fix.
+The supported input subset is narrower than the compiled classic codecs.
+
+Radiance RGBE decoding is original bounded C++20 code following the
+[official Radiance format](https://radsite.lbl.gov/radiance/refer/filefmts.pdf)
+and the pinned PBRT/stb numeric conversion. It adds no library dependency.
+
+HDR validation separately compiles an installed OpenEXR C++ reader/generator
+and a pinned PBRT probe. These oracle libraries are never product dependencies.
+The selected external OpenEXR `comp_zip.exr` asset is pinned to upstream
+`f723c3940fff287c0a26b425b90a8e764823bfd4` and remains cache-only. Its BSD license,
+size, hash, upstream path and project-authored wrapper boundary are recorded in
+the [HDR fixture manifest](../tests/fixtures/pbrt-render/hdr-io/README.md).
+The small independently generated HALF, FLOAT and RGBE images are owned fixtures.

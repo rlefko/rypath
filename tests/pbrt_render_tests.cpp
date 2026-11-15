@@ -102,6 +102,23 @@ std::string replaced(std::string_view source, std::string_view from, std::string
     return result.replace(offset, from.size(), to);
 }
 
+void film_output_precision(const fs::path &scratch) {
+    const auto run = [&](std::string_view name, std::string_view film, bool half) {
+        const auto result = translation(
+            write(scratch, name, replaced(basic, R"(Film "rgb")", film) + std::string(triangle)));
+        require(result.exit_code() == 0 && result.scene.has_value(),
+                "Film output precision rejected a supported scene");
+        require(result.save_fp16 == half, "Film.savefp16 effective precision was lost");
+    };
+    run("precision-default.pbrt", R"(Film "rgb")", true);
+    run("precision-float.pbrt", R"(Film "rgb" "bool savefp16" false)", false);
+    run("precision-half.pbrt", R"(Film "rgb" "bool savefp16" true)", true);
+    run("precision-last.pbrt", R"(Film "rgb" "bool savefp16" true "bool savefp16" false)", false);
+    run("precision-replaced.pbrt", R"(Film "rgb" "bool savefp16" false
+Film "rgb")",
+        true);
+}
+
 void effective_defaults_and_cameras(const fs::path &scratch) {
     // accepted() destroys both the preflight result and entry Location before returning.
     const auto defaults =
@@ -1937,6 +1954,7 @@ int main(int argc, char **argv) {
         require(argc == 3, "Expected scratch directory and PBRT fixtures");
         const fs::path scratch(argv[1]);
         fs::create_directories(scratch);
+        film_output_precision(scratch);
         effective_defaults_and_cameras(scratch);
         sobol_translation(scratch);
         material_instances(scratch);

@@ -24,7 +24,12 @@ enum : Word {
     point_texture_filter = 2,
     ewa_texture_filter = 3,
 };
-enum : Word { srgb8_texel_format = 0, linear8_texel_format = 1, linear_half_texel_format = 2 };
+enum : Word {
+    srgb8_texel_format = 0,
+    linear8_texel_format = 1,
+    linear_half_texel_format = 2,
+    linear_float_texel_format = 3
+};
 enum : Word { independent_sampler = 0, sobol_sampler = 1 };
 enum : Word {
     sampled_material = 0,

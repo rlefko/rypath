@@ -14,3 +14,11 @@ third_party/pbrt/named_spectra.inc -text
 third_party/pbrt/sobol_tables.inc -text
 tests/fixtures/pbrt-render/ply-assets/sportscar-quad.ply -text
 tests/fixtures/pbrt-render/cornell-box-sobol-*.pbrt -text whitespace=-blank-at-eol
+
+# Preserve HDR fixtures and independent binary32 oracle payloads byte for byte.
+*.exr binary
+*.hdr binary
+*.f32 binary
+
+# Vendored OpenEXR bytes are checksum-pinned, including upstream whitespace.
+third_party/openexr/** -text whitespace=-blank-at-eol,-blank-at-eof

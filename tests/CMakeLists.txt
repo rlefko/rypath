@@ -29,7 +29,7 @@ endfunction()
 string(CONCAT help_text
     "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
     "       rypath --check-pbrt SCENE\n"
-    "       rypath --render-pbrt SCENE --output IMAGE.png [--batch-size 8]\n"
+    "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n")
 set(error_text "rypath: unsupported arguments\nTry 'rypath --help' for usage.\n")
@@ -64,14 +64,14 @@ add_cli_test(render_total_overflow 1 "" "rypath: Total render sample count excee
 add_cli_test(render_signed_samples 1 "" "rypath: invalid unsigned integer for --samples\n"
     --render-demo --output unused.png --samples -1)
 add_cli_test(render_pbrt_missing_scene 1 "" "${error_text}" --render-pbrt)
-add_cli_test(render_pbrt_missing_output 1 "" "rypath: --render-pbrt requires --output IMAGE.png\n"
+add_cli_test(render_pbrt_missing_output 1 "" "rypath: --render-pbrt requires --output IMAGE.{png,exr}\n"
     --render-pbrt unused.pbrt)
 add_cli_test(render_pbrt_duplicate 1 "" "rypath: duplicate option --batch-size\n"
     --render-pbrt unused.pbrt --output unused.png --batch-size 1 --batch-size 2)
 add_cli_test(render_pbrt_zero_batch 1 "" "rypath: --batch-size must be a positive unsigned integer\n"
     --render-pbrt unused.pbrt --output unused.png --batch-size 0)
-add_cli_test(render_pbrt_output_format 1 "" "rypath: --render-pbrt output must have the .png extension\n"
-    --render-pbrt unused.pbrt --output unused.exr)
+add_cli_test(render_pbrt_output_format 1 "" "rypath: --render-pbrt output must have the .png or .exr extension\n"
+    --render-pbrt unused.pbrt --output unused.jpg)
 add_cli_test(render_pbrt_unknown 1 "" "${error_text}"
     --render-pbrt unused.pbrt --output unused.png --samples 4)
 
@@ -546,5 +546,48 @@ if(RYPATH_ENABLE_METAL)
     set_tests_properties(metal.core_texture_render PROPERTIES TIMEOUT 180)
     if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
         set_tests_properties(metal.core_texture_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+add_executable(rypath_hdr_image_tests hdr_image_tests.cpp)
+target_link_libraries(rypath_hdr_image_tests PRIVATE rypath_image)
+rypath_configure_host_target(rypath_hdr_image_tests)
+add_test(NAME image.hdr COMMAND rypath_hdr_image_tests)
+set_tests_properties(image.hdr PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_exr_output_tests exr_output_tests.cpp)
+target_link_libraries(rypath_exr_output_tests PRIVATE rypath_metal_backend)
+rypath_configure_host_target(rypath_exr_output_tests)
+add_test(NAME render.exr COMMAND rypath_exr_output_tests)
+set_tests_properties(render.exr PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_exr_codec_tests exr_codec_tests.cpp)
+target_link_libraries(rypath_exr_codec_tests PRIVATE rypath_image)
+rypath_configure_host_target(rypath_exr_codec_tests)
+add_test(NAME image.exr COMMAND rypath_exr_codec_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/exr")
+set_tests_properties(image.exr PROPERTIES TIMEOUT 60)
+
+add_executable(rypath_hdr_scene_tests hdr_scene_tests.cpp)
+target_link_libraries(rypath_hdr_scene_tests PRIVATE rypath_pbrt_render)
+rypath_configure_host_target(rypath_hdr_scene_tests)
+add_test(NAME pbrt.hdr_scene COMMAND rypath_hdr_scene_tests
+    "${CMAKE_CURRENT_BINARY_DIR}/hdr-scene/$<CONFIG>")
+set_tests_properties(pbrt.hdr_scene PROPERTIES TIMEOUT 30)
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_hdr_texture_probe hdr_texture_probe.mm)
+    set_target_properties(rypath_hdr_texture_probe PROPERTIES
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_hdr_texture_probe PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    target_link_libraries(rypath_hdr_texture_probe PRIVATE rypath_metal_backend)
+    rypath_configure_host_target(rypath_hdr_texture_probe)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_hdr_texture_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+    endif()
+    add_test(NAME metal.hdr_texture COMMAND rypath_hdr_texture_probe)
+    set_tests_properties(metal.hdr_texture PROPERTIES TIMEOUT 30)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        set_tests_properties(metal.hdr_texture PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()

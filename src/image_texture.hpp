@@ -14,7 +14,9 @@
 namespace rypath {
 
 enum class ImageEncoding { srgb, linear, gamma };
-enum class ImageStorage { encoded8, linear_half };
+enum class ImageStorage { encoded8, linear_half, linear_float };
+enum class ImageSampleFormat { unorm8, unorm16, half, float32 };
+enum class ImageFileFormat { png, jpeg, exr, hdr };
 enum class ImageWrap { repeat, clamp, black };
 enum class ImageFilter { bilinear, trilinear, point, ewa };
 
@@ -28,11 +30,24 @@ struct DecodedImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgb;
-    std::uint32_t bit_depth = 8;       // RGB16 samples are stored most significant byte first.
+    ImageSampleFormat sample_format = ImageSampleFormat::unorm8;
     std::uint32_t source_channels = 3; // PBRT channels after dropping gray and palette alpha.
     std::vector<std::uint8_t> alpha{}; // True RGBA only, in the same byte order as RGB.
-    bool jpeg = false;
+    ImageFileFormat file_format = ImageFileFormat::png;
+    // Floating sources retain exact decoded samples; HALF values widen exactly.
+    // Byte and floating representations are mutually exclusive.
+    std::vector<float> floating_rgb{};
+    std::vector<float> floating_alpha{};
 };
+
+constexpr std::size_t image_storage_words(ImageStorage storage) {
+    return storage == ImageStorage::linear_float ? 4 : storage == ImageStorage::linear_half ? 2 : 1;
+}
+
+inline std::size_t decoded_image_retained_bytes(const DecodedImage &image) {
+    return image.rgb.size() + image.alpha.size() +
+           (image.floating_rgb.size() + image.floating_alpha.size()) * sizeof(float);
+}
 
 struct ImageMipLevel {
     std::uint32_t width;
@@ -62,6 +77,10 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
                                      const ImageLimits &limits = {});
 ImageResult<DecodedImage> decode_jpeg(std::span<const std::uint8_t> bytes,
                                       const ImageLimits &limits = {});
+ImageResult<DecodedImage> decode_exr(std::span<const std::uint8_t> bytes,
+                                     const ImageLimits &limits = {});
+ImageResult<DecodedImage> decode_hdr(std::span<const std::uint8_t> bytes,
+                                     const ImageLimits &limits = {});
 ImageEncoding image_effective_encoding(const DecodedImage &image, ImageEncoding authored);
 ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEncoding encoding,
                                               ImageWrap wrap, const ImageLimits &limits = {},

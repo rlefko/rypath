@@ -665,7 +665,11 @@ struct GraphImageSampler {
         } else {
             value = rypath_image::lookup_scalar(texture, levels, texels, transfer, *parameters, st,
                                                 dx, dy, true);
+            if (!isfinite(value))
+                return false;
             value *= texture.scale;
+            if (!isfinite(value))
+                return false;
             if (texture.invert != 0u)
                 value = max(0.0f, 1.0f - value);
         }

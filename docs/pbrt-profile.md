@@ -29,7 +29,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
-| Typed texture graphs and PNG/JPEG imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
+| Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
 | Constant and image infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
@@ -74,8 +74,8 @@ capture still occurs at each camera declaration.
 | Float constant texture | Optional scalar `float value` |
 | Spectrum constant texture | Optional `value` of type `rgb`, `spectrum`, or `blackbody`, subject to the narrower render profile |
 | Float/spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |
-| Infinite light | `L`, `scale`, `illuminance`, or square RGB PNG/JPEG `filename` |
-| Diffuse area light | `L`, `scale`, `twosided`, `power`, PNG/JPEG `filename` mutually exclusive with `L` |
+| Infinite light | `L`, `scale`, `illuminance`, or square RGB PNG/JPEG/EXR/HDR `filename` |
+| Diffuse area light | `L`, `scale`, `twosided`, `power`, PNG/JPEG/EXR/HDR `filename` mutually exclusive with `L` |
 | Triangle mesh | `P`, `indices`, per-vertex `N`, `S`, and `uv`, scalar/texture `alpha`; exactly three vertices may omit indices |
 
 Triangle normals, tangents, and UVs are narrowed into owned indexed arrays. Face
@@ -103,7 +103,9 @@ same type and name, so it can reject a shadowed explicit value of a different
 type. This acceptance extension covers parameter selection in preflight. See
 the [pinned parameter dictionary](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/paramdict.cpp).
 
-## PNG imagemap definitions
+<a id="png-imagemap-definitions"></a>
+
+## Image map definitions
 
 Named float and spectrum imagemaps use their respective typed namespaces and
 follow the same parameter precedence rules. Filtering accepts `point`,
@@ -124,6 +126,33 @@ gray, RGB, or YCbCr input and rejects CMYK/YCCK and unsupported coding modes. A 
 A dependency is marked visited after successful decoding.
 The decoder provenance and its byte-stream limits are recorded in
 [LodePNG](../third_party/lodepng/README.md).
+
+EXR accepts single-part flat scanline or one-level tiled images, including
+nonzero data-window origins and partial edge tiles. The data window becomes
+the texture extent; the display window does not allocate additional pixels.
+Channels must be exactly unit-sampled Y, RGB or RGBA with one consistent HALF
+or FLOAT type. Y replicates into RGB. Finite signed and above-one samples remain
+linear; HALF widens exactly, and FLOAT remains binary32. Missing chromaticities
+means sRGB/D65; authored chromaticities must match the pinned PBRT relative
+`<1e-3` check. No color-space conversion or alpha compositing is performed.
+True RGBA alpha follows the existing scalar consumer policy.
+
+Compiled classic EXR compression includes NONE, RLE, ZIPS, ZIP, PIZ, PXR24, B44,
+B44A, DWAA and DWAB. Multipart, deep, mip/rip levels, UINT or mixed channel
+types, layered/extra/partial channels, subsampling, other chromaticities,
+HTJ2K, LJ2K and ZSTD are explicitly unsupported. Nonfinite decoded values,
+malformed chunks and resource exhaustion are errors rather than compatibility
+fallbacks. Damaged chunk tables are not reconstructed.
+
+Radiance `.hdr` accepts RGBE `#?RADIANCE`/`#?RGBE`,
+`FORMAT=32-bit_rle_rgbe`, flat or modern per-channel RLE scanlines, and
+`-Y height +X width` orientation. RGBE conversion is linear binary32, using
+`mantissa * 2^(exponent - 136)` and black for exponent zero. XYZE, legacy
+RGBE repeat-marker RLE, mixed flat/RLE scanlines, other orientations,
+nonidentity exposure/color correction/pixel aspect and non-sRGB primaries
+are unsupported. Unknown header assignments are unsupported; malformed or
+truncated packets and trailing bytes are errors. Header text is never executed.
+The [HDR record](hdr-image-validation.md) lists the exact limits and evidence.
 
 Sixteen-bit grayscale-alpha and grayscale with `tRNS` are explicit rypath
 extensions: the pinned PBRT decoder rejects conversion of those inputs. Owned
@@ -150,7 +179,12 @@ retained accounting includes decoded RGB/alpha bytes, packed mip texels, level
 records, and custom gamma tables. Native views for normal maps and lights keep
 the original dimensions and share storage when encoding and wrap agree.
 PNG encoding may be sRGB, linear, or finite positive gamma. JPEG follows the
-pinned fallback's fixed sRGB decode even when another encoding is authored. Image-specific resource limits are listed below.
+pinned fallback's fixed sRGB decode even when another encoding is authored.
+EXR/HDR always use linear encoding; a valid authored encoding is inert for these
+floating formats, following pinned PBRT. HALF EXR mips retain binary16 storage;
+FLOAT EXR and RGBE use binary32 storage with four 32-bit words per RGB(A) texel.
+Decoded floating RGB/alpha consumes 12/16 bytes per pixel, including widened HALF.
+Image-specific resource limits are listed below.
 Sixteen-bit sources retain six bytes per pixel and eight bytes per packed RGB
 mip texel. The 4,096-pixel axis ceiling does not override byte limits: a full
 4,096×4,096 RGB16 source and pyramid exceed the combined 256 MiB limit.
@@ -300,6 +334,7 @@ The diagnostic limit also marks analysis incomplete.
 | Source or mip image axis | 4,096 pixels |
 | Retained decoded RGB/alpha, mip/native views and transfer tables per scene | 256 MiB |
 | Scratch per decode or mip build | 256 MiB |
+| HDR header / individual header line | 64 KiB / 4 KiB |
 | Individual PNG decoder allocation | 128 MiB |
 | DEFLATE blocks per PNG | 65,536 |
 | JPEG scans / cumulative DCT blocks | 256 / 2²² |

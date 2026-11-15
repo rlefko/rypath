@@ -8,8 +8,11 @@
 
 #include <charconv>
 #include <exception>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <set>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -78,7 +81,8 @@ template <typename Integer> bool parse_unsigned(std::string_view value, Integer 
 }
 
 int finish_render(const rypath::RenderResult &result, const rypath::RenderSettings &settings,
-                  const std::filesystem::path &output) {
+                  const std::filesystem::path &output, rypath::ExrPrecision precision,
+                  std::span<const std::pair<std::string, std::string>> metadata) {
     if (!result.device.name.empty()) {
         std::cout << "Device: " << result.device.name << '\n'
                   << "Registry ID: " << result.device.registry_id << '\n'
@@ -100,13 +104,47 @@ int finish_render(const rypath::RenderResult &result, const rypath::RenderSettin
     case rypath::GeometryStatus::success:
         break;
     }
-    if (const auto diagnostic = rypath::write_png(result.film, output); !diagnostic.empty()) {
+    const bool exr = output.extension() == ".exr";
+    const auto diagnostic = exr ? rypath::write_exr(result.film, output, precision, metadata)
+                                : rypath::write_png(result.film, output);
+    if (!diagnostic.empty()) {
         return render_error(diagnostic);
     }
     const auto total =
         static_cast<std::uint64_t>(settings.width) * settings.height * settings.samples;
-    std::cout << "Total samples: " << total << '\n' << "Wrote PNG: " << output.string() << '\n';
+    std::cout << "Total samples: " << total << '\n'
+              << "Wrote " << (exr ? "EXR" : "PNG") << ": " << output.string() << '\n';
     return 0;
+}
+
+using Metadata = std::vector<std::pair<std::string, std::string>>;
+
+Metadata render_metadata(const rypath::RenderSettings &settings, std::string scene,
+                         std::string profile, const rypath::RenderScene &render_scene,
+                         std::string overrides) {
+    std::ostringstream exposure;
+    exposure << std::setprecision(std::numeric_limits<double>::max_digits10)
+             << render_scene.exposure;
+    const auto seed = settings.sampler.kind == rypath::SamplerKind::sobol
+                          ? std::to_string(rypath::sobol_signed_seed(settings.seed))
+                          : std::to_string(settings.seed);
+    return {{"rypath.version", RYPATH_VERSION},
+            {"rypath.profile", std::move(profile)},
+            {"rypath.scene", std::move(scene)},
+            {"rypath.sampler", rypath::sampler_description(settings.sampler)},
+            {"rypath.seed", seed},
+            {"rypath.samplesPerPixel", std::to_string(settings.samples)},
+            {"rypath.batchSize", std::to_string(settings.batch_size)},
+            {"rypath.exposure", exposure.str()},
+            {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
+            {"rypath.overrides", std::move(overrides)}};
+}
+
+const char *output_description(const std::filesystem::path &path, rypath::ExrPrecision precision) {
+    if (path.extension() != ".exr")
+        return "PNG; display sRGB; no FP16 intermediate";
+    return precision == rypath::ExrPrecision::half ? "EXR; linear sRGB; HALF"
+                                                   : "EXR; linear sRGB; FLOAT";
 }
 
 int render_demo(int argc, char *argv[]) {
@@ -158,12 +196,15 @@ int render_demo(int argc, char *argv[]) {
               << "Batch size: " << settings.batch_size << '\n'
               << "Seed: " << settings.seed << '\n'
               << std::flush;
-    const auto result =
-        rypath::render_progressive(rypath::make_demo_scene(), settings, [&](std::uint64_t count) {
-            std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
-                      << std::endl;
-        });
-    return finish_render(result, settings, output);
+    const auto scene = rypath::make_demo_scene();
+    const auto metadata = render_metadata(settings, "demo-v1", "demo-v1", scene, "output path");
+    std::cout << "Output: " << output.string() << " ("
+              << output_description(output, rypath::ExrPrecision::float32) << ")\n";
+    const auto result = rypath::render_progressive(scene, settings, [&](std::uint64_t count) {
+        std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
+                  << std::endl;
+    });
+    return finish_render(result, settings, output, rypath::ExrPrecision::float32, metadata);
 }
 
 int render_pbrt(int argc, char *argv[]) {
@@ -193,10 +234,10 @@ int render_pbrt(int argc, char *argv[]) {
         }
     }
     if (output.empty()) {
-        return render_error("--render-pbrt requires --output IMAGE.png");
+        return render_error("--render-pbrt requires --output IMAGE.{png,exr}");
     }
-    if (output.extension() != ".png") {
-        return render_error("--render-pbrt output must have the .png extension");
+    if (output.extension() != ".png" && output.extension() != ".exr") {
+        return render_error("--render-pbrt output must have the .png or .exr extension");
     }
     rypath::pbrt::RenderTranslation translated;
     {
@@ -224,6 +265,8 @@ int render_pbrt(int argc, char *argv[]) {
     if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
         return render_error(diagnostic);
     }
+    const auto precision =
+        translated.save_fp16 ? rypath::ExrPrecision::half : rypath::ExrPrecision::float32;
     const bool sobol = settings.sampler.kind == rypath::SamplerKind::sobol;
     const auto seed = sobol ? std::to_string(rypath::sobol_signed_seed(settings.seed))
                             : std::to_string(settings.seed);
@@ -239,8 +282,10 @@ int render_pbrt(int argc, char *argv[]) {
         << "Batch size: " << settings.batch_size << '\n'
         << "Seed: " << seed << '\n'
         << "Finite path maxdepth: " << scene.max_depth << '\n'
-        << "Output override: " << output.string()
-        << " (Film.filename overridden; PNG; no FP16 intermediate)\n";
+        << "Output override: " << output.string() << " (Film.filename overridden; "
+        << output_description(output, precision)
+        << (output.extension() == ".png" ? "; Film.savefp16 overridden" : "; Film.savefp16 honored")
+        << ")\n";
     for (const auto &item : translated.provenance) {
         std::cout << item << '\n';
     }
@@ -249,7 +294,11 @@ int render_pbrt(int argc, char *argv[]) {
         std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
                   << std::endl;
     });
-    return finish_render(result, settings, output);
+    const auto metadata =
+        render_metadata(settings, entry.string(), "pbrt-spectral-v1", scene,
+                        output.extension() == ".exr" ? "Film.filename; batch size"
+                                                     : "Film.filename; Film.savefp16; batch size");
+    return finish_render(result, settings, output, precision, metadata);
 }
 
 } // namespace
@@ -258,7 +307,7 @@ int main(int argc, char *argv[]) {
     if (argc == 1 || (argc == 2 && std::string_view{argv[1]} == "--help")) {
         std::cout << "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
                      "       rypath --check-pbrt SCENE\n"
-                     "       rypath --render-pbrt SCENE --output IMAGE.png [--batch-size 8]\n"
+                     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n";
         return 0;

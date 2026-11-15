@@ -2116,6 +2116,11 @@ void Interpreter::native_image(Descriptor &descriptor, string_view field, ImageE
         } else if (square && source->pixels->width != source->pixels->height) {
             error("invalid-image", filename.location,
                   "An equal-area infinite light image must be square");
+        } else if (field != "normalmap" &&
+                   std::ranges::any_of(source->pixels->floating_rgb,
+                                       [](float value) { return value < 0; })) {
+            error("invalid-image", filename.location,
+                  "Image lights require nonnegative RGB samples");
         } else {
             descriptor.native_image =
                 image_pyramid(filename.location, *source, encoding, wrap, 1, true);
@@ -2141,8 +2146,8 @@ std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesys
         return static_cast<char>(std::tolower(character));
     });
     const bool jpeg = one_of(extension, {".jpg", ".jpeg"});
-    if (!jpeg && extension != ".png") {
-        unsupported(source, "Only PNG and JPEG image files are supported");
+    if (!jpeg && !one_of(extension, {".png", ".exr", ".hdr"})) {
+        unsupported(source, "Only PNG, JPEG, EXR, and Radiance HDR image files are supported");
         return {};
     }
     if (asset_remaining_.files == 0) {
@@ -2179,7 +2184,10 @@ std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesys
             error("unreadable-file", source, "image input changed or could not be read");
             return {};
         }
-        auto decoded = jpeg ? decode_jpeg(data, image_limits_) : decode_png(data, image_limits_);
+        auto decoded = jpeg                  ? decode_jpeg(data, image_limits_)
+                       : extension == ".exr" ? decode_exr(data, image_limits_)
+                       : extension == ".hdr" ? decode_hdr(data, image_limits_)
+                                             : decode_png(data, image_limits_);
         if (!decoded.value) {
             issue(decoded.unsupported ? Severity::unsupported : Severity::error,
                   decoded.unsupported      ? "unsupported-feature"
@@ -2188,7 +2196,7 @@ std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesys
                   source, "Image \"" + path.string() + "\": " + decoded.diagnostic);
             return {};
         }
-        image_limits_.retained_bytes -= decoded.value->rgb.size() + decoded.value->alpha.size();
+        image_limits_.retained_bytes -= decoded_image_retained_bytes(*decoded.value);
         return std::make_shared<const DecodedImage>(std::move(*decoded.value));
     } catch (const std::bad_alloc &) {
         error("limit-exceeded", source, "Cannot allocate image input or decoded pixels");

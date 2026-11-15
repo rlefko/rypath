@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [45]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+LightSource "infinite"
+Texture "weight" "float" "imagemap" "string filename" "assets/bright-float.exr"
+    "float scale" [0.000003] "float uscale" [16] "float vscale" [8]
+Texture "blend" "spectrum" "mix" "rgb tex1" [0.1 0.2 0.8]
+    "rgb tex2" [0.8 0.3 0.1] "texture amount" "weight"
+Material "diffuse" "texture reflectance" "blend"
+Shape "trianglemesh" "point3 P" [-1 -1 2 1 -1 2 1 1 2 -1 1 2]
+    "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1]

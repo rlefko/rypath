@@ -5,7 +5,7 @@
 The current program is a C++20 command-line executable. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
 `--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`, and
-`--render-pbrt SCENE --output IMAGE.png`. No arguments prints help, and invalid
+`--render-pbrt SCENE --output IMAGE.{png,exr}`. No arguments prints help, and invalid
 arguments fail. Render the original demo or the supported PBRT spectral subset;
 portable preflight remains independent of rendering.
 
@@ -34,7 +34,7 @@ The portable reader owns source records, decoded tokens, authored numeric lexeme
 typed directives, dependencies, and diagnostics. A separate interpreter tracks
 PBRT scene state and builds checked float/index geometry only within the declared
 [compatibility profile](pbrt-profile.md). It preserves camera, material, and
-typed texture descriptors. Supported image consumers retain shared decoded PNG/JPEG data, packed mip
+typed texture descriptors. Supported image consumers retain shared decoded PNG/JPEG/EXR/HDR data, packed mip
 pyramids, and native-resolution views. Incomplete analysis returns diagnostics
 and a partial inventory, without a complete scene handle.
 No spectral reconstruction, light normalization, or renderer defaults are applied.
@@ -112,12 +112,21 @@ derivative vectors feed elliptical filtering of the shared mip pyramid; the
 [EWA record](ewa-texture-validation.md) defines stable arithmetic, bounded scan
 work, and edge handling.
 Sixteen-bit PNG sources retain their original channel bytes and compile to linear
-binary16 mip storage. A private format discriminator selects sRGB8, linear8, or
-linear-half texels in the existing Metal descriptor. Shared buffer offsets count
+binary16 mip storage. A private format discriminator selects sRGB8, linear8, linear-half, or linear-float texels in the existing Metal descriptor. Shared buffer offsets count
 32-bit words: one per encoded-byte texel or two per half RGB texel. Both backends
 widen half subnormals without half-precision arithmetic; filtering remains float.
 The [16-bit record](image16-texture-validation.md) defines quantization, memory
 accounting, and reference coverage.
+EXR sources retain channel type independently of their decoded float vectors:
+HALF compiles to binary16 mips; FLOAT and Radiance RGBE compile to binary32
+mips. Linear-float texels occupy four 32-bit words for RGB and optional scalar
+alpha. Portable and Metal views share this format and its exact word accounting.
+Floating samples ignore valid authored transfer encoding. Native views bypass
+power-of-two mip resizing for normal maps and image lights; signed and HDR
+values survive native storage; mip resizing and consumers apply the pinned PBRT
+semantics, including the nonnegative floor after NPOT resampling.
+The [HDR record](hdr-image-validation.md) defines decoder exclusions and
+independent source/mip evidence.
 Indexed PNGs decode to packed indices, validate every palette reference, and
 expand to the existing RGB8 source representation. Preflight accounts for packed
 and expanded storage before allocation. The existing image caches, mip compiler,
@@ -156,11 +165,22 @@ component with matched NEE/escape PDFs. Scene function constants remove graph,
 manual-query, surface-detail, and image-light code from unused pipeline variants.
 See the [core texture contract and validation](core-texture-validation.md).
 
+The EXR publisher projects complete compensated XYZ means to linear sRGB using
+the film's sensor model and exposure. Raw sums, corrections and counts remain
+unchanged. It validates finiteness and selected precision, writes a sibling
+temporary file through positioned callbacks, checks codec finalization and
+close, then atomically renames. Failure preserves the old destination and removes
+the temporary file. PBRT output honors `savefp16`; demo EXR uses FLOAT.
+The bounded static C11 OpenEXRCore subset owns codec work through scoped allocation
+callbacks and adds no installed-SDK product dependency. Metadata identifies the
+render settings and overrides, without defining checkpoint identity.
+
 ## Rendering and planned boundaries
 
 The first renderer exercises these boundaries concretely: portable spectral
 sampling and compensated film accumulation, an owned native render session and
-complete-path MSL kernel, and a separate ImageIO PNG adapter. A narrow native
+complete-path MSL kernel, a separate ImageIO PNG adapter, and a portable
+OpenEXR publisher. A narrow native
 accessor reuses the existing geometry owner's device, queue, TLAS, and BLAS
 residency. Host code receives complete samples rather than individual bounce
 queries. Predetermined batches commit only after checked GPU readback and full
@@ -215,7 +235,7 @@ without a general plugin system or cross-platform GPU abstraction.
   versioned internal representation. Accepted syntax, faithful semantics,
   approximations, and unsupported features will be tracked separately. Missing
   materials, parameters, or geometry must produce actionable diagnostics.
-- **Presentation:** PNG output is available; linear HDR output precedes a native application.
+- **Presentation:** PNG display output and linear HALF/FLOAT OpenEXR output are available.
   Display-only edits will not invalidate raw samples; changes to the integrand
   will. Preview history and raw accumulation are distinct.
 

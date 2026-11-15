@@ -505,7 +505,8 @@ std::string validate_image_textures(const RenderScene &scene) {
         if ((image.encoding != ImageEncoding::srgb && image.encoding != ImageEncoding::linear &&
              image.encoding != ImageEncoding::gamma) ||
             (image.storage != ImageStorage::encoded8 &&
-             image.storage != ImageStorage::linear_half) ||
+             image.storage != ImageStorage::linear_half &&
+             image.storage != ImageStorage::linear_float) ||
             (image.wrap != ImageWrap::repeat && image.wrap != ImageWrap::clamp &&
              image.wrap != ImageWrap::black) ||
             image.levels.empty() || image.levels.size() > 13) {
@@ -520,7 +521,7 @@ std::string validate_image_textures(const RenderScene &scene) {
         }
         remaining -= image.levels.size() * sizeof(ImageMipLevel);
         std::size_t offset = 0;
-        const std::size_t words_per_texel = image.storage == ImageStorage::linear_half ? 2 : 1;
+        const std::size_t words_per_texel = image_storage_words(image.storage);
         auto width = image.levels.front().width;
         auto height = image.levels.front().height;
         if (width == 0 || height == 0 ||
@@ -548,10 +549,7 @@ std::string validate_image_textures(const RenderScene &scene) {
             return "Incomplete image mip chain";
         }
         if (image.storage == ImageStorage::linear_half) {
-            const auto valid_half = [](std::uint32_t bits) {
-                // Finite nonnegative values have an unsigned encoding below +infinity.
-                return bits < 0x7c00u;
-            };
+            const auto valid_half = [](std::uint32_t bits) { return (bits & 0x7fffu) < 0x7c00u; };
             for (std::size_t i = 0; i < image.texels.size(); i += 2) {
                 const auto rg = image.texels[i], b = image.texels[i + 1];
                 if (!valid_half(rg & 0xffffu) || !valid_half(rg >> 16u) ||
@@ -560,7 +558,32 @@ std::string validate_image_textures(const RenderScene &scene) {
                     return "Invalid linear-half image texel payload";
                 }
             }
+        } else if (image.storage == ImageStorage::linear_float) {
+            if (image.encoding != ImageEncoding::linear || image.custom_transfer) {
+                return "Floating-point images require linear encoding";
+            }
+            for (std::size_t i = 0; i < image.texels.size(); ++i) {
+                if (!std::isfinite(std::bit_cast<float>(image.texels[i])) ||
+                    (image.source_channels != 4u && i % 4 == 3 && image.texels[i] != 0)) {
+                    return "Invalid linear-float image texel payload";
+                }
+            }
         }
+    }
+    std::set<const ImagePyramid *> checked_emission;
+    const auto check_emission = [&](std::uint32_t index) {
+        const auto &image = *scene.image_textures[index].image;
+        return checked_emission.insert(&image).second ? validate_image_light(image) : std::string{};
+    };
+    for (const auto &emission : scene.area_emissions) {
+        if (emission.image_texture != UINT32_MAX) {
+            if (auto error = check_emission(emission.image_texture); !error.empty())
+                return error;
+        }
+    }
+    if (scene.environment_image != UINT32_MAX) {
+        if (auto error = check_emission(scene.environment_image); !error.empty())
+            return error;
     }
     std::size_t remaining_frames = render_patch_corner_limit;
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
@@ -616,6 +639,27 @@ void accumulate(double value, double &sum, double &correction) {
 }
 
 } // namespace
+
+std::string validate_image_light(const ImagePyramid &image) {
+    if (!image.native_base || image.levels.size() != 1 || image.source_channels != 3)
+        return "Image lights require a native RGB image";
+    const auto &level = image.levels.front();
+    if (level.width == 0 || level.height == 0 || level.width > ImageLimits{}.max_dimension ||
+        level.height > ImageLimits{}.max_dimension)
+        return "Image light dimensions exceed the supported range";
+    for (std::uint32_t y = 0; y < level.height; ++y) {
+        for (std::uint32_t x = 0; x < level.width; ++x) {
+            const auto rgb = image_base_texel_linear_rgb(image, x, y);
+            if (!rgb || !std::ranges::all_of(
+                            *rgb, [](float value) { return std::isfinite(value) && value >= 0; }))
+                return "Image lights require finite nonnegative RGB samples";
+            // RGBIlluminant first forms twice the largest component in binary32.
+            if (*std::ranges::max_element(*rgb) > std::numeric_limits<float>::max() / 2)
+                return "Image light RGBIlluminant reconstruction overflows binary32";
+        }
+    }
+    return {};
+}
 
 std::string validate_render_settings(const RenderSettings &settings) {
     if (!valid_film_size(settings.width, settings.height)) {

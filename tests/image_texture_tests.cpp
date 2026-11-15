@@ -128,7 +128,8 @@ void decode_profiles(const std::filesystem::path &directory) {
     // PNG Sub filter on the second RGB pixel. Rows remain in file order.
     const auto rgb = make_png(2, 2, 2, Bytes{1, 10, 20, 30, 90, 180, 250, 0, 2, 4, 6, 7, 8, 9});
     const auto image = success(decode_png(rgb));
-    require(image.width == 2 && image.height == 2 && image.bit_depth == 8 &&
+    require(image.width == 2 && image.height == 2 &&
+                image.sample_format == ImageSampleFormat::unorm8 &&
                 image.rgb == Bytes{10, 20, 30, 100, 200, 24, 2, 4, 6, 7, 8, 9},
             "RGB PNG scanline order or Sub filter changed");
     std::filesystem::create_directories(directory);
@@ -156,20 +157,22 @@ void decode_16_bit_profiles() {
     // PNG Sub filter operates on bytes, including each sample's low byte.
     const auto rgb = success(decode_png(
         make_png(2, 1, 2, Bytes{1, 0x12, 0xfe, 0xab, 0xcd, 0x00, 0x01, 0, 1, 1, 2, 3, 4}, 16)));
-    require(rgb.width == 2 && rgb.height == 1 && rgb.bit_depth == 16 &&
+    require(rgb.width == 2 && rgb.height == 1 && rgb.sample_format == ImageSampleFormat::unorm16 &&
                 rgb.rgb ==
                     Bytes{0x12, 0xfe, 0xab, 0xcd, 0x00, 0x01, 0x12, 0xff, 0xac, 0xcf, 0x03, 0x05},
             "RGB16 PNG changed high or low bytes");
     const auto rgba = success(
         decode_png(make_png(1, 1, 6, Bytes{0, 0x12, 0x34, 0xab, 0xcd, 0xfe, 0xdc, 0, 0}, 16)));
-    require(rgba.bit_depth == 16 && rgba.rgb == Bytes{0x12, 0x34, 0xab, 0xcd, 0xfe, 0xdc},
+    require(rgba.sample_format == ImageSampleFormat::unorm16 &&
+                rgba.rgb == Bytes{0x12, 0x34, 0xab, 0xcd, 0xfe, 0xdc},
             "Transparent RGBA16 lost RGB values");
     const auto gray = make_png(1, 1, 0, Bytes{0, 0x01, 0x23}, 16, 0, "gAMA");
     const auto gray_transparent = insert_chunk(gray, 33, "tRNS", {0x01, 0x23});
     const auto gray_alpha = make_png(1, 1, 4, Bytes{0, 0x01, 0x23, 0, 0}, 16);
     for (const auto &png : {gray, gray_transparent, gray_alpha}) {
         const auto image = success(decode_png(png, {.retained_bytes = 6}));
-        require(image.bit_depth == 16 && image.rgb == Bytes{0x01, 0x23, 0x01, 0x23, 0x01, 0x23},
+        require(image.sample_format == ImageSampleFormat::unorm16 &&
+                    image.rgb == Bytes{0x01, 0x23, 0x01, 0x23, 0x01, 0x23},
                 "Gray16 was not replicated with full precision independently of transparency");
         require(decode_png(png, {.retained_bytes = 5}).limit_exceeded,
                 "PNG16 ignored its six-byte retained pixel cost");
@@ -254,8 +257,8 @@ void decode_indexed_profiles() {
         for (const auto &bytes : {png, insert_chunk(png, after_plte, "tRNS", {}),
                                   insert_chunk(png, after_plte, "tRNS", alpha)}) {
             const auto image = success(decode_png(bytes));
-            require(image.width == width && image.height == height && image.bit_depth == 8 &&
-                        image.rgb == rgb,
+            require(image.width == width && image.height == height &&
+                        image.sample_format == ImageSampleFormat::unorm8 && image.rgb == rgb,
                     "Indexed PNG changed palette RGB, row padding, filtering, or tRNS handling");
             require_rgb8_mip_equivalence(image, reference);
         }
@@ -319,8 +322,8 @@ void decode_packed_grayscale_profiles() {
         for (const auto &bytes : {png, insert_chunk(png, after_ihdr, "tRNS", {0, 1}),
                                   insert_chunk(png, after_ihdr, "tRNS", {0xff, 0xf1})}) {
             const auto image = success(decode_png(bytes));
-            require(image.width == width && image.height == height && image.bit_depth == 8 &&
-                        image.rgb == rgb,
+            require(image.width == width && image.height == height &&
+                        image.sample_format == ImageSampleFormat::unorm8 && image.rgb == rgb,
                     "Packed grayscale changed sample expansion, filtering, padding, or tRNS");
             require_rgb8_mip_equivalence(image, reference);
         }
@@ -345,7 +348,7 @@ void packed_decode_limits() {
                 "Packed PNG decoder accepted an undersized budget");
         const auto exact =
             success(decode_png(png, {.retained_bytes = retained, .scratch_bytes = scratch}));
-        require(exact.bit_depth == 8 && exact.rgb.size() == retained,
+        require(exact.sample_format == ImageSampleFormat::unorm8 && exact.rgb.size() == retained,
                 "Packed PNG decoder retained a non-RGB8 payload");
     };
     // Inflate dominates for tiny inputs. A 5x3 two-bit image needs two data bytes per row.
@@ -584,7 +587,8 @@ void decode_adam7_profiles() {
             }
             const auto expected_channels = mode == 3 ? 3u : (mode == 4 ? 1u : channels);
             require(image.width == width && image.height == height &&
-                        image.bit_depth == std::max(8u, depth) &&
+                        image.sample_format == (depth == 16 ? ImageSampleFormat::unorm16
+                                                            : ImageSampleFormat::unorm8) &&
                         image.source_channels == expected_channels && image.rgb == rgb &&
                         image.alpha == alpha,
                     "Adam7 pixel layout, expanded colors, or native channel identity differs");
@@ -636,7 +640,9 @@ void decode_jpeg_profiles() {
         std::uint64_t hash = 14695981039346656037ull;
         for (const auto byte : image.rgb)
             hash = (hash ^ byte) * 1099511628211ull;
-        require(image.width == 19 && image.height == 17 && image.bit_depth == 8 && image.jpeg &&
+        require(image.width == 19 && image.height == 17 &&
+                    image.sample_format == ImageSampleFormat::unorm8 &&
+                    image.file_format == ImageFileFormat::jpeg &&
                     image.source_channels == test.channels && image.alpha.empty() &&
                     hash == test.decoded_hash,
                 "JPEG decoded bytes differ from PBRT's pinned decoder");
@@ -904,7 +910,8 @@ void mip_pyramid() {
 }
 
 DecodedImage gray16_strip(std::span<const std::uint16_t> values) {
-    DecodedImage image{static_cast<std::uint32_t>(values.size()), 1, {}, 16};
+    DecodedImage image{
+        static_cast<std::uint32_t>(values.size()), 1, {}, ImageSampleFormat::unorm16};
     for (const auto value : values) {
         const auto high = static_cast<std::uint8_t>(value >> 8);
         const auto low = static_cast<std::uint8_t>(value);
@@ -950,8 +957,9 @@ void mip_pyramid_16_bit() {
         repeat, std::array<std::uint16_t, 7>{0x3bec, 0x35cb, 0, 0x3576, 0x3968, 0x3176, 0x36c6});
 
     // The rational PBRT transfer gives blue 0x1bc9 where the sRGB power law gives 0x1bc8.
-    const auto srgb = success(build_image_pyramid({1, 1, {0, 1, 0, 2, 0x0c, 0x69}, 16},
-                                                  ImageEncoding::srgb, ImageWrap::clamp));
+    const auto srgb =
+        success(build_image_pyramid({1, 1, {0, 1, 0, 2, 0x0c, 0x69}, ImageSampleFormat::unorm16},
+                                    ImageEncoding::srgb, ImageWrap::clamp));
     require(srgb.encoding == ImageEncoding::srgb && srgb.storage == ImageStorage::linear_half &&
                 srgb.texels == std::vector<std::uint32_t>{0x00280014, 0x1bc9},
             "Continuous sRGB16 decode or binary16 channel packing changed");
@@ -976,8 +984,9 @@ void mip_pyramid_16_bit() {
                     .value.has_value(),
             "Half-float mip scratch did not account for both float working levels");
     for (const auto &malformed :
-         {DecodedImage{1, 1, {0, 1, 2}, 16}, DecodedImage{1, 1, Bytes(7), 16},
-          DecodedImage{1, 1, Bytes(6), 12}}) {
+         {DecodedImage{1, 1, {0, 1, 2}, ImageSampleFormat::unorm16},
+          DecodedImage{1, 1, Bytes(7), ImageSampleFormat::unorm16},
+          DecodedImage{1, 1, Bytes(6), static_cast<ImageSampleFormat>(12)}}) {
         const auto result = build_image_pyramid(malformed, ImageEncoding::linear, ImageWrap::clamp);
         require(!result.value && !result.unsupported && !result.limit_exceeded &&
                     !result.diagnostic.empty(),

@@ -3,7 +3,7 @@
 `--render-demo` renders an original built-in matte scene through Metal. It is a
 small declared transport model, not PBRT scene compatibility or a complete
 offline renderer. The separate [PBRT spectral profile](pbrt-rendering.md) now
-translates a bounded set of scene files, including diffuse PNG image textures.
+translates a bounded set of scene files, including typed texture graphs and bounded PNG/JPEG/EXR/HDR image inputs.
 The demo has no textures, finite light,
 specular material, participating medium, denoiser, or CPU rendering fallback.
 
@@ -15,7 +15,9 @@ cmake --build --preset release
 ```
 
 The output path is required. The other values shown are defaults. Progress is
-reported after complete batches; only the final PNG is saved. Exit status is
+reported after complete batches; only the final image is saved. A `.exr` path
+selects linear FLOAT OpenEXR for the demo; other paths preserve the existing
+PNG contract. Exit status is
 `0` after rendering and publication, `2` for an unbuilt/unavailable Metal backend
 or unavailable compute ray tracing, and `1` for invalid arguments or execution,
 validation, or output failure. Diagnostic modes cannot be combined with rendering.
@@ -63,7 +65,7 @@ constant environment; this slice makes no sampling-efficiency claim.
 
 There is no raw-radiance clamp, firefly removal, sample rejection, or fixed-depth
 rendering policy. Needing more than 1,024 scatterings triggers an emergency failure:
-the whole pending batch is uncommitted and no final PNG is published. There is
+the whole pending batch is uncommitted and no final image is published. There is
 no replacement sample or altered seed retry.
 
 ## Sensor and display
@@ -85,8 +87,17 @@ PNG conversion uses a copy of averaged XYZ, the standard D65 XYZ-to-linear-sRGB
 matrix, unit exposure, sRGB transfer encoding, and display-only gamut clipping
 and eight-bit quantization. There is no white adaptation or tone mapper. The
 equal-energy illuminant need not display as neutral D65 white. ImageIO tags the
-PNG as sRGB. Raw XYZ sums and counts are unchanged by conversion. OpenEXR and
-checkpoint/resume remain roadmap work.
+PNG as sRGB. Raw XYZ sums and counts are unchanged by conversion.
+
+Demo EXR output uses the same compensated mean and linear-sRGB projection with
+FLOAT RGB and ZIP compression, preserving negative and above-one finite values.
+It applies no display transfer or clipping. The separate PBRT film uses its
+calibrated projection/exposure and honors `savefp16` for HALF/FLOAT selection.
+Incomplete counts, nonfinite raw/projected values and selected-precision overflow
+fail without replacing an existing destination. Both publishers finalize and
+close a sibling temporary file before rename. The
+[HDR validation record](hdr-image-validation.md) documents independent readback,
+metadata and format limits. Checkpoint/resume remains roadmap work.
 
 ## Sampling, ownership, and batches
 
@@ -185,7 +196,11 @@ MIS, retained NEE on roulette termination, survivor compensation, and a raw
 contribution above one. They guard against accidental clamping and changes to
 the estimator that aggregate image comparisons could miss.
 PNG tests decode the saved image and verify conversion and failed-publication
-behavior. CLI checks include unavailable backends and malformed options.
+behavior. Portable EXR film tests verify independent projection constants, both
+precisions, preserved negative/HDR values, invalid films and atomic failures.
+A separately linked installed OpenEXR reader supplies independent output-format
+evidence in the [HDR record](hdr-image-validation.md). CLI checks include both
+formats, unavailable backends, malformed options and publication failures.
 
 Run all three build/test presets on the final revision and run native backend
 tests with API validation:

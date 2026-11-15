@@ -333,7 +333,7 @@ Material "diffuse" "texture reflectance" "paint"
                 checked.document.dependencies.front().visited && definitions.size() == 4,
             "A 16-bit source is decoded once for all filters");
     const auto &first = definitions.front();
-    require(first.source->pixels->bit_depth == 16 &&
+    require(first.source->pixels->sample_format == ImageSampleFormat::unorm16 &&
                 first.source->pixels->rgb == std::vector<std::uint8_t>{128, 0, 64, 0, 32, 0} &&
                 first.texture.image->storage == ImageStorage::linear_half &&
                 first.texture.image->encoding == ImageEncoding::srgb &&
@@ -405,7 +405,8 @@ Material "diffuse" "texture reflectance" "paint"
                 checked.document.dependencies.back().visited && definitions.size() == 3,
             "One Include and one decoded indexed asset supply three descriptors");
     const auto &first = definitions.front();
-    require(first.source->pixels->bit_depth == 8 && first.source->pixels->rgb == rgb &&
+    require(first.source->pixels->sample_format == ImageSampleFormat::unorm8 &&
+                first.source->pixels->rgb == rgb &&
                 first.texture.image->storage == ImageStorage::encoded8 &&
                 definitions[1].source == first.source && definitions[2].source == first.source &&
                 definitions[1].texture.image == first.texture.image &&
@@ -456,7 +457,7 @@ Material "diffuse" "texture reflectance" "paint"
     const auto &first = definitions.front();
     require(checked.document.dependencies.size() == 1 &&
                 checked.document.dependencies.front().visited &&
-                first.source->pixels->bit_depth == 8 &&
+                first.source->pixels->sample_format == ImageSampleFormat::unorm8 &&
                 std::ranges::equal(first.source->pixels->rgb, test::grayscale2_rgb) &&
                 first.texture.image->storage == ImageStorage::encoded8 &&
                 definitions[1].source == first.source &&

@@ -341,9 +341,10 @@ struct MetalRenderScene::Impl {
             }
             const auto &image = *texture.image;
             const wire::Word texel_format =
-                image.storage == ImageStorage::linear_half ? wire::linear_half_texel_format
-                : image.encoding != ImageEncoding::srgb    ? wire::linear8_texel_format
-                                                           : wire::srgb8_texel_format;
+                image.storage == ImageStorage::linear_float  ? wire::linear_float_texel_format
+                : image.storage == ImageStorage::linear_half ? wire::linear_half_texel_format
+                : image.encoding != ImageEncoding::srgb      ? wire::linear8_texel_format
+                                                             : wire::srgb8_texel_format;
             wire::Word transfer_offset = image.encoding == ImageEncoding::srgb ? 0 : 256;
             if (image.custom_transfer) {
                 const auto [found, fresh] = transfer_offsets.try_emplace(

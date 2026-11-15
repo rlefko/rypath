@@ -9,6 +9,7 @@ namespace rypath::pbrt {
 struct RenderTranslation {
     std::optional<RenderScene> scene;
     RenderSettings settings;
+    bool save_fp16 = true;
     std::vector<Diagnostic> diagnostics;
     std::vector<std::string> provenance;
     int status = 1;

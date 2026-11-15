@@ -11,10 +11,18 @@ cmake --build --preset release
   --output build/pbrt.png --batch-size 8
 ```
 
-The output path must end in `.png`; batch size defaults to eight. Resolution,
+The output path must end in `.png` or `.exr`; batch size defaults to eight. Resolution,
 sample count, seed, and depth come from the scene. Progress reports committed
 sample batches and only the completed image is published. The path overrides
-`Film.filename`, and the terminal identifies the PNG/no-FP16 storage policy.
+`Film.filename`. PNG uses the existing display-sRGB conversion and overrides
+`Film.savefp16`. EXR publishes linear sRGB with ZIP compression and honors
+`Film.savefp16`: omitted or true selects HALF; false selects FLOAT.
+The terminal reports the format, precision and actual overrides. EXR projection
+uses compensated XYZ means and sensor exposure without display clipping or
+transfer encoding. Negative and above-one finite values survive; nonfinite
+values and HALF/FLOAT overflow fail. Publication replaces the destination only
+after encoding, finalization and close succeed. The
+[HDR record](hdr-image-validation.md) specifies metadata and validation.
 Exit 0 means rendering and publication succeeded, 2 means unsupported rendering
 or unavailable Metal, and 1 means invalid input, resource, numeric, execution,
 or output failure. Errors take precedence. Rejected scenes do not acquire a GPU
@@ -39,11 +47,11 @@ diagnosed even when not placed in the image.
 | Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
-| Textures | Typed float/spectrum graphs, PNG/JPEG imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
-| Environment | Zero or one infinite light: a square RGB PNG/JPEG equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
-| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
+| Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
+| Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
+| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
-| Output metadata | Filename and FP16 setting explicitly overridden by PNG policy; no bitwise PBRT PNG equivalence |
+| Output | Explicit filename override; PNG display encoding or linear EXR with authored/default HALF or FLOAT precision; no bitwise PBRT image equivalence |
 
 Supported parameter defaults include film 1280×720, camera FOV 90, shutter [0,1],
 ISO 100, seed zero, and depth five. Independent sampling defaults to four
@@ -53,8 +61,7 @@ camera. Exact full-frame crop/pixel bounds are accepted; other bounds are
 unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
-Non-sRGB reconstruction, legacy `color` parameters, Ptex, floating-point/HDR image
-inputs, fractional emitting alpha, emitting object members, other external mesh
+Non-sRGB reconstruction, legacy `color` parameters, Ptex, fractional emitting alpha, emitting object members, other external mesh
 formats, media, motion, lens effects, and other cameras, filters, samplers, and
 integrators remain unsupported. The core texture boundary below lists the
 additional exclusions.
@@ -160,7 +167,7 @@ references to a constant texture share its compiled payload. See the
 [reflectance validation record](spectral-reflectance-validation.md) for the
 numerical contract and independent comparisons.
 
-## PNG imagemaps
+## Image maps
 
 ```pbrt
 Texture "paint" "spectrum" "imagemap" "string filename" "paint.png"
@@ -173,9 +180,9 @@ follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/b
 
 | Parameter | Supported values |
 | --- | --- |
-| `filename` | Required entry-relative or absolute path to a supported [PNG/JPEG input](pbrt-profile.md#png-imagemap-definitions) |
+| `filename` | Required entry-relative or absolute path to a supported [PNG/JPEG/EXR/HDR input](pbrt-profile.md#image-map-definitions) |
 | `mapping` | `uv` (default), `planar`, `spherical`, or `cylindrical`; UV scales default to 1 and offsets to 0 |
-| `encoding` | PNG: `sRGB` (default), `linear`, or `gamma` plus positive finite exponent; JPEG: fixed sRGB decode |
+| `encoding` | PNG: `sRGB` (default), `linear`, or `gamma` plus positive finite exponent; JPEG: fixed sRGB decode; EXR/HDR: linear regardless of valid authored encoding |
 | `filter` | `point`, `bilinear` (default), `trilinear`, or elliptical `ewa`/`EWA` |
 | `wrap` | `repeat` (default), `clamp`, or `black`, including non-power-of-two sources |
 | `scale`, `invert` | Multiply filtered RGB by `scale` (default 1), then subtract from one when `invert` is true (default false) |
@@ -184,7 +191,8 @@ follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/b
 Texture lookup maps the hit UV, flips the vertical coordinate and filters in
 linear RGB. The spectrum uses the existing sRGB albedo reconstruction after
 clamping the scaled or inverted RGB to [0,1]. Explicit texture encoding controls
-sample decoding. PNG metadata gamma, color metadata, and alpha do not affect reflectance.
+sample decoding for PNG. EXR/HDR samples are always linear. PNG metadata gamma,
+color metadata, and alpha do not affect reflectance.
 Float imagemaps, positive `gamma` encoding, non-UV mappings, alpha, surface detail,
 and image emission follow the core texture profile below.
 
@@ -207,8 +215,15 @@ Resizing and downsampling propagate float working values; each stored level is
 rounded independently to binary16. Resizing may produce values above one, which
 remain available to filtering and texture scaling before the reflectance clamp.
 Portable and Metal lookup widen stored halves to float, including half subnormals.
-This texture storage policy is separate from film accumulation and PNG output's
-`savefp16` override. See [16-bit validation](image16-texture-validation.md).
+EXR HALF follows the same binary16 mip path with exact decoded HALF values.
+EXR FLOAT and Radiance RGBE retain binary32 mips and native views; values above
+65,504 are never narrowed to HALF. Signed source values remain available to
+scalar/bump consumers, subject to PBRT's nonnegative floor after NPOT resize;
+spectrum reflectance clamps after filtering and
+texture scale/invert. Native normal and light views retain original dimensions.
+Nonfinite or unrepresentable generated mip samples fail visibly.
+This texture storage policy is separate from film accumulation and output
+`savefp16`. See [16-bit validation](image16-texture-validation.md).
 
 Point filtering uses the same floor LOD as bilinear, then rounds
 `st * resolution - 0.5` with halfway values away from zero before applying
@@ -286,11 +301,12 @@ are deferred because the pinned renderer applies different stochastic masks to
 hit and NEE techniques without compensating its geometric MIS weights.
 
 Diffuse `displacement` is bump mapping. `normalmap` uses an RGB native-resolution
-PNG/JPEG with repeat bilinear sampling and takes precedence over bump mapping.
+PNG/JPEG/EXR/HDR with repeat bilinear sampling and takes precedence over bump mapping.
 Triangle `vector3 S` tangents and normals form the declaration-space shading
 frame before object placement. Surface detail changes the shading normal;
 geometry, offsets, area measures, and emission sidedness keep geometric normals.
 PNG normal maps decode as linear; pinned JPEG fallback decoding is always sRGB.
+EXR/HDR normal maps remain linear and retain their floating source precision.
 
 PLY shape `displacement` is true geometry displacement and requires vertex UVs.
 Cyclic quads are triangulated, longest edges are refined in the shape-definition
@@ -300,7 +316,7 @@ not trigger another refinement. Bounds are 64 refinement levels, 2²⁴ texture
 node visits, the existing 2,000,000 scalar-value budget, and bounded scratch
 storage. Other shape displacement remains unsupported.
 
-Infinite image lights require a square RGB PNG/JPEG in PBRT's equal-area
+Infinite image lights require a square RGB PNG/JPEG/EXR/HDR in PBRT's equal-area
 octahedral projection and an orthonormal linear transform. Radiance uses native
 nearest sampling with octahedral seams and calibrated RGBIlluminant/D65 spectra.
 The proposal is 15/16 image-weighted sampling plus 1/16 uniform sphere sampling;
@@ -312,9 +328,10 @@ with this PDF. Portals, multiple environments, positive area `power`, instanced
 emitters, and authored bilinear emission-sampling controls remain deferred.
 
 The [core texture validation record](core-texture-validation.md) distinguishes
-pinned behavior, numerical adaptations, and measured evidence. APNG, EXR, PFM,
-BMP, TGA, QOI, CMYK/YCCK JPEG, ICC color management, wider color spaces, Ptex,
-and output/checkpoint/UI changes are outside this boundary.
+pinned behavior, numerical adaptations, and measured evidence. APNG, PFM, BMP, TGA, QOI, CMYK/YCCK JPEG, ICC color management, wider color
+spaces and Ptex remain outside the image-input boundary. EXR/RGBE support and
+linear EXR output are defined separately in the [HDR record](hdr-image-validation.md);
+checkpointing and UI changes remain deferred.
 
 ## External PLY geometry
 
@@ -519,7 +536,7 @@ without an illuminance multiplier. Emission and reflectance are independent;
 black diffuse emitters remain visible. The emission normal preserves winding,
 transformed handedness, and ReverseOrientation before face-forwarding the
 scattering normal. Two-sided emission changes the emitting hemisphere, not its
-radiance. An empty image filename is inert. An RGB PNG/JPEG filename uses native
+radiance. An empty image filename is inert. An RGB PNG/JPEG/EXR/HDR filename uses native
 resolution, clamp-wrapped bilinear sampling at `(u, 1-v)`, and RGBIlluminant/D65
 spectral reconstruction. Combining a nonempty filename with effective `L` is
 invalid. Image emitters retain the existing geometric proposal and MIS density.
@@ -587,7 +604,9 @@ Shared inputs set `savefp16=false`. PBRT writes linear binary32 PFM through its
 output override. The test-only rypath harness uses the production translator,
 Metal renderer, and film projection to expose unquantized linear RGB. The PFM
 reader checks dimensions, endianness, byte count, and bottom-up row order while
-preserving negative and above-one values. Product output remains PNG.
+preserving negative and above-one values. These historical PFM comparisons
+precede product EXR output; the [HDR record](hdr-image-validation.md) adds
+independent EXR readback and floating-input comparisons.
 
 ```sh
 python3 scripts/compare_pbrt.py \
