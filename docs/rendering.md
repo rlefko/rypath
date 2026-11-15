@@ -15,7 +15,9 @@ cmake --build --preset release
 ```
 
 The output path is required. The other values shown are defaults. Progress is
-reported after complete batches; only the final image is saved. A `.exr` path
+reported after complete batches; only the final image is saved. Optional
+[checkpoints](checkpointing.md) preserve raw state for cancellation and compatible
+resume. A `.exr` path
 selects linear FLOAT OpenEXR for the demo; other paths preserve the existing
 PNG contract. Exit status is
 `0` after rendering and publication, `2` for an unbuilt/unavailable Metal backend
@@ -97,7 +99,7 @@ Incomplete counts, nonfinite raw/projected values and selected-precision overflo
 fail without replacing an existing destination. Both publishers finalize and
 close a sibling temporary file before rename. The
 [HDR validation record](hdr-image-validation.md) documents independent readback,
-metadata and format limits. Checkpoint/resume remains roadmap work.
+metadata and format limits. Checkpoints store exact raw state separately.
 
 ## Sampling, ownership, and batches
 

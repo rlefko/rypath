@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-#include "metal_render.hpp"
+#include "render_driver.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 
 namespace rypath {
 
-RenderResult render_progressive(const RenderScene &scene, const RenderSettings &settings,
-                                const std::function<void(std::uint64_t)> &progress) {
+RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSettings &settings,
+                                       const RenderControl &control,
+                                       const RenderSampleSource &source) {
     RenderResult result;
     try {
         result.diagnostic = validate_render_settings(settings);
@@ -30,22 +32,83 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
                 return result;
             }
         }
-        auto built = build_metal_renderer(scene);
+        if (!((scene.model == RenderModel::demo && scene.exposure == 1) ||
+              (scene.model == RenderModel::pbrt && std::isfinite(scene.exposure) &&
+               scene.exposure >= 0))) {
+            result.diagnostic = "Invalid film model or exposure";
+            return result;
+        }
+        if (control.initial_film) {
+            const auto &film = *control.initial_film;
+            if (film.width != settings.width || film.height != settings.height ||
+                film.model != scene.model ||
+                film.pixels.size() != std::size_t{settings.width} * settings.height) {
+                result.diagnostic = "Resume Film dimensions, model, or storage mismatch";
+                return result;
+            }
+            const auto count = film.pixels.front().count;
+            for (const auto &pixel : film.pixels) {
+                if (pixel.count != count || count > settings.samples) {
+                    result.diagnostic = "Resume Film has inconsistent or excessive sample counts";
+                    return result;
+                }
+                for (std::size_t i = 0; i < 3; ++i) {
+                    if (!std::isfinite(pixel.sum[i]) || !std::isfinite(pixel.correction[i]) ||
+                        !std::isfinite(pixel.sum[i] + pixel.correction[i]) ||
+                        (count == 0 && (pixel.sum[i] != 0 || pixel.correction[i] != 0))) {
+                        result.diagnostic = "Resume Film has invalid raw accumulation";
+                        return result;
+                    }
+                }
+            }
+            result.film = film;
+            result.film.exposure = scene.exposure;
+        } else {
+            result.film = make_film(settings.width, settings.height, scene.model, scene.exposure);
+        }
+        const auto pixel_total = static_cast<std::uint32_t>(result.film.pixels.size());
+        auto completed = result.film.pixels.front().count;
+        const auto notify = [&] {
+            if (control.committed) {
+                result.diagnostic = control.committed(result.film, result.device);
+                if (!result.diagnostic.empty())
+                    return false;
+            }
+            return true;
+        };
+        const auto finish = [&](RenderCompletion completion) {
+            result.status = GeometryStatus::success;
+            result.completion = completion;
+        };
+        if (completed == settings.samples) {
+            if (notify())
+                finish(RenderCompletion::complete);
+            return result;
+        }
+        if (control.cancelled && control.cancelled()) {
+            if (notify())
+                finish(RenderCompletion::cancelled);
+            return result;
+        }
+        auto built = source.prepare();
         result.device = built.device;
         result.status = built.status;
         result.diagnostic = built.diagnostic;
         if (built.status != GeometryStatus::success) {
+            // Preserve the fresh-render unavailable/error contract. A restored
+            // Film remains useful to callers even when preparation fails.
+            if (!control.initial_film)
+                result.film = {};
             return result;
         }
         result.status = GeometryStatus::failure;
-        if (!built.scene) {
-            result.diagnostic = "render build returned no scene";
+        if (!notify())
             return result;
-        }
-        result.film = make_film(settings.width, settings.height, scene.model, scene.exposure);
-        const auto pixel_total = static_cast<std::uint32_t>(result.film.pixels.size());
-        std::uint64_t completed = 0;
         while (completed < settings.samples) {
+            if (control.cancelled && control.cancelled()) {
+                finish(RenderCompletion::cancelled);
+                return result;
+            }
             const auto batch_count = std::min(settings.batch_size, settings.samples - completed);
             FilmBatch batch(result.film, batch_count);
             // Pixel tiles may execute in any order. Within a pixel, absolute
@@ -67,7 +130,7 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
                     request.sample_begin = completed + sample_offset;
                     request.sample_count = sample_count;
                     request.total_samples = settings.samples;
-                    auto tile = built.scene->sample(request);
+                    auto tile = source.sample(request);
                     if (tile.status != GeometryStatus::success) {
                         result.diagnostic = "render batch: " + tile.diagnostic;
                         return result;
@@ -85,16 +148,42 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
                 return result;
             }
             completed += batch_count;
-            if (progress) {
-                progress(completed);
+            if (!notify())
+                return result;
+            if (control.progress) {
+                control.progress(completed);
             }
         }
-        result.status = GeometryStatus::success;
+        finish(RenderCompletion::complete);
     } catch (const std::exception &error) {
         result.status = GeometryStatus::failure;
         result.diagnostic = std::string{"render: "} + error.what();
     }
     return result;
+}
+
+RenderResult render_progressive(const RenderScene &scene, const RenderSettings &settings,
+                                const RenderControl &control) {
+    std::unique_ptr<MetalRenderScene> native;
+    detail::RenderSampleSource source;
+    source.prepare = [&] {
+        auto built = build_metal_renderer(scene);
+        if (built.status == GeometryStatus::success && !built.scene) {
+            built.status = GeometryStatus::failure;
+            built.diagnostic = "render build returned no scene";
+        }
+        native = std::move(built.scene);
+        return built;
+    };
+    source.sample = [&](const RenderRequest &request) { return native->sample(request); };
+    return detail::drive_progressive(scene, settings, control, source);
+}
+
+RenderResult render_progressive(const RenderScene &scene, const RenderSettings &settings,
+                                const std::function<void(std::uint64_t)> &progress) {
+    RenderControl control;
+    control.progress = progress;
+    return render_progressive(scene, settings, control);
 }
 
 } // namespace rypath

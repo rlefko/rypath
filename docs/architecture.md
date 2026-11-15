@@ -253,6 +253,17 @@ without changing raw Film accumulation. See the [surface profile](pbrt-rendering
 and [validation record](surface-material-validation.md) for the approximations,
 resource limits and reference comparisons.
 
+## Resumable execution
+
+The progressive driver accepts validated committed Film state and resumes at its
+uniform absolute sample count. Cancellation is observed between complete batches;
+callbacks publish only committed state. A bounded portable checkpoint codec retains
+all raw sums, compensation and counts. Canonical owned-scene identity and explicit
+host/shader contracts permit continuation across compatible builds and supported
+Metal devices, with per-session provenance and no cross-device bitwise claim.
+See [checkpointing](checkpointing.md) for durability, identity exclusions, limits
+and the fixed sample-target policy.
+
 ## Rendering and planned boundaries
 
 The first renderer exercises these boundaries concretely: portable spectral
@@ -328,7 +339,7 @@ a numerical transport estimator; the separate render mode does.
 The offline MVP must combine progressive Metal rendering, a named and pinned
 supported PBRT profile, indexed geometry and instancing, textures and lighting,
 spectral surface scattering, homogeneous media, linear OpenEXR output,
-checkpoint/resume, and cancellation. It also includes documented polygonal
+durable checkpoint/resume, and cancellation. It also includes documented polygonal
 OBJ/MTL, PLY, glTF/GLB, and STL import profiles.
 
 Acceptance requires independent numerical tests, unmodified supported upstream

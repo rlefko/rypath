@@ -2,42 +2,36 @@
 
 ## Current milestone
 
-[Extended PBRT surfaces (PR #31)](https://github.com/rlefko/rypath/pull/31) is
-merged at `d8fe018`.
-
 [Homogeneous spectral media (PR #32)](https://github.com/rlefko/rypath/pull/32)
-adds explicit `volpath` with absorption,
-scattering, absorption-coupled emission, Henyey–Greenstein phase functions,
-scoped camera/instance interfaces, invisible boundaries and all 47 pinned PBRT
-measured presets. Ordered shadow traversal includes medium transmittance;
-raw Film accumulation remains separate. See the
-[render profile](pbrt-rendering.md#homogeneous-media) and
-[media validation record](medium-validation.md).
+is merged at `21f6667`.
 
-Heterogeneous media, arbitrary layers, subsurface/hair, fractional emitting alpha,
-Ptex, wider color spaces, additional importers, checkpointing and the interactive
-app remain on the [roadmap](roadmap.md). This does not establish offline MVP
-completion or full pinned-corpus support. Durable checkpoint/resume with
-cancellation remains a useful next bounded task.
+The current resumable-rendering PR adds durable raw checkpoints, compatible-build
+and supported-GPU continuation, and complete-batch cancellation. The fixed sample
+target remains part of render identity. Presentation settings and batch sizes may
+change; completed checkpoints can export without a GPU. See the
+[checkpoint contract](checkpointing.md) and [validation](checkpoint-validation.md).
+
+The next bounded task is a polygonal OBJ/MTL import profile, beginning with loader
+coverage and conversion policies. Further importers, broader PBRT support,
+long-run accumulation/convergence studies, licensed corpus acceptance and measured
+M4 Max benchmarks remain on the [roadmap](roadmap.md). This does not establish
+completion of the offline MVP or full pinned-corpus support.
 
 ## Validation
 
-Implementation `e3f4414` passes Debug, Release and ASan/UBSan (103/103 each)
-on Apple M4 Max with Xcode 26.6. Metal-disabled Apple Clang and LLVM 18 builds
-pass 75/75 each; all 102 Python checks pass. The new portable scene tests, independent GPU math/transport checks, all 47 measured preset
-comparisons and eight matched PBRT image fixtures pass. The matched images cover
-120 regional RGB gates across 256 renders; their raw PFMs are independently
-recomputed. Coefficient tables match all 282 source RGB values exactly;
-reconstructed spectra pass the existing RGB and blackbody tolerances.
+Implementation `b4fb5a0` passes Debug, Release and ASan/UBSan (116/116 each) on
+Apple M4 Max with macOS 26.6 and Xcode 26.6. Metal-disabled Apple Clang and LLVM 18
+builds pass 85/85 each; all 112 Python checks pass.
 
-Metal API validation passes all 30 suites without skips. All 11 affected
-shader-instrumented suites pass with an explicit 600-second diagnostic budget;
-normal PR deadlines and numerical gates are unchanged. Changed-unit Clang-Tidy,
-native Clang analysis and repository hooks pass. Four owned showcase scenes illustrate absorption, phase anisotropy, emission/nested
-media and measured presets, with separate raw EXR and display PNG output.
+Twelve real-signal checkpoint/resume cases cover both samplers, SIGINT/SIGTERM,
+same-build continuation and both Debug/Release directions. Each restores a
+nonempty prefix and reaches its fixed target with exact raw pixel-byte equality
+in these fixtures. Periodic publication and completed export without Metal pass.
+Metal API validation passes 33/33 suites without skips; all three affected
+shader-instrumented suites pass. Changed-unit Clang-Tidy, native Clang analysis,
+repository hooks and independent review pass. A second GPU is unavailable;
+cross-device compatibility is a policy with explicit numerical limits, not
+measured multi-device evidence.
 
-Earlier evidence and numerical caveats remain in the
-[surface](surface-material-validation.md), [dielectric](dielectric-validation.md),
-[conductor](conductor-validation.md), [HDR](hdr-image-validation.md) and
-[texture](core-texture-validation.md) records. Their counts describe those
-earlier revisions.
+Earlier surface, media, spectrum, texture and HDR records retain their historical
+validation evidence. Their counts describe those earlier revisions.

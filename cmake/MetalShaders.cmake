@@ -46,6 +46,7 @@ foreach(shader IN ITEMS smoke geometry render texture_probe hdr_texture_probe ma
             "${CMAKE_CURRENT_SOURCE_DIR}/src/conductor_probe_wire.h")
     endif()
     if(shader STREQUAL "render")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/dielectric.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/sampling_contract.h")

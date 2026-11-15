@@ -5,9 +5,11 @@
 #include "metal_render.hpp"
 #include "pbrt.hpp"
 #include "pbrt_render.hpp"
+#include "render_job.hpp"
 
 #include <algorithm>
 #include <charconv>
+#include <csignal>
 #include <exception>
 #include <iomanip>
 #include <iostream>
@@ -120,6 +122,40 @@ int finish_render(const rypath::RenderResult &result, const rypath::RenderSettin
 
 using Metadata = std::vector<std::pair<std::string, std::string>>;
 
+int finish_job(const rypath::RenderJobResult &job, const rypath::RenderSettings &settings,
+               const std::filesystem::path &output, rypath::ExrPrecision precision,
+               Metadata metadata) {
+    if (job.render.completion == rypath::RenderCompletion::cancelled) {
+        std::cout << "Render status: cancelled\n"
+                  << "Completed samples per pixel: " << job.render.film.pixels.front().count << '/'
+                  << settings.samples << '\n';
+        return job.signal == SIGTERM ? 143 : 130;
+    }
+    if (!job.identity.empty()) {
+        metadata.emplace_back("rypath.checkpointIdentity", job.identity);
+        metadata.emplace_back("rypath.checkpointProvenance",
+                              rypath::checkpoint_provenance(job.segments));
+    }
+    return finish_render(job.render, settings, output, precision, metadata);
+}
+
+// Returns false for an option owned by the surrounding render command.
+bool checkpoint_option(std::string_view option, std::string_view value,
+                       rypath::CheckpointOptions &options, std::string &diagnostic) {
+    if (option == "--checkpoint" || option == "--resume") {
+        if (value.empty())
+            diagnostic = std::string{option} + " requires a nonempty path";
+        (option == "--checkpoint" ? options.output : options.resume) = value;
+    } else if (option == "--checkpoint-interval") {
+        options.interval_supplied = true;
+        if (!parse_unsigned(value, options.interval_seconds) || options.interval_seconds == 0)
+            diagnostic = "--checkpoint-interval must be a positive unsigned integer";
+    } else {
+        return false;
+    }
+    return true;
+}
+
 std::string surface_model_description(const rypath::RenderScene &scene) {
     std::set<std::string> models;
     for (const auto &m : scene.materials) {
@@ -197,6 +233,7 @@ const char *output_description(const std::filesystem::path &path, rypath::ExrPre
 
 int render_demo(int argc, char *argv[]) {
     rypath::RenderSettings settings;
+    rypath::CheckpointOptions checkpoints;
     std::filesystem::path output;
     std::set<std::string_view> seen;
     for (int index = 2; index < argc; index += 2) {
@@ -209,7 +246,11 @@ int render_demo(int argc, char *argv[]) {
         }
         const std::string_view value = argv[index + 1];
         bool valid = true;
-        if (option == "--output") {
+        std::string diagnostic;
+        if (checkpoint_option(option, value, checkpoints, diagnostic)) {
+            if (!diagnostic.empty())
+                return render_error(diagnostic);
+        } else if (option == "--output") {
             output = value;
         } else if (option == "--width") {
             valid = parse_unsigned(value, settings.width);
@@ -234,6 +275,9 @@ int render_demo(int argc, char *argv[]) {
     if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
         return render_error(diagnostic);
     }
+    if (const auto diagnostic = rypath::validate_checkpoint_paths(checkpoints, output, {});
+        !diagnostic.empty())
+        return render_error(diagnostic);
 
     std::cout << "rypath " RYPATH_VERSION "\n"
               << "Scene: demo-v1\n"
@@ -248,11 +292,13 @@ int render_demo(int argc, char *argv[]) {
     const auto metadata = render_metadata(settings, "demo-v1", "demo-v1", scene, "output path");
     std::cout << "Output: " << output.string() << " ("
               << output_description(output, rypath::ExrPrecision::float32) << ")\n";
-    const auto result = rypath::render_progressive(scene, settings, [&](std::uint64_t count) {
-        std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
-                  << std::endl;
-    });
-    return finish_render(result, settings, output, rypath::ExrPrecision::float32, metadata);
+    const auto job = rypath::run_render_job(scene, settings, checkpoints, output, {},
+                                            RYPATH_BUILD_DESCRIPTION, [&](std::uint64_t count) {
+                                                std::cout
+                                                    << "Committed samples per pixel: " << count
+                                                    << '/' << settings.samples << std::endl;
+                                            });
+    return finish_job(job, settings, output, rypath::ExrPrecision::float32, metadata);
 }
 
 int render_pbrt(int argc, char *argv[]) {
@@ -260,6 +306,7 @@ int render_pbrt(int argc, char *argv[]) {
         return argument_error();
     }
     const std::filesystem::path entry = argv[2];
+    rypath::CheckpointOptions checkpoints;
     std::filesystem::path output;
     std::uint64_t batch_size = 8;
     std::set<std::string_view> seen;
@@ -271,7 +318,11 @@ int render_pbrt(int argc, char *argv[]) {
         if (index + 1 == argc || std::string_view{argv[index + 1]}.starts_with("--")) {
             return render_error("missing value for " + std::string{option});
         }
-        if (option == "--output") {
+        std::string diagnostic;
+        if (checkpoint_option(option, argv[index + 1], checkpoints, diagnostic)) {
+            if (!diagnostic.empty())
+                return render_error(diagnostic);
+        } else if (option == "--output") {
             output = argv[index + 1];
         } else if (option == "--batch-size") {
             if (!parse_unsigned(std::string_view{argv[index + 1]}, batch_size) || batch_size == 0) {
@@ -287,13 +338,19 @@ int render_pbrt(int argc, char *argv[]) {
     if (output.extension() != ".png" && output.extension() != ".exr") {
         return render_error("--render-pbrt output must have the .png or .exr extension");
     }
+    if (const auto diagnostic = rypath::validate_checkpoint_paths(checkpoints, output, {});
+        !diagnostic.empty())
+        return render_error(diagnostic);
     rypath::pbrt::RenderTranslation translated;
+    std::vector<std::filesystem::path> inputs{entry};
     {
         const auto checked = rypath::pbrt::check(entry);
         if (checked.exit_code() != 0) {
             std::cout << rypath::pbrt::report(checked);
             return checked.exit_code();
         }
+        for (const auto &dependency : checked.document.dependencies)
+            inputs.push_back(dependency.resolved_path);
         translated = rypath::pbrt::translate(checked, rypath::pbrt::Location{entry.string()});
     }
     for (const auto &diagnostic : translated.diagnostics) {
@@ -345,15 +402,17 @@ int render_pbrt(int argc, char *argv[]) {
         std::cout << item << '\n';
     }
     std::cout << std::flush;
-    const auto result = rypath::render_progressive(scene, settings, [&](std::uint64_t count) {
-        std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
-                  << std::endl;
-    });
+    const auto job = rypath::run_render_job(scene, settings, checkpoints, output, inputs,
+                                            RYPATH_BUILD_DESCRIPTION, [&](std::uint64_t count) {
+                                                std::cout
+                                                    << "Committed samples per pixel: " << count
+                                                    << '/' << settings.samples << std::endl;
+                                            });
     const auto metadata =
         render_metadata(settings, entry.string(), "pbrt-spectral-v1", scene,
                         output.extension() == ".exr" ? "Film.filename; batch size"
                                                      : "Film.filename; Film.savefp16; batch size");
-    return finish_render(result, settings, output, precision, metadata);
+    return finish_job(job, settings, output, precision, metadata);
 }
 
 } // namespace
@@ -364,7 +423,9 @@ int main(int argc, char *argv[]) {
                      "       rypath --check-pbrt SCENE\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
-                     "              [--samples 128] [--batch-size 8] [--seed 1]\n";
+                     "              [--samples 128] [--batch-size 8] [--seed 1]\n"
+                     "       Render options: [--checkpoint PATH] [--resume PATH]\n"
+                     "                       [--checkpoint-interval SECONDS (default: 60)]\n";
         return 0;
     }
     try {
