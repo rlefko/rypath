@@ -124,9 +124,9 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_sobol_tables}")
 
 add_library(rypath_render STATIC src/render.cpp src/sampling.cpp src/triangle_attributes.cpp
-    src/texture_footprint.cpp src/reflectance_curve.cpp)
+    src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp)
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    PRIVATE "${rypath_generated_directory}")
+    PRIVATE "${rypath_generated_directory}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image)
 rypath_configure_host_target(rypath_render)
 
