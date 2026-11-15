@@ -58,7 +58,7 @@ if(rypath_multi_config)
     string(APPEND rypath_runtime_directory "/$<CONFIG>")
 endif()
 
-add_library(rypath_geometry STATIC src/geometry.cpp src/bilinear.cpp)
+add_library(rypath_geometry STATIC src/geometry.cpp src/bilinear.cpp src/mesh_displacement.cpp)
 target_include_directories(rypath_geometry PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_geometry)
 
