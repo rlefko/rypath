@@ -109,7 +109,7 @@ struct Material {
     Word texture_root = 0xffffffffu;
     Word bump_root = 0xffffffffu;
     Word normal_map = 0xffffffffu;
-    Word scattering = 0; // 0: diffuse, 1: conductor
+    Word scattering = 0; // 0: diffuse, 1: conductor, 2: dielectric
     Word eta_begin = 0;
     Word eta_count = 0;
     Word k_begin = 0;

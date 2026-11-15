@@ -23,7 +23,7 @@ inline constexpr std::uint32_t render_emergency_limit = 1024;
 inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
 
 enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image, blackbody, texture_graph };
-enum class ScatteringKind { diffuse, conductor };
+enum class ScatteringKind { diffuse, conductor, dielectric };
 
 // Optical constants are unbounded nonnegative spectra, never diffuse albedo.
 // PBRT named curves extend endpoints; inline/file curves are zero outside support.
@@ -171,6 +171,8 @@ float blackbody_exponent_factor(float temperature_kelvin);
 double spectral_reflectance(const SpectralMaterial &material, double wavelength);
 double optical_spectrum(const OpticalSpectrum &spectrum, double wavelength);
 std::string validate_conductor_material(const SpectralMaterial &material);
+std::string validate_dielectric_material(const SpectralMaterial &material);
+bool scene_has_dielectrics(const RenderScene &scene);
 std::array<std::uint32_t, 4> sample_words(std::uint64_t seed, std::uint32_t pixel,
                                           std::uint64_t sample, std::uint32_t block);
 float sample_uniform(std::uint32_t word);

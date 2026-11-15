@@ -131,7 +131,8 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
     return {{"rypath.version", RYPATH_VERSION},
             {"rypath.profile", std::move(profile)},
             {"rypath.scene", std::move(scene)},
-            {"rypath.sampler", rypath::sampler_description(settings.sampler)},
+            {"rypath.sampler", rypath::sampler_description(
+                                   settings.sampler, rypath::scene_has_dielectrics(render_scene))},
             {"rypath.seed", seed},
             {"rypath.samplesPerPixel", std::to_string(settings.samples)},
             {"rypath.batchSize", std::to_string(settings.batch_size)},
@@ -274,7 +275,9 @@ int render_pbrt(int argc, char *argv[]) {
         << "rypath " RYPATH_VERSION "\n"
         << "Scene: " << entry.string() << '\n'
         << "Render profile: pbrt-spectral-v1\n"
-        << "Sampler: " << rypath::sampler_description(settings.sampler) << '\n'
+        << "Sampler: "
+        << rypath::sampler_description(settings.sampler, rypath::scene_has_dielectrics(scene))
+        << '\n'
         << "Light sampling: separate environment and uniform triangle area (differs from PBRT)\n"
         << "Color: calibrated CIE 1931 XYZ / sRGB\n"
         << "Resolution: " << settings.width << 'x' << settings.height << '\n'

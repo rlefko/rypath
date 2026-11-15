@@ -193,6 +193,21 @@ constants exclude conductor work from diffuse-only pipelines. The
 [conductor validation record](conductor-validation.md) describes the model,
 numerical adaptations and independent evidence.
 
+## Spectral dielectric scattering
+
+Dielectrics reuse the material wire layout, optical knot storage, roughness
+textures and authored surface frames. Their signed local interface coordinates
+select entering/exiting refraction, with Fresnel branch selection and radiance
+transmission weights. Both hemispheres participate in continuous light/BSDF MIS;
+smooth and index-matched events retain delta bookkeeping. Existing geometric
+offsets and whole-batch failure handling apply to transmitted paths.
+
+A shared CPU/MSL sampling contract appends a disjoint dielectric lobe stream,
+preserving the original eight transport dimensions per bounce. Scene-dependent
+Sobol depth validation runs in translation, the driver and direct Metal requests.
+Sampler provenance identifies the extension. See the [render profile](pbrt-rendering.md#spectral-ggx-dielectrics)
+and [validation record](dielectric-validation.md).
+
 ## Rendering and planned boundaries
 
 The first renderer exercises these boundaries concretely: portable spectral

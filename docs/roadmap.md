@@ -85,20 +85,23 @@ clarifies the work; completion is recorded in [status](status.md).
 27. **Linear HDR image I/O (merged in PR #28):** bounded HALF/FLOAT EXR
     and Radiance RGBE inputs, native binary32 texture/light storage, and atomic
     linear HALF/FLOAT EXR film output. See [HDR validation](hdr-image-validation.md).
-28. **Spectral GGX conductors (under review):** smooth and anisotropic reflection,
+28. **Spectral GGX conductors (merged in PR #29):** smooth and anisotropic reflection,
     raw optical spectra, scalar roughness textures, mapped shading frames, and
     independent BSDF/transport validation.
-29. **Broader PBRT rendering:** wider color spaces, additional
+29. **Spectral GGX dielectrics (under review):** smooth and anisotropic reflection/
+    transmission, scalar/spectral eta, mapped frames, dedicated lobe sampling,
+    and independent BSDF/transport validation.
+30. **Broader PBRT rendering:** wider color spaces, additional
     spectra, texture filters and formats, filters/samplers, and faithfully rendered
     pinned upstream entry points.
     JSON preflight reports remain follow-up work.
-30. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+31. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-31. **Broader spectral surfaces:** dielectric transmission, additional material
+32. **Broader spectral surfaces:** thin/layered and additional material
     models and lighting/MIS, and independent CPU/Metal numerical comparisons.
-32. **Offline completion:** homogeneous spectral media,
+33. **Offline completion:** homogeneous spectral media,
     checkpoint/resume, cancellation, and long-run accumulation validation.
-33. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+34. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet

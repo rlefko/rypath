@@ -33,7 +33,8 @@ void sobol_gpu_probe() {
             const auto coordinate = (1U << m) - 1;
             const auto limit = std::uint64_t{1} << (52 - 2 * m);
             for (const auto frame : {std::uint64_t{0}, std::uint64_t{1}, limit - 1}) {
-                for (const auto dimension : {0U, 1U, 2U, 7U, 11U, 523U, 1019U, 1023U}) {
+                for (const auto dimension :
+                     {0U, 1U, 2U, 7U, 11U, 523U, 908U, 1019U, 1020U, 1023U}) {
                     for (std::uint32_t mode = 0; mode < 4; ++mode) {
                         for (const auto seed : {0U, 0x7fffffffU, 0x80000000U, 0xffffffffU}) {
                             queries.push_back({m, coordinate, coordinate, std::uint32_t(frame),
@@ -46,6 +47,12 @@ void sobol_gpu_probe() {
         // An asymmetric mapping and a nonmultiple of the group width exercise
         // both pixel axes and execution of the padded-lane guard.
         queries.push_back({3, 1, 4, 37, 0, 523, sobol::owen, 17});
+        for (const auto dimension : {908U, 1020U}) {
+            for (std::uint32_t mode = 0; mode < 4; ++mode) {
+                queries.push_back({3, 1, 4, 0xffffffffu, 0, dimension, mode, 0x80000000u});
+                queries.push_back({3, 1, 4, 0, 1, dimension, mode, 0xffffffffu});
+            }
+        }
         const auto &tables = sobol_tables();
         const auto table_buffer = [device newBufferWithBytes:&tables
                                                       length:sizeof(tables)

@@ -79,17 +79,18 @@ std::string validate_sampler_range(const RenderSampler &sampler, std::uint64_t s
 
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-std::string sampler_description(const RenderSampler &sampler) {
+std::string sampler_description(const RenderSampler &sampler, bool dielectrics) {
     switch (sampler.kind) {
     case SamplerKind::independent:
-        return "philox4x32-10-v1 (sequence differs from PBRT)";
+        return dielectrics ? "philox4x32-10-v1+dielectric-v1 (sequence differs from PBRT)"
+                           : "philox4x32-10-v1 (sequence differs from PBRT)";
     case SamplerKind::sobol: {
         const auto mode = randomization_name(sampler.randomization);
         if (mode.empty()) {
             return "invalid Sobol randomization mode";
         }
-        return "sobol-v1 / " + std::string(mode) +
-               " (PBRT camera variates; rypath transport dimensions)";
+        return std::string(dielectrics ? "sobol-v1+dielectric-v1 / " : "sobol-v1 / ") +
+               std::string(mode) + " (PBRT camera variates; rypath transport dimensions)";
     }
     }
     return "invalid render sampler kind";
