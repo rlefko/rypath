@@ -2,35 +2,36 @@
 
 ## Current milestone
 
-[Resumable rendering (PR #33)](https://github.com/rlefko/rypath/pull/33) is merged
-at `53dafb9`. Its [checkpoint contract](checkpointing.md) and
-[validation record](checkpoint-validation.md) retain the measured evidence.
+[Polygonal OBJ/MTL import (PR #34)](https://github.com/rlefko/rypath/pull/34) is
+merged at `ae7a883`. Its [import profile](obj-import.md) and
+[validation record](obj-validation.md) retain the declared semantics and evidence.
 
-The current polygonal OBJ/MTL PR adds portable preflight and conversion to a
-relocatable PBRT bundle, preserving mesh attributes and provenance. Legacy and
-PBR material conversion follows a named approximation profile with warnings;
-unsupported geometry and material behavior produce explicit diagnostics. See
-the [import profile](obj-import.md) and [validation](obj-validation.md).
+The STL import change adds portable ASCII/binary preflight and relocatable PBRT
+bundles, preserving flat triangle geometry and provenance. VisCAM/SolidView and
+Materialise colors use an explicit sRGB-to-diffuse profile; Materialise alpha maps
+to stochastic surface coverage. Ambiguous colored inputs require a convention
+selection. See the [STL profile](stl-import.md) and [validation](stl-validation.md).
 
-A next bounded task is STL import through the mesh conversion path. Broader
-OBJ/MTL profiles, glTF/GLB, further PBRT support, long-run convergence studies,
-licensed corpus acceptance and measured M4 Max benchmarks remain on the
-[roadmap](roadmap.md). This does not establish completion of the offline MVP,
-full-spec OBJ support, or full pinned-corpus coverage.
+A next bounded task is defining and implementing the static glTF/GLB import
+profile. Broader OBJ/MTL and STL profiles, further PBRT support, long-run
+convergence studies, licensed corpus acceptance and measured M4 Max benchmarks
+remain on the [roadmap](roadmap.md). This does not establish offline MVP
+completion, full-spec OBJ support, or full pinned-corpus coverage.
 
 ## Validation
 
-OBJ implementation `5d0364c` passes Debug, Release and ASan/UBSan (127/127 each),
-the Metal-disabled LLVM 18 build (95/95), all 112 Python checks, changed-unit
+STL implementation `9a1aaf6` passes Debug, Release and ASan/UBSan (142/142 each),
+the Metal-disabled LLVM 18 build (109/109), all 112 Python checks, changed-unit
 Clang-Tidy and repository hooks. Tests ran on Apple M4 Max, macOS 26.6 and
 Xcode 26.6.
 
-Ten imported material cases match independently authored PBRT models within
-predeclared raw-XYZ statistical thresholds on M4 Max. Bump/normal paired checks
-and omitted-map controls pass. A small pinned upstream cube bundle renders in
-both the pinned PBRT CPU renderer and rypath; this establishes selected asset
-acceptance, not external-renderer pixel equivalence. Independent review has no
-remaining actionable findings.
+Six imported geometry/color/coverage cases match independently authored PBRT
+models within predeclared raw-XYZ statistical thresholds on M4 Max. Negative
+controls detect ignored alpha, missing color transfer and accidental smoothing.
+A small pinned upstream STL triangle bundle renders with both the pinned PBRT
+CPU renderer and rypath. This establishes selected asset acceptance, without an
+external-renderer pixel-equivalence claim. Independent review has no remaining
+actionable findings.
 
-Earlier surface, media, spectrum, texture, HDR and checkpoint records retain
+Earlier OBJ, surface, media, spectrum, texture, HDR and checkpoint records retain
 their historical validation evidence. Their counts describe those revisions.

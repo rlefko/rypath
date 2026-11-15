@@ -6,7 +6,9 @@ The current program is a C++20 command-line executable. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
 `--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`,
 `--render-pbrt SCENE --output IMAGE.{png,exr}`, `--check-obj MODEL.obj`, and
-`--convert-obj MODEL.obj --output DIRECTORY`. No arguments prints help, and invalid
+`--convert-obj MODEL.obj --output DIRECTORY`, `--check-stl MODEL.stl`, and
+`--convert-stl MODEL.stl --output DIRECTORY`. STL modes accept
+`--stl-colors auto|viscam|magics`. No arguments prints help, and invalid
 arguments fail. Render the original demo or the supported PBRT spectral subset;
 portable preflight remains independent of rendering.
 
@@ -279,6 +281,16 @@ Existing preflight and render translation validate the complete staged asset set
 before a no-replacement directory rename. Relative references use a documented
 bundle-root entry-scene convention. The [OBJ profile](obj-import.md) separates
 preserved geometry, material approximations, and unsupported behavior.
+
+The STL adapter independently owns ASCII/binary snapshots, solid ranges, original
+facet normals and vendor attributes. Checked unwelded flat triangles are grouped
+by effective diffuse color/coverage, retaining source-facet mappings. A named
+sRGB/coverage profile maps vendor fields into existing PBRT material and alpha
+parameters. It shares bounded PLY serialization and atomic directory publication
+utilities with OBJ; each importer retains its own manifest and diagnostics.
+Portable preparation checks generated-file and decode budgets before staging.
+See the [STL profile](stl-import.md) for color ambiguity and numeric-domain rules.
+Neither adapter changes transport, sampling, accumulation, or checkpoint contracts.
 
 ## Rendering and planned boundaries
 

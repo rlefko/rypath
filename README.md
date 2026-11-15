@@ -86,6 +86,11 @@ compute ray tracing; Linux and Metal-disabled builds report it as unavailable.
 PBRT world fragments with meshes, textures, and explicit material-conversion
 warnings. Use `--check-obj MODEL.obj` or `--convert-obj MODEL.obj --output DIRECTORY`.
 
+[ASCII/binary STL conversion](docs/stl-import.md) preserves flat triangle geometry
+and supports VisCAM/SolidView and Materialise colors, with explicit convention
+selection for ambiguous inputs. Materialise alpha maps to surface coverage.
+Use `--check-stl MODEL.stl` or `--convert-stl MODEL.stl --output DIRECTORY`.
+
 [Checkpoint/resume and cancellation](docs/checkpointing.md) preserve complete raw
 sample batches across compatible builds and supported Metal devices. Broader PBRT
 rendering, remaining surface models and heterogeneous media follow this bounded profile. Scene compatibility, numerical

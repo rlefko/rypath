@@ -7,6 +7,7 @@
 #include "pbrt.hpp"
 #include "pbrt_render.hpp"
 #include "render_job.hpp"
+#include "stl.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -99,6 +100,54 @@ int import_obj(const ObjCommand &command) {
     std::cout << "OBJ conversion: " << (status == 0 ? "supported" : "rejected") << '\n';
     if (status == 0 && !command.output.empty())
         std::cout << "Wrote OBJ bundle: " << command.output.string() << '\n';
+    return status;
+}
+
+int import_stl(int argc, char *argv[]) {
+    const bool convert = std::string_view{argv[1]} == "--convert-stl";
+    if (argc < 3 || std::string_view{argv[2]}.empty() ||
+        std::string_view{argv[2]}.starts_with("--"))
+        return argument_error();
+    rypath::stl::Options options;
+    std::filesystem::path output;
+    bool colors_seen = false, output_seen = false;
+    for (int i = 3; i < argc; i += 2) {
+        if (i + 1 >= argc || std::string_view{argv[i + 1]}.empty() ||
+            std::string_view{argv[i + 1]}.starts_with("--"))
+            return argument_error();
+        const std::string_view key{argv[i]}, value{argv[i + 1]};
+        if (key == "--output" && convert && !output_seen) {
+            output = value;
+            output_seen = true;
+        } else if (key == "--stl-colors" && !colors_seen) {
+            if (value == "auto")
+                options.colors = rypath::stl::ColorMode::automatic;
+            else if (value == "viscam")
+                options.colors = rypath::stl::ColorMode::viscam;
+            else if (value == "magics")
+                options.colors = rypath::stl::ColorMode::magics;
+            else
+                return argument_error();
+            colors_seen = true;
+        } else {
+            return argument_error();
+        }
+    }
+    if (convert && !output_seen)
+        return argument_error();
+    const auto loaded = rypath::stl::load(argv[2], options);
+    std::cout << rypath::stl::report(loaded);
+    if (loaded.exit_code() != 0 || !loaded.asset)
+        return loaded.exit_code() == 0 ? 1 : loaded.exit_code();
+    auto conversion = rypath::stl::prepare(*loaded.asset, loaded.diagnostics);
+    auto status = conversion.exit_code();
+    if (status == 0 && convert)
+        status = rypath::stl::publish(*loaded.asset, conversion, output);
+    for (std::size_t i = loaded.diagnostics.size(); i < conversion.diagnostics.size(); ++i)
+        std::cout << rypath::pbrt::format_diagnostic(conversion.diagnostics[i]) << '\n';
+    std::cout << "STL conversion: " << (status == 0 ? "supported" : "rejected") << '\n';
+    if (status == 0 && convert)
+        std::cout << "Wrote STL bundle: " << output.string() << '\n';
     return status;
 }
 
@@ -448,6 +497,9 @@ int main(int argc, char *argv[]) {
                      "       rypath --check-pbrt SCENE\n"
                      "       rypath --check-obj MODEL.obj\n"
                      "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
+                     "       rypath --check-stl MODEL.stl [--stl-colors auto|viscam|magics]\n"
+                     "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
+                     "              [--stl-colors auto|viscam|magics]\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n"
@@ -456,6 +508,9 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     try {
+        if (argc > 1 && (std::string_view{argv[1]} == "--check-stl" ||
+                         std::string_view{argv[1]} == "--convert-stl"))
+            return import_stl(argc, argv);
         if (argc == 3 && std::string_view{argv[1]} == "--check-obj" &&
             !std::string_view{argv[2]}.empty() && !std::string_view{argv[2]}.starts_with("--"))
             return import_obj({.source = argv[2], .output = {}});
