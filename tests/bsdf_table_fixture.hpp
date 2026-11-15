@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -39,7 +40,7 @@ inline std::vector<unsigned char> fourier(unsigned channels = 1, bool harmonic =
         f(b, amplitude * (varying_zenith ? 5.5f : 2.f));
     }
     for (unsigned i = 0; i < 9; ++i) {
-        u(b, i * channels * (harmonic ? 2u : 1u));
+        u(b, std::uint64_t(i) * channels * (harmonic ? 2u : 1u));
         u(b, harmonic ? 2 : 1);
     }
     for (unsigned i = 0; i < 9; ++i) {
@@ -82,7 +83,7 @@ inline std::vector<unsigned char> measured(unsigned np = 1, bool plateau = false
     add("ndf", {2, 2}, {1, 1, 1, 1});
     add("sigma", {2, 2}, {1, 1, 1, 1});
     const unsigned resolution = plateau ? 4 : 2;
-    std::vector<float> density(np * 2 * resolution * resolution, 1);
+    std::vector<float> density(std::size_t(np) * 2 * resolution * resolution, 1);
     if (plateau)
         for (unsigned i = 0; i < density.size(); ++i) {
             unsigned x = i % resolution, y = (i / resolution) % resolution;
@@ -90,11 +91,11 @@ inline std::vector<unsigned char> measured(unsigned np = 1, bool plateau = false
         }
     if (normal_resolution)
         add("vndf", {np, 2, normal_resolution, normal_resolution},
-            std::vector<float>(np * 2 * normal_resolution * normal_resolution, 1));
+            std::vector<float>(std::size_t(np) * 2 * normal_resolution * normal_resolution, 1));
     else
         add("vndf", {np, 2, resolution, resolution}, density);
     add("luminance", {np, 2, resolution, resolution}, density);
-    std::vector<float> spectra(np * 4 * resolution * resolution);
+    std::vector<float> spectra(std::size_t(np) * 4 * resolution * resolution);
     for (unsigned p = 0; p < np; ++p)
         for (unsigned t = 0; t < 2; ++t)
             for (unsigned l = 0; l < 2; ++l)
