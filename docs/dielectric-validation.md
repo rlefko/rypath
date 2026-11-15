@@ -173,3 +173,10 @@ and outward winding. Both pass and reject the original generator. The full
 Python suite now passes 86/86 (`build/dielectric-python-showcase-fix.log`), and
 repository hooks pass. A native 240×150, 1,024-spp preview confirms the corrected
 frame appearance; it is visual evidence, not a numerical convergence gate.
+
+The first hosted Clang-Tidy run reached the existing ten-minute job deadline
+while processing unit 66 of 73, without emitted source diagnostics. CI now
+analyzes two independent translation units concurrently. The file selection,
+checks and deadline are unchanged; NUL-delimited paths and nonzero analyzer
+exit propagation remain intact. The original transcript is retained in
+`build/dielectric-ci-tidy-first.log`.
