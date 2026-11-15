@@ -44,10 +44,11 @@ diagnosed even when not placed in the image.
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
 | Filter | Box radii 0.5 or triangle radii defaulting independently to 2 |
 | Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
-| Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
+| Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol (0–113 when any translated material is dielectric), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
+| Dielectrics | Smooth and anisotropic single-scattering GGX reflection/transmission, scalar or spectral eta, textured roughness and mapped frames; see [dielectric profile](#spectral-ggx-dielectrics) |
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
@@ -384,6 +385,15 @@ Roulette compares the raw word with `0xc0000000`. Emitter selection takes the
 high bits for its exact dyadic PMF; area coordinates retain the existing
 high-bit midpoint grids. No dimension wrapping or independent-sampler tail is used.
 
+The `dielectric-v1` extension leaves all these assignments unchanged and uses
+Sobol dimension `908+b` for the dielectric lobe choice at bounce `b`. Scenes
+containing any translated dielectric material, including an unused definition,
+have a Sobol depth limit of 113: legacy dimensions end at 907 and the new tail
+ends at 1020. Independent sampling instead takes the first Philox word of block
+`0x80000000 | b`, retaining its 1024-depth limit. Smooth, rough and index-matched
+interfaces use the same per-bounce allocation. CLI and EXR sampler provenance
+identify this extension; scenes without dielectrics retain their original labels.
+
 Let `m = ceil(log2(max(width, height)))`. Sobol requires `m <= 25` and each
 absolute sample index to be less than `2^(52 - 2m)`. The finite Sobol depth
 limit of 127 keeps all path dimensions within the available Sobol table.
@@ -462,6 +472,51 @@ The [conductor validation record](conductor-validation.md) describes numerical
 adaptations, independent BSDF tests, and matched upstream renders.
 Portable scene tests cover the input and translation contract and do not establish
 GPU rendering agreement or full external-corpus support.
+
+## Spectral GGX dielectrics
+
+Inline and named `dielectric` materials accept one scalar `float eta`, or a
+named/numeric/file `spectrum eta`, defaulting to 1.5. Effective float eta takes
+precedence over spectral eta regardless of declaration order, following pinned
+PBRT. An ignored spectral filename is not an input dependency. Optical curves
+remain raw, finite and nonnegative; they receive no diffuse albedo clamp.
+Named curves extend endpoints; numeric/file curves are zero outside their
+support. Exact zero evaluated eta becomes one, including those zero tails,
+matching PBRT's explicit index-matched fallback. Negative, nonfinite, overflowing,
+or authored nonzero-to-zero narrowed eta values are errors. RGB, blackbody, and
+texture-valued eta remain unsupported. Numeric/file curves require two knots.
+
+Roughness, per-axis fallback, remapping, smooth threshold, axis floors and
+scalar graphs follow the conductor profile. Existing alpha, bump/normal-map
+precedence and shape/placement frame semantics apply. Frames retain authored
+orientation on both sides of an interface. The local outgoing direction selects
+eta or its reciprocal; eta below one is valid. Eta exactly one is delta
+straight-through transmission even at nonzero roughness.
+
+The single-scattering GGX BSDF samples a visible normal and then chooses
+reflection or refraction with its Fresnel probability. Both continuous PDFs
+include that choice; transmission includes the refraction Jacobian. Transport
+uses radiance convention, including reciprocal squared relative eta on
+transmission. Smooth sampled weights cancel their Fresnel branch probabilities.
+The original fixed compensated roulette remains unchanged; no throughput-based
+eta-scale roulette is introduced. The [PBRT dielectric model](https://pbr-book.org/4ed/Reflection_Models/Rough_Dielectric_BSDF)
+and pinned implementation define the target equations.
+
+Environment and finite-emitter NEE evaluate both local hemispheres with the
+absolute receiver cosine and the matching mixture PDF. Delta events skip NEE
+and receive unity weight at subsequent emitter/environment hits. Geometric
+normals govern offsets and emitter sidedness. Valid null microfacet samples
+retain earlier contributions; invalid or unrepresentable arithmetic fails the
+entire pending batch. No roughness/radiance clamp, sample retry or selective
+rejection hides numerical failure.
+
+This is a surface-interface model: each material authors a relative IOR, without
+an automatic nested-medium stack. Absorption, participating media, thin glass,
+coated materials and specialized caustic sampling remain unsupported. Other
+glass boundaries still occlude direct shadow connections; BSDF paths traverse
+successive interfaces. Difficult specular-chain lighting can have high variance.
+See [dielectric validation](dielectric-validation.md) for independent probes,
+matched upstream images and numerical limits.
 
 ## Spectral and transport contract
 
@@ -565,8 +620,8 @@ existing CIE table matches the pinned PBRT values. RGB reconstruction extends th
 material/light model. Area lighting adds its own proposal and complementary
 emissive-hit MIS; wavelength sampling and roulette are unchanged.
 
-Diffuse materials use the [existing Lambertian NEE/MIS](rendering.md); conductors
-use the reflection contract above. Both retain compensated roulette. Escape and sided surface emission precede the depth cutoff.
+Diffuse materials use the [existing Lambertian NEE/MIS](rendering.md); conductors and dielectrics
+use their scattering contracts above. All retain compensated roulette. Escape and sided surface emission precede the depth cutoff.
 At an opaque hit, the authored cutoff precedes another direct-light estimate or
 scattering, and the emergency watchdog. Depth zero preserves visible sky and
 emission; non-emitting opaque hits are black. This targets the finite-depth integral, not infinite-depth transport.

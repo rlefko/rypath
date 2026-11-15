@@ -2,51 +2,42 @@
 
 ## Current milestone
 
-[Linear HDR image I/O (PR #28)](https://github.com/rlefko/rypath/pull/28) is merged
-at `edaeb6da`. It adds bounded HALF/FLOAT EXR and Radiance RGBE inputs, binary32
-texture/light storage, and atomic linear EXR film output.
+[Spectral GGX conductors (PR #29)](https://github.com/rlefko/rypath/pull/29) is
+merged at `8bc47ef`. It adds smooth/anisotropic reflection, raw eta/k spectra,
+textured roughness and mapped frames.
 
-Spectral GGX conductors are ready for review. The implementation adds smooth
-and anisotropic single-scattering reflection, unclamped named/numeric/file eta/k
-spectra, scalar roughness textures, and mapped anisotropic shading frames.
-Area/environment lighting and MIS handle both continuous and delta reflection.
-Invalid optical inputs fail preflight; invalid evaluated roughness or numerical
-failures reject the entire staged Film batch. See the
-[render profile](pbrt-rendering.md) and [conductor validation](conductor-validation.md).
+Spectral GGX dielectrics are ready for review. This slice adds polished
+and frosted glass, spectral refraction, Fresnel lobe selection, both-hemisphere
+light/BSDF MIS and authored interface orientation. Raw Film accumulation and
+existing diffuse/conductor sampling streams remain separate and unchanged.
+Glass Sobol scenes use a dedicated lobe tail and a 113-bounce bound.
+See the [render profile](pbrt-rendering.md) and
+[dielectric validation](dielectric-validation.md), including the explicit
+near-unity binary32 direction/PDF limitation.
 
-Dielectric transmission, fractional emitting alpha, Ptex, wider color spaces,
-additional importers, media, checkpointing and the interactive app remain on the
-[roadmap](roadmap.md). This slice does not establish offline MVP completion.
+Thin/coated materials, absorption and media, fractional emitting alpha, Ptex,
+wider color spaces, additional importers, checkpointing and the interactive app
+remain on the [roadmap](roadmap.md). This slice does not establish offline MVP
+completion or full pinned-corpus support.
+
+The next suggested bounded task is durable checkpoint/resume with cancellation
+for fixed-target offline renders.
 
 ## Validation
 
-The conductor implementation and grazing-frame follow-up pass 91/91 Debug,
-Release and ASan/UBSan tests on
-Apple M4 Max, including native transport, mapped frames, exact sample/Film
-partitioning, a captured grazing-sample regression and whole-batch rejection.
-Portable Apple Clang and Clang 18
-builds pass 70/70 tests. Independent BSDF checks cover 5,493 point/sample cases,
-128 reciprocity and axis-swap pairs, and 524,288 energy/probability samples.
-All 23 Metal tests pass API validation, 79 Python checks pass, and the final
-eight-scene reference comparison passes 120 gates across 256 clean renderer
-runs. The conductor record identifies the explicit roughness comparison
-override, shader-instrumentation timeouts and longer diagnostic runs, static
-analysis, environment and numerical limitations.
-The initial 23-test shader validation required three longer diagnostic reruns;
-the follow-up passes both affected transport suites under instrumentation.
-Normal CTest limits are
-unchanged. The owned 960×600 conductor showcase completes 4,096 samples per
-pixel (2.36 billion total), without denoising.
+Debug, Release and ASan/UBSan pass 95/95 tests on M4 Max. Both Metal-disabled
+Apple Clang and LLVM 18 builds pass 72/72, and 84 Python checks pass. Changed-unit
+Clang-Tidy, native static analysis and repository hooks pass. The independent
+BSDF probe passes 5,144 double cases, 4,096 pinned PBRT comparisons, reciprocity
+and axis checks, and 393,216 energy/probability samples. All 25 Metal API tests
+pass, as do all four affected shader-instrumented suites. Eight matched PBRT
+fixtures pass 120 gates across 256 diagnostic-clean
+renders, independently recomputed from raw PFMs. Instrumentation and numerical
+limits are recorded in the dielectric validation record.
 
-A stable checker integral prevents valid nonnegative roughness from becoming
-negative through cancellation. Four of 6,440 pinned source-float graph values
-remain outside the original comparison threshold; independent integration
-supports the new results within `4e-8`. These are explicit numerical differences,
-not 6,440 passing comparisons. PBRT runs that substitute black for invalid
-samples are excluded from image-agreement evidence.
-
-Historical HDR and texture results remain in [HDR validation](hdr-image-validation.md),
+Historical conductor checks and numerical caveats remain in
+[conductor validation](conductor-validation.md); its timing study is explicitly
+[confounded](conductor-performance.md). Earlier HDR and texture evidence remains
+in [HDR validation](hdr-image-validation.md),
 [core texture validation](core-texture-validation.md) and
-[performance](core-texture-performance.md). Their earlier test counts describe
-those completed slices. Selected external asset coverage remains distinct from
-full pinned-corpus support.
+[performance](core-texture-performance.md). Their counts describe those revisions.
