@@ -322,6 +322,31 @@ void detail_controls(const fs::path &path, std::span<const RenderSample> clear) 
                tilted, "An authored normal map takes precedence over displacement");
 }
 
+void combined_consumers(const fs::path &path) {
+    const auto body = std::string(R"(
+LightSource "infinite" "string filename" "assets/environment.png" "float scale" 10
+Texture "color" "spectrum" "mix" "rgb tex1" [.2 .6 .3] "rgb tex2" [.7 .1 .4] "float amount" .4
+Texture "bump" "float" "bilerp" "float v00" 0 "float v01" 0 "float v10" .3 "float v11" .3
+Texture "visible" "float" "imagemap" "string filename" "assets/white.png" "string filter" "point"
+Material "diffuse" "texture reflectance" "color" "texture displacement" "bump"
+  "string normalmap" "assets/normal-tilted.png"
+)") + std::string(receiver) +
+                      R"( "float alpha" .5
+Material "diffuse" "rgb reflectance" [0 0 0]
+AreaLightSource "diffuse" "string filename" "assets/emission.png" "float scale" 100 "bool twosided" true
+Shape "trianglemesh" "point3 P" [1.2 -.6 1 2.2 -.6 1 2.2 .6 1 1.2 .6 1]
+  "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1] "texture alpha" "visible"
+)";
+    auto renderer = build(load(path, body, 2));
+    const auto whole = samples(*renderer, 257);
+    auto partitioned = samples(*renderer, 129, 0, 1);
+    const auto tail = samples(*renderer, 128, 129, 1);
+    partitioned.insert(partitioned.end(), tail.begin(), tail.end());
+    equivalent(whole, partitioned,
+               "Combined texture consumers changed across batch/group partitions");
+    require(total(whole) > 0, "Combined image lights must contribute radiance");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -339,7 +364,7 @@ int main(int argc, char **argv) {
         const fs::path scratch(argv[1]), fixtures(argv[2]);
         fs::create_directories(scratch / "assets");
         for (const auto name : {"white.png", "zero.png", "gray-pattern.png", "normal-flat.png",
-                                "normal-tilted.png"}) {
+                                "normal-tilted.png", "environment.png", "emission.png"}) {
             fs::copy_file(fixtures / "assets" / name, scratch / "assets" / name,
                           fs::copy_options::overwrite_existing);
         }
@@ -358,6 +383,7 @@ int main(int argc, char **argv) {
         spatial_instance_alpha(path);
         shadows_and_emitters(path, clear);
         detail_controls(path, clear);
+        combined_consumers(path);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Core texture render: " << error.what() << '\n';

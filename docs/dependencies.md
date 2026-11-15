@@ -3,7 +3,7 @@
 Original rypath code uses SPDX identifier `GPL-3.0-only`. The repository contains
 the full unmodified GNU GPL v3 text in [LICENSE](../LICENSE).
 
-The portable CLI builds its vendored PNG decoder into the executable and
+The portable CLI builds its vendored PNG and JPEG decoders into the executable and
 requires no external third-party libraries at runtime. The macOS adapters use
 the SDK's Metal, Foundation, CoreFoundation,
 CoreGraphics, and ImageIO frameworks through Objective-C++ with ARC. The project
@@ -107,12 +107,22 @@ I/O and enforce the same profile on Linux and macOS. The static build disables
 the encoder, disk I/O, C++ wrapper, and ancillary metadata decoding. A local
 extension caps work at 65,536 DEFLATE blocks per stream. The reader also checks
 image dimensions, decompressed scanline size, scratch memory, and aggregate
-retained image payloads. The accepted input subset is noninterlaced grayscale
+retained image payloads. Static noninterlaced and Adam7 input supports grayscale
 at 1/2/4/8/16 bits, grayscale with alpha/RGB/RGBA at 8/16 bits, and indexed
 color at 1/2/4/8 bits. Packed grayscale expands to RGB8 using the decoder.
-The adapter validates packed palette indices before RGB8 expansion. Alpha and
-color metadata are ignored for diffuse reflectance. The [LodePNG record](../third_party/lodepng/README.md)
+The adapter validates packed palette indices before RGB8 expansion. RGBA alpha
+is retained for scalar filter branches; alpha never composites RGB reflectance,
+and color metadata is ignored. The [LodePNG record](../third_party/lodepng/README.md)
 retains the source pin, hashes, modifications, and license.
 
 The unmodified PNGSuite comparison images retain their original notice in the
 [image fixture manifest](../tests/fixtures/pbrt-render/image-assets/README.md).
+
+JPEG input uses the same `stb_image` revision `af1a5bc352164740c1cc1354942b1c6b72eacb8a`
+as the pinned PBRT reference, under its retained dual MIT/public-domain terms.
+Only in-memory JPEG decoding is compiled. The wrapper owns bounded allocations,
+validates marker framing and color modes, and limits scans and DCT work. Local
+hardening rejects incomplete component/scan/restart data and widens vulnerable
+IDCT arithmetic. Source hashes, patch boundaries, and license are in the
+[stb record](../third_party/stb/README.md). It adds no runtime or build-time network
+dependency. Owned JPEG fixtures record their source recipe and hashes separately.

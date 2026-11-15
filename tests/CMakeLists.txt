@@ -527,6 +527,11 @@ add_test(NAME pbrt.core_texture_scene COMMAND rypath_core_texture_scene_tests
     "${CMAKE_CURRENT_BINARY_DIR}/core-texture-scene")
 set_tests_properties(pbrt.core_texture_scene PROPERTIES TIMEOUT 30)
 
+add_executable(rypath_texture_graph_reference "${PROJECT_SOURCE_DIR}/scripts/rypath_texture_graph_probe.cpp")
+target_include_directories(rypath_texture_graph_reference PRIVATE "${PROJECT_SOURCE_DIR}/shaders")
+target_link_libraries(rypath_texture_graph_reference PRIVATE rypath_render rypath_pbrt)
+rypath_configure_host_target(rypath_texture_graph_reference)
+
 add_executable(rypath_core_texture_render_tests core_texture_render_tests.cpp)
 target_link_libraries(rypath_core_texture_render_tests PRIVATE rypath_metal_backend rypath_pbrt_render)
 set_target_properties(rypath_core_texture_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")

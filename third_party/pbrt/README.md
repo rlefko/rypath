@@ -32,6 +32,28 @@ The adaptations retain PBRT's copyright and [Apache-2.0 license](LICENSE.txt).
 The [image texture validation record](../../docs/image-texture-validation.md)
 describes the numerical contract.
 
+## Core texture and surface adaptations
+
+`shaders/texture_graph.h` adapts typed texture evaluation, mappings, checkerboard,
+dots, marble, and noise from pinned `textures.h`, `textures.cpp`, and
+`util/noise.cpp`. The bounded graph representation and validation are original
+rypath code. `shaders/surface_detail.h` adapts definition-frame shading partials,
+normal mapping, and bump finite differences from `shapes.h`, `interaction.h`,
+`materials.h`, and `util/transform.cpp`. `src/mesh_displacement.cpp` adapts
+longest-edge refinement, shared midpoints, displacement and normal construction
+from `util/mesh.h`, with explicit work/scratch limits and stable host arithmetic.
+
+`shaders/alpha_hash.h` adapts the packed-ray MurmurHash64A convention from
+`util/hash.h`; the native query traversal is rypath code. `shaders/image_lighting.h`
+adapts equal-area projection, native light image addressing, and RGBIlluminant
+reconstruction from `util/vecmath.h`, `lights.h`, and `util/spectrum.h`. The bounded
+CDF mixture and its matched PDF are rypath's proposal, not PBRT's sampler.
+All cited sources use revision `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f` and retain
+the upstream copyright and [Apache-2.0 terms](LICENSE.txt).
+
+The [core texture record](../../docs/core-texture-validation.md) documents
+semantic differences, numerical limits, and standalone reference commands.
+
 ## Bilinear intersection adaptation
 
 `shaders/bilinear.h` adapts the bilinear ruling intersection and compensated

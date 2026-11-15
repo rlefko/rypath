@@ -29,16 +29,16 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
-| Named spectrum PNG imagemaps | Retained with effective mapping and sampling parameters | Entry-relative image decode and mip validation, including unused definitions | See [PNG imagemaps](pbrt-rendering.md#png-imagemaps) |
-| Constant infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
-| Diffuse triangle area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
+| Typed texture graphs and PNG/JPEG imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
+| Constant and image infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
+| Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | File spectra on diffuse materials, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
 | Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
-| Other external meshes, other image and procedural textures, other file-spectrum consumers | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
-| Textured area lights, emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
+| Other external meshes, image formats and textures outside the core profile, other file-spectrum consumers | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
+| Emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
 | Unknown directives / malformed syntax | Source-located error | Stops without line-based recovery | Not attempted |
 | Legacy v3 forms and hexadecimal numbers | Explicit diagnostic | Outside this profile | Unsupported |
 
@@ -70,17 +70,17 @@ capture still occurs at each camera declaration.
 | Sobol sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, `fastowen`, or `owen`) |
 | Path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |
-| Diffuse material | `reflectance`, including a spectrum texture reference; named definitions require `string type` |
+| Diffuse material | `reflectance`, including a spectrum texture reference, scalar `displacement`, RGB image `normalmap`; named definitions require `string type` |
 | Float constant texture | Optional scalar `float value` |
 | Spectrum constant texture | Optional `value` of type `rgb`, `spectrum`, or `blackbody`, subject to the narrower render profile |
-| Spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |
-| Constant infinite light | `L`, `scale`, `illuminance` |
-| Diffuse area light | `L`, `scale`, `twosided`, `power`, empty `filename`; nonempty image filenames are inventoried and deferred |
-| Triangle mesh | `P`, `indices`, per-vertex `N` and `uv`; exactly three vertices may omit indices |
+| Float/spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |
+| Infinite light | `L`, `scale`, `illuminance`, or square RGB PNG/JPEG `filename` |
+| Diffuse area light | `L`, `scale`, `twosided`, `power`, PNG/JPEG `filename` mutually exclusive with `L` |
+| Triangle mesh | `P`, `indices`, per-vertex `N`, `S`, and `uv`, scalar/texture `alpha`; exactly three vertices may omit indices |
 
-Triangle normals and UVs are narrowed into owned indexed arrays. Tangents, face
-indices, and alpha are retained and cardinality-checked but remain unsupported.
-Material displacement/normal maps and infinite-light images/portals are also explicit
+Triangle normals, tangents, and UVs are narrowed into owned indexed arrays. Face
+indices remain unsupported. Triangle `vector3 S`, alpha, material bump/normal maps,
+and infinite-light images follow the core rendering profile. Portals remain explicit
 unsupported features. RGB reflectance is checked against PBRT's [0,1] rule;
 sampled spectral values remain authored, without the demo's reflectance limits.
 
@@ -105,20 +105,22 @@ the [pinned parameter dictionary](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba
 
 ## PNG imagemap definitions
 
-Named spectrum imagemaps share the spectrum namespace and follow the same
-parameter precedence and diffuse binding rules. Filtering accepts `point`,
+Named float and spectrum imagemaps use their respective typed namespaces and
+follow the same parameter precedence rules. Filtering accepts `point`,
 `bilinear` (the default), `trilinear`, and `ewa`/`EWA`. EWA supports finite
 `maxanisotropy` from 1 through 16, defaulting to 8. Values outside that interval
 are source-located unsupported-feature diagnostics, including unused definitions.
 The other filters retain their inert finite `maxanisotropy` parameter.
 
-Supported PNG inputs are noninterlaced grayscale at 1, 2, 4, 8, or 16 bits;
+Supported static PNG inputs are noninterlaced or Adam7-interlaced grayscale at 1, 2, 4, 8, or 16 bits;
 grayscale with alpha, RGB, and RGBA at 8 or 16 bits; and indexed color at
 1, 2, 4, or 8 bits.
 Grayscale replicates into RGB; indexed inputs expand their palette to RGB8.
-Alpha, including palette transparency, is discarded without compositing, and
-metadata does not determine the color transform. Interlaced and animated PNGs
-are unsupported. A missing, corrupt, or over-limit supported input is an error.
+True RGBA alpha is retained for scalar filtering when nonopaque; grayscale-alpha,
+palette transparency, and `tRNS` are ignored without compositing. RGB reflectance
+never composites alpha. Metadata does not determine the color transform.
+Animated PNGs are unsupported. JPEG accepts bounded 8-bit baseline/progressive
+gray, RGB, or YCbCr input and rejects CMYK/YCCK and unsupported coding modes. A missing, corrupt, or over-limit supported input is an error.
 A dependency is marked visited after successful decoding.
 The decoder provenance and its byte-stream limits are recorded in
 [LodePNG](../third_party/lodepng/README.md).
@@ -144,8 +146,11 @@ images and PLY inputs share the file count and expanded byte budget with scene
 files. One successful decode supplies all imagemaps of the same resolved path.
 Mip variants share storage for the same path, encoding, and wrap mode, including
 textures with different filtering modes. Aggregate
-retained accounting includes decoded RGB bytes, packed mip texels, and level
-records. Image-specific resource limits are listed below.
+retained accounting includes decoded RGB/alpha bytes, packed mip texels, level
+records, and custom gamma tables. Native views for normal maps and lights keep
+the original dimensions and share storage when encoding and wrap agree.
+PNG encoding may be sRGB, linear, or finite positive gamma. JPEG follows the
+pinned fallback's fixed sRGB decode even when another encoding is authored. Image-specific resource limits are listed below.
 Sixteen-bit sources retain six bytes per pixel and eight bytes per packed RGB
 mip texel. The 4,096-pixel axis ceiling does not override byte limits: a full
 4,096×4,096 RGB16 source and pyramid exceed the combined 256 MiB limit.
@@ -203,12 +208,13 @@ Normals require all of `nx/ny/nz`. UV selection follows the first complete pair
 from `u/v`, `s/t`, `texture_u/texture_v`, `texture_s/texture_t`. Partial recognized
 attribute groups without a complete selection are errors. Other properties,
 including `face_indices`, are consumed under the same work limits and remain
-inert in this constant-material profile. This is not general PLY metadata support.
-Explicit alpha and active displacement are unsupported. Alpha resolves the latest
-texture declaration before the float declaration, with an empty texture name
-falling back to float; named references are checked even though masking is deferred.
-Empty displacement is
-inert, and finite `edgelength` is inert without displacement.
+inert in this profile. This is not general PLY metadata support.
+Alpha resolves a texture parameter before the float parameter, with an empty
+texture name falling back to float. Active displacement requires UVs and a
+positive finite edge length; it refines and displaces an owned geometry copy.
+Empty displacement is inert, and finite `edgelength` is inert without displacement.
+See the [consumer contract](pbrt-rendering.md#core-texture-graphs-and-consumers)
+for emitting-alpha certification and displacement bounds.
 
 Paths use the entry directory even in nested Includes. Unique decoded assets are
 cached by resolved path components for this preflight only (redundant separators
@@ -292,10 +298,13 @@ The diagnostic limit also marks analysis incomplete.
 | Directives | 100,000 |
 | Diagnostics | 100 |
 | Source or mip image axis | 4,096 pixels |
-| Retained decoded RGB and mip payloads per scene | 256 MiB |
+| Retained decoded RGB/alpha, mip/native views and transfer tables per scene | 256 MiB |
 | Scratch per decode or mip build | 256 MiB |
 | Individual PNG decoder allocation | 128 MiB |
 | DEFLATE blocks per PNG | 65,536 |
+| JPEG scans / cumulative DCT blocks | 256 / 2²² |
+| Texture graph depth / worst-case visits | 64 / 4,096 |
+| PLY refinement depth / texture evaluation work | 64 / 2²⁴ |
 
 Tests inject smaller limits to exercise every boundary cheaply. Translation also
 bounds repeated effective-parameter checks and expanded geometry against the

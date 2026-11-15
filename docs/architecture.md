@@ -34,8 +34,8 @@ The portable reader owns source records, decoded tokens, authored numeric lexeme
 typed directives, dependencies, and diagnostics. A separate interpreter tracks
 PBRT scene state and builds checked float/index geometry only within the declared
 [compatibility profile](pbrt-profile.md). It preserves camera, material, and
-typed texture descriptors. Supported imagemaps retain shared decoded PNGs and
-packed mip pyramids. Incomplete analysis returns diagnostics
+typed texture descriptors. Supported image consumers retain shared decoded PNG/JPEG data, packed mip
+pyramids, and native-resolution views. Incomplete analysis returns diagnostics
 and a partial inventory, without a complete scene handle.
 No spectral reconstruction, light normalization, or renderer defaults are applied.
 
@@ -139,6 +139,22 @@ The adapter maps both back to the source placement. Intersection tables belong t
 their respective compute pipelines; accepted patch coordinates travel in an owned
 per-ray payload. The [PLY record](pbrt-ply-validation.md) covers resource limits,
 intersection conditioning, interpolation and area-light densities.
+
+The core texture layer compiles typed acyclic graphs to a bounded CPU/Metal
+instruction representation. Definition and mapping validation precede upload;
+image views remain immutable and shared. Surface evaluation receives position,
+normal, UV, and explicit camera/fallback differentials. Alpha uses a separate
+zero-derivative definition-frame context before instance placement. Native
+intersection queries accept/reject triangle candidates and each admissible
+bilinear root without stepping over coincident primitives.
+
+Normal and bump maps use the shape-definition shading frame followed by placement;
+PLY displacement rebuilds geometry before native acceleration. Image area lights
+use native bilinear radiance with the existing area proposal. Equal-area image
+environments have a bounded area-averaged importance grid and a uniform proposal
+component with matched NEE/escape PDFs. Scene function constants remove graph,
+manual-query, surface-detail, and image-light code from unused pipeline variants.
+See the [core texture contract and validation](core-texture-validation.md).
 
 ## Rendering and planned boundaries
 
