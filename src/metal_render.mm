@@ -442,7 +442,8 @@ struct MetalRenderScene::Impl {
         std::vector<wire::SurfaceTransform> transforms;
         const bool detail = graph_parameters.alpha_enabled ||
                             std::ranges::any_of(scene.materials, [](const SpectralMaterial &m) {
-                                return m.bump_root != max_index || m.normal_map != max_index;
+                                return m.scattering == ScatteringKind::conductor ||
+                                       m.bump_root != max_index || m.normal_map != max_index;
                             });
         std::map<std::uint32_t, wire::Word> offsets;
         const auto vertex_limit =
@@ -757,10 +758,12 @@ struct MetalRenderScene::Impl {
         std::size_t knot_count = 0;
         if (scene.model == RenderModel::pbrt) {
             for (const auto &material : scene.materials) {
-                if (material.knots.size() > knot_limit - knot_count) {
-                    return "Metal render spectral knot buffer exceeds buffer or index limits";
+                for (const auto *curve :
+                     {&material.knots, &material.eta.knots, &material.k.knots}) {
+                    if (curve->size() > knot_limit - knot_count)
+                        return "Metal render spectral knot buffer exceeds buffer or index limits";
+                    knot_count += curve->size();
                 }
-                knot_count += material.knots.size();
             }
         }
         parameters.knot_count = static_cast<wire::Word>(knot_count);
@@ -839,6 +842,25 @@ struct MetalRenderScene::Impl {
             packed.texture_root = source.texture_root;
             packed.bump_root = source.bump_root;
             packed.normal_map = source.normal_map;
+            if (source.scattering == ScatteringKind::conductor) {
+                packed.scattering = 1;
+                packed.eta_begin = static_cast<wire::Word>(packed_knots.size());
+                packed.eta_count = static_cast<wire::Word>(source.eta.knots.size());
+                for (const auto [wavelength, value] : source.eta.knots)
+                    packed_knots.push_back({wavelength, value});
+                packed.k_begin = static_cast<wire::Word>(packed_knots.size());
+                packed.k_count = static_cast<wire::Word>(source.k.knots.size());
+                for (const auto [wavelength, value] : source.k.knots)
+                    packed_knots.push_back({wavelength, value});
+                packed.optical_extensions = wire::Word(source.eta.extend_endpoints) |
+                                            (wire::Word(source.k.extend_endpoints) << 1);
+                packed.u_roughness = source.u_roughness;
+                packed.v_roughness = source.v_roughness;
+                packed.u_roughness_root = source.u_roughness_root;
+                packed.v_roughness_root = source.v_roughness_root;
+                packed.remap_roughness = source.remap_roughness;
+                continue;
+            }
             switch (source.kind) {
             case SpectralMaterialKind::sampled:
                 packed.kind = wire::sampled_material;
@@ -1187,18 +1209,20 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 return result;
             }
         }
-        const bool features[] = {!scene.texture_graph.nodes.empty(),
-                                 std::ranges::any_of(scene.instance_alpha_roots,
-                                                     [](auto root) { return root != max_index; }),
-                                 std::ranges::any_of(scene.materials,
-                                                     [](const auto &m) {
-                                                         return m.bump_root != max_index ||
-                                                                m.normal_map != max_index;
-                                                     }),
-                                 scene.environment_image != max_index,
-                                 std::ranges::any_of(scene.area_emissions, [](const auto &e) {
-                                     return e.image_texture != max_index;
-                                 })};
+        const bool features[] = {
+            !scene.texture_graph.nodes.empty(),
+            std::ranges::any_of(scene.instance_alpha_roots,
+                                [](auto root) { return root != max_index; }),
+            std::ranges::any_of(scene.materials,
+                                [](const auto &m) {
+                                    return m.bump_root != max_index || m.normal_map != max_index;
+                                }),
+            scene.environment_image != max_index,
+            std::ranges::any_of(scene.area_emissions,
+                                [](const auto &e) { return e.image_texture != max_index; }),
+            std::ranges::any_of(scene.materials, [](const auto &m) {
+                return m.scattering == ScatteringKind::conductor;
+            })};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];

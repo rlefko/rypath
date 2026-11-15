@@ -21,7 +21,7 @@ set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cach
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
 set(rypath_metal_air_files)
-foreach(shader IN ITEMS smoke geometry render texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe)
+foreach(shader IN ITEMS smoke geometry render texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe conductor_probe)
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
     set(air "${rypath_runtime_directory}/CMakeFiles/rypath-${shader}.air")
     set(shader_options)
@@ -34,7 +34,13 @@ foreach(shader IN ITEMS smoke geometry render texture_probe masked_probe texture
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/intersection.h"
         )
     endif()
+    if(shader STREQUAL "conductor_probe")
+        list(APPEND shader_options -fno-fast-math)
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/conductor_probe_wire.h")
+    endif()
     if(shader STREQUAL "render")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_probe_wire.h")

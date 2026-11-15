@@ -47,6 +47,7 @@ diagnosed even when not placed in the image.
 | Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
+| Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
@@ -415,6 +416,53 @@ The terminal reports the effective filter and both radii. No new CLI option is
 needed; use `PixelFilter "triangle" "float xradius" [1.5] "float yradius" [.75]`
 in the scene, or omit either radius to use its default of two.
 
+## Spectral GGX conductors
+
+Inline `Material "conductor"` and `MakeNamedMaterial`/`NamedMaterial` accept
+independent optical constants `eta` and `k`. Each omitted constant defaults to
+the original pinned PBRT `metal-Cu-eta` or `metal-Cu-k` knots. Only `spectrum`
+values are supported: built-in names, numeric wavelength/value pairs, or checked
+entry-relative files. Curves retain raw nonnegative binary32 values, including
+values above one; they never pass through diffuse albedo reconstruction or
+clamping. Named curves extend their endpoint values; numeric and file curves are
+zero outside their inclusive authored interval. Numeric curves require at least
+two wavelength/value pairs under this bounded profile. The pair must remain nonzero
+throughout the renderer's 360–830 nm wavelength domain. RGB, blackbody, and texture
+optical constants, and conductor `reflectance`, are explicit unsupported features.
+
+`roughness` defaults to zero. Each of `uroughness` and `vroughness` independently
+falls back to the effective common roughness, including inherited attributes.
+These values accept finite nonnegative floats or the existing scalar texture
+graphs, with no upper clamp. `remaproughness` defaults to true and applies square
+root. A maximum alpha below `1e-3` selects smooth reflection; otherwise each
+axis is floored to `1e-4`, following pinned PBRT's declared distribution model.
+Conductors retain
+the existing geometry, alpha, bump/normal map, and instance semantics; even a
+constant conductor prepares a surface tangent frame for anisotropic scattering.
+Unused material declarations and their dependencies are checked as well.
+Mapped normals and tangents form a single orthonormal frame. Normalized tangent/
+normal residuals above `64 * FLT_EPSILON`, or degenerate frames, fail visibly;
+smaller roundoff residuals are projected away. The geometric normal controls
+emission and ray offsets, without an extra geometric-hemisphere BSDF clip.
+
+The transport uses a single-scattering anisotropic Trowbridge–Reitz (GGX) model
+with spectral complex-IOR Fresnel and a smooth reflection limit. It omits
+multiple-scattering microfacet compensation. The [PBRT material reference](https://www.pbrt.org/fileformat-v4#materials)
+defines the input parameters. Rough continuation uses `f * absCos / pdf`, with
+matching light-sampling PDFs and MIS. Smooth events skip direct-light proposals
+and subsequent emitter/environment hits receive full weight. Null visible-normal
+samples and zero Fresnel preserve prior contributions and terminate continuation.
+Support, cosines, PDFs and weights use the same local BSDF frame. An accepted
+grazing sample remains accepted when binary32 conversion to a normalized world
+ray rounds its recomputed world cosine through zero; it is not resampled or
+discarded. World-ray normalization must still produce a finite direction.
+Negative/nonfinite evaluated roughness and unrepresentable optical/scattering
+arithmetic fail the entire staged batch; no sample or radiance clamp hides errors.
+The [conductor validation record](conductor-validation.md) describes numerical
+adaptations, independent BSDF tests, and matched upstream renders.
+Portable scene tests cover the input and translation contract and do not establish
+GPU rendering agreement or full external-corpus support.
+
 ## Spectral and transport contract
 
 Numeric materials retain their authored knots, narrowed to float after validation.
@@ -434,7 +482,7 @@ Named emission accepts one case-sensitive built-in name, for example
 `"spectrum L" "stdillum-F11"`. All 88 names at the pinned PBRT revision are
 available: 16 illuminants, 21 glass/metal optical spectra, and 51 camera-response
 spectra. Using an optical or response curve for emission follows PBRT's general
-named-spectrum lookup; it does not enable those materials or film sensors.
+named-spectrum lookup; it does not enable other material models or film sensors.
 Preflight and rendering share one registry. Unrecognized names retain their
 entry-relative filename interpretation and existing dependency diagnostics.
 
@@ -517,8 +565,8 @@ existing CIE table matches the pinned PBRT values. RGB reconstruction extends th
 material/light model. Area lighting adds its own proposal and complementary
 emissive-hit MIS; wavelength sampling and roulette are unchanged.
 
-The [existing Lambertian NEE/MIS and compensated roulette](rendering.md) operate
-on imported spectra. Escape and sided surface emission precede the depth cutoff.
+Diffuse materials use the [existing Lambertian NEE/MIS](rendering.md); conductors
+use the reflection contract above. Both retain compensated roulette. Escape and sided surface emission precede the depth cutoff.
 At an opaque hit, the authored cutoff precedes another direct-light estimate or
 scattering, and the emergency watchdog. Depth zero preserves visible sky and
 emission; non-emitting opaque hits are black. This targets the finite-depth integral, not infinite-depth transport.

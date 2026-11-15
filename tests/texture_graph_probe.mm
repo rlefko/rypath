@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "checker_reference.hpp"
 #include "metal_execution.hpp"
 #include "rgb_spectrum.hpp"
 #include "texture_graph.hpp"
@@ -130,6 +131,28 @@ void run_probe(id<MTLDevice> device) {
         }
     }
 
+    const auto checker_offset = queries.size();
+    std::vector<double> checker_expected;
+    for (const auto [x, radius] : checker_reference::cases()) {
+        wire::Context c{.u = x, .v = .5f, .dudx = radius / 1.5f};
+        queries.push_back({c, 10, 550});
+        checker_expected.push_back(.5 + .5 * checker_reference::axis(x, 1.5f * c.dudx));
+    }
+
+    const auto pinned_checker_offset = queries.size();
+    const auto pinned_regressions = checker_reference::pinned_regressions();
+    const W checker_a = static_cast<W>(graph.nodes.size());
+    graph.nodes.push_back({.values = {.25f}});
+    const W checker_b = static_cast<W>(graph.nodes.size());
+    graph.nodes.push_back({.values = {.82f}});
+    for (const auto &regression : pinned_regressions) {
+        const W root = static_cast<W>(graph.nodes.size());
+        graph.nodes.push_back({.kind = wire::checkerboard,
+                               .children = {checker_a, checker_b},
+                               .mapping = regression.mapping});
+        queries.push_back({regression.context, root, 550});
+    }
+
     std::string diagnostic;
     const auto library = metal::load_library(device, {}, diagnostic);
     require(library != nil, diagnostic);
@@ -173,6 +196,17 @@ void run_probe(id<MTLDevice> device) {
     for (std::size_t i = 0; i < expected_axis.size(); ++i) {
         require(std::abs(values[axis_offset + i] - expected_axis[i]) <= 4e-6f,
                 "Metal coordinate-only angular axis differs from pinned PBRT");
+    }
+    for (std::size_t i = 0; i < checker_expected.size(); ++i) {
+        const float actual = values[checker_offset + i];
+        require(std::isfinite(actual) && actual >= 0 && actual <= 1 &&
+                    std::abs(actual - checker_expected[i]) < 8e-7,
+                "Metal checker differs from independent piecewise tent integral or leaves [0,1]");
+    }
+    for (std::size_t i = 0; i < pinned_regressions.size(); ++i) {
+        require(std::abs(values[pinned_checker_offset + i] - pinned_regressions[i].expected) <=
+                    3e-5,
+                "Metal checker disagrees with independent pinned-context integral");
     }
     float max_delta = 0;
     int errors = 0, failures = 0;

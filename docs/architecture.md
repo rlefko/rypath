@@ -175,6 +175,24 @@ The bounded static C11 OpenEXRCore subset owns codec work through scoped allocat
 callbacks and adds no installed-SDK product dependency. Metadata identifies the
 render settings and overrides, without defining checkpoint identity.
 
+## Spectral conductor scattering
+
+Material scattering is separate from its diffuse spectral representation. Conductor
+materials own two unbounded, nonnegative piecewise-linear optical curves and two
+scalar roughness bindings. The existing knot and texture resources carry their
+payloads; no optical input uses the albedo compiler. Definition and placement
+transforms preserve shading tangents for anisotropic reflection, including surfaces
+without texture graphs. Normal/bump mapping retains the modified tangent frame.
+
+A checked single-scattering GGX evaluator and visible-normal sampler share a local
+orthonormal frame. Smooth hits carry a delta event; rough hits use the same BRDF
+and PDF for continuation, environment lighting and finite-emitter MIS. Rejected
+visible-normal samples and zero Fresnel terminate continuation normally, retaining
+earlier contributions. Invalid arithmetic fails the staged batch. Scene function
+constants exclude conductor work from diffuse-only pipelines. The
+[conductor validation record](conductor-validation.md) describes the model,
+numerical adaptations and independent evidence.
+
 ## Rendering and planned boundaries
 
 The first renderer exercises these boundaries concretely: portable spectral

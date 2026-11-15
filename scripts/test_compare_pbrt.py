@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import struct
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -15,7 +16,7 @@ from unittest import mock
 from compare_pbrt import (
     EWA_ELLIPSE, FILTER_CONTROLS, FULL, QUADRANTS, REGIONS, TRILINEAR_BLEND,
     check_filter_sensitivity, compare_regions, main, make_filter_variant, read_pfm, roi_means,
-    render_replicates, stage_dependencies,
+    render_pfm, render_replicates, stage_dependencies,
 )
 
 
@@ -108,6 +109,63 @@ class PFMTests(unittest.TestCase):
                     read_pfm(self.path, 1, 1)
 
 
+class RendererDiagnosticsTests(unittest.TestCase):
+    def test_exit_zero_finite_output_with_error_is_rejected_and_retained(self):
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream), tempfile.TemporaryDirectory() as directory:
+                variant = Path(directory) / "16.pbrt"
+                diagnostic = "[ tid 123 @ 0.1s cpu/integrators.cpp:266 ] ERROR Not-a-number radiance. Setting to black.\n"
+                def execute(command, **kwargs):
+                    variant.with_suffix(".pfm").write_bytes(
+                        b"PF\n8 8\n-1\n" + struct.pack("<192f", *([0.] * 192)))
+                    return subprocess.CompletedProcess(command, 0,
+                        diagnostic if stream == "stdout" else "",
+                        diagnostic if stream == "stderr" else "")
+                runner = mock.Mock(side_effect=execute)
+                with self.assertRaisesRegex(ValueError, "renderer reported ERROR"):
+                    render_pfm("pbrt", Path("pbrt"), variant, b"WorldBegin\n", runner=runner)
+                self.assertEqual(variant.with_suffix(f".{stream}.log").read_text(), diagnostic)
+                record = json.loads(variant.with_suffix(".process.json").read_text())
+                self.assertEqual(record["returncode"], 0)
+                self.assertTrue(record["error_diagnostic"])
+                self.assertEqual(runner.call_count, 1)
+
+    def test_fatal_diagnostic_is_rejected_before_missing_pfm_readback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            variant = Path(directory) / "16.pbrt"
+            runner = mock.Mock(return_value=subprocess.CompletedProcess(
+                [], 0, "\x1b[31mFATAL\x1b[0m invalid renderer state\n", ""))
+            with self.assertRaisesRegex(ValueError, "renderer reported FATAL"):
+                render_pfm("pbrt", Path("pbrt"), variant, b"WorldBegin\n", runner=runner)
+            self.assertIn("FATAL", variant.with_suffix(".stdout.log").read_text())
+
+    def test_clean_render_and_warning_pass_and_keep_transcripts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            variant = Path(directory) / "00.pbrt"
+            def execute(command, **kwargs):
+                variant.with_suffix(".pfm").write_bytes(
+                    b"PF\n8 8\n-1\n" + struct.pack("<192f", *([1.] * 192)))
+                return subprocess.CompletedProcess(command, 0, "complete\n", "WARNING reference warning\n")
+            pixels = render_pfm("rypath", Path("rypath"), variant, b"WorldBegin\n", runner=execute)
+            self.assertEqual(pixels, [(1., 1., 1.)] * 64)
+            self.assertEqual(variant.with_suffix(".stdout.log").read_text(), "complete\n")
+            self.assertFalse(json.loads(variant.with_suffix(".process.json").read_text())["error_diagnostic"])
+
+    def test_failure_and_timeout_retain_partial_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            variant = Path(directory) / "00.pbrt"
+            runner = mock.Mock(return_value=subprocess.CompletedProcess([], 7, "partial\n", "failed\n"))
+            with self.assertRaises(subprocess.CalledProcessError):
+                render_pfm("rypath", Path("rypath"), variant, b"WorldBegin\n", runner=runner)
+            self.assertEqual(variant.with_suffix(".stderr.log").read_text(), "failed\n")
+            timeout = mock.Mock(side_effect=subprocess.TimeoutExpired([], 120,
+                               output=b"partial timeout\n", stderr=b"FATAL timed out\n"))
+            with self.assertRaises(subprocess.TimeoutExpired):
+                render_pfm("rypath", Path("rypath"), variant, b"WorldBegin\n", runner=timeout)
+            self.assertEqual(variant.with_suffix(".stdout.log").read_text(), "partial timeout\n")
+            self.assertTrue(json.loads(variant.with_suffix(".process.json").read_text())["timed_out"])
+
+
 class ComparisonTests(unittest.TestCase):
     def test_relocated_seed_entries_keep_verified_dependencies(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -125,7 +183,7 @@ class ComparisonTests(unittest.TestCase):
             (root / "dependencies.json").write_text(json.dumps(manifest))
             visited = []
 
-            def render(command, *, check, cwd, timeout):
+            def render(command, *, check, cwd, timeout, capture_output, text):
                 entry, output = map(Path, command[-2:])
                 if command[0] == "pbrt":
                     output, entry = entry, output
@@ -134,6 +192,7 @@ class ComparisonTests(unittest.TestCase):
                 self.assertIn(b'nested/mesh.ply', entry.read_bytes())
                 output.write_bytes(b"PF\n8 8\n-1\n" + struct.pack("<192f", *([1.] * 192)))
                 visited.append(entry)
+                return subprocess.CompletedProcess(command, 0, "", "")
 
             with mock.patch("compare_pbrt.subprocess.run", side_effect=render):
                 result = render_replicates(Path("rypath"), Path("pbrt"), fixture,

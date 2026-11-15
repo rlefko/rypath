@@ -109,6 +109,17 @@ struct Material {
     Word texture_root = 0xffffffffu;
     Word bump_root = 0xffffffffu;
     Word normal_map = 0xffffffffu;
+    Word scattering = 0; // 0: diffuse, 1: conductor
+    Word eta_begin = 0;
+    Word eta_count = 0;
+    Word k_begin = 0;
+    Word k_count = 0;
+    Word optical_extensions = 0; // bit 0: eta, bit 1: k
+    float u_roughness = 0;
+    float v_roughness = 0;
+    Word u_roughness_root = 0xffffffffu;
+    Word v_roughness_root = 0xffffffffu;
+    Word remap_roughness = 1;
 };
 struct SpectralKnot {
     float wavelength;
@@ -232,13 +243,17 @@ static_assert(sizeof(TextureParameters) == 124 && alignof(TextureParameters) == 
                   __builtin_offsetof(TextureParameters, world_from_camera) == 24 &&
                   __builtin_offsetof(TextureParameters, minimum_dx) == 96,
               "texture parameters layout");
-static_assert(sizeof(Material) == 76 && alignof(Material) == 4 &&
+static_assert(sizeof(Material) == 120 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, knot_begin) == 32 &&
                   __builtin_offsetof(Material, knot_count) == 36 &&
                   __builtin_offsetof(Material, kind) == 40 &&
                   __builtin_offsetof(Material, scalar_value) == 44 &&
                   __builtin_offsetof(Material, coefficients) == 48 &&
-                  __builtin_offsetof(Material, image_texture) == 60,
+                  __builtin_offsetof(Material, image_texture) == 60 &&
+                  __builtin_offsetof(Material, scattering) == 76 &&
+                  __builtin_offsetof(Material, eta_begin) == 80 &&
+                  __builtin_offsetof(Material, u_roughness) == 100 &&
+                  __builtin_offsetof(Material, remap_roughness) == 116,
               "render material layout");
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,

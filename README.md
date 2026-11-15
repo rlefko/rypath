@@ -14,7 +14,9 @@ and above-one samples, with pinned PBRT resampling and consumer semantics.
 The PBRT profile includes inline triangles, external PLY triangles and bilinear
 quads, per-vertex shading normals and UVs, constant environment lighting,
 directly placed diffuse emitters with sampled, RGB, blackbody, built-in named, or file emission,
-and box or triangle pixel filtering. Complete batches
+and box or triangle pixel filtering. Spectral conductors add polished and anisotropic
+GGX metals with named/numeric/file optical constants and scalar roughness textures,
+including bump and normal maps. Complete batches
 accumulate raw XYZ; separate output conversion saves display PNG or linear
 HALF/FLOAT OpenEXR. Portable `--check-pbrt`
 reports scene structure, dependencies, and unsupported features. Broader PBRT

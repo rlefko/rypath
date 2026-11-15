@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [28]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [3]
+WorldBegin
+LightSource "infinite" "float scale" [1]
+AttributeBegin
+Material "diffuse" "rgb reflectance" [0 0 0]
+AreaLightSource "diffuse" "float scale" [10] "bool twosided" [true]
+Shape "trianglemesh" "point3 P" [-1.5 -1 -1 2.5 -1 -1 2.5 1 -1 -1.5 1 -1]
+ "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+Texture "bump" "float" "bilerp" "float v00" [0] "float v01" [0] "float v10" [0.2] "float v11" [0.2]
+Texture "mask" "float" "checkerboard" "float tex1" [1] "float tex2" [0]
+ObjectBegin "tile"
+Material "conductor" "float uroughness" [0.04] "float vroughness" [0.2]
+ "texture displacement" "bump" "string normalmap" "assets/normal-tilted.png"
+Shape "trianglemesh" "point3 P" [-2 -2 2 2 -2 2 2 2 2 -2 2 2]
+ "point2 uv" [0 0 1 0 1 1 0 1] "integer indices" [0 1 2 0 2 3]
+ "texture alpha" "mask"
+ObjectEnd
+ObjectInstance "tile"

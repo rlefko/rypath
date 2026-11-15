@@ -155,20 +155,39 @@ inline bool map2d(RYPATH_GRAPH_DEVICE Mapping &mapping, const RYPATH_GRAPH_THREA
     return finite(mapped);
 }
 
-inline float checker_integral(float x) {
-    const float half_x = x * 0.5f;
-    const float y = half_x - floor(half_x) - 0.5f;
-    return half_x + y * (1.0f - 2.0f * abs(y));
+// Periodic part of the square wave's second antiderivative. The omitted
+// linear term cancels in a centered second difference.
+inline float checker_periodic_integral(float phase) {
+    const float half_phase = phase * 0.5f;
+    const float y = half_phase - floor(half_phase) - 0.5f;
+    return y * (1.0f - 2.0f * abs(y));
 }
 
 inline float checker_filter(float x, float radius) {
-    if (floor(x - radius) == floor(x + radius)) {
-        // Floating-point parity avoids out-of-range integer conversion at large coordinates.
-        return abs(fmod(floor(x), 2.0f)) == 0.0f ? 1.0f : -1.0f;
+    const float cell = floor(x);
+    const float parity = abs(fmod(cell, 2.0f)) == 0.0f ? 1.0f : -1.0f;
+    if (radius == 0)
+        return parity;
+    if (radius <= 1.0f) {
+        // Integrate the tent's triangular caps beyond the adjacent boundaries.
+        // This avoids subtracting nearly equal antiderivatives for small radii.
+        const float fraction = x - cell;
+        // Subtract the nearest boundary directly, retaining tiny distances
+        // near zero on the negative side rather than rounding 1-fraction.
+        const float upper_distance = fraction > 0.5f ? (cell + 1.0f) - x : 1.0f - fraction;
+        const float left = max(0.0f, 1.0f - fraction / radius);
+        const float right = max(0.0f, 1.0f - upper_distance / radius);
+        return parity * (1.0f - left * left - right * right);
     }
-    return (checker_integral(x + radius) - 2.0f * checker_integral(x) +
-            checker_integral(x - radius)) /
-           (radius * radius);
+    // Keep phase before adding a broad footprint, and avoid radius-squared
+    // overflow. Input coordinates and derivatives must still be finite.
+    const float phase = fmod(x, 2.0f);
+    const float radius_phase = fmod(radius, 2.0f);
+    return ((checker_periodic_integral(phase + radius_phase) -
+             2.0f * checker_periodic_integral(phase) +
+             checker_periodic_integral(phase - radius_phase)) /
+            radius) /
+           radius;
 }
 
 inline float checked_axis(float x, float dx, float dy) {

@@ -213,3 +213,18 @@ and compares the compiled rypath lookup to calls to PBRT's
 and macOS versions above, all 88 names and 41,448 sample words matched
 bit-for-bit. Both output dumps had SHA-256
 `3bcc076b37c15bb3c714937090ecf3ce2b04d8436c25220ab01d1af9c52360ac`.
+
+## Conductor adaptation
+
+`shaders/conductor.h` adapts `ConductorBxDF`, `TrowbridgeReitzDistribution`, and
+complex Fresnel from the same pinned PBRT revision. It retains the Apache-2.0
+notice and license. Roughness remapping, the effectively-smooth boundary, the
+rough-axis floor, correlated Smith masking-shadowing, and visible-normal
+sampling follow that implementation. The distribution sampler is based on
+[Heitz 2018](https://jcgt.org/published/0007/04/01/).
+
+Checked Metal arithmetic and stable optical-limit/VNDF endpoint calculations are
+rypath adaptations, independently tested against double equations and pinned
+PBRT over the ordinary domain. `scripts/pbrt_conductor_probe.cpp` is an optional
+external oracle linked to the cached CPU reference; no PBRT renderer dependency
+is introduced into the product. See the [validation record](../../docs/conductor-validation.md).
