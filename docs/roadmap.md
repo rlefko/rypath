@@ -96,7 +96,7 @@ clarifies the work; completion is recorded in [status](status.md).
     transmission, nested mapped mixes and conductor optical textures. Explicit
     finite-layer and RGB-to-spectral approximations; bounded table loading and
     independent CPU/Metal/PBRT validation.
-31. **Homogeneous spectral media (under review):** absorption, scattering and
+31. **Homogeneous spectral media (merged in PR #32):** absorption, scattering and
     absorption-coupled emission under explicit `volpath`, HG phase sampling,
     scoped interfaces, null boundaries and all 47 measured presets. Independent
     analytic/Metal/PBRT validation; heterogeneous media remain separate.
@@ -108,8 +108,9 @@ clarifies the work; completion is recorded in [status](status.md).
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
 34. **Remaining surface models:** hair/curves, subsurface transport, arbitrary
     layered stacks and further lighting/MIS, with independent numerical comparisons.
-35. **Offline completion:** checkpoint/resume, cancellation, and long-run
-    accumulation validation.
+35. **Resumable rendering (current PR):** exact raw checkpoints, compatible-build/device
+    continuation, complete-batch cancellation and durable publication.
+    Broader long-run accumulation studies remain acceptance work.
 36. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 

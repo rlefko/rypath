@@ -82,8 +82,9 @@ compute ray tracing; Linux and Metal-disabled builds report it as unavailable.
 
 ## Direction
 
-Broader PBRT rendering, remaining surface models, heterogeneous media, and resumable
-offline rendering follow this bounded profile. Scene compatibility, numerical
+[Checkpoint/resume and cancellation](docs/checkpointing.md) preserve complete raw
+sample batches across compatible builds and supported Metal devices. Broader PBRT
+rendering, remaining surface models and heterogeneous media follow this bounded profile. Scene compatibility, numerical
 correctness, and performance each need separate evidence. The [PBRT profile](docs/pbrt-profile.md) distinguishes checked scene structure
 from rendering conformance. There are no target-device performance claims yet.
 Ray-tracing API flags describe device capabilities; geometry validation runs

@@ -95,6 +95,14 @@ It preserves draft comment lines with automatic markers. The history check
 validates Git's stored subject and remains authoritative for automatic markers,
 an explicit no-op editor, and invocation-only cleanup options.
 
+## Checkpoint compatibility
+
+Review `src/checkpoint_contract.h` whenever rendering, sampling, numerical policy,
+accumulation, or canonical scene fields change. Bump the affected contract for
+incompatible continuation; product version and source fingerprints alone do not
+invalidate checkpoints. Changes must retain the host/shader handshake and add
+identity coverage for new effective render data. See [checkpointing](checkpointing.md).
+
 ## CI and review protection
 
 Every PR to `main` runs formatting/policy, focused clang-tidy, Linux Clang
