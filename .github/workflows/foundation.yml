@@ -56,6 +56,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
+      CC: clang-18
       CXX: clang++-18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -68,7 +69,7 @@ jobs:
         shell: bash
         run: |
           clang-tidy-18 --version
-          jq -ej 'map(.file) | unique[] | select(endswith("/third_party/lodepng/lodepng.cpp") | not) | ., "\u0000"' build/debug/compile_commands.json |
+          jq -ej 'map(.file) | unique[] | select((endswith("/third_party/lodepng/lodepng.cpp") or contains("/third_party/openexr/")) | not) | ., "\u0000"' build/debug/compile_commands.json |
             xargs -0 clang-tidy-18 -p build/debug
 
   linux:
@@ -76,6 +77,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
+      CC: clang-18
       CXX: clang++-18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -135,6 +137,7 @@ jobs:
       contents: read
       security-events: write
     env:
+      CC: clang-18
       CXX: clang++-18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
