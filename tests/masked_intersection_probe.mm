@@ -272,17 +272,33 @@ void compare_alpha_hash(id<MTLDevice> device, id<MTLLibrary> library) {
 
 } // namespace
 
-int main() {
+int main(int argc, char *argv[]) {
     @autoreleasepool {
         try {
+            bool allow_no_device = false;
+            bool allow_no_ray_tracing = false;
+            for (int i = 1; i < argc; ++i) {
+                const std::string_view flag = argv[i];
+                if (flag == "--allow-no-device" && !allow_no_device) {
+                    allow_no_device = true;
+                } else if (flag == "--allow-no-ray-tracing" && !allow_no_ray_tracing) {
+                    allow_no_ray_tracing = true;
+                } else {
+                    throw std::runtime_error("unexpected masked intersection test flag");
+                }
+            }
             const auto device = MTLCreateSystemDefaultDevice();
-#if defined(RYPATH_ALLOW_NO_METAL_DEVICE)
-            if (!device) {
+            if (!device && allow_no_device) {
                 std::cout << "SKIP Masked intersection probe: no Metal device available\n";
                 return 77;
             }
-#endif
-            require(device && device.supportsRaytracing,
+            require(device != nil, "Masked intersection probe requires a Metal device");
+            if (!device.supportsRaytracing && allow_no_ray_tracing) {
+                std::cout
+                    << "SKIP Masked intersection probe: no Metal compute ray tracing available\n";
+                return 77;
+            }
+            require(device.supportsRaytracing,
                     "Masked intersection probe requires Metal ray tracing");
             std::string error;
             const auto library = metal::load_library(device, {}, error);

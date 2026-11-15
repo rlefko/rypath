@@ -121,13 +121,19 @@ void test_coordinate_only_axes() {
             graph.nodes[node].mapping.kind = kind;
         }
         for (const float z : {.25f, -.25f}) {
-            const wire::Context axis{.p = {0, 0, z}, .dpdx = {1, 0, 0}, .dpdy = {0, 1, 0}};
+            wire::Context axis{};
+            axis.p = {0, 0, z};
+            axis.dpdx = {1, 0, 0};
+            axis.dpdy = {0, 1, 0};
             const float s = kind == wire::cylindrical ? .5f : (z > 0 ? 0.f : 1.f);
             const float t = kind == wire::cylindrical ? z : 0.f;
             close(evaluate_texture_graph(graph, 4, axis, 550), 2 * s + t,
                   "bilerp uses the pinned PBRT angular axis coordinates");
             graph.nodes[5].mapping.kind = wire::uv;
-            const auto uv = evaluate_texture_graph(graph, 5, {.u = s, .v = t}, 550);
+            wire::Context uv_context{};
+            uv_context.u = s;
+            uv_context.v = t;
+            const auto uv = evaluate_texture_graph(graph, 5, uv_context, 550);
             if (!uv) {
                 throw std::runtime_error("dots UV control failed to evaluate");
             }
@@ -178,11 +184,18 @@ void test_composition() {
     close(sample(8, context), .25f, "directionmix uses absolute dot and selects its first branch");
     require(!sample(8), "directionmix evaluates its selected second branch");
     close(sample(9), .25f, "checkerboard even tile skips second image");
-    require(!sample(9, {.u = 1}), "checkerboard odd tile evaluates second image");
+    wire::Context odd_tile{};
+    odd_tile.u = 1;
+    require(!sample(9, odd_tile), "checkerboard odd tile evaluates second image");
     close(sample(10), .25f, "dots outside skips inside image");
-    require(!sample(10, {.u = -2, .v = -2}), "pinned dots inside selects second branch");
+    wire::Context inside_dot{};
+    inside_dot.u = -2;
+    inside_dot.v = -2;
+    require(!sample(10, inside_dot), "pinned dots inside selects second branch");
     require(!sample(11), "bilerp evaluates zero-weight corners");
-    close(sample(12, {.u = -1}), -.25f, "bilerp extrapolates");
+    wire::Context extrapolation{};
+    extrapolation.u = -1;
+    close(sample(12, extrapolation), -.25f, "bilerp extrapolates");
     close(sample(13), 4.0f, "sampled spectral leaf preserves values above one");
     close(sample(14), 8.0f, "scale preserves unclamped sampled spectral input");
     close(sample(15), .5f + .5f / std::sqrt(2.f), "RGB sigmoid spectral leaf");

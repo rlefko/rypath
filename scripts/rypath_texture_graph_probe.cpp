@@ -269,7 +269,10 @@ void compare(const ProbePaths &paths) {
         }
     }
     for (const float z : {.25f, -.25f}) {
-        const wire::Context axis{.p = {0, 0, z}, .dpdx = {1, 0, 0}, .dpdy = {0, 1, 0}};
+        wire::Context axis{};
+        axis.p = {0, 0, z};
+        axis.dpdx = {1, 0, 0};
+        axis.dpdy = {0, 1, 0};
         std::array<float, 4> results{};
         for (Word i = 0; i < results.size(); ++i) {
             const auto value = evaluate_texture_graph(graph, first_axis_node + i, axis, 550);
