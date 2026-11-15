@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <ranges>
@@ -243,13 +244,14 @@ bool certify_binary_emitter_mask(const TextureGraph &graph, wire::Word root,
     }
     const auto &image = *texture.image;
     if (image.levels.empty() ||
-        (image.storage != ImageStorage::encoded8 && image.storage != ImageStorage::linear_half) ||
+        (image.storage != ImageStorage::encoded8 && image.storage != ImageStorage::linear_half &&
+         image.storage != ImageStorage::linear_float) ||
         (image.wrap != ImageWrap::black && image.wrap != ImageWrap::repeat &&
          image.wrap != ImageWrap::clamp)) {
         return false;
     }
     const auto level = image.levels.front();
-    const std::size_t stride = image.storage == ImageStorage::linear_half ? 2 : 1;
+    const std::size_t stride = image_storage_words(image.storage);
     if (level.offset > image.texels.size() || level.width == 0 || level.height == 0 ||
         (image.texels.size() - level.offset) / stride / level.width < level.height) {
         return false;
@@ -258,6 +260,14 @@ bool certify_binary_emitter_mask(const TextureGraph &graph, wire::Word root,
     // Point filtering uses channel zero even for RGBA with varying alpha.
     // Each supported wrap selects a texel or the exact zero black border.
     const std::size_t end = level.offset + stride * std::size_t{level.width} * level.height;
+    if (image.storage == ImageStorage::linear_float) {
+        for (std::size_t i = level.offset; i < end; i += stride) {
+            const auto value = std::bit_cast<float>(image.texels[i]);
+            if (value != 0.0f && value != 1.0f)
+                return false;
+        }
+        return true;
+    }
     if (image.storage == ImageStorage::linear_half) {
         for (std::size_t i = level.offset; i < end; i += stride) {
             const auto code = image.texels[i] & 0xffffu;

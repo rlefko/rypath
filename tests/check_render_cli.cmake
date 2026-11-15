@@ -24,6 +24,33 @@ if(NOT invalid_exit STREQUAL "1" OR NOT invalid_stdout STREQUAL "" OR
 endif()
 expect_existing_output()
 
+# EXR is portable output, while backend availability retains its existing status.
+set(exr_output "${output_directory}/demo.exr")
+file(WRITE "${exr_output}" "${sentinel}")
+execute_process(COMMAND "${executable}" --render-demo --output "${exr_output}"
+    --width 8 --height 6 --samples 3 --batch-size 2 --seed 0
+    RESULT_VARIABLE exr_exit OUTPUT_VARIABLE exr_stdout ERROR_VARIABLE exr_stderr)
+if(NOT exr_stdout MATCHES "EXR; linear sRGB; FLOAT")
+    message(FATAL_ERROR "Demo EXR precision missing: ${exr_stdout}${exr_stderr}")
+endif()
+if(exr_exit STREQUAL "0")
+    if(NOT exr_stdout MATCHES "Total samples: 144\nWrote EXR: " OR NOT exr_stderr STREQUAL "")
+        message(FATAL_ERROR "Unexpected demo EXR result: ${exr_stdout}${exr_stderr}")
+    endif()
+    file(READ "${exr_output}" signature LIMIT 4 HEX)
+    if(NOT signature STREQUAL "762f3101")
+        message(FATAL_ERROR "Demo output lacks EXR signature")
+    endif()
+elseif(exr_exit STREQUAL "2")
+    get_render_availability(exr_availability "${exr_stdout}" "${exr_stderr}" "")
+    file(READ "${exr_output}" current)
+    if(exr_availability STREQUAL "" OR NOT current STREQUAL sentinel)
+        message(FATAL_ERROR "Unexpected demo EXR availability result")
+    endif()
+else()
+    message(FATAL_ERROR "Unexpected demo EXR status ${exr_exit}: ${exr_stdout}${exr_stderr}")
+endif()
+
 execute_process(
     COMMAND "${executable}" --render-demo --output "${output}"
         --width 8 --height 6 --samples 3 --batch-size 2 --seed 0

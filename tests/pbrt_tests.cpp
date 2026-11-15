@@ -522,14 +522,14 @@ Include "missing.pbrt"
 Import "module.pbrt"
 Include "compressed.pbrt.gz"
 Shape "plymesh" "string filename" "mesh.ply"
-Texture "t" "spectrum" "imagemap" "string filename" "map.exr"
+Texture "t" "spectrum" "imagemap" "string filename" "map.qoi"
 Material "diffuse" "spectrum reflectance" "curve.spd"
 )");
     write_file(fs::current_path(), "missing.pbrt", "Identity");
     write_file(directory, "module.pbrt", "UnknownDirective");
     write_file(directory, "compressed.pbrt.gz", "\x1f\x8b");
     write_file(directory, "mesh.ply", "unchecked");
-    write_file(directory, "map.exr", "unchecked");
+    write_file(directory, "map.qoi", "unchecked");
     write_file(directory, "curve.spd", "unchecked");
     const auto incomplete = check(pending);
     require(incomplete.exit_code() == 1 && !incomplete.document.dependencies_complete,
@@ -608,7 +608,7 @@ Material "diffuse" "texture reflectance" "unverified"
 
     const auto image = check(write_file(directory, "texture-image.pbrt", R"(WorldBegin
 Material "diffuse" "texture reflectance" "image"
-Texture "image" "spectrum" "imagemap" "string filename" "map.exr"
+Texture "image" "spectrum" "imagemap" "string filename" "map.qoi"
 )"));
     require(image.exit_code() == 2 && !image.scene && image.document.dependencies.size() == 1,
             "a resolved image texture reference remains outside the structural profile");
@@ -1057,16 +1057,16 @@ Translate 1 2 3
                 object_diagnostic.location.line == 6,
             "Inherited emitters on object member shapes have a shape diagnostic");
 
-    write_file(directory, "emission.exr", "asset placeholder");
+    write_file(directory, "emission.qoi", "asset placeholder");
     const auto image = check(write_file(directory, "area-image.pbrt", R"(WorldBegin
-Attribute "light" "string filename" "emission.exr"
+Attribute "light" "string filename" "emission.qoi"
 AreaLightSource "diffuse"
 )"));
     require(image.exit_code() == 2 && image.document.dependencies.size() == 1 &&
                 image.document.dependencies.front().kind == DependencyKind::image,
             "An inherited area light image is inventoried and unsupported");
     const auto conflict = check(write_file(directory, "area-image-conflict.pbrt", R"(WorldBegin
-Attribute "light" "string filename" "emission.exr"
+Attribute "light" "string filename" "emission.qoi"
 AreaLightSource "diffuse" "rgb L" [1 1 1]
 )"));
     require(conflict.exit_code() == 1 && conflict.document.dependencies.size() == 1 &&

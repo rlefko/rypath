@@ -121,7 +121,7 @@ class Translator {
     std::set<string_view> nested_spectra_;
     std::set<string_view> direct_spectra_;
     std::map<const ImagePyramid *, std::uint32_t> native_images_;
-    std::map<const ImagePyramid *, bool> image_formats_;
+    std::map<const ImagePyramid *, ImageFileFormat> image_formats_;
     std::vector<const Descriptor *> graph_mapping_sources_;
 
     void issue(Severity severity, string_view code, const Location &source, std::string message);
@@ -232,7 +232,7 @@ void Translator::film(const Descriptor &descriptor) {
     if (const auto *limit = parameter(descriptor, "maxcomponentvalue")) {
         unsupported(limit->location, "Film sample clamping is unsupported");
     }
-    result_.provenance.emplace_back("CLI PNG output overrides PBRT filename and savefp16");
+    result_.save_fp16 = boolean(descriptor, "savefp16", true);
 }
 
 void Translator::camera(const Descriptor &descriptor, const Descriptor *film_descriptor) {
@@ -684,6 +684,10 @@ std::uint32_t Translator::native_image(const Descriptor &descriptor) {
 }
 
 std::optional<float> Translator::image_emission(const Descriptor &descriptor, float illuminance) {
+    if (const auto error = validate_image_light(*descriptor.native_image); !error.empty()) {
+        invalid(location(descriptor, "filename"), error);
+        return std::nullopt;
+    }
     const auto scale = narrow(descriptor, "scale", 1);
     if (!scale) {
         return std::nullopt;
@@ -960,7 +964,8 @@ void Translator::image_textures() {
         const auto &name = definition.descriptor.authored.arguments.front().text;
         const auto index = static_cast<std::uint32_t>(scene_.image_textures.size());
         scene_.image_textures.push_back(definition.texture);
-        image_formats_.try_emplace(definition.texture.image.get(), definition.source->pixels->jpeg);
+        image_formats_.try_emplace(definition.texture.image.get(),
+                                   definition.source->pixels->file_format);
         if (spectrum) {
             image_indices_.emplace(name, index);
             if (definition.descriptor.texture_mapping.kind == graph::uv) {
@@ -1207,10 +1212,13 @@ void Translator::displace_geometry(std::size_t remaining) {
                     image_linear_scalar(*texture.image, coordinates.s, 1 - coordinates.t,
                                         coordinates.dsdx, coordinates.dtdx, coordinates.dsdy,
                                         coordinates.dtdy, texture.filter, texture.max_anisotropy);
-                if (!value) {
+                if (!value || !std::isfinite(*value)) {
                     return std::nullopt;
                 }
                 const float scaled = *value * texture.scale;
+                if (!std::isfinite(scaled)) {
+                    return std::nullopt;
+                }
                 return texture.invert ? std::max(0.f, 1 - scaled) : scaled;
             }};
         auto &mesh = scene_.geometry.meshes[shape.mesh_index];
@@ -1599,8 +1607,9 @@ void Translator::geometry() {
     }
 }
 
-std::string image_filter_provenance(const RenderScene &scene,
-                                    const std::map<const ImagePyramid *, bool> &formats) {
+std::string
+image_filter_provenance(const RenderScene &scene,
+                        const std::map<const ImagePyramid *, ImageFileFormat> &formats) {
     if (scene.image_textures.empty()) {
         return {};
     }
@@ -1612,8 +1621,7 @@ std::string image_filter_provenance(const RenderScene &scene,
     std::array modes{
         FilterMode{ImageFilter::point, "point"}, FilterMode{ImageFilter::bilinear, "bilinear"},
         FilterMode{ImageFilter::trilinear, "trilinear"}, FilterMode{ImageFilter::ewa, "ewa"}};
-    bool png = false;
-    bool jpeg = false;
+    std::set<ImageFileFormat> used_formats;
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
         const auto &material = scene.materials[scene.instance_materials[i]];
         const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];
@@ -1621,9 +1629,7 @@ std::string image_filter_provenance(const RenderScene &scene,
             (!mesh.triangles.empty() || !mesh.patches.empty())) {
             const auto &texture = scene.image_textures[material.image_texture];
             const auto format = formats.find(texture.image.get());
-            const bool is_jpeg = format != formats.end() && format->second;
-            jpeg |= is_jpeg;
-            png |= !is_jpeg;
+            used_formats.insert(format == formats.end() ? ImageFileFormat::png : format->second);
             for (auto &mode : modes) {
                 mode.used |= mode.filter == texture.filter;
             }
@@ -1634,7 +1640,25 @@ std::string image_filter_provenance(const RenderScene &scene,
         return {};
     }
     std::string provenance = "Image textures: ";
-    provenance += png && jpeg ? "PNG and JPEG" : jpeg ? "JPEG" : "PNG";
+    auto formats_remaining = used_formats.size();
+    for (const auto format : used_formats) {
+        switch (format) {
+        case ImageFileFormat::png:
+            provenance += "PNG";
+            break;
+        case ImageFileFormat::jpeg:
+            provenance += "JPEG";
+            break;
+        case ImageFileFormat::exr:
+            provenance += "EXR";
+            break;
+        case ImageFileFormat::hdr:
+            provenance += "Radiance HDR";
+            break;
+        }
+        if (--formats_remaining > 0)
+            provenance += formats_remaining == 1 ? " and " : ", ";
+    }
     provenance += ", UV mapping, mipmapped ";
     for (const auto &mode : modes) {
         if (mode.used) {

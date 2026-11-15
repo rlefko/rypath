@@ -41,6 +41,13 @@ static float3 texel(const device wire::Word *texels, const device float *transfe
         return float3(0);
     }
     const uint index = uint(y) * level.width + uint(x);
+    if (texel_format == wire::linear_float_texel_format) {
+        const uint word = level.offset + 4u * index;
+        if (alpha)
+            return float3(as_type<float>(texels[word + 3u]), 0, 0);
+        return float3(as_type<float>(texels[word]), as_type<float>(texels[word + 1u]),
+                      as_type<float>(texels[word + 2u]));
+    }
     if (texel_format == wire::linear_half_texel_format) {
         const uint word = level.offset + 2u * index;
         const uint rg = texels[word], b = texels[word + 1u];
@@ -58,7 +65,9 @@ static float3 texel(const device wire::Word *texels, const device float *transfe
 
 static bool valid_level(const device wire::TextureLevel &level, uint texel_word_count,
                         uint texel_format) {
-    const uint words_per_texel = texel_format == wire::linear_half_texel_format ? 2u : 1u;
+    const uint words_per_texel = texel_format == wire::linear_float_texel_format  ? 4u
+                                 : texel_format == wire::linear_half_texel_format ? 2u
+                                                                                  : 1u;
     return level.width > 0 && level.height > 0 && level.width <= 4096 && level.height <= 4096 &&
            level.offset <= texel_word_count &&
            level.width * level.height * words_per_texel <= texel_word_count - level.offset;
@@ -349,8 +358,8 @@ static bool valid_lookup(const device wire::ImageTexture &texture,
                          constant wire::TextureParameters &p, float2 uv, float2 dx, float2 dy) {
     return all(isfinite(uv)) && all(isfinite(dx)) && all(isfinite(dy)) && texture.wrap <= 2u &&
            (texture.channels == 1u || texture.channels == 3u || texture.channels == 4u) &&
-           texture.texel_format <= wire::linear_half_texel_format &&
-           (texture.texel_format == wire::linear_half_texel_format ||
+           texture.texel_format <= wire::linear_float_texel_format &&
+           (texture.texel_format >= wire::linear_half_texel_format ||
             (texture.transfer_offset <= p.transfer_count &&
              p.transfer_count - texture.transfer_offset >= 256u)) &&
            texture.level_count != 0 && texture.level_begin <= p.level_count &&

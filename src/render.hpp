@@ -138,6 +138,7 @@ std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
 std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_patch_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_render_scene(const RenderScene &scene);
+std::string validate_image_light(const ImagePyramid &image);
 bool instance_uses_texture_context(const RenderScene &scene, std::size_t index);
 RenderScene make_demo_scene();
 Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model = RenderModel::demo,

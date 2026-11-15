@@ -17,6 +17,7 @@
 #include <limits>
 #include <new>
 #include <numbers>
+#include <stdexcept>
 #include <tuple>
 #include <utility>
 
@@ -263,20 +264,23 @@ std::uint32_t round_significand(std::uint32_t significand, unsigned shift) {
     return (significand + halfway - 1u + (truncated & 1u)) >> shift;
 }
 
-// Source and mip values are nonnegative, finite, and well within the binary16 range.
+// IEEE binary16 round-to-nearest, ties-to-even, including signed subnormals.
 std::uint32_t encode_half(float value) {
     constexpr auto fraction_mask = 0x007fffffu;
     const auto bits = std::bit_cast<std::uint32_t>(value);
+    const auto sign = (bits >> 16) & 0x8000u;
     const auto exponent = (bits >> 23) & 0xffu;
     const auto fraction = bits & fraction_mask;
+    if (exponent >= 143u)
+        return sign | 0x7c00u;
     if (exponent < 102u) {
-        return 0; // Below half of the smallest binary16 subnormal.
+        return sign; // Below half of the smallest binary16 subnormal.
     }
     if (exponent <= 112u) {
-        return round_significand(fraction | (1u << 23), 126u - exponent);
+        return sign | round_significand(fraction | (1u << 23), 126u - exponent);
     }
     // A carry from rounding the fraction advances the exponent.
-    return ((exponent - 112u) << 10) + round_significand(fraction, 13);
+    return sign | (((exponent - 112u) << 10) + round_significand(fraction, 13));
 }
 
 float decode_half(std::uint32_t bits) {
@@ -367,6 +371,13 @@ struct SourcePixels {
 
     template <std::size_t N> std::array<float, N> pixel(std::size_t index) const {
         std::array<float, N> result{};
+        if (image.sample_format == ImageSampleFormat::half ||
+            image.sample_format == ImageSampleFormat::float32) {
+            std::copy_n(image.floating_rgb.data() + index * 3, 3, result.data());
+            if constexpr (N == 4)
+                result[3] = image.floating_alpha[index];
+            return result;
+        }
         for (std::size_t c = 0; c < 3; ++c)
             result[c] = decode(read_sample(image.rgb, index * 3 + c, is_half));
         if constexpr (N == 4)
@@ -470,8 +481,11 @@ std::vector<Pixel> resize_image(const SourcePixels &source, std::uint32_t width,
                 for (std::size_t channel = 0; channel < pixel.size(); ++channel)
                     pixel[channel] += sample.weights[tap] * source_pixel[channel];
             }
-            for (auto &channel : pixel)
+            for (auto &channel : pixel) {
+                if (!std::isfinite(channel))
+                    throw std::runtime_error("Image resize overflowed finite FLOAT range");
                 channel = std::max(0.0f, channel);
+            }
         }
     }
     return output;
@@ -545,6 +559,12 @@ struct MipSampler {
             return alpha ? Rgb{transfer[texels[index] >> 24], 0, 0}
                          : decode_byte_texel(texels[index], transfer);
         }
+        if (word_stride == 4) {
+            return alpha ? Rgb{std::bit_cast<float>(texels[index * 4 + 3]), 0, 0}
+                         : Rgb{std::bit_cast<float>(texels[index * 4]),
+                               std::bit_cast<float>(texels[index * 4 + 1]),
+                               std::bit_cast<float>(texels[index * 4 + 2])};
+        }
         const auto rg = texels[index * 2];
         const auto b = texels[index * 2 + 1];
         return alpha ? Rgb{decode_half(b >> 16), 0, 0}
@@ -565,7 +585,7 @@ std::optional<MipSampler> mip_sampler(const ImagePyramid &image, std::size_t ind
     if (level.width == 0 || level.height == 0 || !dimensions_fit(level.width, level.height, {})) {
         return std::nullopt;
     }
-    const std::size_t word_stride = image.storage == ImageStorage::linear_half ? 2 : 1;
+    const std::size_t word_stride = image_storage_words(image.storage);
     const auto words = pixel_count(level.width, level.height) * word_stride;
     if (level.offset % word_stride != 0 || level.offset > image.texels.size() ||
         words > image.texels.size() - level.offset) {
@@ -880,7 +900,8 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
     DecodedImage image{.width = width,
                        .height = height,
                        .rgb = {},
-                       .bit_depth = rgb_depth,
+                       .sample_format =
+                           rgb_depth == 16 ? ImageSampleFormat::unorm16 : ImageSampleFormat::unorm8,
                        .source_channels = gray ? 1u : (rgba ? 4u : 3u)};
     try {
         image.rgb.resize(rgb_bytes);
@@ -916,7 +937,10 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
 }
 
 ImageEncoding image_effective_encoding(const DecodedImage &image, ImageEncoding authored) {
-    return image.jpeg ? ImageEncoding::srgb : authored;
+    if (image.sample_format == ImageSampleFormat::half ||
+        image.sample_format == ImageSampleFormat::float32)
+        return ImageEncoding::linear;
+    return image.file_format == ImageFileFormat::jpeg ? ImageEncoding::srgb : authored;
 }
 
 ImageResult<DecodedImage> decode_jpeg(std::span<const std::uint8_t> bytes,
@@ -934,7 +958,7 @@ ImageResult<DecodedImage> decode_jpeg(std::span<const std::uint8_t> bytes,
                                       .height = decoded.height,
                                       .rgb = std::move(decoded.rgb),
                                       .source_channels = decoded.channels,
-                                      .jpeg = true},
+                                      .file_format = ImageFileFormat::jpeg},
                 .diagnostic = {}};
     case jpeg::Error::invalid:
         return {.value = {},
@@ -951,7 +975,17 @@ namespace {
 
 template <std::size_t N>
 void append_texel(ImagePyramid &pyramid, const std::array<float, N> &pixel, const Transfer &color) {
-    if (pyramid.storage == ImageStorage::linear_half) {
+    for (float value : pixel) {
+        if (!std::isfinite(value) || (pyramid.storage == ImageStorage::linear_half &&
+                                      (encode_half(value) & 0x7c00u) == 0x7c00u))
+            throw std::runtime_error("Image filtering overflowed its finite storage range");
+    }
+    if (pyramid.storage == ImageStorage::linear_float) {
+        for (float value : pixel)
+            pyramid.texels.push_back(std::bit_cast<std::uint32_t>(value));
+        if constexpr (N == 3)
+            pyramid.texels.push_back(0);
+    } else if (pyramid.storage == ImageStorage::linear_half) {
         pyramid.texels.push_back(encode_half(pixel[0]) | (encode_half(pixel[1]) << 16));
         auto last = encode_half(pixel[2]);
         if constexpr (N == 4)
@@ -998,6 +1032,8 @@ std::array<float, 256> gamma_transfer(float gamma) {
 }
 
 bool nonopaque_alpha(const SourcePixels &source) {
+    if (!source.image.floating_alpha.empty())
+        return std::ranges::any_of(source.image.floating_alpha, [](float v) { return v != 1; });
     if (source.image.alpha.empty())
         return false;
     const auto count = pixel_count(source.image.width, source.image.height);
@@ -1020,17 +1056,31 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
     if (!dimensions_fit(image.width, image.height, limits)) {
         return budget_error<ImagePyramid>("Image exceeds the dimension limit");
     }
-    if (image.bit_depth != 8 && image.bit_depth != 16) {
-        return {.value = {}, .diagnostic = "Invalid decoded image bit depth"};
-    }
-    const bool is_half = image.bit_depth == 16;
+    const bool floating = image.sample_format == ImageSampleFormat::half ||
+                          image.sample_format == ImageSampleFormat::float32;
+    const bool is_half = image.sample_format == ImageSampleFormat::unorm16 ||
+                         image.sample_format == ImageSampleFormat::half;
+    if (!floating && image.sample_format != ImageSampleFormat::unorm8 && !is_half)
+        return {.value = {}, .diagnostic = "Invalid decoded image sample format"};
+    const auto storage = image.sample_format == ImageSampleFormat::float32
+                             ? ImageStorage::linear_float
+                         : is_half ? ImageStorage::linear_half
+                                   : ImageStorage::encoded8;
     const auto pixels = pixel_count(image.width, image.height);
-    const auto sample_bytes = image.bit_depth / 8;
-    const auto alpha_bytes = image.source_channels == 4 ? pixels * sample_bytes : 0;
-    if (pixels == 0 || image.rgb.size() != pixels * 3 * sample_bytes ||
-        image.alpha.size() != alpha_bytes ||
-        (image.source_channels != 1 && image.source_channels != 3 && image.source_channels != 4)) {
+    const auto sample_bytes = is_half ? 2u : 1u;
+    const auto alpha_samples = image.source_channels == 4 ? pixels : 0;
+    if (pixels == 0 || image.rgb.size() != (floating ? 0 : pixels * 3 * sample_bytes) ||
+        image.alpha.size() != (floating ? 0 : alpha_samples * sample_bytes) ||
+        image.floating_rgb.size() != (floating ? pixels * 3 : 0) ||
+        image.floating_alpha.size() != (floating ? alpha_samples : 0) ||
+        (image.source_channels != 1 && image.source_channels != 3 && image.source_channels != 4))
         return {.value = {}, .diagnostic = "Image dimensions do not match the decoded channels"};
+    for (const auto &samples : {std::span(image.floating_rgb), std::span(image.floating_alpha)}) {
+        for (float value : samples) {
+            if (!std::isfinite(value) || (image.sample_format == ImageSampleFormat::half &&
+                                          decode_half(encode_half(value)) != value))
+                return {.value = {}, .diagnostic = "Invalid finite decoded image sample"};
+        }
     }
     const auto width = native ? image.width : std::bit_ceil(image.width);
     const auto height = native ? image.height : std::bit_ceil(image.height);
@@ -1048,8 +1098,8 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
         level_width = std::max(1u, level_width / 2);
         level_height = std::max(1u, level_height / 2);
     }
-    const bool custom = !is_half && encoding == ImageEncoding::gamma;
-    const auto total_words = is_half ? 2 * total_pixels : total_pixels;
+    const bool custom = !floating && !is_half && encoding == ImageEncoding::gamma;
+    const auto total_words = image_storage_words(storage) * total_pixels;
     const std::size_t retained = total_words * sizeof(std::uint32_t) +
                                  level_count * sizeof(ImageMipLevel) +
                                  (custom ? sizeof(std::array<float, 256>) : 0);
@@ -1081,7 +1131,7 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
                          .wrap = wrap,
                          .levels = {},
                          .texels = {},
-                         .storage = is_half ? ImageStorage::linear_half : ImageStorage::encoded8,
+                         .storage = storage,
                          .source_channels = alpha ? 4u : (image.source_channels == 1 ? 1u : 3u),
                          .native_base = native};
     try {
@@ -1093,7 +1143,7 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
         if (native) {
             pyramid.levels.push_back(level);
             for (std::size_t i = 0; i < pixels; ++i) {
-                if (is_half) {
+                if (is_half || floating) {
                     append_texel(pyramid, source.pixel<3>(i), color);
                 } else {
                     // Native PBRT consumers read source codes without a mip write round trip.
@@ -1106,6 +1156,8 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
         } else {
             generate_mips<Rgb>(pyramid, source, level, level_count);
         }
+    } catch (const std::runtime_error &error) {
+        return {.value = {}, .diagnostic = error.what()};
     } catch (const std::bad_alloc &) {
         return budget_error<ImagePyramid>(
             "Image mip generation could not allocate required memory");
@@ -1135,6 +1187,7 @@ namespace {
 bool valid_sampling_image(const ImagePyramid &image) {
     return valid_profile(image.encoding, image.wrap) && !image.levels.empty() &&
            (image.storage == ImageStorage::linear_half ||
+            image.storage == ImageStorage::linear_float ||
             (image.storage == ImageStorage::encoded8 &&
              (image.encoding != ImageEncoding::gamma || image.custom_transfer))) &&
            (image.source_channels == 1 || image.source_channels == 3 || image.source_channels == 4);
@@ -1200,19 +1253,28 @@ std::optional<Rgb> image_lookup(const ImagePyramid &image, float s, float t, flo
     return blend_mips(*rgb, *upper, lod - static_cast<float>(selected));
 }
 
+std::optional<Rgb> finite_lookup(std::optional<Rgb> value) {
+    if (!value ||
+        !std::ranges::all_of(*value, [](float channel) { return std::isfinite(channel); }))
+        return std::nullopt;
+    return value;
+}
+
 } // namespace
 
 std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t, float dsdx,
                                     float dtdx, float dsdy, float dtdy, ImageFilter filter,
                                     float max_anisotropy) {
-    return image_lookup(image, s, t, dsdx, dtdx, dsdy, dtdy, filter, max_anisotropy, false);
+    return finite_lookup(
+        image_lookup(image, s, t, dsdx, dtdx, dsdy, dtdy, filter, max_anisotropy, false));
 }
 
 std::optional<float> image_linear_scalar(const ImagePyramid &image, float s, float t, float dsdx,
                                          float dtdx, float dsdy, float dtdy, ImageFilter filter,
                                          float max_anisotropy) {
     auto result = image_lookup(image, s, t, dsdx, dtdx, dsdy, dtdy, filter, max_anisotropy, true);
-    return result ? std::optional<float>((*result)[0]) : std::nullopt;
+    return result && std::isfinite((*result)[0]) ? std::optional<float>((*result)[0])
+                                                 : std::nullopt;
 }
 
 std::optional<Rgb> image_base_linear_rgb(const ImagePyramid &image, float s, float t) {
@@ -1220,7 +1282,7 @@ std::optional<Rgb> image_base_linear_rgb(const ImagePyramid &image, float s, flo
         !std::isfinite(s) || !std::isfinite(t))
         return std::nullopt;
     const auto mip = mip_sampler(image, 0);
-    return mip ? std::optional<Rgb>(bilerp_bounded(*mip, s, t)) : std::nullopt;
+    return finite_lookup(mip ? std::optional<Rgb>(bilerp_bounded(*mip, s, t)) : std::nullopt);
 }
 
 std::optional<Rgb> image_base_texel_linear_rgb(const ImagePyramid &image, std::uint32_t x,
@@ -1230,7 +1292,7 @@ std::optional<Rgb> image_base_texel_linear_rgb(const ImagePyramid &image, std::u
     const auto mip = mip_sampler(image, 0);
     if (!mip || x >= static_cast<unsigned>(mip->width) || y >= static_cast<unsigned>(mip->height))
         return std::nullopt;
-    return mip->read(pixel_count(static_cast<unsigned>(mip->width), y) + x);
+    return finite_lookup(mip->read(pixel_count(static_cast<unsigned>(mip->width), y) + x));
 }
 
 } // namespace rypath

@@ -71,7 +71,8 @@ DecodedImage varying_pixels() {
 }
 
 DecodedImage gray16(std::initializer_list<std::uint16_t> samples) {
-    DecodedImage image{static_cast<std::uint32_t>(samples.size()), 1, {}, 16};
+    DecodedImage image{
+        static_cast<std::uint32_t>(samples.size()), 1, {}, ImageSampleFormat::unorm16};
     for (const auto value : samples) {
         for (unsigned channel = 0; channel < 3; ++channel) {
             image.rgb.push_back(static_cast<std::uint8_t>(value >> 8));
@@ -846,7 +847,7 @@ void validation() {
     const auto valid_half = *invalid_half.image_textures.front().image;
     for (const auto &words :
          {std::vector<std::uint32_t>{0}, std::vector<std::uint32_t>{0x7c00, 0},
-          std::vector<std::uint32_t>{0x7e000000, 0}, std::vector<std::uint32_t>{0, 0xbc00},
+          std::vector<std::uint32_t>{0x7e000000, 0}, std::vector<std::uint32_t>{0, 0xfc00},
           std::vector<std::uint32_t>{0, 0x10000}}) {
         auto malformed = std::make_shared<ImagePyramid>(valid_half);
         malformed->texels = words;
@@ -932,7 +933,7 @@ int main(int argc, char **argv) {
         auto pixels = varying_pixels();
         batch_partition(pixels);
         const auto encoded8 = std::exchange(pixels.rgb, {});
-        pixels.bit_depth = 16;
+        pixels.sample_format = ImageSampleFormat::unorm16;
         for (const auto value : encoded8) {
             pixels.rgb.insert(pixels.rgb.end(), {value, value}); // Expand byte v to v * 257.
         }

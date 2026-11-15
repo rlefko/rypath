@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "../src/hdr_probe_wire.h"
 #include "../src/texture_probe_wire.h"
 #include "image_texture.h"
 #include "texture_footprint.h"
@@ -7,6 +8,32 @@
 using namespace metal;
 namespace wire = rypath::render_wire;
 namespace probe = rypath::texture_probe;
+
+kernel void rypath_hdr_lookup_probe(const device wire::ImageTexture *textures [[buffer(0)]],
+                                    const device wire::TextureLevel *levels [[buffer(1)]],
+                                    const device uint *texels [[buffer(2)]],
+                                    const device float *transfer [[buffer(3)]],
+                                    constant wire::TextureParameters &parameters [[buffer(4)]],
+                                    const device rypath::hdr_probe::Query *queries [[buffer(5)]],
+                                    device rypath::hdr_probe::Result *results [[buffer(6)]],
+                                    constant uint &count [[buffer(7)]],
+                                    uint id [[thread_position_in_grid]]) {
+    if (id >= count)
+        return;
+    const auto q = queries[id];
+    const device auto &texture = textures[q.texture];
+    const auto rgb = q.native ? rypath_image::lookup_base(texture, levels, texels, transfer,
+                                                          parameters, float2(q.u, q.v))
+                              : rypath_image::lookup(texture, levels, texels, transfer, parameters,
+                                                     float2(q.u, q.v), float2(q.dsdx, q.dtdx),
+                                                     float2(q.dsdy, q.dtdy));
+    const float scalar =
+        q.native ? 0
+                 : rypath_image::lookup_scalar(texture, levels, texels, transfer, parameters,
+                                               float2(q.u, q.v), float2(q.dsdx, q.dtdx),
+                                               float2(q.dsdy, q.dtdy));
+    results[id] = {rgb.x, rgb.y, rgb.z, scalar};
+}
 
 static probe::Vector pack_probe(float3 value, float w = 0) {
     return {value.x, value.y, value.z, w};

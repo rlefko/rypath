@@ -388,9 +388,9 @@ Shape "plymesh" "string filename" "mesh.ply"
             report(skipped));
 
     write(asset, triangle_ply());
-    write(directory / "map.exr", "unchecked");
+    write(directory / "map.qoi", "unchecked");
     const auto incomplete = check(write(directory / "incomplete.pbrt", R"(WorldBegin
-Texture "t" "spectrum" "imagemap" "string filename" "map.exr"
+Texture "t" "spectrum" "imagemap" "string filename" "map.qoi"
 Shape "plymesh" "string filename" "mesh.ply"
 )"));
     require(incomplete.exit_code() == 2 && !incomplete.document.dependencies_complete &&

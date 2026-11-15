@@ -337,14 +337,91 @@ AreaLightSource "diffuse" "string filename" "assets/emission.png" "float scale" 
 Shape "trianglemesh" "point3 P" [1.2 -.6 1 2.2 -.6 1 2.2 .6 1 1.2 .6 1]
   "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1] "texture alpha" "visible"
 )";
-    auto renderer = build(load(path, body, 2));
-    const auto whole = samples(*renderer, 257);
-    auto partitioned = samples(*renderer, 129, 0, 1);
-    const auto tail = samples(*renderer, 128, 129, 1);
-    partitioned.insert(partitioned.end(), tail.begin(), tail.end());
-    equivalent(whole, partitioned,
-               "Combined texture consumers changed across batch/group partitions");
-    require(total(whole) > 0, "Combined image lights must contribute radiance");
+    auto scene = load(path, body, 2);
+    const auto check_partitions = [&] {
+        auto renderer = build(scene);
+        const auto whole = samples(*renderer, 257);
+        auto partitioned = samples(*renderer, 129, 0, 1);
+        const auto tail = samples(*renderer, 128, 129, 1);
+        partitioned.insert(partitioned.end(), tail.begin(), tail.end());
+        equivalent(whole, partitioned,
+                   "Combined texture consumers changed across batch/group partitions");
+        require(total(whole) > 0, "Combined image lights must contribute radiance");
+    };
+    check_partitions();
+    const auto replace = [&](std::uint32_t index, std::array<float, 3> rgb) {
+        DecodedImage source{.width = 1,
+                            .height = 1,
+                            .rgb = {},
+                            .sample_format = ImageSampleFormat::float32,
+                            .file_format = ImageFileFormat::exr,
+                            .floating_rgb = {rgb.begin(), rgb.end()}};
+        const auto &previous = *scene.image_textures[index].image;
+        auto image = previous.native_base
+                         ? build_image_base(source, ImageEncoding::linear, previous.wrap)
+                         : build_image_pyramid(source, ImageEncoding::linear, previous.wrap);
+        require(image.value.has_value(), image.diagnostic);
+        scene.image_textures[index].image = std::make_shared<ImagePyramid>(std::move(*image.value));
+    };
+    replace(scene.environment_image, {100000.125f, 80000.25f, 70000.5f});
+    scene.environment_image_scale *= 1e-5f;
+    for (auto &emitter : scene.area_emissions) {
+        if (emitter.image_texture != UINT32_MAX) {
+            replace(emitter.image_texture, {70000.5f, 80000.25f, 100000.125f});
+            emitter.image_scale *= 1e-5f;
+        }
+    }
+    for (const auto &material : scene.materials) {
+        if (material.normal_map != UINT32_MAX) {
+            replace(material.normal_map, {.2f, .5f, 1.f});
+        }
+    }
+    check_partitions();
+
+    // A finite HDR source can decode and upload but define an invalid normal.
+    // The failed dispatch must not commit even a prefix of its sample batch.
+    for (const auto &material : scene.materials) {
+        if (material.normal_map != UINT32_MAX) {
+            replace(material.normal_map, {.5f, .5f, .5f});
+        }
+    }
+    const auto failed = render_progressive(
+        scene, {.width = 1, .height = 1, .samples = 64, .batch_size = 64, .seed = seed});
+    require(failed.status == GeometryStatus::failure && failed.film.pixels.size() == 1 &&
+                failed.film.pixels.front().count == 0,
+            "Invalid FLOAT normal map committed a partial or substituted sample batch");
+}
+
+void hdr_scalar_failure(const fs::path &path) {
+    const auto body = std::string(R"(Texture "height" "float" "imagemap"
+  "string filename" "assets/white.png" "string filter" "bilinear"
+  "float uscale" 0 "float vscale" 0 "float udelta" .25 "float vdelta" .5
+  "bool invert" true
+)") + lit_scene(R"("texture displacement" "height"
+)");
+    for (const float amplitude : {1.2e38f, 1e38f}) {
+        auto scene = load(path, body, 1);
+        require(scene.image_textures.size() == 1, "Expected one scalar image");
+        DecodedImage source{
+            .width = 2,
+            .height = 1,
+            .rgb = {},
+            .sample_format = ImageSampleFormat::float32,
+            .file_format = ImageFileFormat::exr,
+            .floating_rgb = {amplitude, amplitude, amplitude, -amplitude, -amplitude, -amplitude}};
+        auto pyramid = build_image_pyramid(source, ImageEncoding::linear, ImageWrap::clamp);
+        if (!pyramid.value)
+            throw std::runtime_error(pyramid.diagnostic);
+        scene.image_textures.front().image =
+            std::make_shared<ImagePyramid>(std::move(*pyramid.value));
+        // Cover overflow both in RGB mean conversion and after authored scale.
+        scene.image_textures.front().scale = amplitude > 1e38f ? 0 : 4;
+        const auto failed = render_progressive(
+            scene, {.width = 1, .height = 1, .samples = 8, .batch_size = 8, .seed = seed});
+        require(failed.status == GeometryStatus::failure && failed.film.pixels.size() == 1 &&
+                    failed.film.pixels.front().count == 0,
+                "Scalar inversion hid HDR overflow or committed a partial sample batch");
+    }
 }
 
 } // namespace
@@ -384,6 +461,7 @@ int main(int argc, char **argv) {
         shadows_and_emitters(path, clear);
         detail_controls(path, clear);
         combined_consumers(path);
+        hdr_scalar_failure(path);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Core texture render: " << error.what() << '\n';

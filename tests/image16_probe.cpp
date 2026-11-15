@@ -35,7 +35,9 @@ int main(int argc, char **argv) try {
     const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>{input}, {}};
     const auto decoded = rypath::decode_png(bytes);
     const bool half = mode.empty();
-    if (!decoded.value || decoded.value->bit_depth != (half ? 16u : 8u)) {
+    if (!decoded.value ||
+        decoded.value->sample_format !=
+            (half ? rypath::ImageSampleFormat::unorm16 : rypath::ImageSampleFormat::unorm8)) {
         std::fprintf(stderr,
                      half ? "%s: expected a 16-bit PNG (%s)\n"
                           : "%s: expected a PNG decoding to RGB8 (%s)\n",

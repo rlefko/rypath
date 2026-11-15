@@ -29,19 +29,32 @@ int unavailable(const UnavailableRender &render) {
 }
 
 int render_png(const std::filesystem::path &output) {
+    if (std::filesystem::is_directory(output)) {
+        std::cerr << "rypath: could not publish EXR image: Is a directory\n";
+        return 1;
+    }
     std::ofstream png{output, std::ios::binary};
-    png << "\x89PNG\r\n\x1a\n";
+    const bool exr = output.extension() == ".exr";
+    if (exr)
+        png << "\x76\x2f\x31\x01";
+    else
+        png << "\x89PNG\r\n\x1a\n";
     png.close();
     if (!png) {
         return 3;
     }
     std::cout << "Device: simulated\n"
                  "Committed samples per pixel: 2/3\nCommitted samples per pixel: 3/3\n"
-                 "Total samples: 144\nWrote PNG: simulated.png\n";
+                 "Total samples: 144\nWrote "
+              << (exr ? "EXR" : "PNG") << ": simulated\n";
     return 0;
 }
 
 int demo(std::string_view scenario, const std::filesystem::path &output) {
+    if (output.extension() == ".exr")
+        std::cout << "Output: EXR; linear sRGB; FLOAT\n";
+    if (scenario == "demo-exr-written")
+        return unavailable({.stdout_text = "Wrote EXR: invalid\nRender status: no_device\n"});
     if (scenario == "demo-marker") {
         return spoof_marker();
     }
@@ -143,7 +156,14 @@ int pbrt(std::string_view scenario, const PbrtPaths &paths) {
         return 2;
     }
     const bool sobol = filename == "sobol.pbrt";
-    if (!sobol && filename != "valid.pbrt") {
+    if (paths.output.extension() == ".exr") {
+        std::cout << "EXR; linear sRGB; " << (filename == "valid.pbrt" ? "FLOAT" : "HALF")
+                  << "; Film.savefp16 honored\n";
+        if (scenario == "pbrt-exr-written")
+            return unavailable({.stdout_text = "Wrote EXR: invalid\nRender status: no_device\n"});
+    }
+    if (!sobol && filename != "valid.pbrt" && filename != "half.pbrt" &&
+        filename != "half-default.pbrt") {
         return 3;
     }
     std::cout << "Render profile: pbrt-spectral-v1\n"
