@@ -5,7 +5,8 @@
 [Extended PBRT surfaces (PR #31)](https://github.com/rlefko/rypath/pull/31) is
 merged at `d8fe018`.
 
-The homogeneous spectral media PR adds explicit `volpath` with absorption,
+[Homogeneous spectral media (PR #32)](https://github.com/rlefko/rypath/pull/32)
+adds explicit `volpath` with absorption,
 scattering, absorption-coupled emission, Henyey–Greenstein phase functions,
 scoped camera/instance interfaces, invisible boundaries and all 47 pinned PBRT
 measured presets. Ordered shadow traversal includes medium transmittance;
@@ -29,8 +30,10 @@ comparisons and eight matched PBRT image fixtures pass. The matched images cover
 recomputed. Coefficient tables match all 282 source RGB values exactly;
 reconstructed spectra pass the existing RGB and blackbody tolerances.
 
-Metal API validation passes all 30 suites without skips. Shader-instrumented
-results are being collected before publication. Four owned showcase scenes illustrate absorption, phase anisotropy, emission/nested
+Metal API validation passes all 30 suites without skips. All 11 affected
+shader-instrumented suites pass with an explicit 600-second diagnostic budget;
+normal PR deadlines and numerical gates are unchanged. Changed-unit Clang-Tidy,
+native Clang analysis and repository hooks pass. Four owned showcase scenes illustrate absorption, phase anisotropy, emission/nested
 media and measured presets, with separate raw EXR and display PNG output.
 
 Earlier evidence and numerical caveats remain in the
