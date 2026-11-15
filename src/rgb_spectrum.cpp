@@ -126,6 +126,23 @@ float evaluate_srgb(const RgbSpectrum &spectrum, float wavelength) {
            0.5f * std::copysign(1.0f / std::sqrt(1.0f + reciprocal * reciprocal), polynomial);
 }
 
+std::optional<float> evaluate_unbounded_srgb(const std::array<float, 3> &rgb, float wavelength) {
+    for (const float value : rgb) {
+        if (!std::isfinite(value) || value < 0)
+            return std::nullopt;
+    }
+    const float scale = 2 * std::max({rgb[0], rgb[1], rgb[2]});
+    if (!std::isfinite(scale))
+        return std::nullopt;
+    if (scale == 0)
+        return 0;
+    const auto normalized = reconstruct_srgb({rgb[0] / scale, rgb[1] / scale, rgb[2] / scale});
+    if (!normalized)
+        return std::nullopt;
+    const float value = scale * evaluate_srgb(*normalized, wavelength);
+    return std::isfinite(value) ? std::optional<float>(value) : std::nullopt;
+}
+
 const std::array<float, 471> &pbrt_d65() { return *pbrt_named_spectrum("stdillum-D65"); }
 
 } // namespace rypath

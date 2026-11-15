@@ -120,6 +120,28 @@ struct Material {
     Word u_roughness_root = 0xffffffffu;
     Word v_roughness_root = 0xffffffffu;
     Word remap_roughness = 1;
+    Word auxiliary = 0xffffffffu; // Word offset in the material-data buffer.
+};
+struct MaterialAuxiliary {
+    Word eta_root, k_root, conductor_reflectance_root;
+    float transmittance;
+    Word transmittance_root;
+    float transmission_scale;
+    Word transmission_scale_root;
+    Word interface_eta_begin, interface_eta_count, interface_eta_extend, interface_eta_root;
+    float interface_u_roughness, interface_v_roughness;
+    Word interface_u_roughness_root, interface_v_roughness_root;
+    float thickness;
+    Word thickness_root;
+    float albedo;
+    Word albedo_root;
+    float g;
+    Word g_root;
+    Word max_depth, samples;
+    Word first_material, second_material;
+    float mix_amount;
+    Word mix_amount_root;
+    Word table_offset;
 };
 struct SpectralKnot {
     float wavelength;
@@ -214,6 +236,7 @@ struct Parameters {
     Word sampler_kind;
     Word randomization;
     Word sobol_scale_exponent;
+    Word material_data_words;
 };
 struct Sample {
     Word status;
@@ -243,7 +266,7 @@ static_assert(sizeof(TextureParameters) == 124 && alignof(TextureParameters) == 
                   __builtin_offsetof(TextureParameters, world_from_camera) == 24 &&
                   __builtin_offsetof(TextureParameters, minimum_dx) == 96,
               "texture parameters layout");
-static_assert(sizeof(Material) == 120 && alignof(Material) == 4 &&
+static_assert(sizeof(Material) == 124 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, knot_begin) == 32 &&
                   __builtin_offsetof(Material, knot_count) == 36 &&
                   __builtin_offsetof(Material, kind) == 40 &&
@@ -255,6 +278,8 @@ static_assert(sizeof(Material) == 120 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, u_roughness) == 100 &&
                   __builtin_offsetof(Material, remap_roughness) == 116,
               "render material layout");
+static_assert(sizeof(MaterialAuxiliary) == 112 && alignof(MaterialAuxiliary) == 4,
+              "material auxiliary layout");
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
@@ -278,7 +303,7 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 184 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 188 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
                   __builtin_offsetof(Parameters, lane_count) == 120 &&

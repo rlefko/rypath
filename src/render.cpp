@@ -2,6 +2,7 @@
 
 #include "render.hpp"
 #include "bilinear.hpp"
+#include "bsdf_table.hpp"
 #include "triangle_attributes.hpp"
 
 #include "cie_xyz_data.hpp"
@@ -255,11 +256,76 @@ bool valid_rgb_coefficients(const std::array<float, 3> &coefficients) {
     return peak + rounding <= largest;
 }
 
+std::string validate_pbrt_material(const SpectralMaterial &material);
+
+std::string validate_surface_material(const SpectralMaterial &m) {
+    const auto &a = m.surface;
+    if (m.scattering == ScatteringKind::measured || m.scattering == ScatteringKind::fourier) {
+        if (!m.table ||
+            m.table->kind != (m.scattering == ScatteringKind::measured ? BsdfTableKind::measured
+                                                                       : BsdfTableKind::fourier))
+            return "Tabulated material requires a checked table of the matching format";
+        return {};
+    }
+    if (m.scattering == ScatteringKind::mix) {
+        if (!std::isfinite(a.mix_amount) || m.bump_root != UINT32_MAX || m.normal_map != UINT32_MAX)
+            return "Mix material requires a finite amount and child-owned surface detail";
+        return {};
+    }
+    if (m.scattering == ScatteringKind::thin_dielectric) {
+        auto thin = m;
+        thin.scattering = ScatteringKind::dielectric;
+        if (thin.u_roughness != 0 || thin.v_roughness != 0 || thin.u_roughness_root != UINT32_MAX ||
+            thin.v_roughness_root != UINT32_MAX)
+            return "Thin dielectric has no roughness parameters";
+        return validate_dielectric_material(thin);
+    }
+    const bool layered = m.scattering == ScatteringKind::coated_diffuse ||
+                         m.scattering == ScatteringKind::coated_conductor;
+    if (layered) {
+        if (!std::isfinite(a.thickness) || !std::isfinite(a.albedo) || !std::isfinite(a.g) ||
+            a.max_depth > 1024 || a.samples == 0 || a.samples > 64)
+            return "Invalid or excessive layered material parameters";
+        SpectralMaterial interface;
+        interface.scattering = ScatteringKind::dielectric;
+        interface.eta = m.scattering == ScatteringKind::coated_diffuse ? m.eta : a.interface_eta;
+        interface.surface.eta_root =
+            m.scattering == ScatteringKind::coated_diffuse ? a.eta_root : a.interface_eta_root;
+        interface.u_roughness = m.scattering == ScatteringKind::coated_diffuse
+                                    ? m.u_roughness
+                                    : a.interface_u_roughness;
+        interface.v_roughness = m.scattering == ScatteringKind::coated_diffuse
+                                    ? m.v_roughness
+                                    : a.interface_v_roughness;
+        if (auto error = validate_dielectric_material(interface); !error.empty())
+            return error;
+        if (m.scattering == ScatteringKind::coated_conductor) {
+            auto substrate = m;
+            substrate.scattering = ScatteringKind::conductor;
+            return validate_conductor_material(substrate);
+        }
+    } else if (m.scattering == ScatteringKind::diffuse_transmission) {
+        if (!std::isfinite(a.transmittance) || !std::isfinite(a.transmission_scale))
+            return "Diffuse transmission requires finite reflectance, transmittance and scale";
+    } else {
+        return "Unknown surface scattering kind";
+    }
+    auto base = m;
+    base.scattering = ScatteringKind::diffuse;
+    base.eta = {};
+    base.k = {};
+    base.u_roughness = base.v_roughness = 0;
+    base.u_roughness_root = base.v_roughness_root = UINT32_MAX;
+    return validate_pbrt_material(base);
+}
+
 std::string validate_pbrt_material(const SpectralMaterial &material) {
     if (material.scattering == ScatteringKind::conductor)
         return validate_conductor_material(material);
     if (material.scattering == ScatteringKind::dielectric)
         return validate_dielectric_material(material);
+    if (material.scattering >= ScatteringKind::thin_dielectric)
+        return validate_surface_material(material);
     if (material.scattering != ScatteringKind::diffuse || !material.eta.knots.empty() ||
         !material.k.knots.empty() || material.u_roughness != 0 || material.v_roughness != 0 ||
         material.u_roughness_root != UINT32_MAX || material.v_roughness_root != UINT32_MAX)
@@ -330,9 +396,21 @@ std::string validate_image_textures(const RenderScene &scene) {
                scene.image_textures[index].image->source_channels == 3;
     };
     for (const auto &material : scene.materials) {
-        for (const auto root : {material.u_roughness_root, material.v_roughness_root}) {
+        for (const auto root :
+             {material.u_roughness_root, material.v_roughness_root,
+              material.surface.interface_u_roughness_root,
+              material.surface.interface_v_roughness_root, material.surface.thickness_root,
+              material.surface.g_root, material.surface.transmission_scale_root,
+              material.surface.mix_amount_root}) {
             if (root != UINT32_MAX && !root_valid(root, graph::scalar))
                 return "Conductor roughness requires a scalar texture graph";
+        }
+        for (const auto root :
+             {material.surface.eta_root, material.surface.k_root,
+              material.surface.interface_eta_root, material.surface.conductor_reflectance_root,
+              material.surface.albedo_root, material.surface.transmittance_root}) {
+            if (root != UINT32_MAX && !root_valid(root, graph::spectrum))
+                return "Surface parameter requires a valid spectrum texture graph";
         }
         if (material.kind == SpectralMaterialKind::image &&
             material.image_texture >= scene.image_textures.size()) {
@@ -398,7 +476,7 @@ std::string validate_image_textures(const RenderScene &scene) {
             return "Invisible emitter binding must match a zero constant alpha";
         }
         const auto &material = scene.materials[scene.instance_materials[i]];
-        if ((material.scattering == ScatteringKind::dielectric ||
+        if ((material.scattering >= ScatteringKind::dielectric ||
              material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX) &&
             scene.instance_surface_transforms.empty()) {
             return "Dielectric or mapped surfaces require definition and placement transforms";
@@ -442,10 +520,8 @@ std::string validate_image_textures(const RenderScene &scene) {
                 return "Surface detail transform must be finite and affine";
         }
     }
-    const bool microfacets = std::ranges::any_of(scene.materials, [](const auto &m) {
-        return m.scattering == ScatteringKind::conductor ||
-               m.scattering == ScatteringKind::dielectric;
-    });
+    const bool microfacets = std::ranges::any_of(
+        scene.materials, [](const auto &m) { return m.scattering != ScatteringKind::diffuse; });
     if (scene.image_textures.empty() && scene.texture_graph.nodes.empty() && !microfacets) {
         return scene.instance_texture_frames.empty() ? "" : "Texture frames require image textures";
     }
@@ -675,7 +751,15 @@ std::string validate_conductor_material(const SpectralMaterial &material) {
         return "Expected conductor scattering";
     // Check the complete piecewise-linear domain, including file support jumps.
     std::vector<double> boundaries{360, 830};
+    const bool dynamic_eta = material.surface.eta_root != UINT32_MAX;
+    const bool dynamic_k = material.surface.k_root != UINT32_MAX;
+    const bool shortcut = material.surface.conductor_reflectance_root != UINT32_MAX;
+    if (shortcut &&
+        (dynamic_eta || dynamic_k || !material.eta.knots.empty() || !material.k.knots.empty()))
+        return "Conductor reflectance cannot be combined with eta or k";
     for (const auto *curve : {&material.eta, &material.k}) {
+        if (shortcut || (curve == &material.eta ? dynamic_eta : dynamic_k))
+            continue;
         if (curve->knots.size() < 2)
             return "Optical spectra require at least two knots";
         float previous = -std::numeric_limits<float>::infinity();
@@ -694,7 +778,7 @@ std::string validate_conductor_material(const SpectralMaterial &material) {
         return optical_spectrum(material.eta, wavelength) == 0 &&
                optical_spectrum(material.k, wavelength) == 0;
     };
-    for (std::size_t i = 0; i < boundaries.size(); ++i) {
+    for (std::size_t i = 0; !shortcut && !dynamic_eta && !dynamic_k && i < boundaries.size(); ++i) {
         if (zero_pair(boundaries[i]) ||
             (i && zero_pair(std::midpoint(boundaries[i - 1], boundaries[i]))))
             return "Conductor eta and k cannot both be zero in the transport wavelength range";
@@ -715,7 +799,7 @@ std::string validate_conductor_material(const SpectralMaterial &material) {
 std::string validate_dielectric_material(const SpectralMaterial &material) {
     if (material.scattering != ScatteringKind::dielectric)
         return "Expected dielectric scattering";
-    if (material.eta.knots.size() < 2)
+    if (material.surface.eta_root == UINT32_MAX && material.eta.knots.size() < 2)
         return "Dielectric eta requires at least two knots";
     float previous = -std::numeric_limits<float>::infinity();
     for (const auto [wavelength, value] : material.eta.knots) {
@@ -1001,8 +1085,7 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
     const bool emission =
         !scene.instance_emissions.empty() && scene.instance_emissions[index] != no_area_emission &&
         scene.area_emissions[scene.instance_emissions[index]].image_texture != UINT32_MAX;
-    return material.scattering == ScatteringKind::conductor ||
-           material.scattering == ScatteringKind::dielectric ||
+    return material.scattering != ScatteringKind::diffuse ||
            material.kind == SpectralMaterialKind::image ||
            material.kind == SpectralMaterialKind::texture_graph ||
            material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||
@@ -1108,6 +1191,42 @@ std::string validate_render_scene(const RenderScene &scene) {
             }
         }
     }
+    std::vector<unsigned char> material_state(scene.materials.size());
+    std::vector<unsigned> material_depth(scene.materials.size());
+    std::vector<std::pair<std::uint32_t, bool>> material_stack;
+    for (std::size_t root = 0; root < scene.materials.size(); ++root) {
+        if (material_state[root] == 2)
+            continue;
+        material_stack.emplace_back(static_cast<std::uint32_t>(root), false);
+        while (!material_stack.empty()) {
+            auto [index, exiting] = material_stack.back();
+            material_stack.pop_back();
+            if (index >= scene.materials.size())
+                return "Mix material references an invalid child";
+            if (exiting) {
+                const auto &m = scene.materials[index];
+                if (m.scattering == ScatteringKind::mix) {
+                    material_depth[index] = 1 + std::max(material_depth[m.surface.first_material],
+                                                         material_depth[m.surface.second_material]);
+                    if (material_depth[index] > 64)
+                        return "Mix material nesting exceeds 64 levels";
+                }
+                material_state[index] = 2;
+                continue;
+            }
+            if (material_state[index] == 2)
+                continue;
+            if (material_state[index] == 1)
+                return "Cyclic mix materials are unsupported";
+            material_state[index] = 1;
+            material_stack.emplace_back(index, true);
+            const auto &m = scene.materials[index];
+            if (m.scattering == ScatteringKind::mix) {
+                material_stack.emplace_back(m.surface.second_material, false);
+                material_stack.emplace_back(m.surface.first_material, false);
+            }
+        }
+    }
     if (auto error = validate_image_textures(scene); !error.empty()) {
         return error;
     }
@@ -1122,7 +1241,17 @@ std::string validate_render_scene(const RenderScene &scene) {
                                  [](float value) { return std::isfinite(value) && value >= 0; })) {
             return "PBRT environment radiance must be finite and nonnegative";
         }
+        std::set<const BsdfTable *> validated_tables;
+        std::size_t table_words = 0;
         for (const auto &material : scene.materials) {
+            if (material.table && validated_tables.insert(material.table.get()).second) {
+                constexpr std::size_t word_budget = 128ULL * 1024 * 1024;
+                if (material.table->words.size() > word_budget - table_words)
+                    return "Material table storage exceeds the aggregate budget";
+                table_words += material.table->words.size();
+                if (auto error = validate_bsdf_table(*material.table); !error.empty())
+                    return error;
+            }
             if (auto error = validate_pbrt_material(material); !error.empty()) {
                 return error;
             }

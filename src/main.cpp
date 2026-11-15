@@ -119,6 +119,30 @@ int finish_render(const rypath::RenderResult &result, const rypath::RenderSettin
 
 using Metadata = std::vector<std::pair<std::string, std::string>>;
 
+std::string surface_model_description(const rypath::RenderScene &scene) {
+    std::set<std::string> models;
+    for (const auto &m : scene.materials) {
+        using K = rypath::ScatteringKind;
+        if (m.scattering == K::coated_diffuse || m.scattering == K::coated_conductor) {
+            models.insert(std::string(m.scattering == K::coated_diffuse ? "coateddiffuse"
+                                                                        : "coatedconductor") +
+                          ": PBRT finite internal-depth approximation; maxdepth=" +
+                          std::to_string(m.surface.max_depth) +
+                          "; nsamples=" + std::to_string(m.surface.samples));
+        } else if (m.scattering == K::fourier) {
+            models.insert(
+                "fourier: SCATFUN v1; achromatic or angular RGBUnbounded spectral reconstruction");
+        }
+    }
+    std::string result;
+    for (const auto &model : models) {
+        if (!result.empty())
+            result += " | ";
+        result += model;
+    }
+    return result;
+}
+
 Metadata render_metadata(const rypath::RenderSettings &settings, std::string scene,
                          std::string profile, const rypath::RenderScene &render_scene,
                          std::string overrides) {
@@ -128,17 +152,27 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
     const auto seed = settings.sampler.kind == rypath::SamplerKind::sobol
                           ? std::to_string(rypath::sobol_signed_seed(settings.seed))
                           : std::to_string(settings.seed);
-    return {{"rypath.version", RYPATH_VERSION},
-            {"rypath.profile", std::move(profile)},
-            {"rypath.scene", std::move(scene)},
-            {"rypath.sampler", rypath::sampler_description(
-                                   settings.sampler, rypath::scene_has_dielectrics(render_scene))},
-            {"rypath.seed", seed},
-            {"rypath.samplesPerPixel", std::to_string(settings.samples)},
-            {"rypath.batchSize", std::to_string(settings.batch_size)},
-            {"rypath.exposure", exposure.str()},
-            {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
-            {"rypath.overrides", std::move(overrides)}};
+    Metadata metadata{{"rypath.version", RYPATH_VERSION},
+                      {"rypath.profile", std::move(profile)},
+                      {"rypath.scene", std::move(scene)},
+                      {"rypath.sampler",
+                       rypath::sampler_description(settings.sampler,
+                                                   rypath::scene_has_dielectrics(render_scene))},
+                      {"rypath.seed", seed},
+                      {"rypath.samplesPerPixel", std::to_string(settings.samples)},
+                      {"rypath.batchSize", std::to_string(settings.batch_size)},
+                      {"rypath.exposure", exposure.str()},
+                      {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
+                      {"rypath.overrides", std::move(overrides)}};
+    if (const auto description = surface_model_description(render_scene); !description.empty())
+        metadata.emplace_back("rypath.materialModel", description);
+    if (std::any_of(
+            render_scene.materials.begin(), render_scene.materials.end(),
+            [](const auto &m) { return m.scattering >= rypath::ScatteringKind::thin_dielectric; }))
+        metadata.emplace_back(
+            "rypath.materialSampling",
+            "material-local-philox-v1; deterministic keyed local walks; stable-ID mix");
+    return metadata;
 }
 
 const char *output_description(const std::filesystem::path &path, rypath::ExrPrecision precision) {
@@ -289,6 +323,8 @@ int render_pbrt(int argc, char *argv[]) {
         << output_description(output, precision)
         << (output.extension() == ".png" ? "; Film.savefp16 overridden" : "; Film.savefp16 honored")
         << ")\n";
+    if (const auto description = surface_model_description(scene); !description.empty())
+        std::cout << "Surface model: " << description << '\n';
     for (const auto &item : translated.provenance) {
         std::cout << item << '\n';
     }

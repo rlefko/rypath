@@ -26,9 +26,9 @@ void require(bool condition, std::string_view message) {
     }
 }
 
-static std::optional<float> image(const void *, wire::Word id, bool spectral, wire::Mapped2D c,
-                                  float) {
-    if (id != 0 || spectral)
+static std::optional<float> image(const void *, wire::Word id, bool spectral, bool unbounded,
+                                  wire::Mapped2D c, float) {
+    if (id != 0 || spectral || unbounded)
         return std::nullopt;
     return c.s + c.t + c.dsdx + 2.0f * c.dtdx + 3.0f * c.dsdy + 4.0f * c.dtdy;
 }

@@ -59,8 +59,9 @@ struct ObservedImage {
     bool spectrum = false;
 };
 
-std::optional<float> track_image(const void *user, wire::Word image, bool spectrum,
+std::optional<float> track_image(const void *user, wire::Word image, bool spectrum, bool unbounded,
                                  wire::Mapped2D c, float wavelength) {
+    (void)unbounded;
     auto &observer = *const_cast<ObservedImage *>(static_cast<const ObservedImage *>(user));
     observer.coordinates = c;
     observer.spectrum = spectrum;

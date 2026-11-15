@@ -421,7 +421,7 @@ Texture "t" "float" "imagemap")",
         Invalid{R"(Texture "t" "spectrum" "constant" "texture value" "other")",
                 "invalid-parameter"},
         Invalid{R"(Texture "t" "spectrum" "constant" "float unexpected" .2)", "unused-parameter"},
-        Invalid{R"(Texture "t" "spectrum" "constant" "rgb value" [0 1.1 1])", "invalid-parameter"},
+        Invalid{R"(Texture "t" "spectrum" "constant" "rgb value" [0 -0.1 1])", "invalid-parameter"},
         Invalid{R"(Texture "t" "spectrum" "constant" "spectrum value" [680 .2 410 .2])",
                 "invalid-parameter"},
         Invalid{R"(Texture "t" "spectrum" "constant" "blackbody value" [-10])",
@@ -730,8 +730,14 @@ AttributeEnd
 MakeNamedMaterial "long_material_name_aaaaaaaaaaaaaaaa" "string type" "diffuse"
 MakeNamedMaterial "long_material_name_bbbbbbbbbbbbbbbb" "string type" "diffuse"
 )"));
-    require(mix.exit_code() == 2,
-            "deferred mix references survive inherited parameter destruction");
+    require(mix.exit_code() == 0 && mix.scene && mix.scene->inline_materials.size() == 1,
+            "checked mix references survive inherited parameter destruction");
+    const auto *mixed_names =
+        mix.scene->inline_materials.front()->effective_parameter("materials").parameter;
+    require(mixed_names && mixed_names->values.size() == 2 &&
+                mixed_names->values.front().text == "long_material_name_aaaaaaaaaaaaaaaa" &&
+                mixed_names->values.back().text == "long_material_name_bbbbbbbbbbbbbbbb",
+            "checked mix keeps owned inherited material names after closed scope");
 
     constexpr std::array malformed_hex{"0x", "0x1pg", "0xgarbage", "-0x.1p+"};
     for (const auto *literal : malformed_hex) {
@@ -1206,13 +1212,26 @@ AreaLightSource "diffuse" "spectrum L" "invalid.spd"
             "An ambiguous Include suffix inventories authored spectra without decoding");
 
     const auto unsupported = check(write_file(directory, "deferred-material.pbrt", R"(WorldBegin
-Material "thindielectric" "spectrum eta" "invalid.spd"
+Material "hair" "spectrum eta" "invalid.spd"
 )"));
     require(unsupported.exit_code() == 2 && unsupported.document.dependencies.size() == 1 &&
                 !unsupported.document.dependencies.front().visited &&
                 unsupported.document.diagnostics.size() == 1,
             "Files on deferred material types remain unchecked dependencies");
     find_diagnostic(unsupported.document, "unsupported-feature");
+    const auto thin = check(write_file(directory, "thin-file.pbrt", R"(WorldBegin
+Material "thindielectric" "spectrum eta" "curve.spd"
+)"));
+    require(thin.exit_code() == 0 && thin.scene && thin.document.dependencies.size() == 1 &&
+                thin.document.dependencies.front().visited &&
+                thin.scene->inline_materials.front()->checked_spectrum("eta"),
+            "Thin dielectric file spectra are checked dependencies with retained snapshots");
+    const auto invalid_thin = check(write_file(directory, "invalid-thin-file.pbrt", R"(WorldBegin
+Material "thindielectric" "spectrum eta" "invalid.spd"
+)"));
+    require(invalid_thin.exit_code() == 1 && !invalid_thin.scene,
+            "Thin dielectric rejects invalid optical spectrum files during preflight");
+    find_diagnostic(invalid_thin.document, "invalid-spectrum-file");
 
     const auto unused = check(write_file(directory, "unused.pbrt", R"(WorldBegin
 MakeNamedMaterial "unused" "string type" "diffuse" "spectrum reflectance" "invalid.spd"

@@ -13,8 +13,8 @@ set(shape [=[
 Shape "trianglemesh" "point3 P" [0 0 1 1 0 1 1 1 1]
 ]=])
 set(cases
-    "rgb eta|[1 1 1]|2"
-    "blackbody eta|3000|2"
+    "rgb eta|[-1 1 1]|1"
+    "blackbody eta|-3000|1"
     "float eta|-1|1"
     "float eta|1e100|1"
     "float eta|1e-100|1"

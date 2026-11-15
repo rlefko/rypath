@@ -4,11 +4,11 @@ file(READ "${fixture}" source)
 set(output "${test_directory}/result.exr")
 set(sentinel "existing linear output")
 set(cases
-    "rgb eta|[1 1 1]|2"
+    "rgb eta|[-1 1 1]|1"
     "spectrum eta|[360 -1 830 -1]|1"
     "spectrum eta|[360 0 830 0] \"spectrum k\" [360 0 830 0]|1"
     "spectrum eta|\"missing-optical.spd\"|1"
-    "rgb reflectance|[0.5 0.5 0.5]|2"
+    "rgb reflectance|[-0.5 0.5 0.5]|1"
     "texture roughness|\"undefined-roughness\"|1")
 set(index 0)
 foreach(case IN LISTS cases)

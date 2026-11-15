@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Original owned matched PBRT v4 comparison. Linear CIE sensor, no denoising.
+Camera "perspective" "float fov" [28]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [5]
+WorldBegin
+LightSource "infinite" "float scale" [1]
+AttributeBegin
+Material "diffuse" "rgb reflectance" [0 0 0]
+AreaLightSource "diffuse" "float scale" [3] "bool twosided" [true]
+Shape "trianglemesh" "point3 P" [-1.5 -1 4 2.5 -1 4 2.5 1 4 -1.5 1 4]
+ "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+Material "diffusetransmission" "rgb reflectance" [.15 .25 .35] "rgb transmittance" [.55 .45 .35] "float scale" [.8]
+Shape "trianglemesh" "point3 P" [-2 -2 2 2 -2 2 2 2 2 -2 2 2]
+ "point2 uv" [0 0 1 0 1 1 0 1] "integer indices" [0 2 1 0 3 2]

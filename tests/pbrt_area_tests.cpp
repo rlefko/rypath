@@ -17,8 +17,8 @@ namespace {
 using namespace rypath;
 constexpr std::uint32_t paths = 32768;
 constexpr std::uint64_t seed = 0x7589bda9aa812393ULL;
-constexpr SpectralMaterial black{.kind = SpectralMaterialKind::constant, .constant = 0};
-constexpr SpectralMaterial white{.kind = SpectralMaterialKind::constant, .constant = 1};
+const SpectralMaterial black{.kind = SpectralMaterialKind::constant, .constant = 0};
+const SpectralMaterial white{.kind = SpectralMaterialKind::constant, .constant = 1};
 
 void require(bool condition, std::string_view message) {
     if (!condition) {

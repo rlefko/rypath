@@ -157,6 +157,10 @@ class Translator {
     std::uint32_t append_material(SpectralMaterial material);
     std::uint32_t spectrum_leaf(const SpectralMaterial &material);
     std::uint32_t spectrum_leaf(std::span<const SpectralKnot> knots);
+    bool optical_role_ = false;
+    std::set<string_view> optical_spectra_;
+    std::set<string_view> optical_only_spectra_;
+    std::map<string_view, std::uint32_t> optical_texture_roots_;
     std::uint32_t raw_spectrum_operand(const Descriptor &descriptor, const Parameter &selected);
     std::uint32_t operand(const Descriptor &descriptor, string_view name, bool spectrum,
                           float fallback);
@@ -170,6 +174,10 @@ class Translator {
                                                 float fallback);
     std::optional<OpticalSpectrum> optical(const Descriptor &descriptor, string_view name);
     std::uint32_t material(const Descriptor &descriptor);
+    std::map<string_view, const Descriptor *> material_definitions_;
+    std::map<string_view, std::uint32_t> translated_materials_;
+    std::set<string_view> active_materials_;
+    std::uint32_t named_material(string_view name);
     void geometry();
 };
 
@@ -908,6 +916,73 @@ std::uint32_t Translator::spectrum_leaf(std::span<const SpectralKnot> knots) {
 
 std::uint32_t Translator::raw_spectrum_operand(const Descriptor &descriptor,
                                                const Parameter &selected) {
+    if (selected.type == "rgb" || selected.type == "color") {
+        const auto material_type = descriptor.authored.name == "MakeNamedMaterial"
+                                       ? string(descriptor, "type").value_or("")
+                                   : descriptor.authored.name == "Material"
+                                       ? string_view(descriptor.authored.arguments.front().text)
+                                       : string_view{};
+        const bool standalone = selected.name == "v00" || selected.name == "v01" ||
+                                selected.name == "v10" || selected.name == "v11" ||
+                                (descriptor.authored.name == "Texture" &&
+                                 descriptor.authored.arguments.back().text == "constant") ||
+                                selected.name == "interface.eta" ||
+                                (selected.name == "eta" && material_type != "conductor");
+        const auto color_space = standalone
+                                     ? descriptor.effective_parameter(selected.name).color_space
+                                     : string_view(descriptor.color_space);
+        if (!charge_spectral_values(selected) ||
+            !supports_rgb_space(color_space, selected.location))
+            return graph::no_texture;
+        std::array<float, 3> rgb{};
+        for (std::size_t i = 0; i < 3; ++i) {
+            if (selected.values[i].number < 0 || !float_representable(selected.values[i].number)) {
+                invalid(selected.location,
+                        "Optical RGB must be finite, nonnegative and representable");
+                return graph::no_texture;
+            }
+            rgb[i] = static_cast<float>(selected.values[i].number);
+        }
+        const float maximum = std::ranges::max(rgb);
+        const float scale = 2 * maximum;
+        if (!std::isfinite(scale)) {
+            invalid(selected.location, "Optical RGB normalization overflows binary32");
+            return graph::no_texture;
+        }
+        if (scale > 0)
+            for (auto &component : rgb)
+                component /= scale;
+        const auto reconstructed = reconstruct_srgb(rgb);
+        if (!reconstructed) {
+            invalid(selected.location, "Optical RGB reconstruction failed");
+            return graph::no_texture;
+        }
+        SpectralMaterial material;
+        material.kind = reconstructed->is_constant ? SpectralMaterialKind::constant
+                                                   : SpectralMaterialKind::rgb_sigmoid;
+        material.constant = reconstructed->constant;
+        material.coefficients = reconstructed->coefficients;
+        const auto root = spectrum_leaf(material);
+        graph::Node factor;
+        factor.values[0] = scale;
+        const auto factor_root = append_node(factor);
+        graph::Node product;
+        product.type = graph::spectrum;
+        product.kind = graph::scale;
+        product.children[0] = root;
+        product.children[1] = factor_root;
+        return append_node(product);
+    }
+    if (selected.type == "blackbody") {
+        const auto temperature = blackbody_temperature(selected);
+        if (!temperature)
+            return graph::no_texture;
+        graph::Node node;
+        node.type = graph::spectrum;
+        node.kind = graph::blackbody;
+        node.values[0] = *temperature;
+        return append_node(node);
+    }
     if (selected.values.front().kind != ValueKind::string) {
         const auto knots = spectrum(descriptor, selected.name, SpectrumRole::graph_operand);
         return knots ? spectrum_leaf(*knots) : graph::no_texture;
@@ -951,8 +1026,9 @@ void Translator::constant_textures() {
         }
         const auto &name = descriptor.authored.arguments.front().text;
         const auto *selected = parameter(descriptor, "value");
-        if (selected && selected->type == "spectrum" && nested_spectra_.contains(name) &&
-            !direct_spectra_.contains(name)) {
+        if (optical_only_spectra_.contains(name) ||
+            (selected && selected->type == "spectrum" && nested_spectra_.contains(name) &&
+             !direct_spectra_.contains(name))) {
             continue; // Only the graph consumes this unclipped curve.
         }
         auto value = reflectance(descriptor, ReflectanceSource::texture, "value", 1);
@@ -995,7 +1071,7 @@ std::uint32_t Translator::operand(const Descriptor &descriptor, string_view name
         return found == texture_roots_[spectrum].end() ? graph::no_texture : found->second;
     }
     if (spectrum) {
-        if (selected && selected->type == "spectrum") {
+        if (selected && (selected->type == "spectrum" || optical_role_)) {
             return raw_spectrum_operand(descriptor, *selected);
         }
         // Bilerp reads standalone spectra. Texture-valued operands use the
@@ -1035,9 +1111,9 @@ std::uint32_t Translator::compile_texture(const Descriptor &descriptor) {
         if (!spectrum) {
             return operand(descriptor, "value", false, 1);
         }
-        if (nested_spectra_.contains(name)) {
+        if (optical_role_ || nested_spectra_.contains(name)) {
             if (const auto *selected = parameter(descriptor, "value");
-                selected && selected->type == "spectrum") {
+                selected && (selected->type == "spectrum" || optical_role_)) {
                 return raw_spectrum_operand(descriptor, *selected);
             }
         }
@@ -1057,6 +1133,7 @@ std::uint32_t Translator::compile_texture(const Descriptor &descriptor) {
     };
     if (type == "imagemap") {
         node.kind = graph::image;
+        node.payload[1] = optical_role_ && spectrum ? 1 : 0;
         node.payload[0] = spectrum ? image_indices_.at(name) : float_image_indices_.at(name);
     } else if (type == "scale") {
         node.kind = graph::scale;
@@ -1131,6 +1208,7 @@ std::uint32_t Translator::compile_texture(const Descriptor &descriptor) {
         node.payload[0] = static_cast<std::uint32_t>(integer(descriptor, "octaves", 8));
         node.values[0] = static_cast<float>(number(descriptor, "roughness", 0.5));
         if (type == "marble") {
+            node.payload[1] = optical_role_ ? 1 : 0;
             node.values[1] = static_cast<float>(number(descriptor, "scale", 1));
             node.values[2] = static_cast<float>(number(descriptor, "variation", 0.2));
         }
@@ -1139,12 +1217,33 @@ std::uint32_t Translator::compile_texture(const Descriptor &descriptor) {
 }
 
 void Translator::compile_textures() {
+    std::set<string_view> bounded_surface_spectra;
     const auto mark_direct_spectrum = [&](const Descriptor &material) {
+        const auto type = material.authored.name == "MakeNamedMaterial"
+                              ? string(material, "type").value_or("")
+                              : string_view(material.authored.arguments.front().text);
         if (const auto *value = parameter(material, "reflectance");
             value && value->type == "texture") {
-            direct_spectra_.insert(value->values.front().text);
+            if (type == "diffusetransmission") {
+                nested_spectra_.insert(value->values.front().text);
+                bounded_surface_spectra.insert(value->values.front().text);
+            } else
+                direct_spectra_.insert(value->values.front().text);
         }
     };
+    const auto mark_surface_spectra = [&](const Descriptor &material) {
+        for (const auto field : {"eta", "k", "conductor.eta", "conductor.k"})
+            if (const auto *value = parameter(material, field); value && value->type == "texture")
+                optical_spectra_.insert(value->values.front().text);
+        for (const auto field : {"albedo", "transmittance"})
+            if (const auto *value = parameter(material, field); value && value->type == "texture") {
+                nested_spectra_.insert(value->values.front().text);
+                bounded_surface_spectra.insert(value->values.front().text);
+            }
+    };
+    std::ranges::for_each(input_.named_materials, mark_surface_spectra);
+    for (const auto &descriptor : input_.inline_materials)
+        mark_surface_spectra(*descriptor);
     std::ranges::for_each(input_.named_materials, mark_direct_spectrum);
     for (const auto &descriptor : input_.inline_materials) {
         mark_direct_spectrum(*descriptor);
@@ -1160,6 +1259,31 @@ void Translator::compile_textures() {
             }
         }
     }
+    const auto expand_references = [&](std::set<string_view> &roots) {
+        for (auto it = input_.texture_order.rbegin(); it != input_.texture_order.rend(); ++it) {
+            const auto &descriptor = input_.texture_descriptor(*it);
+            if (descriptor.authored.arguments[1].text != "spectrum" ||
+                !roots.contains(descriptor.authored.arguments.front().text))
+                continue;
+            for (const auto field : {"tex", "tex1", "tex2", "inside", "outside"})
+                if (const auto *value = parameter(descriptor, field);
+                    value && value->type == "texture")
+                    roots.insert(value->values.front().text);
+        }
+    };
+    expand_references(optical_spectra_);
+    std::set<string_view> bounded = direct_spectra_;
+    bounded.insert(bounded_surface_spectra.begin(), bounded_surface_spectra.end());
+    for (const auto ref : input_.texture_order) {
+        const auto &descriptor = input_.texture_descriptor(ref);
+        if (descriptor.authored.arguments[1].text == "spectrum" &&
+            !optical_spectra_.contains(descriptor.authored.arguments.front().text))
+            bounded.insert(descriptor.authored.arguments.front().text);
+    }
+    expand_references(bounded);
+    for (const auto name : optical_spectra_)
+        if (!bounded.contains(name))
+            optical_only_spectra_.insert(name);
     constant_textures();
     image_textures();
     for (const auto ref : input_.texture_order) {
@@ -1168,11 +1292,29 @@ void Translator::compile_textures() {
         }
         const auto &descriptor = input_.texture_descriptor(ref);
         const auto &arguments = descriptor.authored.arguments;
+        if (arguments[1].text == "spectrum" &&
+            optical_only_spectra_.contains(arguments.front().text))
+            continue;
         const auto root = compile_texture(descriptor);
         if (root != graph::no_texture) {
             texture_roots_[arguments[1].text == "spectrum"].emplace(arguments.front().text, root);
         }
     }
+    optical_role_ = true;
+    auto albedo_roots = std::move(texture_roots_[true]);
+    texture_roots_[true].clear();
+    for (const auto ref : input_.texture_order) {
+        const auto &descriptor = input_.texture_descriptor(ref);
+        if (descriptor.authored.arguments[1].text != "spectrum" ||
+            !optical_spectra_.contains(descriptor.authored.arguments.front().text))
+            continue;
+        const auto root = compile_texture(descriptor);
+        if (root != graph::no_texture)
+            texture_roots_[true].emplace(descriptor.authored.arguments.front().text, root);
+    }
+    optical_texture_roots_ = std::move(texture_roots_[true]);
+    texture_roots_[true] = std::move(albedo_roots);
+    optical_role_ = false;
 }
 
 void Translator::displace_geometry(std::size_t remaining) {
@@ -1202,10 +1344,10 @@ void Translator::displace_geometry(std::size_t remaining) {
         const float scaled_length = *edge_length * input_.displacement_edge_scale;
         const TextureImageSampler images{
             &scene_.image_textures,
-            [](const void *user, graph::Word image, bool spectrum, graph::Mapped2D coordinates,
-               float) -> std::optional<float> {
+            [](const void *user, graph::Word image, bool spectrum, bool unbounded,
+               graph::Mapped2D coordinates, float) -> std::optional<float> {
                 const auto &textures = *static_cast<const std::vector<ImageTexture> *>(user);
-                if (spectrum || image >= textures.size()) {
+                if (spectrum || unbounded || image >= textures.size()) {
                     return std::nullopt;
                 }
                 const auto &texture = textures[image];
@@ -1284,8 +1426,7 @@ void Translator::rebase_texture_mappings() {
 
 void Translator::texture_frames() {
     const bool framed_material = std::ranges::any_of(scene_.materials, [](const auto &material) {
-        return material.scattering == ScatteringKind::conductor ||
-               material.scattering == ScatteringKind::dielectric;
+        return material.scattering != ScatteringKind::diffuse;
     });
     if (!scene_.raster_camera ||
         (scene_.image_textures.empty() && scene_.texture_graph.nodes.empty() && !framed_material)) {
@@ -1359,7 +1500,8 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
     const auto type = descriptor.authored.name == "MakeNamedMaterial"
                           ? string(descriptor, "type").value_or("")
                           : string_view(descriptor.authored.arguments.front().text);
-    const bool dielectric = type == "dielectric";
+    const bool dielectric = type == "dielectric" || type == "thindielectric" ||
+                            type == "coateddiffuse" || name == "interface.eta";
     const std::string label = dielectric ? "Dielectric" : "Conductor";
     if (dielectric && (!selected || selected->type == "float")) {
         const double eta = selected ? selected->values.front().number : 1.5;
@@ -1376,7 +1518,8 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
         return result;
     }
     if (!selected) {
-        const auto knots = pbrt_named_spectrum_knots(name == "eta" ? "metal-Cu-eta" : "metal-Cu-k");
+        const auto knots = pbrt_named_spectrum_knots(
+            (name == "eta" || name == "conductor.eta") ? "metal-Cu-eta" : "metal-Cu-k");
         if (!charge_file_spectrum(descriptor.authored.location, knots.size(), 0)) {
             return std::nullopt;
         }
@@ -1430,92 +1573,190 @@ std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor,
     return result;
 }
 
+std::uint32_t Translator::named_material(string_view name) {
+    if (const auto found = translated_materials_.find(name); found != translated_materials_.end())
+        return found->second;
+    const auto found = material_definitions_.find(name);
+    if (found == material_definitions_.end()) {
+        invalid(entry_, "Undefined mix material reference");
+        return 0;
+    }
+    if (active_materials_.size() >= limits_.scopes || !active_materials_.insert(name).second) {
+        invalid(found->second->authored.location, "Cyclic or excessive mix material reference");
+        return 0;
+    }
+    const auto index = material(*found->second);
+    active_materials_.erase(name);
+    translated_materials_.emplace(name, index);
+    return index;
+}
+
 std::uint32_t Translator::material(const Descriptor &descriptor) {
-    const auto *selected = parameter(descriptor, "reflectance");
-    const auto authored_bump = float_binding(descriptor, "displacement");
-    const auto normal = native_image(descriptor);
-    const auto bump = normal == graph::no_texture ? authored_bump : graph::no_texture;
     const auto type = descriptor.authored.name == "MakeNamedMaterial"
                           ? string(descriptor, "type").value_or("")
                           : string_view(descriptor.authored.arguments.front().text);
-    if (type == "conductor" || type == "dielectric") {
-        const bool dielectric = type == "dielectric";
-        if (selected) {
-            unsupported(selected->location,
-                        "Conductor reflectance shortcut is unsupported; provide eta and k spectra");
+    SpectralMaterial value;
+    const auto authored_bump = float_binding(descriptor, "displacement");
+    value.normal_map = native_image(descriptor);
+    value.bump_root = value.normal_map == graph::no_texture ? authored_bump : graph::no_texture;
+    if (type == "diffuse" && value.bump_root == graph::no_texture &&
+        value.normal_map == graph::no_texture) {
+        const auto *selected = parameter(descriptor, "reflectance");
+        if (!selected)
             return 0;
+        if (selected->type == "texture") {
+            const auto found = spectrum_textures_.find(selected->values.front().text);
+            if (found != spectrum_textures_.end())
+                return found->second;
         }
-        auto eta = optical(descriptor, "eta");
-        auto k = dielectric ? std::optional<OpticalSpectrum>(OpticalSpectrum{})
-                            : optical(descriptor, "k");
-        if (!eta || !k) {
-            return 0;
-        }
-        SpectralMaterial value;
-        value.scattering = dielectric ? ScatteringKind::dielectric : ScatteringKind::conductor;
-        value.eta = std::move(*eta);
-        value.k = std::move(*k);
-        value.bump_root = bump;
-        value.normal_map = normal;
-        value.remap_roughness = boolean(descriptor, "remaproughness", true);
-        const auto roughness = [&](string_view axis) -> std::pair<float, std::uint32_t> {
-            const auto field = parameter(descriptor, axis) ? axis : string_view("roughness");
-            const auto *rough = parameter(descriptor, field);
-            if (!rough)
-                return {0, UINT32_MAX};
-            if (rough->type == "texture")
-                return {0, float_binding(descriptor, field)};
-            if (rough->values.front().number < 0 ||
-                !float_representable(rough->values.front().number)) {
-                invalid(rough->location,
-                        "Material roughness must be nonnegative and representable in binary32");
-                return {0, UINT32_MAX};
+    }
+    const auto spectral_value = [&](string_view name, float fallback) {
+        const auto *selected = parameter(descriptor, name);
+        if (selected && selected->type == "texture") {
+            if (type != "diffusetransmission") {
+                const auto found = spectrum_textures_.find(selected->values.front().text);
+                if (found != spectrum_textures_.end())
+                    return scene_.materials[found->second];
             }
-            return {static_cast<float>(rough->values.front().number), UINT32_MAX};
-        };
-        const auto u = roughness("uroughness"), v = roughness("vroughness");
-        value.u_roughness = u.first;
-        value.u_roughness_root = u.second;
-        value.v_roughness = v.first;
-        value.v_roughness_root = v.second;
-        if (const auto message = dielectric ? validate_dielectric_material(value)
-                                            : validate_conductor_material(value);
-            !message.empty()) {
-            invalid(descriptor.authored.location, message);
-            return 0;
+            SpectralMaterial result;
+            result.kind = SpectralMaterialKind::texture_graph;
+            result.texture_root = operand(descriptor, name, true, fallback);
+            return result;
         }
-        return append_material(std::move(value));
-    }
-    std::uint32_t existing = 0;
-    std::optional<SpectralMaterial> value;
-    if (selected && selected->type == "texture") {
-        const auto &name = selected->values.front().text;
-        if (const auto found = spectrum_textures_.find(name); found != spectrum_textures_.end()) {
-            existing = found->second;
-        } else if (const auto root = texture_roots_[true].find(name);
-                   root != texture_roots_[true].end()) {
-            value.emplace();
-            value->kind = SpectralMaterialKind::texture_graph;
-            value->texture_root = root->second;
-        } else {
-            invalid(selected->location, "Diffuse reflectance requires a checked spectrum texture");
-            return 0;
+        if (type == "diffusetransmission" && selected && selected->type == "spectrum") {
+            SpectralMaterial result;
+            result.kind = SpectralMaterialKind::texture_graph;
+            result.texture_root = raw_spectrum_operand(descriptor, *selected);
+            return result;
         }
-    } else if (selected) {
-        value = reflectance(descriptor, ReflectanceSource::material, "reflectance", 0.5f);
-        if (!value) {
-            return 0;
+        return reflectance(descriptor, ReflectanceSource::material, name, fallback)
+            .value_or(SpectralMaterial{});
+    };
+    // Output references mirror the constant/root pair in material storage.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    const auto bind_float = [&](string_view name, float fallback, float &constant,
+                                std::uint32_t &root) {
+        const auto *selected = parameter(descriptor, name);
+        constant = fallback;
+        if (!selected)
+            return;
+        if (selected->type == "texture")
+            root = float_binding(descriptor, name);
+        else if (const auto narrowed = narrow(descriptor, name, fallback))
+            constant = *narrowed;
+    };
+    // Axis outputs map directly to the source's u/v constant and texture fields.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    const auto roughness = [&](string_view prefix, float &u, float &v, std::uint32_t &ur,
+                               std::uint32_t &vr) {
+        const auto base = std::string(prefix) + "roughness";
+        const auto uf = std::string(prefix) + "uroughness";
+        const auto vf = std::string(prefix) + "vroughness";
+        const auto ufield = parameter(descriptor, uf) ? string_view(uf) : string_view(base);
+        const auto vfield = parameter(descriptor, vf) ? string_view(vf) : string_view(base);
+        for (const auto field : {ufield, vfield})
+            if (const auto *rough = parameter(descriptor, field);
+                rough && rough->type != "texture" && rough->values.front().number < 0)
+                invalid(rough->location, "Material roughness must be nonnegative");
+        bind_float(ufield, 0, u, ur);
+        bind_float(vfield, 0, v, vr);
+        if (u < 0 || v < 0)
+            invalid(descriptor.authored.location, "Material roughness must be nonnegative");
+    };
+    const auto bind_optical = [&](string_view name, OpticalSpectrum &constant,
+                                  std::uint32_t &root) {
+        const auto *selected = parameter(descriptor, name);
+        if (selected && selected->type != "spectrum") {
+            // The spectral texture graph keeps optical values unbounded; albedo
+            // clamping is performed only by the consuming BSDF.
+            if (selected->type == "texture") {
+                const auto found = optical_texture_roots_.find(selected->values.front().text);
+                if (found == optical_texture_roots_.end())
+                    invalid(selected->location,
+                            "Optical parameter requires a checked spectrum texture");
+                else
+                    root = found->second;
+            } else
+                root = raw_spectrum_operand(descriptor, *selected);
+        } else if (auto optics = optical(descriptor, name))
+            constant = std::move(*optics);
+    };
+    if (type == "diffuse" || type == "diffusetransmission" || type == "coateddiffuse") {
+        auto reflectance =
+            spectral_value("reflectance", type == "diffusetransmission" ? 0.25f : 0.5f);
+        reflectance.bump_root = value.bump_root;
+        reflectance.normal_map = value.normal_map;
+        value = std::move(reflectance);
+    }
+    if (type == "mix") {
+        value.scattering = ScatteringKind::mix;
+        if (const auto *materials = parameter(descriptor, "materials");
+            materials && materials->values.size() == 2) {
+            value.surface.first_material = named_material(materials->values[0].text);
+            value.surface.second_material = named_material(materials->values[1].text);
+        } else
+            invalid(descriptor.authored.location,
+                    "Mix material requires two checked material names");
+        bind_float("amount", 0.5f, value.surface.mix_amount, value.surface.mix_amount_root);
+    } else if (type == "measured" || type == "fourier") {
+        value.scattering = type == "measured" ? ScatteringKind::measured : ScatteringKind::fourier;
+        value.table = descriptor.bsdf_table;
+        if (!value.table)
+            invalid(descriptor.authored.location, "Material requires a checked BSDF table");
+    } else if (type == "diffusetransmission") {
+        value.scattering = ScatteringKind::diffuse_transmission;
+        value.surface.transmittance_root = operand(descriptor, "transmittance", true, 0.25f);
+        bind_float("scale", 1, value.surface.transmission_scale,
+                   value.surface.transmission_scale_root);
+    } else if (type == "dielectric" || type == "thindielectric" || type == "coateddiffuse") {
+        value.scattering = type == "dielectric"       ? ScatteringKind::dielectric
+                           : type == "thindielectric" ? ScatteringKind::thin_dielectric
+                                                      : ScatteringKind::coated_diffuse;
+        const auto *eta = parameter(descriptor, "eta");
+        if (eta && (eta->type == "rgb" || eta->type == "color" || eta->type == "blackbody"))
+            value.surface.eta_root = raw_spectrum_operand(descriptor, *eta);
+        else if (auto optics = optical(descriptor, "eta"))
+            value.eta = std::move(*optics);
+        if (type != "thindielectric")
+            roughness("", value.u_roughness, value.v_roughness, value.u_roughness_root,
+                      value.v_roughness_root);
+    } else if (type == "conductor" || type == "coatedconductor") {
+        value.scattering =
+            type == "conductor" ? ScatteringKind::conductor : ScatteringKind::coated_conductor;
+        const bool coated = type == "coatedconductor";
+        if (parameter(descriptor, "reflectance"))
+            value.surface.conductor_reflectance_root = operand(descriptor, "reflectance", true, 0);
+        else {
+            bind_optical(coated ? "conductor.eta" : "eta", value.eta, value.surface.eta_root);
+            bind_optical(coated ? "conductor.k" : "k", value.k, value.surface.k_root);
+        }
+        roughness(coated ? "conductor." : "", value.u_roughness, value.v_roughness,
+                  value.u_roughness_root, value.v_roughness_root);
+        if (coated) {
+            const auto *eta = parameter(descriptor, "interface.eta");
+            if (eta && (eta->type == "rgb" || eta->type == "color" || eta->type == "blackbody"))
+                value.surface.interface_eta_root = raw_spectrum_operand(descriptor, *eta);
+            else if (auto optics = optical(descriptor, "interface.eta"))
+                value.surface.interface_eta = std::move(*optics);
+            roughness("interface.", value.surface.interface_u_roughness,
+                      value.surface.interface_v_roughness, value.surface.interface_u_roughness_root,
+                      value.surface.interface_v_roughness_root);
         }
     }
-    if (!value && bump == graph::no_texture && normal == graph::no_texture) {
-        return existing;
+    value.remap_roughness = boolean(descriptor, "remaproughness", true);
+    if (type == "coateddiffuse" || type == "coatedconductor") {
+        bind_float("thickness", 0.01f, value.surface.thickness, value.surface.thickness_root);
+        bind_float("g", 0, value.surface.g, value.surface.g_root);
+        value.surface.albedo_root = operand(descriptor, "albedo", true, 0);
+        value.surface.max_depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 10));
+        value.surface.samples = static_cast<std::uint32_t>(integer(descriptor, "nsamples", 1));
+        if (value.surface.thickness < 0)
+            invalid(location(descriptor, "thickness"), "Layer thickness must be nonnegative");
+        issue(Severity::warning, "layered-truncation", descriptor.authored.location,
+              "Layered material uses finite maxdepth/nsamples and an approximate stochastic "
+              "layered model");
     }
-    if (!value) {
-        value = scene_.materials[existing];
-    }
-    value->bump_root = bump;
-    value->normal_map = normal;
-    return append_material(std::move(*value));
+    return append_material(std::move(value));
 }
 
 void Translator::geometry() {
@@ -1561,11 +1802,13 @@ void Translator::geometry() {
     compile_textures();
     std::map<string_view, std::uint32_t> named;
     std::map<const Descriptor *, std::uint32_t> inline_materials;
+    for (const auto &descriptor : input_.named_materials)
+        material_definitions_.emplace(descriptor.authored.arguments.front().text, &descriptor);
     for (const auto &descriptor : input_.named_materials) {
-        if (diagnostics_.diagnostics_truncated) {
+        if (diagnostics_.diagnostics_truncated)
             return;
-        }
-        named.emplace(descriptor.authored.arguments.front().text, material(descriptor));
+        const string_view name = descriptor.authored.arguments.front().text;
+        named.emplace(name, named_material(name));
     }
     for (const auto &descriptor : input_.inline_materials) {
         if (diagnostics_.diagnostics_truncated) {

@@ -192,8 +192,8 @@ NamedMaterial "glass"
 }
 void failures(const fs::path &path) {
     for (const auto body :
-         {R"(Material "dielectric" "rgb eta" [1 2 3])",
-          R"(Material "dielectric" "blackbody eta" 3000)",
+         {R"(Material "dielectric" "rgb eta" [-1 2 3])",
+          R"(Material "dielectric" "blackbody eta" -3000)",
           R"(Texture "e" "spectrum" "constant" Material "dielectric" "texture eta" "e")",
           R"(Material "dielectric" "float eta" -0.1)",
           R"(Material "dielectric" "float eta" -1e-100)",
@@ -223,14 +223,15 @@ void failures(const fs::path &path) {
                 std::string("Invalid dielectric unexpectedly translated: ") + body);
         require(output.diagnostics.front().location.line > 0, "Source-located diagnostic");
     }
-    for (const auto unsupported : {R"(Material "dielectric" "rgb eta" [1 2 3])",
-                                   R"(Material "dielectric" "blackbody eta" 3000)"}) {
-        const auto input = inspect(path, std::string(unsupported) + "\n" + std::string(triangle));
-        require(input.exit_code() == 0, report(input));
-        const auto output = translate(input, {path.string()});
-        require(!output.scene && !output.diagnostics.empty() &&
-                    output.diagnostics.front().severity == Severity::unsupported,
-                "RGB and blackbody eta are recognized unsupported features");
+    for (const auto supported : {R"(Material "dielectric" "rgb eta" [1 2 3])",
+                                 R"(Material "dielectric" "blackbody eta" 3000)"}) {
+        const auto translated = scene(path, std::string(supported) + "\n" + std::string(triangle));
+        const auto &m = material(translated);
+        const auto value =
+            evaluate_texture_graph(translated.texture_graph, m.surface.eta_root, {}, 550);
+        require(m.scattering == ScatteringKind::dielectric && value && std::isfinite(*value) &&
+                    *value > 0,
+                "Standalone RGB and blackbody eta retain continuous evaluable spectra");
     }
     write(path.parent_path() / "negative.spd", "360 -0.1\n830 2\n");
     const auto input =

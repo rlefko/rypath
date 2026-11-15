@@ -123,13 +123,32 @@ Material "conductor" "spectrum eta" "eta.spd" "spectrum k" "k.spd"
                                               texture_graph_wire::Context{}, 550);
     require(value && std::abs(*value - 0.4f) < 1e-6f, "Forward scalar graph evaluates roughness");
 }
+void extended_optics(const fs::path &path) {
+    for (const auto body : {R"(Material "conductor" "rgb eta" [1 2 3])",
+                            R"(Material "conductor" "blackbody eta" 3000)",
+                            R"(Texture "optics" "spectrum" "constant" "rgb value" [.3 .5 .7]
+                              Material "conductor" "texture eta" "optics")"}) {
+        const auto translated = scene(path, std::string(body) + "\n" + std::string(triangle));
+        const auto &m = material(translated);
+        const auto value =
+            evaluate_texture_graph(translated.texture_graph, m.surface.eta_root, {}, 550);
+        require(m.scattering == ScatteringKind::conductor && value && std::isfinite(*value) &&
+                    *value > 0,
+                "Conductor extended optics retain evaluable continuous spectra");
+    }
+    const auto shortcut =
+        scene(path, std::string(R"(Material "conductor" "rgb reflectance" [.3 .4 .5])") + "\n" +
+                        std::string(triangle));
+    require(material(shortcut).surface.conductor_reflectance_root != UINT32_MAX,
+            "Conductor reflectance shortcut keeps explicit spectral root");
+}
 void failures(const fs::path &path) {
     for (const auto body : {
-             R"(Material "conductor" "rgb eta" [1 2 3])",
-             R"(Material "conductor" "blackbody k" 3000)",
-             R"(Texture "optics" "spectrum" "constant"
+             R"(Material "conductor" "rgb eta" [-1 2 3])",
+             R"(Material "conductor" "blackbody k" -3000)",
+             R"(Texture "optics" "float" "constant"
                 Material "conductor" "texture eta" "optics")",
-             R"(Material "conductor" "rgb reflectance" [0.3 0.4 0.5])",
+             R"(Material "conductor" "rgb reflectance" [0.3 0.4 0.5] "spectrum k" [360 1 830 1])",
              R"(Material "conductor" "spectrum eta" [360 -1 830 1])",
              R"(Material "conductor" "spectrum eta" [360 0 830 0]
                 "spectrum k" [360 0 830 0])",
@@ -164,6 +183,7 @@ int main() {
         const auto path = directory / "scene.pbrt";
         defaults_and_axes(path);
         files_and_graphs(path);
+        extended_optics(path);
         failures(path);
         fs::remove_all(directory);
         std::cout << "Conductor scene checks passed\n";

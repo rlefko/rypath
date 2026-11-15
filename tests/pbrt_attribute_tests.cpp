@@ -21,8 +21,8 @@ using namespace attribute_reference;
 constexpr std::uint32_t paths = 32768;
 constexpr std::uint64_t seed = 0x7eab129ff367c4d2ULL;
 constexpr std::uint64_t affine_seed = 0x15adb51978ed3909ULL;
-constexpr SpectralMaterial black{.kind = SpectralMaterialKind::constant};
-constexpr SpectralMaterial diffuse{.kind = SpectralMaterialKind::constant, .constant = reflectance};
+const SpectralMaterial black{.kind = SpectralMaterialKind::constant};
+const SpectralMaterial diffuse{.kind = SpectralMaterialKind::constant, .constant = reflectance};
 
 void require(bool condition, std::string_view message) {
     if (!condition) {

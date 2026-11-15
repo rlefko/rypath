@@ -261,6 +261,12 @@ bool dielectric_dimensions() {
         pass &= check(block == (0x80000000u | bounce) && block > 2 * render_emergency_limit,
                       "Philox dielectric block is outside all legacy bounce blocks");
     }
+    for (Word bounce = 0; bounce < render_emergency_limit; ++bounce) {
+        const auto local = sampling_contract::material_local_block(bounce);
+        pass &= check(local > 2 * render_emergency_limit &&
+                          local != sampling_contract::dielectric_lobe_block(bounce),
+                      "Material local counters are disjoint from outer and dielectric streams");
+    }
     pass &= check(!used[1021] && !used[1022] && !used[1023], "Sobol tail keeps reserved words");
     pass &= check(sampler_description({}) == "philox4x32-10-v1 (sequence differs from PBRT)" &&
                       sampler_description({}, true) ==

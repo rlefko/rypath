@@ -58,8 +58,8 @@ std::shared_ptr<const ImagePyramid> read_png(const std::filesystem::path &path) 
     return std::make_shared<const ImagePyramid>(std::move(*pyramid.value));
 }
 
-std::optional<float> sampled_image(const void *data, Word index, bool spectral, wire::Mapped2D c,
-                                   float wavelength) {
+std::optional<float> sampled_image(const void *data, Word index, bool spectral, bool unbounded,
+                                   wire::Mapped2D c, float wavelength) {
     const auto &images = *static_cast<const std::vector<ImageTexture> *>(data);
     const auto &texture = images.at(index);
     const auto &image = *texture.image;
@@ -84,8 +84,12 @@ std::optional<float> sampled_image(const void *data, Word index, bool spectral, 
         }
     }
     for (float &component : *rgb) {
-        component = std::clamp(component, 0.0f, 1.0f);
+        if (!std::isfinite(component))
+            return std::nullopt;
+        component = unbounded ? std::max(0.0f, component) : std::clamp(component, 0.0f, 1.0f);
     }
+    if (unbounded)
+        return evaluate_unbounded_srgb(*rgb, wavelength);
     const auto reconstructed = reconstruct_srgb(*rgb);
     return reconstructed ? std::optional<float>(evaluate_srgb(*reconstructed, wavelength))
                          : std::nullopt;

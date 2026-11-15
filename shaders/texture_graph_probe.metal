@@ -10,13 +10,17 @@ namespace wire = texture_graph_wire;
 struct GraphProbeSampler {
     const device float *rgb_table;
 
-    bool operator()(uint image, bool spectrum, wire::Mapped2D c, float, thread float &value) const {
+    bool operator()(uint image, bool spectrum, bool unbounded, wire::Mapped2D c, float,
+                    thread float &value) const {
         value = c.s + c.t + c.dsdx + 2.0f * c.dtdx + 3.0f * c.dsdy + 4.0f * c.dtdy;
-        return !spectrum && image == 0;
+        return !spectrum && !unbounded && image == 0;
     }
 
-    bool operator()(float r, float g, float b, float wavelength, thread float &value) const {
-        value = rypath_image::spectrum(metal::float3(r, g, b), wavelength, rgb_table);
+    bool operator()(float r, float g, float b, float wavelength, bool unbounded,
+                    thread float &value) const {
+        value = unbounded ? rypath_image::unbounded_spectrum(metal::float3(r, g, b), wavelength,
+                                                             rgb_table)
+                          : rypath_image::spectrum(metal::float3(r, g, b), wavelength, rgb_table);
         return true;
     }
 };

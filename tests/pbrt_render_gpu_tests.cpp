@@ -692,7 +692,7 @@ void blackbody_reflectance_paths(const RenderScene &plane, const RenderSamplesRe
 
 void blackbody_materials(const std::filesystem::path &directory) {
     using Kind = SpectralMaterialKind;
-    constexpr SpectralMaterial white_material{.kind = Kind::constant, .constant = 1};
+    const SpectralMaterial white_material{.kind = Kind::constant, .constant = 1};
     const auto direct = load(directory / "blackbody-reflectance-diffuse.pbrt");
     const auto ply = load(directory / "blackbody-reflectance-ply.pbrt");
     const auto &direct_material = direct.materials.at(direct.instance_materials.front());
@@ -736,11 +736,11 @@ void blackbody_materials(const std::filesystem::path &directory) {
 
 void rgb_materials(const RenderScene &plane) {
     using Kind = SpectralMaterialKind;
-    constexpr SpectralMaterial white{.kind = Kind::constant, .constant = 1};
-    constexpr SpectralMaterial black{.kind = Kind::constant};
-    constexpr SpectralMaterial red{.kind = Kind::rgb_sigmoid, .coefficients = red_coefficients};
+    const SpectralMaterial white{.kind = Kind::constant, .constant = 1};
+    const SpectralMaterial black{.kind = Kind::constant};
+    const SpectralMaterial red{.kind = Kind::rgb_sigmoid, .coefficients = red_coefficients};
     constexpr float largest = std::numeric_limits<float>::max();
-    constexpr SpectralMaterial large{.kind = Kind::rgb_sigmoid, .coefficients = {0, 0, largest}};
+    const SpectralMaterial large{.kind = Kind::rgb_sigmoid, .coefficients = {0, 0, largest}};
     constexpr std::uint64_t seed = 0xc1348c175ee1275cULL;
     const auto whites = trace(*build(with_material(plane, white)), analytic_paths, seed);
     const auto blacks = trace(*build(with_material(plane, black)), analytic_paths, seed);
