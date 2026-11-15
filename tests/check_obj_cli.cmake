@@ -1,0 +1,33 @@
+if(NOT DEFINED executable OR NOT DEFINED fixture OR NOT DEFINED test_directory)
+    message(FATAL_ERROR "Missing OBJ CLI test arguments")
+endif()
+file(REMOVE_RECURSE "${test_directory}")
+file(MAKE_DIRECTORY "${test_directory}")
+execute_process(COMMAND "${executable}" --check-obj "${fixture}"
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status EQUAL 0 OR NOT output MATCHES "OBJ conversion: supported" OR NOT error STREQUAL "")
+    message(FATAL_ERROR "OBJ preflight failed: ${status}\n${output}\n${error}")
+endif()
+if(EXISTS "${test_directory}/bundle")
+    message(FATAL_ERROR "OBJ preflight published output")
+endif()
+execute_process(COMMAND "${executable}" --convert-obj "${fixture}" --output "${test_directory}/bundle"
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status EQUAL 0 OR NOT EXISTS "${test_directory}/bundle/model.pbrt"
+   OR NOT EXISTS "${test_directory}/bundle/conversion.json" OR NOT error STREQUAL "")
+    message(FATAL_ERROR "OBJ conversion failed: ${status}\n${output}\n${error}")
+endif()
+file(SHA256 "${test_directory}/bundle/conversion.json" original)
+execute_process(COMMAND "${executable}" --convert-obj "${fixture}" --output "${test_directory}/bundle"
+    RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+file(SHA256 "${test_directory}/bundle/conversion.json" after)
+if(NOT status EQUAL 1 OR NOT original STREQUAL after)
+    message(FATAL_ERROR "OBJ conversion replaced an existing bundle: ${status}\n${output}\n${error}")
+endif()
+file(WRITE "${test_directory}/unsupported.obj" "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\nl 1 2\n")
+execute_process(COMMAND "${executable}" --convert-obj "${test_directory}/unsupported.obj"
+    --output "${test_directory}/rejected" RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status EQUAL 2 OR EXISTS "${test_directory}/rejected")
+    message(FATAL_ERROR "OBJ unsupported geometry did not fail before publication: ${status}\n${output}\n${error}")
+endif()
+file(REMOVE_RECURSE "${test_directory}")

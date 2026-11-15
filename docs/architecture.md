@@ -4,8 +4,9 @@
 
 The current program is a C++20 command-line executable. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
-`--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`, and
-`--render-pbrt SCENE --output IMAGE.{png,exr}`. No arguments prints help, and invalid
+`--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`,
+`--render-pbrt SCENE --output IMAGE.{png,exr}`, `--check-obj MODEL.obj`, and
+`--convert-obj MODEL.obj --output DIRECTORY`. No arguments prints help, and invalid
 arguments fail. Render the original demo or the supported PBRT spectral subset;
 portable preflight remains independent of rendering.
 
@@ -263,6 +264,21 @@ host/shader contracts permit continuation across compatible builds and supported
 Metal devices, with per-session provenance and no cross-device bitwise claim.
 See [checkpointing](checkpointing.md) for durability, identity exclusions, limits
 and the fixed sample-target policy.
+
+## Polygonal asset conversion
+
+The portable OBJ adapter owns source-byte snapshots, authored polygon corners,
+object/group/smoothing metadata and MTL fields separately from checked meshes.
+Material-homogeneous parts target the existing position-indexed geometry; normal
+synthesis precedes partitioning. Material conversion prepares existing PBRT
+material graphs and bounded derived images without new GPU or transport types.
+
+A separate publisher writes binary triangle PLYs, content-addressed images, a
+PBRT world fragment and conversion provenance into a sibling staging directory.
+Existing preflight and render translation validate the complete staged asset set
+before a no-replacement directory rename. Relative references use a documented
+bundle-root entry-scene convention. The [OBJ profile](obj-import.md) separates
+preserved geometry, material approximations, and unsupported behavior.
 
 ## Rendering and planned boundaries
 

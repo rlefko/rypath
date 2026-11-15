@@ -1,5 +1,33 @@
 include(cli_availability.cmake)
 
+foreach(suite IN ITEMS obj obj_material obj_bundle)
+    add_executable(rypath_${suite}_tests ${suite}_tests.cpp)
+    target_link_libraries(rypath_${suite}_tests PRIVATE rypath_obj)
+    target_compile_definitions(rypath_${suite}_tests PRIVATE RYPATH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    rypath_configure_host_target(rypath_${suite}_tests)
+    add_test(NAME import.${suite} COMMAND rypath_${suite}_tests)
+    set_tests_properties(import.${suite} PROPERTIES TIMEOUT 60)
+endforeach()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_obj_render_tests obj_render_tests.cpp)
+    target_link_libraries(rypath_obj_render_tests PRIVATE rypath_obj rypath_metal_backend)
+    target_compile_definitions(rypath_obj_render_tests PRIVATE RYPATH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    set_target_properties(rypath_obj_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_obj_render_tests)
+    add_test(NAME metal.obj_import COMMAND rypath_obj_render_tests)
+    set_tests_properties(metal.obj_import PROPERTIES TIMEOUT 60)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_obj_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        target_compile_definitions(rypath_obj_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_RAY_TRACING=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.obj_import PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
 add_executable(rypath_checkpoint_tests checkpoint_tests.cpp ../src/checkpoint.cpp ../src/sha256.cpp)
 target_compile_definitions(rypath_checkpoint_tests PRIVATE RYPATH_CHECKPOINT_TESTING=1)
 target_link_libraries(rypath_checkpoint_tests PRIVATE rypath_render)
@@ -106,12 +134,27 @@ endfunction()
 string(CONCAT help_text
     "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
     "       rypath --check-pbrt SCENE\n"
+    "       rypath --check-obj MODEL.obj\n"
+    "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n"
     "       Render options: [--checkpoint PATH] [--resume PATH]\n"
     "                       [--checkpoint-interval SECONDS (default: 60)]\n")
 set(error_text "rypath: unsupported arguments\nTry 'rypath --help' for usage.\n")
+
+add_cli_test(obj_missing_model 1 "" "${error_text}" --check-obj)
+add_cli_test(obj_extra_argument 1 "" "${error_text}" --check-obj input.obj --version)
+add_cli_test(obj_option_as_model 1 "" "${error_text}" --check-obj --version)
+add_cli_test(obj_convert_missing_output 1 "" "${error_text}" --convert-obj input.obj)
+add_cli_test(obj_convert_empty_output 1 "" "${error_text}" --convert-obj input.obj --output)
+add_cli_test(obj_convert_unknown_option 1 "" "${error_text}" --convert-obj input.obj --foo value)
+add_test(NAME cli.obj_import COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>"
+    "-Dfixture=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/obj/external/cube.obj"
+    "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/obj-cli"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_obj_cli.cmake")
+set_tests_properties(cli.obj_import PROPERTIES TIMEOUT 30)
 
 add_cli_test(no_arguments 0 "${help_text}" "")
 add_cli_test(help 0 "${help_text}" "" --help)

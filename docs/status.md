@@ -2,36 +2,35 @@
 
 ## Current milestone
 
-[Homogeneous spectral media (PR #32)](https://github.com/rlefko/rypath/pull/32)
-is merged at `21f6667`.
+[Resumable rendering (PR #33)](https://github.com/rlefko/rypath/pull/33) is merged
+at `53dafb9`. Its [checkpoint contract](checkpointing.md) and
+[validation record](checkpoint-validation.md) retain the measured evidence.
 
-The current resumable-rendering PR adds durable raw checkpoints, compatible-build
-and supported-GPU continuation, and complete-batch cancellation. The fixed sample
-target remains part of render identity. Presentation settings and batch sizes may
-change; completed checkpoints can export without a GPU. See the
-[checkpoint contract](checkpointing.md) and [validation](checkpoint-validation.md).
+The current polygonal OBJ/MTL PR adds portable preflight and conversion to a
+relocatable PBRT bundle, preserving mesh attributes and provenance. Legacy and
+PBR material conversion follows a named approximation profile with warnings;
+unsupported geometry and material behavior produce explicit diagnostics. See
+the [import profile](obj-import.md) and [validation](obj-validation.md).
 
-The next bounded task is a polygonal OBJ/MTL import profile, beginning with loader
-coverage and conversion policies. Further importers, broader PBRT support,
-long-run accumulation/convergence studies, licensed corpus acceptance and measured
-M4 Max benchmarks remain on the [roadmap](roadmap.md). This does not establish
-completion of the offline MVP or full pinned-corpus support.
+A next bounded task is STL import through the mesh conversion path. Broader
+OBJ/MTL profiles, glTF/GLB, further PBRT support, long-run convergence studies,
+licensed corpus acceptance and measured M4 Max benchmarks remain on the
+[roadmap](roadmap.md). This does not establish completion of the offline MVP,
+full-spec OBJ support, or full pinned-corpus coverage.
 
 ## Validation
 
-Implementation `b4fb5a0` passes Debug, Release and ASan/UBSan (116/116 each) on
-Apple M4 Max with macOS 26.6 and Xcode 26.6. Metal-disabled Apple Clang and LLVM 18
-builds pass 85/85 each; all 112 Python checks pass.
+OBJ implementation `5d0364c` passes Debug, Release and ASan/UBSan (127/127 each),
+the Metal-disabled LLVM 18 build (95/95), all 112 Python checks, changed-unit
+Clang-Tidy and repository hooks. Tests ran on Apple M4 Max, macOS 26.6 and
+Xcode 26.6.
 
-Twelve real-signal checkpoint/resume cases cover both samplers, SIGINT/SIGTERM,
-same-build continuation and both Debug/Release directions. Each restores a
-nonempty prefix and reaches its fixed target with exact raw pixel-byte equality
-in these fixtures. Periodic publication and completed export without Metal pass.
-Metal API validation passes 33/33 suites without skips; all three affected
-shader-instrumented suites pass. Changed-unit Clang-Tidy, native Clang analysis,
-repository hooks and independent review pass. A second GPU is unavailable;
-cross-device compatibility is a policy with explicit numerical limits, not
-measured multi-device evidence.
+Ten imported material cases match independently authored PBRT models within
+predeclared raw-XYZ statistical thresholds on M4 Max. Bump/normal paired checks
+and omitted-map controls pass. A small pinned upstream cube bundle renders in
+both the pinned PBRT CPU renderer and rypath; this establishes selected asset
+acceptance, not external-renderer pixel equivalence. Independent review has no
+remaining actionable findings.
 
-Earlier surface, media, spectrum, texture and HDR records retain their historical
-validation evidence. Their counts describe those earlier revisions.
+Earlier surface, media, spectrum, texture, HDR and checkpoint records retain
+their historical validation evidence. Their counts describe those revisions.

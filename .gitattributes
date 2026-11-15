@@ -22,3 +22,8 @@ tests/fixtures/pbrt-render/cornell-box-sobol-*.pbrt -text whitespace=-blank-at-e
 
 # Vendored OpenEXR bytes are checksum-pinned, including upstream whitespace.
 third_party/openexr/** -text whitespace=-blank-at-eol,-blank-at-eof
+
+# Preserve pinned OBJ dependencies and the licensed external fixture byte for byte.
+third_party/tinyobjloader/** -text whitespace=-blank-at-eof
+third_party/earcut/** -text
+tests/fixtures/obj/external/** -text whitespace=-blank-at-eof

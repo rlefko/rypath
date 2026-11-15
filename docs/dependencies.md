@@ -23,7 +23,7 @@ Development tooling is separate from the distributed executable:
 | GitHub Actions / CodeQL | Hosted checks and compiled C++ analysis | Actions pinned by commit SHA |
 
 The workflow and hook configuration are the executable source of truth for exact
-tool pins. No PBRT renderer, mesh-loader, metal-cpp, or denoising runtime dependency is
+tool pins. No PBRT renderer, metal-cpp, or denoising runtime dependency is
 linked or fetched by the build. CodeQL does not analyze Objective-C++ or MSL;
 the Apple adapter receives a separate native Clang analyzer pass, while shader
 compilation and runtime validation cover the compute path.
@@ -105,6 +105,23 @@ No new runtime dependency is linked. The bilinear intersection mathematics is
 adapted from pinned PBRT with explicit Apache-2.0 attribution and compensated
 arithmetic for Metal; its independent CPU oracle is test-only. See the
 [PBRT adaptation record](../third_party/pbrt/README.md).
+
+Polygonal OBJ import statically compiles a memory-only scalar TinyObjLoader C11
+callback decoder at `a6a5714eb144158373899faf2b899811a36d9fba`, under MIT terms.
+Strict project record validation owns source locations, optional-field presence,
+objects/groups, MTL metadata and dependency I/O. A local numeric hook shares the
+portable checked binary64 parser. Optional upstream file, mmap, threaded and SIMD
+paths are disabled; its permissive scene/material builder is not the product
+boundary. The [TinyObjLoader record](../third_party/tinyobjloader/README.md)
+identifies the shipped adaptation and file hashes.
+
+The checked polygon triangulator uses Earcut at
+`2fbafada15dbe5350c606426e17111b91a964e55`, under its retained ISC license.
+Validation precedes triangulation; collinear corner reinsertion and independent
+coverage checks preserve authored attributes. The [Earcut record](../third_party/earcut/README.md)
+describes this boundary. Neither dependency is downloaded during configuration,
+build, preflight or conversion. The selected small unmodified cube OBJ/MTL fixture
+retains its MIT attribution in [the asset manifest](../tests/fixtures/obj/external/README.md).
 
 The 412-byte external PLY comparison asset retains its CC BY 2.0 terms and
 upstream attribution in its [manifest](../tests/fixtures/pbrt-render/ply-assets/README.md).
