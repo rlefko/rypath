@@ -6,25 +6,29 @@
 
 #include "ewa_weights.h"
 
+#include <jpeg.hpp>
 #include <lodepng.h>
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <new>
 #include <numbers>
+#include <tuple>
 #include <utility>
 
 namespace rypath {
 namespace {
 
 constexpr std::uint32_t max_image_dimension = 4096;
-constexpr auto max_png_bytes = std::size_t{16} * 1024 * 1024;
+constexpr auto max_image_file_bytes = std::size_t{16} * 1024 * 1024;
 constexpr auto max_image_bytes = std::size_t{256} * 1024 * 1024;
 
 using Rgb = std::array<float, 3>;
+using Rgba = std::array<float, 4>;
 
 struct PngState {
     LodePNGState state;
@@ -44,8 +48,29 @@ bool dimensions_fit(std::uint32_t width, std::uint32_t height, const ImageLimits
 }
 
 bool valid_profile(ImageEncoding encoding, ImageWrap wrap) {
-    return (encoding == ImageEncoding::srgb || encoding == ImageEncoding::linear) &&
+    return (encoding == ImageEncoding::srgb || encoding == ImageEncoding::linear ||
+            encoding == ImageEncoding::gamma) &&
            (wrap == ImageWrap::repeat || wrap == ImageWrap::clamp || wrap == ImageWrap::black);
+}
+
+std::size_t png_scanline_bytes(unsigned width, unsigned height, const LodePNGInfo &info) {
+    const auto bpp = lodepng_get_bpp(&info.color);
+    const auto pass_bytes = [bpp](unsigned w, unsigned h) -> std::size_t {
+        return w == 0 || h == 0 ? 0 : ((static_cast<std::size_t>(w) * bpp + 7) / 8 + 1) * h;
+    };
+    if (info.interlace_method == 0) {
+        return pass_bytes(width, height);
+    }
+    constexpr std::array<unsigned, 7> x_start{0, 4, 0, 2, 0, 1, 0};
+    constexpr std::array<unsigned, 7> y_start{0, 0, 4, 0, 2, 0, 1};
+    constexpr std::array<unsigned, 7> x_step{8, 8, 4, 4, 2, 2, 1};
+    constexpr std::array<unsigned, 7> y_step{8, 8, 8, 4, 4, 2, 2};
+    std::size_t total = 0;
+    for (std::size_t pass = 0; pass < x_start.size(); ++pass) {
+        total += pass_bytes((width + x_step[pass] - 1 - x_start[pass]) / x_step[pass],
+                            (height + y_step[pass] - 1 - y_start[pass]) / y_step[pass]);
+    }
+    return total;
 }
 
 ImageResult<DecodedImage> png_error(std::string diagnostic, bool unsupported = false) {
@@ -66,7 +91,7 @@ bool valid_chunk_type(std::span<const std::uint8_t, 4> type) {
 // The header has already passed lodepng_inspect. Walk the remaining chunks to reject APNG,
 // check CRCs for skipped ancillary chunks, and validate the IDAT run and IEND boundary.
 ImageResult<DecodedImage> inspect_png_chunks(std::span<const std::uint8_t> bytes,
-                                             const LodePNGColorMode &color) {
+                                             const LodePNGColorMode &color, bool &has_palette) {
     constexpr std::size_t header_size = 33;
     constexpr std::size_t chunk_overhead = 12;
     std::size_t compressed_size = 0;
@@ -97,6 +122,7 @@ ImageResult<DecodedImage> inspect_png_chunks(std::span<const std::uint8_t> bytes
                 return png_error("Invalid PNG palette chunk");
             }
             palette_entries = length / 3;
+            has_palette = true;
         } else if (lodepng_chunk_type_equals(chunk, "tRNS")) {
             const bool valid_length = (color.colortype == LCT_GREY && length == 2) ||
                                       (color.colortype == LCT_RGB && length == 6) ||
@@ -269,12 +295,42 @@ float decode_half(std::uint32_t bits) {
     return std::bit_cast<float>(sign | (float_exponent << 23) | (fraction << 13));
 }
 
-std::uint32_t encode_byte(float value, ImageEncoding encoding) {
-    value = std::clamp(value, 0.0f, 1.0f);
-    if (encoding == ImageEncoding::srgb) {
-        return static_cast<std::uint32_t>(std::round(255.0f * encode_srgb(value)));
+struct Transfer {
+    ImageEncoding encoding;
+    float gamma;
+    std::array<std::uint8_t, 1024> inverse{};
+
+    Transfer(ImageEncoding encoding, float gamma) : encoding(encoding), gamma(gamma) {
+        if (encoding == ImageEncoding::gamma) {
+            for (std::size_t i = 0; i < inverse.size(); ++i) {
+                const float v = static_cast<float>(i) / static_cast<float>(inverse.size() - 1);
+                inverse[i] = static_cast<std::uint8_t>(
+                    std::clamp(255.0f * std::pow(v, 1.0f / gamma) + 0.5f, 0.0f, 255.0f));
+            }
+        }
     }
-    return static_cast<std::uint32_t>(std::min(255.0f, 255.0f * value + 0.5f));
+
+    float decode(float value) const {
+        if (encoding == ImageEncoding::srgb)
+            return decode_srgb(value);
+        if (encoding == ImageEncoding::gamma)
+            return std::pow(value, gamma);
+        return value;
+    }
+
+    std::uint32_t encode_byte(float value) const {
+        value = std::clamp(value, 0.0f, 1.0f);
+        if (encoding == ImageEncoding::srgb)
+            return static_cast<std::uint32_t>(std::round(255.0f * encode_srgb(value)));
+        if (encoding == ImageEncoding::gamma)
+            return inverse[static_cast<std::size_t>(value *
+                                                    static_cast<float>(inverse.size() - 1))];
+        return static_cast<std::uint32_t>(std::min(255.0f, 255.0f * value + 0.5f));
+    }
+};
+
+const std::array<float, 256> &transfer_table(const ImagePyramid &image) {
+    return image.custom_transfer ? *image.custom_transfer : image_transfer_table(image.encoding);
 }
 
 std::uint32_t pack_rgb(std::uint32_t r, std::uint32_t g, std::uint32_t b) {
@@ -290,31 +346,37 @@ std::size_t pixel_count(std::uint32_t width, std::uint32_t height) {
     return static_cast<std::size_t>(width) * height;
 }
 
+std::uint32_t read_sample(std::span<const std::uint8_t> bytes, std::size_t index, bool half) {
+    if (!half)
+        return bytes[index];
+    return (static_cast<unsigned>(bytes[index * 2]) << 8) | bytes[index * 2 + 1];
+}
+
 struct SourcePixels {
-    std::span<const std::uint8_t> bytes;
-    ImageEncoding encoding;
+    const DecodedImage &image;
+    const Transfer &color;
     const std::array<float, 256> &transfer;
     bool is_half;
 
-    Rgb operator[](std::size_t index) const {
-        if (!is_half) {
-            const auto start = index * 3;
-            return {transfer[bytes[start]], transfer[bytes[start + 1]], transfer[bytes[start + 2]]};
-        }
-        Rgb rgb{};
-        for (std::size_t c = 0; c < rgb.size(); ++c) {
-            const auto start = index * 6 + c * 2;
-            const auto sample = (static_cast<unsigned>(bytes[start]) << 8) | bytes[start + 1];
-            const float value = static_cast<float>(sample) / 65535.0f;
-            const float linear = encoding == ImageEncoding::srgb ? decode_srgb(value) : value;
-            // PBRT rounds the source to half before any float resize or downsample.
-            rgb[c] = decode_half(encode_half(linear));
-        }
-        return rgb;
+    float decode(std::uint32_t sample) const {
+        if (!is_half)
+            return transfer[sample];
+        // PBRT rounds the source to half before any float resize or downsample.
+        return decode_half(encode_half(color.decode(static_cast<float>(sample) / 65535.0f)));
+    }
+
+    template <std::size_t N> std::array<float, N> pixel(std::size_t index) const {
+        std::array<float, N> result{};
+        for (std::size_t c = 0; c < 3; ++c)
+            result[c] = decode(read_sample(image.rgb, index * 3 + c, is_half));
+        if constexpr (N == 4)
+            result[3] = decode(read_sample(image.alpha, index, is_half));
+        return result;
     }
 };
 
 int remap(int coordinate, int size, ImageWrap wrap) {
+    assert(size > 0);
     if (wrap == ImageWrap::repeat) {
         const int remainder = coordinate % size;
         return remainder < 0 ? remainder + size : remainder;
@@ -354,78 +416,82 @@ std::vector<ResampleWeight> resample_weights(std::uint32_t old_size, std::uint32
     return result;
 }
 
-void resize_row(const SourcePixels &source, std::uint32_t source_width,
-                const std::vector<ResampleWeight> &horizontal, ImageWrap wrap,
-                std::span<Rgb> destination) {
+bool outside(int coordinate, int size) { return coordinate < 0 || coordinate >= size; }
+
+template <typename Pixel>
+void resize_row(const SourcePixels &source, int y, const std::vector<ResampleWeight> &horizontal,
+                ImageWrap wrap, std::span<Pixel> destination) {
+    const auto width = static_cast<int>(source.image.width);
+    const auto height = static_cast<int>(source.image.height);
+    if (wrap == ImageWrap::black && outside(y, height)) {
+        std::ranges::fill(destination, Pixel{});
+        return;
+    }
+    const auto row = pixel_count(source.image.width, remap(y, height, wrap));
     for (std::size_t x = 0; x < horizontal.size(); ++x) {
         const auto &sample = horizontal[x];
-        Rgb rgb{};
+        Pixel pixel{};
         for (int tap = 0; tap < 4; ++tap) {
-            const int in_x = remap(sample.first + tap, static_cast<int>(source_width), wrap);
-            const auto in_rgb = source[static_cast<std::size_t>(in_x)];
-            for (std::size_t channel = 0; channel < rgb.size(); ++channel) {
-                rgb[channel] += sample.weights[tap] * in_rgb[channel];
-            }
+            const int in_x = sample.first + tap;
+            if (wrap == ImageWrap::black && outside(in_x, width))
+                continue;
+            const auto in_pixel = source.pixel<std::tuple_size_v<Pixel>>(
+                row + static_cast<std::size_t>(remap(in_x, width, wrap)));
+            for (std::size_t channel = 0; channel < pixel.size(); ++channel)
+                pixel[channel] += sample.weights[tap] * in_pixel[channel];
         }
-        destination[x] = rgb;
+        destination[x] = pixel;
     }
 }
 
-std::vector<Rgb> resize_image(const DecodedImage &image, std::uint32_t width, std::uint32_t height,
-                              ImageEncoding encoding, ImageWrap wrap) {
-    const auto &transfer = image_transfer_table(encoding);
-    const auto row_bytes = static_cast<std::size_t>(image.width) * 3 * (image.bit_depth / 8);
-    const auto horizontal = resample_weights(image.width, width);
-    const auto vertical = resample_weights(image.height, height);
-    std::vector<Rgb> output(pixel_count(width, height));
+template <typename Pixel>
+std::vector<Pixel> resize_image(const SourcePixels &source, std::uint32_t width,
+                                std::uint32_t height, ImageWrap wrap) {
+    const auto horizontal = resample_weights(source.image.width, width);
+    const auto vertical = resample_weights(source.image.height, height);
+    std::vector<Pixel> output(pixel_count(width, height));
 
-    // A four-row ring keeps both separable passes within the scratch budget at 4096 x 4096.
-    std::vector<Rgb> rows(pixel_count(width, 4));
+    // A four-row ring keeps both separable passes within the scratch budget.
+    std::vector<Pixel> rows(pixel_count(width, 4));
     int last_row = vertical.front().first - 1;
     auto row_slot = [](int y) { return static_cast<std::uint32_t>(y) % 4u; };
     for (std::uint32_t y = 0; y < height; ++y) {
         const auto &sample = vertical[y];
         while (last_row < sample.first + 3) {
             ++last_row;
-            const auto source_y =
-                static_cast<std::uint32_t>(remap(last_row, static_cast<int>(image.height), wrap));
-            const SourcePixels source_row{
-                std::span(image.rgb).subspan(row_bytes * source_y, row_bytes), encoding, transfer,
-                image.bit_depth == 16};
             auto destination_row =
                 std::span(rows).subspan(pixel_count(width, row_slot(last_row)), width);
-            resize_row(source_row, image.width, horizontal, wrap, destination_row);
+            resize_row(source, last_row, horizontal, wrap, destination_row);
         }
         for (std::uint32_t x = 0; x < width; ++x) {
-            auto &rgb = output[pixel_count(width, y) + x];
+            auto &pixel = output[pixel_count(width, y) + x];
             for (int tap = 0; tap < 4; ++tap) {
-                const auto &source_rgb = rows[width * row_slot(sample.first + tap) + x];
-                for (std::size_t channel = 0; channel < rgb.size(); ++channel) {
-                    rgb[channel] += sample.weights[tap] * source_rgb[channel];
-                }
+                const auto &source_pixel = rows[width * row_slot(sample.first + tap) + x];
+                for (std::size_t channel = 0; channel < pixel.size(); ++channel)
+                    pixel[channel] += sample.weights[tap] * source_pixel[channel];
             }
-            for (auto &channel : rgb) {
+            for (auto &channel : pixel)
                 channel = std::max(0.0f, channel);
-            }
         }
     }
     return output;
 }
 
-std::vector<Rgb> downsample(std::span<const Rgb> input, const ImageMipLevel &current,
-                            const ImageMipLevel &next) {
-    std::vector<Rgb> output(pixel_count(next.width, next.height));
+template <typename Pixel>
+std::vector<Pixel> downsample(std::span<const Pixel> input, const ImageMipLevel &current,
+                              const ImageMipLevel &next) {
+    std::vector<Pixel> output(pixel_count(next.width, next.height));
     for (std::uint32_t y = 0; y < next.height; ++y) {
         const auto row = pixel_count(current.width, 2 * y);
         const auto next_row = row + (current.height > 1 ? current.width : 0);
         for (std::uint32_t x = 0; x < next.width; ++x) {
             const auto column = 2 * x;
             const auto next_column = column + (current.width > 1 ? 1 : 0);
-            auto &rgb = output[pixel_count(next.width, y) + x];
-            for (std::size_t c = 0; c < rgb.size(); ++c) {
-                rgb[c] = (input[row + column][c] + input[row + next_column][c] +
-                          input[next_row + column][c] + input[next_row + next_column][c]) *
-                         0.25f;
+            auto &pixel = output[pixel_count(next.width, y) + x];
+            for (std::size_t c = 0; c < pixel.size(); ++c) {
+                pixel[c] = (input[row + column][c] + input[row + next_column][c] +
+                            input[next_row + column][c] + input[next_row + next_column][c]) *
+                           0.25f;
             }
         }
     }
@@ -472,22 +538,25 @@ struct MipSampler {
     int height;
     ImageWrap wrap;
     std::size_t word_stride;
+    std::uint32_t channels;
 
-    Rgb read(std::size_t index) const {
+    Rgb read(std::size_t index, bool alpha = false) const {
         if (word_stride == 1) {
-            return decode_byte_texel(texels[index], transfer);
+            return alpha ? Rgb{transfer[texels[index] >> 24], 0, 0}
+                         : decode_byte_texel(texels[index], transfer);
         }
         const auto rg = texels[index * 2];
         const auto b = texels[index * 2 + 1];
-        return {decode_half(rg), decode_half(rg >> 16), decode_half(b)};
+        return alpha ? Rgb{decode_half(b >> 16), 0, 0}
+                     : Rgb{decode_half(rg), decode_half(rg >> 16), decode_half(b)};
     }
 
-    Rgb texel(int x, int y) const {
+    Rgb texel(int x, int y, bool alpha = false) const {
         if (wrap == ImageWrap::black && (x < 0 || y < 0 || x >= width || y >= height)) {
             return {};
         }
         const int index = remap(y, height, wrap) * width + remap(x, width, wrap);
-        return read(static_cast<std::size_t>(index));
+        return read(static_cast<std::size_t>(index), alpha);
     }
 };
 
@@ -503,11 +572,12 @@ std::optional<MipSampler> mip_sampler(const ImagePyramid &image, std::size_t ind
         return std::nullopt;
     }
     return MipSampler{std::span(image.texels).subspan(level.offset, words),
-                      image_transfer_table(image.encoding),
+                      transfer_table(image),
                       static_cast<int>(level.width),
                       static_cast<int>(level.height),
                       image.wrap,
-                      word_stride};
+                      word_stride,
+                      image.source_channels};
 }
 
 struct TexturePoint {
@@ -515,20 +585,23 @@ struct TexturePoint {
     float y;
 };
 
-Rgb bilerp(const MipSampler &mip, TexturePoint center) {
+Rgb bilerp(const MipSampler &mip, TexturePoint center, bool scalar = false) {
     const auto ix = static_cast<int>(std::floor(center.x));
     const auto iy = static_cast<int>(std::floor(center.y));
     const float dx = center.x - static_cast<float>(ix);
     const float dy = center.y - static_cast<float>(iy);
-    const auto a = mip.texel(ix, iy);
-    const auto b = mip.texel(ix + 1, iy);
-    const auto c = mip.texel(ix, iy + 1);
-    const auto d = mip.texel(ix + 1, iy + 1);
+    const bool alpha = scalar && mip.channels == 4;
+    const auto a = mip.texel(ix, iy, alpha);
+    const auto b = mip.texel(ix + 1, iy, alpha);
+    const auto c = mip.texel(ix, iy + 1, alpha);
+    const auto d = mip.texel(ix + 1, iy + 1, alpha);
     Rgb rgb{};
     for (std::size_t channel = 0; channel < rgb.size(); ++channel) {
         rgb[channel] = (1.0f - dx) * (1.0f - dy) * a[channel] + dx * (1.0f - dy) * b[channel] +
                        (1.0f - dx) * dy * c[channel] + dx * dy * d[channel];
     }
+    if (scalar && mip.channels == 3)
+        rgb[0] = (rgb[0] + rgb[1] + rgb[2]) / 3.0f;
     return rgb;
 }
 
@@ -592,7 +665,7 @@ std::optional<MipSampler> ewa_mip(const ImagePyramid &image, std::size_t index) 
     return mip;
 }
 
-std::optional<Rgb> ewa_bilerp(const ImagePyramid &image, TexturePoint st) {
+std::optional<Rgb> ewa_bilerp(const ImagePyramid &image, TexturePoint st, bool scalar) {
     const auto mip = ewa_mip(image, 0);
     if (!mip) {
         return std::nullopt;
@@ -601,8 +674,9 @@ std::optional<Rgb> ewa_bilerp(const ImagePyramid &image, TexturePoint st) {
                                            outside_black_axis(st.y, 1.0f, mip->height))) {
         return Rgb{};
     }
-    return bilerp(*mip, {ewa_center(st.x, mip->width, image.wrap),
-                         ewa_center(st.y, mip->height, image.wrap)});
+    return bilerp(
+        *mip, {ewa_center(st.x, mip->width, image.wrap), ewa_center(st.y, mip->height, image.wrap)},
+        scalar);
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
@@ -679,7 +753,7 @@ std::optional<Rgb> ewa_level(const ImagePyramid &image, std::size_t index, Textu
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 std::optional<Rgb> ewa_rgb(const ImagePyramid &image, TexturePoint st, TexturePoint dx,
-                           TexturePoint dy, float max_anisotropy) {
+                           TexturePoint dy, float max_anisotropy, bool scalar) {
     if (!(max_anisotropy >= 1.0f && max_anisotropy <= 16.0f) ||
         image.levels.size() > std::bit_width(max_image_dimension)) {
         return std::nullopt;
@@ -688,7 +762,7 @@ std::optional<Rgb> ewa_rgb(const ImagePyramid &image, TexturePoint st, TexturePo
     const float scale_y = largest_component(dy);
     const bool finite_center = std::isfinite(st.x) && std::isfinite(st.y);
     if (scale_x == 0.0f || scale_y == 0.0f) {
-        return finite_center ? ewa_bilerp(image, st) : std::nullopt;
+        return finite_center ? ewa_bilerp(image, st, scalar) : std::nullopt;
     }
     // With nonzero gradients and a cap of at most 16, a major length of
     // at least 32 guarantees a post-cap minor length of at least two.
@@ -736,7 +810,7 @@ std::optional<Rgb> ewa_rgb(const ImagePyramid &image, TexturePoint st, TexturePo
 
 ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
                                      const ImageLimits &limits) {
-    if (bytes.size() > max_png_bytes) {
+    if (bytes.size() > max_image_file_bytes) {
         return budget_error<DecodedImage>("PNG exceeds the 16 MiB input limit");
     }
     PngState png;
@@ -750,46 +824,40 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
         return budget_error<DecodedImage>("PNG exceeds the image dimension limit");
     }
     const auto &color = png.state.info_png.color;
-    if (auto result = inspect_png_chunks(bytes, color); !result.diagnostic.empty()) {
+    bool has_palette = false;
+    if (auto result = inspect_png_chunks(bytes, color, has_palette); !result.diagnostic.empty()) {
         return result;
-    }
-    // lodepng_inspect has already checked the legal depths for each color type.
-    if (png.state.info_png.interlace_method != 0) {
-        return png_error("PNG must be noninterlaced", true);
     }
     const auto depth = color.bitdepth;
     const bool indexed = color.colortype == LCT_PALETTE;
+    const bool rgba = color.colortype == LCT_RGBA;
+    const bool gray = color.colortype == LCT_GREY || color.colortype == LCT_GREY_ALPHA;
     const auto rgb_depth = std::max(8u, depth);
     const std::size_t pixels = pixel_count(width, height);
     const auto source_bpp = lodepng_get_bpp(&color);
-    const std::size_t rgb_bytes = pixels * 3 * (rgb_depth / 8);
+    const std::size_t sample_bytes = rgb_depth / 8;
+    const std::size_t rgb_bytes = pixels * 3 * sample_bytes;
+    const std::size_t alpha_bytes = rgba ? pixels * sample_bytes : 0;
+    const std::size_t retained = rgb_bytes + alpha_bytes;
     const std::size_t raw_bytes = (pixels * source_bpp + 7) / 8;
-    const std::size_t row_bytes = (static_cast<std::size_t>(width) * source_bpp + 7) / 8;
-    const std::size_t scanline_bytes = (row_bytes + 1) * height;
-    if (rgb_bytes > std::min(limits.retained_bytes, max_image_bytes)) {
+    const std::size_t scanline_bytes = png_scanline_bytes(width, height, png.state.info_png);
+    if (retained > std::min(limits.retained_bytes, max_image_bytes)) {
         return budget_error<DecodedImage>("PNG exceeds the decoded image byte budget");
     }
-    // LodePNG reserves the exact scanline size. On a malformed stream it can attempt one
-    // growth of 1.5 times this size plus at most one stored DEFLATE block (65535 bytes).
-    // Include both old/new buffers if realloc moves the allocation, plus IDAT and tables.
+    // Include both old/new inflate buffers if realloc moves the allocation, plus IDAT
+    // and tables. The Adam7 passes unfilter and remove padding in the scanline buffer.
     constexpr std::size_t max_block_bytes = 65535;
     constexpr auto huffman_scratch_bytes = std::size_t{256} * 1024;
     const auto inflate_scratch = bytes.size() + scanline_bytes * 2 + scanline_bytes / 2 +
                                  max_block_bytes + huffman_scratch_bytes;
-    auto scratch = std::max({inflate_scratch, scanline_bytes + raw_bytes, raw_bytes + rgb_bytes});
-    if (indexed) {
-        // Count both of LodePNG's 256-entry RGBA palettes in every stage. Expansion
-        // writes straight to the retained RGB vector while the packed indices are live.
-        scratch += std::size_t{2} * 256 * 4;
-    } else {
-        // The decoder's RGB buffer remains live while copying into the retained vector.
-        scratch = std::max(scratch, 2 * rgb_bytes);
-    }
+    const auto scratch = std::max({inflate_scratch, scanline_bytes + raw_bytes,
+                                   raw_bytes + retained, indexed ? 0 : 2 * retained}) +
+                         (has_palette ? std::size_t{2} * 256 * 4 : 0);
     if (scratch > std::min(limits.scratch_bytes, max_image_bytes)) {
         return budget_error<DecodedImage>("PNG exceeds the decoder scratch byte budget");
     }
     png.state.decoder.zlibsettings.max_output_size = scanline_bytes;
-    if (indexed) {
+    if (indexed || rgba) {
         png.state.decoder.color_convert = 0;
     } else {
         png.state.info_raw.colortype = LCT_RGB;
@@ -809,14 +877,19 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
     if (error != 0) {
         return png_error(error);
     }
+    DecodedImage image{.width = width,
+                       .height = height,
+                       .rgb = {},
+                       .bit_depth = rgb_depth,
+                       .source_channels = gray ? 1u : (rgba ? 4u : 3u)};
+    try {
+        image.rgb.resize(rgb_bytes);
+        image.alpha.resize(alpha_bytes);
+    } catch (const std::bad_alloc &) {
+        return budget_error<DecodedImage>("PNG decoder could not allocate required memory");
+    }
     if (indexed) {
-        DecodedImage image{width, height, {}, rgb_depth};
-        try {
-            image.rgb.resize(rgb_bytes);
-        } catch (const std::bad_alloc &) {
-            return budget_error<DecodedImage>("PNG decoder could not allocate required memory");
-        }
-        // LodePNG removes scanline padding, leaving a single MSB-first index stream.
+        // LodePNG removes row padding and interlacing, leaving a single MSB-first stream.
         const auto mask = (1u << depth) - 1;
         for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
             const auto bit = pixel * depth;
@@ -828,16 +901,120 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
             // The fourth palette byte is alpha. Keep the original RGB even at alpha zero.
             std::copy_n(color.palette + 4 * index, 3, image.rgb.data() + 3 * pixel);
         }
-        return {.value = std::move(image), .diagnostic = {}};
+    } else if (rgba) {
+        for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
+            const auto *input = raw.get() + pixel * 4 * sample_bytes;
+            std::copy_n(input, 3 * sample_bytes, image.rgb.data() + pixel * 3 * sample_bytes);
+            std::copy_n(input + 3 * sample_bytes, sample_bytes,
+                        image.alpha.data() + pixel * sample_bytes);
+        }
+    } else {
+        // Conversion removes grayscale alpha and transparency keys without compositing.
+        std::copy_n(raw.get(), rgb_bytes, image.rgb.data());
     }
-    // Conversion removes alpha without compositing and replicates grayscale into RGB.
-    DecodedImage image{width, height, {raw.get(), raw.get() + rgb_bytes}, rgb_depth};
     return {.value = std::move(image), .diagnostic = {}};
 }
 
-ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEncoding encoding,
-                                              ImageWrap wrap, const ImageLimits &limits) {
-    if (!valid_profile(encoding, wrap)) {
+ImageEncoding image_effective_encoding(const DecodedImage &image, ImageEncoding authored) {
+    return image.jpeg ? ImageEncoding::srgb : authored;
+}
+
+ImageResult<DecodedImage> decode_jpeg(std::span<const std::uint8_t> bytes,
+                                      const ImageLimits &limits) {
+    if (bytes.size() > max_image_file_bytes)
+        return budget_error<DecodedImage>("JPEG exceeds the 16 MiB input limit");
+
+    auto decoded =
+        jpeg::decode(bytes, {.max_dimension = std::min(limits.max_dimension, max_image_dimension),
+                             .retained_bytes = std::min(limits.retained_bytes, max_image_bytes),
+                             .scratch_bytes = std::min(limits.scratch_bytes, max_image_bytes)});
+    switch (decoded.error) {
+    case jpeg::Error::none:
+        return {.value = DecodedImage{.width = decoded.width,
+                                      .height = decoded.height,
+                                      .rgb = std::move(decoded.rgb),
+                                      .source_channels = decoded.channels,
+                                      .jpeg = true},
+                .diagnostic = {}};
+    case jpeg::Error::invalid:
+        return {.value = {},
+                .diagnostic = std::string("Invalid JPEG: ") +
+                              (decoded.detail ? decoded.detail : "entropy decode failed")};
+    case jpeg::Error::unsupported:
+        return {.value = {}, .diagnostic = decoded.detail, .unsupported = true};
+    default:
+        return budget_error<DecodedImage>(decoded.detail);
+    }
+}
+
+namespace {
+
+template <std::size_t N>
+void append_texel(ImagePyramid &pyramid, const std::array<float, N> &pixel, const Transfer &color) {
+    if (pyramid.storage == ImageStorage::linear_half) {
+        pyramid.texels.push_back(encode_half(pixel[0]) | (encode_half(pixel[1]) << 16));
+        auto last = encode_half(pixel[2]);
+        if constexpr (N == 4)
+            last |= encode_half(pixel[3]) << 16;
+        pyramid.texels.push_back(last);
+    } else {
+        auto word = pack_rgb(color.encode_byte(pixel[0]), color.encode_byte(pixel[1]),
+                             color.encode_byte(pixel[2]));
+        if constexpr (N == 4)
+            word |= color.encode_byte(pixel[3]) << 24;
+        pyramid.texels.push_back(word);
+    }
+}
+
+template <typename Pixel>
+void generate_mips(ImagePyramid &pyramid, const SourcePixels &source, ImageMipLevel level,
+                   int level_count) {
+    std::vector<Pixel> working;
+    if (source.image.width != level.width || source.image.height != level.height) {
+        working = resize_image<Pixel>(source, level.width, level.height, pyramid.wrap);
+    } else {
+        working.resize(pixel_count(level.width, level.height));
+        for (std::size_t i = 0; i < working.size(); ++i)
+            working[i] = source.pixel<std::tuple_size_v<Pixel>>(i);
+    }
+    for (int i = 0; i < level_count; ++i) {
+        pyramid.levels.push_back(level);
+        for (const auto &pixel : working)
+            append_texel(pyramid, pixel, source.color);
+        if (i + 1 < level_count) {
+            const ImageMipLevel next{std::max(1u, level.width / 2), std::max(1u, level.height / 2),
+                                     static_cast<std::uint32_t>(pyramid.texels.size())};
+            working = downsample(std::span<const Pixel>(working), level, next);
+            level = next;
+        }
+    }
+}
+
+std::array<float, 256> gamma_transfer(float gamma) {
+    std::array<float, 256> table{};
+    for (std::size_t i = 0; i < table.size(); ++i)
+        table[i] = std::pow(static_cast<float>(i) / 255.0f, gamma);
+    return table;
+}
+
+bool nonopaque_alpha(const SourcePixels &source) {
+    if (source.image.alpha.empty())
+        return false;
+    const auto count = pixel_count(source.image.width, source.image.height);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto value = read_sample(source.image.alpha, i, source.is_half);
+        if (value != (source.is_half ? 65535u : 255u) && source.decode(value) != 1.0f)
+            return true;
+    }
+    return false;
+}
+
+ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding authored,
+                                      ImageWrap wrap, const ImageLimits &limits, float gamma,
+                                      bool native) {
+    const auto encoding = image_effective_encoding(image, authored);
+    if (!valid_profile(encoding, wrap) ||
+        (encoding == ImageEncoding::gamma && !(gamma > 0 && std::isfinite(gamma)))) {
         return {.value = {}, .diagnostic = "Invalid image encoding or wrap mode"};
     }
     if (!dimensions_fit(image.width, image.height, limits)) {
@@ -848,22 +1025,21 @@ ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEn
     }
     const bool is_half = image.bit_depth == 16;
     const auto pixels = pixel_count(image.width, image.height);
-    if (pixels == 0 || image.rgb.size() != pixels * 3 * (image.bit_depth / 8)) {
-        return {.value = {}, .diagnostic = "Image dimensions do not match the RGB buffer"};
+    const auto sample_bytes = image.bit_depth / 8;
+    const auto alpha_bytes = image.source_channels == 4 ? pixels * sample_bytes : 0;
+    if (pixels == 0 || image.rgb.size() != pixels * 3 * sample_bytes ||
+        image.alpha.size() != alpha_bytes ||
+        (image.source_channels != 1 && image.source_channels != 3 && image.source_channels != 4)) {
+        return {.value = {}, .diagnostic = "Image dimensions do not match the decoded channels"};
     }
-    const auto width = std::bit_ceil(image.width);
-    const auto height = std::bit_ceil(image.height);
+    const auto width = native ? image.width : std::bit_ceil(image.width);
+    const auto height = native ? image.height : std::bit_ceil(image.height);
     const bool needs_resize = image.width != width || image.height != height;
-    if (needs_resize && wrap == ImageWrap::black) {
-        return {.value = {},
-                .diagnostic = "Non-power-of-two PNGs require repeat or clamp wrapping",
-                .unsupported = true};
-    }
     if (!dimensions_fit(width, height, limits)) {
         return budget_error<ImagePyramid>("Resized image exceeds the dimension limit");
     }
 
-    const auto level_count = std::bit_width(std::max(width, height));
+    const auto level_count = native ? 1 : std::bit_width(std::max(width, height));
     std::size_t total_pixels = 0;
     std::uint32_t level_width = width;
     std::uint32_t level_height = height;
@@ -872,22 +1048,30 @@ ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEn
         level_width = std::max(1u, level_width / 2);
         level_height = std::max(1u, level_height / 2);
     }
+    const bool custom = !is_half && encoding == ImageEncoding::gamma;
     const auto total_words = is_half ? 2 * total_pixels : total_pixels;
-    const std::size_t retained =
-        total_words * sizeof(std::uint32_t) + level_count * sizeof(ImageMipLevel);
+    const std::size_t retained = total_words * sizeof(std::uint32_t) +
+                                 level_count * sizeof(ImageMipLevel) +
+                                 (custom ? sizeof(std::array<float, 256>) : 0);
     if (retained > std::min(limits.retained_bytes, max_image_bytes)) {
         return budget_error<ImagePyramid>("Image exceeds the mip pyramid byte budget");
     }
 
-    const auto base_bytes = pixel_count(width, height) * sizeof(Rgb);
+    const Transfer color(encoding, gamma);
+    const auto gamma_table = custom ? gamma_transfer(gamma) : std::array<float, 256>{};
+    const SourcePixels source{image, color, custom ? gamma_table : image_transfer_table(encoding),
+                              is_half};
+    const bool alpha = !native && nonopaque_alpha(source);
+    const auto pixel_size = alpha ? sizeof(Rgba) : sizeof(Rgb);
+    const auto base_bytes = native ? 0 : pixel_count(width, height) * pixel_size;
     const auto mip_scratch =
         base_bytes +
         (level_count > 1
-             ? pixel_count(std::max(1u, width / 2), std::max(1u, height / 2)) * sizeof(Rgb)
+             ? pixel_count(std::max(1u, width / 2), std::max(1u, height / 2)) * pixel_size
              : 0);
     const auto resize_scratch = needs_resize
                                     ? base_bytes + (width + height) * sizeof(ResampleWeight) +
-                                          pixel_count(width, 4) * sizeof(Rgb)
+                                          pixel_count(width, 4) * pixel_size
                                     : 0;
     if (std::max(mip_scratch, resize_scratch) > std::min(limits.scratch_bytes, max_image_bytes)) {
         return budget_error<ImagePyramid>("Image exceeds the mip generation scratch byte budget");
@@ -897,58 +1081,81 @@ ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEn
                          .wrap = wrap,
                          .levels = {},
                          .texels = {},
-                         .storage = is_half ? ImageStorage::linear_half : ImageStorage::encoded8};
-    pyramid.levels.reserve(level_count);
-    pyramid.texels.reserve(total_words);
-    auto level = ImageMipLevel{width, height, 0};
-    std::vector<Rgb> working;
-    if (needs_resize) {
-        working = resize_image(image, width, height, encoding, wrap);
-    } else {
-        const SourcePixels source{image.rgb, encoding, image_transfer_table(encoding), is_half};
-        working.resize(pixels);
-        for (std::size_t i = 0; i < pixels; ++i) {
-            working[i] = source[i];
-        }
-    }
-    for (int i = 0; i < level_count; ++i) {
-        pyramid.levels.push_back(level);
-        for (const auto &rgb : working) {
-            if (is_half) {
-                const auto rg = encode_half(rgb[0]) | (encode_half(rgb[1]) << 16);
-                pyramid.texels.push_back(rg);
-                pyramid.texels.push_back(encode_half(rgb[2]));
-            } else {
-                pyramid.texels.push_back(pack_rgb(encode_byte(rgb[0], encoding),
-                                                  encode_byte(rgb[1], encoding),
-                                                  encode_byte(rgb[2], encoding)));
+                         .storage = is_half ? ImageStorage::linear_half : ImageStorage::encoded8,
+                         .source_channels = alpha ? 4u : (image.source_channels == 1 ? 1u : 3u),
+                         .native_base = native};
+    try {
+        if (custom)
+            pyramid.custom_transfer = std::make_shared<const std::array<float, 256>>(gamma_table);
+        pyramid.levels.reserve(level_count);
+        pyramid.texels.reserve(total_words);
+        const ImageMipLevel level{width, height, 0};
+        if (native) {
+            pyramid.levels.push_back(level);
+            for (std::size_t i = 0; i < pixels; ++i) {
+                if (is_half) {
+                    append_texel(pyramid, source.pixel<3>(i), color);
+                } else {
+                    // Native PBRT consumers read source codes without a mip write round trip.
+                    pyramid.texels.push_back(
+                        pack_rgb(image.rgb[3 * i], image.rgb[3 * i + 1], image.rgb[3 * i + 2]));
+                }
             }
+        } else if (alpha) {
+            generate_mips<Rgba>(pyramid, source, level, level_count);
+        } else {
+            generate_mips<Rgb>(pyramid, source, level, level_count);
         }
-        if (i + 1 < level_count) {
-            const ImageMipLevel next{std::max(1u, level.width / 2), std::max(1u, level.height / 2),
-                                     static_cast<std::uint32_t>(pyramid.texels.size())};
-            working = downsample(working, level, next);
-            level = next;
-        }
+    } catch (const std::bad_alloc &) {
+        return budget_error<ImagePyramid>(
+            "Image mip generation could not allocate required memory");
     }
     return {.value = std::move(pyramid), .diagnostic = {}};
+}
+
+} // namespace
+
+ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEncoding encoding,
+                                              ImageWrap wrap, const ImageLimits &limits,
+                                              float gamma) {
+    return build_image(image, encoding, wrap, limits, gamma, false);
+}
+
+ImageResult<ImagePyramid> build_image_base(const DecodedImage &image, ImageEncoding encoding,
+                                           ImageWrap wrap, const ImageLimits &limits, float gamma) {
+    return build_image(image, encoding, wrap, limits, gamma, true);
 }
 
 const std::array<float, 256> &image_transfer_table(ImageEncoding encoding) {
     return encoding == ImageEncoding::srgb ? srgb_table : linear_table;
 }
 
-std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t, float dsdx,
-                                    float dtdx, float dsdy, float dtdy, ImageFilter filter,
-                                    float max_anisotropy) {
-    if (!valid_profile(image.encoding, image.wrap) || image.levels.empty() ||
-        (image.storage != ImageStorage::encoded8 && image.storage != ImageStorage::linear_half) ||
-        !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
-        !std::isfinite(dtdy)) {
+namespace {
+
+bool valid_sampling_image(const ImagePyramid &image) {
+    return valid_profile(image.encoding, image.wrap) && !image.levels.empty() &&
+           (image.storage == ImageStorage::linear_half ||
+            (image.storage == ImageStorage::encoded8 &&
+             (image.encoding != ImageEncoding::gamma || image.custom_transfer))) &&
+           (image.source_channels == 1 || image.source_channels == 3 || image.source_channels == 4);
+}
+
+Rgb bilerp_bounded(const MipSampler &mip, float s, float t, bool scalar = false) {
+    return bilerp(mip,
+                  {bounded_coordinate(s, mip.wrap) * static_cast<float>(mip.width) - 0.5f,
+                   bounded_coordinate(t, mip.wrap) * static_cast<float>(mip.height) - 0.5f},
+                  scalar);
+}
+
+std::optional<Rgb> image_lookup(const ImagePyramid &image, float s, float t, float dsdx, float dtdx,
+                                float dsdy, float dtdy, ImageFilter filter, float max_anisotropy,
+                                bool scalar) {
+    if (!valid_sampling_image(image) || image.native_base || !std::isfinite(dsdx) ||
+        !std::isfinite(dtdx) || !std::isfinite(dsdy) || !std::isfinite(dtdy)) {
         return std::nullopt;
     }
     if (filter == ImageFilter::ewa) {
-        return ewa_rgb(image, {s, t}, {dsdx, dtdx}, {dsdy, dtdy}, max_anisotropy);
+        return ewa_rgb(image, {s, t}, {dsdx, dtdx}, {dsdy, dtdy}, max_anisotropy, scalar);
     }
     if ((filter != ImageFilter::bilinear && filter != ImageFilter::trilinear &&
          filter != ImageFilter::point) ||
@@ -977,9 +1184,7 @@ std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t,
             const int y = point_coordinate(t, image.wrap, mip->height);
             return mip->texel(x, y);
         }
-        return bilerp(*mip,
-                      {bounded_coordinate(s, image.wrap) * static_cast<float>(mip->width) - 0.5f,
-                       bounded_coordinate(t, image.wrap) * static_cast<float>(mip->height) - 0.5f});
+        return bilerp_bounded(*mip, s, t, scalar);
     };
     const auto selected =
         wide ? coarsest : static_cast<std::size_t>(std::max(0.0f, std::floor(lod)));
@@ -993,6 +1198,39 @@ std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t,
         return std::nullopt;
     }
     return blend_mips(*rgb, *upper, lod - static_cast<float>(selected));
+}
+
+} // namespace
+
+std::optional<Rgb> image_linear_rgb(const ImagePyramid &image, float s, float t, float dsdx,
+                                    float dtdx, float dsdy, float dtdy, ImageFilter filter,
+                                    float max_anisotropy) {
+    return image_lookup(image, s, t, dsdx, dtdx, dsdy, dtdy, filter, max_anisotropy, false);
+}
+
+std::optional<float> image_linear_scalar(const ImagePyramid &image, float s, float t, float dsdx,
+                                         float dtdx, float dsdy, float dtdy, ImageFilter filter,
+                                         float max_anisotropy) {
+    auto result = image_lookup(image, s, t, dsdx, dtdx, dsdy, dtdy, filter, max_anisotropy, true);
+    return result ? std::optional<float>((*result)[0]) : std::nullopt;
+}
+
+std::optional<Rgb> image_base_linear_rgb(const ImagePyramid &image, float s, float t) {
+    if (!valid_sampling_image(image) || !image.native_base || image.levels.size() != 1 ||
+        !std::isfinite(s) || !std::isfinite(t))
+        return std::nullopt;
+    const auto mip = mip_sampler(image, 0);
+    return mip ? std::optional<Rgb>(bilerp_bounded(*mip, s, t)) : std::nullopt;
+}
+
+std::optional<Rgb> image_base_texel_linear_rgb(const ImagePyramid &image, std::uint32_t x,
+                                               std::uint32_t y) {
+    if (!valid_sampling_image(image) || !image.native_base || image.levels.size() != 1)
+        return std::nullopt;
+    const auto mip = mip_sampler(image, 0);
+    if (!mip || x >= static_cast<unsigned>(mip->width) || y >= static_cast<unsigned>(mip->height))
+        return std::nullopt;
+    return mip->read(pixel_count(static_cast<unsigned>(mip->width), y) + x);
 }
 
 } // namespace rypath

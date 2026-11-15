@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [60]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+AttributeBegin
+    Rotate 30 0 1 0
+    LightSource "infinite" "string filename" "assets/environment.png" "float illuminance" [1]
+AttributeEnd
+Material "diffuse" "rgb reflectance" [0.7 0.65 0.75]
+Shape "trianglemesh" "point3 P" [-0.5 -0.7 2 0.5 -0.7 2 0.5 0.7 2 -0.5 0.7 2]
+    "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1]
+Material "diffuse" "rgb reflectance" [0 0 0]
+AreaLightSource "diffuse" "string filename" "assets/emission.png" "float scale" [2]
+    "bool twosided" [true]
+Shape "trianglemesh" "point3 P" [0.3 0.15 1 0.7 0.15 1 0.7 0.65 1 0.3 0.65 1]
+    "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1]

@@ -13,7 +13,8 @@ id<MTLLibrary> load_library(id<MTLDevice> device, const std::filesystem::path &p
                             std::string &diagnostic);
 id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> library,
                                           NSString *name, std::string &diagnostic,
-                                          id<MTLFunction> intersection = nil);
+                                          id<MTLFunction> intersection = nil,
+                                          MTLFunctionConstantValues *constants = nil);
 id<MTLFunction> load_patch_intersection(id<MTLLibrary> library, std::string &diagnostic);
 id<MTLIntersectionFunctionTable> make_intersection_table(id<MTLComputePipelineState> pipeline,
                                                          id<MTLFunction> intersection,

@@ -58,7 +58,7 @@ if(rypath_multi_config)
     string(APPEND rypath_runtime_directory "/$<CONFIG>")
 endif()
 
-add_library(rypath_geometry STATIC src/geometry.cpp src/bilinear.cpp)
+add_library(rypath_geometry STATIC src/geometry.cpp src/bilinear.cpp src/mesh_displacement.cpp)
 target_include_directories(rypath_geometry PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_geometry)
 
@@ -73,9 +73,17 @@ if(RYPATH_ENABLE_SANITIZERS)
         -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
     target_link_options(rypath_png PRIVATE -fsanitize=address,undefined)
 endif()
+add_library(rypath_jpeg STATIC third_party/stb/jpeg.cpp)
+target_include_directories(rypath_jpeg PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb")
+set_target_properties(rypath_jpeg PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
+if(RYPATH_ENABLE_SANITIZERS)
+    target_compile_options(rypath_jpeg PRIVATE -fsanitize=address,undefined
+        -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    target_link_options(rypath_jpeg PRIVATE -fsanitize=address,undefined)
+endif()
 add_library(rypath_image STATIC src/image_texture.cpp)
 target_include_directories(rypath_image PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(rypath_image PRIVATE rypath_png)
+target_link_libraries(rypath_image PRIVATE rypath_png rypath_jpeg)
 rypath_configure_host_target(rypath_image)
 
 include(cmake/RgbSpectrumData.cmake)
@@ -116,9 +124,9 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_sobol_tables}")
 
 add_library(rypath_render STATIC src/render.cpp src/sampling.cpp src/triangle_attributes.cpp
-    src/texture_footprint.cpp src/reflectance_curve.cpp)
+    src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp)
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    PRIVATE "${rypath_generated_directory}")
+    PRIVATE "${rypath_generated_directory}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image)
 rypath_configure_host_target(rypath_render)
 

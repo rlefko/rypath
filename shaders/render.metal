@@ -6,9 +6,14 @@
 #include "../src/render_wire.h"
 #include "../src/sobol_probe_wire.h"
 #include "../src/sobol_shared.h"
+#include "alpha_hash.h"
+#include "image_lighting.h"
 #include "image_texture.h"
 #include "intersection.h"
+#include "masked_intersection.h"
+#include "surface_detail.h"
 #include "texture_footprint.h"
+#include "texture_graph.h"
 
 using namespace metal;
 using namespace metal::raytracing;
@@ -17,6 +22,13 @@ namespace sobol = rypath::sobol;
 
 constant float pi = 3.14159265358979323846f;
 constant uint all_visible = 0xffu;
+// Scene specialization keeps graph stacks and manual traversal out of scenes
+// that do not use those features, including the original diffuse baseline.
+constant bool graph_enabled [[function_constant(0)]];
+constant bool alpha_enabled [[function_constant(1)]];
+constant bool surface_detail_enabled [[function_constant(2)]];
+constant bool environment_image_enabled [[function_constant(3)]];
+constant bool area_image_enabled [[function_constant(4)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -625,6 +637,341 @@ image_reflectance(const device wire::Instance &instance, uint primitive, uint ki
     return rypath_image::spectrum(rgb, sample.wavelength, rgb_table);
 }
 
+namespace graph_wire = rypath::texture_graph_wire;
+
+static wire::Point pack_point(float3 p) { return {p.x, p.y, p.z}; }
+
+struct GraphImageSampler {
+    const device wire::ImageTexture *textures;
+    const device wire::TextureLevel *levels;
+    const device wire::Word *texels;
+    const device float *transfer;
+    const device float *spectra;
+    constant wire::TextureParameters *parameters;
+    bool operator()(uint index, bool spectrum, graph_wire::Mapped2D mapped, float wavelength,
+                    thread float &value) const {
+        if (index >= parameters->texture_count)
+            return false;
+        const device auto &texture = textures[index];
+        const float2 st(mapped.s, mapped.t), dx(mapped.dsdx, mapped.dtdx),
+            dy(mapped.dsdy, mapped.dtdy);
+        if (spectrum) {
+            float3 rgb = rypath_image::lookup(texture, levels, texels, transfer, *parameters, st,
+                                              dx, dy, true);
+            rgb *= texture.scale;
+            if (texture.invert != 0u)
+                rgb = 1.0f - rgb;
+            value = rypath_image::spectrum(rgb, wavelength, spectra);
+        } else {
+            value = rypath_image::lookup_scalar(texture, levels, texels, transfer, *parameters, st,
+                                                dx, dy, true);
+            value *= texture.scale;
+            if (texture.invert != 0u)
+                value = max(0.0f, 1.0f - value);
+        }
+        return isfinite(value);
+    }
+};
+struct GraphRgbSampler {
+    const device float *table;
+    bool operator()(float r, float g, float b, float wavelength, thread float &value) const {
+        value = rypath_image::spectrum(float3(r, g, b), wavelength, table);
+        return isfinite(value);
+    }
+};
+struct GraphResources {
+    const device graph_wire::Node *nodes;
+    const device wire::SpectralKnot *knots;
+    constant wire::TextureGraphParameters *parameters;
+    GraphImageSampler images;
+    // Share the bounded evaluator across shading, masks, and bump differences.
+    // Inlining its stack at every query also overwhelms instrumented compilation.
+    __attribute__((noinline)) bool evaluate(uint root, graph_wire::Context context,
+                                            float wavelength, thread float &value) const {
+        if (!graph_enabled)
+            return false;
+        return rypath::texture_graph::evaluate(nodes, parameters->node_count, knots,
+                                               parameters->knot_count, root, context, wavelength,
+                                               images, GraphRgbSampler{images.spectra}, value);
+    }
+};
+
+static bool
+surface_texture_context(const device wire::Instance &instance, uint primitive, uint kind,
+                        float2 hit_uv, thread const SurfacePoint &point,
+                        const device wire::Point *positions, const device wire::Triangle *triangles,
+                        const device wire::Patch *patches, const device wire::Point2 *uvs,
+                        const device wire::TextureFrame *frames,
+                        constant wire::TextureParameters &tp, constant wire::Parameters &p,
+                        thread const wire::Sample &sample, float3 primary_direction,
+                        bool footprints, thread graph_wire::Context &context,
+                        thread float3 &geometric_dpdu, thread float3 &geometric_dpdv) {
+    float2 st;
+    float3 dpdu, dpdv, local_p;
+    if (kind == wire::triangle_primitive) {
+        const auto triangle = triangles[instance.triangle_begin + primitive];
+        const float3 p0 = unpack(positions[instance.vertex_begin + triangle.vertices[0]]);
+        const float3 p1 = unpack(positions[instance.vertex_begin + triangle.vertices[1]]);
+        const float3 p2 = unpack(positions[instance.vertex_begin + triangle.vertices[2]]);
+        local_p = fma(float3(hit_uv.y), p2 - p0, fma(float3(hit_uv.x), p1 - p0, p0));
+        float2 a(0, 0), b(1, 0), c(1, 1);
+        if (instance.uv_begin != 0xffffffffu &&
+            (!texture_vertex_uv(uvs, instance.uv_begin, triangle.vertices[0], tp.uv_count, a) ||
+             !texture_vertex_uv(uvs, instance.uv_begin, triangle.vertices[1], tp.uv_count, b) ||
+             !texture_vertex_uv(uvs, instance.uv_begin, triangle.vertices[2], tp.uv_count, c)))
+            return false;
+        if (!rypath_texture_triangle_uv(float3(1.0f - (hit_uv.x + hit_uv.y), hit_uv.x, hit_uv.y), a,
+                                        b, c, st) ||
+            instance.frame_begin >= tp.frame_count ||
+            primitive >= tp.frame_count - instance.frame_begin)
+            return false;
+        const auto frame = frames[instance.frame_begin + primitive];
+        dpdu = unpack(frame.dpdu);
+        dpdv = unpack(frame.dpdv);
+    } else {
+        const auto patch = patches[instance.patch_begin + primitive];
+        float3 v[4];
+        float2 uv[4] = {float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1)};
+        for (uint i = 0; i < 4; ++i) {
+            v[i] = unpack(positions[instance.vertex_begin + patch.vertices[i]]);
+            if (instance.uv_begin != 0xffffffffu &&
+                !texture_vertex_uv(uvs, instance.uv_begin, patch.vertices[i], tp.uv_count, uv[i]))
+                return false;
+        }
+        const float3 du = texture_world_vector(instance, mix(v[1] - v[0], v[3] - v[2], hit_uv.y));
+        const float3 dv = texture_world_vector(instance, mix(v[2] - v[0], v[3] - v[1], hit_uv.x));
+        local_p = mix(mix(v[0], v[1], hit_uv.x), mix(v[2], v[3], hit_uv.x), hit_uv.y);
+        if (!rypath_texture_patch_frame(hit_uv, du, dv, instance.uv_begin != 0xffffffffu, uv[0],
+                                        uv[1], uv[2], uv[3], st, dpdu, dpdv))
+            return false;
+    }
+    float3 dpdx(0), dpdy(0);
+    // Rebase the affine translation before adding local coordinates. Subtracting
+    // the camera from an already-rounded world point loses small surface offsets.
+    const float3 relative_p =
+        texture_world_vector(instance, local_p) +
+        (float3(instance.matrix[3], instance.matrix[7], instance.matrix[11]) - unpack(p.origin));
+    if (!all(isfinite(relative_p)))
+        return false;
+    bool primary = false;
+    if (footprints && sample.scatterings == 0u) {
+        float3 rx, ry;
+        texture_camera_rays(p, sample, rx, ry);
+        if (!all(isfinite(rx)) || !all(isfinite(ry)))
+            return false;
+        primary = rypath_texture_primary_dp(relative_p, point.geometric_normal, primary_direction,
+                                            rx, ry, tp.spp_scale, dpdx, dpdy);
+    }
+    if (footprints && !primary) {
+        rypath_texture_approximate_dp(relative_p, point.geometric_normal,
+                                      texture_matrix(tp.world_from_camera),
+                                      texture_matrix(tp.camera_from_world), unpack(tp.minimum_dx),
+                                      unpack(tp.minimum_dy), tp.spp_scale, dpdx, dpdy);
+    }
+    float2 dstdx(0), dstdy(0);
+    if (footprints && !rypath_texture_uv_derivatives(dpdu, dpdv, dpdx, dpdy, dstdx, dstdy))
+        return false;
+    context = {pack_point(relative_p),
+               pack_point(point.geometric_normal),
+               pack_point(dpdx),
+               pack_point(dpdy),
+               st.x,
+               st.y,
+               dstdx.x,
+               dstdx.y,
+               dstdy.x,
+               dstdy.y};
+    geometric_dpdu = dpdu;
+    geometric_dpdv = dpdv;
+    return true;
+}
+
+struct SurfaceAlpha {
+    const device wire::Instance *instances;
+    const device wire::Point *positions;
+    const device wire::Triangle *triangles;
+    const device wire::Patch *patches;
+    const device wire::Point *normals;
+    const device wire::Point2 *uvs;
+    const device wire::TextureFrame *frames;
+    const device wire::SurfaceVertex *vertices;
+    const device wire::SurfaceTransform *transforms;
+    constant wire::Parameters *parameters;
+    thread const wire::Sample *sample;
+    GraphResources graph;
+    ray incoming;
+
+    MaskedAlphaResult operator()(uint ordinal, uint geometry, uint primitive,
+                                 intersection_type type, float2 uv, float t) const {
+        if (ordinal >= parameters->instance_count || geometry != 0 || !isfinite(t))
+            return {false, false};
+        const device auto &instance = instances[ordinal];
+        const bool patch = type == intersection_type::bounding_box;
+        const uint kind = patch ? wire::patch_primitive : wire::triangle_primitive;
+        if (primitive >= (patch ? instance.patch_count : instance.triangle_count))
+            return {false, false};
+        if (instance.alpha_root == 0xffffffffu)
+            return {true, true};
+        SurfacePoint point;
+        if (!surface_point(uv, kind, instance, primitive, positions, triangles, patches, normals,
+                           parameters->normal_count, PointSource::native_hit, point))
+            return {false, false};
+        graph_wire::Context context{};
+        float3 dpdu, dpdv;
+        if (!surface_texture_context(instance, primitive, kind, uv, point, positions, triangles,
+                                     patches, uvs, frames, *graph.images.parameters, *parameters,
+                                     *sample, incoming.direction, false, context, dpdu, dpdv))
+            return {false, false};
+        // PBRT tests shape alpha before ObjectInstance transforms the accepted
+        // interaction. Reconstruct that definition-frame point directly to
+        // preserve small coordinates under large placement translations.
+        const device auto &xf = transforms[ordinal];
+        if (xf.vertex_begin > graph.parameters->surface_vertex_count ||
+            xf.vertex_count > graph.parameters->surface_vertex_count - xf.vertex_begin)
+            return {false, false};
+        float3 local[4];
+        for (uint i = 0; i < (patch ? 4u : 3u); ++i) {
+            const uint vertex_index =
+                patch ? patches[instance.patch_begin + primitive].vertices[i]
+                      : triangles[instance.triangle_begin + primitive].vertices[i];
+            if (vertex_index >= xf.vertex_count)
+                return {false, false};
+            local[i] = unpack(vertices[xf.vertex_begin + vertex_index].position);
+        }
+        const float3 local_p =
+            patch ? mix(mix(local[0], local[1], uv.x), mix(local[2], local[3], uv.x), uv.y)
+                  : fma(float3(uv.y), local[2] - local[0],
+                        fma(float3(uv.x), local[1] - local[0], local[0]));
+        const float3 definition =
+            rypath_surface_detail::transform(xf.shape, local_p) + unpack(xf.definition_translation);
+        const float3 n = unpack(context.n);
+        float3 definition_n(dot(float3(xf.placement[0], xf.placement[3], xf.placement[6]), n),
+                            dot(float3(xf.placement[1], xf.placement[4], xf.placement[7]), n),
+                            dot(float3(xf.placement[2], xf.placement[5], xf.placement[8]), n));
+        if (!all(isfinite(definition)) ||
+            !rypath_surface_detail::unit_vector(definition_n, definition_n))
+            return {false, false};
+        context.p = pack_point(definition);
+        context.n = pack_point(definition_n);
+        float alpha;
+        if (!graph.evaluate(instance.alpha_root, context, sample->wavelength, alpha))
+            return {false, false};
+        return {alpha >= 1 ||
+                    (alpha > 0 && alpha_uniform(incoming.origin, incoming.direction, t) <= alpha),
+                true};
+    }
+};
+
+static SurfaceHit visible_shadow(thread MixedIntersector &trace, ray incoming,
+                                 instance_acceleration_structure scene,
+                                 MixedIntersectionTable table, thread SurfaceAlpha &alpha) {
+    if (alpha_enabled) {
+        alpha.incoming = incoming;
+        return trace_masked_surface(incoming, scene, all_visible, alpha, true);
+    }
+    const auto hit = trace_shadow(trace, incoming, scene, all_visible, table);
+    return {hit.type, 0, 0, 0, 0, {0, 0}, true};
+}
+
+struct BumpEvaluator {
+    GraphResources graph;
+    uint root;
+    float wavelength;
+    bool operator()(graph_wire::Context context, thread float &value) const {
+        return graph.evaluate(root, context, wavelength, value);
+    }
+};
+
+static bool
+apply_surface_detail(uint ordinal, const device wire::Instance &instance, uint primitive, uint kind,
+                     float2 uv, const device wire::Triangle *triangles,
+                     const device wire::Patch *patches, const device wire::Point2 *texture_uvs,
+                     const device wire::SurfaceVertex *vertices,
+                     const device wire::SurfaceTransform *transforms,
+                     const device wire::Material &material, GraphResources graph,
+                     graph_wire::Context context, float wavelength, thread SurfacePoint &point) {
+    const device auto &xf = transforms[ordinal];
+    if (xf.vertex_begin > graph.parameters->surface_vertex_count ||
+        xf.vertex_count > graph.parameters->surface_vertex_count - xf.vertex_begin)
+        return false;
+    const bool is_patch = kind == wire::patch_primitive;
+    const uint count = is_patch ? 4u : 3u;
+    uint indices[4];
+    float2 st[4] = {float2(0, 0), float2(1, 0), is_patch ? float2(0, 1) : float2(1, 1),
+                    float2(1, 1)};
+    for (uint i = 0; i < count; ++i) {
+        indices[i] = is_patch ? patches[instance.patch_begin + primitive].vertices[i]
+                              : triangles[instance.triangle_begin + primitive].vertices[i];
+        if (instance.uv_begin != 0xffffffffu &&
+            !texture_vertex_uv(texture_uvs, instance.uv_begin, indices[i],
+                               graph.images.parameters->uv_count, st[i]))
+            return false;
+    }
+    rypath_surface_detail::Frame frame;
+    if (!(is_patch ? rypath_surface_detail::patch(vertices, xf, indices, uv, st, frame)
+                   : rypath_surface_detail::triangle(vertices, xf, indices, uv, st, frame)))
+        return false;
+    point.geometric_normal = frame.geometric_normal;
+    if (material.normal_map != 0xffffffffu) {
+        if (material.normal_map >= graph.images.parameters->texture_count)
+            return false;
+        const float3 rgb = rypath_image::lookup_base(
+            graph.images.textures[material.normal_map], graph.images.levels, graph.images.texels,
+            graph.images.transfer, *graph.images.parameters, float2(context.u, 1.0f - context.v));
+        return rypath_surface_detail::normal_map(frame, rgb, point.geometric_normal,
+                                                 point.shading_normal);
+    }
+    return rypath_surface_detail::bump_map(frame, context, point.geometric_normal,
+                                           BumpEvaluator{graph, material.bump_root, wavelength},
+                                           point.shading_normal);
+}
+
+// Only certified binary alpha can reach an emitter. Constant-zero alpha keeps
+// PBRT's special invisible light behavior; an all-zero image emits nothing.
+static bool area_radiance(const device wire::AreaEmission &emission,
+                          const device wire::Instance &instance, uint primitive, uint kind,
+                          float2 uv, thread const SurfacePoint &point, SurfaceAlpha resources,
+                          rypath_image_light::Images images, thread float &radiance) {
+    radiance = emission.radiance[dense_index(resources.sample->wavelength)];
+    const bool masked =
+        alpha_enabled && instance.alpha_root != 0xffffffffu && instance.invisible_emitter == 0u;
+    if (!masked && !(area_image_enabled && emission.image_texture != 0xffffffffu))
+        return true;
+    graph_wire::Context context{};
+    float3 dpdu, dpdv;
+    if (!surface_texture_context(instance, primitive, kind, uv, point, resources.positions,
+                                 resources.triangles, resources.patches, resources.uvs,
+                                 resources.frames, *resources.graph.images.parameters,
+                                 *resources.parameters, *resources.sample,
+                                 resources.incoming.direction, false, context, dpdu, dpdv))
+        return false;
+    if (masked) {
+        float alpha;
+        if (!resources.graph.evaluate(instance.alpha_root, context, resources.sample->wavelength,
+                                      alpha) ||
+            !(alpha == 0.0f || alpha == 1.0f))
+            return false;
+        if (alpha == 0.0f) {
+            radiance = 0;
+            return true;
+        }
+    }
+    if (area_image_enabled && emission.image_texture != 0xffffffffu)
+        radiance = rypath_image_light::area_radiance(
+            images, emission.image_texture, emission.image_scale, float2(context.u, context.v),
+            resources.sample->wavelength);
+    return isfinite(radiance) && radiance >= 0;
+}
+
+static float power_weight(float a, float b) {
+    const float scale = max(a, b);
+    if (!(scale > 0) || !isfinite(scale))
+        return NAN;
+    a /= scale;
+    b /= scale;
+    return a * a / (a * a + b * b);
+}
+
 static float2 patch_sample_uv(uint u, uint v) {
     // Independent 23-bit midpoint coordinates stay strictly within the square.
     return (float2(u >> 9, v >> 9) + 0.5f) * 0x1.0p-23f;
@@ -711,6 +1058,14 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                               device wire::Sample *output [[buffer(1)]],
                               const device float *environment [[buffer(7)]],
                               const device sobol::Tables &tables [[buffer(12)]],
+                              const device wire::ImageTexture *image_textures [[buffer(17)]],
+                              const device wire::TextureLevel *image_levels [[buffer(18)]],
+                              const device wire::Word *image_texels [[buffer(19)]],
+                              const device float *image_transfer [[buffer(20)]],
+                              const device float *image_spectra [[buffer(21)]],
+                              constant wire::TextureParameters &texture_p [[buffer(22)]],
+                              constant wire::TextureGraphParameters &graph_p [[buffer(25)]],
+                              const device float *illuminant [[buffer(29)]],
                               uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
@@ -720,7 +1075,17 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
     if (p.model == wire::pbrt_model && !all(isfinite(primary_ray(p, sample).direction))) {
         sample.status = wire::invalid_arithmetic;
     }
-    sample.radiance = sky_radiance(environment, p, sample.wavelength);
+    if (environment_image_enabled) {
+        const rypath_image_light::Images images{image_textures, image_levels,  image_texels,
+                                                image_transfer, image_spectra, illuminant,
+                                                &texture_p};
+        sample.radiance = rypath_image_light::environment_radiance(
+            images, graph_p, primary_ray(p, sample).direction, sample.wavelength);
+    } else {
+        sample.radiance = sky_radiance(environment, p, sample.wavelength);
+    }
+    if (!isfinite(sample.radiance) || sample.radiance < 0)
+        sample.status = wire::invalid_arithmetic;
     output[lane] = sample;
 }
 
@@ -747,6 +1112,14 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 const device float *image_transfer [[buffer(20)]],
                                 const device float *image_spectra [[buffer(21)]],
                                 constant wire::TextureParameters &texture_p [[buffer(22)]],
+                                const device graph_wire::Node *graph_nodes [[buffer(23)]],
+                                const device wire::SpectralKnot *graph_knots [[buffer(24)]],
+                                constant wire::TextureGraphParameters &graph_p [[buffer(25)]],
+                                const device wire::SurfaceVertex *surface_vertices [[buffer(26)]],
+                                const device wire::SurfaceTransform *surface_transforms
+                                [[buffer(27)]],
+                                const device float *environment_cdf [[buffer(28)]],
+                                const device float *illuminant [[buffer(29)]],
                                 uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
@@ -755,6 +1128,18 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
     wire::Sample sample = begin_sample(p, tables, lane, index);
     ray incoming = primary_ray(p, sample);
     const float3 primary_direction = incoming.direction;
+    const GraphResources graph{
+        graph_nodes,
+        graph_knots,
+        &graph_p,
+        {image_textures, image_levels, image_texels, image_transfer, image_spectra, &texture_p}};
+    SurfaceAlpha alpha{
+        instances,      positions,        triangles,          patches, normals, texture_uvs,
+        texture_frames, surface_vertices, surface_transforms, &p,      &sample, graph,
+        incoming};
+    const rypath_image_light::Images light_images{image_textures, image_levels,  image_texels,
+                                                  image_transfer, image_spectra, illuminant,
+                                                  &texture_p};
     MixedIntersector closest;
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
     MixedIntersector shadow;
@@ -772,9 +1157,26 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        const auto hit = trace_surface(closest, incoming, scene, all_visible, intersection_table);
+        alpha.incoming = incoming;
+        const auto hit = alpha_enabled ? trace_masked_surface(incoming, scene, all_visible, alpha)
+                                       : trace_surface(closest, incoming, scene, all_visible,
+                                                       intersection_table);
+        if (!hit.valid) {
+            sample.status = wire::invalid_hit;
+            break;
+        }
         if (hit.type == intersection_type::none) {
-            sample.radiance += throughput * escape_weight * E;
+            float Le = E;
+            if (environment_image_enabled) {
+                Le = rypath_image_light::environment_radiance(
+                    light_images, graph_p, incoming.direction, sample.wavelength);
+                if (sample.scatterings != 0u) {
+                    const float pdf = rypath_image_light::environment_pdf(graph_p, environment_cdf,
+                                                                          incoming.direction);
+                    escape_weight = power_weight(previous_bsdf_pdf, pdf);
+                }
+            }
+            sample.radiance += throughput * escape_weight * Le;
             break;
         }
         const uint bounce = sample.scatterings;
@@ -811,7 +1213,12 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 break;
             }
             const device wire::AreaEmission &emission = emissions[instance.emission];
-            const float Le = emission.radiance[dense_index(sample.wavelength)];
+            float Le;
+            if (!area_radiance(emission, instance, hit.primitive_id, kind, hit_uv, point, alpha,
+                               light_images, Le)) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
             if (Le > 0.0f && (emission.two_sided != 0u ||
                               dot(point.geometric_normal, -incoming.direction) >= 0.0f)) {
                 float weight = 1.0f;
@@ -847,9 +1254,23 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const device wire::Material &material = materials[instance.material];
-        if (material.kind == wire::image_material && !emissive &&
+        const bool context_material =
+            material.kind == wire::image_material || material.kind == wire::graph_material ||
+            material.bump_root != 0xffffffffu || material.normal_map != 0xffffffffu;
+        if (context_material && !emissive &&
             !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
                            normals, p.normal_count, PointSource::native_hit, point)) {
+            sample.status = wire::invalid_arithmetic;
+            break;
+        }
+        graph_wire::Context texture_context{};
+        float3 geometric_dpdu(0), geometric_dpdv(0);
+        if ((material.kind == wire::graph_material || material.bump_root != 0xffffffffu ||
+             material.normal_map != 0xffffffffu) &&
+            !surface_texture_context(instance, hit.primitive_id, kind, hit_uv, point, positions,
+                                     triangles, patches, texture_uvs, texture_frames, texture_p, p,
+                                     sample, primary_direction, true, texture_context,
+                                     geometric_dpdu, geometric_dpdv)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -874,6 +1295,12 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                     image_textures[material.image_texture], image_levels,
                                     image_texels, image_transfer, image_spectra, texture_p, p,
                                     sample, primary_direction);
+        } else if (p.model == wire::pbrt_model && material.kind == wire::graph_material) {
+            if (!graph.evaluate(material.texture_root, texture_context, sample.wavelength, rho)) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            rho = clamp(rho, 0.0f, 1.0f);
         } else {
             sample.status = wire::invalid_hit;
             break;
@@ -885,12 +1312,21 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         if (rho == 0.0f) {
             break;
         }
-        const bool authored_normals = instance.normal_begin != wire::no_normals;
+        const bool detail = surface_detail_enabled && (material.bump_root != 0xffffffffu ||
+                                                       material.normal_map != 0xffffffffu);
+        if (detail && !apply_surface_detail(hit.instance_id, instance, hit.primitive_id, kind,
+                                            hit_uv, triangles, patches, texture_uvs,
+                                            surface_vertices, surface_transforms, material, graph,
+                                            texture_context, sample.wavelength, point)) {
+            sample.status = wire::invalid_arithmetic;
+            break;
+        }
+        const bool authored_normals = instance.normal_begin != wire::no_normals || detail;
         if (!authored_normals && bounce >= p.emergency_limit) {
             sample.status = wire::emergency_depth;
             break;
         }
-        if (!emissive && material.kind != wire::image_material &&
+        if (!emissive && !context_material &&
             !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
                            normals, p.normal_count, PointSource::native_hit, point)) {
             sample.status = wire::invalid_arithmetic;
@@ -913,10 +1349,27 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const uint4 light_words = draw_words(p, tables, sample, index, 2 + 2 * bounce);
-        const float3 light_direction =
-            sphere(sample_uniform(p, light_words.x), sample_uniform(p, light_words.y));
+        float3 light_direction;
+        float light_pdf = 1.0f / (4.0f * pi);
+        float light_radiance = E;
+        const float2 light_u(sample_uniform(p, light_words.x), sample_uniform(p, light_words.y));
+        if (environment_image_enabled) {
+            if (!rypath_image_light::sample_environment(graph_p, environment_cdf, light_u,
+                                                        light_direction, light_pdf)) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            light_radiance = rypath_image_light::environment_radiance(
+                light_images, graph_p, light_direction, sample.wavelength);
+        } else {
+            light_direction = sphere(light_u.x, light_u.y);
+        }
+        if (!isfinite(light_radiance) || light_radiance < 0) {
+            sample.status = wire::invalid_arithmetic;
+            break;
+        }
         const float light_cosine = dot(n, light_direction);
-        if (E > 0.0f && light_cosine > 0.0f) {
+        if (light_radiance > 0.0f && light_cosine > 0.0f) {
             const float3 origin = directional_offset
                                       ? spawn_toward(incoming, hit.distance, point, light_direction)
                                       : area_reference;
@@ -924,11 +1377,18 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 sample.status = wire::invalid_arithmetic;
                 break;
             }
-            if (trace_shadow(shadow, ray(origin, light_direction), scene, all_visible,
-                             intersection_table)
-                    .type == intersection_type::none) {
-                sample.radiance +=
-                    throughput * rho * (4.0f * light_cosine) * light_weight(light_cosine) * E;
+            const auto visibility = visible_shadow(shadow, ray(origin, light_direction), scene,
+                                                   intersection_table, alpha);
+            if (!visibility.valid) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            if (visibility.type == intersection_type::none) {
+                const float factor = environment_image_enabled
+                                         ? (light_cosine / pi) / light_pdf *
+                                               power_weight(light_pdf, light_cosine / pi)
+                                         : (4.0f * light_cosine) * light_weight(light_cosine);
+                sample.radiance += throughput * rho * factor * light_radiance;
             }
         }
 
@@ -955,18 +1415,24 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 break;
             }
             const device wire::AreaEmission &emission = emissions[light_instance.emission];
-            const float Le = emission.radiance[dense_index(sample.wavelength)];
+            float Le = emission.radiance[dense_index(sample.wavelength)];
             // A coplanar connection has zero geometric emitter cosine.
             const bool same_triangle = !patch_hit && !patch_light &&
                                        emitter.instance == hit.instance_id &&
                                        emitter.primitive == hit.primitive_id;
-            if (Le > 0.0f && !same_triangle) {
+            if ((Le > 0.0f || (area_image_enabled && emission.image_texture != 0xffffffffu)) &&
+                !same_triangle) {
                 SurfacePoint target;
                 const float2 light_uv = patch_light ? patch_sample_uv(light_words.z, light_words.w)
                                                     : triangle_uv(light_words.z, light_words.w);
                 if (!surface_point(light_uv, emitter.kind, light_instance, emitter.primitive,
                                    positions, triangles, patches, normals, p.normal_count,
                                    PointSource::area_sample, target)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                if (!area_radiance(emission, light_instance, emitter.primitive, emitter.kind,
+                                   light_uv, target, alpha, light_images, Le)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
@@ -987,12 +1453,17 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     const float3 direction = delta / sqrt(distance_squared);
                     const float receiver_cosine = dot(n, direction);
                     const float emitter_cosine = dot(target.geometric_normal, -direction);
-                    if (receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
+                    if (Le > 0.0f && receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
                         (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
                         const float factor =
-                            area_weights(target.inverse_area_pdf, abs(emitter_cosine),
-                                         receiver_cosine / pi, distance_squared, p.emitter_slots)
-                                .direct_factor;
+                            light_instance.invisible_emitter != 0u
+                                ? (float(p.emitter_slots) * target.inverse_area_pdf) *
+                                      abs(emitter_cosine) * (receiver_cosine / pi) /
+                                      distance_squared
+                                : area_weights(target.inverse_area_pdf, abs(emitter_cosine),
+                                               receiver_cosine / pi, distance_squared,
+                                               p.emitter_slots)
+                                      .direct_factor;
                         const float3 origin =
                             directional_offset
                                 ? spawn_toward(incoming, hit.distance, point, direction)
@@ -1011,8 +1482,13 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                             break;
                         }
                         const ray connection(origin, segment, 0.0f, 0x1.fffffep-1f);
-                        if (trace_shadow(shadow, connection, scene, all_visible, intersection_table)
-                                .type == intersection_type::none) {
+                        const auto visibility =
+                            visible_shadow(shadow, connection, scene, intersection_table, alpha);
+                        if (!visibility.valid) {
+                            sample.status = wire::invalid_arithmetic;
+                            break;
+                        }
+                        if (visibility.type == intersection_type::none) {
                             sample.radiance += (throughput * rho) * (factor * Le);
                         }
                     }

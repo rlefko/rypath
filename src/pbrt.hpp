@@ -4,6 +4,7 @@
 #include "geometry.hpp"
 #include "image_texture.hpp"
 #include "spectral_knot.hpp"
+#include "texture_graph_wire.h"
 
 #include <array>
 #include <cstddef>
@@ -106,6 +107,10 @@ struct CheckedSpectrumSource {
     std::filesystem::path resolved_path;
     std::vector<SpectralKnot> knots;
 };
+struct CheckedImageSource {
+    std::filesystem::path resolved_path;
+    std::shared_ptr<const DecodedImage> pixels;
+};
 struct Descriptor {
     Directive authored;
     Transform transform;
@@ -116,13 +121,23 @@ struct Descriptor {
     };
     std::vector<InheritedParameter> inherited;
     std::vector<std::size_t> effective_authored;
+    // Single-spectrum descriptors preserve their existing checked payload.
     std::shared_ptr<const CheckedSpectrumSource> spectrum_file{};
+    std::string_view spectrum_file_parameter{};
+    std::vector<std::pair<std::string_view, std::shared_ptr<const CheckedSpectrumSource>>>
+        spectrum_files{};
+    std::shared_ptr<const ImagePyramid> native_image{};
+    std::shared_ptr<const CheckedImageSource> native_image_source{};
+    texture_graph_wire::Mapping texture_mapping{};
+    Transform texture_from_world{};
+    std::array<float, 3> texture_direction{0, 1, 0};
 
     struct EffectiveParameter {
         const Parameter *parameter = nullptr;
         std::string_view color_space;
     };
     EffectiveParameter effective_parameter(std::string_view name) const;
+    const CheckedSpectrumSource *checked_spectrum(std::string_view name) const;
 };
 struct MaterialBinding {
     std::shared_ptr<const std::string> name = Location::empty_file();
@@ -146,14 +161,16 @@ struct Placement {
     Transform transform;
     Location location;
 };
-struct CheckedImageSource {
-    std::filesystem::path resolved_path;
-    std::shared_ptr<const DecodedImage> pixels;
-};
 struct SpectrumImageTexture {
     Descriptor descriptor;
     std::shared_ptr<const CheckedImageSource> source;
     ImageTexture texture;
+    bool binary_base = false;
+};
+struct TextureDefinitionRef {
+    enum class Kind { float_constant, spectrum_constant, float_image, spectrum_image, procedural };
+    Kind kind;
+    std::size_t index;
 };
 struct Scene {
     std::vector<Descriptor> options;
@@ -162,12 +179,18 @@ struct Scene {
     std::vector<Descriptor> float_constant_textures;
     std::vector<Descriptor> spectrum_constant_textures;
     std::vector<SpectrumImageTexture> spectrum_image_textures;
+    std::vector<SpectrumImageTexture> float_image_textures;
+    std::vector<Descriptor> procedural_textures;
+    std::vector<TextureDefinitionRef> texture_order;
     std::vector<Descriptor> lights;
     std::vector<std::shared_ptr<const Descriptor>> area_lights;
     std::vector<Shape> shapes;
     std::vector<Object> objects;
     std::vector<Placement> placements;
     GeometryData geometry;
+    float displacement_edge_scale = 1;
+
+    const Descriptor &texture_descriptor(TextureDefinitionRef ref) const;
 };
 struct Inventory {
     std::size_t named_materials = 0;

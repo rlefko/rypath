@@ -589,6 +589,9 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
                         MTLPackedFloat3Make(m[column], m[column + 4], m[column + 8]);
                 }
                 instance.mask = geometry_wire::all_visible;
+                if (geometry.instances[indices.source_index].non_opaque) {
+                    instance.options = MTLAccelerationStructureInstanceOptionNonOpaque;
+                }
                 instance.accelerationStructureIndex =
                     mesh_to_structure[indices.mesh_index][kind_index(indices.kind)];
                 native_instances.push_back(instance);

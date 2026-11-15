@@ -38,10 +38,10 @@ diagnosed even when not placed in the image.
 | Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
 | Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol, default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
-| Materials | Two-sided diffuse, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
-| Textures | Named spectrum constants and UV-mapped PNG imagemaps for diffuse reflectance; float constants are validated during translation |
-| Environment | Zero or one constant infinite light with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
-| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
+| Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
+| Textures | Typed float/spectrum graphs, PNG/JPEG imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
+| Environment | Zero or one infinite light: a square RGB PNG/JPEG equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
+| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
 | Output metadata | Filename and FP16 setting explicitly overridden by PNG policy; no bitwise PBRT PNG equivalence |
 
@@ -53,10 +53,11 @@ camera. Exact full-frame crop/pixel bounds are accepted; other bounds are
 unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
-Non-sRGB reconstruction, legacy `color` parameters,
-other image and procedural textures, textured emitters, emitting object
-members, other external mesh formats, tangents/normal maps, media, motion, lens
-effects, and other cameras, filters, samplers, and integrators remain unsupported.
+Non-sRGB reconstruction, legacy `color` parameters, Ptex, floating-point/HDR image
+inputs, fractional emitting alpha, emitting object members, other external mesh
+formats, media, motion, lens effects, and other cameras, filters, samplers, and
+integrators remain unsupported. The core texture boundary below lists the
+additional exclusions.
 Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
 passes structural preflight and translates with its authored Sobol sampler,
 1024×1024 film, triangle filter, 64 samples per pixel, and maximum depth 65.
@@ -90,8 +91,9 @@ Direct RGB reflectance continues to use the material dictionary's color space.
 Translation checks every constant definition, including unused ones, before
 rendering. All references to a spectrum constant share its compiled diffuse
 material payload. Float constants accept signed values that narrow to finite
-binary32. Alpha masking and displacement remain deferred. See the
-[constant texture validation record](pbrt-texture-validation.md).
+binary32. Composite graphs retain signed spectral operands until the final
+material reflectance clamp. See the historical [constant texture validation
+record](pbrt-texture-validation.md) and current core profile below.
 
 ## Blackbody reflectance
 
@@ -171,20 +173,20 @@ follow the [pinned PBRT texture implementation](https://github.com/mmp/pbrt-v4/b
 
 | Parameter | Supported values |
 | --- | --- |
-| `filename` | Required entry-relative or absolute path to a supported [PNG input](pbrt-profile.md#png-imagemap-definitions) |
-| `mapping` | `uv` (default), with `uscale` and `vscale` defaulting to 1 and `udelta` and `vdelta` to 0 |
-| `encoding` | `sRGB` (default) or `linear`; output color primaries are sRGB |
+| `filename` | Required entry-relative or absolute path to a supported [PNG/JPEG input](pbrt-profile.md#png-imagemap-definitions) |
+| `mapping` | `uv` (default), `planar`, `spherical`, or `cylindrical`; UV scales default to 1 and offsets to 0 |
+| `encoding` | PNG: `sRGB` (default), `linear`, or `gamma` plus positive finite exponent; JPEG: fixed sRGB decode |
 | `filter` | `point`, `bilinear` (default), `trilinear`, or elliptical `ewa`/`EWA` |
-| `wrap` | `repeat` (default), `clamp`, or `black`; non-power-of-two images require repeat or clamp |
+| `wrap` | `repeat` (default), `clamp`, or `black`, including non-power-of-two sources |
 | `scale`, `invert` | Multiply filtered RGB by `scale` (default 1), then subtract from one when `invert` is true (default false) |
 | `maxanisotropy` | EWA accepts 1–16, default 8; finite values remain inert with other filters |
 
 Texture lookup maps the hit UV, flips the vertical coordinate and filters in
 linear RGB. The spectrum uses the existing sRGB albedo reconstruction after
 clamping the scaled or inverted RGB to [0,1]. Explicit texture encoding controls
-sample decoding. PNG gamma, color metadata, and alpha do not affect reflectance.
-Float imagemaps, non-UV mappings, other encodings or filters, alpha masking,
-displacement, and image emission are outside this profile.
+sample decoding. PNG metadata gamma, color metadata, and alpha do not affect reflectance.
+Float imagemaps, positive `gamma` encoding, non-UV mappings, alpha, surface detail,
+and image emission follow the core texture profile below.
 
 Indexed PNGs expand each palette index into its exact RGB8 entry, including
 fully transparent entries. Palette alpha does not mask geometry or composite
@@ -239,6 +241,80 @@ sample count. Camera ray differentials supply primary footprints. Secondary
 hits and primary projection fallbacks use PBRT's camera footprint approximation.
 The [image texture validation record](image-texture-validation.md) describes
 mip generation, the footprint calculation, and comparison coverage.
+
+## Core texture graphs and consumers
+
+Float and spectrum namespaces are distinct. All definitions, including unused
+ones, are validated after parsing; forward references work, cycles and wrong
+channel references are errors. Both channels support `constant`, `imagemap`,
+`scale`, `mix`, `directionmix`, `bilerp`, `checkerboard`, and `dots`. Float graphs
+also support `fbm`, `wrinkled`, and `windy`; spectrum graphs support `marble`.
+The implementation follows the pinned factories, including their operand order,
+conditional evaluation, image scale folding, and mapping derivative conventions.
+Graph limits are 64 nodes of depth and 4,096 worst-case visits per evaluation.
+
+Two-dimensional consumers support UV, planar, spherical, and cylindrical
+mapping; three-dimensional checkerboard and noise use the inverse texture
+declaration transform. Planar mappings transform position as well. Texture
+positions are camera-relative with declaration inverses rebased before binary32
+conversion. Filtered procedures use the existing primary/fallback footprint.
+Signed numeric and file spectra stay unclipped inside graphs; diffuse albedo is
+clamped only after evaluating the root. Image spectrum nodes retain PBRT's own
+RGB albedo conversion before participating in a graph.
+
+Float imagemaps reproduce PBRT's channel-selection differences: bilinear and
+trilinear branches use Y, mean RGB, or retained nonopaque RGBA alpha; point,
+nondegenerate EWA, and direct coarsest-mip lookup use channel zero. Degenerate EWA
+uses its bilinear branch. Grayscale-alpha, palette transparency, and `tRNS` do
+not provide scalar alpha. Geometry alpha is an explicit shape parameter.
+
+Nonemitting triangle and bilinear shapes accept scalar alpha textures or values.
+Values at most zero reject a candidate; values at least one accept it; fractional
+values use the pinned packed-ray hash convention. Native queries preserve other
+primitives at the same distance and every admissible patch root. All candidates
+use zero texture derivatives. Hash tuples and rejected-root traversal can differ
+from PBRT's recursive rays and transformed-primitive rays; sample identity with
+PBRT is not claimed. Batch and scheduling changes preserve rypath's results.
+
+Emitting alpha is restricted to resolved constants zero/one or direct UV point
+imagemaps with unit scale, optional inversion, and exactly binary prepared base
+texels and border. Certification happens after resize and encoding; an
+uncertifiable emitting mask is rejected before GPU work. A constant-zero emitter
+is invisible to all rays but supplies full NEE emission with weight one, following
+PBRT's special case. An all-zero image mask is dark. Fractional emitting masks
+are deferred because the pinned renderer applies different stochastic masks to
+hit and NEE techniques without compensating its geometric MIS weights.
+
+Diffuse `displacement` is bump mapping. `normalmap` uses an RGB native-resolution
+PNG/JPEG with repeat bilinear sampling and takes precedence over bump mapping.
+Triangle `vector3 S` tangents and normals form the declaration-space shading
+frame before object placement. Surface detail changes the shading normal;
+geometry, offsets, area measures, and emission sidedness keep geometric normals.
+PNG normal maps decode as linear; pinned JPEG fallback decoding is always sRGB.
+
+PLY shape `displacement` is true geometry displacement and requires vertex UVs.
+Cyclic quads are triangulated, longest edges are refined in the shape-definition
+metric with shared midpoints, displacement is evaluated in original object space,
+and normals are rebuilt before Metal acceleration construction. Placement does
+not trigger another refinement. Bounds are 64 refinement levels, 2²⁴ texture
+node visits, the existing 2,000,000 scalar-value budget, and bounded scratch
+storage. Other shape displacement remains unsupported.
+
+Infinite image lights require a square RGB PNG/JPEG in PBRT's equal-area
+octahedral projection and an orthonormal linear transform. Radiance uses native
+nearest sampling with octahedral seams and calibrated RGBIlluminant/D65 spectra.
+The proposal is 15/16 image-weighted sampling plus 1/16 uniform sphere sampling;
+its PDF uses actual quantized CDF intervals and includes the uniform component.
+The importance grid has at most 128 cells per axis; native texel mass is distributed
+by area overlap into those cells, independently of native radiance resolution.
+Black maps use a uniform CDF. BSDF escape and NEE use complementary power weights
+with this PDF. Portals, multiple environments, positive area `power`, instanced
+emitters, and authored bilinear emission-sampling controls remain deferred.
+
+The [core texture validation record](core-texture-validation.md) distinguishes
+pinned behavior, numerical adaptations, and measured evidence. APNG, EXR, PFM,
+BMP, TGA, QOI, CMYK/YCCK JPEG, ICC color management, wider color spaces, Ptex,
+and output/checkpoint/UI changes are outside this boundary.
 
 ## External PLY geometry
 
@@ -443,8 +519,10 @@ without an illuminance multiplier. Emission and reflectance are independent;
 black diffuse emitters remain visible. The emission normal preserves winding,
 transformed handedness, and ReverseOrientation before face-forwarding the
 scattering normal. Two-sided emission changes the emitting hemisphere, not its
-radiance. An empty image filename is inert; nonempty filenames remain inventoried
-unsupported assets, and combining one with effective L is invalid.
+radiance. An empty image filename is inert. An RGB PNG/JPEG filename uses native
+resolution, clamp-wrapped bilinear sampling at `(u, 1-v)`, and RGBIlluminant/D65
+spectral reconstruction. Combining a nonempty filename with effective `L` is
+invalid. Image emitters retain the existing geometric proposal and MIS density.
 The authored finite value determines whether power is positive; this deferred
 parameter is not narrowed to float. Transformed emitters use checked world-space
 geometry for both native acceleration and shading, while preserving source

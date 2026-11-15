@@ -330,15 +330,15 @@ Shape "plymesh"
     require(!missing.document.dependencies.front().exists &&
                 !missing.document.dependencies_complete,
             report(missing));
-    diagnostic(with_parameter(R"("float alpha" 1)"), "unsupported-parameter", 2);
+    success(with_parameter(R"("float alpha" 1)"));
     diagnostic(with_parameter(R"("texture alpha" "absent" "float alpha" 1)"),
                "undefined-reference");
     diagnostic(with_parameter(R"("float alpha" 1 "texture alpha" "absent")"),
                "undefined-reference");
-    diagnostic(with_parameter(R"("texture alpha" "")"), "unsupported-parameter", 2);
+    success(with_parameter(R"("texture alpha" "")"));
     const auto empty_alpha =
         with_parameter(R"("texture alpha" "shadowed" "texture alpha" "" "float alpha" 1)");
-    diagnostic(empty_alpha, "unsupported-parameter", 2);
+    success(empty_alpha);
     const auto inherited_alpha = check(write(directory / "inherited-alpha.pbrt", R"(WorldBegin
 Attribute "shape" "texture alpha" "absent"
 Shape "plymesh" "string filename" "mesh.ply" "float alpha" 1
@@ -357,7 +357,7 @@ Shape "plymesh" "string filename" "mesh.ply" "texture displacement" "d"
 Texture "d" "float" "constant" "float value" .25
 Shape "plymesh" "string filename" "mesh.ply" "texture displacement" "d"
 )")),
-               "unsupported-parameter", 2);
+               "invalid-geometry");
 
     const auto lit = check(write(directory / "emitting-object.pbrt", R"(WorldBegin
 ObjectBegin "fixture"

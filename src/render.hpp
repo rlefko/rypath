@@ -6,6 +6,7 @@
 #include "sampling.hpp"
 #include "spectral_knot.hpp"
 #include "texture_footprint.hpp"
+#include "texture_graph.hpp"
 
 #include <functional>
 #include <optional>
@@ -21,7 +22,7 @@ inline constexpr std::uint32_t render_tile_capacity = 65536;
 inline constexpr std::uint32_t render_emergency_limit = 1024;
 inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
 
-enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image, blackbody };
+enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image, blackbody, texture_graph };
 
 struct SpectralMaterial {
     std::array<float, 8> reflectance{};
@@ -31,6 +32,9 @@ struct SpectralMaterial {
     std::array<float, 3> coefficients{};
     std::uint32_t image_texture = 0;
     float temperature_kelvin = 0;
+    std::uint32_t texture_root = UINT32_MAX;
+    std::uint32_t bump_root = UINT32_MAX;
+    std::uint32_t normal_map = UINT32_MAX;
 };
 enum class RenderModel { demo, pbrt };
 enum class PixelFilterKind { box, triangle };
@@ -57,6 +61,13 @@ struct RasterCamera {
 struct AreaEmission {
     std::array<float, 471> radiance{};
     bool two_sided = false;
+    std::uint32_t image_texture = UINT32_MAX;
+    float image_scale = 1;
+};
+struct SurfaceTransforms {
+    std::array<double, 16> shape{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<double, 16> placement{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    bool authored_reverse = false;
 };
 struct RenderScene {
     GeometryData geometry;
@@ -78,6 +89,13 @@ struct RenderScene {
     // One entry per source instance when image textures are present. Only textured
     // triangles need frames; patch tangents are evaluated at the hit coordinate.
     std::vector<std::vector<TextureTriangleFrame>> instance_texture_frames{};
+    TextureGraph texture_graph{};
+    std::vector<std::uint32_t> instance_alpha_roots{};
+    std::vector<std::uint32_t> instance_invisible_emitters{};
+    std::uint32_t environment_image = UINT32_MAX;
+    float environment_image_scale = 1;
+    GeometryTransform environment_texture_from_world{};
+    std::vector<SurfaceTransforms> instance_surface_transforms{};
 };
 struct RenderSettings {
     std::uint32_t width = 256;
@@ -120,6 +138,7 @@ std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
 std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_patch_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_render_scene(const RenderScene &scene);
+bool instance_uses_texture_context(const RenderScene &scene, std::size_t index);
 RenderScene make_demo_scene();
 Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model = RenderModel::demo,
                double exposure = 1);

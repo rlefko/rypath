@@ -284,6 +284,7 @@ std::string validate_pbrt_material(const SpectralMaterial &material) {
             return "PBRT RGB reflectance requires three finite, evaluable coefficients";
         }
         return {};
+    case SpectralMaterialKind::texture_graph:
     case SpectralMaterialKind::image:
         if (!material.knots.empty() || material.constant != 0 ||
             material.coefficients != zero_coefficients) {
@@ -304,13 +305,130 @@ std::string validate_pbrt_material(const SpectralMaterial &material) {
 }
 
 std::string validate_image_textures(const RenderScene &scene) {
+    namespace graph = texture_graph_wire;
+    if (const auto error = validate_texture_graph(scene.texture_graph, scene.image_textures.size());
+        !error.empty()) {
+        return error;
+    }
+    const auto root_valid = [&](std::uint32_t root, std::uint32_t type) {
+        return root < scene.texture_graph.nodes.size() &&
+               scene.texture_graph.nodes[root].type == type;
+    };
+    const auto base_valid = [&](std::uint32_t index) {
+        return index < scene.image_textures.size() && scene.image_textures[index].image &&
+               scene.image_textures[index].image->native_base &&
+               !scene.image_textures[index].image->levels.empty() &&
+               scene.image_textures[index].image->source_channels == 3;
+    };
     for (const auto &material : scene.materials) {
         if (material.kind == SpectralMaterialKind::image &&
             material.image_texture >= scene.image_textures.size()) {
             return "Image material references an invalid texture";
         }
+        if (material.kind == SpectralMaterialKind::texture_graph &&
+            !root_valid(material.texture_root, graph::spectrum)) {
+            return "Material references an invalid spectrum texture graph";
+        }
+        if (material.kind != SpectralMaterialKind::texture_graph &&
+            material.texture_root != UINT32_MAX) {
+            return "Non-graph material contains a texture graph binding";
+        }
+        if (material.bump_root != UINT32_MAX && !root_valid(material.bump_root, graph::scalar)) {
+            return "Bump mapping requires a scalar texture graph";
+        }
+        if (material.normal_map != UINT32_MAX && !base_valid(material.normal_map)) {
+            return "Normal mapping requires a native-resolution image";
+        }
     }
-    if (scene.image_textures.empty()) {
+    const auto count = scene.geometry.instances.size();
+    if ((!scene.instance_alpha_roots.empty() && scene.instance_alpha_roots.size() != count) ||
+        (!scene.instance_invisible_emitters.empty() &&
+         scene.instance_invisible_emitters.size() != count) ||
+        (!scene.instance_surface_transforms.empty() &&
+         scene.instance_surface_transforms.size() != count)) {
+        return "Texture consumer bindings require one entry per source instance";
+    }
+    std::set<const ImagePyramid *> certified_images;
+    const auto certified_mask = [&](std::uint32_t root) {
+        const auto &node = scene.texture_graph.nodes[root];
+        if (node.kind == graph::image && node.mapping.kind == graph::uv &&
+            node.payload[0] < scene.image_textures.size()) {
+            const auto &texture = scene.image_textures[node.payload[0]];
+            if (texture.filter != ImageFilter::point || texture.scale != 1 || !texture.image)
+                return false;
+            if (certified_images.contains(texture.image.get()))
+                return true;
+            if (!certify_binary_emitter_mask(scene.texture_graph, root, scene.image_textures))
+                return false;
+            certified_images.insert(texture.image.get());
+            return true;
+        }
+        return certify_binary_emitter_mask(scene.texture_graph, root, scene.image_textures);
+    };
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto root =
+            scene.instance_alpha_roots.empty() ? UINT32_MAX : scene.instance_alpha_roots[i];
+        const bool emissive =
+            !scene.instance_emissions.empty() && scene.instance_emissions[i] != no_area_emission;
+        const auto invisible =
+            scene.instance_invisible_emitters.empty() ? 0 : scene.instance_invisible_emitters[i];
+        if (root != UINT32_MAX && !root_valid(root, graph::scalar)) {
+            return "Alpha requires a scalar texture graph";
+        }
+        if (emissive && root != UINT32_MAX && !certified_mask(root)) {
+            return "Emitting alpha requires a certified binary constant or point texture";
+        }
+        const bool zero = root != UINT32_MAX &&
+                          scene.texture_graph.nodes[root].kind == graph::constant_node &&
+                          scene.texture_graph.nodes[root].values[0] == 0;
+        if (invisible > 1 || bool(invisible) != (emissive && zero)) {
+            return "Invisible emitter binding must match a zero constant alpha";
+        }
+        const auto &material = scene.materials[scene.instance_materials[i]];
+        if ((material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX) &&
+            scene.instance_surface_transforms.empty()) {
+            return "Surface detail requires definition and placement transforms";
+        }
+    }
+    for (const auto &emission : scene.area_emissions) {
+        if (emission.image_texture != UINT32_MAX &&
+            (!base_valid(emission.image_texture) || !std::isfinite(emission.image_scale) ||
+             emission.image_scale < 0)) {
+            return "Area image emission requires a native image and finite nonnegative scale";
+        }
+    }
+    if (scene.environment_image != UINT32_MAX) {
+        if (!base_valid(scene.environment_image) || !std::isfinite(scene.environment_image_scale) ||
+            scene.environment_image_scale < 0) {
+            return "Environment image requires a native image and finite nonnegative scale";
+        }
+        const auto &level = scene.image_textures[scene.environment_image].image->levels.front();
+        if (level.width != level.height || level.width == 0 ||
+            level.width > ImageLimits{}.max_dimension) {
+            return "Environment image must use a bounded square equal-area map";
+        }
+        const auto &m = scene.environment_texture_from_world.values;
+        if (!std::ranges::all_of(m, [](float v) { return std::isfinite(v); }))
+            return "Environment image transform must be finite";
+        constexpr double tolerance = 64 * std::numeric_limits<float>::epsilon();
+        for (unsigned row = 0; row < 3; ++row) {
+            for (unsigned column = 0; column < 3; ++column) {
+                double product = 0;
+                for (unsigned k = 0; k < 3; ++k)
+                    product += double(m[4 * row + k]) * m[4 * column + k];
+                if (std::abs(product - double(row == column)) > tolerance)
+                    return "Environment image transform must be orthonormal";
+            }
+        }
+    }
+    for (const auto &surface : scene.instance_surface_transforms) {
+        for (const auto *m : {&surface.shape, &surface.placement}) {
+            if (!std::ranges::all_of(*m, [](double v) { return std::isfinite(v); }) ||
+                (*m)[12] != 0 || (*m)[13] != 0 || (*m)[14] != 0 || (*m)[15] != 1)
+                return "Surface detail transform must be finite and affine";
+        }
+    }
+    if (scene.image_textures.empty() && scene.texture_graph.nodes.empty()) {
         return scene.instance_texture_frames.empty() ? "" : "Texture frames require image textures";
     }
     if (scene.model != RenderModel::pbrt ||
@@ -341,6 +459,15 @@ std::string validate_image_textures(const RenderScene &scene) {
     }
     std::set<const ImagePyramid *> checked;
     std::size_t remaining = ImageLimits{}.retained_bytes;
+    if (scene.environment_image != UINT32_MAX) {
+        const auto width = std::min<std::size_t>(
+            render_wire::environment_grid_limit,
+            scene.image_textures[scene.environment_image].image->levels.front().width);
+        const auto bytes = (width + 1) * (width + 1) * sizeof(float);
+        if (bytes > remaining)
+            return "Environment sampling table exceeds the image memory budget";
+        remaining -= bytes;
+    }
     for (const auto &texture : scene.image_textures) {
         if (texture.filter != ImageFilter::point && texture.filter != ImageFilter::bilinear &&
             texture.filter != ImageFilter::trilinear && texture.filter != ImageFilter::ewa) {
@@ -359,7 +486,24 @@ std::string validate_image_textures(const RenderScene &scene) {
         if (!checked.insert(&image).second) {
             continue;
         }
-        if ((image.encoding != ImageEncoding::srgb && image.encoding != ImageEncoding::linear) ||
+        if (image.source_channels != 1 && image.source_channels != 3 &&
+            image.source_channels != 4) {
+            return "Invalid image channel layout";
+        }
+        if (image.custom_transfer) {
+            if (remaining < sizeof(*image.custom_transfer) ||
+                !std::ranges::all_of(*image.custom_transfer, [](float v) {
+                    return std::isfinite(v) && v >= 0 && v <= 1;
+                })) {
+                return "Invalid or excessive image transfer table";
+            }
+            remaining -= sizeof(*image.custom_transfer);
+        } else if (image.encoding == ImageEncoding::gamma &&
+                   image.storage == ImageStorage::encoded8) {
+            return "Gamma byte image requires an owned transfer table";
+        }
+        if ((image.encoding != ImageEncoding::srgb && image.encoding != ImageEncoding::linear &&
+             image.encoding != ImageEncoding::gamma) ||
             (image.storage != ImageStorage::encoded8 &&
              image.storage != ImageStorage::linear_half) ||
             (image.wrap != ImageWrap::repeat && image.wrap != ImageWrap::clamp &&
@@ -379,7 +523,8 @@ std::string validate_image_textures(const RenderScene &scene) {
         const std::size_t words_per_texel = image.storage == ImageStorage::linear_half ? 2 : 1;
         auto width = image.levels.front().width;
         auto height = image.levels.front().height;
-        if (!std::has_single_bit(width) || !std::has_single_bit(height) ||
+        if (width == 0 || height == 0 ||
+            (!image.native_base && (!std::has_single_bit(width) || !std::has_single_bit(height))) ||
             width > ImageLimits{}.max_dimension || height > ImageLimits{}.max_dimension) {
             return "Image mip dimensions must be bounded positive powers of two";
         }
@@ -393,10 +538,13 @@ std::string validate_image_textures(const RenderScene &scene) {
             width = std::max(1u, width / 2);
             height = std::max(1u, height / 2);
         }
-        if (image.levels.back().width != 1 || image.levels.back().height != 1 ||
-            offset != image.texels.size() ||
-            image.levels.size() != static_cast<std::size_t>(std::bit_width(std::max(
-                                       image.levels.front().width, image.levels.front().height)))) {
+        if (offset != image.texels.size() ||
+            (image.native_base
+                 ? image.levels.size() != 1
+                 : (image.levels.back().width != 1 || image.levels.back().height != 1 ||
+                    image.levels.size() !=
+                        static_cast<std::size_t>(std::bit_width(
+                            std::max(image.levels.front().width, image.levels.front().height)))))) {
             return "Incomplete image mip chain";
         }
         if (image.storage == ImageStorage::linear_half) {
@@ -406,7 +554,9 @@ std::string validate_image_textures(const RenderScene &scene) {
             };
             for (std::size_t i = 0; i < image.texels.size(); i += 2) {
                 const auto rg = image.texels[i], b = image.texels[i + 1];
-                if (!valid_half(rg & 0xffffu) || !valid_half(rg >> 16u) || !valid_half(b)) {
+                if (!valid_half(rg & 0xffffu) || !valid_half(rg >> 16u) ||
+                    !valid_half(b & 0xffffu) || !valid_half(b >> 16u) ||
+                    (image.source_channels != 4u && (b >> 16u) != 0)) {
                     return "Invalid linear-half image texel payload";
                 }
             }
@@ -416,8 +566,7 @@ std::string validate_image_textures(const RenderScene &scene) {
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
         const auto &frames = scene.instance_texture_frames[i];
         const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];
-        const bool textured =
-            scene.materials[scene.instance_materials[i]].kind == SpectralMaterialKind::image;
+        const bool textured = instance_uses_texture_context(scene, i);
         if (frames.size() != (textured ? mesh.triangles.size() : 0) ||
             frames.size() > remaining_frames) {
             return "Invalid or excessive texture triangle frame table";
@@ -697,6 +846,19 @@ std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTrans
         }
     }
     return {};
+}
+
+bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) {
+    const auto &material = scene.materials[scene.instance_materials[index]];
+    const bool emission =
+        !scene.instance_emissions.empty() && scene.instance_emissions[index] != no_area_emission &&
+        scene.area_emissions[scene.instance_emissions[index]].image_texture != UINT32_MAX;
+    return material.kind == SpectralMaterialKind::image ||
+           material.kind == SpectralMaterialKind::texture_graph ||
+           material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||
+           (!scene.instance_alpha_roots.empty() &&
+            scene.instance_alpha_roots[index] != UINT32_MAX) ||
+           emission;
 }
 
 std::string validate_render_scene(const RenderScene &scene) {

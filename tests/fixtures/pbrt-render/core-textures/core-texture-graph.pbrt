@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [45]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+LightSource "infinite"
+Texture "gray" "spectrum" "imagemap" "string filename" "assets/gray-pattern.png"
+    "string mapping" "planar" "vector3 v1" [0.6 0 0] "vector3 v2" [0 0.6 0]
+    "float udelta" [0.5] "float vdelta" [0.5] "string filter" "point"
+Texture "cool" "spectrum" "constant" "spectrum value" "assets/cool.spd"
+Texture "warm" "spectrum" "bilerp" "rgb v00" [0.12 0.25 0.2] "rgb v01" [0.8 0.2 0.2]
+    "rgb v10" [0.15 0.5 0.4] "rgb v11" [0.4 0.4 0.6]
+Texture "tones" "spectrum" "mix" "texture tex1" "warm" "texture tex2" "cool" "float amount" [0.3]
+# The visible plane is separated from the 3D pattern's depth discontinuity.
+AttributeBegin
+    Translate 0 0 0.125
+    Texture "patches" "spectrum" "checkerboard" "integer dimension" [3]
+        "texture tex1" "tones" "texture tex2" "gray"
+AttributeEnd
+Material "diffuse" "texture reflectance" "patches"
+Shape "trianglemesh" "point3 P" [-1 -1 2 1 -1 2 1 1 2 -1 1 2]
+    "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1]

@@ -115,9 +115,10 @@ inline bool bilinear_unit_interval(BilinearNumber value) {
     return value.high >= 0.0f && (value - 1.0f).high <= 0.0f;
 }
 
+template <typename Predicate>
 inline void consider_bilinear_edge(BilinearProjection start, BilinearProjection end,
                                    metal::float2 uv_start, metal::float2 uv_end, float direction,
-                                   int ray_exponent, float t_min,
+                                   int ray_exponent, float t_min, thread Predicate &accept,
                                    thread BilinearIntersection &best) {
     const auto difference = start - end;
     const bool use_x = metal::abs(difference.x.high) >= metal::abs(difference.y.high);
@@ -148,14 +149,19 @@ inline void consider_bilinear_edge(BilinearProjection start, BilinearProjection 
     const auto z = (end.z * from - start.z * to) / denominator;
     const float t = (z / direction).scale(ray_exponent).high;
     if (metal::isfinite(t) && t >= t_min && t <= best.t) {
-        best = {true, t, metal::mix(uv_start, uv_end, (from / denominator).high)};
+        const auto uv = metal::mix(uv_start, uv_end, (from / denominator).high);
+        if (accept(uv, t)) {
+            best = {true, t, uv};
+        }
     }
 }
 
+template <typename Predicate>
 inline void consider_bilinear_root(BilinearNumber u, BilinearProjection origin,
                                    BilinearProjection edge_u, BilinearProjection edge_v,
                                    BilinearProjection warp, float direction, int ray_exponent,
-                                   float t_min, bool swapped, thread BilinearIntersection &best) {
+                                   float t_min, bool swapped, thread Predicate &accept,
+                                   thread BilinearIntersection &best) {
     if (!bilinear_unit_interval(u)) {
         return;
     }
@@ -186,14 +192,19 @@ inline void consider_bilinear_root(BilinearNumber u, BilinearProjection origin,
 
     const float t = (point.z / direction).scale(ray_exponent).high;
     if (metal::isfinite(t) && t >= t_min && t <= best.t) {
-        best = {true, t, swapped ? metal::float2(v.high, u.high) : metal::float2(u.high, v.high)};
+        const auto uv = swapped ? metal::float2(v.high, u.high) : metal::float2(u.high, v.high);
+        if (accept(uv, t)) {
+            best = {true, t, uv};
+        }
     }
 }
 
-inline BilinearIntersection intersect_bilinear(metal::float3 p00, metal::float3 p10,
-                                               metal::float3 p01, metal::float3 p11,
-                                               metal::float3 origin, metal::float3 direction,
-                                               float t_min, float t_max) {
+// Evaluate each isolated candidate before narrowing the accepted ray interval.
+template <typename Predicate>
+inline BilinearIntersection
+intersect_bilinear_if(metal::float3 p00, metal::float3 p10, metal::float3 p01, metal::float3 p11,
+                      metal::float3 origin, metal::float3 direction, float t_min, float t_max,
+                      thread Predicate &accept) {
     BilinearIntersection best{false, t_max, {0.0f, 0.0f}};
     const float position_max =
         metal::max(metal::max(bilinear_max_abs(p00), bilinear_max_abs(p10)),
@@ -250,18 +261,18 @@ inline BilinearIntersection intersect_bilinear(metal::float3 p00, metal::float3 
     // of two, even when their ruling families differ.
     const float dominant_direction = direction[dominant];
     consider_bilinear_edge(offset, corner_u, {0, 0}, {1, 0}, dominant_direction, ray_exponent,
-                           t_min, best);
+                           t_min, accept, best);
     consider_bilinear_edge(offset, corner_v, {0, 0}, {0, 1}, dominant_direction, ray_exponent,
-                           t_min, best);
+                           t_min, accept, best);
     consider_bilinear_edge(corner_u, opposite, {1, 0}, {1, 1}, dominant_direction, ray_exponent,
-                           t_min, best);
+                           t_min, accept, best);
     consider_bilinear_edge(corner_v, opposite, {0, 1}, {1, 1}, dominant_direction, ray_exponent,
-                           t_min, best);
+                           t_min, accept, best);
 
     if (a.high == 0.0f) {
         if (b.high != 0.0f) {
             consider_bilinear_root(-c / b, offset, edge_u, edge_v, warp, dominant_direction,
-                                   ray_exponent, t_min, swapped, best);
+                                   ray_exponent, t_min, swapped, accept, best);
         }
         return best;
     }
@@ -277,7 +288,7 @@ inline BilinearIntersection intersect_bilinear(metal::float3 p00, metal::float3 
     }
     if (discriminant.high == 0.0f) {
         consider_bilinear_root(scaled_b * -0.5f / scaled_a, offset, edge_u, edge_v, warp,
-                               dominant_direction, ray_exponent, t_min, swapped, best);
+                               dominant_direction, ray_exponent, t_min, swapped, accept, best);
         return best;
     }
 
@@ -286,8 +297,20 @@ inline BilinearIntersection intersect_bilinear(metal::float3 p00, metal::float3 
     const auto square_root = BilinearNumber(root) + correction;
     const auto q = (scaled_b + (scaled_b.high < 0.0f ? -square_root : square_root)) * -0.5f;
     consider_bilinear_root(q / scaled_a, offset, edge_u, edge_v, warp, dominant_direction,
-                           ray_exponent, t_min, swapped, best);
+                           ray_exponent, t_min, swapped, accept, best);
     consider_bilinear_root(scaled_c / q, offset, edge_u, edge_v, warp, dominant_direction,
-                           ray_exponent, t_min, swapped, best);
+                           ray_exponent, t_min, swapped, accept, best);
     return best;
+}
+
+struct AcceptBilinearHit {
+    bool operator()(metal::float2, float) const { return true; }
+};
+
+inline BilinearIntersection intersect_bilinear(metal::float3 p00, metal::float3 p10,
+                                               metal::float3 p01, metal::float3 p11,
+                                               metal::float3 origin, metal::float3 direction,
+                                               float t_min, float t_max) {
+    AcceptBilinearHit accept;
+    return intersect_bilinear_if(p00, p10, p01, p11, origin, direction, t_min, t_max, accept);
 }

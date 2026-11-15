@@ -129,6 +129,14 @@ REGIONS = {
 }
 
 
+CORE_TEXTURE_REGIONS = {
+    "core-texture-graph": QUADRANTS,
+    "core-texture-alpha": {"full": FULL, "left": (0, 0, 4, 8), "right": (4, 0, 8, 8)},
+    "core-texture-detail": {"full": FULL, "left": (0, 0, 4, 8), "right": (4, 0, 8, 8)},
+    "core-texture-lights": QUADRANTS,
+}
+
+
 def read_pfm(path, width=WIDTH, height=HEIGHT):
     """Read RGB PFM with unit scale and return top-down row-major linear RGB."""
     with path.open("rb") as file:
@@ -287,8 +295,8 @@ def main():
     parser.add_argument("--pbrt", type=Path, required=True, help="pinned upstream pbrt binary")
     parser.add_argument("--fixtures", type=Path, required=True, help="PBRT render fixture directory")
     parser.add_argument("--output-dir", type=Path, required=True, help="cache for variants and PFM outputs")
-    parser.add_argument("--scene", action="append", choices=REGIONS, metavar="NAME",
-                        help="compare one named fixture (repeatable, defaults to all fixtures)")
+    parser.add_argument("--scene", action="append", choices=(*REGIONS, *CORE_TEXTURE_REGIONS), metavar="NAME",
+                        help="compare one named fixture (repeatable, defaults to the established suite)")
     args = parser.parse_args()
     try:
         rypath = args.rypath.resolve(strict=True)
@@ -298,8 +306,13 @@ def main():
         print(f"Comparison artifacts in {run_dir}", flush=True)
         passed = True
         for scene in dict.fromkeys(args.scene or REGIONS):
-            fixture = args.fixtures / f"{scene}.pbrt"
-            measurements = render_replicates(rypath, pbrt, fixture, run_dir, REGIONS[scene])
+            if scene in CORE_TEXTURE_REGIONS:
+                fixture = args.fixtures / "core-textures" / f"{scene}.pbrt"
+                regions = CORE_TEXTURE_REGIONS[scene]
+            else:
+                fixture = args.fixtures / f"{scene}.pbrt"
+                regions = REGIONS[scene]
+            measurements = render_replicates(rypath, pbrt, fixture, run_dir, regions)
             passed &= compare_regions(scene, measurements)
             if scene in FILTER_CONTROLS:
                 passed &= check_filter_sensitivity(scene, rypath, pbrt, run_dir, measurements)

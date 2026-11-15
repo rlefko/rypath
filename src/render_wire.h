@@ -31,10 +31,12 @@ enum : Word {
     constant_material = 1,
     rgb_sigmoid_material = 2,
     image_material = 3,
-    blackbody_material = 4
+    blackbody_material = 4,
+    graph_material = 5
 };
 enum : Word { no_emission = 0xffffffffu };
 enum : Word { no_normals = 0xffffffffu };
+enum : Word { environment_grid_limit = 128 };
 enum : Word { triangle_primitive = 1, patch_primitive = 2 };
 
 struct Point {
@@ -68,6 +70,8 @@ struct ImageTexture {
     Word invert;
     Word filter;
     float max_anisotropy;
+    Word transfer_offset = 0;
+    Word channels = 3;
 };
 struct TextureParameters {
     Word texture_count;
@@ -80,6 +84,7 @@ struct TextureParameters {
     float camera_from_world[9];
     Point minimum_dx;
     Point minimum_dy;
+    Word transfer_count = 512;
 };
 struct Triangle {
     Word vertices[3];
@@ -96,6 +101,9 @@ struct Material {
     float scalar_value;
     float coefficients[3];
     Word image_texture;
+    Word texture_root = 0xffffffffu;
+    Word bump_root = 0xffffffffu;
+    Word normal_map = 0xffffffffu;
 };
 struct SpectralKnot {
     float wavelength;
@@ -114,10 +122,44 @@ struct Instance {
     Word patch_count;
     Word uv_begin;
     Word frame_begin;
+    Word alpha_root = 0xffffffffu;
+    Word invisible_emitter = 0;
 };
 struct AreaEmission {
     float radiance[471];
     Word two_sided;
+    Word image_texture = 0xffffffffu;
+    float image_scale = 1;
+};
+struct SurfaceVertex {
+    Point position;
+    Point normal;
+    Point tangent;
+};
+struct SurfaceTransform {
+    float shape[9];
+    float shape_normal[9];
+    float placement[9];
+    float placement_normal[9];
+    Word vertex_begin;
+    Word vertex_count;
+    Word has_normals;
+    Word has_tangents;
+    Word authored_reverse;
+    Word shape_reverse_winding;
+    Point definition_translation;
+};
+struct TextureGraphParameters {
+    Word node_count;
+    Word knot_count;
+    Word alpha_enabled;
+    Word environment_image;
+    float environment_scale;
+    float environment_from_world[9];
+    float world_from_environment[9];
+    Word environment_width;
+    Word environment_cdf_count;
+    Word surface_vertex_count;
 };
 struct Emitter {
     Word instance;
@@ -175,17 +217,17 @@ static_assert(sizeof(Patch) == 16 && alignof(Patch) == 4, "render patch layout")
 static_assert(sizeof(Point2) == 8 && alignof(Point2) == 4, "texture coordinate layout");
 static_assert(sizeof(TextureFrame) == 24 && alignof(TextureFrame) == 4, "texture frame layout");
 static_assert(sizeof(TextureLevel) == 12 && alignof(TextureLevel) == 4, "texture level layout");
-static_assert(sizeof(ImageTexture) == 48 && alignof(ImageTexture) == 4 &&
+static_assert(sizeof(ImageTexture) == 56 && alignof(ImageTexture) == 4 &&
                   __builtin_offsetof(ImageTexture, texel_format) == 12 &&
                   __builtin_offsetof(ImageTexture, uscale) == 16 &&
                   __builtin_offsetof(ImageTexture, filter) == 40 &&
                   __builtin_offsetof(ImageTexture, max_anisotropy) == 44,
               "image texture layout");
-static_assert(sizeof(TextureParameters) == 120 && alignof(TextureParameters) == 4 &&
+static_assert(sizeof(TextureParameters) == 124 && alignof(TextureParameters) == 4 &&
                   __builtin_offsetof(TextureParameters, world_from_camera) == 24 &&
                   __builtin_offsetof(TextureParameters, minimum_dx) == 96,
               "texture parameters layout");
-static_assert(sizeof(Material) == 64 && alignof(Material) == 4 &&
+static_assert(sizeof(Material) == 76 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, knot_begin) == 32 &&
                   __builtin_offsetof(Material, knot_count) == 36 &&
                   __builtin_offsetof(Material, kind) == 40 &&
@@ -196,7 +238,7 @@ static_assert(sizeof(Material) == 64 && alignof(Material) == 4 &&
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 92 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 100 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
                   __builtin_offsetof(Instance, emission) == 68 &&
@@ -206,9 +248,12 @@ static_assert(sizeof(Instance) == 92 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, uv_begin) == 84 &&
                   __builtin_offsetof(Instance, frame_begin) == 88,
               "render instance layout");
-static_assert(sizeof(AreaEmission) == 1888 && alignof(AreaEmission) == 4 &&
+static_assert(sizeof(AreaEmission) == 1896 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
               "render area emission layout");
+static_assert(sizeof(SurfaceVertex) == 36 && sizeof(SurfaceTransform) == 180 &&
+                  sizeof(TextureGraphParameters) == 104,
+              "texture graph and surface layout");
 static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,

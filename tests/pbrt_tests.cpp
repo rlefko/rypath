@@ -330,9 +330,10 @@ MakeNamedMedium "m" "string type" "homogeneous")",
         require(find_diagnostic(invalid.document, sample.code).severity == Severity::error,
                 "state error severity");
     }
-    const auto deferred_texture =
-        check(write_file(directory, "deferred-texture.pbrt",
-                         std::string{scene_start} + R"(Texture "t" "spectrum" "checkerboard"
+    write_file(directory, "texture.ptx", "asset placeholder");
+    const auto deferred_texture = check(write_file(
+        directory, "deferred-texture.pbrt",
+        std::string{scene_start} + R"(Texture "t" "spectrum" "ptex" "string filename" "texture.ptx"
 Material "diffuse" "texture reflectance" "t"
 )"));
     require(deferred_texture.exit_code() == 2 && !deferred_texture.scene,
@@ -455,17 +456,15 @@ Texture "t" "spectrum" "constant"
                 "typed reference errors identify the use and the required channel");
     }
 
-    constexpr std::array deferred_consumers{
+    constexpr std::array float_consumers{
         R"(Material "diffuse" "texture displacement" "t")",
         R"(Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "texture alpha" "t")",
     };
-    for (const auto *consumer : deferred_consumers) {
+    for (const auto *consumer : float_consumers) {
         const auto result = check(write_file(
-            directory, "deferred-texture-consumer.pbrt",
+            directory, "float-texture-consumer.pbrt",
             std::string{scene_start} + "Texture \"t\" \"float\" \"constant\"\n" + consumer));
-        require(result.exit_code() == 2 && !result.scene, report(result));
-        require(find_diagnostic(result.document, "unsupported-parameter").location.line == 4,
-                "valid float references preserve deferred consumer diagnostics");
+        require(result.exit_code() == 0 && result.scene, report(result));
     }
 }
 
