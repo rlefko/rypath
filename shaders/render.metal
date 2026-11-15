@@ -1407,7 +1407,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const float incident_cosine = dot(point.shading_normal, incoming.direction);
-        if (authored_normals && incident_cosine == 0.0f) {
+        if (authored_normals && !conductor && incident_cosine == 0.0f) {
             break;
         }
         if (bounce >= p.emergency_limit) {
@@ -1442,6 +1442,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 break;
             }
             wo = frame.local(-incoming.direction);
+            if (wo.z == 0.0f)
+                break;
         }
         const bool delta = conductor && conductor_parameters.smooth;
         const bool directional_offset = authored_normals || patch_hit;
@@ -1471,7 +1473,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        const float light_cosine = dot(n, light_direction);
+        const float3 local_light = conductor ? frame.local(light_direction) : float3(0);
+        const float light_cosine =
+            conductor ? (wo.z > 0 ? local_light.z : -local_light.z) : dot(n, light_direction);
         if (!delta && light_radiance > 0.0f && light_cosine > 0.0f) {
             const float3 origin = directional_offset
                                       ? spawn_toward(incoming, hit.distance, point, light_direction)
@@ -1489,8 +1493,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             if (visibility.type == intersection_type::none) {
                 float factor;
                 if (conductor) {
-                    const auto evaluated = rypath_conductor::evaluate(conductor_parameters, wo,
-                                                                      frame.local(light_direction));
+                    const auto evaluated =
+                        rypath_conductor::evaluate(conductor_parameters, wo, local_light);
                     factor = evaluated.valid ? conductor_direct(evaluated.f * light_cosine,
                                                                 evaluated.pdf, light_pdf, false)
                                              : NAN;
@@ -1567,14 +1571,17 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 // continuation and all noncoincident curved self-lighting.
                 if (distance_squared >= FLT_MIN) {
                     const float3 direction = delta / sqrt(distance_squared);
-                    const float receiver_cosine = dot(n, direction);
+                    const float3 local_receiver = conductor ? frame.local(direction) : float3(0);
+                    const float receiver_cosine =
+                        conductor ? (wo.z > 0 ? local_receiver.z : -local_receiver.z)
+                                  : dot(n, direction);
                     const float emitter_cosine = dot(target.geometric_normal, -direction);
                     if (Le > 0.0f && receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
                         (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
                         float factor;
                         if (conductor) {
-                            const auto evaluated = rypath_conductor::evaluate(
-                                conductor_parameters, wo, frame.local(direction));
+                            const auto evaluated = rypath_conductor::evaluate(conductor_parameters,
+                                                                              wo, local_receiver);
                             factor = evaluated.valid
                                          ? conductor_direct(
                                                evaluated.f * receiver_cosine, evaluated.pdf,
@@ -1626,6 +1633,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         }
         float3 wi;
         float continuation_pdf = 0;
+        float continuation_cosine = 0;
         if (conductor) {
             const auto continuation = rypath_conductor::sample(
                 conductor_parameters, wo,
@@ -1643,6 +1651,10 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             }
             throughput *= continuation.weight;
             continuation_pdf = continuation.pdf;
+            // The local sample, PDF and weight share one support convention.
+            // A positive grazing cosine can round through zero when this ray
+            // is mapped to a binary32 world frame; do not reject it a second time.
+            continuation_cosine = abs(continuation.wi.z);
         } else {
             wi = hemisphere(n, sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y));
             throughput *= rho;
@@ -1654,7 +1666,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             }
             throughput /= 0.75f;
         }
-        const float cosine = dot(n, wi);
+        const float cosine = conductor ? continuation_cosine : dot(n, wi);
         if (!(cosine > 0.0f)) {
             sample.status = wire::invalid_arithmetic;
             break;

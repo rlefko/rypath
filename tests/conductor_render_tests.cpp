@@ -244,6 +244,40 @@ void film_accounting(const fs::path &fixtures) {
         }
     }
 }
+// Original three-vertex extraction from an owned sphere showcase. This sample
+// has positive local wi.z (~1.2e-9); float frame conversion gives a world dot
+// near -6.9e-9. The conductor support/PDF remains defined in its local frame.
+void grazing_world_frame(const fs::path &scratch) {
+    const auto path = scratch / "grazing-conductor-frame.pbrt";
+    std::ofstream(path) << R"(LookAt 0 1.5 -3  0 0 4  0 1 0
+Camera "perspective" "float fov" [27]
+Film "rgb" "integer xresolution" [960] "integer yresolution" [600] "string sensor" "cie1931" "float iso" [35]
+PixelFilter "triangle"
+Sampler "sobol" "integer pixelsamples" [4096] "string randomization" "fastowen" "integer seed" [17]
+Integrator "path" "integer maxdepth" [5]
+WorldBegin
+LightSource "infinite" "rgb L" [0.20 0.25 0.35]
+Material "conductor" "spectrum eta" "metal-Ag-eta" "spectrum k" "metal-Ag-k" "float uroughness" [.015] "float vroughness" [.3]
+Shape "trianglemesh" "integer indices" [0 1 2]
+ "point3 P" [0.967896581 -0.186349705 3.86432123 0.981310725 -0.231436417 3.86698937 0.974043131 -0.231436417 3.9110086]
+ "normal N" [-0.94736582 -0.258819044 -0.188442782 -0.928735137 -0.321439475 -0.184736907 -0.938829005 -0.321439475 -0.123599187]
+ "point2 uv" [0.53125 0.583333313 0.53125 0.604166687 0.520833313 0.604166687]
+)";
+    const auto scene = load(path);
+    RenderRequest query{.width = 960,
+                        .height = 600,
+                        .seed = 17,
+                        .pixel_begin = 328010,
+                        .pixel_count = 1,
+                        .sample_begin = 294,
+                        .sample_count = 1,
+                        .total_samples = 4096,
+                        .sampler = {SamplerKind::sobol, SobolRandomization::fastowen}};
+    const auto paths = sample(*build(scene), query);
+    require(paths.size() == 1 && paths[0].pixel == 328010 && paths[0].sample == 294 &&
+                paths[0].scatterings == 1 && paths[0].radiance > 0,
+            "Positive local conductor sample was lost at a grazing world-frame conversion");
+}
 void invalid_dynamic_roughness(const fs::path &scratch, const fs::path &fixtures) {
     std::ifstream input(fixtures / "roughness-graph.pbrt");
     std::string source{std::istreambuf_iterator<char>(input), {}};
@@ -329,6 +363,7 @@ int main(int argc, char **argv) {
         diffuse_delta_emitter(scratch);
         graph_branch_sensitivity(fixtures);
         film_accounting(fixtures);
+        grazing_world_frame(scratch);
         invalid_dynamic_roughness(scratch, fixtures);
         for (const auto name : {"rough-au", "anisotropic-cu", "numeric-file-optical",
                                 "detail-alpha", "anisotropy-rotated", "roughness-graph"})

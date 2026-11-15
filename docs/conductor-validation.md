@@ -136,7 +136,7 @@ all 256 process records free of error diagnostics. Artifacts are retained in
 `.cache/conductor-reference-final.log`. Provenance identifies implementation
 `6be5a4b`, the uncommitted harness/documentation state and Release executable
 SHA-256 `2ac4a8f838dd3de52c6c3258ec7fe11ff8e922467e52ea709f729d5fe1cb575a`.
-No production source changed after these measurements.
+These measurements precede the grazing-frame follow-up below.
 
 The whole shader-instrumented CTest run passed 20/23: texture footprint reached
 its 30-second limit, while combined-texture and conductor transport reached
@@ -160,6 +160,51 @@ substitutions; the other seven fixtures are clean. All 128 PBRT runs with the
 positive-floor comparison variant pass strict diagnostics and finite readback
 in `.cache/conductor-reference-diagnostics/pbrt-positive-floor-zprheqls`. These
 CPU-only checks establish clean reference inputs, not image agreement.
+
+## Grazing-frame follow-up
+
+A larger owned sphere showcase exposed a valid GGX sample rejected after its
+conversion into a normalized binary32 world ray. At pixel 328010, sample 294,
+wavelength 390.570435 nm, the Ag conductor's accepted local cosine was
+`+1.192026e-9`, while the recomputed world cosine was `-6.901402e-9`.
+Independent double evaluation also gives positive support (`+6.409457e-9`).
+This is frame-conversion roundoff, not invalid authored roughness or a valid
+reason to discard a sample.
+
+The follow-up retains the accepted local cosine with its PDF and throughput
+weight. Conductor environment/area NEE and tangent termination likewise use
+that local frame. Finite world-ray normalization remains required; the diffuse
+expressions, sampler dimensions, raw accumulation and numerical-failure policy
+are unchanged. No resampling, contribution clamp or sample omission is added.
+
+`grazing_world_frame` extracts one original triangle into a native regression.
+It preserves the 960×600 raster, 4,096-spp Sobol configuration, seed 17 and
+absolute pixel/sample identity. It fails against the old shader and requires a
+successful finite positive result with exactly one scattering after the fix.
+Independent review approved the updated support/cosine contract and regression.
+
+The corrected working tree based on `9145292` passes 91/91 Debug, Release and
+ASan/UBSan tests. The 960×600 showcase completes all 4,096 samples per pixel
+(2,359,296,000 total), with no denoising, in
+`.cache/conductor-showcase/conductors.png`; its complete log and owned scene
+remain alongside it. The refreshed reference comparison passes 120/120 gates
+with 256 diagnostic-clean renders in
+`.cache/conductor-reference-grazing-fix/conductors-aafg66pc`.
+Its `renderer-state.json` records the exact public patch and Metal library
+SHA-256 `9b0941743e38a7acfd6a6c27c63880e5014a2630e42d9625e8c6a02edef49858`.
+The host executable is unchanged, so the harness now automatically hashes the
+required Metal library beside the canonical executable as well.
+
+All 23 Metal API checks and 79 Python tests pass after the follow-up. The native
+regression passes Clang-Tidy 18 with matching LLVM 18 libc++ headers. Repository
+hooks pass. Logs use the `build/conductor-grazing-*` prefix.
+Both affected transport suites (conductor, including the captured regression,
+and combined textures) pass shader instrumentation with a 600-second diagnostic
+cap, without validation errors. Their logs are
+`build/conductor-grazing-shader-conductor.log` and
+`build/conductor-grazing-shader-core-texture.log`.
+The performance record separately identifies the refreshed implementation and
+baseline measurements.
 
 ## Filtered checker numerical adaptation
 

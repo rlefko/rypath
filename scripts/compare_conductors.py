@@ -34,6 +34,14 @@ def comparison_variant(scene, source):
     return source, overrides
 
 
+def rypath_artifact_hashes(binary):
+    """Hash the canonical host executable and its required default Metal library."""
+    executable = binary.resolve(strict=True)
+    library = executable.with_name('rypath.metallib').resolve(strict=True)
+    return {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (executable, library)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rypath', type=Path)
@@ -52,12 +60,14 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='conductors-', dir=args.output_dir.resolve()))
     print(f'Artifacts: {work}', flush=True)
-    binaries = [pbrt] + ([args.rypath.resolve(strict=True)] if args.rypath else [])
+    binary_hashes = {str(pbrt): hashlib.sha256(pbrt.read_bytes()).hexdigest()}
+    if args.rypath:
+        binary_hashes.update(rypath_artifact_hashes(args.rypath))
     (work/'provenance.json').write_text(json.dumps({
         'pbrt_revision': revision,
         'rypath_revision': subprocess.check_output(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).strip(),
         'rypath_dirty': bool(subprocess.check_output(['git', '-C', ROOT, 'status', '--porcelain'], text=True).strip()),
-        'binaries': {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in binaries},
+        'binaries': binary_hashes,
         'mode': 'PBRT inputs only' if args.pbrt_only else 'matched comparison',
         'seeds': {'rypath': list(range(16)), 'pbrt': list(range(16,32))},
         'resolution': [8,8], 'spp': 4096,

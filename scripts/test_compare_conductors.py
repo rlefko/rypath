@@ -2,9 +2,42 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Check explicit, identical conductor reference variants without a GPU."""
 import unittest
+import tempfile
+import hashlib
 from pathlib import Path
 
-from compare_conductors import comparison_variant
+from compare_conductors import comparison_variant, rypath_artifact_hashes
+
+
+class RendererArtifactTests(unittest.TestCase):
+    def test_shader_hash_tracks_updates_and_uses_canonical_executable_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = root/'build'
+            actual.mkdir()
+            executable = actual/'rypath_pbrt_reference'
+            executable.write_bytes(b'unchanged host executable')
+            library = actual/'rypath.metallib'
+            library.write_bytes(b'original shader')
+            alias = root/'reference-link'
+            alias.symlink_to(executable)
+            (root/'rypath.metallib').write_bytes(b'wrong library beside alias')
+            before = rypath_artifact_hashes(alias)
+            self.assertEqual(before, {
+                str(executable.resolve()): hashlib.sha256(executable.read_bytes()).hexdigest(),
+                str(library.resolve()): hashlib.sha256(library.read_bytes()).hexdigest(),
+            })
+            library.write_bytes(b'grazing shader fix')
+            after = rypath_artifact_hashes(alias)
+            self.assertEqual(before[str(executable.resolve())], after[str(executable.resolve())])
+            self.assertNotEqual(before[str(library.resolve())], after[str(library.resolve())])
+
+    def test_missing_default_library_rejects_incomplete_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory)/'rypath_pbrt_reference'
+            executable.write_bytes(b'host executable')
+            with self.assertRaises(FileNotFoundError):
+                rypath_artifact_hashes(executable)
 
 
 class VariantTests(unittest.TestCase):

@@ -20,18 +20,23 @@ additional importers, media, checkpointing and the interactive app remain on the
 
 ## Validation
 
-Implementation `6be5a4b` passes 91/91 Debug, Release and ASan/UBSan tests on
+The conductor implementation and grazing-frame follow-up pass 91/91 Debug,
+Release and ASan/UBSan tests on
 Apple M4 Max, including native transport, mapped frames, exact sample/Film
-partitioning and whole-batch rejection. Portable Apple Clang and Clang 18
+partitioning, a captured grazing-sample regression and whole-batch rejection.
+Portable Apple Clang and Clang 18
 builds pass 70/70 tests. Independent BSDF checks cover 5,493 point/sample cases,
 128 reciprocity and axis-swap pairs, and 524,288 energy/probability samples.
-All 23 Metal tests pass API validation, 77 Python checks pass, and the final
+All 23 Metal tests pass API validation, 79 Python checks pass, and the final
 eight-scene reference comparison passes 120 gates across 256 clean renderer
 runs. The conductor record identifies the explicit roughness comparison
 override, shader-instrumentation timeouts and longer diagnostic runs, static
 analysis, environment and numerical limitations.
-All 23 instrumented Metal tests pass when the three timed-out cases are run
-directly with a longer diagnostic cap; normal CTest limits are unchanged.
+The initial 23-test shader validation required three longer diagnostic reruns;
+the follow-up passes both affected transport suites under instrumentation.
+Normal CTest limits are
+unchanged. The owned 960×600 conductor showcase completes 4,096 samples per
+pixel (2.36 billion total), without denoising.
 
 A stable checker integral prevents valid nonnegative roughness from becoming
 negative through cancellation. Four of 6,440 pinned source-float graph values

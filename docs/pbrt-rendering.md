@@ -452,6 +452,10 @@ defines the input parameters. Rough continuation uses `f * absCos / pdf`, with
 matching light-sampling PDFs and MIS. Smooth events skip direct-light proposals
 and subsequent emitter/environment hits receive full weight. Null visible-normal
 samples and zero Fresnel preserve prior contributions and terminate continuation.
+Support, cosines, PDFs and weights use the same local BSDF frame. An accepted
+grazing sample remains accepted when binary32 conversion to a normalized world
+ray rounds its recomputed world cosine through zero; it is not resampled or
+discarded. World-ray normalization must still produce a finite direction.
 Negative/nonfinite evaluated roughness and unrepresentable optical/scattering
 arithmetic fail the entire staged batch; no sample or radiance clamp hides errors.
 The [conductor validation record](conductor-validation.md) describes numerical
