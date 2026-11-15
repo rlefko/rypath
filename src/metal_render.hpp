@@ -57,13 +57,26 @@ struct RenderBuildResult {
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path = {});
 
+enum class RenderCompletion { complete, cancelled, failed };
+struct RenderControl {
+    const Film *initial_film = nullptr;
+    std::function<bool()> cancelled;
+    // Called after every committed batch and once before work. For completed
+    // resumes and cancellation before GPU setup, device is empty.
+    // A diagnostic fails the render while preserving the committed Film.
+    std::function<std::string(const Film &, const MetalDeviceInfo &)> committed;
+    std::function<void(std::uint64_t)> progress;
+};
 struct RenderResult {
     GeometryStatus status = GeometryStatus::failure;
+    RenderCompletion completion = RenderCompletion::failed;
     MetalDeviceInfo device;
     std::string diagnostic;
     Film film;
 };
 RenderResult render_progressive(const RenderScene &scene, const RenderSettings &settings,
                                 const std::function<void(std::uint64_t)> &progress = {});
+RenderResult render_progressive(const RenderScene &scene, const RenderSettings &settings,
+                                const RenderControl &control);
 
 } // namespace rypath

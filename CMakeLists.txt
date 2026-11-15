@@ -135,14 +135,18 @@ target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image rypath_bsdf_tables)
 rypath_configure_host_target(rypath_render)
 
+add_library(rypath_checkpoint STATIC src/sha256.cpp src/checkpoint.cpp src/render_identity.cpp)
+target_link_libraries(rypath_checkpoint PUBLIC rypath_render)
+rypath_configure_host_target(rypath_checkpoint)
+
 add_library(rypath_pbrt_render STATIC src/pbrt_render.cpp)
 target_include_directories(rypath_pbrt_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_pbrt_render PUBLIC rypath_pbrt rypath_render)
 rypath_configure_host_target(rypath_pbrt_render)
 
-add_library(rypath_metal_backend STATIC src/render_driver.cpp src/exr_output.cpp)
+add_library(rypath_metal_backend STATIC src/render_driver.cpp src/exr_output.cpp src/render_job.cpp)
 target_include_directories(rypath_metal_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(rypath_metal_backend PRIVATE rypath_geometry rypath_render)
+target_link_libraries(rypath_metal_backend PRIVATE rypath_geometry rypath_render PUBLIC rypath_checkpoint)
 rypath_configure_host_target(rypath_metal_backend)
 
 if(RYPATH_ENABLE_METAL)
@@ -182,6 +186,7 @@ endif()
 add_executable(rypath src/main.cpp)
 set_target_properties(rypath PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
 target_compile_definitions(rypath PRIVATE RYPATH_VERSION="${PROJECT_VERSION}")
+include(cmake/BuildProvenance.cmake)
 target_link_libraries(rypath PRIVATE rypath_metal_backend rypath_pbrt_render)
 rypath_configure_host_target(rypath)
 

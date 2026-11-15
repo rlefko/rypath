@@ -1,4 +1,76 @@
 include(cli_availability.cmake)
+
+add_executable(rypath_checkpoint_tests checkpoint_tests.cpp ../src/checkpoint.cpp ../src/sha256.cpp)
+target_compile_definitions(rypath_checkpoint_tests PRIVATE RYPATH_CHECKPOINT_TESTING=1)
+target_link_libraries(rypath_checkpoint_tests PRIVATE rypath_render)
+rypath_configure_host_target(rypath_checkpoint_tests)
+add_test(NAME render.checkpoint_codec COMMAND rypath_checkpoint_tests)
+set_tests_properties(render.checkpoint_codec PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_render_job_tests render_job_tests.cpp)
+target_link_libraries(rypath_render_job_tests PRIVATE rypath_metal_backend)
+rypath_configure_host_target(rypath_render_job_tests)
+add_test(NAME render.checkpoint_job COMMAND rypath_render_job_tests)
+set_tests_properties(render.checkpoint_job PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_render_identity_tests render_identity_tests.cpp)
+target_link_libraries(rypath_render_identity_tests PRIVATE rypath_checkpoint rypath_metal_backend)
+set_target_properties(rypath_render_identity_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+rypath_configure_host_target(rypath_render_identity_tests)
+add_test(NAME render.checkpoint_identity COMMAND rypath_render_identity_tests)
+set_tests_properties(render.checkpoint_identity PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_resume_render_tests resume_render_tests.cpp)
+target_link_libraries(rypath_resume_render_tests PRIVATE rypath_metal_backend rypath_pbrt_render)
+target_compile_definitions(rypath_resume_render_tests PRIVATE RYPATH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+set_target_properties(rypath_resume_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+rypath_configure_host_target(rypath_resume_render_tests)
+add_test(NAME render.resume_driver COMMAND rypath_resume_render_tests --portable)
+set_tests_properties(render.resume_driver PROPERTIES TIMEOUT 30)
+if(RYPATH_ENABLE_METAL)
+    foreach(variant IN ITEMS bad missing)
+        set(contract_air "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-contract-${variant}.air")
+        set(contract_library "${CMAKE_CURRENT_BINARY_DIR}/checkpoint-contract-${variant}.metallib")
+        add_custom_command(OUTPUT "${contract_library}"
+            COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1
+                "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}"
+                -c "${CMAKE_CURRENT_SOURCE_DIR}/checkpoint_contract_${variant}.metal" -o "${contract_air}"
+            COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${contract_air}" -o "${contract_library}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/checkpoint_contract_${variant}.metal" VERBATIM)
+        add_custom_target(rypath_contract_${variant} DEPENDS "${contract_library}")
+        add_dependencies(rypath_render_identity_tests rypath_contract_${variant})
+        set(contract_expected mismatch)
+        if(variant STREQUAL "missing")
+            set(contract_expected unavailable)
+        endif()
+        set(contract_availability)
+        if(RYPATH_ALLOW_NO_METAL_DEVICE)
+            list(APPEND contract_availability --allow-no-device)
+        endif()
+        if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+            list(APPEND contract_availability --allow-no-ray-tracing)
+        endif()
+        add_test(NAME metal.checkpoint_contract_${variant} COMMAND rypath_render_identity_tests
+            --shader-contract "${contract_library}" ${contract_expected} ${contract_availability})
+        set_tests_properties(metal.checkpoint_contract_${variant} PROPERTIES TIMEOUT 30)
+        if(contract_availability)
+            set_tests_properties(metal.checkpoint_contract_${variant} PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+    add_test(NAME metal.resume_render COMMAND rypath_resume_render_tests --native)
+    set_tests_properties(metal.resume_render PROPERTIES TIMEOUT 60)
+    foreach(target IN ITEMS rypath_resume_render_tests rypath_render_identity_tests)
+        if(RYPATH_ALLOW_NO_METAL_DEVICE)
+            target_compile_definitions(${target} PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        endif()
+        if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+            target_compile_definitions(${target} PRIVATE RYPATH_ALLOW_NO_METAL_RAY_TRACING=1)
+        endif()
+    endforeach()
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.resume_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
 add_executable(rypath_medium_scene_tests medium_scene_tests.cpp)
 target_link_libraries(rypath_medium_scene_tests PRIVATE rypath_pbrt_render)
 rypath_configure_host_target(rypath_medium_scene_tests)
@@ -36,7 +108,9 @@ string(CONCAT help_text
     "       rypath --check-pbrt SCENE\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
-    "              [--samples 128] [--batch-size 8] [--seed 1]\n")
+    "              [--samples 128] [--batch-size 8] [--seed 1]\n"
+    "       Render options: [--checkpoint PATH] [--resume PATH]\n"
+    "                       [--checkpoint-interval SECONDS (default: 60)]\n")
 set(error_text "rypath: unsupported arguments\nTry 'rypath --help' for usage.\n")
 
 add_cli_test(no_arguments 0 "${help_text}" "")
@@ -68,6 +142,18 @@ add_cli_test(render_total_overflow 1 "" "rypath: Total render sample count excee
     --render-demo --output unused.png --width 2 --height 1 --samples 18446744073709551615)
 add_cli_test(render_signed_samples 1 "" "rypath: invalid unsigned integer for --samples\n"
     --render-demo --output unused.png --samples -1)
+add_cli_test(checkpoint_missing_path 1 "" "rypath: missing value for --checkpoint\n"
+    --render-demo --output unused.png --checkpoint)
+add_cli_test(checkpoint_zero_interval 1 "" "rypath: --checkpoint-interval must be a positive unsigned integer\n"
+    --render-demo --output unused.png --checkpoint-interval 0)
+add_cli_test(checkpoint_orphan_interval 1 "" "rypath: --checkpoint-interval requires --checkpoint or --resume\n"
+    --render-demo --output unused.png --checkpoint-interval 1)
+add_cli_test(checkpoint_duplicate 1 "" "rypath: duplicate option --resume\n"
+    --render-demo --output unused.png --resume a --resume b)
+add_cli_test(checkpoint_alias 1 "" "rypath: checkpoint and image output paths must not alias\n"
+    --render-demo --output unused.png --checkpoint unused.png)
+add_cli_test(checkpoint_pbrt_interval 1 "" "rypath: --checkpoint-interval must be a positive unsigned integer\n"
+    --render-pbrt unused.pbrt --output unused.png --checkpoint-interval -1)
 add_cli_test(render_pbrt_missing_scene 1 "" "${error_text}" --render-pbrt)
 add_cli_test(render_pbrt_missing_output 1 "" "rypath: --render-pbrt requires --output IMAGE.{png,exr}\n"
     --render-pbrt unused.pbrt)

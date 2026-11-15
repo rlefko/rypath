@@ -2,6 +2,7 @@
 
 #include "metal_render.hpp"
 #include "bsdf_table.hpp"
+#include "checkpoint_contract.h"
 
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
@@ -28,6 +29,50 @@ namespace rypath {
 namespace {
 
 namespace wire = render_wire;
+
+// Execute the contract in the actual loaded library. A matching entry-point
+// name alone cannot establish compatibility with a stale/custom metallib.
+bool verify_shader_contract(id<MTLDevice> device, id<MTLCommandQueue> queue, id<MTLLibrary> library,
+                            std::string &diagnostic) {
+    auto pipeline =
+        metal::load_pipeline(device, library, @"rypath_checkpoint_contract", diagnostic);
+    if (pipeline == nil) {
+        diagnostic =
+            "Metal shader compatibility handshake unavailable; rebuild the metallib: " + diagnostic;
+        return false;
+    }
+    constexpr std::array<std::uint32_t, 4> expected{
+        checkpoint_contract::renderer, checkpoint_contract::sampling,
+        checkpoint_contract::accumulation, checkpoint_contract::identity};
+    auto buffer = [device newBufferWithLength:sizeof(expected)
+                                      options:MTLResourceStorageModeShared];
+    if (buffer == nil) {
+        diagnostic = "Metal shader compatibility handshake buffer allocation failed";
+        return false;
+    }
+    std::memset(buffer.contents, 0, sizeof(expected));
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (command == nil || encoder == nil) {
+        diagnostic = "Metal shader compatibility handshake command creation failed";
+        return false;
+    }
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:buffer offset:0 atIndex:0];
+    [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder endEncoding];
+    diagnostic = metal::complete(command, "shader compatibility handshake");
+    if (!diagnostic.empty())
+        return false;
+    std::array<std::uint32_t, 4> actual{};
+    std::memcpy(actual.data(), buffer.contents, sizeof(actual));
+    if (actual != expected) {
+        diagnostic = "Metal shader contracts mismatch (renderer/sampling/accumulation/identity); "
+                     "rebuild the metallib for this renderer";
+        return false;
+    }
+    return true;
+}
 
 static_assert(std::is_trivially_copyable_v<wire::Parameters> &&
               std::is_trivially_copyable_v<wire::Sample>);
@@ -1304,6 +1349,9 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
 
         id<MTLLibrary> library = metal::load_library(impl->device, library_path, result.diagnostic);
         if (library == nil) {
+            return result;
+        }
+        if (!verify_shader_contract(impl->device, impl->queue, library, result.diagnostic)) {
             return result;
         }
         NSString *entry =

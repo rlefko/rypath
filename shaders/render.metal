@@ -3,6 +3,7 @@
 #include <metal_raytracing>
 #include <metal_stdlib>
 
+#include "../src/checkpoint_contract.h"
 #include "../src/render_wire.h"
 #include "../src/sampling_contract.h"
 #include "../src/sobol_probe_wire.h"
@@ -24,6 +25,13 @@ using namespace metal;
 using namespace metal::raytracing;
 namespace wire = rypath::render_wire;
 namespace sobol = rypath::sobol;
+
+kernel void rypath_checkpoint_contract(device uint *result [[buffer(0)]]) {
+    result[0] = rypath::checkpoint_contract::renderer;
+    result[1] = rypath::checkpoint_contract::sampling;
+    result[2] = rypath::checkpoint_contract::accumulation;
+    result[3] = rypath::checkpoint_contract::identity;
+}
 
 constant float pi = 3.14159265358979323846f;
 constant uint all_visible = 0xffu;
