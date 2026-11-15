@@ -124,8 +124,8 @@ python3 scripts/compare_media.py --rypath build/release/rypath_pbrt_reference \
 ```
 
 On implementation `e3f4414`, all 120 image gates pass; the largest absolute
-difference is 0.498 of its predeclared threshold. All 256 raw PFM files were
-independently recomputed, and matched outputs remain byte-identical after the
+difference/threshold ratio is 0.498. Image statistics were independently
+recomputed from all 256 raw PFM files, and matched outputs remain byte-identical after the
 final mechanical static-analysis cleanup. All 47 preset comparisons pass with
 maximum scaled error `6.438e-6`; the explicit RGB/blackbody comparison maximum
 is `1.315e-4` under its existing per-case tolerances.
