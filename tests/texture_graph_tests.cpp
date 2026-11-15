@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "../shaders/texture_graph.h"
+#include "checker_reference.hpp"
 #include "texture_graph.hpp"
 
 #include <algorithm>
@@ -64,6 +66,33 @@ std::optional<float> track_image(const void *user, wire::Word image, bool spectr
     observer.spectrum = spectrum;
     ++observer.calls;
     return image == 3 && wavelength == 550.0f ? 1.25f : std::optional<float>{};
+}
+
+void test_stable_checker() {
+    for (const auto &regression : checker_reference::pinned_regressions()) {
+        TextureGraph graph{.nodes = {{.values = {.25f}},
+                                     {.values = {.82f}},
+                                     {.kind = wire::checkerboard,
+                                      .children = {0, 1},
+                                      .mapping = regression.mapping}},
+                           .knots = {}};
+        const auto actual = evaluate_texture_graph(graph, 2, regression.context, 550);
+        require(actual && std::abs(*actual - regression.expected) <= 3e-5,
+                "Stable checker disagrees with independent pinned-context integral");
+        require(std::abs(regression.pbrt - regression.expected) > 3e-5,
+                "Pinned source-float baseline no longer exposes the recorded cancellation error");
+    }
+    for (const auto [x, radius] : checker_reference::cases()) {
+        const float actual = texture_graph::checker_filter(x, radius);
+        const double expected = checker_reference::axis(x, radius);
+        require(std::isfinite(actual) && actual >= -1 && actual <= 1,
+                "Filtered checker axis exceeded its physical range");
+        require(std::abs(actual - expected) < 8e-7,
+                "Filtered checker differs from independent piecewise tent integral");
+        const float weight = .5f - .5f * actual * actual;
+        require(weight >= 0 && weight <= 1,
+                "Nonnegative checker inputs produced an out-of-range blend");
+    }
 }
 
 void test_mappings() {
@@ -305,6 +334,7 @@ void test_limits_and_emitter_certification() {
 
 int main() {
     try {
+        test_stable_checker();
         test_mappings();
         test_coordinate_only_axes();
         test_composition();
