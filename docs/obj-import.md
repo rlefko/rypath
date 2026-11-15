@@ -21,6 +21,8 @@ The bundle contains `model.pbrt`, triangle PLYs in `meshes/`, content-addressed
 original/derived images in `assets/`, and `conversion.json`. The manifest records
 source and output hashes, authored material properties, polygon object/group and
 smoothing metadata, triangle-to-polygon associations, and conversion diagnostics.
+Material properties and diagnostics retain source file, line, and column;
+diagnostics include severity. Metadata must be valid UTF-8 for JSON publication.
 Source assets retain their own terms; conversion does not assign a new license.
 
 PBRT resolves assets relative to the **entry scene directory**, not the included

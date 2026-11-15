@@ -4,8 +4,9 @@
 
 The current program is a C++20 command-line executable. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
-`--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`, and
-`--render-pbrt SCENE --output IMAGE.{png,exr}`. No arguments prints help, and invalid
+`--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`,
+`--render-pbrt SCENE --output IMAGE.{png,exr}`, `--check-obj MODEL.obj`, and
+`--convert-obj MODEL.obj --output DIRECTORY`. No arguments prints help, and invalid
 arguments fail. Render the original demo or the supported PBRT spectral subset;
 portable preflight remains independent of rendering.
 

@@ -104,11 +104,12 @@ clarifies the work; completion is recorded in [status](status.md).
     spectra, texture filters and formats, filters/samplers, and faithfully rendered
     pinned upstream entry points.
     JSON preflight reports remain follow-up work.
-33. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
-    variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
+33. **Mesh import profiles:** the current PR adds bounded polygonal OBJ/MTL
+    preflight, documented material approximations and portable PBRT bundles.
+    Broader OBJ/MTL profiles, documented PLY variants, glTF/GLB and STL remain.
 34. **Remaining surface models:** hair/curves, subsurface transport, arbitrary
     layered stacks and further lighting/MIS, with independent numerical comparisons.
-35. **Resumable rendering (current PR):** exact raw checkpoints, compatible-build/device
+35. **Resumable rendering (merged in PR #33):** exact raw checkpoints, compatible-build/device
     continuation, complete-batch cancellation and durable publication.
     Broader long-run accumulation studies remain acceptance work.
 36. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
