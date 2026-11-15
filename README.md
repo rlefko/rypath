@@ -91,6 +91,12 @@ and supports VisCAM/SolidView and Materialise colors, with explicit convention
 selection for ambiguous inputs. Materialise alpha maps to surface coverage.
 Use `--check-stl MODEL.stl` or `--convert-stl MODEL.stl --output DIRECTORY`.
 
+[Static glTF/GLB conversion](docs/gltf-import.md) preserves selected static triangle
+scenes, core metallic-roughness inputs, native UV textures, signed normal frames,
+sidedness and alpha through explicit rypath PBRT extensions. Use
+`--check-gltf MODEL` or `--convert-gltf MODEL --output DIRECTORY`; scene selection
+accepts `--gltf-scene INDEX`. Camera and lighting remain caller-owned.
+
 [Checkpoint/resume and cancellation](docs/checkpointing.md) preserve complete raw
 sample batches across compatible builds and supported Metal devices. Broader PBRT
 rendering, remaining surface models and heterogeneous media follow this bounded profile. Scene compatibility, numerical

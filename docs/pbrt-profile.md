@@ -55,6 +55,15 @@ forms are recognized, with option execution deferred.
 Film output filenames are not input dependencies, texture parameter strings are
 named references, and built-in spectrum names are not treated as filenames.
 
+## rypath glTF extensions
+
+Converted glTF bundles explicitly use `rypath-gltf-v1` materials, glTF-tagged
+spectrum imagemaps and signed-frame PLY properties. The [glTF import profile](gltf-import.md)
+defines their complete fields, sampler policy and restrictions. They are rypath
+extensions rather than standard PBRT v4 syntax/semantics; ordinary PBRT material,
+image and unmarked PLY interpretation remains unchanged. Structural acceptance
+alone does not establish complete rendering or corpus compatibility.
+
 ## Declared descriptor parameters
 
 Parameters outside these schemas are diagnosed rather than silently discarded.

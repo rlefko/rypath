@@ -292,6 +292,15 @@ Portable preparation checks generated-file and decode budgets before staging.
 See the [STL profile](stl-import.md) for color ambiguity and numeric-domain rules.
 Neither adapter changes transport, sampling, accumulation, or checkpoint contracts.
 
+The static glTF adapter adds a separate checked scene-selection and resource
+boundary using memory-only cgltf and bounded MikkTSpace. Core materials target
+`rypath-gltf-v1`, with direct RGB image slots, native top-left UV sampling and
+signed PLY frames; this introduces a dedicated spectral BSDF/coverage contract.
+Nonemissive mesh reuse becomes object instances; emissive placements remain direct
+geometry. Source snapshots, generated-file validation and atomic publication
+follow the shared bundle model. See the [glTF profile](gltf-import.md) for limits,
+selected-scene restrictions and explicit rendering adaptations.
+
 ## Rendering and planned boundaries
 
 The first renderer exercises these boundaries concretely: portable spectral

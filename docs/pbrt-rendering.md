@@ -860,3 +860,15 @@ python3 scripts/compare_pbrt.py \
   --fixtures tests/fixtures/pbrt-render \
   --output-dir .cache/pbrt-reference/comparison
 ```
+
+## Static glTF material extension
+
+`rypath-gltf-v1` is a dedicated core metallic-roughness spectral adaptation with
+direct RGB texture slots, all core sampler modes, native top-left glTF UVs,
+signed tangent normal maps, geometric sidedness and coverage. It is separate
+from ordinary PBRT material graphs and requires the corresponding glTF-tagged
+imagemap policy. OPAQUE and MASK emission are supported; fractional BLEND emission
+is rejected. Visibility/emitter coverage uses LOD zero independently of shading
+footprints. The [glTF profile](gltf-import.md) lists exact fields, numeric limits,
+model assumptions and current validation boundaries. Generated worlds require
+rypath; no stock-PBRT image equivalence is claimed.

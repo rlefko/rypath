@@ -50,6 +50,11 @@ must produce the same effective owned data to remain compatible; inactive fields
 are conservatively included. Bitwise changes in translated data can reject a job
 even when two scenes appear visually equivalent.
 
+Static glTF identity includes material factors and image bindings, sampler policy,
+native image data, signed tangent frames and material-derived emission bindings.
+These fields participate in the versioned renderer/identity contract; adding
+glTF support does not make older incompatible checkpoints resumable.
+
 The original target sample count is fixed: it controls texture footprints.
 Checkpointing does not add a PBRT sample override or allow extending a completed
 job. Batch size, file paths, output precision and presentation exposure may change.

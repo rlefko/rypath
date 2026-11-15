@@ -12,13 +12,24 @@ Materialise colors use an explicit sRGB-to-diffuse profile; Materialise alpha ma
 to stochastic surface coverage. Ambiguous colored inputs require a convention
 selection. See the [STL profile](stl-import.md) and [validation](stl-validation.md).
 
-A next bounded task is defining and implementing the static glTF/GLB import
-profile. Broader OBJ/MTL and STL profiles, further PBRT support, long-run
-convergence studies, licensed corpus acceptance and measured M4 Max benchmarks
-remain on the [roadmap](roadmap.md). This does not establish offline MVP
-completion, full-spec OBJ support, or full pinned-corpus coverage.
+The static glTF/GLB change adds selected-scene triangle conversion, core
+metallic-roughness spectral adaptation, native-UV PNG/JPEG sampling, signed normal
+frames, sidedness, alpha and emission through explicit rypath PBRT extensions.
+See the [glTF profile](gltf-import.md) for fidelity, conservative input boundaries
+and deferred features, and the [validation record](gltf-validation.md) for measured evidence.
+
+Broader mesh/PBRT profiles, long-run convergence, licensed corpus acceptance and
+measured M4 Max benchmarks remain on the [roadmap](roadmap.md). This does not
+establish offline MVP completion or full pinned-corpus coverage.
 
 ## Validation
+
+The glTF change passes Debug, Release and ASan/UBSan (163/163 each), 112 Python
+checks, changed-unit Clang-Tidy and Objective-C++ analysis, and repository hooks
+on M4 Max. GPU evidence includes 4,528 independent double-equation BSDF cases,
+2,097,152 Monte Carlo samples, 36,311 texture cases and full-render material,
+visibility, emission and resume comparisons. See [glTF validation](gltf-validation.md).
+The following STL results are historical evidence for that revision.
 
 STL implementation `9a1aaf6` passes Debug, Release and ASan/UBSan (142/142 each),
 the Metal-disabled LLVM 18 build (109/109), all 112 Python checks, changed-unit
