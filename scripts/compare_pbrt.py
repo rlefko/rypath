@@ -188,18 +188,50 @@ def stage_dependencies(fixture, destination):
         target.write_bytes(payload)
 
 
-def render_pfm(backend, binary, variant, source):
+def render_pfm(backend, binary, variant, source, *, runner=None):
+    """Retain each process transcript and reject reported errors before PFM readback.
+
+    Some PBRT failures replace invalid samples with black and still exit zero.
+    Finite output is therefore insufficient evidence of a valid reference render.
+    The optional runner supports deterministic subprocess tests without patching.
+    """
     output = variant.with_suffix(".pfm")
     variant.write_bytes(source)
     command = [str(binary), str(variant), str(output)]
     if backend == "pbrt":
         command = [str(binary), "--quiet", "--outfile", str(output), str(variant)]
-    subprocess.run(command, check=True, cwd=variant.parent, timeout=120)
+    execute = runner or subprocess.run
+
+    def retain(stdout, stderr, **status):
+        def decoded(value):
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+        variant.with_suffix(".stdout.log").write_text(decoded(stdout))
+        variant.with_suffix(".stderr.log").write_text(decoded(stderr))
+        variant.with_suffix(".process.json").write_text(
+            json.dumps({"command": command, **status}, indent=2) + "\n")
+
+    try:
+        result = execute(command, check=False, cwd=variant.parent, timeout=120,
+                         capture_output=True, text=True)
+    except subprocess.TimeoutExpired as error:
+        retain(error.stdout, error.stderr, timed_out=True)
+        raise
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    plain = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", combined)
+    diagnostic = re.search(r"\b(?:ERROR|FATAL|SEVERE)\b", plain, re.IGNORECASE)
+    retain(result.stdout, result.stderr, returncode=result.returncode,
+           error_diagnostic=diagnostic is not None)
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command,
+                                            output=result.stdout, stderr=result.stderr)
+    if diagnostic:
+        raise ValueError(f"{variant}: renderer reported {diagnostic[0]}; "
+                         "see retained stdout/stderr logs")
     return read_pfm(output)
 
 
-def render_replicates(rypath, pbrt, fixture, run_dir, regions):
-    source = fixture.read_bytes()
+def render_replicates(rypath, pbrt, fixture, run_dir, regions, *, source_override=None):
+    source = fixture.read_bytes() if source_override is None else source_override
     seed_token = b'"integer seed" [0]'
     if source.count(seed_token) != 1 or source.count(b'"integer pixelsamples" [4096]') != 1:
         raise ValueError(f"{fixture}: expected one sampler seed and 4096 spp")

@@ -6,6 +6,13 @@ samples per pixel, CIE 1931, linear sRGB, and full precision film. The compariso
 uses rypath seeds 0–15 and PBRT seeds 16–31; full image and four quadrant RGB means
 use five combined standard errors plus `2e-5 * max(1, abs(reference))`.
 
+For matched reference rendering only, the harness changes the roughness graph's
+zero endpoint to 0.01 for both backends. Pinned PBRT can otherwise produce
+negative checker values through cancellation, then replace invalid radiance
+with black. The native zero/0.15 fixture remains unchanged. The harness records
+the override and both source hashes and rejects renderer error diagnostics;
+see [conductor validation](../../../../docs/conductor-validation.md).
+
 | Entry | Selected coverage |
 | --- | --- |
 | smooth-cu-environment | Default copper eta/k, smooth reflection into constant environment |
@@ -15,7 +22,7 @@ use five combined standard errors plus `2e-5 * max(1, abs(reference))`.
 | anisotropy-rotated | Same model with UV frame rotated 90 degrees |
 | numeric-file-optical | Numeric eta, file k above one, unremapped microfacet width, transformed external PLY |
 | detail-alpha | Instance, binary procedural alpha, bump and normal-map precedence, anisotropic material |
-| roughness-graph | Checker roughness graph crossing exactly smooth and rough regions |
+| roughness-graph | Native smooth/rough checker regions; matched reference uses 0.01/0.15 |
 
 `assets/k.spd` is original optical data for this test, with no physical-material
 claim. `assets/normal-tilted.png` is the unchanged owned core-texture fixture.
