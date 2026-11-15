@@ -2234,7 +2234,7 @@ static int stbi__jpeg_decode_block(stbi__jpeg *j, short data[64], stbi__huffman 
          j->code_bits -= s;
          // decode into unzigzag'd location
          zig = stbi__jpeg_dezigzag[k++];
-         if (!stbi__store_coefficient(data + zig, (r >> 8) * dequant[zig])) return 0;
+         if (!stbi__store_coefficient(data + zig, (int64_t) (r >> 8) * dequant[zig])) return 0;
       } else {
          int rs = stbi__jpeg_huff_decode(j, hac);
          if (rs < 0) return stbi__err("bad huffman code","Corrupt JPEG");
@@ -2249,7 +2249,7 @@ static int stbi__jpeg_decode_block(stbi__jpeg *j, short data[64], stbi__huffman 
             if (k >= 64 || s > 10) return stbi__err("invalid AC coefficient", "Corrupt JPEG");
             // decode into unzigzag'd location
             zig = stbi__jpeg_dezigzag[k++];
-            if (!stbi__store_coefficient(data + zig, stbi__extend_receive(j,s) * dequant[zig])) return 0;
+            if (!stbi__store_coefficient(data + zig, (int64_t) stbi__extend_receive(j,s) * dequant[zig])) return 0;
          }
       }
    } while (k < 64);
@@ -2275,7 +2275,7 @@ static int stbi__jpeg_decode_block_prog_dc(stbi__jpeg *j, short data[64], stbi__
       j->img_comp[b].dc_pred = dc;
       if (dc < -2047 || dc > 2047)
          return stbi__err("invalid DC coefficient", "Corrupt JPEG");
-      if (!stbi__store_coefficient(data, dc * (1 << j->succ_low))) return 0;
+      if (!stbi__store_coefficient(data, (int64_t) dc * (1 << j->succ_low))) return 0;
    } else {
       // refinement scan for DC coefficient
       if (stbi__jpeg_get_bit(j) &&
@@ -2314,7 +2314,7 @@ static int stbi__jpeg_decode_block_prog_ac(stbi__jpeg *j, short data[64], stbi__
             j->code_buffer <<= s;
             j->code_bits -= s;
             zig = stbi__jpeg_dezigzag[k++];
-            if (!stbi__store_coefficient(data + zig, (r >> 8) * (1 << shift))) return 0;
+            if (!stbi__store_coefficient(data + zig, (int64_t) (r >> 8) * (1 << shift))) return 0;
          } else {
             int rs = stbi__jpeg_huff_decode(j, hac);
             if (rs < 0) return stbi__err("bad huffman code","Corrupt JPEG");
@@ -2335,7 +2335,7 @@ static int stbi__jpeg_decode_block_prog_ac(stbi__jpeg *j, short data[64], stbi__
                if (k > j->spec_end || s > 10)
                   return stbi__err("invalid AC coefficient", "Corrupt JPEG");
                zig = stbi__jpeg_dezigzag[k++];
-               if (!stbi__store_coefficient(data + zig, stbi__extend_receive(j,s) * (1 << shift))) return 0;
+               if (!stbi__store_coefficient(data + zig, (int64_t) stbi__extend_receive(j,s) * (1 << shift))) return 0;
             }
          }
       } while (k <= j->spec_end);

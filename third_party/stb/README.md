@@ -9,7 +9,7 @@ for the original dual-license notice.
 | File | SHA-256 |
 | --- | --- |
 | Original `stb_image.h` | `91f435e0fc6a620018b878b9859c74dff60d28046f87e649191ad6f35a98c722` |
-| Modified `stb_image.h` | `3aa3c8e749b841b48441739e638a80df415de6ff1c8e2a2823fd18478d06799e` |
+| Modified `stb_image.h` | `00d52444dcd5ad343ae073e033d92ee7b1362b99a4d6d3a1c33eb561d2845e0f` |
 | Original `LICENSE` | `bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63` |
 
 The rypath adapter compiles JPEG decoding from memory. It accepts 8-bit Huffman
@@ -26,6 +26,10 @@ returning a partially decoded image. Progressive coefficient planes start at
 zero so an interleaved refinement can safely update MCU padding skipped by a
 noninterleaved first scan. The JPEG state charges each scan's scheduled
 8×8 blocks and the final progressive IDCT pass against a cumulative 2²²-block
-limit. The scalar IDCT widens integer intermediates to avoid signed overflow on
+limit. Coefficient products widen an operand to `int64_t` before multiplication
+and then pass through the signed 16-bit range check. Existing symbol, DC, and
+progressive-shift bounds already keep these products within signed 32-bit range.
+The explicit widening makes the checked arithmetic consistent across all paths.
+The scalar IDCT widens integer intermediates to avoid signed overflow on
 malformed coefficients. IDCT scaling, rounding, color conversion, and upsampling
 follow the pinned implementation for valid inputs.

@@ -62,9 +62,9 @@ the observed boundary failure and the separate off-boundary comparison.
 
 ## Deterministic and native checks
 
-Runtime implementation is recorded in commit `9e1789b`; the following reference
-tooling/documentation commit does not change its model. Final branch checks are
-reported separately on the PR.
+The core runtime integration is recorded in commit `9e1789b`. Subsequent
+coefficient-promotion and test-portability fixes preserve the supported model;
+final branch checks are reported separately on the PR.
 
 The implementation was exercised on Apple M4 Max with the repository's macOS 14 /
 MSL 3.1 deployment contract. All checks use the actual device; portable builds
@@ -84,6 +84,12 @@ GPU families.
 | Surface frame | Seven CPU/Metal cases include authored tangents, mirrored and nonuniform placement, geometric face-forward order, curved patches and large-tangent reduction |
 | Image lights | Independent projection/PDF/radiance and frequency tests, 18 cell-frequency gates, gamma RGBA scalar-filter controls, and concentrated-cell roundtrip stress |
 | Displacement | Analytic planes/normals, shared-edge refinement, shape-space metric, UV requirements, collapsed/nonfinite geometry and work/scratch/depth exhaustion |
+
+CodeQL also identified coefficient products promoted to 64 bits only after
+multiplication. Independent review confirmed that existing guards bound these
+products within signed 32-bit range. Promotion now occurs before multiplication
+on every coefficient path. Five owned JPEGs still match the pinned decoder byte
+for byte; a further 50,000 deterministic mutations pass ASan/UBSan.
 
 Independent review found and reproduced the instance alpha frame, nonuniform
 surface orientation, angular-axis derivatives, repeated binary-mask scans,
