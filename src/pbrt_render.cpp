@@ -168,6 +168,7 @@ class Translator {
     std::optional<SpectralMaterial> reflectance(const Descriptor &descriptor,
                                                 ReflectanceSource source, string_view name,
                                                 float fallback);
+    std::optional<OpticalSpectrum> optical(const Descriptor &descriptor, string_view name);
     std::uint32_t material(const Descriptor &descriptor);
     void geometry();
 };
@@ -1282,8 +1283,11 @@ void Translator::rebase_texture_mappings() {
 }
 
 void Translator::texture_frames() {
+    const bool conductor = std::ranges::any_of(scene_.materials, [](const auto &material) {
+        return material.scattering == ScatteringKind::conductor;
+    });
     if (!scene_.raster_camera ||
-        (scene_.image_textures.empty() && scene_.texture_graph.nodes.empty())) {
+        (scene_.image_textures.empty() && scene_.texture_graph.nodes.empty() && !conductor)) {
         return;
     }
     try {
@@ -1347,11 +1351,105 @@ void Translator::texture_frames() {
     }
 }
 
+std::optional<OpticalSpectrum> Translator::optical(const Descriptor &descriptor, string_view name) {
+    const auto *selected = parameter(descriptor, name);
+    OpticalSpectrum result;
+    result.extend_endpoints = true;
+    if (!selected) {
+        const auto knots = pbrt_named_spectrum_knots(name == "eta" ? "metal-Cu-eta" : "metal-Cu-k");
+        if (!charge_file_spectrum(descriptor.authored.location, knots.size(), 0)) {
+            return std::nullopt;
+        }
+        result.knots.assign(knots.begin(), knots.end());
+    } else if (selected->type != "spectrum") {
+        unsupported(selected->location, "Conductor " + std::string(name) +
+                                            " requires a named, numeric, or file spectrum; RGB, "
+                                            "blackbody, and textures are unsupported");
+        return std::nullopt;
+    } else if (selected->values.front().kind == ValueKind::string) {
+        auto knots = pbrt_named_spectrum_knots(selected->values.front().text);
+        if (knots.empty()) {
+            const auto *file = descriptor.checked_spectrum(name);
+            if (!file) {
+                invalid(selected->location,
+                        "Conductor optical spectrum requires a checked spectrum file");
+                return std::nullopt;
+            }
+            knots = file->knots;
+            result.extend_endpoints = false;
+        }
+        if (!charge_file_spectrum(selected->location, knots.size(), 0)) {
+            return std::nullopt;
+        }
+        result.knots.assign(knots.begin(), knots.end());
+    } else {
+        result.extend_endpoints = false;
+        auto knots = spectrum(descriptor, name, SpectrumRole::graph_operand);
+        if (!knots) {
+            return std::nullopt;
+        }
+        result.knots = std::move(*knots);
+    }
+    for (const auto &knot : result.knots) {
+        if (!std::isfinite(knot.value) || knot.value < 0) {
+            invalid(location(descriptor, name),
+                    "Conductor optical constants must be finite and nonnegative");
+            return std::nullopt;
+        }
+    }
+    return result;
+}
+
 std::uint32_t Translator::material(const Descriptor &descriptor) {
     const auto *selected = parameter(descriptor, "reflectance");
     const auto authored_bump = float_binding(descriptor, "displacement");
     const auto normal = native_image(descriptor);
     const auto bump = normal == graph::no_texture ? authored_bump : graph::no_texture;
+    const auto type = descriptor.authored.name == "MakeNamedMaterial"
+                          ? string(descriptor, "type").value_or("")
+                          : string_view(descriptor.authored.arguments.front().text);
+    if (type == "conductor") {
+        if (selected) {
+            unsupported(selected->location,
+                        "Conductor reflectance shortcut is unsupported; provide eta and k spectra");
+            return 0;
+        }
+        auto eta = optical(descriptor, "eta");
+        auto k = optical(descriptor, "k");
+        if (!eta || !k) {
+            return 0;
+        }
+        SpectralMaterial value;
+        value.scattering = ScatteringKind::conductor;
+        value.eta = std::move(*eta);
+        value.k = std::move(*k);
+        value.bump_root = bump;
+        value.normal_map = normal;
+        value.remap_roughness = boolean(descriptor, "remaproughness", true);
+        const auto roughness = [&](string_view axis) -> std::pair<float, std::uint32_t> {
+            const auto field = parameter(descriptor, axis) ? axis : string_view("roughness");
+            const auto *rough = parameter(descriptor, field);
+            if (!rough)
+                return {0, UINT32_MAX};
+            if (rough->type == "texture")
+                return {0, float_binding(descriptor, field)};
+            if (!float_representable(rough->values.front().number)) {
+                invalid(rough->location, "Conductor roughness overflows binary32");
+                return {0, UINT32_MAX};
+            }
+            return {static_cast<float>(rough->values.front().number), UINT32_MAX};
+        };
+        const auto u = roughness("uroughness"), v = roughness("vroughness");
+        value.u_roughness = u.first;
+        value.u_roughness_root = u.second;
+        value.v_roughness = v.first;
+        value.v_roughness_root = v.second;
+        if (const auto message = validate_conductor_material(value); !message.empty()) {
+            invalid(descriptor.authored.location, message);
+            return 0;
+        }
+        return append_material(std::move(value));
+    }
     std::uint32_t existing = 0;
     std::optional<SpectralMaterial> value;
     if (selected && selected->type == "texture") {

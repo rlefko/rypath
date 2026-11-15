@@ -23,13 +23,18 @@ kernel void rypath_surface_detail_probe(const device wire::SurfaceVertex *vertic
                                         uint id [[thread_position_in_grid]]) {
     const device auto &xf = transforms[id];
     const uint indices[] = {0, 1, 2, 3};
-    const float2 uvs[] = {float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1)};
+    float2 uvs[] = {float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1)};
+    if (id == 7) {
+        uvs[1].x = -1;
+        uvs[3].x = -1;
+    }
     const float2 hit(0.25f, 0.5f);
     detail::Frame frame;
     const bool formed = id == 3 || id == 4
                             ? detail::patch(vertices, xf, indices, hit, uvs, frame)
                             : detail::triangle(vertices, xf, indices, hit, uvs, frame);
-    float3 mapped(0), bumped(0);
+    float3 mapped(0), bumped(0), retained_mapped(NAN), retained_bumped(NAN);
+    detail::Frame map_frame = {}, bump_frame = {};
     bool map_ok = false, bump_ok = false;
     if (formed) {
         const rypath::texture_graph_wire::Context context{
@@ -37,9 +42,24 @@ kernel void rypath_surface_detail_probe(const device wire::SurfaceVertex *vertic
         map_ok =
             detail::normal_map(frame, float3(0.75f, 0.5f, 1.0f), frame.geometric_normal, mapped);
         bump_ok = detail::bump_map(frame, context, frame.geometric_normal, Displacement{}, bumped);
+        map_ok = detail::normal_map(frame, float3(0.75f, 0.5f, 1.0f), frame.geometric_normal,
+                                    retained_mapped, &map_frame) &&
+                 map_ok;
+        bump_ok = detail::bump_map(frame, context, frame.geometric_normal, Displacement{},
+                                   retained_bumped, &bump_frame) &&
+                  bump_ok;
     } else {
         frame = {float3(NAN), float3(NAN), float3(NAN), float3(NAN), float3(NAN), float3(NAN)};
     }
+    device auto *retained = result + 9 * 8 + 8 * id;
+    retained[0] = pack(map_frame.n);
+    retained[1] = pack(map_frame.dpdu);
+    retained[2] = pack(map_frame.dpdv);
+    retained[3] = pack(bump_frame.n);
+    retained[4] = pack(bump_frame.dpdu);
+    retained[5] = pack(bump_frame.dpdv);
+    retained[6] = pack(retained_mapped);
+    retained[7] = pack(retained_bumped);
     result += 9 * id;
     result[0] = pack(frame.n);
     result[1] = pack(frame.dpdu);

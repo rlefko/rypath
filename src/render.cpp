@@ -11,6 +11,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <type_traits>
 #include <utility>
@@ -255,6 +256,12 @@ bool valid_rgb_coefficients(const std::array<float, 3> &coefficients) {
 }
 
 std::string validate_pbrt_material(const SpectralMaterial &material) {
+    if (material.scattering == ScatteringKind::conductor)
+        return validate_conductor_material(material);
+    if (material.scattering != ScatteringKind::diffuse || !material.eta.knots.empty() ||
+        !material.k.knots.empty() || material.u_roughness != 0 || material.v_roughness != 0 ||
+        material.u_roughness_root != UINT32_MAX || material.v_roughness_root != UINT32_MAX)
+        return "Invalid diffuse scattering payload";
     constexpr std::array<float, 3> zero_coefficients{};
     if (material.kind != SpectralMaterialKind::image && material.image_texture != 0) {
         return "Constant spectral material contains an image binding";
@@ -321,6 +328,10 @@ std::string validate_image_textures(const RenderScene &scene) {
                scene.image_textures[index].image->source_channels == 3;
     };
     for (const auto &material : scene.materials) {
+        for (const auto root : {material.u_roughness_root, material.v_roughness_root}) {
+            if (root != UINT32_MAX && !root_valid(root, graph::scalar))
+                return "Conductor roughness requires a scalar texture graph";
+        }
         if (material.kind == SpectralMaterialKind::image &&
             material.image_texture >= scene.image_textures.size()) {
             return "Image material references an invalid texture";
@@ -428,7 +439,9 @@ std::string validate_image_textures(const RenderScene &scene) {
                 return "Surface detail transform must be finite and affine";
         }
     }
-    if (scene.image_textures.empty() && scene.texture_graph.nodes.empty()) {
+    const bool conductors = std::ranges::any_of(
+        scene.materials, [](const auto &m) { return m.scattering == ScatteringKind::conductor; });
+    if (scene.image_textures.empty() && scene.texture_graph.nodes.empty() && !conductors) {
         return scene.instance_texture_frames.empty() ? "" : "Texture frames require image textures";
     }
     if (scene.model != RenderModel::pbrt ||
@@ -639,6 +652,60 @@ void accumulate(double value, double &sum, double &correction) {
 }
 
 } // namespace
+
+double optical_spectrum(const OpticalSpectrum &spectrum, double wavelength) {
+    if (spectrum.knots.empty())
+        return 0;
+    if (spectrum.extend_endpoints) {
+        if (wavelength < spectrum.knots.front().wavelength)
+            return spectrum.knots.front().value;
+        if (wavelength > spectrum.knots.back().wavelength)
+            return spectrum.knots.back().value;
+    }
+    return sampled_spectrum(spectrum.knots, wavelength);
+}
+
+std::string validate_conductor_material(const SpectralMaterial &material) {
+    if (material.scattering != ScatteringKind::conductor)
+        return "Expected conductor scattering";
+    // Check the complete piecewise-linear domain, including file support jumps.
+    std::vector<double> boundaries{360, 830};
+    for (const auto *curve : {&material.eta, &material.k}) {
+        if (curve->knots.size() < 2)
+            return "Optical spectra require at least two knots";
+        float previous = -std::numeric_limits<float>::infinity();
+        for (const auto [wavelength, value] : curve->knots) {
+            if (!std::isfinite(wavelength) || wavelength <= previous || !std::isfinite(value) ||
+                value < 0)
+                return "Optical spectra require increasing finite wavelengths and finite "
+                       "nonnegative values";
+            previous = wavelength;
+            if (wavelength >= 360 && wavelength <= 830)
+                boundaries.push_back(wavelength);
+        }
+    }
+    std::ranges::sort(boundaries);
+    const auto zero_pair = [&](double wavelength) {
+        return optical_spectrum(material.eta, wavelength) == 0 &&
+               optical_spectrum(material.k, wavelength) == 0;
+    };
+    for (std::size_t i = 0; i < boundaries.size(); ++i) {
+        if (zero_pair(boundaries[i]) ||
+            (i && zero_pair(std::midpoint(boundaries[i - 1], boundaries[i]))))
+            return "Conductor eta and k cannot both be zero in the transport wavelength range";
+    }
+    if (!std::isfinite(material.u_roughness) || material.u_roughness < 0 ||
+        !std::isfinite(material.v_roughness) || material.v_roughness < 0)
+        return "Conductor roughness must be finite and nonnegative";
+    if (!material.knots.empty() || material.reflectance != std::array<float, 8>{} ||
+        material.constant != 0 || material.coefficients != std::array<float, 3>{} ||
+        material.temperature_kelvin != 0 || material.image_texture != 0 ||
+        material.texture_root != UINT32_MAX ||
+        (material.kind != SpectralMaterialKind::sampled &&
+         material.kind != SpectralMaterialKind::constant))
+        return "Conductor contains a diffuse reflectance payload";
+    return {};
+}
 
 std::string validate_image_light(const ImagePyramid &image) {
     if (!image.native_base || image.levels.size() != 1 || image.source_channels != 3)
@@ -897,7 +964,8 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
     const bool emission =
         !scene.instance_emissions.empty() && scene.instance_emissions[index] != no_area_emission &&
         scene.area_emissions[scene.instance_emissions[index]].image_texture != UINT32_MAX;
-    return material.kind == SpectralMaterialKind::image ||
+    return material.scattering == ScatteringKind::conductor ||
+           material.kind == SpectralMaterialKind::image ||
            material.kind == SpectralMaterialKind::texture_graph ||
            material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||
            (!scene.instance_alpha_roots.empty() &&
@@ -1024,7 +1092,8 @@ std::string validate_render_scene(const RenderScene &scene) {
         return {};
     }
     for (const auto &material : scene.materials) {
-        if (material.kind != SpectralMaterialKind::sampled || material.constant != 0 ||
+        if (material.scattering != ScatteringKind::diffuse ||
+            material.kind != SpectralMaterialKind::sampled || material.constant != 0 ||
             material.coefficients != std::array<float, 3>{} || material.temperature_kelvin != 0) {
             return "Demo spectral material requires a sampled reflectance";
         }

@@ -22,6 +22,7 @@ void require(bool success, std::string_view message) {
 }
 
 using Vec = std::array<double, 3>;
+Vec operator+(Vec a, Vec b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
 Vec operator-(Vec a, Vec b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
 Vec operator*(double s, Vec v) { return {s * v[0], s * v[1], s * v[2]}; }
 double dot(Vec a, Vec b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
@@ -45,7 +46,7 @@ void near(wire::Point point, Vec expected, std::string_view label) {
 }
 
 void verify(const wire::Point *output) {
-    for (unsigned i = 0; i < 7; ++i) {
+    for (unsigned i = 0; i < 8; ++i) {
         near(output[9 * i + 7], {1, 1, 1}, "surface probe status");
     }
     near(output[0], {0, 0, 1}, "unmodified triangle shading normal");
@@ -93,10 +94,52 @@ void verify(const wire::Point *output) {
     near(output[56], {0, 10, 0}, "large tangent reduction retains frame ratio");
     near(output[60], unit(cross({10, 0, 4.5}, {0, 10, 3})),
          "bump uses reduced authored tangent scale");
+    near(output[9 * 7 + 1], {-1, 0, 0}, "mirrored UV dpdu");
+    near(output[9 * 7 + 2], {0, 1, 0}, "mirrored UV dpdv");
+    for (unsigned i = 0; i < 8; ++i) {
+        const auto *frame = output + 9 * i;
+        const auto *retained = output + 9 * 8 + 8 * i;
+        const Vec n = unpack(frame[0]), u = unpack(frame[1]), v = unpack(frame[2]);
+        const Vec geometric = unpack(frame[8]);
+        const auto face_forward = [&](Vec mapped) {
+            return dot(mapped, geometric) < 0 ? -1.0 * mapped : mapped;
+        };
+        // Double tangent-plane projection, independent of device normalization.
+        const Vec tangent = unit(u);
+        const Vec mapped_n = face_forward(unit(0.5 * tangent + n));
+        const Vec mapped_u = unit(tangent - dot(tangent, mapped_n) * mapped_n);
+        const Vec mapped_v = cross(mapped_n, mapped_u);
+        near(retained[0], mapped_n, "retained mapped normal");
+        near(retained[1], mapped_u, "retained mapped dpdu projection");
+        near(retained[2], mapped_v, "retained mapped dpdv orientation");
+        near(retained[0], unpack(frame[5]), "map Frame output preserves original normal");
+        near(retained[6], unpack(frame[5]), "map pointer call preserves original normal");
+        // h(u,v,p)=2u+3v+p.x/4 is linear: exact partials include the
+        // displacement's spatial derivative and height times normal derivatives.
+        constexpr double height = 2.0;
+        const Vec bumped_u = u + (2 + 0.25 * u[0]) * n + height * unpack(frame[3]);
+        const Vec bumped_v = v + (3 + 0.25 * v[0]) * n + height * unpack(frame[4]);
+        const Vec bumped_n = face_forward(unit(cross(bumped_u, bumped_v)));
+        near(retained[3], bumped_n, "retained bumped normal");
+        near(retained[4], bumped_u, "retained bumped dpdu partial");
+        near(retained[5], bumped_v, "retained bumped dpdv partial");
+        near(retained[3], unpack(frame[6]), "bump Frame output preserves original normal");
+        near(retained[7], unpack(frame[6]), "bump pointer call preserves original normal");
+        const auto orthogonal = [](Vec a, Vec b) { return std::abs(dot(unit(a), unit(b))) < 4e-6; };
+        require(orthogonal(unpack(retained[0]), unpack(retained[1])) &&
+                    orthogonal(unpack(retained[0]), unpack(retained[2])) &&
+                    orthogonal(unpack(retained[1]), unpack(retained[2])),
+                "Mapped frame must be orthogonal");
+        require(orthogonal(unpack(retained[3]), unpack(retained[4])) &&
+                    orthogonal(unpack(retained[3]), unpack(retained[5])),
+                "Bump partials must remain tangent to the bumped normal");
+    }
+    std::cout << "Surface detail: 8 retained normal/bump frames, projected tangents and exact "
+                 "displacement partials\n";
 }
 
-std::array<wire::SurfaceTransform, 7> transforms() {
-    std::array<wire::SurfaceTransform, 7> xfs{};
+std::array<wire::SurfaceTransform, 8> transforms() {
+    std::array<wire::SurfaceTransform, 8> xfs{};
     const auto diagonal = [](float(&matrix)[9], float x, float y, float z) {
         matrix[0] = x;
         matrix[4] = y;
@@ -161,7 +204,7 @@ void run(id<MTLDevice> device, const char *path) {
     const auto matrix = [device newBufferWithBytes:xfs.data()
                                             length:sizeof(xfs)
                                            options:MTLResourceStorageModeShared];
-    const auto output = [device newBufferWithLength:9 * xfs.size() * sizeof(wire::Point)
+    const auto output = [device newBufferWithLength:17 * xfs.size() * sizeof(wire::Point)
                                             options:MTLResourceStorageModeShared];
     const auto queue = [device newCommandQueue];
     const auto command = [queue commandBuffer];

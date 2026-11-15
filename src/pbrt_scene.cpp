@@ -340,6 +340,30 @@ constexpr std::array named_material_fields{
     material_fields[2],
 };
 
+constexpr std::array conductor_fields{
+    Field{.name = "eta", .type = "spectral-texture", .allow_spectrum_file = true},
+    Field{.name = "k", .type = "spectral-texture", .allow_spectrum_file = true},
+    Field{.name = "roughness", .type = "float-texture", .allow_texture_reference = true},
+    Field{.name = "uroughness", .type = "float-texture", .allow_texture_reference = true},
+    Field{.name = "vroughness", .type = "float-texture", .allow_texture_reference = true},
+    Field{"remaproughness", "bool"},
+    material_fields[1],
+    material_fields[2],
+    Field{.name = "reflectance", .type = "spectral-texture", .deferred = true},
+};
+constexpr std::array named_conductor_fields{
+    Field{"type", "string", 1, false, true},
+    conductor_fields[0],
+    conductor_fields[1],
+    conductor_fields[2],
+    conductor_fields[3],
+    conductor_fields[4],
+    conductor_fields[5],
+    conductor_fields[6],
+    conductor_fields[7],
+    conductor_fields[8],
+};
+
 constexpr std::array float_constant_fields{Field{"value", "float"}};
 constexpr std::array spectrum_constant_fields{
     Field{.name = "value", .type = "spectral", .rule = Rule::albedo, .allow_spectrum_file = true},
@@ -858,6 +882,12 @@ void Interpreter::scan_after_include(const Directive &directive) {
             scan_parameter(material_fields.front());
             return;
         }
+        if (target == "material" && type == "conductor") {
+            for (const auto &field : conductor_fields) {
+                scan_parameter(field);
+            }
+            return;
+        }
     } else if (name == "Shape") {
         dependencies(directive, "shape", argument);
     } else if (name == "Texture") {
@@ -971,7 +1001,9 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
             // validation charge bounds this scan even for inherited parameters.
             if (file_spectrum && field.allow_spectrum_file) {
                 auto file = spectrum_file(parameter->values.front());
-                if (directive.name == "Texture" && directive.arguments.back().text != "constant") {
+                if ((directive.name == "Texture" &&
+                     directive.arguments.back().text != "constant") ||
+                    (target == "material" && one_of(field.name, {"eta", "k"}))) {
                     descriptor.spectrum_files.emplace_back(field.name, std::move(file));
                 } else {
                     descriptor.spectrum_file = std::move(file);
@@ -1303,7 +1335,7 @@ void Interpreter::material(const Directive &directive) {
         }
     }
     dependencies(directive, "material", type);
-    if (type != "diffuse") {
+    if (type != "diffuse" && type != "conductor") {
         if (type == "mix") {
             if (const auto *materials =
                     select(directive, "material", Field{"materials", "string", 2});
@@ -1323,8 +1355,10 @@ void Interpreter::material(const Directive &directive) {
 
     Descriptor descriptor = describe(directive, false);
     validate(descriptor, directive, "material",
-             named ? std::span<const Field>(named_material_fields)
-                   : std::span<const Field>(material_fields));
+             type == "conductor" ? (named ? std::span<const Field>(named_conductor_fields)
+                                          : std::span<const Field>(conductor_fields))
+                                 : (named ? std::span<const Field>(named_material_fields)
+                                          : std::span<const Field>(material_fields)));
     native_image(descriptor, "normalmap", ImageEncoding::linear, ImageWrap::repeat);
     if (named) {
         scene_.named_materials.push_back(std::move(descriptor));

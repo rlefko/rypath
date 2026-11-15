@@ -252,7 +252,7 @@ inline bool patch(const device wire::SurfaceVertex *vertices,
 }
 
 inline bool normal_map(Frame frame, float3 rgb, float3 world_geometric_normal,
-                       thread float3 &result) {
+                       thread float3 &result, thread Frame *mapped = nullptr) {
     float3 local, tangent;
     if (!unit_vector(2.0f * rgb - 1.0f, local) || !unit_vector(frame.dpdu, tangent)) {
         return false;
@@ -262,12 +262,19 @@ inline bool normal_map(Frame frame, float3 rgb, float3 world_geometric_normal,
         return false;
     }
     result = same_hemisphere(result, world_geometric_normal);
+    if (mapped != nullptr) {
+        *mapped = frame;
+        mapped->n = result;
+        if (!unit_vector(tangent - dot(tangent, result) * result, mapped->dpdu))
+            return false;
+        mapped->dpdv = cross(result, mapped->dpdu);
+    }
     return true;
 }
 
 template <typename Evaluator>
 inline bool bump_map(Frame frame, graph::Context context, float3 world_geometric_normal,
-                     Evaluator evaluate, thread float3 &result) {
+                     Evaluator evaluate, thread float3 &result, thread Frame *mapped = nullptr) {
     const float u_width = 0.5f * (abs(context.dudx) + abs(context.dudy));
     const float v_width = 0.5f * (abs(context.dvdx) + abs(context.dvdy));
     const float du = u_width == 0.0f ? 0.0005f : u_width;
@@ -293,6 +300,12 @@ inline bool bump_map(Frame frame, graph::Context context, float3 world_geometric
         return false;
     }
     result = same_hemisphere(result, world_geometric_normal);
+    if (mapped != nullptr) {
+        *mapped = frame;
+        mapped->n = result;
+        mapped->dpdu = dpdu;
+        mapped->dpdv = dpdv;
+    }
     return true;
 }
 

@@ -27,13 +27,13 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Current v4 directive forms and typed scalar/array parameters | Checked, with owned locations and numeric lexemes | Type/cardinality and supported descriptor schemas checked | Not attempted |
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
 | Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
-| Diffuse materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
+| Diffuse and conductor materials and named bindings | Retained | Last matching typed parameter wins; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
 | Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
 | Constant and image infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
-| File spectra on diffuse materials, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
+| File spectra on diffuse/conductor materials, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
 | Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
@@ -71,6 +71,7 @@ capture still occurs at each camera declaration.
 | Path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |
 | Diffuse material | `reflectance`, including a spectrum texture reference, scalar `displacement`, RGB image `normalmap`; named definitions require `string type` |
+| Conductor material | Named/numeric/file `spectrum eta` and `k`; scalar/float-texture `roughness`, `uroughness`, `vroughness`; `remaproughness`, `displacement`, `normalmap`; named definitions require `string type`. RGB/blackbody/texture optical constants and the reflectance shortcut are unsupported |
 | Float constant texture | Optional scalar `float value` |
 | Spectrum constant texture | Optional `value` of type `rgb`, `spectrum`, or `blackbody`, subject to the narrower render profile |
 | Float/spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |

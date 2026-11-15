@@ -23,6 +23,14 @@ inline constexpr std::uint32_t render_emergency_limit = 1024;
 inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
 
 enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image, blackbody, texture_graph };
+enum class ScatteringKind { diffuse, conductor };
+
+// Optical constants are unbounded nonnegative spectra, never diffuse albedo.
+// PBRT named curves extend endpoints; inline/file curves are zero outside support.
+struct OpticalSpectrum {
+    std::vector<SpectralKnot> knots;
+    bool extend_endpoints = false;
+};
 
 struct SpectralMaterial {
     std::array<float, 8> reflectance{};
@@ -35,6 +43,14 @@ struct SpectralMaterial {
     std::uint32_t texture_root = UINT32_MAX;
     std::uint32_t bump_root = UINT32_MAX;
     std::uint32_t normal_map = UINT32_MAX;
+    ScatteringKind scattering = ScatteringKind::diffuse;
+    OpticalSpectrum eta{};
+    OpticalSpectrum k{};
+    float u_roughness = 0;
+    float v_roughness = 0;
+    std::uint32_t u_roughness_root = UINT32_MAX;
+    std::uint32_t v_roughness_root = UINT32_MAX;
+    bool remap_roughness = true;
 };
 enum class RenderModel { demo, pbrt };
 enum class PixelFilterKind { box, triangle };
@@ -153,6 +169,8 @@ double blackbody_reflectance(float temperature_kelvin, double wavelength);
 // Pack a validated positive finite temperature for binary32 wavelength evaluation.
 float blackbody_exponent_factor(float temperature_kelvin);
 double spectral_reflectance(const SpectralMaterial &material, double wavelength);
+double optical_spectrum(const OpticalSpectrum &spectrum, double wavelength);
+std::string validate_conductor_material(const SpectralMaterial &material);
 std::array<std::uint32_t, 4> sample_words(std::uint64_t seed, std::uint32_t pixel,
                                           std::uint64_t sample, std::uint32_t block);
 float sample_uniform(std::uint32_t word);

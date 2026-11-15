@@ -1,0 +1,4 @@
+# Owned optical extinction curve; deliberately exceeds diffuse albedo bounds
+360 2.3
+500 3.2
+830 4.8
