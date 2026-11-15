@@ -1,0 +1,44 @@
+{
+  "hdr-half-diffuse": [
+    {
+      "path": "assets/signed-half.exr",
+      "bytes": 419,
+      "sha256": "d9b012b41248f2729f9e8034d06b5c1585e2ce390978f9916b14bf9951f35b1b"
+    }
+  ],
+  "hdr-float-graph": [
+    {
+      "path": "assets/bright-float.exr",
+      "bytes": 503,
+      "sha256": "13af7439b55eacb29226c0289a2b83708c959da5b893251fc7d1e6f659de6d04"
+    }
+  ],
+  "hdr-rgbe-diffuse": [
+    {
+      "path": "assets/pattern.hdr",
+      "bytes": 69,
+      "sha256": "9a46c9e2fd940dc9a9e4abfd7dd521468a90c6184984892fe08d18a505efa0d5"
+    }
+  ],
+  "hdr-area": [
+    {
+      "path": "assets/bright-float.exr",
+      "bytes": 503,
+      "sha256": "13af7439b55eacb29226c0289a2b83708c959da5b893251fc7d1e6f659de6d04"
+    }
+  ],
+  "hdr-environment": [
+    {
+      "path": "assets/bright-float.exr",
+      "bytes": 503,
+      "sha256": "13af7439b55eacb29226c0289a2b83708c959da5b893251fc7d1e6f659de6d04"
+    }
+  ],
+  "hdr-external": [
+    {
+      "path": "assets/external-comp-zip.exr",
+      "bytes": 1180708,
+      "sha256": "b51491f94c30896e038ab13286922d75f36f65a42533a8c9acac72b81b1a84a8"
+    }
+  ]
+}

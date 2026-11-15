@@ -7,21 +7,23 @@ and interactive rendering follow later.
 **Current state: progressive Metal rendering and a strict PBRT spectral profile.**
 Render the built-in demo or PBRT files containing supported sampled spectra or
 linear sRGB colors. Diffuse reflectance supports blackbody, built-in and file spectra,
-named constant textures, and PNG imagemaps.
-Packed grayscale, indexed, 8-bit, and 16-bit PNG textures support point, bilinear,
-trilinear, and bounded EWA mip filtering.
+typed texture graphs, and PNG/JPEG/EXR/Radiance HDR imagemaps.
+Byte, binary16, and binary32 texture storage supports point, bilinear,
+trilinear, and bounded EWA mip filtering. Floating inputs retain linear signed
+and above-one samples, with pinned PBRT resampling and consumer semantics.
 The PBRT profile includes inline triangles, external PLY triangles and bilinear
 quads, per-vertex shading normals and UVs, constant environment lighting,
 directly placed diffuse emitters with sampled, RGB, blackbody, built-in named, or file emission,
 and box or triangle pixel filtering. Complete batches
-accumulate raw XYZ; separate display conversion saves the final PNG. Portable `--check-pbrt`
+accumulate raw XYZ; separate output conversion saves display PNG or linear
+HALF/FLOAT OpenEXR. Portable `--check-pbrt`
 reports scene structure, dependencies, and unsupported features. Broader PBRT
-materials, textured or instanced emitters, and other external assets
+materials, instanced emitters, and other external assets
 remain in development.
 
 ## Build and run
 
-Requirements: CMake 3.25 or newer, Ninja, and a C++20 compiler. The foundation is
+Requirements: CMake 3.25 or newer, Ninja, C++20 and C11 compilers. The foundation is
 tested with Clang on Linux and Apple Clang on macOS. The Metal backend requires
 macOS 14 or newer, full Xcode, and its Metal compiler tools. Apple Silicon is the
 target platform. Linux builds the portable CLI with explicit Metal-unavailable
@@ -37,7 +39,7 @@ ctest --preset debug --no-tests=error
 ./build/debug/rypath --metal-smoke-test
 ./build/debug/rypath --check-pbrt tests/fixtures/pbrt/cornell-box.pbrt
 ./build/debug/rypath --render-pbrt tests/fixtures/pbrt/cornell-box.pbrt \
-  --output build/cornell.png --batch-size 8
+  --output build/cornell.exr --batch-size 8
 ./build/debug/rypath --render-pbrt tests/fixtures/pbrt-render/image-magnified.pbrt \
   --output build/pbrt.png --batch-size 8
 ./build/debug/rypath --render-demo --output build/demo.png \
@@ -49,6 +51,12 @@ its authored Sobol sampler. Preflight returns **0** for complete analysis within
 the profile, **1** for missing or malformed input, and **2** for unsupported
 features. It creates no images. The [PBRT render profile](docs/pbrt-rendering.md)
 describes Sobol randomizations, limits, and differences in transport sampling.
+
+PBRT EXR output honors `Film.savefp16` (default true: HALF; false: FLOAT).
+The demo uses FLOAT for `.exr`; PNG keeps display encoding. Nonfinite output
+and precision overflow fail without replacing an existing destination. The
+[HDR contract and validation](docs/hdr-image-validation.md) defines the bounded
+input formats, output metadata, and independent reference evidence.
 
 `release` and `asan-ubsan` provide matching configure, build, and test presets.
 The sanitizer preset requires Clang or GCC with AddressSanitizer and
@@ -65,7 +73,7 @@ compute ray tracing; Linux and Metal-disabled builds report it as unavailable.
 
 ## Direction
 
-Broader PBRT rendering, spectral materials, media, linear OpenEXR, and resumable
+Broader PBRT rendering, spectral materials, media, and resumable
 offline rendering follow this bounded profile. Scene compatibility, numerical
 correctness, and performance each need separate evidence. The [PBRT profile](docs/pbrt-profile.md) distinguishes checked scene structure
 from rendering conformance. There are no target-device performance claims yet.

@@ -2,38 +2,36 @@
 
 ## Current milestone
 
-[Packed grayscale PNG textures (PR #26)](https://github.com/rlefko/rypath/pull/26)
-is merged. The current core texturing slice adds Adam7 PNG and bounded JPEG,
-typed texture graphs and procedural textures, nonemitting alpha and certified
-binary emitter masks, bump/normal maps, PLY displacement, and image area and
-equal-area environment lights.
+[Core PBRT texturing (PR #27)](https://github.com/rlefko/rypath/pull/27) is merged
+at `8aaa003e`. It adds Adam7 PNG/JPEG, typed graphs and procedural textures,
+alpha, bump/normal maps, PLY displacement, and image area/environment lighting.
 
-`--render-pbrt SCENE --output IMAGE.png` renders the declared spectral diffuse
-profile with a pinhole camera, box/triangle filtering, independent or Sobol
-sampling, authored finite depth, complete raw XYZ batches, and final PNG output.
-Portable `--check-pbrt` validates supported inputs and reports unsupported features
-before rendering. The [render profile](pbrt-rendering.md) defines exact boundaries.
+Linear HDR image I/O is ready for review. The implementation adds bounded HALF/FLOAT EXR and Radiance RGBE inputs, binary32
+texture/light storage, and atomic linear EXR output alongside display PNG.
+`--render-pbrt SCENE --output IMAGE.exr` honors `Film.savefp16` (default HALF;
+false selects FLOAT). Portable preflight remains separate from Metal rendering.
+See the [render profile](pbrt-rendering.md) and [HDR record](hdr-image-validation.md).
 
-Fractional emitting alpha, Ptex, HDR/floating-point image inputs, wider color
-spaces, additional materials/importers, OpenEXR output, checkpointing, and the
-interactive app remain on the [roadmap](roadmap.md). Project foundations and the
-foundation audit were already merged in PRs #1 and #12.
+Fractional emitting alpha, Ptex, wider color spaces, additional materials and
+importers, media, checkpointing and the interactive app remain on the
+[roadmap](roadmap.md). These slices do not establish offline MVP completion.
 
 ## Validation
 
-The [core texture record](core-texture-validation.md) separates numerical
-adaptations, independent review findings, and implementation measurements.
-The current implementation passes **82/82 Debug, Release and ASan/UBSan tests** and
-**64/64 portable tests**. Native M4 Max checks include 1,403 graph queries,
-32 masked traversal cases, 1,115 exact alpha hashes, seven surface-frame cases,
-and concentrated environment-PDF stress. All 20 Metal tests also pass with API and shader validation enabled.
+Current HDR working-tree evidence includes independent installed OpenEXR
+readback of 48 film channel values, 380 pinned PBRT source/mip dimension/channel
+checks, and 90 matched render gates across six fixtures and 192 PFM outputs.
+The [HDR record](hdr-image-validation.md) identifies revision, environment,
+thresholds and selected external coverage. Implementation `8a6ff53` passes 87/87 Debug, Release and ASan/UBSan tests,
+68/68 portable tests, 71 Python checks, and changed-unit static analysis. The
+native HDR probe passes 2,304 HALF/FLOAT queries; overflow regressions verify
+whole-batch failure without partial accumulation. All 21 Metal tests pass API
+validation; shader instrumentation passes 20/21, with the combined texture test
+timing out while Apple's compiler service is active.
 
-Pinned PBRT comparisons pass **6,440 graph values**, **48 new render gates**, and
-all **594 established render gates plus eight sensitivity controls**. The 71
-Python policy/comparison tests and changed-unit static analysis pass. Complete
-render timings and measured regressions are recorded separately in
-[performance](core-texture-performance.md); hosted checks are reported on the PR.
-
-Selected external Cornell, PLY, and PNGSuite coverage remains distinct from full
-pinned-corpus support. Historical records retain their own tested revisions;
-these results do not establish offline MVP completion.
+Historical PR #27 evidence is retained in [core texture validation](core-texture-validation.md)
+and [performance](core-texture-performance.md): 82/82 Debug, Release and sanitizer
+tests, 64/64 portable tests, native GPU validation, and pinned PBRT comparisons.
+Those counts describe that completed slice, not the current HDR revision.
+Selected external Cornell, PLY, PNGSuite and OpenEXR coverage remains distinct
+from full pinned-corpus support.

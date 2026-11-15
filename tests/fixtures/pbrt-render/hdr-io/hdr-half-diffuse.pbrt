@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-only
+Camera "perspective" "float fov" [45]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+LightSource "infinite"
+Texture "image" "spectrum" "imagemap" "string filename" "assets/signed-half.exr"
+    "string filter" "bilinear"
+Material "diffuse" "texture reflectance" "image"
+Shape "trianglemesh" "point3 P" [-1 -1 2 1 -1 2 1 1 2 -1 1 2]
+    "integer indices" [0 1 2 0 2 3] "point2 uv" [0 0 1 0 1 1 0 1]
