@@ -21,12 +21,12 @@ set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cach
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
 set(rypath_metal_air_files)
-foreach(shader IN ITEMS smoke geometry render texture_probe texture_graph_probe)
+foreach(shader IN ITEMS smoke geometry render texture_probe texture_graph_probe masked_probe)
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
     set(air "${rypath_runtime_directory}/CMakeFiles/rypath-${shader}.air")
     set(shader_options)
     set(shader_dependencies "${source}")
-    if(shader STREQUAL "geometry" OR shader STREQUAL "render")
+    if(shader STREQUAL "geometry" OR shader STREQUAL "render" OR shader STREQUAL "masked_probe")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies
             "${CMAKE_CURRENT_SOURCE_DIR}/src/geometry_wire.h"
@@ -58,6 +58,11 @@ foreach(shader IN ITEMS smoke geometry render texture_probe texture_graph_probe)
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_graph.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
+    endif()
+    if(shader STREQUAL "masked_probe")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/masked_probe_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/masked_intersection.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/alpha_hash.h")
     endif()
     add_custom_command(
         OUTPUT "${air}"

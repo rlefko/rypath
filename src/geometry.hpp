@@ -29,6 +29,7 @@ struct GeometryMesh {
     std::vector<std::array<float, 2>> uvs{};
     // Tensor-product corner order: p00, p10, p01, p11 (cyclic PLY 0,1,3,2).
     std::vector<std::array<std::uint32_t, 4>> patches{};
+    std::vector<GeometryPoint> tangents{};
 };
 
 enum class PrimitiveKind : std::uint32_t { triangle = 1, bilinear_patch = 2 };
@@ -36,6 +37,7 @@ enum class PrimitiveKind : std::uint32_t { triangle = 1, bilinear_patch = 2 };
 struct GeometryInstance {
     std::uint32_t mesh_index = 0;
     GeometryTransform transform;
+    bool non_opaque = false;
 };
 
 struct GeometryData {

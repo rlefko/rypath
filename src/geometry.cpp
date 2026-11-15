@@ -110,12 +110,18 @@ std::string validate_geometry(const GeometryData &geometry) {
         if (!mesh.uvs.empty() && mesh.uvs.size() != mesh.positions.size()) {
             return mesh_name + " must have one UV per vertex";
         }
+        if (!mesh.tangents.empty() && mesh.tangents.size() != mesh.positions.size()) {
+            return mesh_name + " must have one tangent per vertex";
+        }
         for (std::size_t vertex = 0; vertex < mesh.positions.size(); ++vertex) {
             if (!finite(mesh.positions[vertex])) {
                 return mesh_name + " vertex " + std::to_string(vertex) + " is nonfinite";
             }
             if (!mesh.normals.empty() && !finite(mesh.normals[vertex])) {
                 return mesh_name + " normal " + std::to_string(vertex) + " is nonfinite";
+            }
+            if (!mesh.tangents.empty() && !finite(mesh.tangents[vertex])) {
+                return mesh_name + " tangent " + std::to_string(vertex) + " is nonfinite";
             }
             if (!mesh.uvs.empty() &&
                 (!std::isfinite(mesh.uvs[vertex][0]) || !std::isfinite(mesh.uvs[vertex][1]))) {
