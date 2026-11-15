@@ -156,3 +156,20 @@ the Metal library is
 The pinned PBRT executable is
 `4fd27e940f295fdb14f8407dbad7ef2e05dba9e9e2980c4a5cc3cad3da9b43b2`.
 These are correctness measurements, not performance or convergence claims.
+
+## Showcase face-frame correction
+
+The first frosted showcase exposed a scene-authoring seam: the generator used
+PBRT's per-triangle default UVs on triangulated polygon faces. Their anisotropy
+axes changed by up to 48 degrees across coplanar fan triangles. The generator
+now authors one affine planar UV mapping per original face and splits vertices
+at actual face boundaries. Independent review confirms identical ordered
+triangle positions and winding before and after the correction (28 block
+triangles and 8 prism triangles); renderer semantics are unchanged.
+
+Two new regressions independently reconstruct the emitted tangent frames and
+check nondegenerate UVs, consistent face directions, geometric edge adjacency,
+and outward winding. Both pass and reject the original generator. The full
+Python suite now passes 86/86 (`build/dielectric-python-showcase-fix.log`), and
+repository hooks pass. A native 240×150, 1,024-spp preview confirms the corrected
+frame appearance; it is visual evidence, not a numerical convergence gate.

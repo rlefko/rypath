@@ -9,6 +9,7 @@ from pathlib import Path
 
 def mesh(vertices, faces):
     center = [sum(v[k] for v in vertices) / len(vertices) for k in range(3)]
+    positions, uvs = [], []
     indices = []
     for face in faces:
         a, b, c = [vertices[i] for i in face[:3]]
@@ -16,9 +17,27 @@ def mesh(vertices, faces):
         n = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]]
         outward = sum(n[k] * (a[k] - center[k]) for k in range(3))
         face = face if outward > 0 else face[::-1]
+        # Each polygon has one affine UV frame. Per-triangle default UVs would
+        # rotate anisotropic roughness at the internal fan edges. Split vertices
+        # at actual face boundaries so hard corners can have independent frames.
+        length = math.sqrt(sum(x*x for x in n))
+        normal = [x / length * (1 if outward > 0 else -1) for x in n]
+        tangent = [normal[2], 0, -normal[0]]
+        length = math.sqrt(sum(x*x for x in tangent))
+        tangent = [x/length for x in tangent] if length > 1e-10 else [1, 0, 0]
+        bitangent = [normal[1]*tangent[2]-normal[2]*tangent[1],
+                     normal[2]*tangent[0]-normal[0]*tangent[2],
+                     normal[0]*tangent[1]-normal[1]*tangent[0]]
+        first = len(positions)
+        for i in face:
+            positions.append(vertices[i])
+            offset = [vertices[i][k] - a[k] for k in range(3)]
+            uvs.append([sum(offset[k]*axis[k] for k in range(3))
+                        for axis in (tangent, bitangent)])
         for j in range(1, len(face)-1):
-            indices.extend((face[0], face[j], face[j+1]))
-    return ('Shape "trianglemesh" "point3 P" [' + ' '.join(f'{x:.8g}' for p in vertices for x in p)
+            indices.extend((first, first+j, first+j+1))
+    return ('Shape "trianglemesh" "point3 P" [' + ' '.join(f'{x:.8g}' for p in positions for x in p)
+            + ']\n "point2 uv" [' + ' '.join(f'{x:.8g}' for uv in uvs for x in uv)
             + ']\n "integer indices" [' + ' '.join(map(str, indices)) + ']\n')
 
 

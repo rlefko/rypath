@@ -26,7 +26,7 @@ for fixed-target offline renders.
 ## Validation
 
 Debug, Release and ASan/UBSan pass 95/95 tests on M4 Max. Both Metal-disabled
-Apple Clang and LLVM 18 builds pass 72/72, and 84 Python checks pass. Changed-unit
+Apple Clang and LLVM 18 builds pass 72/72, and 86 Python checks pass. Changed-unit
 Clang-Tidy, native static analysis and repository hooks pass. The independent
 BSDF probe passes 5,144 double cases, 4,096 pinned PBRT comparisons, reciprocity
 and axis checks, and 393,216 energy/probability samples. All 25 Metal API tests
