@@ -54,6 +54,21 @@ the upstream copyright and [Apache-2.0 terms](LICENSE.txt).
 The [core texture record](../../docs/core-texture-validation.md) documents
 semantic differences, numerical limits, and standalone reference commands.
 
+## Extended surface adaptations
+
+`shaders/layered.h` and `shaders/transmission.h` adapt the finite layered,
+thin-dielectric and diffuse-transmission equations from `src/pbrt/bxdfs.h`,
+`bxdfs.cpp`, `util/scattering.h` and the HG phase model. `shaders/table_bsdf.h`
+adapts measured tensor coordinate mappings and piecewise bilinear sampling from
+`bxdfs.cpp` and `util/sampling.h`. Optical RGB texture reconstruction follows
+`util/spectrum.h`. These use the same pinned revision and Apache-2.0 terms above.
+
+The scalar-lane Metal implementations, checked packed buffers, material-local
+random streams and fixed density-only layered stream are rypath adaptations.
+See [surface validation](../../docs/surface-material-validation.md) for their
+numerical contract. Legacy Fourier sources have a separate
+[PBRT v3 notice](../pbrt-v3/README.md).
+
 ## Bilinear intersection adaptation
 
 `shaders/bilinear.h` adapts the bilinear ruling intersection and compensated

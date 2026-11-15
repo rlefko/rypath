@@ -49,6 +49,7 @@ diagnosed even when not placed in the image.
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
 | Dielectrics | Smooth and anisotropic single-scattering GGX reflection/transmission, scalar or spectral eta, textured roughness and mapped frames; see [dielectric profile](#spectral-ggx-dielectrics) |
+| Extended surfaces | Thin dielectric, diffuse transmission, nested mixes, finite-depth coated diffuse/conductor, measured tensor and legacy Fourier tables; see [surface materials](#extended-surface-materials) |
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
@@ -430,15 +431,17 @@ in the scene, or omit either radius to use its default of two.
 
 Inline `Material "conductor"` and `MakeNamedMaterial`/`NamedMaterial` accept
 independent optical constants `eta` and `k`. Each omitted constant defaults to
-the original pinned PBRT `metal-Cu-eta` or `metal-Cu-k` knots. Only `spectrum`
-values are supported: built-in names, numeric wavelength/value pairs, or checked
-entry-relative files. Curves retain raw nonnegative binary32 values, including
+the original pinned PBRT `metal-Cu-eta` or `metal-Cu-k` knots. Inputs accept
+built-in names, numeric wavelength/value pairs, checked entry-relative files,
+RGB, blackbody, or spectrum texture graphs. RGB optical inputs use unbounded
+sRGB reconstruction; each graph is compiled for its consumer role. Curves retain raw nonnegative binary32 values, including
 values above one; they never pass through diffuse albedo reconstruction or
 clamping. Named curves extend their endpoint values; numeric and file curves are
 zero outside their inclusive authored interval. Numeric curves require at least
 two wavelength/value pairs under this bounded profile. The pair must remain nonzero
-throughout the renderer's 360–830 nm wavelength domain. RGB, blackbody, and texture
-optical constants, and conductor `reflectance`, are explicit unsupported features.
+throughout the renderer's 360–830 nm wavelength domain. The alternative
+`reflectance` input uses pinned PBRT's eta=1, k=2*sqrt(R)/sqrt(1-R) approximation
+with R clamped to [0,0.9999]; supplying it together with eta or k is an error.
 
 `roughness` defaults to zero. Each of `uroughness` and `vroughness` independently
 falls back to the effective common roughness, including inherited attributes.
@@ -483,8 +486,8 @@ remain raw, finite and nonnegative; they receive no diffuse albedo clamp.
 Named curves extend endpoints; numeric/file curves are zero outside their
 support. Exact zero evaluated eta becomes one, including those zero tails,
 matching PBRT's explicit index-matched fallback. Negative, nonfinite, overflowing,
-or authored nonzero-to-zero narrowed eta values are errors. RGB, blackbody, and
-texture-valued eta remain unsupported. Numeric/file curves require two knots.
+or authored nonzero-to-zero narrowed eta values are errors. RGB and blackbody
+eta use continuous optical spectral graphs. Numeric/file curves require two knots.
 
 Roughness, per-axis fallback, remapping, smooth threshold, axis floors and
 scalar graphs follow the conductor profile. Existing alpha, bump/normal-map
@@ -511,12 +514,72 @@ entire pending batch. No roughness/radiance clamp, sample retry or selective
 rejection hides numerical failure.
 
 This is a surface-interface model: each material authors a relative IOR, without
-an automatic nested-medium stack. Absorption, participating media, thin glass,
-coated materials and specialized caustic sampling remain unsupported. Other
+an automatic nested-medium stack. Scene-wide absorption, participating media
+and specialized caustic sampling remain unsupported. Thin and coated surfaces
+are separate models described below. Other
 glass boundaries still occlude direct shadow connections; BSDF paths traverse
 successive interfaces. Difficult specular-chain lighting can have high variance.
 See [dielectric validation](dielectric-validation.md) for independent probes,
 matched upstream images and numerical limits.
+
+## Extended surface materials
+
+Inline and named bindings support these additional models. All retain the
+existing geometry, alpha, texture mapping and selected-material bump/normal
+semantics. Unsupported parameters and malformed dependencies fail with source
+locations before rendering; declarations are checked even when unused.
+
+| Material | Parameters and behavior |
+| --- | --- |
+| `thindielectric` | Relative `eta`, including the dielectric float precedence; Fresnel thin-sheet reflection and straight-through transmission with internal reflection summation, without refraction or thickness absorption |
+| `diffusetransmission` | Spectrum `reflectance` and `transmittance` (default .25 each), float `scale` (default 1), with texture-capable reflection/transmission spectra; each product is clamped to [0,1] after scaling, with cosine sampling in either hemisphere |
+| `coateddiffuse` | Base `reflectance`; interface `eta`, `roughness`/`uroughness`/`vroughness`; internal `thickness`, `albedo` and `g`; `remaproughness`, `maxdepth`, `nsamples` |
+| `coatedconductor` | `interface.eta`, `interface.roughness`/`interface.uroughness`/`interface.vroughness`; `conductor.eta`/`conductor.k` or `reflectance`, and corresponding conductor roughness; internal layer controls as above |
+| `mix` | Two names in `string materials`, plus float/texture `amount` (default .5); bounded, cycle-checked nested graph, resolved once at each hit before applying the chosen child's surface detail |
+| `measured` | Entry-relative `string filename` for spectral tensor-v1 reflective tables; isotropic and full-azimuth anisotropic data; reduced azimuth domains and non-spectral variants explicitly rejected |
+| `fourier` | Entry-relative `string bsdffile` for SCATFUN v1, one basis and one or three channels; reflection/transmission and radiance eta weighting within otherwise supported v4 scene syntax |
+
+Coatings adapt the pinned PBRT finite stochastic layered model. The defaults are
+`maxdepth=10`, `nsamples=1`, `thickness=.01`, `albedo=0`, `g=0`; accepted authored
+bounds are depth 0–1024 and samples 1–64. Thickness is floored internally to the
+smallest normal float as in PBRT, and HG anisotropy is limited internally to
+[-.99,.99]. Conductor optical constants are relative to the coating. This is an
+explicit **compatibility approximation**: finite internal truncation and
+stochastic value/PDF estimates do not establish an uncapped unbiased layered
+solution. Diagnostics and `rypath.materialModel` EXR metadata record each
+coating's depth/sample settings. The outer path depth remains independent.
+
+Mix selection hashes the world hit position, outgoing direction and stable
+material ID; it is independent of allocation addresses and execution order.
+Amounts outside [0,1] select endpoints. At most 64 nested mix nodes are allowed.
+The selected child supplies its complete scattering and surface-detail behavior.
+
+Tables are immutable, deduplicated inputs with checked relative offsets and
+allocations: at most 128 MiB per file and 512 MiB aggregate working storage.
+Malformed distributions, nonfinite samples, invalid shapes, overlapping fields
+and unsupported versions fail visibly. Fourier zenith grids may duplicate zero
+at the reflection/transmission boundary, and inactive rows may have zero mass.
+Decreasing CDFs are rejected, including the archived roughglass asset discussed
+in the [validation record](surface-material-validation.md).
+
+One-channel Fourier data is achromatic. Three-channel angular RGB is evaluated
+first and then reconstructed with unbounded linear sRGB spectra. There is no
+albedo clamp; this is a documented spectral adaptation of RGB data, not a claim
+that legacy RGB measurements acquired spectral information.
+
+The `material-local-philox-v1` stream derives variable-length work from pixel,
+absolute sample index, bounce, seed and stable material ID, preserving all outer
+sampling dimensions. Layered continuation carries its joint-path throughput
+separately from the approximate directional MIS density. Directional densities
+use one fixed density-only random stream for both MIS techniques; transport and
+value estimates retain separate event streams. Delta classification determines
+whether direct-light proposals and subsequent-hit MIS apply. Complete batches
+still commit raw XYZ, independently of display conversion.
+
+See [surface material validation](surface-material-validation.md) for references,
+measured evidence, numerical limits and external-asset coverage. These additions
+do not imply general PBRT v3 parsing, arbitrary layer stacks, scene-wide media,
+subsurface transport, hair/curves, or full PBRT corpus compatibility.
 
 ## Spectral and transport contract
 

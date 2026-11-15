@@ -68,6 +68,15 @@ adaptation and both source/derivative hashes. Reference
 provenance and build instructions are recorded in
 [PBRT render validation](pbrt-render-validation.md).
 
+Extended surface kernels adapt the same pinned v4 layered and measured models.
+Legacy Fourier angular interpolation follows PBRT v3
+`13d871faae88233b327d04cda24022b8bb0093ee`, with its separate
+[BSD notice](../third_party/pbrt-v3/README.md). Optional reference builds stay in
+ignored caches and do not link into rypath. The
+[external table manifest](../tests/fixtures/pbrt-render/surface-materials/external-tables.json)
+records selected datasets, hashes, sizes and individual terms; no measured or
+legacy Fourier dataset is vendored. Owned synthetic tables are test fixtures.
+
 The [Sobol data and routines](../third_party/pbrt/sobol.md) use the same pinned
 PBRT revision. The 1,024-dimensional direction table and interval matrices are
 checksum-verified at configure time and shared by portable and Metal sampling.
