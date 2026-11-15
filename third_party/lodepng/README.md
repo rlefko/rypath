@@ -31,11 +31,12 @@ bit count modulo eight.
 The build compiles the decoder from these sources with disk I/O, the C++ wrapper,
 encoding, and ancillary metadata decoding disabled. Allocations in LodePNG are
 individually limited to 128 MiB. rypath checks PNG header and chunk framing, limits
-the expected decompressed scanline size and the aggregate decode scratch, and only
-exposes decoded RGB bytes for the supported texture image profile. At 16 bits,
-each channel retains its most-significant byte followed by its least-significant
-byte; no conversion to eight bits is requested. Depth-dependent scanline,
-conversion, and copy sizes contribute to the same existing allocation budgets.
+the exact decompressed scanline size and aggregate decode scratch. Static Adam7
+images include the filter byte and packed row padding in each nonempty pass.
+Decoding retains RGB and separates authored true RGBA alpha into its own buffer.
+At 16 bits, each channel stores its most-significant byte followed by its
+least-significant byte. Depth-dependent scanline, conversion, copy, and palette
+sizes contribute to the allocation budgets.
 
 For indexed color, the adapter disables color conversion and validates the
 unfiltered, tightly packed indices against the decoded palette before expanding

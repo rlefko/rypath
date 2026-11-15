@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <numbers>
 #include <span>
@@ -195,12 +196,6 @@ void require_rgb8_mip_equivalence(const DecodedImage &image, const DecodedImage 
     for (const auto encoding : {ImageEncoding::srgb, ImageEncoding::linear}) {
         for (const auto wrap : {ImageWrap::repeat, ImageWrap::clamp, ImageWrap::black}) {
             auto result = build_image_pyramid(image, encoding, wrap);
-            if (wrap == ImageWrap::black &&
-                (!std::has_single_bit(rgb.width) || !std::has_single_bit(rgb.height))) {
-                require(!result.value && result.unsupported && !result.limit_exceeded,
-                        "NPOT black wrap was accepted");
-                continue;
-            }
             const auto actual = success(std::move(result));
             const auto expected = success(build_image_pyramid(rgb, encoding, wrap));
             require(actual.storage == ImageStorage::encoded8 && actual.texels == expected.texels &&
@@ -477,11 +472,8 @@ void decode_errors() {
     }
 
     for (const auto &unsupported :
-         {make_png(1, 1, 0, Bytes{0, 0x10}, 4, 1), make_png(1, 1, 0, Bytes{0, 0x10}, 4, 0, "acTL"),
-          make_png(1, 1, 3, Bytes{0, 0}, 4, 1, "PLTE"),
+         {make_png(1, 1, 0, Bytes{0, 0x10}, 4, 0, "acTL"),
           insert_chunk(indexed, after_ihdr, "acTL", {0, 0, 0, 1, 0, 0, 0, 0}),
-          make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 1),
-          make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6}, 16, 1),
           make_png(1, 1, 2, Bytes{0, 11, 22, 33}, 8, 0, "acTL"),
           make_png(1, 1, 2, Bytes{0, 1, 2, 3, 4, 5, 6}, 16, 0, "acTL")}) {
         const auto result = decode_png(unsupported);
@@ -507,6 +499,262 @@ void decode_errors() {
     require(success(decode_png(grayscale, {.scratch_bytes = 2 * decoded_bytes})).rgb.size() ==
                 decoded_bytes,
             "Grayscale decode rejected exact RGB buffer limit");
+}
+
+// Test writer follows the seven PNG passes directly, with the "None" row filter.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+Bytes adam7_scanlines(unsigned width, unsigned height, unsigned channels, unsigned depth,
+                      std::span<const std::uint16_t> source) {
+    constexpr std::array passes{std::array{0u, 0u, 8u, 8u}, std::array{4u, 0u, 8u, 8u},
+                                std::array{0u, 4u, 4u, 8u}, std::array{2u, 0u, 4u, 4u},
+                                std::array{0u, 2u, 2u, 4u}, std::array{1u, 0u, 2u, 2u},
+                                std::array{0u, 1u, 1u, 2u}};
+    Bytes rows;
+    for (const auto &[x0, y0, dx, dy] : passes) {
+        if (x0 >= width)
+            continue;
+        for (unsigned y = y0; y < height; y += dy) {
+            rows.push_back(0);
+            unsigned bit = 0;
+            for (unsigned x = x0; x < width; x += dx) {
+                const auto index = (y * width + x) * channels;
+                for (const auto sample : source.subspan(index, channels)) {
+                    if (depth == 16) {
+                        rows.push_back(static_cast<std::uint8_t>(sample >> 8));
+                        rows.push_back(static_cast<std::uint8_t>(sample));
+                    } else {
+                        if (bit == 0)
+                            rows.push_back(0);
+                        rows.back() |= static_cast<std::uint8_t>(sample << (8 - bit - depth));
+                        bit = (bit + depth) % 8;
+                    }
+                }
+            }
+        }
+    }
+    return rows;
+}
+
+void decode_adam7_profiles() {
+    constexpr auto palette =
+        std::array<std::uint8_t, 12>{32, 8, 91, 255, 2, 20, 0, 37, 189, 134, 1, 5};
+    struct Profile {
+        unsigned mode, depth, channels;
+    };
+    constexpr std::array profiles{Profile{0, 1, 1},  Profile{0, 2, 1},  Profile{0, 4, 1},
+                                  Profile{0, 8, 1},  Profile{0, 16, 1}, Profile{2, 8, 3},
+                                  Profile{2, 16, 3}, Profile{3, 1, 1},  Profile{3, 2, 1},
+                                  Profile{3, 4, 1},  Profile{3, 8, 1},  Profile{4, 8, 2},
+                                  Profile{4, 16, 2}, Profile{6, 8, 4},  Profile{6, 16, 4}};
+    for (const auto &[mode, depth, channels] : profiles) {
+        for (const auto &[width, height] :
+             {std::array{1u, 1u}, std::array{1u, 9u}, std::array{9u, 1u}, std::array{11u, 13u}}) {
+            const unsigned max_sample = (1u << depth) - 1;
+            const unsigned colors = std::min(1u << depth, 4u);
+            std::vector<std::uint16_t> source(std::size_t{width} * height * channels);
+            for (std::size_t i = 0; i < source.size(); ++i) {
+                const auto patterned = (i * 149 + i / 3 * 53 + 1) & max_sample;
+                source[i] = static_cast<std::uint16_t>(mode == 3 ? patterned % colors : patterned);
+            }
+            const auto scanlines = adam7_scanlines(width, height, channels, depth, source);
+            auto png = make_png(width, height, static_cast<std::uint8_t>(mode), scanlines,
+                                static_cast<std::uint8_t>(depth), 1);
+            if (mode == 3)
+                png =
+                    insert_chunk(std::move(png), 33, "PLTE",
+                                 Bytes(palette.begin(), palette.begin() + 3 * std::size_t{colors}));
+            const auto image = success(decode_png(png));
+            Bytes rgb, alpha;
+            const auto append_sample = [&](Bytes &out, unsigned value) {
+                if (depth == 16)
+                    out.push_back(static_cast<std::uint8_t>(value >> 8));
+                out.push_back(
+                    static_cast<std::uint8_t>(depth < 8 ? value * 255 / max_sample : value));
+            };
+            for (std::size_t i = 0; i < source.size(); i += channels) {
+                if (mode == 3) {
+                    const auto *entry = palette.data() + 3 * std::size_t{source[i]};
+                    rgb.insert(rgb.end(), entry, entry + 3);
+                } else {
+                    for (unsigned c = 0; c < 3; ++c)
+                        append_sample(rgb, source[i + (channels < 3 ? 0 : c)]);
+                    if (mode == 6)
+                        append_sample(alpha, source[i + 3]);
+                }
+            }
+            const auto expected_channels = mode == 3 ? 3u : (mode == 4 ? 1u : channels);
+            require(image.width == width && image.height == height &&
+                        image.bit_depth == std::max(8u, depth) &&
+                        image.source_channels == expected_channels && image.rgb == rgb &&
+                        image.alpha == alpha,
+                    "Adam7 pixel layout, expanded colors, or native channel identity differs");
+        }
+    }
+    // One missing pass row and an invalid filter byte in the final pass are malformed.
+    require(!decode_png(make_png(2, 2, 0, Bytes{0, 17, 0, 18}, 8, 1)).value &&
+                !decode_png(make_png(2, 2, 0, Bytes{0, 17, 0, 18, 5, 19, 20}, 8, 1)).value,
+            "Adam7 accepted malformed scanlines");
+    const auto indexed = insert_chunk(make_png(2, 2, 3, Bytes{0, 0, 0, 0, 0, 0x40}, 2, 1), 33,
+                                      "PLTE", Bytes{1, 2, 3});
+    require(decode_png(indexed).diagnostic.find("index exceeds palette size") != std::string::npos,
+            "Adam7 did not validate a palette index in the final pass");
+
+    const auto rows =
+        adam7_scanlines(11, 13, 4, 16, std::vector<std::uint16_t>(std::size_t{11} * 13 * 4, 87));
+    const auto rgba = make_png(11, 13, 6, rows, 16, 1, "PLTE");
+    const auto scratch = rgba.size() + rows.size() * 2 + rows.size() / 2 + 65535 +
+                         std::size_t{256} * 1024 + std::size_t{2} * 256 * 4;
+    const auto retained = 11u * 13u * 8u;
+    require(decode_png(rgba, {.retained_bytes = retained - 1}).limit_exceeded &&
+                decode_png(rgba, {.scratch_bytes = scratch - 1}).limit_exceeded &&
+                decode_png(rgba, {.retained_bytes = retained, .scratch_bytes = scratch}).value,
+            "Adam7 scratch or retained bytes did not include truecolor alpha and PLTE");
+}
+
+void decode_jpeg_profiles() {
+    const auto directory = std::filesystem::path(__FILE__).parent_path() / "fixtures/image";
+    const auto read = [&](std::string_view name) {
+        std::ifstream input(directory / name, std::ios::binary);
+        require(input.good(), "Could not open JPEG test fixture");
+        return Bytes(std::istreambuf_iterator<char>(input), {});
+    };
+    struct Case {
+        std::string_view name;
+        std::uint32_t channels;
+        std::uint64_t decoded_hash;
+    };
+    constexpr std::array cases{
+        Case{"baseline-ycbcr.jpg", 3, 0xfe62f13d28cf9135},
+        Case{"progressive-ycbcr.jpg", 3, 0xfe62f13d28cf9135},
+        Case{"progressive-mixed-dc.jpg", 3, 0xfe62f13d28cf9135},
+        Case{"baseline-rgb.jpg", 3, 0x2fa873fff074c333},
+        Case{"progressive-gray.jpg", 1, 0xa5a287805fcc30c9},
+    };
+    for (const auto &test : cases) {
+        const auto bytes = read(test.name);
+        const auto image = success(decode_jpeg(bytes));
+        std::uint64_t hash = 14695981039346656037ull;
+        for (const auto byte : image.rgb)
+            hash = (hash ^ byte) * 1099511628211ull;
+        require(image.width == 19 && image.height == 17 && image.bit_depth == 8 && image.jpeg &&
+                    image.source_channels == test.channels && image.alpha.empty() &&
+                    hash == test.decoded_hash,
+                "JPEG decoded bytes differ from PBRT's pinned decoder");
+        const auto authored_linear =
+            success(build_image_pyramid(image, ImageEncoding::linear, ImageWrap::repeat));
+        const auto authored_gamma =
+            success(build_image_pyramid(image, ImageEncoding::gamma, ImageWrap::repeat, {}, 2));
+        require(authored_linear.encoding == ImageEncoding::srgb &&
+                    authored_gamma.texels == authored_linear.texels,
+                "Explicit JPEG encoding overrode pinned effective sRGB");
+    }
+
+    const auto bytes = read("baseline-ycbcr.jpg");
+    const auto marker = [&](std::uint8_t code) {
+        const auto match = std::ranges::search(bytes, std::array<std::uint8_t, 2>{0xff, code});
+        require(!match.empty(), "Missing JPEG marker in test fixture");
+        return static_cast<std::size_t>(match.begin() - bytes.begin()) + 1;
+    };
+    const auto expect_invalid = [&](const Bytes &bad) {
+        const auto result = decode_jpeg(bad);
+        require(!result.value && !result.limit_exceeded && !result.unsupported,
+                "Malformed JPEG was accepted or misclassified");
+    };
+
+    auto malformed = bytes;
+    malformed.pop_back();
+    expect_invalid(malformed);
+    malformed = bytes;
+    malformed.push_back(0);
+    expect_invalid(malformed);
+    malformed = bytes;
+    malformed[marker(0xd0)] = 0xd1;
+    expect_invalid(malformed);
+    malformed = bytes;
+    const auto scan = marker(0xda);
+    const auto length = static_cast<std::size_t>(bytes[scan + 1]) * 256 + bytes[scan + 2];
+    malformed.erase(malformed.begin() + static_cast<std::ptrdiff_t>(scan + 1 + length),
+                    malformed.end() - 2);
+    expect_invalid(malformed); // Complete EOI framing with no entropy.
+    malformed = bytes;
+    malformed[marker(0xc4) + 4] = 255; // Oversized Huffman symbol array.
+    expect_invalid(malformed);
+    malformed = bytes;
+    malformed[scan + 5] = 0x33; // Missing DC and AC tables.
+    expect_invalid(malformed);
+    malformed = bytes;
+    malformed[marker(0xc0)] = 0xc1;
+    require(decode_jpeg(malformed).unsupported, "Unsupported JPEG SOF was accepted");
+    malformed = bytes;
+    malformed[marker(0xc0) + 8] = 4;
+    require(decode_jpeg(malformed).unsupported, "CMYK was accepted");
+
+    malformed.assign(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(scan - 1));
+    for (unsigned i = 0; i < 257; ++i)
+        malformed.insert(malformed.end(), {0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0});
+    malformed.insert(malformed.end(), {0xff, 0xd9});
+    const auto too_many_scans = decode_jpeg(malformed);
+    require(too_many_scans.limit_exceeded &&
+                too_many_scans.diagnostic.find("256-scan") != std::string::npos,
+            "JPEG ignored its scan count limit");
+    constexpr auto retained = 19u * 17u * 3u;
+    require(decode_jpeg(bytes, {.max_dimension = 18}).limit_exceeded &&
+                decode_jpeg(bytes, {.retained_bytes = retained - 1}).limit_exceeded &&
+                decode_jpeg(bytes, {.retained_bytes = retained}).value &&
+                decode_jpeg(bytes, {.scratch_bytes = retained}).limit_exceeded &&
+                decode_jpeg(Bytes(16 * 1024 * 1024 + 1)).limit_exceeded,
+            "JPEG ignored its axis, byte, or work budget");
+}
+
+void append_jpeg_segment(Bytes &jpeg, std::uint8_t marker, std::span<const std::uint8_t> data) {
+    const auto size = data.size() + 2;
+    jpeg.insert(jpeg.end(), {0xff, marker, static_cast<std::uint8_t>(size >> 8),
+                             static_cast<std::uint8_t>(size)});
+    jpeg.insert(jpeg.end(), data.begin(), data.end());
+}
+
+void jpeg_dct_work_limit() {
+    Bytes jpeg{0xff, 0xd8};
+    append_jpeg_segment(jpeg, 0xdb, Bytes(65, 1));
+    // The quantization table ID is 1, and all 64 quantization values are 1.
+    append_jpeg_segment(jpeg, 0xc2, Bytes{8, 16, 0, 16, 0, 1, 1, 0x11, 1});
+    Bytes dc{0, 1};
+    dc.insert(dc.end(), 16, 0);
+    append_jpeg_segment(jpeg, 0xc4, dc); // Huffman bits 0 -> DC difference 0.
+    Bytes ac{0x10, 1, 1};
+    ac.insert(ac.end(), 14, 0);
+    ac.insert(ac.end(), {0xe0, 0x30}); // 0 -> 14-bit EOB count, 10 -> three-bit count.
+    append_jpeg_segment(jpeg, 0xc4, ac);
+
+    constexpr unsigned blocks = 4096 * 4096 / 64;
+    append_jpeg_segment(jpeg, 0xda, Bytes{1, 1, 0, 0, 0, 0});
+    jpeg.insert(jpeg.end(), blocks / 8, 0); // DC scans consume a bit per block.
+
+    // All AC values are zero. Eight 32767-block EOB runs and one eight-block run
+    // encode the complete scan in 125 bits. Stuff each entropy byte of 0xff.
+    std::vector<bool> bits;
+    for (unsigned i = 0; i < 8; ++i) {
+        bits.push_back(false);
+        bits.insert(bits.end(), 14, true);
+    }
+    bits.insert(bits.end(), {true, false, false, false, false, true, true, true});
+    Bytes entropy;
+    for (std::size_t i = 0; i < bits.size(); i += 8) {
+        std::uint8_t byte = 0;
+        for (std::size_t j = 0; j < 8; ++j)
+            byte = static_cast<std::uint8_t>(2 * byte + static_cast<unsigned>(bits[i + j]));
+        entropy.push_back(byte);
+        if (byte == 0xff)
+            entropy.push_back(0);
+    }
+    for (std::uint8_t coefficient = 1; coefficient <= 16; ++coefficient) {
+        append_jpeg_segment(jpeg, 0xda, Bytes{1, 1, 0, coefficient, coefficient, 0});
+        jpeg.insert(jpeg.end(), entropy.begin(), entropy.end());
+    }
+    jpeg.insert(jpeg.end(), {0xff, 0xd9});
+    const auto result = decode_jpeg(jpeg);
+    require(result.limit_exceeded && result.diagnostic.find("DCT block-work") != std::string::npos,
+            "JPEG ignored its DCT block limit across complete progressive scans");
 }
 
 void deflate_work_limit() {
@@ -626,8 +874,6 @@ void mip_pyramid() {
                    levels, Bytes{252, 92, 0, 87, 172, 44, 108});
     require_levels(success(build_image_pyramid(npot, ImageEncoding::linear, ImageWrap::clamp)),
                    levels, Bytes{255, 85, 2, 68, 178, 35, 106});
-    require(build_image_pyramid(npot, ImageEncoding::linear, ImageWrap::black).unsupported,
-            "Non-power-of-two black wrapping was accepted");
 
     require(
         build_image_pyramid(npot, ImageEncoding::linear, ImageWrap::repeat, {.max_dimension = 3})
@@ -702,8 +948,6 @@ void mip_pyramid_16_bit() {
                                                            0x3061, 0x36ab});
     require_half_strip(
         repeat, std::array<std::uint16_t, 7>{0x3bec, 0x35cb, 0, 0x3576, 0x3968, 0x3176, 0x36c6});
-    require(build_image_pyramid(npot, ImageEncoding::linear, ImageWrap::black).unsupported,
-            "PNG16 accepted non-power-of-two black wrapping");
 
     // The rational PBRT transfer gives blue 0x1bc9 where the sRGB power law gives 0x1bc8.
     const auto srgb = success(build_image_pyramid({1, 1, {0, 1, 0, 2, 0x0c, 0x69}, 16},
@@ -739,6 +983,117 @@ void mip_pyramid_16_bit() {
                     !result.diagnostic.empty(),
                 "Invalid decoded bit depth or RGB16 payload length was accepted");
     }
+}
+
+void npot_black_and_native_view() {
+    const std::array<std::uint8_t, 9> gray{251, 26, 109, 31, 123, 120, 185, 44, 65};
+    DecodedImage image{.width = 3, .height = 3, .rgb = {}, .source_channels = 1};
+    for (const auto sample : gray)
+        image.rgb.insert(image.rgb.end(), 3, sample);
+    auto black = success(build_image_pyramid(image, ImageEncoding::linear, ImageWrap::black));
+    require(black.levels.size() == 3 && black.levels[0].width == 4 && black.levels[0].height == 4,
+            "Black NPOT resize did not produce a complete mip chain");
+    const auto sinc = [](double x) {
+        return x == 0 ? 1.0 : std::sin(std::numbers::pi * x) / (std::numbers::pi * x);
+    };
+    const auto weight = [&](double x) { return std::abs(x) <= 2 ? sinc(x) * sinc(x / 2) : 0; };
+    const auto weight_sum = [&](double x) {
+        double sum = 0;
+        for (int source = -2; source < 5; ++source)
+            sum += weight(source - x);
+        return sum;
+    };
+    for (unsigned y = 0; y < 4; ++y) {
+        for (unsigned x = 0; x < 4; ++x) {
+            const double cx = (x + 0.5) * 3 / 4 - 0.5;
+            const double cy = (y + 0.5) * 3 / 4 - 0.5;
+            double sum = 0;
+            // The normalization includes zero taps outside the original source.
+            for (unsigned sy = 0; sy < 3; ++sy)
+                for (unsigned sx = 0; sx < 3; ++sx)
+                    sum += gray[3 * sy + sx] * weight(sx - cx) * weight(sy - cy);
+            const auto quantized =
+                std::lround(std::clamp(sum / (weight_sum(cx) * weight_sum(cy)), 0.0, 255.0));
+            require(black.texels[4 * y + x] == 0x010101u * static_cast<unsigned>(quantized),
+                    "Black NPOT mip base differs from independent zero-tap convolution");
+        }
+    }
+
+    const auto native = success(
+        build_image_base(image, ImageEncoding::linear, ImageWrap::black, {.scratch_bytes = 0}));
+    require(native.native_base && native.levels.size() == 1 && native.levels[0].width == 3 &&
+                native.levels[0].height == 3 && native.texels[0] == 0xfbfbfbu,
+            "Native image view resampled the source");
+    require(image_base_linear_rgb(native, 0.5f, 0.5f) ==
+                std::array{123.0f / 255, 123.0f / 255, 123.0f / 255},
+            "Native image view did not use source pixel centers");
+}
+
+void scalar_channel_and_gamma() {
+    const Bytes scanlines{0, 51, 102, 153, 25,  51, 102, 153, 85,
+                          0, 51, 102, 153, 127, 51, 102, 153, 255};
+    auto rgba = success(decode_png(make_png(2, 2, 6, scanlines)));
+    const auto mip = success(build_image_pyramid(rgba, ImageEncoding::linear, ImageWrap::clamp));
+    require(mip.source_channels == 4 && mip.texels.front() == 0x19996633u &&
+                mip.texels.back() == 0x7b996633u,
+            "Native alpha packing or downsampling differs from pinned PBRT");
+    const auto value = [&](ImageFilter filter, float width) {
+        return image_linear_scalar(mip, 0.25f, 0.25f, width, 0, 0, width, filter);
+    };
+    require(value(ImageFilter::point, 0) == 51.0f / 255 &&
+                value(ImageFilter::bilinear, 0) == 25.0f / 255 &&
+                value(ImageFilter::trilinear, 0) == 25.0f / 255 &&
+                value(ImageFilter::ewa, 0) == 25.0f / 255 &&
+                std::abs(value(ImageFilter::ewa, 0.3f).value_or(NAN) - 0.200000033f) < 1e-7f &&
+                value(ImageFilter::bilinear, 0.5f) == 51.0f / 255 &&
+                value(ImageFilter::ewa, 4) == 51.0f / 255,
+            "Scalar imagemap selected the wrong channel for its filter and footprint");
+    require(image_linear_rgb(mip, 0.25f, 0.25f, 0, 0, 0, 0) ==
+                std::array{51.0f / 255, 102.0f / 255, 153.0f / 255},
+            "Spectrum sampling used RGBA alpha");
+
+    std::ranges::fill(rgba.alpha, 255);
+    const auto opaque = success(build_image_pyramid(rgba, ImageEncoding::linear, ImageWrap::clamp));
+    require(opaque.source_channels == 3 &&
+                image_linear_scalar(opaque, 0.25f, 0.25f, 0, 0, 0, 0) == 0.4f,
+            "Opaque RGBA did not use the RGB average");
+
+    const auto rgba16 = success(decode_png(make_png(
+        2, 1, 6,
+        Bytes{0, 0x80, 0, 0x80, 0, 0x80, 0, 0x40, 0, 0x80, 0, 0x80, 0, 0x80, 0, 0xff, 0xff}, 16)));
+    const auto half =
+        success(build_image_pyramid(rgba16, ImageEncoding::gamma, ImageWrap::clamp, {}, 2));
+    require(half.source_channels == 4 && !half.custom_transfer &&
+                image_linear_scalar(half, 0.25f, 0.5f, 0, 0, 0, 0) == 0.0625f,
+            "Linear-half packing lost the gamma-decoded true alpha");
+
+    const auto gray = success(decode_png(make_png(4, 1, 0, Bytes{0, 0, 51, 128, 255})));
+    const auto gamma =
+        success(build_image_pyramid(gray, ImageEncoding::gamma, ImageWrap::clamp, {}, 2));
+    // PBRT gamma's 1024-slot inverse LUT maps source code 51 through code 50.
+    require_levels(
+        gamma, std::array{ImageMipLevel{4, 1, 0}, ImageMipLevel{2, 1, 4}, ImageMipLevel{1, 1, 6}},
+        Bytes{0, 50, 128, 255, 36, 202, 145});
+    const auto gamma_sample =
+        image_linear_scalar(gamma, 0.25f, 0.25f, 0.3f, 0, 0, 0.3f, ImageFilter::trilinear);
+    require(gamma.source_channels == 1 && gamma.custom_transfer &&
+                std::abs(gamma_sample.value_or(NAN) - 0.0997371376f) < 1e-7f,
+            "Gamma forward samples or scalar trilinear mip blend differs from pinned PBRT");
+    const auto base =
+        success(build_image_base(gray, ImageEncoding::gamma, ImageWrap::clamp, {}, 2));
+    const auto native_gamma = image_base_linear_rgb(base, 0.375f, 0.5f);
+    require(base.texels[1] == 0x333333u && native_gamma &&
+                std::abs(native_gamma->front() - 0.04f) < 1e-7f,
+            "Native gamma view rounded source codes using the mip encoding");
+    constexpr auto retained = 3 * sizeof(ImageMipLevel) + 7 * sizeof(std::uint32_t) + 1024;
+    require(build_image_pyramid(gray, ImageEncoding::gamma, ImageWrap::clamp,
+                                {.retained_bytes = retained - 1}, 2)
+                    .limit_exceeded &&
+                !build_image_pyramid(gray, ImageEncoding::gamma, ImageWrap::clamp, {}, 0).value &&
+                !build_image_pyramid(gray, ImageEncoding::gamma, ImageWrap::clamp, {},
+                                     std::numeric_limits<float>::infinity())
+                     .value,
+            "Gamma validation or transfer-table byte accounting failed");
 }
 
 void lookup_16_bit() {
@@ -1085,6 +1440,9 @@ int main(int argc, char *argv[]) {
     try {
         require(argc == 2, "Expected a temporary test directory argument");
         decode_profiles(argv[1]);
+        decode_adam7_profiles();
+        decode_jpeg_profiles();
+        jpeg_dct_work_limit();
         decode_16_bit_profiles();
         decode_indexed_profiles();
         decode_packed_grayscale_profiles();
@@ -1094,6 +1452,8 @@ int main(int argc, char *argv[]) {
         deflate_allocation_limit();
         mip_pyramid();
         mip_pyramid_16_bit();
+        npot_black_and_native_view();
+        scalar_channel_and_gamma();
         lookup_16_bit();
         lookup();
         trilinear_lookup();

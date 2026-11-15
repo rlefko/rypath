@@ -13,7 +13,7 @@
 
 namespace rypath {
 
-enum class ImageEncoding { srgb, linear };
+enum class ImageEncoding { srgb, linear, gamma };
 enum class ImageStorage { encoded8, linear_half };
 enum class ImageWrap { repeat, clamp, black };
 enum class ImageFilter { bilinear, trilinear, point, ewa };
@@ -28,7 +28,10 @@ struct DecodedImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgb;
-    std::uint32_t bit_depth = 8; // RGB16 samples are stored most significant byte first.
+    std::uint32_t bit_depth = 8;       // RGB16 samples are stored most significant byte first.
+    std::uint32_t source_channels = 3; // PBRT channels after dropping gray and palette alpha.
+    std::vector<std::uint8_t> alpha{}; // True RGBA only, in the same byte order as RGB.
+    bool jpeg = false;
 };
 
 struct ImageMipLevel {
@@ -43,6 +46,9 @@ struct ImagePyramid {
     std::vector<ImageMipLevel> levels;
     std::vector<std::uint32_t> texels;
     ImageStorage storage = ImageStorage::encoded8;
+    std::uint32_t source_channels = 3; // Any retained alpha uses the high byte or half.
+    std::shared_ptr<const std::array<float, 256>> custom_transfer{};
+    bool native_base = false;
 };
 
 template <typename T> struct ImageResult {
@@ -54,13 +60,28 @@ template <typename T> struct ImageResult {
 
 ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
                                      const ImageLimits &limits = {});
+ImageResult<DecodedImage> decode_jpeg(std::span<const std::uint8_t> bytes,
+                                      const ImageLimits &limits = {});
+ImageEncoding image_effective_encoding(const DecodedImage &image, ImageEncoding authored);
 ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEncoding encoding,
-                                              ImageWrap wrap, const ImageLimits &limits = {});
+                                              ImageWrap wrap, const ImageLimits &limits = {},
+                                              float gamma = 1);
+ImageResult<ImagePyramid> build_image_base(const DecodedImage &image, ImageEncoding encoding,
+                                           ImageWrap wrap, const ImageLimits &limits = {},
+                                           float gamma = 1);
 const std::array<float, 256> &image_transfer_table(ImageEncoding encoding);
 std::optional<std::array<float, 3>> image_linear_rgb(const ImagePyramid &image, float s, float t,
                                                      float dsdx, float dtdx, float dsdy, float dtdy,
                                                      ImageFilter filter = ImageFilter::bilinear,
                                                      float max_anisotropy = 8);
+std::optional<float> image_linear_scalar(const ImagePyramid &image, float s, float t, float dsdx,
+                                         float dtdx, float dsdy, float dtdy,
+                                         ImageFilter filter = ImageFilter::bilinear,
+                                         float max_anisotropy = 8);
+std::optional<std::array<float, 3>> image_base_linear_rgb(const ImagePyramid &image, float s,
+                                                          float t);
+std::optional<std::array<float, 3>> image_base_texel_linear_rgb(const ImagePyramid &image,
+                                                                std::uint32_t x, std::uint32_t y);
 
 struct ImageTexture {
     std::shared_ptr<const ImagePyramid> image;
