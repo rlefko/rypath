@@ -27,3 +27,6 @@ third_party/openexr/** -text whitespace=-blank-at-eol,-blank-at-eof
 third_party/tinyobjloader/** -text whitespace=-blank-at-eof
 third_party/earcut/** -text
 tests/fixtures/obj/external/** -text whitespace=-blank-at-eof
+
+# Preserve the licensed upstream STL fixture byte for byte.
+tests/fixtures/stl/external/** -text whitespace=-blank-at-eof,-blank-at-eol

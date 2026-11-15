@@ -1,5 +1,33 @@
 include(cli_availability.cmake)
 
+foreach(suite IN ITEMS stl stl_bundle)
+    add_executable(rypath_${suite}_tests ${suite}_tests.cpp)
+    target_link_libraries(rypath_${suite}_tests PRIVATE rypath_stl)
+    target_compile_definitions(rypath_${suite}_tests PRIVATE RYPATH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    rypath_configure_host_target(rypath_${suite}_tests)
+    add_test(NAME import.${suite} COMMAND rypath_${suite}_tests)
+    set_tests_properties(import.${suite} PROPERTIES TIMEOUT 60)
+endforeach()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_stl_render_tests stl_render_tests.cpp)
+    target_link_libraries(rypath_stl_render_tests PRIVATE rypath_stl rypath_metal_backend)
+    set_target_properties(rypath_stl_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_stl_render_tests)
+    add_test(NAME metal.stl_import COMMAND rypath_stl_render_tests)
+    set_tests_properties(metal.stl_import PROPERTIES TIMEOUT 60)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_stl_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        target_compile_definitions(rypath_stl_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_RAY_TRACING=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.stl_import PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+
 foreach(suite IN ITEMS obj obj_material obj_bundle)
     add_executable(rypath_${suite}_tests ${suite}_tests.cpp)
     target_link_libraries(rypath_${suite}_tests PRIVATE rypath_obj)
@@ -136,6 +164,9 @@ string(CONCAT help_text
     "       rypath --check-pbrt SCENE\n"
     "       rypath --check-obj MODEL.obj\n"
     "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
+    "       rypath --check-stl MODEL.stl [--stl-colors auto|viscam|magics]\n"
+    "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
+    "              [--stl-colors auto|viscam|magics]\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n"
@@ -155,6 +186,24 @@ add_test(NAME cli.obj_import COMMAND "${CMAKE_COMMAND}"
     "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/obj-cli"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/check_obj_cli.cmake")
 set_tests_properties(cli.obj_import PROPERTIES TIMEOUT 30)
+
+add_cli_test(stl_missing_model 1 "" "${error_text}" --check-stl)
+add_cli_test(stl_option_as_model 1 "" "${error_text}" --check-stl --version)
+add_cli_test(stl_extra_argument 1 "" "${error_text}" --check-stl input.stl --version)
+add_cli_test(stl_check_output 1 "" "${error_text}" --check-stl input.stl --output unused)
+add_cli_test(stl_convert_missing_output 1 "" "${error_text}" --convert-stl input.stl)
+add_cli_test(stl_convert_empty_output 1 "" "${error_text}" --convert-stl input.stl --output)
+add_cli_test(stl_convert_unknown_option 1 "" "${error_text}" --convert-stl input.stl --foo value)
+add_cli_test(stl_duplicate_output 1 "" "${error_text}" --convert-stl input.stl --output a --output b)
+add_cli_test(stl_invalid_color_mode 1 "" "${error_text}" --check-stl input.stl --stl-colors none)
+add_cli_test(stl_missing_color_mode 1 "" "${error_text}" --check-stl input.stl --stl-colors)
+add_cli_test(stl_duplicate_color_mode 1 "" "${error_text}" --check-stl input.stl --stl-colors auto --stl-colors magics)
+add_test(NAME cli.stl_import COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>"
+    "-Dfixture=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/stl/external/triangle.stl"
+    "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/stl-cli"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_stl_cli.cmake")
+set_tests_properties(cli.stl_import PROPERTIES TIMEOUT 30)
 
 add_cli_test(no_arguments 0 "${help_text}" "")
 add_cli_test(help 0 "${help_text}" "" --help)

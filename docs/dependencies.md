@@ -127,6 +127,23 @@ The 412-byte external PLY comparison asset retains its CC BY 2.0 terms and
 upstream attribution in its [manifest](../tests/fixtures/pbrt-render/ply-assets/README.md).
 Owned wrappers and synthetic mesh fixtures have separate GPL-3.0-only terms.
 
+The bounded STL decoder is original C++20 code. The APIs and behavior of
+`stl_reader` at `a130fe0b2ac15d7c2fd642bf1dcbdec600e69151` were examined:
+its file-based decoder welds matching coordinates and removes degenerate facets,
+and its internal allocations do not expose the required resource contract.
+Adapting it would require replacing these behaviors and its parsing boundary.
+The rypath reader owns immutable input bytes, checks counts before allocations,
+and reports rejected facets without dropping them. No STL loader dependency is
+linked or fetched by the build.
+
+Binary framing and VisCAM layout reference Assimp at
+`6bf4b3a4f0d1750c4a4cdc5a3dd0fef4ec0a666d`; Materialise color/alpha interpretation
+references Three.js r181. The [STL profile](stl-import.md) separates source
+conventions from rypath's color and coverage assumptions. The small unmodified
+Assimp ASCII triangle retains its modified BSD-3-Clause terms, exact revision,
+hashes and asset-closure record in the
+[fixture manifest](../tests/fixtures/stl/external/README.md).
+
 Portable PNG input uses the zlib-licensed LodePNG decoder at revision
 `7b2893e35891c0c85bee5595caafaf3c2044b409`. Its in-memory decode API and
 configurable allocation and inflate limits let the preflight reader own file
