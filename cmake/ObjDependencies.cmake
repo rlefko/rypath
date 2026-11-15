@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Verify pinned shipped sources, local adaptations, and the small licensed fixture.
+foreach(_rypath_obj_record IN ITEMS third_party/tinyobjloader third_party/earcut tests/fixtures/obj/external)
+    set(_rypath_obj_root "${CMAKE_CURRENT_LIST_DIR}/../${_rypath_obj_record}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_rypath_obj_root}/SHA256SUMS")
+    file(STRINGS "${_rypath_obj_root}/SHA256SUMS" _rypath_obj_hashes)
+    foreach(_rypath_obj_entry IN LISTS _rypath_obj_hashes)
+        string(SUBSTRING "${_rypath_obj_entry}" 0 64 _rypath_obj_expected)
+        string(SUBSTRING "${_rypath_obj_entry}" 66 -1 _rypath_obj_path)
+        file(SHA256 "${_rypath_obj_root}/${_rypath_obj_path}" _rypath_obj_actual)
+        if(NOT _rypath_obj_actual STREQUAL _rypath_obj_expected)
+            message(FATAL_ERROR "Vendored OBJ dependency checksum mismatch: ${_rypath_obj_record}/${_rypath_obj_path}")
+        endif()
+    endforeach()
+endforeach()

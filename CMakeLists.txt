@@ -144,6 +144,22 @@ target_include_directories(rypath_pbrt_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR
 target_link_libraries(rypath_pbrt_render PUBLIC rypath_pbrt rypath_render)
 rypath_configure_host_target(rypath_pbrt_render)
 
+include(cmake/ObjDependencies.cmake)
+add_library(rypath_tinyobj STATIC third_party/tinyobjloader/tiny_obj_c.c
+    third_party/tinyobjloader/tobj_tess.c)
+set_target_properties(rypath_tinyobj PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+target_include_directories(rypath_tinyobj SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyobjloader")
+if(RYPATH_ENABLE_SANITIZERS)
+    target_compile_options(rypath_tinyobj PRIVATE -fsanitize=address,undefined
+        -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    target_link_options(rypath_tinyobj PRIVATE -fsanitize=address,undefined)
+endif()
+add_library(rypath_obj STATIC src/obj.cpp src/obj_material.cpp src/obj_bundle.cpp src/obj_budget.cpp)
+target_include_directories(rypath_obj PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(rypath_obj SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/earcut/include")
+target_link_libraries(rypath_obj PUBLIC rypath_pbrt_render PRIVATE rypath_tinyobj rypath_checkpoint)
+rypath_configure_host_target(rypath_obj)
+
 add_library(rypath_metal_backend STATIC src/render_driver.cpp src/exr_output.cpp src/render_job.cpp)
 target_include_directories(rypath_metal_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_metal_backend PRIVATE rypath_geometry rypath_render PUBLIC rypath_checkpoint)
@@ -187,7 +203,7 @@ add_executable(rypath src/main.cpp)
 set_target_properties(rypath PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
 target_compile_definitions(rypath PRIVATE RYPATH_VERSION="${PROJECT_VERSION}")
 include(cmake/BuildProvenance.cmake)
-target_link_libraries(rypath PRIVATE rypath_metal_backend rypath_pbrt_render)
+target_link_libraries(rypath PRIVATE rypath_metal_backend rypath_pbrt_render rypath_obj)
 rypath_configure_host_target(rypath)
 
 include(CTest)

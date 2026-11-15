@@ -3,6 +3,7 @@
 #include "image_output.hpp"
 #include "metal_backend.hpp"
 #include "metal_render.hpp"
+#include "obj.hpp"
 #include "pbrt.hpp"
 #include "pbrt_render.hpp"
 #include "render_job.hpp"
@@ -74,6 +75,30 @@ int argument_error() {
 
 int render_error(std::string_view diagnostic, int status = 1) {
     std::cerr << "rypath: " << diagnostic << '\n';
+    return status;
+}
+
+struct ObjCommand {
+    std::filesystem::path source;
+    std::filesystem::path output;
+};
+int import_obj(const ObjCommand &command) {
+    const auto loaded = rypath::obj::load(command.source);
+    std::cout << rypath::obj::report(loaded);
+    if (loaded.exit_code() != 0 || !loaded.asset)
+        return loaded.exit_code() == 0 ? 1 : loaded.exit_code();
+    auto conversion = rypath::obj::prepare_materials(*loaded.asset);
+    // Loader warnings belong to the published provenance as well as preflight output.
+    conversion.diagnostics.insert(conversion.diagnostics.begin(), loaded.diagnostics.begin(),
+                                  loaded.diagnostics.end());
+    auto status = conversion.exit_code();
+    if (status == 0 && !command.output.empty())
+        status = rypath::obj::publish(*loaded.asset, conversion, command.output);
+    for (std::size_t i = loaded.diagnostics.size(); i < conversion.diagnostics.size(); ++i)
+        std::cout << rypath::pbrt::format_diagnostic(conversion.diagnostics[i]) << '\n';
+    std::cout << "OBJ conversion: " << (status == 0 ? "supported" : "rejected") << '\n';
+    if (status == 0 && !command.output.empty())
+        std::cout << "Wrote OBJ bundle: " << command.output.string() << '\n';
     return status;
 }
 
@@ -421,6 +446,8 @@ int main(int argc, char *argv[]) {
     if (argc == 1 || (argc == 2 && std::string_view{argv[1]} == "--help")) {
         std::cout << "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
                      "       rypath --check-pbrt SCENE\n"
+                     "       rypath --check-obj MODEL.obj\n"
+                     "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n"
@@ -429,6 +456,14 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     try {
+        if (argc == 3 && std::string_view{argv[1]} == "--check-obj" &&
+            !std::string_view{argv[2]}.empty() && !std::string_view{argv[2]}.starts_with("--"))
+            return import_obj({.source = argv[2], .output = {}});
+        if (argc == 5 && std::string_view{argv[1]} == "--convert-obj" &&
+            !std::string_view{argv[2]}.empty() && !std::string_view{argv[2]}.starts_with("--") &&
+            std::string_view{argv[3]} == "--output" && !std::string_view{argv[4]}.empty() &&
+            !std::string_view{argv[4]}.starts_with("--"))
+            return import_obj({.source = argv[2], .output = argv[4]});
         if (argc > 1 && std::string_view{argv[1]} == "--render-pbrt") {
             return render_pbrt(argc, argv);
         }
