@@ -49,6 +49,8 @@ std::string_view dependency_name(DependencyKind kind) {
         return "image";
     case DependencyKind::spectrum:
         return "spectrum";
+    case DependencyKind::bsdf:
+        return "bsdf";
     case DependencyKind::scene:
         return "scene";
     }

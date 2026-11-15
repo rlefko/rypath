@@ -23,7 +23,7 @@ struct TextureImageSampler {
     // Mapped coordinates have not been vertically flipped. The image consumer applies
     // the image convention and its scale/invert options, then returns the typed value.
     std::optional<float> (*sample)(const void *user, texture_graph_wire::Word image, bool spectrum,
-                                   texture_graph_wire::Mapped2D coordinates,
+                                   bool unbounded, texture_graph_wire::Mapped2D coordinates,
                                    float wavelength) = nullptr;
 };
 

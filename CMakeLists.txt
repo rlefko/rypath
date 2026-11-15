@@ -100,10 +100,14 @@ add_library(rypath_pbrt_spectra STATIC src/pbrt_spectra.cpp)
 target_include_directories(rypath_pbrt_spectra PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_pbrt_spectra)
 
+add_library(rypath_bsdf_tables STATIC src/bsdf_table.cpp)
+target_include_directories(rypath_bsdf_tables PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_bsdf_tables)
+
 add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp
     src/spectrum_file.cpp)
 target_include_directories(rypath_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(rypath_pbrt PRIVATE rypath_geometry PUBLIC rypath_image rypath_pbrt_spectra)
+target_link_libraries(rypath_pbrt PRIVATE rypath_geometry PUBLIC rypath_image rypath_pbrt_spectra rypath_bsdf_tables)
 rypath_configure_host_target(rypath_pbrt)
 
 include(cmake/CieData.cmake)
@@ -128,7 +132,7 @@ add_library(rypath_render STATIC src/render.cpp src/sampling.cpp src/triangle_at
     src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp)
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PRIVATE "${rypath_generated_directory}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
-target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image)
+target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image rypath_bsdf_tables)
 rypath_configure_host_target(rypath_render)
 
 add_library(rypath_pbrt_render STATIC src/pbrt_render.cpp)

@@ -17,6 +17,10 @@
 #include <utility>
 #include <vector>
 
+namespace rypath {
+struct BsdfTable;
+}
+
 namespace rypath::pbrt {
 
 struct Location {
@@ -55,6 +59,8 @@ struct Limits {
     std::size_t directives = 100'000;
     std::size_t diagnostics = 100;
     ImageLimits image{};
+    std::size_t bsdf_file_bytes = 128 * 1024 * 1024;
+    std::size_t bsdf_working_bytes = 512 * 1024 * 1024;
 };
 enum class ValueKind { number, integer, boolean, string };
 struct Value {
@@ -77,7 +83,7 @@ struct Directive {
     std::vector<Value> arguments;
     std::vector<Parameter> parameters;
 };
-enum class DependencyKind { include, import, mesh, image, spectrum, scene };
+enum class DependencyKind { include, import, mesh, image, spectrum, scene, bsdf };
 struct Dependency {
     Location location;
     DependencyKind kind = DependencyKind::include;
@@ -122,6 +128,7 @@ struct Descriptor {
     std::vector<InheritedParameter> inherited;
     std::vector<std::size_t> effective_authored;
     // Single-spectrum descriptors preserve their existing checked payload.
+    std::shared_ptr<const BsdfTable> bsdf_table{};
     std::shared_ptr<const CheckedSpectrumSource> spectrum_file{};
     std::string_view spectrum_file_parameter{};
     std::vector<std::pair<std::string_view, std::shared_ptr<const CheckedSpectrumSource>>>

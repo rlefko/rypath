@@ -27,7 +27,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Current v4 directive forms and typed scalar/array parameters | Checked, with owned locations and numeric lexemes | Type/cardinality and supported descriptor schemas checked | Not attempted |
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
 | Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
-| Diffuse, conductor, and dielectric materials and named bindings | Retained | Last matching typed parameter wins; dielectric float eta precedes spectral eta; explicit values override inherited defaults | Not translated |
+| Diffuse, conductor, dielectric and extended surface materials and named bindings | Retained | Last matching typed parameter wins; dielectric float eta precedes spectral eta; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
 | Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
 | Constant and image infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
@@ -71,8 +71,9 @@ capture still occurs at each camera declaration.
 | Path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |
 | Diffuse material | `reflectance`, including a spectrum texture reference, scalar `displacement`, RGB image `normalmap`; named definitions require `string type` |
-| Conductor material | Named/numeric/file `spectrum eta` and `k`; scalar/float-texture `roughness`, `uroughness`, `vroughness`; `remaproughness`, `displacement`, `normalmap`; named definitions require `string type`. RGB/blackbody/texture optical constants and the reflectance shortcut are unsupported |
-| Dielectric material | Scalar float or named/numeric/file spectrum `eta`; conductor roughness and surface-detail settings. Float eta takes precedence over spectral eta, including inherited values; ignored spectral files are not consumed. RGB/blackbody/texture eta are unsupported |
+| Conductor material | Named/numeric/file `spectrum eta` and `k`; scalar/float-texture `roughness`, `uroughness`, `vroughness`; `remaproughness`, `displacement`, `normalmap`; named definitions require `string type`. RGB/blackbody/texture optical constants and the mutually exclusive reflectance shortcut are supported |
+| Dielectric material | Scalar float or named/numeric/file spectrum `eta`; conductor roughness and surface-detail settings. Float eta takes precedence over spectral eta, including inherited values; ignored spectral files are not consumed. RGB/blackbody eta are supported |
+| Extended surface materials | `coateddiffuse`, `coatedconductor`, `thindielectric`, `diffusetransmission`, nested `mix`, spectral tensor-v1 `measured`, and SCATFUN-v1 `fourier`; parameters, approximations and limits are in the [render profile](pbrt-rendering.md#extended-surface-materials) |
 | Float constant texture | Optional scalar `float value` |
 | Spectrum constant texture | Optional `value` of type `rgb`, `spectrum`, or `blackbody`, subject to the narrower render profile |
 | Float/spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |

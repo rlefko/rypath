@@ -88,20 +88,25 @@ clarifies the work; completion is recorded in [status](status.md).
 28. **Spectral GGX conductors (merged in PR #29):** smooth and anisotropic reflection,
     raw optical spectra, scalar roughness textures, mapped shading frames, and
     independent BSDF/transport validation.
-29. **Spectral GGX dielectrics (under review):** smooth and anisotropic reflection/
+29. **Spectral GGX dielectrics (merged in PR #30):** smooth and anisotropic reflection/
     transmission, scalar/spectral eta, mapped frames, dedicated lobe sampling,
     and independent BSDF/transport validation.
-30. **Broader PBRT rendering:** wider color spaces, additional
+30. **Extended PBRT surfaces (under review):** finite coated diffuse/conductor,
+    spectral measured and legacy Fourier tables, thin dielectric, diffuse
+    transmission, nested mapped mixes and conductor optical textures. Explicit
+    finite-layer and RGB-to-spectral approximations; bounded table loading and
+    independent CPU/Metal/PBRT validation.
+31. **Broader PBRT rendering:** wider color spaces, additional
     spectra, texture filters and formats, filters/samplers, and faithfully rendered
     pinned upstream entry points.
     JSON preflight reports remain follow-up work.
-31. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+32. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-32. **Broader spectral surfaces:** thin/layered and additional material
-    models and lighting/MIS, and independent CPU/Metal numerical comparisons.
-33. **Offline completion:** homogeneous spectral media,
+33. **Remaining surface models:** hair/curves, subsurface transport, arbitrary
+    layered stacks and further lighting/MIS, with independent numerical comparisons.
+34. **Offline completion:** homogeneous spectral media,
     checkpoint/resume, cancellation, and long-run accumulation validation.
-34. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+35. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet

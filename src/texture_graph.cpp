@@ -67,7 +67,8 @@ const char *node_error(const TextureGraph &graph, const wire::Node &node, std::s
         }
         break;
     case wire::image:
-        if (node.payload[0] >= image_count) {
+        if (node.payload[0] >= image_count || node.payload[1] > 1 ||
+            (node.payload[1] != 0 && node.type != wire::spectrum)) {
             return "image index out of range";
         }
         [[fallthrough]];
@@ -165,12 +166,13 @@ const char *measure_graph(const TextureGraph &graph, Word root, std::vector<Cost
 struct ImageAdapter {
     TextureImageSampler sampler;
 
-    bool operator()(Word image, bool spectrum, wire::Mapped2D coords, float wavelength,
-                    float &value) const {
+    bool operator()(Word image, bool spectrum, bool unbounded, wire::Mapped2D coords,
+                    float wavelength, float &value) const {
         if (sampler.sample == nullptr) {
             return false;
         }
-        const auto sampled = sampler.sample(sampler.user, image, spectrum, coords, wavelength);
+        const auto sampled =
+            sampler.sample(sampler.user, image, spectrum, unbounded, coords, wavelength);
         if (!sampled) {
             return false;
         }
@@ -182,7 +184,15 @@ struct ImageAdapter {
 struct RgbAdapter {
     // The shared CPU/Metal evaluator calls this with three RGB components and a wavelength.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    bool operator()(float r, float g, float b, float wavelength, float &value) const {
+    bool operator()(float r, float g, float b, float wavelength, bool unbounded,
+                    float &value) const {
+        if (unbounded) {
+            const auto result = evaluate_unbounded_srgb({r, g, b}, wavelength);
+            if (!result)
+                return false;
+            value = *result;
+            return true;
+        }
         const auto reconstructed = reconstruct_srgb({r, g, b});
         if (!reconstructed) {
             return false;

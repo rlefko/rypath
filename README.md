@@ -17,7 +17,10 @@ directly placed diffuse emitters with sampled, RGB, blackbody, built-in named, o
 and box or triangle pixel filtering. Spectral conductors add polished and anisotropic
 GGX metals with named/numeric/file optical constants and scalar roughness textures,
 including bump and normal maps. Spectral dielectrics add polished and frosted
-anisotropic glass with wavelength-dependent refraction and textured roughness. Complete batches
+anisotropic glass with wavelength-dependent refraction and textured roughness.
+Thin glass, diffuse transmission, nested material mixes, finite-depth coatings,
+spectral measured tables and legacy Fourier tables extend this surface profile;
+see the [material limits and validation](docs/surface-material-validation.md). Complete batches
 accumulate raw XYZ; separate output conversion saves display PNG or linear
 HALF/FLOAT OpenEXR. Portable `--check-pbrt`
 reports scene structure, dependencies, and unsupported features. Broader PBRT

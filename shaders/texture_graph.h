@@ -444,8 +444,8 @@ evaluate_leaf(RYPATH_GRAPH_DEVICE Node &node, RYPATH_GRAPH_DEVICE render_wire::S
         break;
     case wire::image: {
         Mapped2D c;
-        if (!map2d(node.mapping, ctx, c) ||
-            !images(node.payload[0], node.type == wire::spectrum, c, wavelength, value)) {
+        if (!map2d(node.mapping, ctx, c) || !images(node.payload[0], node.type == wire::spectrum,
+                                                    node.payload[1] != 0, c, wavelength, value)) {
             return false;
         }
         break;
@@ -467,7 +467,7 @@ evaluate_leaf(RYPATH_GRAPH_DEVICE Node &node, RYPATH_GRAPH_DEVICE render_wire::S
             return false;
         }
         const Point color = marble_rgb(phase);
-        if (!rgb(color.x, color.y, color.z, wavelength, value)) {
+        if (!rgb(color.x, color.y, color.z, wavelength, node.payload[1] != 0, value)) {
             return false;
         }
         break;

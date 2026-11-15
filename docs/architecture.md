@@ -208,6 +208,23 @@ Sobol depth validation runs in translation, the driver and direct Metal requests
 Sampler provenance identifies the extension. See the [render profile](pbrt-rendering.md#spectral-ggx-dielectrics)
 and [validation record](dielectric-validation.md).
 
+## Extended surface scattering
+
+Tagged materials reference indexed auxiliary payloads; immutable measured/Fourier
+tables are deduplicated in a checked shared Metal buffer. Translation resolves
+named material graphs and compiles spectrum textures by consumer role. A stable
+material ID resolves a nested mix at a hit before the child's bump/normal frame.
+
+The scattering contract separates evaluated value, continuation throughput,
+directional MIS density and delta classification. Finite layered continuation
+retains its sampled joint-path ratio while NEE and subsequent emissive hits use
+the same fixed-stream approximate density. Domain-separated material-local
+random streams preserve the outer sampler layout and absolute sample accounting.
+This supports thin/diffuse transmission, finite coatings and tabulated scattering
+without changing raw Film accumulation. See the [surface profile](pbrt-rendering.md#extended-surface-materials)
+and [validation record](surface-material-validation.md) for the approximations,
+resource limits and reference comparisons.
+
 ## Rendering and planned boundaries
 
 The first renderer exercises these boundaries concretely: portable spectral

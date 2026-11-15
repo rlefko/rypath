@@ -1,0 +1,47 @@
+{
+  "date": "2026-11-15",
+  "pbrt_v4_source_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "pbrt_v3_source_revision": "13d871faae88233b327d04cda24022b8bb0093ee",
+  "assets": [
+    {
+      "file": "cm_white_spec.bsdf",
+      "source": "https://raw.githubusercontent.com/mmp/pbrt-v4-scenes/30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572/barcelona-pavilion/bsdfs/cm_white_spec.bsdf",
+      "revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572",
+      "bytes": 6951224,
+      "sha256": "55823e81337790eee58c8b7c6b5fa918bc56aea619e0a8e4bb31b4ee295ffed8",
+      "terms": "CC0-1.0, RGL materials database https://rgl.epfl.ch/materials"
+    },
+    {
+      "file": "aniso_brushed_aluminium_1_spec.bsdf",
+      "source": "https://d38rqfq1h7iukm.cloudfront.net/media/materials/aniso_brushed_aluminium_1/aniso_brushed_aluminium_1_spec.bsdf",
+      "revision": null,
+      "bytes": 111463352,
+      "sha256": "e2e6d66ac4b06dccf24eb3af0353adf39453159229889fbd469caa83721c6db4",
+      "terms": "CC0-1.0, RGL materials database https://rgl.epfl.ch/materials"
+    },
+    {
+      "file": "roughgold_alpha_0.2.bsdf",
+      "source": "https://www.pbrt.org/scenes-v3",
+      "archive_member": "pbrt-v3-scenes/bsdfs/roughgold_alpha_0.2.bsdf",
+      "bytes": 207354,
+      "sha256": "0340220e21774d56920f55c9a3bf6b68333ce70e5dd44f7181ba6a89153b743a",
+      "terms": "Publisher states scene data usable fairly freely; no per-BSDF license found. Local validation only, no redistribution."
+    },
+    {
+      "file": "roughglass_alpha_0.2.bsdf",
+      "source": "https://www.pbrt.org/scenes-v3",
+      "archive_member": "pbrt-v3-scenes/bsdfs/roughglass_alpha_0.2.bsdf",
+      "bytes": 918541,
+      "sha256": "4ff4b2b867c53e7bfc75b704bd772ac426a2228c74920fd4cbd40a936670563e",
+      "terms": "Publisher states scene data usable fairly freely; no per-BSDF license found. Local validation only, no redistribution."
+    },
+    {
+      "file": "paint.bsdf",
+      "source": "https://www.pbrt.org/scenes-v3",
+      "archive_member": "pbrt-v3-scenes/bsdfs/paint.bsdf",
+      "bytes": 509284,
+      "sha256": "8f13175c22d8e6ef6c827d4c51b99bae942083d40abe34f0bd19f08cd6c920e0",
+      "terms": "Publisher states scene data usable fairly freely; no per-BSDF license found. Local validation only, no redistribution."
+    }
+  ]
+}

@@ -23,13 +23,55 @@ inline constexpr std::uint32_t render_emergency_limit = 1024;
 inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
 
 enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image, blackbody, texture_graph };
-enum class ScatteringKind { diffuse, conductor, dielectric };
+enum class ScatteringKind {
+    diffuse,
+    conductor,
+    dielectric,
+    thin_dielectric,
+    diffuse_transmission,
+    coated_diffuse,
+    coated_conductor,
+    measured,
+    fourier,
+    mix
+};
 
 // Optical constants are unbounded nonnegative spectra, never diffuse albedo.
 // PBRT named curves extend endpoints; inline/file curves are zero outside support.
 struct OpticalSpectrum {
     std::vector<SpectralKnot> knots;
     bool extend_endpoints = false;
+};
+
+struct BsdfTable;
+// Additional surface parameters are stored separately on the GPU so ordinary
+// diffuse, conductor and dielectric records retain a compact common layout.
+struct SurfaceMaterialParameters {
+    std::uint32_t eta_root = UINT32_MAX;
+    std::uint32_t k_root = UINT32_MAX;
+    std::uint32_t conductor_reflectance_root = UINT32_MAX;
+    float transmittance = 0.25f;
+    std::uint32_t transmittance_root = UINT32_MAX;
+    float transmission_scale = 1;
+    std::uint32_t transmission_scale_root = UINT32_MAX;
+    OpticalSpectrum interface_eta{};
+    std::uint32_t interface_eta_root = UINT32_MAX;
+    float interface_u_roughness = 0;
+    float interface_v_roughness = 0;
+    std::uint32_t interface_u_roughness_root = UINT32_MAX;
+    std::uint32_t interface_v_roughness_root = UINT32_MAX;
+    float thickness = 0.01f;
+    std::uint32_t thickness_root = UINT32_MAX;
+    float albedo = 0;
+    std::uint32_t albedo_root = UINT32_MAX;
+    float g = 0;
+    std::uint32_t g_root = UINT32_MAX;
+    std::uint32_t max_depth = 10;
+    std::uint32_t samples = 1;
+    std::uint32_t first_material = UINT32_MAX;
+    std::uint32_t second_material = UINT32_MAX;
+    float mix_amount = 0.5f;
+    std::uint32_t mix_amount_root = UINT32_MAX;
 };
 
 struct SpectralMaterial {
@@ -51,6 +93,8 @@ struct SpectralMaterial {
     std::uint32_t u_roughness_root = UINT32_MAX;
     std::uint32_t v_roughness_root = UINT32_MAX;
     bool remap_roughness = true;
+    SurfaceMaterialParameters surface{};
+    std::shared_ptr<const BsdfTable> table{};
 };
 enum class RenderModel { demo, pbrt };
 enum class PixelFilterKind { box, triangle };

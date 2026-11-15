@@ -1,0 +1,26 @@
+{
+  "thindielectric": {
+    "bytes": 882,
+    "sha256": "22a91d3f51794c3e3a7b57d5458e7ee893c7e6933d7baa7d05c06d7b97433d4c"
+  },
+  "diffusetransmission": {
+    "bytes": 954,
+    "sha256": "f9e80b91c3efad1e788c294bedaf8f3e7fea5e8b68b886572272890a707c5085"
+  },
+  "mix": {
+    "bytes": 1120,
+    "sha256": "c430d67219822928231febdda57335daffe8b0e9eaa7df663a82738dc715e9b4"
+  },
+  "coateddiffuse": {
+    "bytes": 1007,
+    "sha256": "3c1ac0051085f1579552a3d21a84c2b6558c1b295b040520249caf6be47603d6"
+  },
+  "coatedconductor": {
+    "bytes": 1030,
+    "sha256": "e094745b80522b600e0f7d86df6b98057663b6d48b370c8c249c68d22568e990"
+  },
+  "measured": {
+    "bytes": 894,
+    "sha256": "d281cbadbc31962ea07929342fe90b336b02cd53fde5490fb75c918f7080da5f"
+  }
+}

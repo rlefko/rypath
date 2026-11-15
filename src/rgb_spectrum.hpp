@@ -20,6 +20,8 @@ std::optional<RgbSpectrum> reconstruct_srgb(const std::array<float, 3> &rgb);
 
 // Evaluate the continuous reconstruction at a wavelength in [360, 830] nm.
 float evaluate_srgb(const RgbSpectrum &spectrum, float wavelength);
+// PBRT RGBUnboundedSpectrum: angular BSDF/optical values may exceed one.
+std::optional<float> evaluate_unbounded_srgb(const std::array<float, 3> &rgb, float wavelength);
 
 // PBRT's luminance-normalized stdillum-D65 sampled at 360, 361, ..., 830 nm.
 const std::array<float, 471> &pbrt_d65();

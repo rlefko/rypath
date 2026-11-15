@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "bsdf_table.hpp"
 #include "pbrt.hpp"
 #include "pbrt_numeric.hpp"
 #include "pbrt_spectra.hpp"
@@ -333,35 +334,22 @@ constexpr std::array material_fields{
     Field{"normalmap", "string"},
 };
 
-constexpr std::array named_material_fields{
-    Field{"type", "string", 1, false, true},
-    material_fields[0],
-    material_fields[1],
-    material_fields[2],
-};
-
 constexpr std::array conductor_fields{
-    Field{.name = "eta", .type = "spectral-texture", .allow_spectrum_file = true},
-    Field{.name = "k", .type = "spectral-texture", .allow_spectrum_file = true},
+    Field{.name = "eta",
+          .type = "spectral-texture",
+          .allow_texture_reference = true,
+          .allow_spectrum_file = true},
+    Field{.name = "k",
+          .type = "spectral-texture",
+          .allow_texture_reference = true,
+          .allow_spectrum_file = true},
     Field{.name = "roughness", .type = "float-texture", .allow_texture_reference = true},
     Field{.name = "uroughness", .type = "float-texture", .allow_texture_reference = true},
     Field{.name = "vroughness", .type = "float-texture", .allow_texture_reference = true},
     Field{"remaproughness", "bool"},
     material_fields[1],
     material_fields[2],
-    Field{.name = "reflectance", .type = "spectral-texture", .deferred = true},
-};
-constexpr std::array named_conductor_fields{
-    Field{"type", "string", 1, false, true},
-    conductor_fields[0],
-    conductor_fields[1],
-    conductor_fields[2],
-    conductor_fields[3],
-    conductor_fields[4],
-    conductor_fields[5],
-    conductor_fields[6],
-    conductor_fields[7],
-    conductor_fields[8],
+    material_fields[0],
 };
 
 constexpr std::array dielectric_fields{
@@ -373,20 +361,10 @@ constexpr std::array dielectric_fields{
     material_fields[1],
     material_fields[2],
 };
-constexpr std::array named_dielectric_fields{
-    Field{"type", "string", 1, false, true},
-    dielectric_fields[0],
-    dielectric_fields[1],
-    dielectric_fields[2],
-    dielectric_fields[3],
-    dielectric_fields[4],
-    dielectric_fields[5],
-    dielectric_fields[6],
-};
 
 constexpr std::array float_constant_fields{Field{"value", "float"}};
 constexpr std::array spectrum_constant_fields{
-    Field{.name = "value", .type = "spectral", .rule = Rule::albedo, .allow_spectrum_file = true},
+    Field{.name = "value", .type = "spectral", .rule = Rule::emission, .allow_spectrum_file = true},
 };
 constexpr std::array mapping_fields{
     Field{"mapping", "string"}, Field{"uscale", "float"}, Field{"vscale", "float"},
@@ -581,6 +559,9 @@ class Interpreter {
     std::map<std::size_t, PlyResult> ply_cache_;
     std::map<std::size_t, std::shared_ptr<const CheckedSpectrumSource>> decoded_spectra_;
     PlyBudget asset_remaining_;
+    std::size_t bsdf_working_used_ = 0;
+    std::map<std::pair<std::filesystem::path, BsdfTableKind>, std::shared_ptr<const BsdfTable>>
+        bsdf_cache_;
     std::map<std::size_t, std::shared_ptr<const CheckedImageSource>> decoded_images_;
     using ImageVariant = std::tuple<std::size_t, ImageEncoding, ImageWrap, float, bool>;
     std::map<ImageVariant, std::shared_ptr<const ImagePyramid>> image_pyramids_;
@@ -747,7 +728,9 @@ void Interpreter::dependencies(const Directive &directive, string_view target, s
     if (target == "material") {
         file("normalmap", DependencyKind::image);
         if (type == "measured") {
-            file("filename", DependencyKind::scene, true);
+            file("filename", DependencyKind::bsdf, true);
+        } else if (type == "fourier") {
+            file("bsdffile", DependencyKind::bsdf, true);
         }
     } else if (target == "shape" && type == "plymesh") {
         file("filename", DependencyKind::mesh, true);
@@ -1039,7 +1022,11 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
                 auto file = spectrum_file(parameter->values.front());
                 if ((directive.name == "Texture" &&
                      directive.arguments.back().text != "constant") ||
-                    (target == "material" && one_of(field.name, {"eta", "k"}))) {
+                    target == "material") {
+                    if (target == "material" && field.name == "reflectance") {
+                        descriptor.spectrum_file = file;
+                        descriptor.spectrum_file_parameter = field.name;
+                    }
                     descriptor.spectrum_files.emplace_back(field.name, std::move(file));
                 } else {
                     descriptor.spectrum_file = std::move(file);
@@ -1371,32 +1358,128 @@ void Interpreter::material(const Directive &directive) {
         }
     }
     dependencies(directive, "material", type);
-    if (type != "diffuse" && type != "conductor" && type != "dielectric") {
-        if (type == "mix") {
-            if (const auto *materials =
-                    select(directive, "material", Field{"materials", "string", 2});
-                materials && field_valid(Field{"materials", "string", 2}, *materials)) {
-                for (const auto &value : materials->values) {
-                    material_uses_.try_emplace(value.text, value.location);
-                }
-            }
-        }
+    if (!one_of(type, {"diffuse", "conductor", "dielectric", "thindielectric", "coateddiffuse",
+                       "coatedconductor", "diffusetransmission", "mix", "measured", "fourier"})) {
         deferred_type(directive, type,
-                      one_of(type, {"", "none", "interface", "coateddiffuse", "coatedconductor",
-                                    "diffusetransmission", "dielectric", "thindielectric", "hair",
-                                    "conductor", "measured", "subsurface", "mix"}),
-                      "material");
+                      one_of(type, {"", "none", "interface", "hair", "subsurface"}), "material");
         return;
     }
-
     Descriptor descriptor = describe(directive, false);
-    validate(descriptor, directive, "material",
-             type == "dielectric"  ? (named ? std::span<const Field>(named_dielectric_fields)
-                                            : std::span<const Field>(dielectric_fields))
-             : type == "conductor" ? (named ? std::span<const Field>(named_conductor_fields)
-                                            : std::span<const Field>(conductor_fields))
-                                   : (named ? std::span<const Field>(named_material_fields)
-                                            : std::span<const Field>(material_fields)));
+    std::vector<Field> schema;
+    const auto add = [&](std::span<const Field> fields) {
+        schema.insert(schema.end(), fields.begin(), fields.end());
+    };
+    if (named)
+        schema.push_back(Field{"type", "string", 1, false, true});
+    if (type == "diffuse" || type == "diffusetransmission")
+        add(material_fields);
+    else if (type == "conductor")
+        add(conductor_fields);
+    else if (type == "dielectric" || type == "coateddiffuse")
+        add(dielectric_fields);
+    else if (type == "thindielectric") {
+        schema.push_back(dielectric_fields[0]);
+        schema.push_back(material_fields[1]);
+        schema.push_back(material_fields[2]);
+    } else if (type != "mix") {
+        schema.push_back(material_fields[1]);
+        schema.push_back(material_fields[2]);
+    }
+    const auto spectral = [&](string_view field) {
+        schema.push_back(Field{.name = field,
+                               .type = "spectral-texture",
+                               .rule = Rule::albedo,
+                               .allow_texture_reference = true,
+                               .allow_spectrum_file = true});
+    };
+    const auto scalar = [&](string_view field) {
+        schema.push_back(
+            Field{.name = field, .type = "float-texture", .allow_texture_reference = true});
+    };
+    if (type == "coateddiffuse")
+        spectral("reflectance");
+    if (type == "coatedconductor") {
+        for (const auto field : {"conductor.eta", "conductor.k"})
+            schema.push_back(Field{.name = field,
+                                   .type = "spectral-texture",
+                                   .allow_texture_reference = true,
+                                   .allow_spectrum_file = true});
+        spectral("reflectance");
+        schema.push_back(
+            Field{.name = "interface.eta", .type = "dielectric-eta", .allow_spectrum_file = true});
+        for (const auto field :
+             {"interface.roughness", "interface.uroughness", "interface.vroughness",
+              "conductor.roughness", "conductor.uroughness", "conductor.vroughness"})
+            scalar(field);
+        schema.push_back(Field{"remaproughness", "bool"});
+    }
+    if (type == "coateddiffuse" || type == "coatedconductor") {
+        spectral("albedo");
+        scalar("g");
+        scalar("thickness");
+        schema.push_back(Field{"maxdepth", "integer", 1, false, false, false, Rule::nonnegative});
+        schema.push_back(Field{"nsamples", "integer", 1, false, false, false, Rule::positive});
+    }
+    if (type == "diffusetransmission") {
+        spectral("transmittance");
+        schema.push_back(Field{"scale", "float"});
+    }
+    if (type == "mix") {
+        schema.push_back(Field{"materials", "string", 2, false, true});
+        scalar("amount");
+    }
+    if (type == "measured" || type == "fourier")
+        schema.push_back(
+            Field{type == "measured" ? "filename" : "bsdffile", "string", 1, false, true});
+    const auto fields = validate(descriptor, directive, "material", schema);
+    if (type == "mix" && fields.contains("materials"))
+        for (const auto &value : fields.at("materials")->values)
+            material_uses_.try_emplace(value.text, value.location);
+    if (type == "conductor" || type == "coatedconductor") {
+        const auto eta = type == "conductor" ? "eta" : "conductor.eta";
+        const auto k = type == "conductor" ? "k" : "conductor.k";
+        if (fields.contains("reflectance") && (fields.contains(eta) || fields.contains(k)))
+            error("invalid-parameter", fields.at("reflectance")->location,
+                  "Conductor reflectance cannot be combined with eta or k");
+    }
+    if (type == "coateddiffuse" || type == "coatedconductor") {
+        const auto depth =
+            fields.contains("maxdepth") ? fields.at("maxdepth")->values.front().integer : 10;
+        const auto samples =
+            fields.contains("nsamples") ? fields.at("nsamples")->values.front().integer : 1;
+        if (depth > 1024 || samples > 64 || static_cast<long long>(depth) * samples > 65536)
+            error("limit-exceeded", directive.location,
+                  "Layered material maxdepth/nsamples exceed checked work limits");
+    }
+    if (type == "measured" || type == "fourier") {
+        const auto field = type == "measured" ? "filename" : "bsdffile";
+        if (fields.contains(field)) {
+            const auto &value = fields.at(field)->values.front();
+            const auto index = dependency(DependencyKind::bsdf, value);
+            if (index && result_.document.dependencies[*index].exists) {
+                auto &input = result_.document.dependencies[*index];
+                const auto kind =
+                    type == "measured" ? BsdfTableKind::measured : BsdfTableKind::fourier;
+                const auto key = std::pair{input.resolved_path, kind};
+                if (const auto cached = bsdf_cache_.find(key); cached != bsdf_cache_.end())
+                    descriptor.bsdf_table = cached->second;
+                else {
+                    auto decoded = read_bsdf_table(
+                        input.resolved_path, kind,
+                        {.remaining_budget = limits_.bsdf_working_bytes - bsdf_working_used_,
+                         .per_file_budget = limits_.bsdf_file_bytes});
+                    if (!decoded.table)
+                        error("invalid-bsdf-table", value.location, decoded.diagnostic);
+                    else {
+                        bsdf_working_used_ += decoded.table->working_bytes;
+                        descriptor.bsdf_table = decoded.table;
+                        bsdf_cache_.emplace(key, std::move(decoded.table));
+                    }
+                }
+                input.visited = descriptor.bsdf_table != nullptr;
+            }
+        }
+    }
     native_image(descriptor, "normalmap", ImageEncoding::linear, ImageWrap::repeat);
     if (named) {
         scene_.named_materials.push_back(std::move(descriptor));
@@ -2696,6 +2779,32 @@ void Interpreter::resolve_references() {
             }
         }
     }
+    std::map<string_view, const Descriptor *> material_definitions;
+    for (const auto &material : scene_.named_materials)
+        material_definitions.emplace(material.authored.arguments.front().text, &material);
+    std::map<string_view, unsigned> material_state;
+    const auto visit_material = [&](auto &&self, string_view name, std::size_t depth) -> void {
+        if (material_state[name] == 2 || !material_definitions.contains(name))
+            return;
+        const auto &descriptor = *material_definitions.at(name);
+        if (material_state[name] == 1) {
+            error("cyclic-reference", descriptor.authored.location,
+                  "Cyclic mix material reference");
+            return;
+        }
+        if (depth > limits_.scopes) {
+            error("limit-exceeded", descriptor.authored.location,
+                  "Material reference depth limit exceeded");
+            return;
+        }
+        material_state[name] = 1;
+        if (const auto *materials = descriptor.effective_parameter("materials").parameter)
+            for (const auto &value : materials->values)
+                self(self, value.text, depth + 1);
+        material_state[name] = 2;
+    };
+    for (const auto &[name, descriptor] : material_definitions)
+        visit_material(visit_material, name, 0);
     std::size_t expanded = scene_.geometry.instances.size();
     for (const auto &placement : scene_.placements) {
         if (result_.document.diagnostics_truncated) {

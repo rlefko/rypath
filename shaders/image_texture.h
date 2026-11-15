@@ -519,4 +519,12 @@ static float spectrum(float3 rgb, float wavelength, const device float *table) {
     const float inverse = 1.0f / polynomial;
     return 0.5f + 0.5f * copysign(1.0f / sqrt(1.0f + inverse * inverse), polynomial);
 }
+static inline float unbounded_spectrum(float3 rgb, float wavelength, const device float *table) {
+    if (!all(isfinite(rgb)) || any(rgb < 0))
+        return NAN;
+    float scale = 2 * max(max(rgb.x, rgb.y), rgb.z);
+    if (!isfinite(scale))
+        return NAN;
+    return scale == 0 ? 0 : scale * spectrum(rgb / scale, wavelength, table);
+}
 } // namespace rypath_image

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "metal_render.hpp"
+#include "bsdf_table.hpp"
 
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
@@ -232,6 +233,7 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> triangles = nil;
     id<MTLBuffer> patches = nil;
     id<MTLBuffer> materials = nil;
+    id<MTLBuffer> material_data = nil;
     id<MTLBuffer> environment = nil;
     id<MTLBuffer> knots = nil;
     id<MTLBuffer> area_emissions = nil;
@@ -406,7 +408,9 @@ struct MetalRenderScene::Impl {
         image_levels = upload(device, levels);
         image_texels = upload(device, texels);
         image_transfer = upload(device, transfer);
-        if (texture_parameters.texture_count != 0 || !scene.texture_graph.nodes.empty()) {
+        if (texture_parameters.texture_count != 0 || !scene.texture_graph.nodes.empty() ||
+            std::ranges::any_of(scene.materials,
+                                [](const auto &m) { return m.table != nullptr; })) {
             image_spectra = upload(device, srgb_reconstruction_table());
         } else {
             const std::array<float, 1> empty{};
@@ -443,8 +447,7 @@ struct MetalRenderScene::Impl {
         std::vector<wire::SurfaceTransform> transforms;
         const bool detail = graph_parameters.alpha_enabled ||
                             std::ranges::any_of(scene.materials, [](const SpectralMaterial &m) {
-                                return m.scattering == ScatteringKind::conductor ||
-                                       m.scattering == ScatteringKind::dielectric ||
+                                return m.scattering != ScatteringKind::diffuse ||
                                        m.bump_root != max_index || m.normal_map != max_index;
                             });
         std::map<std::uint32_t, wire::Word> offsets;
@@ -760,8 +763,8 @@ struct MetalRenderScene::Impl {
         std::size_t knot_count = 0;
         if (scene.model == RenderModel::pbrt) {
             for (const auto &material : scene.materials) {
-                for (const auto *curve :
-                     {&material.knots, &material.eta.knots, &material.k.knots}) {
+                for (const auto *curve : {&material.knots, &material.eta.knots, &material.k.knots,
+                                          &material.surface.interface_eta.knots}) {
                     if (curve->size() > knot_limit - knot_count)
                         return "Metal render spectral knot buffer exceeds buffer or index limits";
                     knot_count += curve->size();
@@ -836,6 +839,10 @@ struct MetalRenderScene::Impl {
         }
 
         std::vector<wire::Material> packed_materials(scene.materials.size());
+        std::vector<wire::Word> packed_data;
+        std::map<const BsdfTable *, wire::Word> table_offsets;
+        const auto data_limit =
+            std::min<std::size_t>(128 * 1024 * 1024, device.maxBufferLength / sizeof(wire::Word));
         std::vector<wire::SpectralKnot> packed_knots;
         packed_knots.reserve(std::max<std::size_t>(1, knot_count));
         for (std::size_t index = 0; index < scene.materials.size(); ++index) {
@@ -844,25 +851,77 @@ struct MetalRenderScene::Impl {
             packed.texture_root = source.texture_root;
             packed.bump_root = source.bump_root;
             packed.normal_map = source.normal_map;
-            if (source.scattering == ScatteringKind::conductor ||
-                source.scattering == ScatteringKind::dielectric) {
-                packed.scattering = source.scattering == ScatteringKind::conductor ? 1 : 2;
-                packed.eta_begin = static_cast<wire::Word>(packed_knots.size());
-                packed.eta_count = static_cast<wire::Word>(source.eta.knots.size());
-                for (const auto [wavelength, value] : source.eta.knots)
+            packed.scattering = static_cast<wire::Word>(source.scattering);
+            packed.eta_begin = static_cast<wire::Word>(packed_knots.size());
+            packed.eta_count = static_cast<wire::Word>(source.eta.knots.size());
+            for (const auto [wavelength, value] : source.eta.knots)
+                packed_knots.push_back({wavelength, value});
+            packed.k_begin = static_cast<wire::Word>(packed_knots.size());
+            packed.k_count = static_cast<wire::Word>(source.k.knots.size());
+            for (const auto [wavelength, value] : source.k.knots)
+                packed_knots.push_back({wavelength, value});
+            packed.optical_extensions = wire::Word(source.eta.extend_endpoints) |
+                                        (wire::Word(source.k.extend_endpoints) << 1);
+            packed.u_roughness = source.u_roughness;
+            packed.v_roughness = source.v_roughness;
+            packed.u_roughness_root = source.u_roughness_root;
+            packed.v_roughness_root = source.v_roughness_root;
+            packed.remap_roughness = source.remap_roughness;
+            const auto &a = source.surface;
+            const bool auxiliary = source.scattering >= ScatteringKind::thin_dielectric ||
+                                   a.eta_root != max_index || a.k_root != max_index ||
+                                   a.conductor_reflectance_root != max_index;
+            if (auxiliary) {
+                wire::Word table_offset = max_index;
+                if (source.table) {
+                    auto [it, added] = table_offsets.try_emplace(
+                        source.table.get(), static_cast<wire::Word>(packed_data.size()));
+                    if (added) {
+                        if (source.table->words.size() > data_limit - packed_data.size())
+                            return "Material tables exceed the GPU buffer budget";
+                        packed_data.insert(packed_data.end(), source.table->words.begin(),
+                                           source.table->words.end());
+                    }
+                    table_offset = it->second;
+                }
+                const auto interface_begin = static_cast<wire::Word>(packed_knots.size());
+                for (const auto [wavelength, value] : a.interface_eta.knots)
                     packed_knots.push_back({wavelength, value});
-                packed.k_begin = static_cast<wire::Word>(packed_knots.size());
-                packed.k_count = static_cast<wire::Word>(source.k.knots.size());
-                for (const auto [wavelength, value] : source.k.knots)
-                    packed_knots.push_back({wavelength, value});
-                packed.optical_extensions = wire::Word(source.eta.extend_endpoints) |
-                                            (wire::Word(source.k.extend_endpoints) << 1);
-                packed.u_roughness = source.u_roughness;
-                packed.v_roughness = source.v_roughness;
-                packed.u_roughness_root = source.u_roughness_root;
-                packed.v_roughness_root = source.v_roughness_root;
-                packed.remap_roughness = source.remap_roughness;
-                continue;
+                const wire::MaterialAuxiliary aux{
+                    a.eta_root,
+                    a.k_root,
+                    a.conductor_reflectance_root,
+                    a.transmittance,
+                    a.transmittance_root,
+                    a.transmission_scale,
+                    a.transmission_scale_root,
+                    interface_begin,
+                    static_cast<wire::Word>(a.interface_eta.knots.size()),
+                    wire::Word(a.interface_eta.extend_endpoints),
+                    a.interface_eta_root,
+                    a.interface_u_roughness,
+                    a.interface_v_roughness,
+                    a.interface_u_roughness_root,
+                    a.interface_v_roughness_root,
+                    a.thickness,
+                    a.thickness_root,
+                    a.albedo,
+                    a.albedo_root,
+                    a.g,
+                    a.g_root,
+                    a.max_depth,
+                    a.samples,
+                    a.first_material,
+                    a.second_material,
+                    a.mix_amount,
+                    a.mix_amount_root,
+                    table_offset};
+                constexpr auto words = sizeof(aux) / sizeof(wire::Word);
+                if (words > data_limit - packed_data.size())
+                    return "Material parameters exceed the GPU buffer budget";
+                packed.auxiliary = static_cast<wire::Word>(packed_data.size());
+                const auto encoded = std::bit_cast<std::array<wire::Word, words>>(aux);
+                packed_data.insert(packed_data.end(), encoded.begin(), encoded.end());
             }
             switch (source.kind) {
             case SpectralMaterialKind::sampled:
@@ -903,6 +962,10 @@ struct MetalRenderScene::Impl {
             packed_knots.emplace_back();
         }
 
+        parameters.material_data_words = static_cast<wire::Word>(packed_data.size());
+        if (packed_data.empty())
+            packed_data.push_back(0);
+        material_data = upload(device, packed_data);
         instances = upload(device, packed_instances);
         positions = upload(device, packed_positions);
         triangles = upload(device, packed_triangles);
@@ -910,7 +973,7 @@ struct MetalRenderScene::Impl {
         materials = upload(device, packed_materials);
         knots = upload(device, packed_knots);
         if (instances == nil || positions == nil || triangles == nil || materials == nil ||
-            knots == nil || patches == nil) {
+            knots == nil || patches == nil || material_data == nil) {
             return "Metal render shading buffer allocation failed";
         }
         if (auto error = upload_area_lighting(scene, packed_instances); !error.empty())
@@ -1048,6 +1111,7 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:surface_transforms offset:0 atIndex:27];
             [encoder setBuffer:environment_cdf offset:0 atIndex:28];
             [encoder setBuffer:illuminant offset:0 atIndex:29];
+            [encoder setBuffer:material_data offset:0 atIndex:30];
         }
         if (p.instance_count == 0 && graph_parameters.environment_image != max_index) {
             [encoder setBuffer:image_textures offset:0 atIndex:17];
@@ -1229,7 +1293,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             std::ranges::any_of(
                 scene.materials,
                 [](const auto &m) { return m.scattering == ScatteringKind::conductor; }),
-            impl->dielectrics};
+            impl->dielectrics,
+            std::ranges::any_of(scene.materials, [](const auto &m) {
+                return m.scattering >= ScatteringKind::thin_dielectric;
+            })};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];

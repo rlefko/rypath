@@ -14,6 +14,7 @@
 #include "image_texture.h"
 #include "intersection.h"
 #include "masked_intersection.h"
+#include "scattering.h"
 #include "surface_detail.h"
 #include "texture_footprint.h"
 #include "texture_graph.h"
@@ -34,6 +35,7 @@ constant bool environment_image_enabled [[function_constant(3)]];
 constant bool area_image_enabled [[function_constant(4)]];
 constant bool conductor_enabled [[function_constant(5)]];
 constant bool dielectric_enabled [[function_constant(6)]];
+constant bool surface_materials_enabled [[function_constant(7)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -665,8 +667,8 @@ struct GraphImageSampler {
     const device float *transfer;
     const device float *spectra;
     constant wire::TextureParameters *parameters;
-    bool operator()(uint index, bool spectrum, graph_wire::Mapped2D mapped, float wavelength,
-                    thread float &value) const {
+    bool operator()(uint index, bool spectrum, bool unbounded, graph_wire::Mapped2D mapped,
+                    float wavelength, thread float &value) const {
         if (index >= parameters->texture_count)
             return false;
         const device auto &texture = textures[index];
@@ -678,7 +680,11 @@ struct GraphImageSampler {
             rgb *= texture.scale;
             if (texture.invert != 0u)
                 rgb = 1.0f - rgb;
-            value = rypath_image::spectrum(rgb, wavelength, spectra);
+            if (!all(isfinite(rgb)))
+                return false;
+            value = unbounded
+                        ? rypath_image::unbounded_spectrum(max(rgb, float3(0)), wavelength, spectra)
+                        : rypath_image::spectrum(rgb, wavelength, spectra);
         } else {
             value = rypath_image::lookup_scalar(texture, levels, texels, transfer, *parameters, st,
                                                 dx, dy, true);
@@ -695,8 +701,10 @@ struct GraphImageSampler {
 };
 struct GraphRgbSampler {
     const device float *table;
-    bool operator()(float r, float g, float b, float wavelength, thread float &value) const {
-        value = rypath_image::spectrum(float3(r, g, b), wavelength, table);
+    bool operator()(float r, float g, float b, float wavelength, bool unbounded,
+                    thread float &value) const {
+        value = unbounded ? rypath_image::unbounded_spectrum(float3(r, g, b), wavelength, table)
+                          : rypath_image::spectrum(float3(r, g, b), wavelength, table);
         return isfinite(value);
     }
 };
@@ -1101,6 +1109,136 @@ static bool scattering_frame(rypath_surface_detail::Frame frame, thread Scatteri
 
 // Continuous light proposals. Zero f/PDF is a valid unsupported direction;
 // arithmetic failure is distinct and is rejected with the whole sample batch.
+static bool parameter_value(uint root, float fallback, const thread GraphResources &graph,
+                            graph_wire::Context context, float wavelength, thread float &value) {
+    value = fallback;
+    return (root == 0xffffffffu || graph.evaluate(root, context, wavelength, value)) &&
+           isfinite(value);
+}
+static const device wire::MaterialAuxiliary *
+material_auxiliary(const device wire::Material &m, const device uint *data, uint count) {
+    constexpr uint size = sizeof(wire::MaterialAuxiliary) / sizeof(uint);
+    return m.auxiliary <= count && size <= count - m.auxiliary
+               ? reinterpret_cast<const device wire::MaterialAuxiliary *>(data + m.auxiliary)
+               : nullptr;
+}
+static bool prepare_scattering(const device wire::Material &m,
+                               const device wire::MaterialAuxiliary *a, float rho,
+                               const device wire::SpectralKnot *knots, constant wire::Parameters &p,
+                               const thread GraphResources &graph, graph_wire::Context ctx,
+                               float wavelength, const device uint *data,
+                               const device float *rgb_table,
+                               thread rypath_scattering::Prepared &out) {
+    out.kind = m.scattering;
+    out.reflectance = rho;
+    out.transmittance = 0;
+    out.wavelength = wavelength;
+    out.rgb_table = rgb_table;
+    out.table = nullptr;
+    if (!surface_materials_enabled && m.scattering >= 3)
+        return false;
+    if (m.scattering >= 3 && a == nullptr)
+        return false;
+    if (m.scattering == 7 || m.scattering == 8) {
+        if (a->table_offset >= p.material_data_words)
+            return false;
+        out.table = data + a->table_offset;
+        return true;
+    }
+    if (m.scattering == 4) {
+        float t, scale;
+        if (!parameter_value(a->transmittance_root, a->transmittance, graph, ctx, wavelength, t) ||
+            !parameter_value(a->transmission_scale_root, a->transmission_scale, graph, ctx,
+                             wavelength, scale))
+            return false;
+        float r_scaled = rho * scale, t_scaled = t * scale;
+        if (!isfinite(r_scaled) || !isfinite(t_scaled))
+            return false;
+        out.reflectance = clamp(r_scaled, 0.0f, 1.0f);
+        out.transmittance = clamp(t_scaled, 0.0f, 1.0f);
+        return true;
+    }
+    float u, v;
+    if (!parameter_value(m.u_roughness_root, m.u_roughness, graph, ctx, wavelength, u) ||
+        !parameter_value(m.v_roughness_root, m.v_roughness, graph, ctx, wavelength, v))
+        return false;
+    float eta = optical_value(knots, m.eta_begin, m.eta_count, p.knot_count,
+                              (m.optical_extensions & 1u) != 0, wavelength);
+    float k = optical_value(knots, m.k_begin, m.k_count, p.knot_count,
+                            (m.optical_extensions & 2u) != 0, wavelength);
+    if (a != nullptr) {
+        if (a->conductor_reflectance_root != 0xffffffffu) {
+            float r;
+            if (!graph.evaluate(a->conductor_reflectance_root, ctx, wavelength, r) || !isfinite(r))
+                return false;
+            r = clamp(r, 0.0f, .9999f);
+            eta = 1;
+            k = 2 * sqrt(r) / sqrt(1 - r);
+        } else {
+            if (a->eta_root != 0xffffffffu && !graph.evaluate(a->eta_root, ctx, wavelength, eta))
+                return false;
+            if (a->k_root != 0xffffffffu && !graph.evaluate(a->k_root, ctx, wavelength, k))
+                return false;
+        }
+    }
+    if (m.scattering == 1)
+        return rypath_conductor::prepare(eta, k, u, v, m.remap_roughness != 0, out.conductor);
+    if (m.scattering == 2 || m.scattering == 3)
+        return rypath_dielectric::prepare(eta, u, v, m.remap_roughness != 0, out.dielectric);
+    if (m.scattering != 5 && m.scattering != 6)
+        return false;
+    float ie = eta, iu = u, iv = v;
+    if (m.scattering == 6) {
+        ie = optical_value(knots, a->interface_eta_begin, a->interface_eta_count, p.knot_count,
+                           a->interface_eta_extend != 0, wavelength);
+        if (a->interface_eta_root != 0xffffffffu &&
+            !graph.evaluate(a->interface_eta_root, ctx, wavelength, ie))
+            return false;
+        if (!parameter_value(a->interface_u_roughness_root, a->interface_u_roughness, graph, ctx,
+                             wavelength, iu) ||
+            !parameter_value(a->interface_v_roughness_root, a->interface_v_roughness, graph, ctx,
+                             wavelength, iv))
+            return false;
+    }
+    if (!rypath_dielectric::prepare(ie, iu, iv, m.remap_roughness != 0, out.layered.interface))
+        return false;
+    out.layered.conductor_base = m.scattering == 6;
+    if (out.layered.conductor_base &&
+        !rypath_conductor::prepare(eta / out.layered.interface.eta, k / out.layered.interface.eta,
+                                   u, v, m.remap_roughness != 0, out.layered.conductor))
+        return false;
+    out.layered.reflectance = rho;
+    if (!parameter_value(a->thickness_root, a->thickness, graph, ctx, wavelength,
+                         out.layered.thickness) ||
+        !parameter_value(a->albedo_root, a->albedo, graph, ctx, wavelength, out.layered.albedo) ||
+        !parameter_value(a->g_root, a->g, graph, ctx, wavelength, out.layered.g))
+        return false;
+    out.layered.albedo = clamp(out.layered.albedo, 0.0f, 1.0f);
+    out.layered.g = clamp(out.layered.g, -1.0f, 1.0f);
+    out.layered.max_depth = a->max_depth;
+    out.layered.samples = a->samples;
+    return rypath_layered::valid_parameters(out.layered);
+}
+
+// Function constants must guard the dispatch itself: a runtime material tag
+// otherwise keeps every layered/table branch in legacy-only pipelines, including
+// their shader-validation instrumentation and register requirements.
+static rypath_scattering::Evaluation
+evaluate_scattering(const thread rypath_scattering::Prepared &p, float3 wo, float3 wi, uint seed) {
+    if (surface_materials_enabled)
+        return rypath_scattering::evaluate(p, wo, wi, seed);
+    return p.kind == 2 ? rypath_dielectric::evaluate(p.dielectric, wo, wi)
+                       : rypath_conductor::evaluate(p.conductor, wo, wi);
+}
+
+static rypath_scattering::Sample sample_scattering(const thread rypath_scattering::Prepared &p,
+                                                   float3 wo, float uc, float2 u, uint seed) {
+    if (surface_materials_enabled)
+        return rypath_scattering::sample(p, wo, uc, u, seed);
+    return p.kind == 2 ? rypath_dielectric::sample(p.dielectric, wo, uc, u)
+                       : rypath_conductor::sample(p.conductor, wo, u);
+}
+
 static float scattering_direct(float f_cos, float bsdf_pdf, float light_pdf, bool invisible) {
     if (!(f_cos >= 0) || !(bsdf_pdf >= 0) || !(light_pdf > 0) || !isfinite(f_cos) ||
         !isfinite(bsdf_pdf) || !isfinite(light_pdf))
@@ -1197,6 +1335,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 [[buffer(27)]],
                                 const device float *environment_cdf [[buffer(28)]],
                                 const device float *illuminant [[buffer(29)]],
+                                const device uint *material_data [[buffer(30)]],
                                 uint lane [[thread_position_in_grid]]) {
     if (lane >= p.lane_count) {
         return;
@@ -1335,14 +1474,12 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         if (p.model == wire::pbrt_model && bounce >= p.max_depth) {
             break;
         }
-        const device wire::Material &material = materials[instance.material];
-        const bool conductor = conductor_enabled && material.scattering == 1u;
-        const bool dielectric = dielectric_enabled && material.scattering == 2u;
-        const bool microfacet = conductor || dielectric;
-        const bool context_material = microfacet || material.kind == wire::image_material ||
-                                      material.kind == wire::graph_material ||
-                                      material.bump_root != 0xffffffffu ||
-                                      material.normal_map != 0xffffffffu;
+        const device wire::Material &root_material = materials[instance.material];
+        const bool root_framed = root_material.scattering != 0;
+        const bool context_material = root_framed || root_material.kind == wire::image_material ||
+                                      root_material.kind == wire::graph_material ||
+                                      root_material.bump_root != 0xffffffffu ||
+                                      root_material.normal_map != 0xffffffffu;
         if (context_material && !emissive &&
             !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
                            normals, p.normal_count, PointSource::native_hit, point)) {
@@ -1351,8 +1488,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         }
         graph_wire::Context texture_context{};
         float3 geometric_dpdu(0), geometric_dpdv(0);
-        if ((microfacet || material.kind == wire::graph_material ||
-             material.bump_root != 0xffffffffu || material.normal_map != 0xffffffffu) &&
+        if ((root_framed || root_material.kind == wire::graph_material ||
+             root_material.bump_root != 0xffffffffu || root_material.normal_map != 0xffffffffu) &&
             !surface_texture_context(instance, hit.primitive_id, kind, hit_uv, point, positions,
                                      triangles, patches, texture_uvs, texture_frames, texture_p, p,
                                      sample, primary_direction, true, texture_context,
@@ -1360,8 +1497,44 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             sample.status = wire::invalid_arithmetic;
             break;
         }
+        uint material_index = instance.material;
+        for (uint depth = 0; depth <= 64; ++depth) {
+            const device auto &node = materials[material_index];
+            if (!surface_materials_enabled || node.scattering != 9)
+                break;
+            auto aux = material_auxiliary(node, material_data, p.material_data_words);
+            float amount;
+            if (aux == nullptr || depth == 64 ||
+                !parameter_value(aux->mix_amount_root, aux->mix_amount, graph, texture_context,
+                                 sample.wavelength, amount)) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            const float selector =
+                alpha_uniform(point.position, -incoming.direction, as_type<float>(material_index));
+            material_index = amount <= 0         ? aux->first_material
+                             : amount >= 1       ? aux->second_material
+                             : selector < amount ? aux->second_material
+                                                 : aux->first_material;
+            if (material_index >= p.material_count) {
+                sample.status = wire::invalid_hit;
+                break;
+            }
+        }
+        if (sample.status != wire::success)
+            break;
+        const device wire::Material &material = materials[material_index];
+        const bool dielectric = dielectric_enabled && material.scattering == 2u;
+        const bool microfacet =
+            (conductor_enabled || dielectric_enabled || surface_materials_enabled) &&
+            material.scattering != 0;
+        const uint4 material_random =
+            philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
+                         rypath::sampling_contract::material_local_block(bounce)),
+                   uint2(p.seed_low ^ material_index,
+                         p.seed_high ^ rypath::sampling_contract::material_stream_v1));
         float rho = NAN;
-        if (microfacet) {
+        if (microfacet && material.scattering != 4 && material.scattering != 5) {
             rho = 1.0f;
         } else if (p.model == wire::demo_model && material.kind == wire::sampled_material) {
             rho = demo_reflectance(material, p, sample.wavelength);
@@ -1388,16 +1561,17 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 sample.status = wire::invalid_arithmetic;
                 break;
             }
-            rho = clamp(rho, 0.0f, 1.0f);
+            if (material.scattering != 4)
+                rho = clamp(rho, 0.0f, 1.0f);
         } else {
             sample.status = wire::invalid_hit;
             break;
         }
-        if (!(rho >= 0.0f && rho <= 1.0f)) {
+        if (!isfinite(rho) || (material.scattering != 4 && !(rho >= 0.0f && rho <= 1.0f))) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        if (rho == 0.0f) {
+        if (rho == 0.0f && material.scattering == 0) {
             break;
         }
         const bool detail = surface_detail_enabled && (material.bump_root != 0xffffffffu ||
@@ -1432,45 +1606,24 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const float3 n = incident_cosine > 0.0f ? -point.shading_normal : point.shading_normal;
-        rypath_conductor::Parameters conductor_parameters{};
-        rypath_dielectric::Parameters dielectric_parameters{};
+        rypath_scattering::Prepared scattering{};
         ScatteringFrame frame{};
         float3 wo(0);
         if (microfacet) {
-            float u = material.u_roughness, v = material.v_roughness;
-            if ((material.u_roughness_root != 0xffffffffu &&
-                 !graph.evaluate(material.u_roughness_root, texture_context, sample.wavelength,
-                                 u)) ||
-                (material.v_roughness_root != 0xffffffffu &&
-                 !graph.evaluate(material.v_roughness_root, texture_context, sample.wavelength,
-                                 v))) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            const float eta =
-                optical_value(knots, material.eta_begin, material.eta_count, p.knot_count,
-                              (material.optical_extensions & 1u) != 0u, sample.wavelength);
-            bool prepared;
-            if (dielectric) {
-                prepared = rypath_dielectric::prepare(eta, u, v, material.remap_roughness != 0u,
-                                                      dielectric_parameters);
-            } else {
-                const float k =
-                    optical_value(knots, material.k_begin, material.k_count, p.knot_count,
-                                  (material.optical_extensions & 2u) != 0u, sample.wavelength);
-                prepared = rypath_conductor::prepare(eta, k, u, v, material.remap_roughness != 0u,
-                                                     conductor_parameters);
-            }
-            if (!prepared || !scattering_frame(shading_frame, frame)) {
+            if (!prepare_scattering(
+                    material, material_auxiliary(material, material_data, p.material_data_words),
+                    rho, knots, p, graph, texture_context, sample.wavelength, material_data,
+                    image_spectra, scattering) ||
+                !scattering_frame(shading_frame, frame)) {
                 sample.status = wire::invalid_arithmetic;
                 break;
             }
             wo = frame.local(-incoming.direction);
-            if (wo.z == 0.0f)
+            if (wo.z == 0)
                 break;
         }
-        bool delta =
-            dielectric ? dielectric_parameters.smooth : conductor && conductor_parameters.smooth;
+        bool delta = microfacet && rypath_scattering::delta_only(scattering);
+        const bool both_hemispheres = microfacet && rypath_scattering::both_hemispheres(scattering);
         const bool directional_offset = authored_normals || patch_hit;
         const float3 area_reference =
             directional_offset ? point.position : spawn_origin(incoming, hit.distance, point, n);
@@ -1499,9 +1652,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const float3 local_light = microfacet ? frame.local(light_direction) : float3(0);
-        const float light_cosine = dielectric  ? abs(local_light.z)
-                                   : conductor ? (wo.z > 0 ? local_light.z : -local_light.z)
-                                               : dot(n, light_direction);
+        const float light_cosine = both_hemispheres ? abs(local_light.z)
+                                   : microfacet     ? (wo.z > 0 ? local_light.z : -local_light.z)
+                                                    : dot(n, light_direction);
         if (!delta && light_radiance > 0.0f && light_cosine > 0.0f) {
             const float3 origin = directional_offset
                                       ? spawn_toward(incoming, hit.distance, point, light_direction)
@@ -1518,15 +1671,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             }
             if (visibility.type == intersection_type::none) {
                 float factor;
-                if (dielectric) {
+                if (microfacet) {
                     const auto evaluated =
-                        rypath_dielectric::evaluate(dielectric_parameters, wo, local_light);
-                    factor = evaluated.valid ? scattering_direct(evaluated.f * light_cosine,
-                                                                 evaluated.pdf, light_pdf, false)
-                                             : NAN;
-                } else if (conductor) {
-                    const auto evaluated =
-                        rypath_conductor::evaluate(conductor_parameters, wo, local_light);
+                        evaluate_scattering(scattering, wo, local_light, material_random.y);
                     factor = evaluated.valid ? scattering_direct(evaluated.f * light_cosine,
                                                                  evaluated.pdf, light_pdf, false)
                                              : NAN;
@@ -1540,7 +1687,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
-                sample.radiance += throughput * rho * factor * light_radiance;
+                sample.radiance += throughput * (microfacet ? 1.0f : rho) * factor * light_radiance;
             }
         }
 
@@ -1605,34 +1752,23 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     const float3 direction = delta / sqrt(distance_squared);
                     const float3 local_receiver = microfacet ? frame.local(direction) : float3(0);
                     const float receiver_cosine =
-                        dielectric  ? abs(local_receiver.z)
-                        : conductor ? (wo.z > 0 ? local_receiver.z : -local_receiver.z)
-                                    : dot(n, direction);
+                        both_hemispheres ? abs(local_receiver.z)
+                        : microfacet     ? (wo.z > 0 ? local_receiver.z : -local_receiver.z)
+                                         : dot(n, direction);
                     const float emitter_cosine = dot(target.geometric_normal, -direction);
                     if (Le > 0.0f && receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
                         (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
                         float factor;
-                        if (dielectric) {
-                            const auto evaluated = rypath_dielectric::evaluate(
-                                dielectric_parameters, wo, local_receiver);
+                        if (microfacet) {
+                            const auto evaluated = evaluate_scattering(
+                                scattering, wo, local_receiver, material_random.z);
                             factor = evaluated.valid
                                          ? scattering_direct(
                                                evaluated.f * receiver_cosine, evaluated.pdf,
                                                area_light_pdf(target.inverse_area_pdf,
                                                               abs(emitter_cosine), distance_squared,
                                                               p.emitter_slots),
-                                               light_instance.invisible_emitter != 0u)
-                                         : NAN;
-                        } else if (conductor) {
-                            const auto evaluated = rypath_conductor::evaluate(conductor_parameters,
-                                                                              wo, local_receiver);
-                            factor = evaluated.valid
-                                         ? scattering_direct(
-                                               evaluated.f * receiver_cosine, evaluated.pdf,
-                                               area_light_pdf(target.inverse_area_pdf,
-                                                              abs(emitter_cosine), distance_squared,
-                                                              p.emitter_slots),
-                                               light_instance.invisible_emitter != 0u)
+                                               light_instance.invisible_emitter != 0)
                                          : NAN;
                         } else {
                             factor = light_instance.invisible_emitter != 0u
@@ -1669,7 +1805,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                             break;
                         }
                         if (visibility.type == intersection_type::none) {
-                            sample.radiance += (throughput * rho) * (factor * Le);
+                            sample.radiance +=
+                                (throughput * (microfacet ? 1.0f : rho)) * (factor * Le);
                         }
                     }
                 }
@@ -1678,11 +1815,15 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         float3 wi;
         float continuation_pdf = 0;
         float continuation_cosine = 0;
-        if (dielectric) {
-            const uint lobe_word = dielectric_lobe_word(p, tables, sample, index, bounce);
-            const auto continuation = rypath_dielectric::sample(
-                dielectric_parameters, wo, sample_uniform(p, lobe_word),
-                float2(sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y)));
+        if (microfacet) {
+            const float lobe =
+                dielectric
+                    ? sample_uniform(p, dielectric_lobe_word(p, tables, sample, index, bounce))
+                    : u01(material_random.x);
+            const auto continuation = sample_scattering(
+                scattering, wo, lobe,
+                float2(sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y)),
+                material_random.w);
             if (!continuation.valid) {
                 sample.status = wire::invalid_arithmetic;
                 break;
@@ -1698,27 +1839,6 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             continuation_pdf = continuation.pdf;
             continuation_cosine = abs(continuation.wi.z);
             delta = continuation.delta;
-        } else if (conductor) {
-            const auto continuation = rypath_conductor::sample(
-                conductor_parameters, wo,
-                float2(sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y)));
-            if (!continuation.valid) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            if (!continuation.accepted)
-                break;
-            wi = frame.world(continuation.wi);
-            if (!rypath_surface_detail::unit_vector(wi, wi)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            throughput *= continuation.weight;
-            continuation_pdf = continuation.pdf;
-            // The local sample, PDF and weight share one support convention.
-            // A positive grazing cosine can round through zero when this ray
-            // is mapped to a binary32 world frame; do not reject it a second time.
-            continuation_cosine = abs(continuation.wi.z);
         } else {
             wi = hemisphere(n, sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y));
             throughput *= rho;
