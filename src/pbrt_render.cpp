@@ -129,6 +129,10 @@ class Translator {
     void invalid(const Location &source, std::string message);
     const Descriptor *required(string_view name);
     std::optional<float> narrow(const Descriptor &descriptor, string_view name, double fallback);
+    std::map<std::string, std::uint32_t, std::less<>> medium_indices_;
+    void media();
+    std::uint32_t medium_id(std::string_view name);
+    bool medium_spectrum(const Descriptor &, std::string_view, std::array<float, 471> &);
     void film(const Descriptor &descriptor);
     void camera(const Descriptor &descriptor, const Descriptor *film);
     void filter(const Descriptor &descriptor);
@@ -415,6 +419,7 @@ void Translator::sampler(const Descriptor &descriptor) {
 }
 
 void Translator::integrator(const Descriptor &descriptor) {
+    scene_.volume_transport = descriptor.authored.arguments.front().text == "volpath";
     const auto depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 5));
     const bool sobol = result_.settings.sampler.kind == SamplerKind::sobol;
     const auto limit = sobol ? sobol_max_depth : render_emergency_limit;
@@ -1426,7 +1431,8 @@ void Translator::rebase_texture_mappings() {
 
 void Translator::texture_frames() {
     const bool framed_material = std::ranges::any_of(scene_.materials, [](const auto &material) {
-        return material.scattering != ScatteringKind::diffuse;
+        return material.scattering != ScatteringKind::diffuse &&
+               material.scattering != ScatteringKind::null_interface;
     });
     if (!scene_.raster_camera ||
         (scene_.image_textures.empty() && scene_.texture_graph.nodes.empty() && !framed_material)) {
@@ -1596,6 +1602,10 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
                           ? string(descriptor, "type").value_or("")
                           : string_view(descriptor.authored.arguments.front().text);
     SpectralMaterial value;
+    if (type == "interface" || type == "none" || type.empty()) {
+        value.scattering = ScatteringKind::null_interface;
+        return append_material(std::move(value));
+    }
     const auto authored_bump = float_binding(descriptor, "displacement");
     value.normal_map = native_image(descriptor);
     value.bump_root = value.normal_map == graph::no_texture ? authored_bump : graph::no_texture;
@@ -1694,6 +1704,11 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
             materials && materials->values.size() == 2) {
             value.surface.first_material = named_material(materials->values[0].text);
             value.surface.second_material = named_material(materials->values[1].text);
+            if (scene_.materials[value.surface.first_material].scattering ==
+                    ScatteringKind::null_interface ||
+                scene_.materials[value.surface.second_material].scattering ==
+                    ScatteringKind::null_interface)
+                invalid(materials->location, "An interface material cannot be a mix child");
         } else
             invalid(descriptor.authored.location,
                     "Mix material requires two checked material names");
@@ -1787,7 +1802,8 @@ void Translator::geometry() {
             remaining -= count * width;
         }
     }
-    if (std::ranges::none_of(geometry.instances, [&](const GeometryInstance &instance) {
+    if (!scene_.volume_transport &&
+        std::ranges::none_of(geometry.instances, [&](const GeometryInstance &instance) {
             const auto &mesh = geometry.meshes[instance.mesh_index];
             return !mesh.triangles.empty() || !mesh.patches.empty();
         })) {
@@ -1848,6 +1864,15 @@ void Translator::geometry() {
         } else if (binding.inline_material) {
             mesh.material = inline_materials.at(binding.inline_material.get());
         }
+        if (scene_.materials[mesh.material].scattering == ScatteringKind::null_interface &&
+            shape.area_light)
+            invalid(shape.descriptor.authored.location,
+                    "An interface material cannot emit area light");
+        if ((shape.media.inside != shape.media.outside ||
+             scene_.materials[mesh.material].scattering == ScatteringKind::null_interface) &&
+            mesh.alpha != graph::no_texture)
+            unsupported(shape.descriptor.authored.location,
+                        "A medium transition requires opaque alpha");
     };
     std::ranges::for_each(input_.shapes, bind);
     for (const auto &object : input_.objects) {
@@ -1940,6 +1965,8 @@ void Translator::geometry() {
             invalid(shape.descriptor.authored.location, message);
         }
         scene_.instance_materials.push_back(binding.material);
+        scene_.instance_media.push_back(
+            {medium_id(shape.media.inside), medium_id(shape.media.outside)});
         if (has_alpha) {
             scene_.instance_alpha_roots.push_back(binding.alpha);
         }
@@ -2048,6 +2075,259 @@ image_filter_provenance(const RenderScene &scene,
     return provenance + " filtering";
 }
 
+namespace {
+struct MediumPreset {
+    std::string_view name;
+    std::array<float, 3> scattering, absorption;
+};
+constexpr MediumPreset medium_presets[]{
+#include "../third_party/pbrt/medium_presets.inc"
+};
+} // namespace
+
+std::uint32_t Translator::medium_id(std::string_view name) {
+    if (name.empty())
+        return no_medium;
+    const auto found = medium_indices_.find(name);
+    if (found == medium_indices_.end()) {
+        invalid(entry_, "Undefined checked medium reference");
+        return no_medium;
+    }
+    return found->second;
+}
+
+bool Translator::medium_spectrum(const Descriptor &descriptor, std::string_view name,
+                                 std::array<float, 471> &dense) {
+    const auto [selected, space] = descriptor.effective_parameter(name);
+    dense.fill(1);
+    if (!selected)
+        return true;
+    if (!charge_spectral_values(*selected))
+        return false;
+    if (selected->type == "rgb") {
+        if (!supports_rgb_space(space, selected->location))
+            return false;
+        std::array<float, 3> rgb{};
+        for (std::size_t c = 0; c < 3; ++c) {
+            if (selected->values[c].number < 0 ||
+                !float_representable(selected->values[c].number)) {
+                invalid(selected->location,
+                        "Medium RGB coefficients must be finite nonnegative binary32");
+                return false;
+            }
+            rgb[c] = static_cast<float>(selected->values[c].number);
+        }
+        const float scale = 2 * std::ranges::max(rgb);
+        if (!std::isfinite(scale)) {
+            invalid(selected->location, "Medium RGB scale overflows binary32");
+            return false;
+        }
+        if (scale == 0) {
+            dense.fill(0);
+            return true;
+        }
+        for (auto &v : rgb)
+            v /= scale;
+        const auto tint = reconstruct_srgb(rgb);
+        if (!tint) {
+            invalid(selected->location, "Medium RGB reconstruction failed");
+            return false;
+        }
+        const auto reconstructed = *tint;
+        for (std::size_t i = 0; i < dense.size(); ++i)
+            dense[i] = scale * evaluate_srgb(reconstructed, 360.f + static_cast<float>(i));
+    } else if (selected->type == "blackbody") {
+        const auto temperature = blackbody_temperature(*selected);
+        if (!temperature)
+            return false;
+        constexpr double h = 6.62606957e-34, c = 299792458., k = 1.3806488e-23;
+        const double peak = 2.8977721e-3 / *temperature;
+        const auto planck = [&](double wavelength) {
+            return (2 * h * c * c) /
+                   (std::pow(wavelength, 5) * std::expm1(h * c / (wavelength * k * *temperature)));
+        };
+        const double normalization = planck(peak);
+        if (!(normalization > 0 && std::isfinite(normalization))) {
+            invalid(selected->location, "Medium blackbody normalization is not finite");
+            return false;
+        }
+        for (std::size_t i = 0; i < dense.size(); ++i)
+            dense[i] =
+                static_cast<float>(planck((360. + static_cast<double>(i)) * 1e-9) / normalization);
+    } else if (selected->values.front().kind == ValueKind::string) {
+        if (const auto *named = pbrt_named_spectrum(selected->values.front().text))
+            dense = *named;
+        else {
+            const auto *file = descriptor.checked_spectrum(name);
+            if (!file) {
+                invalid(selected->location, "Medium spectrum requires a checked file");
+                return false;
+            }
+            if (!charge_file_spectrum(selected->location, file->knots.size(), 0))
+                return false;
+            if (std::ranges::any_of(file->knots,
+                                    [](const SpectralKnot &v) { return v.value < 0; })) {
+                invalid(selected->location, "Medium spectrum must be nonnegative");
+                return false;
+            }
+            for (std::size_t i = 0; i < dense.size(); ++i)
+                dense[i] = static_cast<float>(
+                    sampled_spectrum(file->knots, 360. + static_cast<double>(i)));
+        }
+    } else {
+        std::vector<SpectralKnot> knots;
+        for (std::size_t i = 0; i < selected->values.size(); i += 2) {
+            const auto &w = selected->values[i], &v = selected->values[i + 1];
+            if (!float_representable(w.number) || !float_representable(v.number) || v.number < 0 ||
+                (!knots.empty() && static_cast<float>(w.number) <= knots.back().wavelength)) {
+                invalid(v.location, "Medium spectrum must have increasing binary32 wavelengths and "
+                                    "nonnegative finite values");
+                return false;
+            }
+            knots.push_back({static_cast<float>(w.number), static_cast<float>(v.number)});
+        }
+        for (std::size_t i = 0; i < dense.size(); ++i)
+            dense[i] = static_cast<float>(sampled_spectrum(knots, 360. + static_cast<double>(i)));
+    }
+    if (std::ranges::any_of(dense, [](float v) { return !std::isfinite(v) || v < 0; })) {
+        invalid(selected->location, "Medium spectrum must be finite and nonnegative");
+        return false;
+    }
+    return true;
+}
+
+void Translator::media() {
+    constexpr std::size_t medium_values = std::size_t{3} * 471U;
+    for (const auto &descriptor : input_.media) {
+        if (diagnostics_.diagnostics_truncated)
+            return;
+        if (scene_.media.size() >= no_medium ||
+            medium_values > limits_.total_values - spectral_values_) {
+            spectral_limit(descriptor.authored.location);
+            return;
+        }
+        spectral_values_ += medium_values;
+        HomogeneousMedium medium;
+        const auto preset_name = string(descriptor, "preset").value_or("");
+        const auto preset = std::ranges::find(medium_presets, preset_name, &MediumPreset::name);
+        if (!preset_name.empty() && preset == std::end(medium_presets))
+            issue(Severity::warning, "unknown-medium-preset", location(descriptor, "preset"),
+                  "Material preset \"" + std::string(preset_name) +
+                      "\" not found; using explicit/default coefficients");
+        if (preset != std::end(medium_presets)) {
+            if (parameter(descriptor, "sigma_a") || parameter(descriptor, "sigma_s"))
+                invalid(location(descriptor, "preset"),
+                        "A recognized medium preset conflicts with explicit coefficients");
+            for (const auto &[name, rgb] :
+                 {std::pair{std::string_view{"sigma_a"}, preset->absorption},
+                  std::pair{std::string_view{"sigma_s"}, preset->scattering}}) {
+                Descriptor synthetic;
+                Parameter p;
+                p.name = name;
+                p.type = "rgb";
+                for (float v : rgb) {
+                    Value x;
+                    x.kind = ValueKind::number;
+                    x.number = v;
+                    p.values.push_back(x);
+                }
+                synthetic.authored.parameters.push_back(std::move(p));
+                synthetic.effective_authored = {0};
+                medium_spectrum(synthetic, name,
+                                name == "sigma_a" ? medium.sigma_a : medium.sigma_s);
+            }
+        } else {
+            medium_spectrum(descriptor, "sigma_a", medium.sigma_a);
+            medium_spectrum(descriptor, "sigma_s", medium.sigma_s);
+        }
+        const auto scale = narrow(descriptor, "scale", 1),
+                   le_scale = narrow(descriptor, "Lescale", 1),
+                   authored_g = narrow(descriptor, "g", 0);
+        if (!scale || !le_scale || !authored_g)
+            continue;
+        const float coefficient_scale = *scale;
+        const float emission_scale = *le_scale;
+        const float asymmetry = *authored_g;
+        if (coefficient_scale < 0 || emission_scale < 0) {
+            invalid(descriptor.authored.location, "Medium scales must be nonnegative");
+            continue;
+        }
+        for (auto *values : {&medium.sigma_a, &medium.sigma_s})
+            for (auto &v : *values) {
+                v *= coefficient_scale;
+                if (!std::isfinite(v))
+                    invalid(descriptor.authored.location,
+                            "Scaled medium coefficient overflows binary32");
+            }
+        medium.g = std::clamp(asymmetry, -.99f, .99f);
+        if (medium.g != asymmetry)
+            result_.provenance.push_back("Homogeneous medium g: authored " +
+                                         std::to_string(asymmetry) + "; effective " +
+                                         std::to_string(medium.g) + " (PBRT HG clamp)");
+        if (const auto *le = parameter(descriptor, "Le")) {
+            if (le->type == "blackbody") {
+                // Normalize the continuous Planck shape before dense binary32
+                // storage can underflow. A positive temperature is not zero Le.
+                blackbody_emission(*le, le_scale, 1., medium.emission);
+            } else {
+                std::array<float, 471> raw;
+                const bool valid = medium_spectrum(descriptor, "Le", raw);
+                bool authored_positive = false;
+                if (le->type == "rgb") {
+                    authored_positive = std::ranges::any_of(
+                        le->values, [](const Value &v) { return v.number > 0; });
+                } else if (le->values.front().kind == ValueKind::string) {
+                    auto knots = pbrt_named_spectrum_knots(le->values.front().text);
+                    if (const auto *file = descriptor.checked_spectrum("Le"))
+                        knots = file->knots;
+                    authored_positive = std::ranges::any_of(
+                        knots, [](const SpectralKnot &k) { return k.value > 0; });
+                } else {
+                    for (std::size_t i = 1; i < le->values.size(); i += 2)
+                        authored_positive |= le->values[i].number > 0;
+                }
+                if (valid && authored_positive) {
+                    if (le->type == "rgb") {
+                        // RGB photometric normalization uses its base illuminant.
+                        Descriptor light;
+                        light.authored.location = descriptor.authored.location;
+                        light.color_space = descriptor.effective_parameter("Le").color_space;
+                        auto p = *le;
+                        p.name = "L";
+                        light.authored.parameters.push_back(std::move(p));
+                        if (const auto *scale_param = parameter(descriptor, "Lescale")) {
+                            auto q = *scale_param;
+                            q.name = "scale";
+                            light.authored.parameters.push_back(std::move(q));
+                        }
+                        for (std::size_t i = 0; i < light.authored.parameters.size(); ++i)
+                            light.effective_authored.push_back(i);
+                        emission(light, 1., medium.emission);
+                    } else {
+                        const double normalization = pbrt_y_inner_product(raw);
+                        if (!(normalization > 0 && std::isfinite(normalization)))
+                            invalid(le->location, "Medium emission requires a positive finite "
+                                                  "photometric normalization");
+                        else
+                            for (std::size_t i = 0; i < raw.size(); ++i) {
+                                const double v =
+                                    static_cast<double>(raw[i]) * emission_scale / normalization;
+                                if (!float_representable(v))
+                                    invalid(le->location, "Medium emission overflows binary32");
+                                else
+                                    medium.emission[i] = static_cast<float>(v);
+                            }
+                    }
+                }
+            }
+        }
+
+        medium_indices_.emplace(descriptor.authored.arguments.front().text,
+                                static_cast<std::uint32_t>(scene_.media.size()));
+        scene_.media.push_back(std::move(medium));
+    }
+}
+
 RenderTranslation Translator::run() {
     const auto *film_descriptor = required("Film");
     if (film_descriptor) {
@@ -2068,6 +2348,8 @@ RenderTranslation Translator::run() {
     if (integrator_descriptor) {
         integrator(*integrator_descriptor);
     }
+    media();
+    scene_.camera_medium = medium_id(input_.camera_medium);
     for (const auto &option : input_.options) {
         if (option.authored.name != "Accelerator") {
             continue;
@@ -2091,6 +2373,14 @@ RenderTranslation Translator::run() {
     if (!diagnostics_.diagnostics_truncated) {
         geometry();
     }
+    if (std::ranges::all_of(scene_.instance_media,
+                            [](const MediumInterface &m) { return m.inside == m.outside; }))
+        scene_.instance_media.clear();
+    if (!scene_.volume_transport &&
+        (scene_.camera_medium != no_medium ||
+         std::ranges::any_of(scene_.instance_media,
+                             [](const MediumInterface &m) { return m.inside != m.outside; })))
+        unsupported(entry_, "Homogeneous media require an explicit volpath integrator");
     if (!diagnostics_.diagnostics_truncated &&
         scene_.instance_materials.size() == input_.geometry.instances.size()) {
         texture_frames();

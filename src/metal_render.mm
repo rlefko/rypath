@@ -203,6 +203,8 @@ std::string validate_request(const RenderRequest &request) {
     if (request.emergency_limit == 0 || request.emergency_limit > render_emergency_limit) {
         return "Invalid Metal render emergency depth limit";
     }
+    if (request.boundary_limit == 0 || request.boundary_limit > medium_boundary_limit)
+        return "Invalid Metal medium boundary limit";
     return validate_sampler_range(request.sampler, request.seed, request.width, request.height,
                                   request.sample_begin, request.sample_count);
 }
@@ -215,6 +217,8 @@ std::string sample_error(wire::Word status) {
         return "Metal render encountered non-finite or invalid path arithmetic";
     case wire::invalid_hit:
         return "Metal render encountered invalid native hit data";
+    case wire::boundary_exhaustion:
+        return "Metal render medium boundary or random-stream budget exhausted";
     default:
         return "Metal render sample status is invalid or unwritten";
     }
@@ -260,6 +264,31 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
     bool dielectrics = false;
+
+    std::string upload_medium_data(const RenderScene &scene, std::vector<wire::Word> &data) {
+        constexpr std::size_t words = sizeof(wire::Medium) / sizeof(wire::Word);
+        const auto limit =
+            std::min<std::size_t>(128 * 1024 * 1024, device.maxBufferLength / sizeof(wire::Word));
+        if (data.size() > limit || scene.media.size() > (limit - data.size()) / words)
+            return "Homogeneous media exceed the shared GPU data budget";
+        parameters.medium_begin = static_cast<wire::Word>(data.size());
+        parameters.medium_count = static_cast<wire::Word>(scene.media.size());
+        parameters.camera_medium = scene.camera_medium;
+        for (const auto &source : scene.media) {
+            wire::Medium medium{};
+            std::ranges::copy(source.sigma_a, medium.sigma_a);
+            std::ranges::copy(source.sigma_s, medium.sigma_s);
+            std::ranges::copy(source.emission, medium.emission);
+            medium.g = std::clamp(source.g, -.99f, .99f);
+            const auto encoded = std::bit_cast<std::array<wire::Word, words>>(medium);
+            data.insert(data.end(), encoded.begin(), encoded.end());
+        }
+        parameters.material_data_words = static_cast<wire::Word>(data.size());
+        if (data.empty())
+            data.push_back(0);
+        material_data = upload(device, data);
+        return material_data == nil ? "Metal medium data allocation failed" : "";
+    }
 
     std::string upload_textures(const RenderScene &scene,
                                 std::vector<wire::Instance> &packed_instances) {
@@ -447,7 +476,8 @@ struct MetalRenderScene::Impl {
         std::vector<wire::SurfaceTransform> transforms;
         const bool detail = graph_parameters.alpha_enabled ||
                             std::ranges::any_of(scene.materials, [](const SpectralMaterial &m) {
-                                return m.scattering != ScatteringKind::diffuse ||
+                                return (m.scattering != ScatteringKind::diffuse &&
+                                        m.scattering != ScatteringKind::null_interface) ||
                                        m.bump_root != max_index || m.normal_map != max_index;
                             });
         std::map<std::uint32_t, wire::Word> offsets;
@@ -829,6 +859,10 @@ struct MetalRenderScene::Impl {
             packed.invisible_emitter = scene.instance_invisible_emitters.empty()
                                            ? 0
                                            : scene.instance_invisible_emitters[source];
+            if (!scene.instance_media.empty()) {
+                packed.inside_medium = scene.instance_media[source].inside;
+                packed.outside_medium = scene.instance_media[source].outside;
+            }
             packed_instances.push_back(packed);
         }
         if (auto message = upload_normals(scene, packed_instances); !message.empty()) {
@@ -868,7 +902,8 @@ struct MetalRenderScene::Impl {
             packed.v_roughness_root = source.v_roughness_root;
             packed.remap_roughness = source.remap_roughness;
             const auto &a = source.surface;
-            const bool auxiliary = source.scattering >= ScatteringKind::thin_dielectric ||
+            const bool auxiliary = (source.scattering >= ScatteringKind::thin_dielectric &&
+                                    source.scattering != ScatteringKind::null_interface) ||
                                    a.eta_root != max_index || a.k_root != max_index ||
                                    a.conductor_reflectance_root != max_index;
             if (auxiliary) {
@@ -962,10 +997,8 @@ struct MetalRenderScene::Impl {
             packed_knots.emplace_back();
         }
 
-        parameters.material_data_words = static_cast<wire::Word>(packed_data.size());
-        if (packed_data.empty())
-            packed_data.push_back(0);
-        material_data = upload(device, packed_data);
+        if (auto error = upload_medium_data(scene, packed_data); !error.empty())
+            return error;
         instances = upload(device, packed_instances);
         positions = upload(device, packed_positions);
         triangles = upload(device, packed_triangles);
@@ -1047,6 +1080,7 @@ struct MetalRenderScene::Impl {
         p.seed_low = static_cast<wire::Word>(request.seed);
         p.seed_high = static_cast<wire::Word>(request.seed >> 32);
         p.emergency_limit = request.emergency_limit;
+        p.boundary_limit = request.boundary_limit;
         p.lane_count = request.pixel_count * request.sample_count;
         p.sampler_kind = static_cast<wire::Word>(request.sampler.kind);
         p.randomization = static_cast<wire::Word>(request.sampler.randomization);
@@ -1125,6 +1159,8 @@ struct MetalRenderScene::Impl {
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];
+        if (p.instance_count == 0 && p.medium_count != 0)
+            [encoder setBuffer:material_data offset:0 atIndex:30];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
         [encoder endEncoding];
@@ -1294,8 +1330,13 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 scene.materials,
                 [](const auto &m) { return m.scattering == ScatteringKind::conductor; }),
             impl->dielectrics,
-            std::ranges::any_of(scene.materials, [](const auto &m) {
-                return m.scattering >= ScatteringKind::thin_dielectric;
+            std::ranges::any_of(scene.materials,
+                                [](const auto &m) {
+                                    return m.scattering >= ScatteringKind::thin_dielectric &&
+                                           m.scattering != ScatteringKind::null_interface;
+                                }),
+            scene.volume_transport || std::ranges::any_of(scene.materials, [](const auto &m) {
+                return m.scattering == ScatteringKind::null_interface;
             })};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
@@ -1328,6 +1369,12 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (impl->sampling_tables == nil) {
             result.diagnostic = "Metal Sobol table buffer allocation failed";
             return result;
+        }
+        if (impl->parameters.instance_count == 0) {
+            std::vector<wire::Word> data;
+            result.diagnostic = impl->upload_medium_data(scene, data);
+            if (!result.diagnostic.empty())
+                return result;
         }
         if (impl->parameters.instance_count != 0 || scene.environment_image != max_index) {
             try {

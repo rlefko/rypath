@@ -24,6 +24,10 @@ inline constexpr Word dielectric_lobe_block(Word bounce) { return 0x80000000u | 
 // stable selected material ID is mixed into the key, never a host address.
 enum : Word { material_stream_v1 = 0x6d617431u };
 inline constexpr Word material_local_block(Word bounce) { return 0x40000000u | bounce; }
+// Media use a checked monotonic draw-block index, including depth-neutral
+// boundary segments. Domain separation preserves all existing surface streams.
+enum : Word { medium_stream_v1 = 0x6d656431u, medium_block_limit = 0x20000000u };
+inline constexpr Word medium_local_block(Word draw) { return 0x20000000u | draw; }
 static_assert(4 + 8 * dielectric_max_depth == dielectric_lobe_begin,
               "Disjoint dielectric dimensions");
 static_assert(dielectric_lobe_dimension(dielectric_max_depth - 1) < 1024, "Dielectric table bound");

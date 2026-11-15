@@ -254,3 +254,23 @@ arithmetic and rationalized refraction are rypath numerical adaptations.
 `scripts/pbrt_dielectric_probe.cpp` is an opt-in oracle against the external
 pinned CPU build, not a production dependency. See
 [dielectric validation](../../docs/dielectric-validation.md).
+
+## Homogeneous measured-medium presets
+
+`medium_presets.inc` retains all 47 exact case-sensitive names and the measured
+reduced-scattering/absorption RGB values from
+[`media.cpp` at b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/media.cpp).
+It retains PBRT's Apache-2.0 copyright and license; see [LICENSE.txt](LICENSE.txt).
+The source credits Jensen, Marschner, Levoy and Hanrahan, *A Practical Model for
+Subsurface Light Transport* (SIGGRAPH 2001), and Narasimhan, Gupta, Donner,
+Ramamoorthi, Nayar and Jensen, *Acquiring Scattering Properties of Participating
+Media by Dilution* (SIGGRAPH 2006).
+
+Rows retain the upstream order: name, reduced-scattering RGB, absorption RGB.
+The table documents mm⁻¹ units. Like pinned PBRT, homogeneous preparation uses
+the reduced-scattering values directly as `sigma_s`, reconstructs both spectra
+using sRGB Unbounded, and applies only the authored coefficient scale; it does
+not convert units or divide by `(1-g)`. The table is compiled locally and needs
+no runtime asset, download or PBRT library. The optional
+`scripts/pbrt_medium_probe.cpp` validates dense preparation against the cached
+pinned CPU PBRT build; production remains independent of that reference.

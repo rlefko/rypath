@@ -483,6 +483,7 @@ struct GraphicsState {
     TransformSet transform{};
     std::array<bool, 2> active{true, true};
     MaterialBinding material;
+    MediumBinding media{};
     std::shared_ptr<const Descriptor> area_light;
     std::string color_space = "srgb";
     bool reverse = false;
@@ -550,6 +551,7 @@ class Interpreter {
         Transform transform;
         std::string color_space;
         bool animated = false;
+        std::string medium;
     };
     std::vector<PendingOption> options_;
     std::map<string_view, std::size_t> option_indices_;
@@ -812,7 +814,8 @@ void Interpreter::authored_dependencies(const Directive &directive, DependencyCo
                           "conductor.eta", "conductor.k", "k"})) {
             family = "spectral-texture";
         } else if ((target == "material" && one_of(name, {"eta", "interface.eta"})) ||
-                   (target == "light" && one_of(name, {"I", "L"}))) {
+                   (target == "light" && one_of(name, {"I", "L"})) ||
+                   (target == "medium" && one_of(name, {"sigma_a", "sigma_s", "Le"}))) {
             family = type == "conductor" ? "spectral-texture" : "spectral";
         }
         return SchemaName{name, accepts_type(family, declared_type) ? family : declared_type};
@@ -1022,7 +1025,7 @@ std::map<string_view, const Parameter *> Interpreter::validate(Descriptor &descr
                 auto file = spectrum_file(parameter->values.front());
                 if ((directive.name == "Texture" &&
                      directive.arguments.back().text != "constant") ||
-                    target == "material") {
+                    target == "material" || target == "medium") {
                     if (target == "material" && field.name == "reflectance") {
                         descriptor.spectrum_file = file;
                         descriptor.spectrum_file_parameter = field.name;
@@ -1198,8 +1201,9 @@ void Interpreter::option(const Directive &directive) {
         return;
     }
 
-    PendingOption pending{&directive, {}, state_.color_space, false};
+    PendingOption pending{&directive, {}, state_.color_space, false, {}};
     if (directive.name == "Camera") {
+        pending.medium = state_.media.outside;
         TransformSet world_from_camera{};
         bool invertible = true;
         for (std::size_t i = 0; i < state_.transform.size(); ++i) {
@@ -1236,6 +1240,8 @@ void Interpreter::validate_option(const PendingOption &pending) {
     const auto &directive = *pending.directive;
     const string_view type = directive.arguments.front().text;
     Descriptor descriptor{directive, pending.transform, pending.color_space, {}, {}};
+    if (directive.name == "Camera")
+        scene_.camera_medium = pending.medium;
     std::span<const Field> schema;
     string_view supported_type;
     bool known = false;
@@ -1261,7 +1267,7 @@ void Interpreter::validate_option(const PendingOption &pending) {
         schema = type == "sobol" ? std::span<const Field>{sobol_sampler_fields}
                                  : std::span<const Field>{sampler_fields};
     } else if (directive.name == "Integrator") {
-        supported_type = "path";
+        supported_type = type == "volpath" ? "volpath" : "path";
         known = one_of(type, {"function", "simplepath", "lightpath", "simplevolpath", "volpath",
                               "bdpt", "mlt", "ambientocclusion", "randomwalk", "sppm"});
         schema = integrator_fields;
@@ -1359,7 +1365,8 @@ void Interpreter::material(const Directive &directive) {
     }
     dependencies(directive, "material", type);
     if (!one_of(type, {"diffuse", "conductor", "dielectric", "thindielectric", "coateddiffuse",
-                       "coatedconductor", "diffusetransmission", "mix", "measured", "fourier"})) {
+                       "coatedconductor", "diffusetransmission", "mix", "measured", "fourier",
+                       "interface", "none", ""})) {
         deferred_type(directive, type,
                       one_of(type, {"", "none", "interface", "hair", "subsurface"}), "material");
         return;
@@ -1381,7 +1388,7 @@ void Interpreter::material(const Directive &directive) {
         schema.push_back(dielectric_fields[0]);
         schema.push_back(material_fields[1]);
         schema.push_back(material_fields[2]);
-    } else if (type != "mix") {
+    } else if (!one_of(type, {"mix", "interface", "none", ""})) {
         schema.push_back(material_fields[1]);
         schema.push_back(material_fields[2]);
     }
@@ -1774,7 +1781,7 @@ void Interpreter::register_mesh(const Location &location, Descriptor descriptor,
     const auto mesh_index = static_cast<std::uint32_t>(scene_.geometry.meshes.size());
     scene_.geometry.meshes.push_back(std::move(mesh));
     Shape checked_shape{std::move(descriptor), state_.material, state_.reverse, mesh_index,
-                        state_.area_light};
+                        state_.area_light,     state_.media};
     if (current_object_) {
         scene_.objects[*current_object_].shapes.push_back(std::move(checked_shape));
     } else {
@@ -2398,6 +2405,16 @@ Interpreter::image_pyramid(const Location &location, const CheckedImageSource &s
     }
 }
 
+namespace {
+struct PresetDefinition {
+    std::string_view name;
+    std::array<float, 3> scattering, absorption;
+};
+constexpr PresetDefinition presets[]{
+#include "../third_party/pbrt/medium_presets.inc"
+};
+} // namespace
+
 void Interpreter::medium(const Directive &directive) {
     if (directive.name == "MediumInterface") {
         for (const auto &medium : directive.arguments) {
@@ -2405,9 +2422,8 @@ void Interpreter::medium(const Directive &directive) {
                 medium_uses_.push_back(&medium);
             }
         }
-        if (!directive.arguments.front().text.empty() || !directive.arguments.back().text.empty()) {
-            unsupported(directive.location, "MediumInterface is outside the structural profile");
-        }
+        state_.media = {directive.arguments.front().text, directive.arguments.back().text,
+                        directive.location};
         return;
     }
 
@@ -2427,8 +2443,38 @@ void Interpreter::medium(const Directive &directive) {
     }
     const string_view type = parameter->values.front().text;
     const bool known = one_of(type, {"homogeneous", "uniformgrid", "rgbgrid", "cloud", "nanovdb"});
-    dependencies(directive, "medium", type);
-    deferred_type(directive, type, known, "medium");
+    if (type != "homogeneous") {
+        dependencies(directive, "medium", type);
+        deferred_type(directive, type, known, "medium");
+        return;
+    }
+    auto descriptor = describe(directive);
+    std::vector schema{Field{"type", "string", 1, false, true},
+                       Field{"preset", "string"},
+                       Field{.name = "sigma_a", .type = "spectral", .allow_spectrum_file = true},
+                       Field{.name = "sigma_s", .type = "spectral", .allow_spectrum_file = true},
+                       Field{.name = "Le", .type = "spectral", .allow_spectrum_file = true},
+                       Field{"scale", "float"},
+                       Field{"Lescale", "float"},
+                       Field{"g", "float"}};
+    const auto *preset = select(directive, "medium", Field{"preset", "string"});
+    if (preset && field_valid(Field{"preset", "string"}, *preset) &&
+        std::ranges::find(presets, preset->values.front().text, &PresetDefinition::name) !=
+            std::end(presets)) {
+        if (std::ranges::any_of(directive.parameters, [](const Parameter &p) {
+                return p.name == "sigma_a" || p.name == "sigma_s";
+            })) {
+            error("unused-parameter", preset->location,
+                  "A recognized medium preset conflicts with explicit coefficients");
+            return;
+        }
+        // Inherited defaults are allowed to be unused by pinned PBRT. Do not
+        // decode coefficient files shadowed by the measured preset.
+        std::erase_if(schema,
+                      [](const Field &f) { return f.name == "sigma_a" || f.name == "sigma_s"; });
+    }
+    validate(descriptor, directive, "medium", schema);
+    scene_.media.push_back(std::move(descriptor));
 }
 
 void Interpreter::visit(const Directive &directive) {

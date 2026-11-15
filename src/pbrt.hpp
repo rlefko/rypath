@@ -151,12 +151,17 @@ struct MaterialBinding {
     std::shared_ptr<const Descriptor> inline_material;
     Location location;
 };
+struct MediumBinding {
+    std::string inside, outside;
+    Location location;
+};
 struct Shape {
     Descriptor descriptor;
     MaterialBinding material;
     bool reverse_orientation = false;
     std::uint32_t mesh_index = 0;
     std::shared_ptr<const Descriptor> area_light;
+    MediumBinding media{};
 };
 struct Object {
     std::string name;
@@ -181,6 +186,8 @@ struct TextureDefinitionRef {
 };
 struct Scene {
     std::vector<Descriptor> options;
+    std::vector<Descriptor> media;
+    std::string camera_medium;
     std::vector<Descriptor> named_materials;
     std::vector<std::shared_ptr<const Descriptor>> inline_materials;
     std::vector<Descriptor> float_constant_textures;
