@@ -1135,6 +1135,8 @@ static bool prepare_scattering(const device wire::Material &m,
     out.wavelength = wavelength;
     out.rgb_table = rgb_table;
     out.table = nullptr;
+    if (!surface_materials_enabled && m.scattering >= 3)
+        return false;
     if (m.scattering >= 3 && a == nullptr)
         return false;
     if (m.scattering == 7 || m.scattering == 8) {
@@ -1216,6 +1218,25 @@ static bool prepare_scattering(const device wire::Material &m,
     out.layered.max_depth = a->max_depth;
     out.layered.samples = a->samples;
     return rypath_layered::valid_parameters(out.layered);
+}
+
+// Function constants must guard the dispatch itself: a runtime material tag
+// otherwise keeps every layered/table branch in legacy-only pipelines, including
+// their shader-validation instrumentation and register requirements.
+static rypath_scattering::Evaluation
+evaluate_scattering(const thread rypath_scattering::Prepared &p, float3 wo, float3 wi, uint seed) {
+    if (surface_materials_enabled)
+        return rypath_scattering::evaluate(p, wo, wi, seed);
+    return p.kind == 2 ? rypath_dielectric::evaluate(p.dielectric, wo, wi)
+                       : rypath_conductor::evaluate(p.conductor, wo, wi);
+}
+
+static rypath_scattering::Sample sample_scattering(const thread rypath_scattering::Prepared &p,
+                                                   float3 wo, float uc, float2 u, uint seed) {
+    if (surface_materials_enabled)
+        return rypath_scattering::sample(p, wo, uc, u, seed);
+    return p.kind == 2 ? rypath_dielectric::sample(p.dielectric, wo, uc, u)
+                       : rypath_conductor::sample(p.conductor, wo, u);
 }
 
 static float scattering_direct(float f_cos, float bsdf_pdf, float light_pdf, bool invisible) {
@@ -1652,7 +1673,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 float factor;
                 if (microfacet) {
                     const auto evaluated =
-                        rypath_scattering::evaluate(scattering, wo, local_light, material_random.y);
+                        evaluate_scattering(scattering, wo, local_light, material_random.y);
                     factor = evaluated.valid ? scattering_direct(evaluated.f * light_cosine,
                                                                  evaluated.pdf, light_pdf, false)
                                              : NAN;
@@ -1739,7 +1760,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                         (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
                         float factor;
                         if (microfacet) {
-                            const auto evaluated = rypath_scattering::evaluate(
+                            const auto evaluated = evaluate_scattering(
                                 scattering, wo, local_receiver, material_random.z);
                             factor = evaluated.valid
                                          ? scattering_direct(
@@ -1799,7 +1820,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 dielectric
                     ? sample_uniform(p, dielectric_lobe_word(p, tables, sample, index, bounce))
                     : u01(material_random.x);
-            const auto continuation = rypath_scattering::sample(
+            const auto continuation = sample_scattering(
                 scattering, wo, lobe,
                 float2(sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y)),
                 material_random.w);
