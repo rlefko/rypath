@@ -78,6 +78,14 @@ static_assert(std::is_trivially_copyable_v<wire::Parameters> &&
               std::is_trivially_copyable_v<wire::Sample>);
 constexpr auto max_index = std::numeric_limits<std::uint32_t>::max();
 
+bool gltf_visibility(const SpectralMaterial &m) {
+    return m.scattering == ScatteringKind::gltf && (!m.gltf.double_sided || m.gltf.alpha_mode != 0);
+}
+bool filtered_visibility(const RenderScene &scene) {
+    return std::ranges::any_of(scene.instance_alpha_roots,
+                               [](auto root) { return root != max_index; }) ||
+           std::ranges::any_of(scene.materials, gltf_visibility);
+}
 using Vec = std::array<double, 3>;
 
 Vec cross(Vec a, Vec b) {
@@ -455,6 +463,14 @@ struct MetalRenderScene::Impl {
                                 texture.vscale, texture.udelta, texture.vdelta, texture.scale,
                                 static_cast<wire::Word>(texture.invert), filter,
                                 texture.max_anisotropy, transfer_offset, image.source_channels});
+            if (texture.gltf_sampler) {
+                auto &packed = textures.back();
+                packed.gltf = 1;
+                packed.wrap = texture.gltf_sampler->wrap_s;
+                packed.wrap_t = texture.gltf_sampler->wrap_t;
+                packed.min_filter = texture.gltf_sampler->min_filter;
+                packed.mag_filter = texture.gltf_sampler->mag_filter;
+            }
         }
         texture_parameters.texture_count = static_cast<wire::Word>(textures.size());
         texture_parameters.level_count = static_cast<wire::Word>(levels.size());
@@ -483,8 +499,9 @@ struct MetalRenderScene::Impl {
         image_texels = upload(device, texels);
         image_transfer = upload(device, transfer);
         if (texture_parameters.texture_count != 0 || !scene.texture_graph.nodes.empty() ||
-            std::ranges::any_of(scene.materials,
-                                [](const auto &m) { return m.table != nullptr; })) {
+            std::ranges::any_of(scene.materials, [](const auto &m) {
+                return m.table != nullptr || m.scattering == ScatteringKind::gltf;
+            })) {
             image_spectra = upload(device, srgb_reconstruction_table());
         } else {
             const std::array<float, 1> empty{};
@@ -506,8 +523,7 @@ struct MetalRenderScene::Impl {
         }
         graph_parameters.node_count = static_cast<wire::Word>(nodes.size());
         graph_parameters.knot_count = static_cast<wire::Word>(values.size());
-        graph_parameters.alpha_enabled = std::ranges::any_of(
-            scene.instance_alpha_roots, [](std::uint32_t root) { return root != max_index; });
+        graph_parameters.alpha_enabled = filtered_visibility(scene);
         graph_parameters.environment_image = scene.environment_image;
         graph_parameters.environment_scale = scene.environment_image_scale;
         if (nodes.empty())
@@ -562,7 +578,8 @@ struct MetalRenderScene::Impl {
                         vertices.push_back(
                             {pack(mesh.positions[v]),
                              pack(mesh.normals.empty() ? GeometryPoint{} : mesh.normals[v]),
-                             pack(mesh.tangents.empty() ? GeometryPoint{} : mesh.tangents[v])});
+                             pack(mesh.tangents.empty() ? GeometryPoint{} : mesh.tangents[v]),
+                             mesh.tangent_signs.empty() ? 1 : mesh.tangent_signs[v]});
                     }
                 }
                 wire::SurfaceTransform packed{};
@@ -770,6 +787,7 @@ struct MetalRenderScene::Impl {
             packed_emissions[i].two_sided = source.two_sided;
             packed_emissions[i].image_texture = source.image_texture;
             packed_emissions[i].image_scale = source.image_scale;
+            packed_emissions[i].gltf_material = source.gltf_material;
         }
         std::vector<wire::Emitter> packed_emitters;
         packed_emitters.reserve(std::max<std::size_t>(1, emitter_count));
@@ -967,35 +985,48 @@ struct MetalRenderScene::Impl {
                 const auto interface_begin = static_cast<wire::Word>(packed_knots.size());
                 for (const auto [wavelength, value] : a.interface_eta.knots)
                     packed_knots.push_back({wavelength, value});
-                const wire::MaterialAuxiliary aux{
-                    a.eta_root,
-                    a.k_root,
-                    a.conductor_reflectance_root,
-                    a.transmittance,
-                    a.transmittance_root,
-                    a.transmission_scale,
-                    a.transmission_scale_root,
-                    interface_begin,
-                    static_cast<wire::Word>(a.interface_eta.knots.size()),
-                    wire::Word(a.interface_eta.extend_endpoints),
-                    a.interface_eta_root,
-                    a.interface_u_roughness,
-                    a.interface_v_roughness,
-                    a.interface_u_roughness_root,
-                    a.interface_v_roughness_root,
-                    a.thickness,
-                    a.thickness_root,
-                    a.albedo,
-                    a.albedo_root,
-                    a.g,
-                    a.g_root,
-                    a.max_depth,
-                    a.samples,
-                    a.first_material,
-                    a.second_material,
-                    a.mix_amount,
-                    a.mix_amount_root,
-                    table_offset};
+                wire::MaterialAuxiliary aux{a.eta_root,
+                                            a.k_root,
+                                            a.conductor_reflectance_root,
+                                            a.transmittance,
+                                            a.transmittance_root,
+                                            a.transmission_scale,
+                                            a.transmission_scale_root,
+                                            interface_begin,
+                                            static_cast<wire::Word>(a.interface_eta.knots.size()),
+                                            wire::Word(a.interface_eta.extend_endpoints),
+                                            a.interface_eta_root,
+                                            a.interface_u_roughness,
+                                            a.interface_v_roughness,
+                                            a.interface_u_roughness_root,
+                                            a.interface_v_roughness_root,
+                                            a.thickness,
+                                            a.thickness_root,
+                                            a.albedo,
+                                            a.albedo_root,
+                                            a.g,
+                                            a.g_root,
+                                            a.max_depth,
+                                            a.samples,
+                                            a.first_material,
+                                            a.second_material,
+                                            a.mix_amount,
+                                            a.mix_amount_root,
+                                            table_offset,
+                                            {}};
+                const auto &g = source.gltf;
+                std::ranges::copy(g.base_color, aux.gltf.base_color);
+                aux.gltf.metallic = g.metallic;
+                aux.gltf.roughness = g.roughness;
+                aux.gltf.normal_scale = g.normal_scale;
+                aux.gltf.alpha_cutoff = g.alpha_cutoff;
+                aux.gltf.alpha_mode = g.alpha_mode;
+                aux.gltf.double_sided = g.double_sided;
+                aux.gltf.base_color_texture = g.base_color_texture;
+                aux.gltf.metallic_roughness_texture = g.metallic_roughness_texture;
+                aux.gltf.normal_texture = g.normal_texture;
+                aux.gltf.emissive_texture = g.emissive_texture;
+                std::ranges::copy(g.emissive, aux.gltf.emissive);
                 constexpr auto words = sizeof(aux) / sizeof(wire::Word);
                 if (words > data_limit - packed_data.size())
                     return "Material parameters exceed the GPU buffer budget";
@@ -1312,14 +1343,16 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 return result;
             }
         }
-        const bool alpha = std::ranges::any_of(
-            scene.instance_alpha_roots, [](std::uint32_t root) { return root != max_index; });
+        const bool alpha = filtered_visibility(scene);
         if (alpha) {
             if (prepared.instances.empty()) {
                 prepared = scene.geometry;
             }
             for (std::size_t i = 0; i < prepared.instances.size(); ++i) {
-                prepared.instances[i].non_opaque = scene.instance_alpha_roots[i] != max_index;
+                prepared.instances[i].non_opaque =
+                    (!scene.instance_alpha_roots.empty() &&
+                     scene.instance_alpha_roots[i] != max_index) ||
+                    gltf_visibility(scene.materials[scene.instance_materials[i]]);
             }
         }
         const auto &geometry_data = prepared.instances.empty() ? scene.geometry : prepared;
@@ -1365,11 +1398,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         }
         const bool features[] = {
             !scene.texture_graph.nodes.empty(),
-            std::ranges::any_of(scene.instance_alpha_roots,
-                                [](auto root) { return root != max_index; }),
+            filtered_visibility(scene),
             std::ranges::any_of(scene.materials,
                                 [](const auto &m) {
-                                    return m.bump_root != max_index || m.normal_map != max_index;
+                                    return m.bump_root != max_index || m.normal_map != max_index ||
+                                           m.scattering == ScatteringKind::gltf;
                                 }),
             scene.environment_image != max_index,
             std::ranges::any_of(scene.area_emissions,
@@ -1381,10 +1414,16 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             std::ranges::any_of(scene.materials,
                                 [](const auto &m) {
                                     return m.scattering >= ScatteringKind::thin_dielectric &&
-                                           m.scattering != ScatteringKind::null_interface;
+                                           m.scattering != ScatteringKind::null_interface &&
+                                           m.scattering != ScatteringKind::gltf;
                                 }),
-            scene.volume_transport || std::ranges::any_of(scene.materials, [](const auto &m) {
-                return m.scattering == ScatteringKind::null_interface;
+            scene.volume_transport || std::ranges::any_of(scene.materials,
+                                                          [](const auto &m) {
+                                                              return m.scattering ==
+                                                                     ScatteringKind::null_interface;
+                                                          }),
+            std::ranges::any_of(scene.materials, [](const auto &m) {
+                return m.scattering == ScatteringKind::gltf;
             })};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)

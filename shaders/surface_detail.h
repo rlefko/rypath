@@ -174,6 +174,75 @@ inline bool triangle(const device wire::SurfaceVertex *vertices,
     return place_frame(xf, frame);
 }
 
+// glTF frames are formed from authored vertex attributes, then placed and
+// orthonormalized. Handedness and backface reversal are independent of PBRT's
+// declaration-frame shading-normal convention above.
+inline float determinant(const device float *m) {
+    return dot(float3(m[0], m[1], m[2]), cross(float3(m[3], m[4], m[5]), float3(m[6], m[7], m[8])));
+}
+inline bool gltf_triangle(const device wire::SurfaceVertex *vertices,
+                          const device wire::SurfaceTransform &xf, const thread uint *indices,
+                          float2 bary, float3 incoming, float3 map, bool mapped, float scale,
+                          thread Frame &frame) {
+    for (uint i = 0; i < 3; ++i)
+        if (indices[i] >= xf.vertex_count)
+            return false;
+    const auto a = vertices[xf.vertex_begin + indices[0]];
+    const auto b = vertices[xf.vertex_begin + indices[1]];
+    const auto c = vertices[xf.vertex_begin + indices[2]];
+    const float3 weights(1 - bary.x - bary.y, bary.x, bary.y);
+    float3 geometric;
+    if (!unit_vector(
+            cross(unpack(b.position) - unpack(a.position), unpack(c.position) - unpack(a.position)),
+            geometric))
+        return false;
+    float3 n = xf.has_normals ? weights.x * unpack(a.normal) + weights.y * unpack(b.normal) +
+                                    weights.z * unpack(c.normal)
+                              : geometric;
+    if (xf.authored_reverse) {
+        n = -n;
+        geometric = -geometric;
+    }
+    if (!unit_vector(transform(xf.placement_normal, transform(xf.shape_normal, geometric)),
+                     frame.geometric_normal) ||
+        !unit_vector(transform(xf.placement_normal, transform(xf.shape_normal, n)), n))
+        return false;
+    float3 t, bitangent;
+    if (xf.has_tangents) {
+        t = weights.x * unpack(a.tangent) + weights.y * unpack(b.tangent) +
+            weights.z * unpack(c.tangent);
+        t = transform(xf.placement, transform(xf.shape, t));
+        if (!unit_vector(t - dot(t, n) * n, t))
+            return false;
+        const float sign = a.tangent_sign * copysign(1.0f, determinant(xf.shape)) *
+                           copysign(1.0f, determinant(xf.placement));
+        bitangent = sign * cross(n, t);
+    } else {
+        if (mapped)
+            return false;
+        coordinate_system(n, t, bitangent);
+    }
+    if (dot(frame.geometric_normal, incoming) > 0) {
+        n = -n;
+        t = -t;
+        bitangent = -bitangent;
+    }
+    if (mapped) {
+        float3 normal(2 * map - 1);
+        normal.xy *= scale;
+        if (!unit_vector(normal, normal) ||
+            !unit_vector(normal.x * t + normal.y * bitangent + normal.z * n, n))
+            return false;
+        if (!unit_vector(t - dot(t, n) * n, t))
+            coordinate_system(n, t, bitangent);
+    }
+    frame.n = n;
+    frame.dpdu = t;
+    frame.dpdv = cross(n, t);
+    frame.dndu = frame.dndv = float3(0);
+    return all(isfinite(n)) && all(isfinite(t));
+}
+
 inline float3 reflect_plane(float3 value, float3 normal) {
     return value - precise::divide(2.0f * dot(value, normal), dot(normal, normal)) * normal;
 }

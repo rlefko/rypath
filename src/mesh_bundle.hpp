@@ -171,11 +171,18 @@ class Writer {
 inline std::vector<std::uint8_t> ply(const GeometryMesh &mesh, std::size_t limit,
                                      std::string_view label = "OBJ",
                                      std::string_view profile = "obj-polygon-v1") {
-    if (!mesh.patches.empty() || !mesh.tangents.empty() || mesh.positions.empty() ||
-        mesh.triangles.empty() || mesh.positions.size() > std::numeric_limits<std::int32_t>::max())
+    if (!mesh.patches.empty() || mesh.positions.empty() || mesh.triangles.empty() ||
+        mesh.positions.size() > std::numeric_limits<std::int32_t>::max())
         throw std::runtime_error(std::string(label) +
                                  " export requires nonempty checked triangle geometry");
     const bool normals = !mesh.normals.empty(), uvs = !mesh.uvs.empty();
+    const bool tangents = !mesh.tangents.empty();
+    if (!mesh.tangent_signs.empty() && !tangents)
+        throw std::runtime_error(std::string(label) +
+                                 " export requires tangents for signed frames");
+    if (tangents && (mesh.tangents.size() != mesh.positions.size() ||
+                     mesh.tangent_signs.size() != mesh.positions.size() || !normals))
+        throw std::runtime_error(std::string(label) + " export requires complete signed tangents");
     if ((normals && mesh.normals.size() != mesh.positions.size()) ||
         (uvs && mesh.uvs.size() != mesh.positions.size()))
         throw std::runtime_error(std::string(label) +
@@ -184,13 +191,18 @@ inline std::vector<std::uint8_t> ply(const GeometryMesh &mesh, std::size_t limit
     header.stream << "ply\nformat binary_little_endian 1.0\ncomment rypath " << profile << "\n"
                   << "element vertex " << mesh.positions.size()
                   << "\nproperty float x\nproperty float y\nproperty float z\n";
+    if (tangents)
+        header.stream << "comment rypath_gltf_tangent_frame_v1\n";
     if (normals)
         header.stream << "property float nx\nproperty float ny\nproperty float nz\n";
     if (uvs)
         header.stream << "property float u\nproperty float v\n";
+    if (tangents)
+        header.stream << "property float tangent_x\nproperty float tangent_y\n"
+                         "property float tangent_z\nproperty float tangent_sign\n";
     header.stream << "element face " << mesh.triangles.size()
                   << "\nproperty list uchar int vertex_indices\nend_header\n";
-    const std::size_t stride = 12 + (normals ? 12 : 0) + (uvs ? 8 : 0);
+    const std::size_t stride = 12 + (normals ? 12 : 0) + (uvs ? 8 : 0) + (tangents ? 16 : 0);
     const auto header_bytes = header.value.size();
     if (header_bytes > limit || mesh.positions.size() > (limit - header_bytes) / stride)
         throw std::runtime_error(std::string(label) + " mesh output limit exceeded");
@@ -211,11 +223,17 @@ inline std::vector<std::uint8_t> ply(const GeometryMesh &mesh, std::size_t limit
     };
     for (std::size_t i = 0; i < mesh.positions.size(); ++i) {
         point(mesh.positions[i]);
+        if (tangents && mesh.tangent_signs[i] != 1 && mesh.tangent_signs[i] != -1)
+            throw std::runtime_error(std::string(label) + " export has an invalid tangent sign");
         if (normals)
             point(mesh.normals[i]);
         if (uvs) {
             real(mesh.uvs[i][0]);
             real(mesh.uvs[i][1]);
+        }
+        if (tangents) {
+            point(mesh.tangents[i]);
+            real(mesh.tangent_signs[i]);
         }
     }
     for (const auto &triangle : mesh.triangles) {

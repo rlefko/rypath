@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "upstream": "https://github.com/KhronosGroup/glTF-Sample-Assets",
+  "revision": "8f492390ddc7a2ae221a1369ef560589cf8c70fb",
+  "coverage": "Selected Triangle glTF and Box GLB only; not full corpus coverage",
+  "assets": [
+    {
+      "model": "Triangle",
+      "entry": "Triangle/glTF/Triangle.gltf",
+      "terms": "CC0-1.0 model; CC-BY-4.0 metadata",
+      "credit": "2017 Marco Hutter",
+      "files": [
+        {
+          "path": "Triangle/glTF/Triangle.gltf",
+          "upstreamPath": "Models/Triangle/glTF/Triangle.gltf",
+          "bytes": 1037,
+          "sha256": "6f4a8a1fbefbac2d0adde0800864279fd98c3f119077380e6840810ed62b6cfc"
+        },
+        {
+          "path": "Triangle/glTF/Triangle.bin",
+          "upstreamPath": "Models/Triangle/glTF/Triangle.bin",
+          "bytes": 44,
+          "sha256": "898ed7f560dca9907a80c98be57fbbc0f3a092d2e3683b964ffcfa75c549ac62"
+        },
+        {
+          "path": "Triangle/LICENSE.md",
+          "upstreamPath": "Models/Triangle/LICENSE.md",
+          "bytes": 770,
+          "sha256": "4903dc013ec4c537537bd8a8446676a635f511fbb12f1d589cbdca958871cb2d"
+        },
+        {
+          "path": "Triangle/metadata.json",
+          "upstreamPath": "Models/Triangle/metadata.json",
+          "bytes": 786,
+          "sha256": "2e4398106ef5dab7f21a4fa947b117b6c1c8787e452809d8cda1c19a6a3391f9"
+        }
+      ]
+    },
+    {
+      "model": "Box",
+      "entry": "Box/glTF-Binary/Box.glb",
+      "terms": "CC-BY-4.0",
+      "credit": "2017 Cesium",
+      "files": [
+        {
+          "path": "Box/glTF-Binary/Box.glb",
+          "upstreamPath": "Models/Box/glTF-Binary/Box.glb",
+          "bytes": 1664,
+          "sha256": "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e"
+        },
+        {
+          "path": "Box/LICENSE.md",
+          "upstreamPath": "Models/Box/LICENSE.md",
+          "bytes": 771,
+          "sha256": "2759bbffe3b8aebe789958875a098045fe4039eb3e2291ef0fd09c65994bdddc"
+        },
+        {
+          "path": "Box/metadata.json",
+          "upstreamPath": "Models/Box/metadata.json",
+          "bytes": 624,
+          "sha256": "f5867d1cb319a739e434cce40177c7da65701e747198eef97da025610eac9af6"
+        }
+      ]
+    }
+  ]
+}

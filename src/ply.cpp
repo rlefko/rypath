@@ -41,7 +41,7 @@ std::size_t scalar_bytes(Scalar type) {
     return widths[static_cast<std::size_t>(type)];
 }
 
-enum class Attribute { ignored, x, y, z, nx, ny, nz, u, v, indices };
+enum class Attribute { ignored, x, y, z, nx, ny, nz, u, v, tx, ty, tz, sign, indices };
 
 struct Property {
     string_view name;
@@ -111,6 +111,8 @@ class Decoder {
     std::size_t mesh_values_ = 0;
     bool has_normals_ = false;
     bool has_uvs_ = false;
+    bool gltf_frame_ = false;
+    bool has_tangents_ = false;
     GeometryMesh mesh_;
     std::string unsupported_polygon_;
 
@@ -200,6 +202,10 @@ void Decoder::read_header() {
     while (true) {
         auto line = read_line();
         const auto command = token(line);
+        if (command == "comment" && token(line) == "rypath_gltf_tangent_frame_v1") {
+            gltf_frame_ = true;
+            continue;
+        }
         if (command == "comment" || command == "obj_info" || command.empty()) {
             continue;
         }
@@ -273,6 +279,12 @@ void Decoder::identify_attributes() {
     };
     bind(std::array{"x", "y", "z"}, Attribute::x, true);
     has_normals_ = bind(std::array{"nx", "ny", "nz"}, Attribute::nx);
+    if (gltf_frame_) {
+        has_tangents_ = bind(std::array{"tangent_x", "tangent_y", "tangent_z", "tangent_sign"},
+                             Attribute::tx, true);
+        if (!has_normals_)
+            fail("Signed tangent frames require vertex normals");
+    }
     bool any_uv = false;
     for (const auto names :
          {std::array{"u", "v"}, std::array{"s", "t"}, std::array{"texture_u", "texture_v"},
@@ -483,7 +495,7 @@ void Decoder::read_indices(Scalar type, std::size_t count) {
 
 void Decoder::read_row(const Element &element) {
     // Retain the numeric slots selected by the header in semantic component order.
-    std::array<float, 8> vertex{};
+    std::array<float, 12> vertex{};
     for (const auto &property : element.properties) {
         if (property.list_count) {
             const auto count = list_length(scalar(*property.list_count), property.type);
@@ -510,6 +522,10 @@ void Decoder::read_row(const Element &element) {
         if (has_normals_) {
             mesh_.normals.push_back({vertex[3], vertex[4], vertex[5]});
         }
+        if (has_tangents_) {
+            mesh_.tangents.push_back({vertex[8], vertex[9], vertex[10]});
+            mesh_.tangent_signs.push_back(vertex[11]);
+        }
         if (has_uvs_) {
             mesh_.uvs.push_back({vertex[6], vertex[7]});
         }
@@ -532,6 +548,11 @@ PlyMesh Decoder::decode() {
     if (has_uvs_) {
         mesh_.uvs.reserve(vertex_count_);
         mesh_values_ += vertex_count_ * 2;
+    }
+    if (has_tangents_) {
+        mesh_.tangents.reserve(vertex_count_);
+        mesh_.tangent_signs.reserve(vertex_count_);
+        mesh_values_ += vertex_count_ * 4;
     }
     for (const auto &element : elements_) {
         if (element.properties.empty()) {

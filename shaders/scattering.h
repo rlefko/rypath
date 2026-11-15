@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "gltf_bsdf.h"
 #include "image_texture.h"
 #include "layered.h"
 #include "table_bsdf.h"
@@ -13,6 +14,7 @@ struct Prepared {
     rypath_conductor::Parameters conductor;
     rypath_dielectric::Parameters dielectric;
     rypath_layered::Parameters layered;
+    rypath_gltf::Parameters gltf;
     const device uint *table;
     const device float *rgb_table;
 };
@@ -21,13 +23,15 @@ inline float spectral_value(float3 value, bool rgb, const thread Prepared &p) {
 }
 inline bool delta_only(const thread Prepared &p) {
     return (p.kind == 1 && p.conductor.smooth) || (p.kind == 2 && p.dielectric.smooth) ||
-           p.kind == 3;
+           p.kind == 3 || (p.kind == 11 && p.gltf.alpha == 0 && p.gltf.specular_probability == 1);
 }
 inline bool both_hemispheres(const thread Prepared &p) {
     return p.kind == 2 || p.kind == 3 || p.kind == 4 || p.kind == 8;
 }
 inline Evaluation evaluate(const thread Prepared &p, float3 wo, float3 wi, uint seed) {
     switch (p.kind) {
+    case 11:
+        return rypath_gltf::evaluate(p.gltf, wo, wi);
     case 0:
         return rypath_transmission::diffuse_evaluate(p.reflectance, 0, wo, wi);
     case 1:
@@ -52,6 +56,8 @@ inline Evaluation evaluate(const thread Prepared &p, float3 wo, float3 wi, uint 
 }
 inline Sample sample(const thread Prepared &p, float3 wo, float uc, float2 u, uint seed) {
     switch (p.kind) {
+    case 11:
+        return rypath_gltf::sample(p.gltf, wo, uc, u);
     case 0:
         return rypath_transmission::diffuse_sample(p.reflectance, 0, wo, uc, u);
     case 1:

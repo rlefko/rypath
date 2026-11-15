@@ -194,3 +194,28 @@ The selected external OpenEXR `comp_zip.exr` asset is pinned to upstream
 size, hash, upstream path and project-authored wrapper boundary are recorded in
 the [HDR fixture manifest](../tests/fixtures/pbrt-render/hdr-io/README.md).
 The small independently generated HALF, FLOAT and RGBE images are owned fixtures.
+
+## Static glTF decoding and tangent generation
+
+The glTF adapter statically includes unmodified cgltf at
+`85cd62382dfea638278962690cf515023f33ed00` (header version 1.15, newer than its
+v1.15 tag), under retained MIT terms. The [cgltf record](../third_party/cgltf/README.md)
+contains shipped hashes and the memory-only/numeric adaptation boundary.
+The project owns strict JSON, container and URI validation, immutable snapshots,
+range-checked accessor decoding and selected-scene semantics. Neither library
+file I/O nor `cgltf_validate()` forms the safety boundary.
+
+Unmodified MikkTSpace header version 1.0 at
+`3e895b49d05ea07e4c2133156cfa94369e19e409` supplies missing normal-map tangent
+frames under its retained zlib-style notices. Its
+[record](../third_party/mikktspace/README.md) documents checked allocations and
+per-corner signed-frame preservation. Generation uses native glTF UVs and bounded
+work. These dependencies add no build/runtime network access.
+
+The BSDF model references Khronos glTF-Sample-Renderer
+`623715005b00f5dba155e7448706bf87202e553a`; the RGB-to-spectral interpretation and
+path-coverage policy are project adaptations, described in the
+[glTF profile](gltf-import.md). Two tiny unmodified Khronos sample assets at
+`8f492390ddc7a2ae221a1369ef560589cf8c70fb` retain their separate model/metadata
+licenses and complete hashes in the [fixture manifest](../tests/fixtures/gltf/external/README.md).
+No full corpus is fetched by the build.

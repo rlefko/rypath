@@ -46,6 +46,7 @@ constant bool conductor_enabled [[function_constant(5)]];
 constant bool dielectric_enabled [[function_constant(6)]];
 constant bool surface_materials_enabled [[function_constant(7)]];
 constant bool media_enabled [[function_constant(8)]];
+constant bool gltf_enabled [[function_constant(9)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -395,6 +396,7 @@ struct SurfacePoint {
     float3 position;
     float3 error;
     float3 geometric_normal;
+    float3 winding_normal;
     float3 shading_normal;
     float inverse_area_pdf;
     float world_extent;
@@ -433,6 +435,7 @@ static bool triangle_surface_point(float2 uv, const device wire::Instance &insta
     if (instance.reverse_orientation != 0) {
         point.geometric_normal = -point.geometric_normal;
     }
+    point.winding_normal = point.geometric_normal;
     point.shading_normal = point.geometric_normal;
     if (instance.normal_begin != wire::no_normals) {
         const uint begin = instance.normal_begin;
@@ -509,6 +512,7 @@ static bool patch_surface_point(float2 uv, const device wire::Instance &instance
     if (instance.reverse_orientation != 0) {
         point.geometric_normal = -point.geometric_normal;
     }
+    point.winding_normal = point.geometric_normal;
     point.shading_normal = point.geometric_normal;
     if (instance.normal_begin != wire::no_normals) {
         float3 n[4];
@@ -848,7 +852,49 @@ surface_texture_context(const device wire::Instance &instance, uint primitive, u
     return true;
 }
 
+static const device wire::MaterialAuxiliary *
+material_auxiliary(const device wire::Material &m, const device uint *data, uint count) {
+    constexpr uint size = sizeof(wire::MaterialAuxiliary) / sizeof(uint);
+    return m.auxiliary <= count && size <= count - m.auxiliary
+               ? reinterpret_cast<const device wire::MaterialAuxiliary *>(data + m.auxiliary)
+               : nullptr;
+}
+[[clang::noinline]] static bool gltf_texture(uint index, const thread GraphResources &graph,
+                                             graph_wire::Context ctx, bool footprints,
+                                             thread float4 &rgba) {
+    rgba = float4(1);
+    if (index == 0xffffffffu)
+        return true;
+    if (index >= graph.images.parameters->texture_count)
+        return false;
+    const device auto &t = graph.images.textures[index];
+    if (!t.gltf || t.level_begin > graph.images.parameters->level_count ||
+        t.level_count > graph.images.parameters->level_count - t.level_begin)
+        return false;
+    rgba = rypath_image::gltf_rgba(t, graph.images.levels, graph.images.texels,
+                                   graph.images.parameters->texel_word_count, float2(ctx.u, ctx.v),
+                                   footprints ? float2(ctx.dudx, ctx.dvdx) : float2(0),
+                                   footprints ? float2(ctx.dudy, ctx.dvdy) : float2(0));
+    return all(isfinite(rgba)) && all(rgba >= 0);
+}
+[[clang::noinline]] static bool gltf_coverage(const device wire::GltfMaterial &g,
+                                              const thread GraphResources &graph,
+                                              graph_wire::Context ctx, thread float &coverage) {
+    coverage = 1;
+    if (g.alpha_mode == 0)
+        return true;
+    float4 base;
+    if (!gltf_texture(g.base_color_texture, graph, ctx, false, base))
+        return false;
+    coverage = base.w * g.base_color[3];
+    if (g.alpha_mode == 1)
+        coverage = coverage >= g.alpha_cutoff ? 1.0f : 0.0f;
+    return isfinite(coverage) && coverage >= 0 && coverage <= 1;
+}
+
 struct SurfaceAlpha {
+    const device wire::Material *materials;
+    const device uint *material_data;
     const device wire::Instance *instances;
     const device wire::Point *positions;
     const device wire::Triangle *triangles;
@@ -872,7 +918,33 @@ struct SurfaceAlpha {
         const uint kind = patch ? wire::patch_primitive : wire::triangle_primitive;
         if (primitive >= (patch ? instance.patch_count : instance.triangle_count))
             return {false, false};
-        if (instance.alpha_root == 0xffffffffu)
+        if (instance.material >= parameters->material_count)
+            return {false, false};
+        const device auto &material = materials[instance.material];
+        const device auto *aux =
+            gltf_enabled && material.scattering == 11
+                ? material_auxiliary(material, material_data, parameters->material_data_words)
+                : nullptr;
+        if (gltf_enabled && material.scattering == 11 && aux == nullptr)
+            return {false, false};
+        if (aux && !aux->gltf.double_sided) {
+            if (patch)
+                return {false, false};
+            const auto tri = triangles[instance.triangle_begin + primitive];
+            const float3 a = unpack(positions[instance.vertex_begin + tri.vertices[0]]);
+            const float3 b = unpack(positions[instance.vertex_begin + tri.vertices[1]]);
+            const float3 c = unpack(positions[instance.vertex_begin + tri.vertices[2]]);
+            float3 normal =
+                cross(texture_world_vector(instance, b - a), texture_world_vector(instance, c - a));
+            if (instance.reverse_orientation)
+                normal = -normal;
+            const float facing = dot(normal, incoming.direction);
+            if (!isfinite(facing))
+                return {false, false};
+            if (!(facing < 0))
+                return {false, true};
+        }
+        if (instance.alpha_root == 0xffffffffu && (!aux || aux->gltf.alpha_mode == 0))
             return {true, true};
         SurfacePoint point;
         if (!surface_point(uv, kind, instance, primitive, positions, triangles, patches, normals,
@@ -884,6 +956,15 @@ struct SurfaceAlpha {
                                      patches, uvs, frames, *graph.images.parameters, *parameters,
                                      *sample, incoming.direction, false, context, dpdu, dpdv))
             return {false, false};
+        if (aux) {
+            float coverage;
+            if (!gltf_coverage(aux->gltf, graph, context, coverage))
+                return {false, false};
+            return {coverage >= 1 ||
+                        (coverage > 0 &&
+                         alpha_uniform(incoming.origin, incoming.direction, t) < coverage),
+                    true};
+        }
         // PBRT tests shape alpha before ObjectInstance transforms the accepted
         // interaction. Reconstruct that definition-frame point directly to
         // preserve small coordinates under large placement translations.
@@ -1036,7 +1117,8 @@ static bool apply_surface_detail(
     const device wire::Point2 *texture_uvs, const device wire::SurfaceVertex *vertices,
     const device wire::SurfaceTransform *transforms, const device wire::Material &material,
     GraphResources graph, graph_wire::Context context, float wavelength, thread SurfacePoint &point,
-    thread rypath_surface_detail::Frame &frame, bool retain_frame) {
+    thread rypath_surface_detail::Frame &frame, bool retain_frame,
+    const device wire::MaterialAuxiliary *aux, float3 incoming) {
     const device auto &xf = transforms[ordinal];
     if (xf.vertex_begin > graph.parameters->surface_vertex_count ||
         xf.vertex_count > graph.parameters->surface_vertex_count - xf.vertex_begin)
@@ -1053,6 +1135,19 @@ static bool apply_surface_detail(
             !texture_vertex_uv(texture_uvs, instance.uv_begin, indices[i],
                                graph.images.parameters->uv_count, st[i]))
             return false;
+    }
+    if (gltf_enabled && material.scattering == 11) {
+        if (!aux || is_patch)
+            return false;
+        float4 map;
+        if (!gltf_texture(aux->gltf.normal_texture, graph, context, true, map) ||
+            !rypath_surface_detail::gltf_triangle(vertices, xf, indices, uv, incoming, map.xyz,
+                                                  aux->gltf.normal_texture != 0xffffffffu,
+                                                  aux->gltf.normal_scale, frame))
+            return false;
+        point.geometric_normal = frame.geometric_normal;
+        point.shading_normal = frame.n;
+        return true;
     }
     if (!(is_patch ? rypath_surface_detail::patch(vertices, xf, indices, uv, st, frame)
                    : rypath_surface_detail::triangle(vertices, xf, indices, uv, st, frame)))
@@ -1081,9 +1176,43 @@ static bool apply_surface_detail(
 // PBRT's special invisible light behavior; an all-zero image emits nothing.
 static bool area_radiance(const device wire::AreaEmission &emission,
                           const device wire::Instance &instance, uint primitive, uint kind,
-                          float2 uv, thread const SurfacePoint &point, SurfaceAlpha resources,
+                          float2 uv, thread SurfacePoint &point, SurfaceAlpha resources,
                           rypath_image_light::Images images, thread float &radiance) {
     radiance = emission.radiance[dense_index(resources.sample->wavelength)];
+    if (gltf_enabled && emission.gltf_material != 0xffffffffu) {
+        point.geometric_normal = point.winding_normal;
+        if (emission.gltf_material >= resources.parameters->material_count)
+            return false;
+        const device auto &material = resources.materials[emission.gltf_material];
+        const device auto *aux = material_auxiliary(material, resources.material_data,
+                                                    resources.parameters->material_data_words);
+        if (!aux || material.scattering != 11)
+            return false;
+        graph_wire::Context ctx{};
+        float3 du, dv;
+        if (!surface_texture_context(instance, primitive, kind, uv, point, resources.positions,
+                                     resources.triangles, resources.patches, resources.uvs,
+                                     resources.frames, *resources.graph.images.parameters,
+                                     *resources.parameters, *resources.sample,
+                                     resources.incoming.direction, false, ctx, du, dv))
+            return false;
+        float coverage;
+        if (!gltf_coverage(aux->gltf, resources.graph, ctx, coverage))
+            return false;
+        if (coverage == 0) {
+            radiance = 0;
+            return true;
+        }
+        if (coverage != 1)
+            return false;
+        float4 rgb;
+        if (!gltf_texture(aux->gltf.emissive_texture, resources.graph, ctx, false, rgb))
+            return false;
+        rgb.xyz *= float3(aux->gltf.emissive[0], aux->gltf.emissive[1], aux->gltf.emissive[2]);
+        radiance = emission.image_scale * rypath_image_light::illuminant_spectrum(
+                                              images, rgb.xyz, resources.sample->wavelength);
+        return isfinite(radiance) && radiance >= 0;
+    }
     const bool masked =
         alpha_enabled && instance.alpha_root != 0xffffffffu && instance.invisible_emitter == 0u;
     if (!masked && !(area_image_enabled && emission.image_texture != 0xffffffffu))
@@ -1234,13 +1363,6 @@ static bool parameter_value(uint root, float fallback, const thread GraphResourc
     return (root == 0xffffffffu || graph.evaluate(root, context, wavelength, value)) &&
            isfinite(value);
 }
-static const device wire::MaterialAuxiliary *
-material_auxiliary(const device wire::Material &m, const device uint *data, uint count) {
-    constexpr uint size = sizeof(wire::MaterialAuxiliary) / sizeof(uint);
-    return m.auxiliary <= count && size <= count - m.auxiliary
-               ? reinterpret_cast<const device wire::MaterialAuxiliary *>(data + m.auxiliary)
-               : nullptr;
-}
 static bool prepare_scattering(const device wire::Material &m,
                                const device wire::MaterialAuxiliary *a, float rho,
                                const device wire::SpectralKnot *knots, constant wire::Parameters &p,
@@ -1254,9 +1376,20 @@ static bool prepare_scattering(const device wire::Material &m,
     out.wavelength = wavelength;
     out.rgb_table = rgb_table;
     out.table = nullptr;
-    if (!surface_materials_enabled && m.scattering >= 3)
-        return false;
     if (m.scattering >= 3 && a == nullptr)
+        return false;
+    if (gltf_enabled && m.scattering == 11) {
+        float4 base, mr;
+        if (!gltf_texture(a->gltf.base_color_texture, graph, ctx, true, base) ||
+            !gltf_texture(a->gltf.metallic_roughness_texture, graph, ctx, true, mr))
+            return false;
+        const float3 rgb =
+            base.xyz * float3(a->gltf.base_color[0], a->gltf.base_color[1], a->gltf.base_color[2]);
+        const float color = rypath_image::spectrum(rgb, wavelength, rgb_table);
+        return rypath_gltf::prepare(color, a->gltf.metallic * mr.z, a->gltf.roughness * mr.y,
+                                    out.gltf);
+    }
+    if (!surface_materials_enabled && m.scattering >= 3)
         return false;
     if (m.scattering == 7 || m.scattering == 8) {
         if (a->table_offset >= p.material_data_words)
@@ -1344,6 +1477,8 @@ static bool prepare_scattering(const device wire::Material &m,
 // their shader-validation instrumentation and register requirements.
 static rypath_scattering::Evaluation
 evaluate_scattering(const thread rypath_scattering::Prepared &p, float3 wo, float3 wi, uint seed) {
+    if (gltf_enabled && p.kind == 11)
+        return rypath_gltf::evaluate(p.gltf, wo, wi);
     if (surface_materials_enabled)
         return rypath_scattering::evaluate(p, wo, wi, seed);
     return p.kind == 2 ? rypath_dielectric::evaluate(p.dielectric, wo, wi)
@@ -1352,6 +1487,8 @@ evaluate_scattering(const thread rypath_scattering::Prepared &p, float3 wo, floa
 
 static rypath_scattering::Sample sample_scattering(const thread rypath_scattering::Prepared &p,
                                                    float3 wo, float uc, float2 u, uint seed) {
+    if (gltf_enabled && p.kind == 11)
+        return rypath_gltf::sample(p.gltf, wo, uc, u);
     if (surface_materials_enabled)
         return rypath_scattering::sample(p, wo, uc, u, seed);
     return p.kind == 2 ? rypath_dielectric::sample(p.dielectric, wo, uc, u)
@@ -1599,9 +1736,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         &graph_p,
         {image_textures, image_levels, image_texels, image_transfer, image_spectra, &texture_p}};
     SurfaceAlpha alpha{
-        instances,      positions,        triangles,          patches, normals, texture_uvs,
-        texture_frames, surface_vertices, surface_transforms, &p,      &sample, graph,
-        incoming};
+        materials, material_data, instances,      positions,        triangles,          patches,
+        normals,   texture_uvs,   texture_frames, surface_vertices, surface_transforms, &p,
+        &sample,   graph,         incoming};
     const rypath_image_light::Images light_images{image_textures, image_levels,  image_texels,
                                                   image_transfer, image_spectra, illuminant,
                                                   &texture_p};
@@ -1876,9 +2013,9 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         const device wire::Material &material = materials[material_index];
         const bool dielectric = dielectric_enabled && material.scattering == 2u;
-        const bool microfacet =
-            (conductor_enabled || dielectric_enabled || surface_materials_enabled) &&
-            material.scattering != 0;
+        const bool microfacet = (conductor_enabled || dielectric_enabled ||
+                                 surface_materials_enabled || gltf_enabled) &&
+                                material.scattering != 0;
         const uint4 material_random =
             philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
                          rypath::sampling_contract::material_local_block(bounce)),
@@ -1929,10 +2066,12 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                                        material.normal_map != 0xffffffffu);
         rypath_surface_detail::Frame shading_frame;
         if ((detail || microfacet) &&
-            !apply_surface_detail(hit.instance_id, instance, hit.primitive_id, kind, hit_uv,
-                                  triangles, patches, texture_uvs, surface_vertices,
-                                  surface_transforms, material, graph, texture_context,
-                                  sample.wavelength, point, shading_frame, microfacet)) {
+            !apply_surface_detail(
+                hit.instance_id, instance, hit.primitive_id, kind, hit_uv, triangles, patches,
+                texture_uvs, surface_vertices, surface_transforms, material, graph, texture_context,
+                sample.wavelength, point, shading_frame, microfacet,
+                material_auxiliary(material, material_data, p.material_data_words),
+                incoming.direction)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -2073,7 +2212,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             const bool same_triangle = !patch_hit && !patch_light &&
                                        emitter.instance == hit.instance_id &&
                                        emitter.primitive == hit.primitive_id;
-            if ((Le > 0.0f || (area_image_enabled && emission.image_texture != 0xffffffffu)) &&
+            if ((Le > 0.0f || (area_image_enabled && emission.image_texture != 0xffffffffu) ||
+                 (gltf_enabled && emission.gltf_material != 0xffffffffu)) &&
                 !same_triangle) {
                 SurfacePoint target;
                 const float2 light_uv = patch_light ? patch_sample_uv(light_words.z, light_words.w)
@@ -2174,7 +2314,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         float continuation_cosine = 0;
         if (microfacet) {
             const float lobe =
-                dielectric
+                (dielectric || material.scattering == 11)
                     ? sample_uniform(p, dielectric_lobe_word(p, tables, sample, index, bounce))
                     : u01(material_random.x);
             const auto continuation = sample_scattering(

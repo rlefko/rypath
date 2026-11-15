@@ -113,6 +113,9 @@ std::string validate_geometry(const GeometryData &geometry) {
         if (!mesh.tangents.empty() && mesh.tangents.size() != mesh.positions.size()) {
             return mesh_name + " must have one tangent per vertex";
         }
+        if (!mesh.tangent_signs.empty() && (mesh.tangent_signs.size() != mesh.positions.size() ||
+                                            mesh.tangents.empty() || mesh.normals.empty()))
+            return mesh_name + " requires complete normals, tangents, and tangent signs";
         for (std::size_t vertex = 0; vertex < mesh.positions.size(); ++vertex) {
             if (!finite(mesh.positions[vertex])) {
                 return mesh_name + " vertex " + std::to_string(vertex) + " is nonfinite";
@@ -122,6 +125,15 @@ std::string validate_geometry(const GeometryData &geometry) {
             }
             if (!mesh.tangents.empty() && !finite(mesh.tangents[vertex])) {
                 return mesh_name + " tangent " + std::to_string(vertex) + " is nonfinite";
+            }
+            if (!mesh.tangent_signs.empty()) {
+                const auto n = mesh.normals[vertex], t = mesh.tangents[vertex];
+                const double cx = double(n.y) * t.z - double(n.z) * t.y;
+                const double cy = double(n.z) * t.x - double(n.x) * t.z;
+                const double cz = double(n.x) * t.y - double(n.y) * t.x;
+                if ((mesh.tangent_signs[vertex] != 1 && mesh.tangent_signs[vertex] != -1) ||
+                    !(cx * cx + cy * cy + cz * cz > 0))
+                    return mesh_name + " has an invalid signed tangent frame";
             }
             if (!mesh.uvs.empty() &&
                 (!std::isfinite(mesh.uvs[vertex][0]) || !std::isfinite(mesh.uvs[vertex][1]))) {
@@ -135,6 +147,9 @@ std::string validate_geometry(const GeometryData &geometry) {
                 return mesh_name + " triangle " + std::to_string(primitive) +
                        " has an out-of-range vertex index";
             }
+            if (!mesh.tangent_signs.empty() && (mesh.tangent_signs[a] != mesh.tangent_signs[b] ||
+                                                mesh.tangent_signs[a] != mesh.tangent_signs[c]))
+                return mesh_name + " triangle has inconsistent tangent signs";
             if (zero_area(mesh.positions[a], mesh.positions[b], mesh.positions[c])) {
                 return mesh_name + " triangle " + std::to_string(primitive) + " has zero area";
             }

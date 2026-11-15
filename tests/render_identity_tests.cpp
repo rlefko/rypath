@@ -21,7 +21,7 @@ void identity_checks() {
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
     // the 3420-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "2601d5a4e5181a0e21d06abb3680a5667ffafa6e4898f4dbad31be2d07fd79f1",
+                "0f9e949a1842d3b5f0540422652fab61e35ec03f4f19c213a0163a59a9eae652",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -98,13 +98,49 @@ void identity_checks() {
     scene.texture_graph.nodes.push_back({});
     scene.media.push_back({});
     scene.instance_surface_transforms.push_back({});
+    scene.area_emissions.push_back({});
     const auto populated = render_identity(scene, settings);
     auto deep = [&](auto mutate, std::string_view name) {
         auto copy = scene;
         mutate(copy);
         require(render_identity(copy, settings) != populated, name);
     };
+    deep([](auto &s) { s.area_emissions[0].gltf_material = 0; }, "glTF emitter binding");
+    deep(
+        [](auto &s) {
+            auto i = std::make_shared<ImagePyramid>(*s.image_textures[0].image);
+            i->gltf = true;
+            s.image_textures[0].image = i;
+        },
+        "glTF image policy");
     deep([](auto &s) { s.geometry.meshes[0].positions[0].z += 1; }, "vertex payload");
+    deep([](auto &s) { s.geometry.meshes[0].tangent_signs = {-1}; }, "tangent handedness");
+    deep([](auto &s) { s.materials[0].gltf.base_color[0] = .4f; }, "glTF base color");
+    deep([](auto &s) { s.materials[0].gltf.base_color[3] = .4f; }, "glTF opacity");
+    deep([](auto &s) { s.materials[0].gltf.metallic = .3f; }, "glTF metallic");
+    deep([](auto &s) { s.materials[0].gltf.roughness = .3f; }, "glTF roughness");
+    deep([](auto &s) { s.materials[0].gltf.normal_scale = .3f; }, "glTF normal scale");
+    deep([](auto &s) { s.materials[0].gltf.alpha_mode = 1; }, "glTF alpha mode");
+    deep([](auto &s) { s.materials[0].gltf.alpha_cutoff = .3f; }, "glTF alpha cutoff");
+    deep([](auto &s) { s.materials[0].gltf.double_sided = true; }, "glTF sidedness");
+    deep([](auto &s) { s.materials[0].gltf.base_color_texture = 0; }, "glTF base image");
+    deep([](auto &s) { s.materials[0].gltf.metallic_roughness_texture = 0; }, "glTF data image");
+    deep([](auto &s) { s.materials[0].gltf.normal_texture = 0; }, "glTF normal image");
+    deep([](auto &s) { s.materials[0].gltf.emissive_texture = 0; }, "glTF emissive image");
+    deep([](auto &s) { s.materials[0].gltf.emissive[1] = .3f; }, "glTF emission");
+    deep([](auto &s) { s.image_textures[0].gltf_sampler = GltfSampler{}; },
+         "glTF sampler presence");
+    for (auto field : {&GltfSampler::wrap_s, &GltfSampler::wrap_t, &GltfSampler::min_filter,
+                       &GltfSampler::mag_filter}) {
+        auto a = scene, b = scene;
+        a.image_textures[0].gltf_sampler = GltfSampler{};
+        GltfSampler sampler{};
+        ++(sampler.*field);
+        b.image_textures[0].gltf_sampler = sampler;
+        require(render_identity(a, settings) != render_identity(b, settings),
+                "glTF sampler payload");
+    }
+
     deep([](auto &s) { s.geometry.meshes[0].normals[0].y += 1; }, "normal payload");
     deep([](auto &s) { s.geometry.meshes[0].uvs[0][1] += 1; }, "UV payload");
     deep([](auto &s) { ++s.geometry.meshes[0].triangles[0][2]; }, "triangle payload");

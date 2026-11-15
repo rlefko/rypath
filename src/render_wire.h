@@ -83,6 +83,10 @@ struct ImageTexture {
     float max_anisotropy;
     Word transfer_offset = 0;
     Word channels = 3;
+    Word gltf = 0;
+    Word wrap_t = 10497;
+    Word min_filter = 9987;
+    Word mag_filter = 9729;
 };
 struct TextureParameters {
     Word texture_count;
@@ -128,6 +132,13 @@ struct Material {
     Word remap_roughness = 1;
     Word auxiliary = 0xffffffffu; // Word offset in the material-data buffer.
 };
+struct GltfMaterial {
+    float base_color[4];
+    float metallic, roughness, normal_scale, alpha_cutoff;
+    Word alpha_mode, double_sided;
+    Word base_color_texture, metallic_roughness_texture, normal_texture, emissive_texture;
+    float emissive[3];
+};
 struct MaterialAuxiliary {
     Word eta_root, k_root, conductor_reflectance_root;
     float transmittance;
@@ -148,6 +159,7 @@ struct MaterialAuxiliary {
     float mix_amount;
     Word mix_amount_root;
     Word table_offset;
+    GltfMaterial gltf;
 };
 struct SpectralKnot {
     float wavelength;
@@ -182,11 +194,13 @@ struct AreaEmission {
     Word two_sided;
     Word image_texture = 0xffffffffu;
     float image_scale = 1;
+    Word gltf_material = 0xffffffffu;
 };
 struct SurfaceVertex {
     Point position;
     Point normal;
     Point tangent;
+    float tangent_sign = 1;
 };
 struct SurfaceTransform {
     float shape[9];
@@ -274,7 +288,7 @@ static_assert(sizeof(Patch) == 16 && alignof(Patch) == 4, "render patch layout")
 static_assert(sizeof(Point2) == 8 && alignof(Point2) == 4, "texture coordinate layout");
 static_assert(sizeof(TextureFrame) == 24 && alignof(TextureFrame) == 4, "texture frame layout");
 static_assert(sizeof(TextureLevel) == 12 && alignof(TextureLevel) == 4, "texture level layout");
-static_assert(sizeof(ImageTexture) == 56 && alignof(ImageTexture) == 4 &&
+static_assert(sizeof(ImageTexture) == 72 && alignof(ImageTexture) == 4 &&
                   __builtin_offsetof(ImageTexture, texel_format) == 12 &&
                   __builtin_offsetof(ImageTexture, uscale) == 16 &&
                   __builtin_offsetof(ImageTexture, filter) == 40 &&
@@ -296,7 +310,8 @@ static_assert(sizeof(Material) == 124 && alignof(Material) == 4 &&
                   __builtin_offsetof(Material, u_roughness) == 100 &&
                   __builtin_offsetof(Material, remap_roughness) == 116,
               "render material layout");
-static_assert(sizeof(MaterialAuxiliary) == 112 && alignof(MaterialAuxiliary) == 4,
+static_assert(sizeof(GltfMaterial) == 68 && sizeof(MaterialAuxiliary) == 180 &&
+                  alignof(MaterialAuxiliary) == 4,
               "material auxiliary layout");
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
@@ -314,10 +329,10 @@ static_assert(sizeof(Instance) == 108 && alignof(Instance) == 4 &&
 static_assert(sizeof(Medium) == 5656 && alignof(Medium) == 4 &&
                   __builtin_offsetof(Medium, g) == 5652,
               "homogeneous medium layout");
-static_assert(sizeof(AreaEmission) == 1896 && alignof(AreaEmission) == 4 &&
+static_assert(sizeof(AreaEmission) == 1900 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
               "render area emission layout");
-static_assert(sizeof(SurfaceVertex) == 36 && sizeof(SurfaceTransform) == 180 &&
+static_assert(sizeof(SurfaceVertex) == 40 && sizeof(SurfaceTransform) == 180 &&
                   sizeof(TextureGraphParameters) == 104,
               "texture graph and surface layout");
 static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&

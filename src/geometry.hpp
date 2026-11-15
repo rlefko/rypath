@@ -30,6 +30,8 @@ struct GeometryMesh {
     // Tensor-product corner order: p00, p10, p01, p11 (cyclic PLY 0,1,3,2).
     std::vector<std::array<std::uint32_t, 4>> patches{};
     std::vector<GeometryPoint> tangents{};
+    // Explicit glTF tangent-frame handedness, one +1/-1 per vertex when present.
+    std::vector<float> tangent_signs{};
 };
 
 enum class PrimitiveKind : std::uint32_t { triangle = 1, bilinear_patch = 2 };

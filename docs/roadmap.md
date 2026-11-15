@@ -107,8 +107,10 @@ clarifies the work; completion is recorded in [status](status.md).
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented
     material approximations and portable PBRT bundles. The STL change adds bounded
     ASCII/binary triangles, explicit vendor-color interpretation and Materialise
-    coverage. Static glTF/GLB, broader OBJ/MTL/STL profiles and further PLY variants
-    remain. See [STL validation](stl-validation.md).
+    coverage. The static glTF/GLB change adds selected-scene triangles and explicit
+    metallic-roughness/texture/alpha rendering extensions; see the [glTF profile](gltf-import.md).
+    Broader mesh profiles, glTF animation/extensions and further PLY variants remain.
+    See [STL validation](stl-validation.md).
 34. **Remaining surface models:** hair/curves, subsurface transport, arbitrary
     layered stacks and further lighting/MIS, with independent numerical comparisons.
 35. **Resumable rendering (merged in PR #33):** exact raw checkpoints, compatible-build/device

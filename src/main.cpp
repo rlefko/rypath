@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "gltf.hpp"
 #include "image_output.hpp"
 #include "metal_backend.hpp"
 #include "metal_render.hpp"
@@ -100,6 +101,49 @@ int import_obj(const ObjCommand &command) {
     std::cout << "OBJ conversion: " << (status == 0 ? "supported" : "rejected") << '\n';
     if (status == 0 && !command.output.empty())
         std::cout << "Wrote OBJ bundle: " << command.output.string() << '\n';
+    return status;
+}
+
+int import_gltf(int argc, char *argv[]) {
+    const bool convert = std::string_view(argv[1]) == "--convert-gltf";
+    if (argc < 3 || std::string_view(argv[2]).empty() ||
+        std::string_view(argv[2]).starts_with("--"))
+        return argument_error();
+    rypath::gltf::Options options;
+    std::filesystem::path output;
+    bool output_seen = false;
+    for (int i = 3; i < argc; i += 2) {
+        if (i + 1 >= argc || std::string_view(argv[i + 1]).empty() ||
+            std::string_view(argv[i + 1]).starts_with("--"))
+            return argument_error();
+        const std::string_view key(argv[i]), value(argv[i + 1]);
+        if (key == "--output" && convert && !output_seen) {
+            output = value;
+            output_seen = true;
+        } else if (key == "--gltf-scene" && !options.scene) {
+            std::size_t index = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), index);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size())
+                return argument_error();
+            options.scene = index;
+        } else
+            return argument_error();
+    }
+    if (convert && !output_seen)
+        return argument_error();
+    const auto loaded = rypath::gltf::load(argv[2], options);
+    std::cout << rypath::gltf::report(loaded);
+    if (loaded.exit_code() != 0 || !loaded.asset)
+        return loaded.exit_code() == 0 ? 1 : loaded.exit_code();
+    auto conversion = rypath::gltf::prepare(*loaded.asset, loaded.diagnostics);
+    auto status = conversion.exit_code();
+    if (status == 0 && convert)
+        status = rypath::gltf::publish(*loaded.asset, conversion, output);
+    for (std::size_t i = loaded.diagnostics.size(); i < conversion.diagnostics.size(); ++i)
+        std::cout << rypath::pbrt::format_diagnostic(conversion.diagnostics[i]) << '\n';
+    std::cout << "glTF conversion: " << (status == 0 ? "supported" : "rejected") << '\n';
+    if (status == 0 && convert)
+        std::cout << "Wrote glTF bundle: " << output.string() << '\n';
     return status;
 }
 
@@ -497,6 +541,8 @@ int main(int argc, char *argv[]) {
                      "       rypath --check-pbrt SCENE\n"
                      "       rypath --check-obj MODEL.obj\n"
                      "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
+                     "       rypath --check-gltf MODEL [--gltf-scene INDEX]\n"
+                     "       rypath --convert-gltf MODEL --output DIRECTORY [--gltf-scene INDEX]\n"
                      "       rypath --check-stl MODEL.stl [--stl-colors auto|viscam|magics]\n"
                      "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
                      "              [--stl-colors auto|viscam|magics]\n"
@@ -508,6 +554,9 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     try {
+        if (argc > 1 && (std::string_view{argv[1]} == "--check-gltf" ||
+                         std::string_view{argv[1]} == "--convert-gltf"))
+            return import_gltf(argc, argv);
         if (argc > 1 && (std::string_view{argv[1]} == "--check-stl" ||
                          std::string_view{argv[1]} == "--convert-stl"))
             return import_stl(argc, argv);
