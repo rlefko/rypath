@@ -1,0 +1,34 @@
+{
+  "absorption": {
+    "bytes": 1624,
+    "sha256": "09adbec60aeec82509484786c79390b0893567caa28112336d2af5b3bf25c967"
+  },
+  "emission": {
+    "bytes": 1674,
+    "sha256": "60d703f644bebdcb1a306b1c23bb29ca693b01523b8726896c6eb77f12b6ccf4"
+  },
+  "isotropic": {
+    "bytes": 1642,
+    "sha256": "9d98aad2e2a08788ae2d64203552aed5cb208abe63ab0affe9e98cbf305d6074"
+  },
+  "forward": {
+    "bytes": 1644,
+    "sha256": "f04f9a2c736fa87a1cc444a1ccf1e229bedb5afe5b24a7e9abfcef3e25846b43"
+  },
+  "nested": {
+    "bytes": 2564,
+    "sha256": "c5ea47c0c2643d0a78b3556bb833964071c8fc341f92e24921a8ef86b9a66d03"
+  },
+  "glass": {
+    "bytes": 1664,
+    "sha256": "25d3d5112fa4f2705cb747b365d0cc1a90d7b29c0f563e5588057aa0b3c9d2a4"
+  },
+  "preset": {
+    "bytes": 1615,
+    "sha256": "dae103745e30e9b6212356e74b4f2c4cfe54169fd79a867b5380642dda4d5f5e"
+  },
+  "spectral": {
+    "bytes": 1671,
+    "sha256": "b5cf3d1bbb4c8028fd7336265cc484a5ee0107739175af7b88befd4a4cc2e38e"
+  }
+}

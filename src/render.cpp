@@ -320,6 +320,12 @@ std::string validate_surface_material(const SpectralMaterial &m) {
 }
 
 std::string validate_pbrt_material(const SpectralMaterial &material) {
+    if (material.scattering == ScatteringKind::null_interface) {
+        if (material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||
+            material.texture_root != UINT32_MAX || material.table)
+            return "Null boundaries cannot carry surface detail or scattering tables";
+        return {};
+    }
     if (material.scattering == ScatteringKind::conductor)
         return validate_conductor_material(material);
     if (material.scattering == ScatteringKind::dielectric)
@@ -476,7 +482,8 @@ std::string validate_image_textures(const RenderScene &scene) {
             return "Invisible emitter binding must match a zero constant alpha";
         }
         const auto &material = scene.materials[scene.instance_materials[i]];
-        if ((material.scattering >= ScatteringKind::dielectric ||
+        if (((material.scattering >= ScatteringKind::dielectric &&
+              material.scattering != ScatteringKind::null_interface) ||
              material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX) &&
             scene.instance_surface_transforms.empty()) {
             return "Dielectric or mapped surfaces require definition and placement transforms";
@@ -520,8 +527,10 @@ std::string validate_image_textures(const RenderScene &scene) {
                 return "Surface detail transform must be finite and affine";
         }
     }
-    const bool microfacets = std::ranges::any_of(
-        scene.materials, [](const auto &m) { return m.scattering != ScatteringKind::diffuse; });
+    const bool microfacets = std::ranges::any_of(scene.materials, [](const auto &m) {
+        return m.scattering != ScatteringKind::diffuse &&
+               m.scattering != ScatteringKind::null_interface;
+    });
     if (scene.image_textures.empty() && scene.texture_graph.nodes.empty() && !microfacets) {
         return scene.instance_texture_frames.empty() ? "" : "Texture frames require image textures";
     }
@@ -1085,7 +1094,8 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
     const bool emission =
         !scene.instance_emissions.empty() && scene.instance_emissions[index] != no_area_emission &&
         scene.area_emissions[scene.instance_emissions[index]].image_texture != UINT32_MAX;
-    return material.scattering != ScatteringKind::diffuse ||
+    return (material.scattering != ScatteringKind::diffuse &&
+            material.scattering != ScatteringKind::null_interface) ||
            material.kind == SpectralMaterialKind::image ||
            material.kind == SpectralMaterialKind::texture_graph ||
            material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||
@@ -1095,6 +1105,37 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
 }
 
 std::string validate_render_scene(const RenderScene &scene) {
+    const auto valid_medium = [&](std::uint32_t id) {
+        return id == no_medium || id < scene.media.size();
+    };
+    if (!valid_medium(scene.camera_medium))
+        return "Camera medium index is out of range";
+    const bool active_media = scene.camera_medium != no_medium ||
+                              std::ranges::any_of(scene.instance_media, [](const auto &m) {
+                                  return m.inside != m.outside;
+                              });
+    if (active_media && (!scene.volume_transport || scene.model != RenderModel::pbrt))
+        return "Participating media require PBRT volpath transport";
+    if (scene.media.size() > (128ULL * 1024 * 1024) / (3 * 471 + 1))
+        return "Homogeneous media exceed the shared GPU data budget";
+    for (const auto &medium : scene.media) {
+        if (!std::isfinite(medium.g))
+            return "Homogeneous medium asymmetry must be finite";
+        for (std::size_t i = 0; i < medium.sigma_a.size(); ++i) {
+            const float a = medium.sigma_a[i], s = medium.sigma_s[i], e = medium.emission[i];
+            if (!std::isfinite(a) || !std::isfinite(s) || !std::isfinite(e) || a < 0 || s < 0 ||
+                e < 0 || !std::isfinite(a + s))
+                return "Homogeneous coefficients, extinction and emission must be finite and "
+                       "nonnegative";
+        }
+    }
+    if (!scene.instance_media.empty() &&
+        scene.instance_media.size() != scene.geometry.instances.size())
+        return "Medium interfaces must supply one binding per instance";
+    for (const auto &binding : scene.instance_media) {
+        if (!valid_medium(binding.inside) || !valid_medium(binding.outside))
+            return "Instance medium index is out of range";
+    }
     if (!valid_pixel_filter(scene.filter)) {
         return "Invalid pixel filter or radius";
     }
@@ -1126,6 +1167,18 @@ std::string validate_render_scene(const RenderScene &scene) {
         if (material >= scene.materials.size()) {
             return "Render instance material index is out of range";
         }
+    }
+    for (std::size_t i = 0; i < scene.instance_materials.size(); ++i) {
+        const bool null = scene.materials[scene.instance_materials[i]].scattering ==
+                          ScatteringKind::null_interface;
+        const bool transition = !scene.instance_media.empty() &&
+                                scene.instance_media[i].inside != scene.instance_media[i].outside;
+        if (null && !scene.instance_emissions.empty() && i < scene.instance_emissions.size() &&
+            scene.instance_emissions[i] != no_area_emission)
+            return "Null boundaries cannot emit surface light";
+        if ((null || transition) && !scene.instance_alpha_roots.empty() &&
+            i < scene.instance_alpha_roots.size() && scene.instance_alpha_roots[i] != UINT32_MAX)
+            return "Medium boundaries require opaque alpha";
     }
     if (!scene.instance_reverse_orientation.empty() &&
         (scene.instance_reverse_orientation.size() != scene.geometry.instances.size() ||
@@ -1222,6 +1275,13 @@ std::string validate_render_scene(const RenderScene &scene) {
             material_stack.emplace_back(index, true);
             const auto &m = scene.materials[index];
             if (m.scattering == ScatteringKind::mix) {
+                if (m.surface.first_material < scene.materials.size() &&
+                    m.surface.second_material < scene.materials.size() &&
+                    (scene.materials[m.surface.first_material].scattering ==
+                         ScatteringKind::null_interface ||
+                     scene.materials[m.surface.second_material].scattering ==
+                         ScatteringKind::null_interface))
+                    return "Mix materials cannot contain null boundaries";
                 material_stack.emplace_back(m.surface.second_material, false);
                 material_stack.emplace_back(m.surface.first_material, false);
             }

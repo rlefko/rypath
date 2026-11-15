@@ -2,37 +2,42 @@
 
 ## Current milestone
 
-[Spectral GGX dielectrics (PR #30)](https://github.com/rlefko/rypath/pull/30) is
-merged at `a01bbf2`.
+[Extended PBRT surfaces (PR #31)](https://github.com/rlefko/rypath/pull/31) is
+merged at `d8fe018`.
 
-The extended PBRT surface PR adds coated diffuse/conductor, spectral measured
-and legacy Fourier tables, thin dielectric, diffuse transmission and nested
-material mixes, plus conductor optical textures and reflectance input. Selected
-child bump/normal maps, immutable tables and material-local sampling are included.
-Finite layered transport and Fourier RGB-to-spectral conversion are explicitly
-identified approximations. Raw Film accumulation remains separate.
-See the [render profile](pbrt-rendering.md#extended-surface-materials) and
-[surface validation record](surface-material-validation.md).
+[Homogeneous spectral media (PR #32)](https://github.com/rlefko/rypath/pull/32)
+adds explicit `volpath` with absorption,
+scattering, absorption-coupled emission, Henyey–Greenstein phase functions,
+scoped camera/instance interfaces, invisible boundaries and all 47 pinned PBRT
+measured presets. Ordered shadow traversal includes medium transmittance;
+raw Film accumulation remains separate. See the
+[render profile](pbrt-rendering.md#homogeneous-media) and
+[media validation record](medium-validation.md).
 
-Scene-wide media, arbitrary layers, subsurface/hair, fractional emitting alpha,
+Heterogeneous media, arbitrary layers, subsurface/hair, fractional emitting alpha,
 Ptex, wider color spaces, additional importers, checkpointing and the interactive
 app remain on the [roadmap](roadmap.md). This does not establish offline MVP
-completion, general PBRT v3 parsing or full pinned-corpus support. Durable
-checkpoint/resume with cancellation remains a useful next bounded task.
+completion or full pinned-corpus support. Durable checkpoint/resume with
+cancellation remains a useful next bounded task.
 
 ## Validation
 
-The current implementation passes Debug, Release and ASan/UBSan (100/100 each),
-Metal-disabled Apple Clang and LLVM 18 builds (74/74 each), and 94 Python checks.
-Six matched PBRT image cases pass 90 regional RGB gates across 192 renders,
-independently recomputed from raw PFMs. Independent layered, measured/Fourier,
-texture-role and malformed-input checks are detailed in the surface record.
-Metal API validation passes 28/28 without skips. All nine affected
-shader-instrumented suites pass with an explicit 600-second
-diagnostic budget; normal PR test deadlines and numerical gates are unchanged.
-The archived roughglass Fourier asset is explicitly rejected for decreasing CDFs.
+Implementation `e3f4414` passes Debug, Release and ASan/UBSan (103/103 each)
+on Apple M4 Max with Xcode 26.6. Metal-disabled Apple Clang and LLVM 18 builds
+pass 75/75 each; all 102 Python checks pass. The new portable scene tests, independent GPU math/transport checks, all 47 measured preset
+comparisons and eight matched PBRT image fixtures pass. The matched images cover
+120 regional RGB gates across 256 renders; their raw PFMs are independently
+recomputed. Coefficient tables match all 282 source RGB values exactly;
+reconstructed spectra pass the existing RGB and blackbody tolerances.
+
+Metal API validation passes all 30 suites without skips. All 11 affected
+shader-instrumented suites pass with an explicit 600-second diagnostic budget;
+normal PR deadlines and numerical gates are unchanged. Changed-unit Clang-Tidy,
+native Clang analysis and repository hooks pass. Four owned showcase scenes illustrate absorption, phase anisotropy, emission/nested
+media and measured presets, with separate raw EXR and display PNG output.
 
 Earlier evidence and numerical caveats remain in the
-[dielectric](dielectric-validation.md), [conductor](conductor-validation.md),
-[HDR](hdr-image-validation.md) and [texture](core-texture-validation.md) records.
-Their counts describe those earlier revisions.
+[surface](surface-material-validation.md), [dielectric](dielectric-validation.md),
+[conductor](conductor-validation.md), [HDR](hdr-image-validation.md) and
+[texture](core-texture-validation.md) records. Their counts describe those
+earlier revisions.

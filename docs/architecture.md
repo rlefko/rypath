@@ -175,6 +175,34 @@ The bounded static C11 OpenEXRCore subset owns codec work through scoped allocat
 callbacks and adds no installed-SDK product dependency. Metadata identifies the
 render settings and overrides, without defining checkpoint identity.
 
+## Homogeneous volume state and transport
+
+The checked PBRT scene owns homogeneous medium descriptors, including inherited
+parameters, checked spectrum files and source locations. Graphics state carries
+inside/outside names through attribute and object scopes; each shape captures its
+binding. The camera captures its outside medium at declaration time. Translation
+validates unused definitions, resolves global names and prepares an owned medium
+table, a camera ID and per-instance inside/outside IDs. Empty names map to an
+explicit vacuum sentinel. This preserves bindings across parser-storage release
+and instancing.
+
+Explicit `volpath` enables absorption, scattering and volume emission. The
+existing `path` mode remains vacuum surface transport. Each homogeneous medium
+owns dense binary32 absorption, scattering and emission spectra at integer
+nanometers; CPU/MSL use the pinned nearest-wavelength lookup. Measured presets
+retain their pinned source data and separate license. Photometric preparation
+and medium-local sampling are specified in the
+[render profile](pbrt-rendering.md#homogeneous-media).
+
+Null boundary materials retain geometry for medium transitions while contributing
+no BSDF or surface-depth event. Equal-side interfaces retain the incoming medium;
+distinct sides select by geometric normal. This is explicit boundary state,
+without an inferred nested IOR stack. Shadow transport crosses null boundaries
+and evaluates medium transmittance; ordinary glass remains an occluder for direct
+light shadow rays. Opaque boundary alpha and finite boundary-chain work are
+validated. Resource, numerical and work-limit failures reject the pending batch.
+Raw compensated XYZ accumulation remains independent of presentation.
+
 ## Spectral conductor scattering
 
 Material scattering is separate from its diffuse spectral representation. Conductor

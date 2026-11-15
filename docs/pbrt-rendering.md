@@ -38,14 +38,14 @@ diagnosed even when not placed in the image.
 
 | Component | Rendered behavior and limits |
 | --- | --- |
-| Descriptors | Explicit perspective camera, RGB film, box or triangle filter, independent or Sobol sampler, and path integrator; no substitution of omitted PBRT defaults |
+| Descriptors | Explicit perspective camera, RGB film, box or triangle filter, independent or Sobol sampler, and path or volpath integrator; no substitution of omitted PBRT defaults |
 | Camera | Pinhole, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
 | Filter | Box radii 0.5 or triangle radii defaulting independently to 2 |
 | Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
-| Integrator | Finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol (0–113 when any translated material is dielectric), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
-| Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive |
+| Integrator | Explicit path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol (0–113 when any translated material is dielectric), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
+| Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive for path; volpath permits empty geometry |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
 | Dielectrics | Smooth and anisotropic single-scattering GGX reflection/transmission, scalar or spectral eta, textured roughness and mapped frames; see [dielectric profile](#spectral-ggx-dielectrics) |
@@ -53,6 +53,7 @@ diagnosed even when not placed in the image.
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
+| Homogeneous media | Named absorption/scattering/emission spectra, all 47 pinned measured presets, scoped interfaces and null boundaries; see [homogeneous media](#homogeneous-media) |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
 | Output | Explicit filename override; PNG display encoding or linear EXR with authored/default HALF or FLOAT precision; no bitwise PBRT image equivalence |
 
@@ -65,7 +66,7 @@ unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
 Non-sRGB reconstruction, legacy `color` parameters, Ptex, fractional emitting alpha, emitting object members, other external mesh
-formats, media, motion, lens effects, and other cameras, filters, samplers, and
+formats, heterogeneous media, motion, lens effects, and other cameras, filters, samplers, and
 integrators remain unsupported. The core texture boundary below lists the
 additional exclusions.
 Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
@@ -514,8 +515,8 @@ entire pending batch. No roughness/radiance clamp, sample retry or selective
 rejection hides numerical failure.
 
 This is a surface-interface model: each material authors a relative IOR, without
-an automatic nested-medium stack. Scene-wide absorption, participating media
-and specialized caustic sampling remain unsupported. Thin and coated surfaces
+an automatic nested IOR stack. Homogeneous absorption/scattering use explicit
+medium interfaces as described below. Specialized caustic sampling remains unsupported. Thin and coated surfaces
 are separate models described below. Other
 glass boundaries still occlude direct shadow connections; BSDF paths traverse
 successive interfaces. Difficult specular-chain lighting can have high variance.
@@ -578,8 +579,86 @@ still commit raw XYZ, independently of display conversion.
 
 See [surface material validation](surface-material-validation.md) for references,
 measured evidence, numerical limits and external-asset coverage. These additions
-do not imply general PBRT v3 parsing, arbitrary layer stacks, scene-wide media,
+do not imply general PBRT v3 parsing, arbitrary layer stacks, heterogeneous media,
 subsurface transport, hair/curves, or full PBRT corpus compatibility.
+
+## Homogeneous media
+
+An explicit `Integrator "volpath"` enables homogeneous participating media.
+`path` retains vacuum surface behavior and rejects active camera media or placed
+medium transitions. Unused medium definitions are still validated. Omitted
+integrator, camera, film, filter and sampler descriptors remain outside this
+profile; PBRT's default volumetric integrator is not silently installed.
+
+| Parameter | Default and interpretation |
+| --- | --- |
+| `sigma_a`, `sigma_s` | Independently default to one; finite nonnegative absorption/scattering coefficients; RGB uses Unbounded reconstruction, not reflectance clamping or illuminant normalization |
+| `scale` | One; nonnegative multiplier for both coefficients, independent of emission |
+| `Le` | Zero; finite nonnegative emission spectrum with Illuminant RGB reconstruction |
+| `Lescale` | One; nonnegative emission multiplier after PBRT photometric normalization |
+| `g` | Zero; authored finite asymmetry, with the pinned HG evaluation/sampling clamp to [−0.99, 0.99]; effective changes are reported |
+| `preset` | Empty; otherwise exact case-sensitive name from the 47 pinned measured presets |
+
+Coefficients and emission accept numeric, built-in named, file, RGB and blackbody
+spectra. RGB reconstruction requires effective sRGB color space. Each medium
+owns 471 binary32 samples from 360 through 830 nm, then uses nearest-integer
+wavelength lookup, including the pinned half-way rounding convention. Numeric
+and file spectra are zero outside their recorded wavelength interval; built-in
+names retain their separately prepared endpoint behavior. Spectral preparation,
+scaling and normalization fail visibly when values exceed the finite binary32
+domain. Texture coefficients, heterogeneous media and grid/cloud/NanoVDB
+representations remain unsupported.
+
+All 47 measured names and raw RGB values are pinned in
+[`medium_presets.inc`](../third_party/pbrt/medium_presets.inc). A recognized preset
+supplies both coefficients using sRGB Unbounded spectra, independently of the
+current color space. Explicit coefficient parameters then conflict and fail;
+unused inherited coefficient defaults are ignored without opening their files.
+An unknown preset warns and falls back independently to explicit coefficients
+or the default one. The published table records reduced scattering in mm⁻¹;
+matching PBRT, those values become `sigma_s` directly. No `(1-g)` adjustment or
+automatic conversion of scene units is applied. Authored `scale` controls the
+coefficient scale.
+
+Nonzero `Le` is divided by its PBRT photometric normalization and multiplied by
+`Lescale`; RGB normalization uses its base illuminant. Medium emission has source
+term `sigma_a * Le`, including attenuation along each segment. Consequently a
+pure-scattering medium with zero absorption emits nothing under this convention.
+Authored zero emission stays zero. A positive spectrum with no positive finite
+photometric normalization fails, including support wholly outside the sampled
+range; blackbody emission uses stable normalization before dense storage.
+`scale` changes the absorption/scattering coefficients rather than directly
+scaling the prepared emission spectrum.
+
+`MediumInterface` supplies explicit inside/outside media on geometric-normal
+sides, preserving winding, reflection and `ReverseOrientation`. A camera starts
+in the outside medium captured at its declaration. Named definitions are global;
+shape bindings follow attribute/object scopes and object instances. Equal
+inside/outside names retain the incoming ray's current medium. Authors must
+supply consistent boundaries; no watertightness proof or automatic overlapping
+volume stack is provided. Medium declaration transforms do not rescale a
+homogeneous coefficient: attenuation uses world-space segment length.
+
+`interface` is a null material; inline `none` and the empty material name retain
+PBRT's aliases. Such geometry updates the current medium and continues the ray
+without a surface scattering event. Null materials cannot be mix children or
+area emitters. Null boundaries and distinct-medium transitions require proven
+opaque alpha. Boundary-chain work has a separate visible failure limit; it does
+not silently consume scattering depth or drop paths.
+
+Ordinary glass surfaces can carry medium interfaces, and transmission updates
+the current medium. Surface `eta` stays the authored relative IOR; medium names
+do not infer a nested IOR stack. Direct-light shadow rays cross null boundaries
+with medium transmittance, while glass and other ordinary surfaces occlude those
+rays. There is no straight-through glass-shadow approximation or specialized
+caustic sampler. Finite scattering-depth and existing material-model limits
+continue to apply.
+
+Variable-length medium work uses `medium-local-philox-v1`, a separate versioned
+Philox stream under both independent and Sobol samplers. The Sobol camera and
+surface sequence is retained; volumetric events form an explicitly labeled
+hybrid. Samples still enter raw XYZ accumulation only through complete validated
+batches. No denoising, tone mapping or radiance clamp is introduced.
 
 ## Spectral and transport contract
 

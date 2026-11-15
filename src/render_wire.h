@@ -15,7 +15,13 @@ using Word = uint;
 using Word = std::uint32_t;
 #endif
 
-enum : Word { success = 0, emergency_depth = 1, invalid_arithmetic = 2, invalid_hit = 3 };
+enum : Word {
+    success = 0,
+    emergency_depth = 1,
+    invalid_arithmetic = 2,
+    invalid_hit = 3,
+    boundary_exhaustion = 4
+};
 enum : Word { demo_model = 0, pbrt_model = 1 };
 enum : Word { box_filter = 0, triangle_filter = 1 };
 enum : Word {
@@ -162,6 +168,14 @@ struct Instance {
     Word frame_begin;
     Word alpha_root = 0xffffffffu;
     Word invisible_emitter = 0;
+    Word inside_medium = 0xffffffffu;
+    Word outside_medium = 0xffffffffu;
+};
+struct Medium {
+    float sigma_a[471];
+    float sigma_s[471];
+    float emission[471];
+    float g;
 };
 struct AreaEmission {
     float radiance[471];
@@ -237,6 +251,10 @@ struct Parameters {
     Word randomization;
     Word sobol_scale_exponent;
     Word material_data_words;
+    Word medium_begin;
+    Word medium_count;
+    Word camera_medium = 0xffffffffu;
+    Word boundary_limit = 4096;
 };
 struct Sample {
     Word status;
@@ -283,7 +301,7 @@ static_assert(sizeof(MaterialAuxiliary) == 112 && alignof(MaterialAuxiliary) == 
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 100 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 108 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
                   __builtin_offsetof(Instance, emission) == 68 &&
@@ -293,6 +311,9 @@ static_assert(sizeof(Instance) == 100 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, uv_begin) == 84 &&
                   __builtin_offsetof(Instance, frame_begin) == 88,
               "render instance layout");
+static_assert(sizeof(Medium) == 5656 && alignof(Medium) == 4 &&
+                  __builtin_offsetof(Medium, g) == 5652,
+              "homogeneous medium layout");
 static_assert(sizeof(AreaEmission) == 1896 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
               "render area emission layout");
@@ -303,7 +324,7 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 188 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 204 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
                   __builtin_offsetof(Parameters, lane_count) == 120 &&

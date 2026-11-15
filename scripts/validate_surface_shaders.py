@@ -15,7 +15,7 @@ import time
 
 TESTS = ('texture_graph', 'surface_detail', 'hdr_texture', 'conductor_render',
          'dielectric_render', 'dielectric_bsdf', 'layered_bsdf', 'table_bsdf',
-         'surface_materials')
+         'surface_materials', 'homogeneous_math', 'homogeneous_transport')
 
 
 def main():

@@ -167,12 +167,24 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                       {"rypath.overrides", std::move(overrides)}};
     if (const auto description = surface_model_description(render_scene); !description.empty())
         metadata.emplace_back("rypath.materialModel", description);
-    if (std::any_of(
-            render_scene.materials.begin(), render_scene.materials.end(),
-            [](const auto &m) { return m.scattering >= rypath::ScatteringKind::thin_dielectric; }))
+    if (std::any_of(render_scene.materials.begin(), render_scene.materials.end(),
+                    [](const auto &m) {
+                        return m.scattering >= rypath::ScatteringKind::thin_dielectric &&
+                               m.scattering != rypath::ScatteringKind::null_interface;
+                    }))
         metadata.emplace_back(
             "rypath.materialSampling",
             "material-local-philox-v1; deterministic keyed local walks; stable-ID mix");
+    if (render_scene.volume_transport) {
+        metadata.emplace_back("rypath.integrator",
+                              "volpath; scalar homogeneous spectral transport");
+        metadata.emplace_back(
+            "rypath.mediumSampling",
+            "medium-local-philox-v1; hybrid with Sobol; independent segment counters");
+        metadata.emplace_back("rypath.mediumModel",
+                              "PBRT dense homogeneous spectra; analytic segment emission and "
+                              "shadow transmittance; HG g clamped to [-0.99,0.99]");
+    }
     return metadata;
 }
 
@@ -326,6 +338,9 @@ int render_pbrt(int argc, char *argv[]) {
         << ")\n";
     if (const auto description = surface_model_description(scene); !description.empty())
         std::cout << "Surface model: " << description << '\n';
+    if (scene.volume_transport)
+        std::cout << "Medium sampling: medium-local-philox-v1; hybrid with Sobol; independent "
+                     "segment counters\n";
     for (const auto &item : translated.provenance) {
         std::cout << item << '\n';
     }

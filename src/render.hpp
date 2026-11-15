@@ -21,6 +21,21 @@ inline constexpr std::array<float, 8> spectral_knots{360, 420, 470, 520, 570, 62
 inline constexpr std::uint32_t render_tile_capacity = 65536;
 inline constexpr std::uint32_t render_emergency_limit = 1024;
 inline constexpr std::uint32_t no_area_emission = UINT32_MAX;
+inline constexpr std::uint32_t no_medium = UINT32_MAX;
+inline constexpr std::uint32_t medium_boundary_limit = 4096;
+
+// PBRT homogeneous spectra are sampled at integer nanometers and looked up at
+// the nearest wavelength, with halfway values rounded away from zero.
+struct HomogeneousMedium {
+    std::array<float, 471> sigma_a{};
+    std::array<float, 471> sigma_s{};
+    std::array<float, 471> emission{};
+    float g = 0;
+};
+struct MediumInterface {
+    std::uint32_t inside = no_medium;
+    std::uint32_t outside = no_medium;
+};
 
 enum class SpectralMaterialKind { sampled, constant, rgb_sigmoid, image, blackbody, texture_graph };
 enum class ScatteringKind {
@@ -33,7 +48,8 @@ enum class ScatteringKind {
     coated_conductor,
     measured,
     fourier,
-    mix
+    mix,
+    null_interface
 };
 
 // Optical constants are unbounded nonnegative spectra, never diffuse albedo.
@@ -156,6 +172,11 @@ struct RenderScene {
     float environment_image_scale = 1;
     GeometryTransform environment_texture_from_world{};
     std::vector<SurfaceTransforms> instance_surface_transforms{};
+    bool volume_transport = false;
+    std::vector<HomogeneousMedium> media{};
+    std::uint32_t camera_medium = no_medium;
+    // Empty means no authored transitions; equal sides retain the ray's medium.
+    std::vector<MediumInterface> instance_media{};
 };
 struct RenderSettings {
     std::uint32_t width = 256;
