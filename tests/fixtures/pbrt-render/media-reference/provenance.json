@@ -1,0 +1,23 @@
+{
+  "geometry": "Original owned triangle meshes; GPL-3.0-only",
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "preset": {
+    "name": "Apple",
+    "source": "src/pbrt/media.cpp:GetMediumScatteringProperties",
+    "sigma_a_rgb": [
+      0.003,
+      0.0034,
+      0.046
+    ],
+    "sigma_s_rgb": [
+      2.29,
+      2.39,
+      1.97
+    ],
+    "scale": 0.12,
+    "conversion": "Pinned sRGB RGBUnboundedSpectrum; stored scattering used directly, no anisotropy/unit correction",
+    "reference": "Jensen, Marschner, Levoy, Hanrahan, A Practical Model for Subsurface Light Transport, SIGGRAPH 2001"
+  },
+  "coverage": "Eight owned wrappers establish selected homogeneous transport/preset coverage, not external scene-corpus conformance",
+  "dependencies": []
+}

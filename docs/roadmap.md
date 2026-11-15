@@ -91,22 +91,26 @@ clarifies the work; completion is recorded in [status](status.md).
 29. **Spectral GGX dielectrics (merged in PR #30):** smooth and anisotropic reflection/
     transmission, scalar/spectral eta, mapped frames, dedicated lobe sampling,
     and independent BSDF/transport validation.
-30. **Extended PBRT surfaces (under review):** finite coated diffuse/conductor,
+30. **Extended PBRT surfaces (merged in PR #31):** finite coated diffuse/conductor,
     spectral measured and legacy Fourier tables, thin dielectric, diffuse
     transmission, nested mapped mixes and conductor optical textures. Explicit
     finite-layer and RGB-to-spectral approximations; bounded table loading and
     independent CPU/Metal/PBRT validation.
-31. **Broader PBRT rendering:** wider color spaces, additional
+31. **Homogeneous spectral media (under review):** absorption, scattering and
+    absorption-coupled emission under explicit `volpath`, HG phase sampling,
+    scoped interfaces, null boundaries and all 47 measured presets. Independent
+    analytic/Metal/PBRT validation; heterogeneous media remain separate.
+32. **Broader PBRT rendering:** wider color spaces, additional
     spectra, texture filters and formats, filters/samplers, and faithfully rendered
     pinned upstream entry points.
     JSON preflight reports remain follow-up work.
-32. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
+33. **Mesh import profiles:** comprehensive polygonal OBJ/MTL, documented PLY
     variants, glTF/GLB and STL, conversion policies, and malformed-input fixtures.
-33. **Remaining surface models:** hair/curves, subsurface transport, arbitrary
+34. **Remaining surface models:** hair/curves, subsurface transport, arbitrary
     layered stacks and further lighting/MIS, with independent numerical comparisons.
-34. **Offline completion:** homogeneous spectral media,
-    checkpoint/resume, cancellation, and long-run accumulation validation.
-35. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
+35. **Offline completion:** checkpoint/resume, cancellation, and long-run
+    accumulation validation.
+36. **Offline MVP acceptance:** licensed and pinned external scenes, convergence
     checks, repeated M4 Max benchmarks, and measured performance bottlenecks.
 
 The offline MVP is complete only when these capabilities work together and meet

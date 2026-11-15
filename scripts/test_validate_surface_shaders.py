@@ -18,7 +18,7 @@ class ShaderEvidenceTests(unittest.TestCase):
             output = build / 'surface-shader-validation'
             output.mkdir()
             results = output / 'results.json'
-            results.write_text(json.dumps([{'status': 'passed'}] * 9))
+            results.write_text(json.dumps([{'status': 'passed'}] * len(diagnostic.TESTS)))
             listing = {'tests': [{'name': 'metal.' + name, 'command': ['probe'],
                                   'properties': []} for name in diagnostic.TESTS]}
             with patch.dict(os.environ, MTL_SHADER_VALIDATION_DEFAULT_STATE='none',

@@ -20,7 +20,10 @@ including bump and normal maps. Spectral dielectrics add polished and frosted
 anisotropic glass with wavelength-dependent refraction and textured roughness.
 Thin glass, diffuse transmission, nested material mixes, finite-depth coatings,
 spectral measured tables and legacy Fourier tables extend this surface profile;
-see the [material limits and validation](docs/surface-material-validation.md). Complete batches
+see the [material limits and validation](docs/surface-material-validation.md).
+Explicit `volpath` adds homogeneous spectral absorption, scattering and emission,
+Henyey–Greenstein phase functions, named medium interfaces and all 47 measured
+PBRT presets; see the [media contract and validation](docs/medium-validation.md). Complete batches
 accumulate raw XYZ; separate output conversion saves display PNG or linear
 HALF/FLOAT OpenEXR. Portable `--check-pbrt`
 reports scene structure, dependencies, and unsupported features. Broader PBRT
@@ -79,7 +82,7 @@ compute ray tracing; Linux and Metal-disabled builds report it as unavailable.
 
 ## Direction
 
-Broader PBRT rendering, spectral materials, media, and resumable
+Broader PBRT rendering, remaining surface models, heterogeneous media, and resumable
 offline rendering follow this bounded profile. Scene compatibility, numerical
 correctness, and performance each need separate evidence. The [PBRT profile](docs/pbrt-profile.md) distinguishes checked scene structure
 from rendering conformance. There are no target-device performance claims yet.

@@ -26,19 +26,20 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | --- | --- | --- | --- |
 | Current v4 directive forms and typed scalar/array parameters | Checked, with owned locations and numeric lexemes | Type/cardinality and supported descriptor schemas checked | Not attempted |
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
-| Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
+| Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path/volpath integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse, conductor, dielectric and extended surface materials and named bindings | Retained | Last matching typed parameter wins; dielectric float eta precedes spectral eta; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
 | Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
 | Constant and image infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
-| File spectra on diffuse/conductor/dielectric materials, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
+| File spectra on diffuse/conductor/dielectric materials, homogeneous media, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
 | Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
 | Other external meshes, image formats and textures outside the core profile, other file-spectrum consumers | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
-| Emitting object members, other shapes/materials, media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
+| Homogeneous media and medium interfaces | Retained with named definitions, inherited parameters and declaration transforms | Scoped shape bindings and declaration-time camera outside medium; references checked | See [homogeneous media](pbrt-rendering.md#homogeneous-media) |
+| Emitting object members, other shapes/materials, heterogeneous media, motion | Recognized | Explicit unsupported diagnostics; no silent substitution | Unsupported |
 | Unknown directives / malformed syntax | Source-located error | Stops without line-based recovery | Not attempted |
 | Legacy v3 forms and hexadecimal numbers | Explicit diagnostic | Outside this profile | Unsupported |
 
@@ -68,7 +69,7 @@ capture still occurs at each camera declaration.
 | Box or triangle filter | `xradius`, `yradius` |
 | Independent sampler | `pixelsamples`, `seed` |
 | Sobol sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, `fastowen`, or `owen`) |
-| Path integrator | `maxdepth`, `regularize`, `lightsampler` |
+| Path or volumetric path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |
 | Diffuse material | `reflectance`, including a spectrum texture reference, scalar `displacement`, RGB image `normalmap`; named definitions require `string type` |
 | Conductor material | Named/numeric/file `spectrum eta` and `k`; scalar/float-texture `roughness`, `uroughness`, `vroughness`; `remaproughness`, `displacement`, `normalmap`; named definitions require `string type`. RGB/blackbody/texture optical constants and the mutually exclusive reflectance shortcut are supported |
@@ -86,6 +87,30 @@ indices remain unsupported. Triangle `vector3 S`, alpha, material bump/normal ma
 and infinite-light images follow the core rendering profile. Portals remain explicit
 unsupported features. RGB reflectance is checked against PBRT's [0,1] rule;
 sampled spectral values remain authored, without the demo's reflectance limits.
+
+## Homogeneous medium structure
+
+`MakeNamedMedium "name" "string type" "homogeneous"` retains the effective
+`sigma_a`, `sigma_s`, `Le`, `scale`, `Lescale`, `g` and `preset` parameters, including
+`Attribute "medium"` inheritance. Coefficient and emission inputs accept typed
+RGB, blackbody, numeric spectra and built-in/file spectra; texture references
+are outside this profile. Supported spectrum files are decoded with the existing
+entry-relative budgets. Other medium types remain recognized and unsupported.
+
+`MediumInterface "inside" "outside"` is valid before and after `WorldBegin`.
+A single name binds both sides; an empty name means vacuum. A camera captures
+the outside name when its `Camera` directive is processed. Shapes capture both
+names, which follow attribute/object scope restoration and survive instancing.
+Named medium definitions are global and references resolve after parsing,
+including forward references and Includes. Empty/duplicate definitions and
+undefined names are errors. `WorldBegin` preserves medium state while resetting
+transforms. Structural success does not establish volumetric rendering support.
+
+Inline `Material "interface"`, `Material "none"` and `Material ""`, and named
+`interface`/`none` materials, describe null surface boundaries rather than black
+BSDFs. Rendering rejects null mix children, null area emitters and nonopaque
+alpha on null or medium-transition boundaries. The [render profile](pbrt-rendering.md#homogeneous-media)
+defines preset precedence, spectral preparation and transport limitations.
 
 ## Constant texture definitions
 
@@ -196,10 +221,11 @@ mip texel. The 4,096-pixel axis ceiling does not override byte limits: a full
 
 One bare or bracketed filename is supported in `spectrum reflectance` on diffuse
 materials, `spectrum value` on spectrum constant textures, and `spectrum L` on
-infinite and diffuse area lights. Exact built-in names take precedence over files.
+infinite and diffuse area lights. Homogeneous `sigma_a`, `sigma_s` and `Le` use
+the same checked-file ownership. Exact built-in names take precedence over files.
 Effective parameter selection, light defaults, and scope restoration are unchanged;
 shadowed filenames do not become dependencies. Other file-spectrum consumers remain
-unsupported. Unused supported material and texture definitions are checked too.
+unsupported. Unused supported material, medium and texture definitions are checked too.
 
 Files contain at least two wavelength/value pairs in plain text. Decimal and
 exponent forms, ASCII whitespace, and `#` comments are accepted. Comments may
@@ -278,12 +304,12 @@ as camera-to-world; the named camera coordinate system uses that same inverse.
 `WorldBegin` resets transforms and the active-transform selection and establishes
 the world coordinate system. Other graphics state remains inherited.
 
-Attribute scopes restore active graphics state. Named material, object, texture,
+Attribute scopes restore active graphics state. Named material, medium, object, texture,
 and coordinate-system definitions are global; they survive a scope ending.
 `NamedMaterial` and `ObjectInstance` bindings are resolved after parsing,
 including forward references. Dependencies inside deferred material factories
 are inventoried but do not establish their construction-order compatibility. Duplicate material/object definitions are errors. Object
-members retain definition-time transforms, materials, and orientation; instance
+members retain definition-time transforms, materials, medium interfaces, and orientation; instance
 placement composes outside each member transform. Nested object definitions and
 instances inside object definitions are rejected.
 
