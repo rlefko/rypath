@@ -132,7 +132,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "60fc284144553ff96205c6b403767dc1ec88ceb7dfb2001c7df067ce8ad8b465",
+                "0d0d29a5b10a601b0d15dfbc0e480da751453cf4032fcecdee7472aea3211cf6",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);

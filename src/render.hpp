@@ -49,7 +49,25 @@ enum class ScatteringKind {
     measured,
     fourier,
     mix,
-    null_interface
+    null_interface,
+    gltf
+};
+
+// Versioned spectral adaptation of glTF 2.0 metallic-roughness materials.
+// Texture indices refer to raw linear RGBA glTF samplers, not spectral graphs.
+struct GltfMaterialParameters {
+    std::array<float, 4> base_color{1, 1, 1, 1};
+    float metallic = 1;
+    float roughness = 1;
+    float normal_scale = 1;
+    float alpha_cutoff = .5f;
+    std::uint32_t alpha_mode = 0; // OPAQUE, MASK, BLEND
+    bool double_sided = false;
+    std::uint32_t base_color_texture = UINT32_MAX;
+    std::uint32_t metallic_roughness_texture = UINT32_MAX;
+    std::uint32_t normal_texture = UINT32_MAX;
+    std::uint32_t emissive_texture = UINT32_MAX;
+    std::array<float, 3> emissive{0, 0, 0};
 };
 
 // Optical constants are unbounded nonnegative spectra, never diffuse albedo.
@@ -111,6 +129,7 @@ struct SpectralMaterial {
     bool remap_roughness = true;
     SurfaceMaterialParameters surface{};
     std::shared_ptr<const BsdfTable> table{};
+    GltfMaterialParameters gltf{};
 };
 enum class RenderModel { demo, pbrt };
 enum class PixelFilterKind { box, triangle };
@@ -139,6 +158,7 @@ struct AreaEmission {
     bool two_sided = false;
     std::uint32_t image_texture = UINT32_MAX;
     float image_scale = 1;
+    std::uint32_t gltf_material = UINT32_MAX;
 };
 struct SurfaceTransforms {
     std::array<double, 16> shape{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

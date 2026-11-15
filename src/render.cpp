@@ -320,6 +320,20 @@ std::string validate_surface_material(const SpectralMaterial &m) {
 }
 
 std::string validate_pbrt_material(const SpectralMaterial &material) {
+    if (material.scattering == ScatteringKind::gltf) {
+        const auto &g = material.gltf;
+        const auto unit = [](float x) { return std::isfinite(x) && x >= 0 && x <= 1; };
+        if (!std::ranges::all_of(g.base_color, unit) || !unit(g.metallic) || !unit(g.roughness) ||
+            !std::isfinite(g.normal_scale) || !std::isfinite(g.alpha_cutoff) ||
+            g.alpha_cutoff < 0 || g.alpha_mode > 2 || !std::ranges::all_of(g.emissive, unit))
+            return "Invalid glTF metallic-roughness parameters";
+        if (material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||
+            material.texture_root != UINT32_MAX || material.table || !material.eta.knots.empty() ||
+            !material.k.knots.empty())
+            return "glTF material contains a foreign surface payload";
+        return {};
+    }
+
     if (material.scattering == ScatteringKind::null_interface) {
         if (material.bump_root != UINT32_MAX || material.normal_map != UINT32_MAX ||
             material.texture_root != UINT32_MAX || material.table)
@@ -402,6 +416,17 @@ std::string validate_image_textures(const RenderScene &scene) {
                scene.image_textures[index].image->source_channels == 3;
     };
     for (const auto &material : scene.materials) {
+        if (material.scattering == ScatteringKind::gltf) {
+            const auto &g = material.gltf;
+            for (const auto index : {g.base_color_texture, g.metallic_roughness_texture,
+                                     g.normal_texture, g.emissive_texture}) {
+                if (index != UINT32_MAX && (index >= scene.image_textures.size() ||
+                                            !scene.image_textures[index].gltf_sampler ||
+                                            !scene.image_textures[index].image ||
+                                            !scene.image_textures[index].image->gltf))
+                    return "glTF material requires a glTF image sampler";
+            }
+        }
         for (const auto root :
              {material.u_roughness_root, material.v_roughness_root,
               material.surface.interface_u_roughness_root,
@@ -490,6 +515,10 @@ std::string validate_image_textures(const RenderScene &scene) {
         }
     }
     for (const auto &emission : scene.area_emissions) {
+        if (emission.gltf_material != UINT32_MAX &&
+            (emission.gltf_material >= scene.materials.size() ||
+             scene.materials[emission.gltf_material].scattering != ScatteringKind::gltf))
+            return "glTF area emission requires a glTF material";
         if (emission.image_texture != UINT32_MAX &&
             (!base_valid(emission.image_texture) || !std::isfinite(emission.image_scale) ||
              emission.image_scale < 0)) {
@@ -586,6 +615,18 @@ std::string validate_image_textures(const RenderScene &scene) {
             return "Image texture requires an owned pyramid and finite mapping";
         }
         const auto &image = *texture.image;
+        if (bool(texture.gltf_sampler) != image.gltf)
+            return "glTF image/sampler policy mismatch";
+        if (texture.gltf_sampler) {
+            const auto &s = *texture.gltf_sampler;
+            const auto wrap = [](auto v) { return v == 10497 || v == 33071 || v == 33648; };
+            if (!wrap(s.wrap_s) || !wrap(s.wrap_t) ||
+                (s.mag_filter != 9728 && s.mag_filter != 9729) ||
+                (s.min_filter != 9728 && s.min_filter != 9729 &&
+                 (s.min_filter < 9984 || s.min_filter > 9987)) ||
+                image.storage != ImageStorage::linear_float || image.source_channels != 4)
+                return "Invalid glTF sampler or image storage";
+        }
         if (!checked.insert(&image).second) {
             continue;
         }
@@ -628,7 +669,8 @@ std::string validate_image_textures(const RenderScene &scene) {
         auto width = image.levels.front().width;
         auto height = image.levels.front().height;
         if (width == 0 || height == 0 ||
-            (!image.native_base && (!std::has_single_bit(width) || !std::has_single_bit(height))) ||
+            (!image.native_base && !image.gltf &&
+             (!std::has_single_bit(width) || !std::has_single_bit(height))) ||
             width > ImageLimits{}.max_dimension || height > ImageLimits{}.max_dimension) {
             return "Image mip dimensions must be bounded positive powers of two";
         }
@@ -662,7 +704,7 @@ std::string validate_image_textures(const RenderScene &scene) {
                 }
             }
         } else if (image.storage == ImageStorage::linear_float) {
-            if (image.encoding != ImageEncoding::linear || image.custom_transfer) {
+            if ((!image.gltf && image.encoding != ImageEncoding::linear) || image.custom_transfer) {
                 return "Floating-point images require linear encoding";
             }
             for (std::size_t i = 0; i < image.texels.size(); ++i) {
@@ -833,7 +875,8 @@ std::string validate_dielectric_material(const SpectralMaterial &material) {
 
 bool scene_has_dielectrics(const RenderScene &scene) {
     return std::ranges::any_of(scene.materials, [](const auto &material) {
-        return material.scattering == ScatteringKind::dielectric;
+        return material.scattering == ScatteringKind::dielectric ||
+               material.scattering == ScatteringKind::gltf;
     });
 }
 
@@ -1169,6 +1212,10 @@ std::string validate_render_scene(const RenderScene &scene) {
         }
     }
     for (std::size_t i = 0; i < scene.instance_materials.size(); ++i) {
+        const auto &bound_material = scene.materials[scene.instance_materials[i]];
+        if (bound_material.scattering == ScatteringKind::gltf &&
+            !scene.geometry.meshes[scene.geometry.instances[i].mesh_index].patches.empty())
+            return "glTF materials require triangle geometry";
         const bool null = scene.materials[scene.instance_materials[i]].scattering ==
                           ScatteringKind::null_interface;
         const bool transition = !scene.instance_media.empty() &&
@@ -1239,7 +1286,7 @@ std::string validate_render_scene(const RenderScene &scene) {
             const auto &emission = scene.area_emissions[scene.instance_emissions[i]];
             if (auto error = validate_normal_emission(mesh, instance.transform, reverse,
                                                       emission.two_sided, normals);
-                !error.empty()) {
+                emission.gltf_material == UINT32_MAX && !error.empty()) {
                 return "Instance " + std::to_string(i) + ": " + error;
             }
         }

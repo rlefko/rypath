@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Verify shipped parser/tangent sources and the selected licensed glTF fixture closure.
+foreach(_rypath_gltf_record IN ITEMS third_party/cgltf third_party/mikktspace tests/fixtures/gltf/external)
+    set(_rypath_gltf_root "${CMAKE_CURRENT_LIST_DIR}/../${_rypath_gltf_record}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_rypath_gltf_root}/SHA256SUMS")
+    file(STRINGS "${_rypath_gltf_root}/SHA256SUMS" _rypath_gltf_hashes)
+    foreach(_rypath_gltf_entry IN LISTS _rypath_gltf_hashes)
+        string(SUBSTRING "${_rypath_gltf_entry}" 0 64 _rypath_gltf_expected)
+        string(SUBSTRING "${_rypath_gltf_entry}" 66 -1 _rypath_gltf_path)
+        file(SHA256 "${_rypath_gltf_root}/${_rypath_gltf_path}" _rypath_gltf_actual)
+        if(NOT _rypath_gltf_actual STREQUAL _rypath_gltf_expected)
+            message(FATAL_ERROR "glTF dependency checksum mismatch: ${_rypath_gltf_record}/${_rypath_gltf_path}")
+        endif()
+    endforeach()
+endforeach()

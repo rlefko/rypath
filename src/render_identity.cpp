@@ -77,6 +77,7 @@ class Canonical {
         FIELD(uvs);
         FIELD(patches);
         FIELD(tangents);
+        FIELD(tangent_signs);
     }
     void value(const GeometryInstance &x) {
         FIELD(mesh_index);
@@ -126,6 +127,20 @@ class Canonical {
         FIELD(mix_amount);
         FIELD(mix_amount_root);
     }
+    void value(const GltfMaterialParameters &x) {
+        FIELD(base_color);
+        FIELD(metallic);
+        FIELD(roughness);
+        FIELD(normal_scale);
+        FIELD(alpha_cutoff);
+        FIELD(alpha_mode);
+        FIELD(double_sided);
+        FIELD(base_color_texture);
+        FIELD(metallic_roughness_texture);
+        FIELD(normal_texture);
+        FIELD(emissive_texture);
+        FIELD(emissive);
+    }
     void value(const SpectralMaterial &x) {
         FIELD(reflectance);
         FIELD(knots);
@@ -147,6 +162,7 @@ class Canonical {
         FIELD(remap_roughness);
         FIELD(surface);
         FIELD(table);
+        FIELD(gltf);
     }
     void value(const BsdfTable &x) {
         FIELD(kind);
@@ -174,6 +190,7 @@ class Canonical {
         FIELD(two_sided);
         FIELD(image_texture);
         FIELD(image_scale);
+        FIELD(gltf_material);
     }
     void value(const SurfaceTransforms &x) {
         FIELD(shape);
@@ -204,6 +221,13 @@ class Canonical {
         FIELD(source_channels);
         FIELD(custom_transfer);
         FIELD(native_base);
+        FIELD(gltf);
+    }
+    void value(const GltfSampler &x) {
+        FIELD(wrap_s);
+        FIELD(wrap_t);
+        FIELD(min_filter);
+        FIELD(mag_filter);
     }
     void value(const ImageTexture &x) {
         FIELD(image);
@@ -215,6 +239,7 @@ class Canonical {
         FIELD(invert);
         FIELD(filter);
         FIELD(max_anisotropy);
+        FIELD(gltf_sampler);
     }
     void value(const TextureCamera &x) {
         FIELD(world_from_camera);

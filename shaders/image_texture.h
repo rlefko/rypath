@@ -527,4 +527,106 @@ static inline float unbounded_spectrum(float3 rgb, float wavelength, const devic
         return NAN;
     return scale == 0 ? 0 : scale * spectrum(rgb / scale, wavelength, table);
 }
+// glTF samples retain top-left UVs and linear, unassociated RGBA float texels.
+static float gltf_coordinate(float coordinate, uint wrap) {
+    if (wrap == 33071u)
+        return clamp(coordinate, 0.0f, 1.0f);
+    const float period = wrap == 33648u ? 2.0f : 1.0f;
+    float phase = fmod(coordinate, period);
+    if (wrap == 33648u) {
+        phase = abs(phase);
+        return phase > 1.0f ? 2.0f - phase : phase;
+    }
+    if (phase < 0.0f) {
+        phase += period;
+        if (phase == period)
+            phase = nextafter(period, 0.0f);
+    }
+    return phase;
+}
+
+static bool gltf_wrap_valid(uint wrap) {
+    return wrap == 10497u || wrap == 33071u || wrap == 33648u;
+}
+
+static int gltf_index(int index, int dimension, uint wrap) {
+    return wrap == 10497u ? (index % dimension + dimension) % dimension
+                          : clamp(index, 0, dimension - 1);
+}
+
+static float4 gltf_texel(const device wire::ImageTexture &texture,
+                         const device wire::TextureLevel &level, const device wire::Word *texels,
+                         int x, int y) {
+    const uint ix = uint(gltf_index(x, int(level.width), texture.wrap));
+    const uint iy = uint(gltf_index(y, int(level.height), texture.wrap_t));
+    const uint word = level.offset + 4u * (iy * level.width + ix);
+    return float4(as_type<float>(texels[word]), as_type<float>(texels[word + 1u]),
+                  as_type<float>(texels[word + 2u]), as_type<float>(texels[word + 3u]));
+}
+
+static float4 gltf_level(const device wire::ImageTexture &texture,
+                         const device wire::TextureLevel &level, const device wire::Word *texels,
+                         uint texel_word_count, float2 uv, bool linear) {
+    if (!valid_level(level, texel_word_count, wire::linear_float_texel_format) ||
+        level.offset % 4u != 0u)
+        return float4(NAN);
+    const float2 xy(gltf_coordinate(uv.x, texture.wrap) * float(level.width),
+                    gltf_coordinate(uv.y, texture.wrap_t) * float(level.height));
+    if (!linear)
+        return gltf_texel(texture, level, texels, int(floor(xy.x)), int(floor(xy.y)));
+    const float2 base = floor(xy - 0.5f), d = xy - 0.5f - base;
+    const int2 i = int2(base);
+    const float4 a = gltf_texel(texture, level, texels, i.x, i.y);
+    const float4 b = gltf_texel(texture, level, texels, i.x + 1, i.y);
+    const float4 c = gltf_texel(texture, level, texels, i.x, i.y + 1);
+    const float4 e = gltf_texel(texture, level, texels, i.x + 1, i.y + 1);
+    return (1.0f - d.y) * ((1.0f - d.x) * a + d.x * b) + d.y * ((1.0f - d.x) * c + d.x * e);
+}
+
+// The caller validates level_begin/count against the uploaded descriptor buffer.
+[[clang::noinline]] static float4 gltf_rgba(const device wire::ImageTexture &texture,
+                                            const device wire::TextureLevel *levels,
+                                            const device wire::Word *texels, uint texel_word_count,
+                                            float2 uv, float2 dx, float2 dy) {
+#pragma clang fp contract(off)
+    if (texture.gltf != 1u || texture.texel_format != wire::linear_float_texel_format ||
+        texture.level_count == 0u || texture.level_count > 13u || !gltf_wrap_valid(texture.wrap) ||
+        !gltf_wrap_valid(texture.wrap_t) ||
+        (texture.mag_filter != 9728u && texture.mag_filter != 9729u) ||
+        (texture.min_filter != 9728u && texture.min_filter != 9729u &&
+         (texture.min_filter < 9984u || texture.min_filter > 9987u)) ||
+        !all(isfinite(uv)) || !all(isfinite(dx)) || !all(isfinite(dy)))
+        return float4(NAN);
+    const device wire::TextureLevel *mips = levels + texture.level_begin;
+    const float2 dimensions(float(mips[0].width), float(mips[0].height));
+    // Above this finite gradient bound every valid image is past its final mip.
+    // Otherwise use direct binary32 texel products, including NPOT transition ties.
+    const float scale = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
+    float lambda = 32.0f;
+    if (scale < 8192.0f) {
+        const float2 x = dx * dimensions, y = dy * dimensions;
+        const float rho = max(sqrt(x.x * x.x + x.y * x.y), sqrt(y.x * y.x + y.y * y.y));
+        lambda = rho > 0.0f ? log2(rho) : -INFINITY;
+    }
+    const uint filter = lambda <= 0.0f ? texture.mag_filter : texture.min_filter;
+    float4 result;
+    if (filter == 9728u || filter == 9729u) {
+        result = gltf_level(texture, mips[0], texels, texel_word_count, uv, filter == 9729u);
+    } else {
+        const float lod = clamp(lambda, 0.0f, float(texture.level_count - 1u));
+        const bool linear = filter == 9985u || filter == 9987u;
+        if (filter == 9984u || filter == 9985u) {
+            const uint level = uint(max(0.0f, ceil(lod + 0.5f) - 1.0f));
+            result = gltf_level(texture, mips[level], texels, texel_word_count, uv, linear);
+        } else {
+            const uint lower = uint(floor(lod)), upper = min(lower + 1u, texture.level_count - 1u);
+            const float4 a = gltf_level(texture, mips[lower], texels, texel_word_count, uv, linear);
+            const float4 b = gltf_level(texture, mips[upper], texels, texel_word_count, uv, linear);
+            const float weight = lod - float(lower);
+            result = (1.0f - weight) * a + weight * b;
+        }
+    }
+    return all(isfinite(result)) ? result : float4(NAN);
+}
+
 } // namespace rypath_image

@@ -31,8 +31,8 @@ struct DecodedImage {
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgb;
     ImageSampleFormat sample_format = ImageSampleFormat::unorm8;
-    std::uint32_t source_channels = 3; // PBRT channels after dropping gray and palette alpha.
-    std::vector<std::uint8_t> alpha{}; // True RGBA only, in the same byte order as RGB.
+    std::uint32_t source_channels = 3; // PBRT default drops gray/palette alpha; glTF retains it.
+    std::vector<std::uint8_t> alpha{}; // Unassociated alpha, in the same byte order as RGB.
     ImageFileFormat file_format = ImageFileFormat::png;
     // Floating sources retain exact decoded samples; HALF values widen exactly.
     // Byte and floating representations are mutually exclusive.
@@ -64,6 +64,7 @@ struct ImagePyramid {
     std::uint32_t source_channels = 3; // Any retained alpha uses the high byte or half.
     std::shared_ptr<const std::array<float, 256>> custom_transfer{};
     bool native_base = false;
+    bool gltf = false;
 };
 
 template <typename T> struct ImageResult {
@@ -74,7 +75,8 @@ template <typename T> struct ImageResult {
 };
 
 ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
-                                     const ImageLimits &limits = {});
+                                     const ImageLimits &limits = {},
+                                     bool preserve_all_alpha = false);
 ImageResult<DecodedImage> decode_jpeg(std::span<const std::uint8_t> bytes,
                                       const ImageLimits &limits = {});
 ImageResult<DecodedImage> decode_exr(std::span<const std::uint8_t> bytes,
@@ -102,6 +104,18 @@ std::optional<std::array<float, 3>> image_base_linear_rgb(const ImagePyramid &im
 std::optional<std::array<float, 3>> image_base_texel_linear_rgb(const ImagePyramid &image,
                                                                 std::uint32_t x, std::uint32_t y);
 
+// OpenGL sampler enums retained verbatim from the glTF sampler.
+struct GltfSampler {
+    std::uint32_t wrap_s = 10497;
+    std::uint32_t wrap_t = 10497;
+    std::uint32_t min_filter = 9987;
+    std::uint32_t mag_filter = 9729;
+};
+
+ImageResult<ImagePyramid> build_gltf_image_pyramid(const DecodedImage &image,
+                                                   ImageEncoding encoding,
+                                                   const ImageLimits &limits = {});
+
 struct ImageTexture {
     std::shared_ptr<const ImagePyramid> image;
     float uscale = 1;
@@ -112,6 +126,11 @@ struct ImageTexture {
     bool invert = false;
     ImageFilter filter = ImageFilter::bilinear;
     float max_anisotropy = 8;
+    std::optional<GltfSampler> gltf_sampler{};
 };
+
+// Native top-left glTF UVs and derivatives; no PBRT mapping or V flip.
+std::optional<std::array<float, 4>> gltf_image_rgba(const ImageTexture &texture, float s, float t,
+                                                    float dsdx, float dtdx, float dsdy, float dtdy);
 
 } // namespace rypath

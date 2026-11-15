@@ -828,8 +828,8 @@ std::optional<Rgb> ewa_rgb(const ImagePyramid &image, TexturePoint st, TexturePo
 
 } // namespace
 
-ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
-                                     const ImageLimits &limits) {
+ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes, const ImageLimits &limits,
+                                     bool preserve_all_alpha) {
     if (bytes.size() > max_image_file_bytes) {
         return budget_error<DecodedImage>("PNG exceeds the 16 MiB input limit");
     }
@@ -851,13 +851,15 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
     const auto depth = color.bitdepth;
     const bool indexed = color.colortype == LCT_PALETTE;
     const bool rgba = color.colortype == LCT_RGBA;
+    // In glTF mode ask LodePNG for RGBA even for gray, palette and color-key inputs.
+    const bool retain_rgba = rgba || preserve_all_alpha;
     const bool gray = color.colortype == LCT_GREY || color.colortype == LCT_GREY_ALPHA;
     const auto rgb_depth = std::max(8u, depth);
     const std::size_t pixels = pixel_count(width, height);
     const auto source_bpp = lodepng_get_bpp(&color);
     const std::size_t sample_bytes = rgb_depth / 8;
     const std::size_t rgb_bytes = pixels * 3 * sample_bytes;
-    const std::size_t alpha_bytes = rgba ? pixels * sample_bytes : 0;
+    const std::size_t alpha_bytes = retain_rgba ? pixels * sample_bytes : 0;
     const std::size_t retained = rgb_bytes + alpha_bytes;
     const std::size_t raw_bytes = (pixels * source_bpp + 7) / 8;
     const std::size_t scanline_bytes = png_scanline_bytes(width, height, png.state.info_png);
@@ -877,7 +879,10 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
         return budget_error<DecodedImage>("PNG exceeds the decoder scratch byte budget");
     }
     png.state.decoder.zlibsettings.max_output_size = scanline_bytes;
-    if (indexed || rgba) {
+    if (preserve_all_alpha) {
+        png.state.info_raw.colortype = LCT_RGBA;
+        png.state.info_raw.bitdepth = rgb_depth;
+    } else if (indexed || rgba) {
         png.state.decoder.color_convert = 0;
     } else {
         png.state.info_raw.colortype = LCT_RGB;
@@ -902,14 +907,14 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
                        .rgb = {},
                        .sample_format =
                            rgb_depth == 16 ? ImageSampleFormat::unorm16 : ImageSampleFormat::unorm8,
-                       .source_channels = gray ? 1u : (rgba ? 4u : 3u)};
+                       .source_channels = retain_rgba ? 4u : (gray ? 1u : 3u)};
     try {
         image.rgb.resize(rgb_bytes);
         image.alpha.resize(alpha_bytes);
     } catch (const std::bad_alloc &) {
         return budget_error<DecodedImage>("PNG decoder could not allocate required memory");
     }
-    if (indexed) {
+    if (indexed && !preserve_all_alpha) {
         // LodePNG removes row padding and interlacing, leaving a single MSB-first stream.
         const auto mask = (1u << depth) - 1;
         for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
@@ -922,7 +927,7 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes,
             // The fourth palette byte is alpha. Keep the original RGB even at alpha zero.
             std::copy_n(color.palette + 4 * index, 3, image.rgb.data() + 3 * pixel);
         }
-    } else if (rgba) {
+    } else if (retain_rgba) {
         for (std::size_t pixel = 0; pixel < pixels; ++pixel) {
             const auto *input = raw.get() + pixel * 4 * sample_bytes;
             std::copy_n(input, 3 * sample_bytes, image.rgb.data() + pixel * 3 * sample_bytes);
@@ -1293,6 +1298,243 @@ std::optional<Rgb> image_base_texel_linear_rgb(const ImagePyramid &image, std::u
     if (!mip || x >= static_cast<unsigned>(mip->width) || y >= static_cast<unsigned>(mip->height))
         return std::nullopt;
     return finite_lookup(mip->read(pixel_count(static_cast<unsigned>(mip->width), y) + x));
+}
+
+ImageResult<ImagePyramid> build_gltf_image_pyramid(const DecodedImage &image,
+                                                   ImageEncoding encoding,
+                                                   const ImageLimits &limits) {
+    if (encoding != ImageEncoding::linear && encoding != ImageEncoding::srgb)
+        return {.value = {}, .diagnostic = "glTF images require linear or sRGB encoding"};
+    if (!dimensions_fit(image.width, image.height, limits))
+        return budget_error<ImagePyramid>("glTF image exceeds the dimension limit");
+    const bool wide = image.sample_format == ImageSampleFormat::unorm16;
+    if (!wide && image.sample_format != ImageSampleFormat::unorm8)
+        return {.value = {}, .diagnostic = "glTF images require unsigned normalized samples"};
+    const auto pixels = pixel_count(image.width, image.height);
+    const auto bytes = wide ? 2u : 1u;
+    const bool alpha = image.source_channels == 4;
+    if (pixels == 0 || image.rgb.size() != pixels * 3 * bytes ||
+        image.alpha.size() != (alpha ? pixels * bytes : 0) || !image.floating_rgb.empty() ||
+        !image.floating_alpha.empty() ||
+        (image.source_channels != 1 && image.source_channels != 3 && !alpha))
+        return {.value = {}, .diagnostic = "glTF image dimensions do not match decoded channels"};
+    std::size_t total = 0, count = 0;
+    for (auto w = image.width, h = image.height;;
+         w = std::max(1u, w / 2), h = std::max(1u, h / 2)) {
+        total += pixel_count(w, h);
+        ++count;
+        if (w == 1 && h == 1)
+            break;
+    }
+    const auto retained = total * sizeof(Rgba) + count * sizeof(ImageMipLevel);
+    if (retained > std::min(limits.retained_bytes, max_image_bytes))
+        return budget_error<ImagePyramid>("glTF image exceeds the mip pyramid byte budget");
+    const auto scratch = (pixels + (count > 1 ? pixel_count(std::max(1u, image.width / 2),
+                                                            std::max(1u, image.height / 2))
+                                              : 0)) *
+                         sizeof(Rgba);
+    if (scratch > std::min(limits.scratch_bytes, max_image_bytes))
+        return budget_error<ImagePyramid>("glTF image exceeds the mip scratch byte budget");
+    ImagePyramid pyramid{.encoding = encoding,
+                         .wrap = ImageWrap::repeat,
+                         .levels = {},
+                         .texels = {},
+                         .storage = ImageStorage::linear_float,
+                         .source_channels = 4,
+                         .gltf = true};
+    try {
+        pyramid.levels.reserve(count);
+        pyramid.texels.reserve(total * 4);
+        std::vector<Rgba> working(pixels);
+        const float denominator = wide ? 65535.0f : 255.0f;
+        for (std::size_t i = 0; i < pixels; ++i) {
+            for (std::size_t c = 0; c < 3; ++c) {
+                const float code =
+                    static_cast<float>(read_sample(image.rgb, i * 3 + c, wide)) / denominator;
+                working[i][c] = encoding == ImageEncoding::srgb ? decode_srgb(code) : code;
+            }
+            // Alpha is unassociated coverage data, independent of the RGB transfer.
+            working[i][3] =
+                alpha ? static_cast<float>(read_sample(image.alpha, i, wide)) / denominator : 1.0f;
+        }
+        auto w = image.width, h = image.height;
+        for (;;) {
+            pyramid.levels.push_back({w, h, static_cast<std::uint32_t>(pyramid.texels.size())});
+            for (const auto &pixel : working)
+                for (float value : pixel)
+                    pyramid.texels.push_back(std::bit_cast<std::uint32_t>(value));
+            if (w == 1 && h == 1)
+                break;
+            const auto nw = std::max(1u, w / 2), nh = std::max(1u, h / 2);
+            std::vector<Rgba> next(pixel_count(nw, nh));
+            // Area box resampling covers every source texel, including odd edge rows.
+            // Integer overlap numerators avoid floating endpoint slivers.
+            for (std::uint32_t y = 0; y < nh; ++y) {
+                for (std::uint32_t x = 0; x < nw; ++x) {
+                    std::array<double, 4> sum{};
+                    for (auto sy = y * h / nh; sy < ((y + 1) * h + nh - 1) / nh; ++sy) {
+                        const auto wy =
+                            std::min((y + 1) * h, (sy + 1) * nh) - std::max(y * h, sy * nh);
+                        for (auto sx = x * w / nw; sx < ((x + 1) * w + nw - 1) / nw; ++sx) {
+                            const auto wx =
+                                std::min((x + 1) * w, (sx + 1) * nw) - std::max(x * w, sx * nw);
+                            const double weight =
+                                static_cast<double>(wx) * wy / (static_cast<double>(w) * h);
+                            for (std::size_t c = 0; c < 4; ++c)
+                                sum[c] += weight * working[pixel_count(w, sy) + sx][c];
+                        }
+                    }
+                    for (std::size_t c = 0; c < 4; ++c)
+                        next[pixel_count(nw, y) + x][c] = static_cast<float>(sum[c]);
+                }
+            }
+            working = std::move(next);
+            w = nw;
+            h = nh;
+        }
+    } catch (const std::bad_alloc &) {
+        return budget_error<ImagePyramid>("glTF image mip allocation failed");
+    }
+    return {.value = std::move(pyramid), .diagnostic = {}};
+}
+
+namespace {
+
+bool gltf_wrap_valid(std::uint32_t wrap) { return wrap == 10497 || wrap == 33071 || wrap == 33648; }
+
+// Coordinate and authored glTF wrap enum have distinct roles.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+float gltf_coordinate(float coordinate, std::uint32_t wrap) {
+    if (wrap == 33071)
+        return std::clamp(coordinate, 0.0f, 1.0f);
+    // Reduce before multiplying by dimensions, also for huge finite coordinates.
+    const float period = wrap == 33648 ? 2.0f : 1.0f;
+    float phase = std::fmod(coordinate, period);
+    if (wrap == 33648) {
+        phase = std::abs(phase);
+        return phase > 1 ? 2 - phase : phase;
+    }
+    if (phase < 0) {
+        phase += period;
+        // Preserve the last texel for negative values too small to survive 1+s.
+        if (phase == period)
+            phase = std::nextafter(period, 0.0f);
+    }
+    return phase;
+}
+
+// Integer texel dimension and authored glTF wrap enum are separate units.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+int gltf_index(int index, int dimension, std::uint32_t wrap) {
+    if (wrap == 10497)
+        return (index % dimension + dimension) % dimension;
+    // Mirrored coordinates have already been folded; clamp duplicates edge taps.
+    return std::clamp(index, 0, dimension - 1);
+}
+
+// Mip index and continuous UV coordinates have distinct roles.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+std::optional<Rgba> gltf_level(const ImagePyramid &image, const GltfSampler &sampler,
+                               std::size_t level_index, float s, float t, bool linear) {
+    // NOLINTEND(bugprone-easily-swappable-parameters)
+    const auto &level = image.levels[level_index];
+    const auto words = pixel_count(level.width, level.height) * 4;
+    if (level.width == 0 || level.height == 0 || level.width > max_image_dimension ||
+        level.height > max_image_dimension || level.offset % 4 != 0 ||
+        level.offset > image.texels.size() || words > image.texels.size() - level.offset)
+        return std::nullopt;
+    const auto read = [&](int x, int y) {
+        Rgba result{};
+        const auto index =
+            level.offset +
+            4 * (pixel_count(level.width, static_cast<unsigned>(gltf_index(
+                                              y, static_cast<int>(level.height), sampler.wrap_t))) +
+                 static_cast<unsigned>(
+                     gltf_index(x, static_cast<int>(level.width), sampler.wrap_s)));
+        for (std::size_t c = 0; c < 4; ++c)
+            result[c] = std::bit_cast<float>(image.texels[index + c]);
+        return result;
+    };
+    const float x = gltf_coordinate(s, sampler.wrap_s) * static_cast<float>(level.width);
+    const float y = gltf_coordinate(t, sampler.wrap_t) * static_cast<float>(level.height);
+    if (!linear)
+        return read(static_cast<int>(std::floor(x)), static_cast<int>(std::floor(y)));
+    const float bx = std::floor(x - 0.5f), by = std::floor(y - 0.5f);
+    const auto ix = static_cast<int>(bx), iy = static_cast<int>(by);
+    const float dx = x - 0.5f - bx, dy = y - 0.5f - by;
+    const auto a = read(ix, iy), b = read(ix + 1, iy), c = read(ix, iy + 1),
+               d = read(ix + 1, iy + 1);
+    Rgba result{};
+    for (std::size_t channel = 0; channel < 4; ++channel)
+        result[channel] = (1 - dy) * ((1 - dx) * a[channel] + dx * b[channel]) +
+                          dy * ((1 - dx) * c[channel] + dx * d[channel]);
+    return result;
+}
+
+} // namespace
+
+std::optional<Rgba> gltf_image_rgba(const ImageTexture &texture, float s, float t, float dsdx,
+                                    float dtdx, float dsdy, float dtdy) {
+    if (!texture.image || !texture.gltf_sampler || !texture.image->gltf ||
+        texture.image->storage != ImageStorage::linear_float || texture.image->levels.empty() ||
+        texture.image->levels.size() > 13 || !std::isfinite(s) || !std::isfinite(t) ||
+        !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
+        !std::isfinite(dtdy))
+        return std::nullopt;
+    const auto &image = *texture.image;
+    const auto &sampler = *texture.gltf_sampler;
+    if (!gltf_wrap_valid(sampler.wrap_s) || !gltf_wrap_valid(sampler.wrap_t) ||
+        (sampler.mag_filter != 9728 && sampler.mag_filter != 9729) ||
+        (sampler.min_filter != 9728 && sampler.min_filter != 9729 &&
+         (sampler.min_filter < 9984 || sampler.min_filter > 9987)))
+        return std::nullopt;
+    const auto &base = image.levels.front();
+    // Match the shader's binary32 footprint before the logarithm. In particular,
+    // a rounded 1/NPOT-dimension derivative must land on the same min/mag boundary.
+    const float gradient_scale =
+        std::max({std::abs(dsdx), std::abs(dtdx), std::abs(dsdy), std::abs(dtdy)});
+    float lambda = 32;
+    if (gradient_scale < 8192) {
+        const auto length = [](float x, float y) {
+            // Separate products also prevent contraction at a transition boundary.
+            const volatile float xx = x * x, yy = y * y;
+            return std::sqrt(xx + yy);
+        };
+        const float width = static_cast<float>(base.width),
+                    height = static_cast<float>(base.height);
+        const float rho =
+            std::max(length(dsdx * width, dtdx * height), length(dsdy * width, dtdy * height));
+        lambda = rho > 0 ? std::log2(rho) : -std::numeric_limits<float>::infinity();
+    }
+    // Explicit c=0 min/mag transition, permitted by modern GL and GLES sampling.
+    // Mip-nearest half ties choose the lower mip: ceil(lambda + .5) - 1.
+    const auto filter = lambda <= 0 ? sampler.mag_filter : sampler.min_filter;
+    std::optional<Rgba> result;
+    if (filter == 9728 || filter == 9729) {
+        result = gltf_level(image, sampler, 0, s, t, filter == 9729);
+    } else {
+        const float lod = std::clamp(lambda, 0.0f, static_cast<float>(image.levels.size() - 1));
+        const bool linear = filter == 9985 || filter == 9987;
+        if (filter == 9984 || filter == 9985) {
+            const auto level =
+                static_cast<std::size_t>(std::max(0.0f, std::ceil(lod + 0.5f) - 1.0f));
+            result = gltf_level(image, sampler, level, s, t, linear);
+        } else {
+            const auto lower = static_cast<std::size_t>(std::floor(lod));
+            const auto upper = std::min(lower + 1, image.levels.size() - 1);
+            auto a = gltf_level(image, sampler, lower, s, t, linear);
+            const auto b = gltf_level(image, sampler, upper, s, t, linear);
+            if (a && b) {
+                const auto weight = lod - static_cast<float>(lower);
+                for (std::size_t c = 0; c < 4; ++c)
+                    (*a)[c] = (1 - weight) * (*a)[c] + weight * (*b)[c];
+                result = a;
+            }
+        }
+    }
+    if (result && std::ranges::any_of(*result, [](float v) { return !std::isfinite(v); }))
+        return std::nullopt;
+    return result;
 }
 
 } // namespace rypath

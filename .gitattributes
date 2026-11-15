@@ -30,3 +30,8 @@ tests/fixtures/obj/external/** -text whitespace=-blank-at-eof
 
 # Preserve the licensed upstream STL fixture byte for byte.
 tests/fixtures/stl/external/** -text whitespace=-blank-at-eof,-blank-at-eol
+
+# Preserve pinned glTF dependencies and licensed upstream fixture bytes.
+third_party/cgltf/** -text whitespace=-blank-at-eol,-blank-at-eof
+third_party/mikktspace/** -text whitespace=-blank-at-eol,-blank-at-eof
+tests/fixtures/gltf/external/** -text whitespace=-blank-at-eol,-blank-at-eof

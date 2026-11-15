@@ -334,6 +334,24 @@ constexpr std::array material_fields{
     Field{"normalmap", "string"},
 };
 
+constexpr std::array gltf_material_fields{
+    Field{"basecolor", "rgb", 3, false, false, false, Rule::albedo},
+    Field{"opacity", "float"},
+    Field{"metallic", "float"},
+    Field{"roughness", "float"},
+    Field{"normalscale", "float"},
+    Field{"emissive", "rgb", 3, false, false, false, Rule::albedo},
+    Field{"alphamode", "string"},
+    Field{"alphacutoff", "float"},
+    Field{"doublesided", "bool"},
+    Field{.name = "basecolortexture", .type = "spectral-texture", .allow_texture_reference = true},
+    Field{.name = "metallicroughnesstexture",
+          .type = "spectral-texture",
+          .allow_texture_reference = true},
+    Field{.name = "normaltexture", .type = "spectral-texture", .allow_texture_reference = true},
+    Field{.name = "emissivetexture", .type = "spectral-texture", .allow_texture_reference = true},
+};
+
 constexpr std::array conductor_fields{
     Field{.name = "eta",
           .type = "spectral-texture",
@@ -379,6 +397,11 @@ constexpr std::array imagemap_fields{
     Field{"scale", "float"},
     Field{"invert", "bool"},
     Field{"maxanisotropy", "float"},
+    Field{"rypath.gltf", "bool"},
+    Field{"rypath.wraps", "integer"},
+    Field{"rypath.wrapt", "integer"},
+    Field{"rypath.minfilter", "integer"},
+    Field{"rypath.magfilter", "integer"},
     mapping_fields[0],
     mapping_fields[1],
     mapping_fields[2],
@@ -564,8 +587,9 @@ class Interpreter {
     std::size_t bsdf_working_used_ = 0;
     std::map<std::pair<std::filesystem::path, BsdfTableKind>, std::shared_ptr<const BsdfTable>>
         bsdf_cache_;
-    std::map<std::size_t, std::shared_ptr<const CheckedImageSource>> decoded_images_;
-    using ImageVariant = std::tuple<std::size_t, ImageEncoding, ImageWrap, float, bool>;
+    std::map<std::pair<std::size_t, bool>, std::shared_ptr<const CheckedImageSource>>
+        decoded_images_;
+    using ImageVariant = std::tuple<std::size_t, ImageEncoding, ImageWrap, float, bool, bool>;
     std::map<ImageVariant, std::shared_ptr<const ImagePyramid>> image_pyramids_;
     std::map<const ImagePyramid *, bool> binary_pyramids_;
     ImageLimits image_limits_;
@@ -599,7 +623,8 @@ class Interpreter {
     void imagemap(const Directive &directive, bool spectrum, bool unique);
     void procedural_texture(const Directive &directive, bool spectrum, bool unique);
     void texture_mapping(Descriptor &descriptor, bool spatial = false);
-    std::shared_ptr<const CheckedImageSource> image_source(const Value &filename);
+    std::shared_ptr<const CheckedImageSource> image_source(const Value &filename,
+                                                           bool gltf = false);
     void native_image(Descriptor &descriptor, string_view field, ImageEncoding encoding,
                       ImageWrap wrap, bool square = false);
     bool binary_image(const ImagePyramid &image);
@@ -607,11 +632,12 @@ class Interpreter {
     void emitter_masks();
     void shape_controls(const Descriptor &descriptor);
     std::shared_ptr<const DecodedImage> decode_image(const std::filesystem::path &path,
-                                                     const Location &source);
+                                                     const Location &source, bool gltf = false);
     std::shared_ptr<const ImagePyramid> image_pyramid(const Location &location,
                                                       const CheckedImageSource &source,
                                                       ImageEncoding encoding, ImageWrap wrap,
-                                                      float gamma = 1, bool native = false);
+                                                      float gamma = 1, bool native = false,
+                                                      bool gltf = false);
     void light(const Directive &directive);
     std::shared_ptr<const CheckedSpectrumSource> spectrum_file(const Value &filename);
     void shape(const Directive &directive);
@@ -1366,7 +1392,7 @@ void Interpreter::material(const Directive &directive) {
     dependencies(directive, "material", type);
     if (!one_of(type, {"diffuse", "conductor", "dielectric", "thindielectric", "coateddiffuse",
                        "coatedconductor", "diffusetransmission", "mix", "measured", "fourier",
-                       "interface", "none", ""})) {
+                       "interface", "none", "", "rypath-gltf-v1"})) {
         deferred_type(directive, type,
                       one_of(type, {"", "none", "interface", "hair", "subsurface"}), "material");
         return;
@@ -1378,7 +1404,9 @@ void Interpreter::material(const Directive &directive) {
     };
     if (named)
         schema.push_back(Field{"type", "string", 1, false, true});
-    if (type == "diffuse" || type == "diffusetransmission")
+    if (type == "rypath-gltf-v1")
+        add(gltf_material_fields);
+    else if (type == "diffuse" || type == "diffusetransmission")
         add(material_fields);
     else if (type == "conductor")
         add(conductor_fields);
@@ -1486,6 +1514,25 @@ void Interpreter::material(const Directive &directive) {
                 input.visited = descriptor.bsdf_table != nullptr;
             }
         }
+    }
+    if (type == "rypath-gltf-v1") {
+        for (const auto name : {"opacity", "metallic", "roughness", "alphacutoff", "normalscale"}) {
+            if (fields.contains(name)) {
+                const auto &v = fields.at(name)->values.front();
+                const bool unit = one_of(name, {"opacity", "metallic", "roughness"});
+                if (!representable_float(v.number) ||
+                    (name != string_view("normalscale") && v.number < 0) || (unit && v.number > 1))
+                    error("invalid-parameter", v.location, "Invalid glTF material factor");
+            }
+        }
+        if (fields.contains("alphamode") &&
+            !one_of(fields.at("alphamode")->values.front().text, {"OPAQUE", "MASK", "BLEND"}))
+            error("invalid-parameter", fields.at("alphamode")->location, "Unknown glTF alpha mode");
+        for (const auto name :
+             {"basecolortexture", "metallicroughnesstexture", "normaltexture", "emissivetexture"})
+            if (fields.contains(name) && fields.at(name)->type != "texture")
+                error("invalid-parameter", fields.at(name)->location,
+                      "glTF image slots require named texture references");
     }
     native_image(descriptor, "normalmap", ImageEncoding::linear, ImageWrap::repeat);
     if (named) {
@@ -2235,8 +2282,51 @@ void Interpreter::imagemap(const Directive &directive, bool spectrum, bool uniqu
         previous_issues != result_.document.diagnostics.size()) {
         return;
     }
-    if (auto source = image_source(filename)) {
-        texture.image = image_pyramid(filename.location, *source, encoding, wrap, gamma);
+    const bool gltf =
+        fields.contains("rypath.gltf") && fields.at("rypath.gltf")->values.front().boolean;
+    if (gltf) {
+        GltfSampler sampler;
+        const auto setting = [&](string_view field, std::uint32_t fallback, auto allowed) {
+            if (!fields.contains(field))
+                return fallback;
+            const auto value = fields.at(field)->values.front().integer;
+            if (std::ranges::find(allowed, value) == allowed.end()) {
+                error("invalid-parameter", source_location(field), "Invalid glTF sampler mode");
+                return fallback;
+            }
+            return static_cast<std::uint32_t>(value);
+        };
+        sampler.wrap_s = setting("rypath.wraps", 10497, std::array{10497, 33071, 33648});
+        sampler.wrap_t = setting("rypath.wrapt", 10497, std::array{10497, 33071, 33648});
+        sampler.min_filter =
+            setting("rypath.minfilter", 9987, std::array{9728, 9729, 9984, 9985, 9986, 9987});
+        sampler.mag_filter = setting("rypath.magfilter", 9729, std::array{9728, 9729});
+        texture.gltf_sampler = sampler;
+        if (!spectrum || (encoding != ImageEncoding::srgb && encoding != ImageEncoding::linear))
+            error("invalid-parameter", directive.location,
+                  "glTF images require spectrum type and sRGB or linear encoding");
+        for (const auto field : {"filter", "wrap", "scale", "invert", "maxanisotropy", "mapping",
+                                 "uscale", "vscale", "udelta", "vdelta", "v1", "v2"})
+            if (fields.contains(field))
+                error("invalid-parameter", source_location(field),
+                      "Standard imagemap controls cannot be mixed with glTF samplers");
+    } else {
+        for (const auto field :
+             {"rypath.wraps", "rypath.wrapt", "rypath.minfilter", "rypath.magfilter"})
+            if (fields.contains(field))
+                error("invalid-parameter", source_location(field),
+                      "glTF sampler parameters require rypath.gltf=true");
+    }
+    if (previous_issues != result_.document.diagnostics.size())
+        return;
+    if (auto source = image_source(filename, gltf)) {
+        if (gltf && source->pixels->file_format != ImageFileFormat::png &&
+            source->pixels->file_format != ImageFileFormat::jpeg) {
+            error("invalid-image", filename.location, "glTF images require PNG or JPEG");
+            return;
+        }
+        texture.image =
+            image_pyramid(filename.location, *source, encoding, wrap, gamma, false, gltf);
         if (texture.image) {
             auto &images = spectrum ? scene_.spectrum_image_textures : scene_.float_image_textures;
             images.push_back({std::move(descriptor), std::move(source), std::move(texture)});
@@ -2244,7 +2334,8 @@ void Interpreter::imagemap(const Directive &directive, bool spectrum, bool uniqu
     }
 }
 
-std::shared_ptr<const CheckedImageSource> Interpreter::image_source(const Value &filename) {
+std::shared_ptr<const CheckedImageSource> Interpreter::image_source(const Value &filename,
+                                                                    bool gltf) {
     const auto index = dependency(DependencyKind::image, filename);
     if (!index) {
         return {};
@@ -2253,9 +2344,9 @@ std::shared_ptr<const CheckedImageSource> Interpreter::image_source(const Value 
     if (!input.exists) {
         return {};
     }
-    auto [cached, first_attempt] = decoded_images_.try_emplace(*index);
+    auto [cached, first_attempt] = decoded_images_.try_emplace(std::pair{*index, gltf});
     if (first_attempt) {
-        if (auto pixels = decode_image(input.resolved_path, filename.location)) {
+        if (auto pixels = decode_image(input.resolved_path, filename.location, gltf)) {
             cached->second = std::make_shared<const CheckedImageSource>(
                 CheckedImageSource{input.resolved_path, std::move(pixels)});
             input.visited = true;
@@ -2302,7 +2393,7 @@ void Interpreter::shape_controls(const Descriptor &descriptor) {
 }
 
 std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesystem::path &path,
-                                                              const Location &source) {
+                                                              const Location &source, bool gltf) {
     auto extension = path.extension().string();
     std::ranges::transform(extension, extension.begin(), [](unsigned char character) {
         return static_cast<char>(std::tolower(character));
@@ -2349,7 +2440,7 @@ std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesys
         auto decoded = jpeg                  ? decode_jpeg(data, image_limits_)
                        : extension == ".exr" ? decode_exr(data, image_limits_)
                        : extension == ".hdr" ? decode_hdr(data, image_limits_)
-                                             : decode_png(data, image_limits_);
+                                             : decode_png(data, image_limits_, gltf);
         if (!decoded.value) {
             issue(decoded.unsupported ? Severity::unsupported : Severity::error,
                   decoded.unsupported      ? "unsupported-feature"
@@ -2366,24 +2457,28 @@ std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesys
     }
 }
 
-std::shared_ptr<const ImagePyramid>
-Interpreter::image_pyramid(const Location &location, const CheckedImageSource &source,
-                           ImageEncoding encoding, ImageWrap wrap, float gamma, bool native) {
-    encoding = image_effective_encoding(*source.pixels, encoding);
+std::shared_ptr<const ImagePyramid> Interpreter::image_pyramid(const Location &location,
+                                                               const CheckedImageSource &source,
+                                                               ImageEncoding encoding,
+                                                               ImageWrap wrap, float gamma,
+                                                               bool native, bool gltf) {
+    if (!gltf)
+        encoding = image_effective_encoding(*source.pixels, encoding);
     if (encoding != ImageEncoding::gamma) {
         gamma = 1;
     }
     const auto dependency_index =
         inventoried_paths_.at({DependencyKind::image, source.resolved_path});
-    auto [cached, first_attempt] =
-        image_pyramids_.try_emplace(ImageVariant{dependency_index, encoding, wrap, gamma, native});
+    auto [cached, first_attempt] = image_pyramids_.try_emplace(
+        ImageVariant{dependency_index, encoding, wrap, gamma, native, gltf});
     if (!first_attempt) {
         return cached->second;
     }
     try {
         auto pyramid =
-            native ? build_image_base(*source.pixels, encoding, wrap, image_limits_, gamma)
-                   : build_image_pyramid(*source.pixels, encoding, wrap, image_limits_, gamma);
+            gltf     ? build_gltf_image_pyramid(*source.pixels, encoding, image_limits_)
+            : native ? build_image_base(*source.pixels, encoding, wrap, image_limits_, gamma)
+                     : build_image_pyramid(*source.pixels, encoding, wrap, image_limits_, gamma);
         if (!pyramid.value) {
             issue(pyramid.unsupported ? Severity::unsupported : Severity::error,
                   pyramid.unsupported      ? "unsupported-feature"

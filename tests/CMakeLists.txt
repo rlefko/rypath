@@ -1,3 +1,12 @@
+# glTF portable image and scene contracts.
+foreach(suite IN ITEMS gltf_texture gltf_scene)
+    add_executable(rypath_${suite}_tests ${suite}_tests.cpp)
+    target_link_libraries(rypath_${suite}_tests PRIVATE rypath_pbrt_render rypath_checkpoint rypath_mesh_bundle)
+    rypath_configure_host_target(rypath_${suite}_tests)
+    add_test(NAME gltf.${suite} COMMAND rypath_${suite}_tests)
+    set_tests_properties(gltf.${suite} PROPERTIES TIMEOUT 30)
+endforeach()
+
 include(cli_availability.cmake)
 
 foreach(suite IN ITEMS stl stl_bundle)
@@ -164,6 +173,8 @@ string(CONCAT help_text
     "       rypath --check-pbrt SCENE\n"
     "       rypath --check-obj MODEL.obj\n"
     "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
+    "       rypath --check-gltf MODEL [--gltf-scene INDEX]\n"
+    "       rypath --convert-gltf MODEL --output DIRECTORY [--gltf-scene INDEX]\n"
     "       rypath --check-stl MODEL.stl [--stl-colors auto|viscam|magics]\n"
     "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
     "              [--stl-colors auto|viscam|magics]\n"
@@ -204,6 +215,26 @@ add_test(NAME cli.stl_import COMMAND "${CMAKE_COMMAND}"
     "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/stl-cli"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/check_stl_cli.cmake")
 set_tests_properties(cli.stl_import PROPERTIES TIMEOUT 30)
+
+add_cli_test(gltf_missing_model 1 "" "${error_text}" --check-gltf)
+add_cli_test(gltf_option_as_model 1 "" "${error_text}" --check-gltf --version)
+add_cli_test(gltf_extra_argument 1 "" "${error_text}" --check-gltf input.gltf --version)
+add_cli_test(gltf_check_output 1 "" "${error_text}" --check-gltf input.gltf --output unused)
+add_cli_test(gltf_convert_missing_output 1 "" "${error_text}" --convert-gltf input.gltf)
+add_cli_test(gltf_convert_empty_output 1 "" "${error_text}" --convert-gltf input.gltf --output)
+add_cli_test(gltf_convert_unknown_option 1 "" "${error_text}" --convert-gltf input.gltf --foo value)
+add_cli_test(gltf_duplicate_output 1 "" "${error_text}" --convert-gltf input.gltf --output a --output b)
+add_cli_test(gltf_missing_scene_index 1 "" "${error_text}" --check-gltf input.gltf --gltf-scene)
+add_cli_test(gltf_malformed_scene_index 1 "" "${error_text}" --check-gltf input.gltf --gltf-scene 1px)
+add_cli_test(gltf_negative_scene_index 1 "" "${error_text}" --check-gltf input.gltf --gltf-scene -1)
+add_cli_test(gltf_overflow_scene_index 1 "" "${error_text}" --check-gltf input.gltf --gltf-scene 18446744073709551616)
+add_cli_test(gltf_duplicate_scene_index 1 "" "${error_text}" --check-gltf input.gltf --gltf-scene 0 --gltf-scene 1)
+add_test(NAME cli.gltf_import COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>"
+    "-Dfixture=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/gltf/external/Triangle/glTF/Triangle.gltf"
+    "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/gltf-cli"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_gltf_cli.cmake")
+set_tests_properties(cli.gltf_import PROPERTIES TIMEOUT 30)
 
 add_cli_test(no_arguments 0 "${help_text}" "")
 add_cli_test(help 0 "${help_text}" "" --help)
@@ -914,5 +945,62 @@ if(RYPATH_ENABLE_METAL)
     set_tests_properties(metal.homogeneous_transport PROPERTIES TIMEOUT 180)
     if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
         set_tests_properties(metal.homogeneous_transport PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_gltf_render_tests gltf_render_tests.cpp)
+    target_link_libraries(rypath_gltf_render_tests PRIVATE rypath_metal_backend rypath_pbrt_render rypath_checkpoint)
+    rypath_configure_host_target(rypath_gltf_render_tests)
+    set_target_properties(rypath_gltf_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    add_test(NAME metal.gltf_render COMMAND rypath_gltf_render_tests)
+    set_tests_properties(metal.gltf_render PROPERTIES TIMEOUT 180)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_gltf_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        target_compile_definitions(rypath_gltf_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_RAY_TRACING=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.gltf_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_gltf_probe gltf_probe.mm)
+    target_link_libraries(rypath_gltf_probe PRIVATE rypath_metal_backend rypath_render)
+    rypath_configure_host_target(rypath_gltf_probe)
+    set_target_properties(rypath_gltf_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_gltf_probe PRIVATE -fobjc-arc)
+    add_test(NAME metal.gltf_bsdf COMMAND rypath_gltf_probe "${rypath_metal_library}")
+    set_tests_properties(metal.gltf_bsdf PROPERTIES TIMEOUT 120)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_gltf_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.gltf_bsdf PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+foreach(suite IN ITEMS gltf gltf_bundle)
+    add_executable(rypath_${suite}_tests ${suite}_tests.cpp)
+    target_link_libraries(rypath_${suite}_tests PRIVATE rypath_gltf)
+    target_compile_definitions(rypath_${suite}_tests PRIVATE RYPATH_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    rypath_configure_host_target(rypath_${suite}_tests)
+    add_test(NAME import.${suite} COMMAND rypath_${suite}_tests)
+    set_tests_properties(import.${suite} PROPERTIES TIMEOUT 60)
+endforeach()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_gltf_texture_probe gltf_texture_probe.mm)
+    target_link_libraries(rypath_gltf_texture_probe PRIVATE rypath_metal_backend rypath_render)
+    rypath_configure_host_target(rypath_gltf_texture_probe)
+    set_target_properties(rypath_gltf_texture_probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_gltf_texture_probe PRIVATE -fobjc-arc)
+    add_test(NAME metal.gltf_textures COMMAND rypath_gltf_texture_probe "${rypath_metal_library}")
+    set_tests_properties(metal.gltf_textures PROPERTIES TIMEOUT 60)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_gltf_texture_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.gltf_textures PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()

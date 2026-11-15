@@ -24,7 +24,7 @@ def wire(count=3, target=3, segments=None, sums=(2., 3., 4.), correction=(0., 0.
             raw = text.encode()
             metadata += struct.pack('<I', len(raw)) + raw
     payload = PIXEL.pack(*sums, *correction, count)
-    data = HEADER.pack(b'RYPCHK\r\n', 1, 1, 1, 1, 1, len(metadata), len(payload)) + metadata + payload
+    data = HEADER.pack(b'RYPCHK\r\n', 1, 2, 2, 1, 1, len(metadata), len(payload)) + metadata + payload
     return data + hashlib.sha256(data).digest()
 
 

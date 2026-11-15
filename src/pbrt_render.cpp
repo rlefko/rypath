@@ -1050,7 +1050,8 @@ void Translator::image_textures() {
                                    definition.source->pixels->file_format);
         if (spectrum) {
             image_indices_.emplace(name, index);
-            if (definition.descriptor.texture_mapping.kind == graph::uv) {
+            if (!definition.texture.gltf_sampler &&
+                definition.descriptor.texture_mapping.kind == graph::uv) {
                 SpectralMaterial material;
                 material.kind = SpectralMaterialKind::image;
                 material.image_texture = index;
@@ -1222,6 +1223,34 @@ std::uint32_t Translator::compile_texture(const Descriptor &descriptor) {
 }
 
 void Translator::compile_textures() {
+    const auto reject_gltf_graph_reference = [&](const Descriptor &descriptor) {
+        const auto type = descriptor.authored.name == "MakeNamedMaterial"
+                              ? string(descriptor, "type").value_or("")
+                          : descriptor.authored.name == "Material"
+                              ? string_view(descriptor.authored.arguments.front().text)
+                              : string_view{};
+        if (type == "rypath-gltf-v1")
+            return;
+        const auto check = [&](const Parameter &p) {
+            if (p.type != "texture" || p.values.size() != 1)
+                return;
+            for (const auto &image : input_.spectrum_image_textures)
+                if (image.texture.gltf_sampler &&
+                    image.descriptor.authored.arguments.front().text == p.values.front().text)
+                    invalid(p.location,
+                            "glTF imagemaps can only bind directly to glTF material slots");
+        };
+        for (const auto &p : descriptor.authored.parameters)
+            check(p);
+        for (const auto &p : descriptor.inherited)
+            check(*p.parameter);
+    };
+    for (const auto &d : input_.named_materials)
+        reject_gltf_graph_reference(d);
+    for (const auto &d : input_.inline_materials)
+        reject_gltf_graph_reference(*d);
+    for (const auto &d : input_.procedural_textures)
+        reject_gltf_graph_reference(d);
     std::set<string_view> bounded_surface_spectra;
     const auto mark_direct_spectrum = [&](const Descriptor &material) {
         const auto type = material.authored.name == "MakeNamedMaterial"
@@ -1300,6 +1329,8 @@ void Translator::compile_textures() {
         if (arguments[1].text == "spectrum" &&
             optical_only_spectra_.contains(arguments.front().text))
             continue;
+        if (boolean(descriptor, "rypath.gltf", false))
+            continue;
         const auto root = compile_texture(descriptor);
         if (root != graph::no_texture) {
             texture_roots_[arguments[1].text == "spectrum"].emplace(arguments.front().text, root);
@@ -1312,6 +1343,8 @@ void Translator::compile_textures() {
         const auto &descriptor = input_.texture_descriptor(ref);
         if (descriptor.authored.arguments[1].text != "spectrum" ||
             !optical_spectra_.contains(descriptor.authored.arguments.front().text))
+            continue;
+        if (boolean(descriptor, "rypath.gltf", false))
             continue;
         const auto root = compile_texture(descriptor);
         if (root != graph::no_texture)
@@ -1372,7 +1405,8 @@ void Translator::displace_geometry(std::size_t remaining) {
         auto &mesh = scene_.geometry.meshes[shape.mesh_index];
         const auto original_values = 3 * (mesh.positions.size() + mesh.normals.size() +
                                           mesh.triangles.size() + mesh.tangents.size()) +
-                                     2 * mesh.uvs.size() + 4 * mesh.patches.size();
+                                     mesh.tangent_signs.size() + 2 * mesh.uvs.size() +
+                                     4 * mesh.patches.size();
         const auto evaluate = [&](GeometryPoint p, std::array<float, 2> uv) {
             graph::Context context{};
             context.p = {p.x, p.y, p.z};
@@ -1602,6 +1636,64 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
                           ? string(descriptor, "type").value_or("")
                           : string_view(descriptor.authored.arguments.front().text);
     SpectralMaterial value;
+    if (type == "rypath-gltf-v1") {
+        value.scattering = ScatteringKind::gltf;
+        auto &g = value.gltf;
+        const auto factor = [&](string_view name, float fallback, bool unit = true) {
+            const auto result = narrow(descriptor, name, fallback).value_or(fallback);
+            if (result < 0 || (unit && result > 1))
+                invalid(location(descriptor, name), "glTF factor is outside its supported range");
+            return result;
+        };
+        g.base_color[3] = factor("opacity", 1);
+        g.metallic = factor("metallic", 1);
+        g.roughness = factor("roughness", 1);
+        g.normal_scale = narrow(descriptor, "normalscale", 1).value_or(1);
+        g.alpha_cutoff = factor("alphacutoff", .5f, false);
+        g.double_sided = boolean(descriptor, "doublesided", false);
+        for (const auto name : {"basecolor", "emissive"}) {
+            if (const auto *selected = parameter(descriptor, name)) {
+                for (std::size_t i = 0; i < 3; ++i) {
+                    const auto component = selected->values[i].number;
+                    if (!float_representable(component) || component < 0 || component > 1)
+                        invalid(selected->location, "glTF RGB factors must be in [0,1]");
+                    if (name == string_view("basecolor"))
+                        g.base_color[i] = static_cast<float>(component);
+                    else
+                        g.emissive[i] = static_cast<float>(component);
+                }
+            }
+        }
+        const auto mode = string(descriptor, "alphamode").value_or("OPAQUE");
+        g.alpha_mode = mode == "MASK" ? 1 : mode == "BLEND" ? 2 : 0;
+        if (mode != "OPAQUE" && mode != "MASK" && mode != "BLEND")
+            invalid(location(descriptor, "alphamode"), "Unknown glTF alpha mode");
+        const auto image = [&](string_view name, bool color) -> std::uint32_t {
+            const auto *selected = parameter(descriptor, name);
+            if (!selected)
+                return graph::no_texture;
+            if (selected->type != "texture") {
+                invalid(selected->location, "glTF image bindings require named imagemaps");
+                return graph::no_texture;
+            }
+            const auto found = image_indices_.find(selected->values.front().text);
+            if (found == image_indices_.end()) {
+                invalid(selected->location, "glTF image binding requires a spectrum imagemap");
+                return graph::no_texture;
+            }
+            const auto &texture = scene_.image_textures[found->second];
+            if (!texture.gltf_sampler || !texture.image || !texture.image->gltf ||
+                texture.image->encoding != (color ? ImageEncoding::srgb : ImageEncoding::linear))
+                invalid(selected->location, "glTF image binding requires a glTF imagemap with "
+                                            "matching color/data encoding");
+            return found->second;
+        };
+        g.base_color_texture = image("basecolortexture", true);
+        g.metallic_roughness_texture = image("metallicroughnesstexture", false);
+        g.normal_texture = image("normaltexture", false);
+        g.emissive_texture = image("emissivetexture", true);
+        return append_material(std::move(value));
+    }
     if (type == "interface" || type == "none" || type.empty()) {
         value.scattering = ScatteringKind::null_interface;
         return append_material(std::move(value));
@@ -1709,6 +1801,9 @@ std::uint32_t Translator::material(const Descriptor &descriptor) {
                 scene_.materials[value.surface.second_material].scattering ==
                     ScatteringKind::null_interface)
                 invalid(materials->location, "An interface material cannot be a mix child");
+            if (scene_.materials[value.surface.first_material].scattering == ScatteringKind::gltf ||
+                scene_.materials[value.surface.second_material].scattering == ScatteringKind::gltf)
+                invalid(materials->location, "glTF materials cannot be mix children");
         } else
             invalid(descriptor.authored.location,
                     "Mix material requires two checked material names");
@@ -1793,7 +1888,8 @@ void Translator::geometry() {
         for (const auto &[count, width] :
              {std::pair{mesh.positions.size(), 3U}, std::pair{mesh.triangles.size(), 3U},
               std::pair{mesh.normals.size(), 3U}, std::pair{mesh.uvs.size(), 2U},
-              std::pair{mesh.patches.size(), 4U}, std::pair{mesh.tangents.size(), 3U}}) {
+              std::pair{mesh.patches.size(), 4U}, std::pair{mesh.tangents.size(), 3U},
+              std::pair{mesh.tangent_signs.size(), 1U}}) {
             if (count > remaining / width) {
                 issue(Severity::error, "limit-exceeded", entry_,
                       "Translated geometry value limit exceeded");
@@ -1838,9 +1934,11 @@ void Translator::geometry() {
         const Shape *shape = nullptr;
         std::uint32_t alpha = graph::no_texture;
         bool invisible_emitter = false;
+        std::uint32_t gltf_emission = no_area_emission;
     };
     std::vector<MeshBinding> bindings(geometry.meshes.size());
     std::map<const Descriptor *, std::uint32_t> area_lights;
+    std::map<std::uint32_t, std::uint32_t> gltf_emissions;
     const auto bind = [&](const Shape &shape) {
         const auto &binding = shape.material;
         auto &mesh = bindings[shape.mesh_index];
@@ -1864,6 +1962,64 @@ void Translator::geometry() {
         } else if (binding.inline_material) {
             mesh.material = inline_materials.at(binding.inline_material.get());
         }
+        const auto &material = scene_.materials[mesh.material];
+        if (material.scattering == ScatteringKind::gltf) {
+            if (mesh.alpha != graph::no_texture || shape.area_light)
+                invalid(shape.descriptor.authored.location,
+                        "glTF material cannot mix with shape alpha or AreaLightSource");
+            const auto &g = material.gltf;
+            const auto &geometry_mesh = geometry.meshes[shape.mesh_index];
+            if (!geometry_mesh.patches.empty())
+                unsupported(shape.descriptor.authored.location,
+                            "glTF materials require triangle geometry");
+            if ((g.base_color_texture != graph::no_texture ||
+                 g.metallic_roughness_texture != graph::no_texture ||
+                 g.normal_texture != graph::no_texture ||
+                 g.emissive_texture != graph::no_texture) &&
+                geometry_mesh.uvs.empty())
+                invalid(shape.descriptor.authored.location,
+                        "glTF image bindings require explicit vertex UV coordinates");
+            if (g.normal_texture != graph::no_texture && geometry_mesh.tangent_signs.empty())
+                invalid(shape.descriptor.authored.location,
+                        "glTF normal maps require complete signed tangent frames");
+            if (g.alpha_mode != 0 && shape.media.inside != shape.media.outside)
+                invalid(shape.descriptor.authored.location,
+                        "glTF alpha cannot cross a medium interface");
+            if (std::ranges::any_of(g.emissive, [](float v) { return v > 0; })) {
+                bool opaque = g.base_color[3] == 1;
+                if (g.base_color_texture != graph::no_texture) {
+                    const auto &image = *scene_.image_textures[g.base_color_texture].image;
+                    const auto &base = image.levels.front();
+                    const auto end =
+                        std::size_t(base.offset) + std::size_t(base.width) * base.height * 4;
+                    for (std::size_t i = base.offset + 3; opaque && i < end; i += 4)
+                        opaque = image.texels[i] == std::bit_cast<std::uint32_t>(1.0f);
+                }
+                if (g.alpha_mode == 2 && !opaque)
+                    unsupported(shape.descriptor.authored.location,
+                                "Fractional BLEND emission is unsupported");
+                if (const auto found = gltf_emissions.find(mesh.material);
+                    found != gltf_emissions.end()) {
+                    mesh.gltf_emission = found->second;
+                } else {
+                    AreaEmission area;
+                    area.gltf_material = mesh.material;
+                    // Match the established RGB image-light photometric convention.
+                    area.image_scale = static_cast<float>(1. / pbrt_y_inner_product(pbrt_d65()));
+                    area.two_sided = g.double_sided;
+                    if (scene_.area_emissions.size() >= no_area_emission ||
+                        area.radiance.size() > limits_.total_values - spectral_values_) {
+                        issue(Severity::error, "limit-exceeded", shape.descriptor.authored.location,
+                              "Translated glTF area light table limit exceeded");
+                        return;
+                    }
+                    spectral_values_ += area.radiance.size();
+                    mesh.gltf_emission = static_cast<std::uint32_t>(scene_.area_emissions.size());
+                    gltf_emissions.emplace(mesh.material, mesh.gltf_emission);
+                    scene_.area_emissions.push_back(area);
+                }
+            }
+        }
         if (scene_.materials[mesh.material].scattering == ScatteringKind::null_interface &&
             shape.area_light)
             invalid(shape.descriptor.authored.location,
@@ -1877,6 +2033,11 @@ void Translator::geometry() {
     std::ranges::for_each(input_.shapes, bind);
     for (const auto &object : input_.objects) {
         std::ranges::for_each(object.shapes, bind);
+        for (const auto &shape : object.shapes)
+            if (bindings[shape.mesh_index].gltf_emission != no_area_emission)
+                unsupported(shape.descriptor.authored.location,
+                            "Emitting glTF object members are unsupported; place emitter geometry "
+                            "directly");
     }
 
     for (const auto &descriptor : input_.area_lights) {
@@ -1936,7 +2097,7 @@ void Translator::geometry() {
     }
     scene_.instance_materials.reserve(geometry.instances.size());
     scene_.instance_reverse_orientation.reserve(geometry.instances.size());
-    if (!area_lights.empty()) {
+    if (!scene_.area_emissions.empty()) {
         scene_.instance_emissions.reserve(geometry.instances.size());
     }
     // Every placement prepares normals here and during portable scene validation.
@@ -1990,20 +2151,23 @@ void Translator::geometry() {
         if (!normal_error.empty()) {
             invalid(shape.descriptor.authored.location, normal_error);
         }
-        if (!area_lights.empty()) {
+        if (!scene_.area_emissions.empty()) {
             const auto emission_index =
-                shape.area_light ? area_lights.at(shape.area_light.get()) : no_area_emission;
+                shape.area_light ? area_lights.at(shape.area_light.get()) : binding.gltf_emission;
             scene_.instance_emissions.push_back(emission_index);
-            if (shape.area_light) {
+            if (emission_index != no_area_emission) {
                 const auto message = validate_area_geometry(mesh, instance.transform);
                 if (!message.empty()) {
                     invalid(shape.descriptor.authored.location, message);
                 } else if (normal_error.empty() && emission_index != no_area_emission) {
                     const auto &area = scene_.area_emissions[emission_index];
-                    const auto normal_message = validate_normal_emission(
-                        mesh, instance.transform, reverse_winding, area.two_sided, shading_normals);
-                    if (!normal_message.empty()) {
-                        unsupported(shape.descriptor.authored.location, normal_message);
+                    if (area.gltf_material == UINT32_MAX) {
+                        const auto normal_message =
+                            validate_normal_emission(mesh, instance.transform, reverse_winding,
+                                                     area.two_sided, shading_normals);
+                        if (!normal_message.empty()) {
+                            unsupported(shape.descriptor.authored.location, normal_message);
+                        }
                     }
                 }
             }
