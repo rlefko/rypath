@@ -189,9 +189,14 @@ struct Medium {
     float emission[471];
     float g;
 };
-struct PointLight {
+enum : Word { point_light = 0, spot_light = 1 };
+struct PositionalLight {
     Point position;
     float intensity[471];
+    Word kind;
+    float light_from_world[9];
+    float cos_falloff_start;
+    float cos_falloff_end;
 };
 struct AreaEmission {
     float radiance[471];
@@ -273,8 +278,8 @@ struct Parameters {
     Word medium_count;
     Word camera_medium = 0xffffffffu;
     Word boundary_limit = 4096;
-    Word point_begin;
-    Word point_count;
+    Word positional_begin;
+    Word positional_count;
 };
 struct Sample {
     Word status;
@@ -335,9 +340,12 @@ static_assert(sizeof(Instance) == 108 && alignof(Instance) == 4 &&
 static_assert(sizeof(Medium) == 5656 && alignof(Medium) == 4 &&
                   __builtin_offsetof(Medium, g) == 5652,
               "homogeneous medium layout");
-static_assert(sizeof(PointLight) == 1896 && alignof(PointLight) == 4 &&
-                  __builtin_offsetof(PointLight, intensity) == 12,
-              "point light layout");
+static_assert(sizeof(PositionalLight) == 1944 && alignof(PositionalLight) == 4 &&
+                  __builtin_offsetof(PositionalLight, intensity) == 12 &&
+                  __builtin_offsetof(PositionalLight, kind) == 1896 &&
+                  __builtin_offsetof(PositionalLight, light_from_world) == 1900 &&
+                  __builtin_offsetof(PositionalLight, cos_falloff_start) == 1936,
+              "positional light layout");
 static_assert(sizeof(AreaEmission) == 1900 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
               "render area emission layout");
@@ -349,8 +357,8 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
 static_assert(sizeof(Parameters) == 212 && alignof(Parameters) == 4 &&
-                  __builtin_offsetof(Parameters, point_begin) == 204 &&
-                  __builtin_offsetof(Parameters, point_count) == 208 &&
+                  __builtin_offsetof(Parameters, positional_begin) == 204 &&
+                  __builtin_offsetof(Parameters, positional_count) == 208 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&
                   __builtin_offsetof(Parameters, width) == 84 &&
                   __builtin_offsetof(Parameters, lane_count) == 120 &&

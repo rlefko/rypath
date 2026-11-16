@@ -201,6 +201,13 @@ class Canonical {
         FIELD(position);
         FIELD(intensity);
     }
+    void value(const SpotLight &x) {
+        FIELD(position);
+        FIELD(intensity);
+        FIELD(light_from_world);
+        FIELD(cos_falloff_start);
+        FIELD(cos_falloff_end);
+    }
     void value(const HomogeneousMedium &x) {
         FIELD(sigma_a);
         FIELD(sigma_s);
@@ -272,6 +279,7 @@ class Canonical {
     }
     void value(const RenderScene &x) {
         FIELD(point_lights);
+        FIELD(spot_lights);
         FIELD(geometry);
         FIELD(materials);
         FIELD(instance_materials);

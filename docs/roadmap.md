@@ -100,10 +100,15 @@ clarifies the work; completion is recorded in [status](status.md).
     absorption-coupled emission under explicit `volpath`, HG phase sampling,
     scoped interfaces, null boundaries and all 47 measured presets. Independent
     analytic/Metal/PBRT validation; heterogeneous media remain separate.
+    Isolate the inherited large bounded-fog arithmetic failure recorded during
+    [spot demonstrations](spot-light-validation.md#demonstration-images-and-a-bounded-medium-follow-up)
+    as a numerical-reliability follow-up.
 32. **Broader PBRT rendering:** spectral point lighting adds a bounded all-point
     estimator for surfaces and homogeneous media, including geometry-free volumes.
     See [point-light validation](point-light-validation.md). Spectral spot lights
-    are the next bounded lighting extension; wider color spaces, additional
+    extend the same surface/volume estimator with affine cones and cubic cosine
+    falloff; see [spot validation](spot-light-validation.md). Spectral distant
+    lights are the next bounded lighting extension; wider color spaces, additional
     filters/samplers and faithfully rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented

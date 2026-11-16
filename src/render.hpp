@@ -160,10 +160,19 @@ struct AreaEmission {
     float image_scale = 1;
     std::uint32_t gltf_material = UINT32_MAX;
 };
-inline constexpr std::uint32_t max_point_lights = 64;
+inline constexpr std::uint32_t max_positional_lights = 64;
+inline constexpr std::uint32_t max_point_lights = max_positional_lights;
 struct PointLight {
     GeometryPoint position{};
     std::array<float, 471> intensity{};
+};
+struct SpotLight {
+    GeometryPoint position{};
+    std::array<float, 471> intensity{};
+    // Row-major inverse direction map; a common positive scale is immaterial.
+    std::array<float, 9> light_from_world{1, 0, 0, 0, 1, 0, 0, 0, 1};
+    float cos_falloff_start = 1;
+    float cos_falloff_end = 0;
 };
 struct SurfaceTransforms {
     std::array<double, 16> shape{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -183,6 +192,7 @@ struct RenderScene {
     std::vector<std::uint32_t> instance_reverse_orientation{};
     std::vector<AreaEmission> area_emissions{};
     std::vector<PointLight> point_lights{};
+    std::vector<SpotLight> spot_lights{};
     // Empty or one emission index (or no_area_emission) per source instance.
     std::vector<std::uint32_t> instance_emissions{};
     PixelFilter filter{};

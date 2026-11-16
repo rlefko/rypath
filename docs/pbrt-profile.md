@@ -31,7 +31,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
 | Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
 | Constant and image infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
-| Point-light intensity, power, position and declaration transform | Retained, including inherited parameters and endpoint medium | Checked spectral dependencies, finite parameters and a 64-light limit | See the [render profile](pbrt-rendering.md#point-lights) |
+| Point/spot intensity, power, position, cone and declaration transform | Retained, including inherited parameters and endpoint medium | Checked spectral dependencies, finite parameters, spot angle/endpoint domains and a combined 64-light limit | See the [point](pbrt-rendering.md#point-lights) and [spot](pbrt-rendering.md#spot-lights) profiles |
 | Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | File spectra on diffuse/conductor/dielectric materials, homogeneous media, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
@@ -90,6 +90,7 @@ capture still occurs at each camera declaration.
 | Float/spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |
 | Infinite light | `L`, `scale`, `illuminance`, or square RGB PNG/JPEG/EXR/HDR `filename` |
 | Point light | Spectral `I`, nonnegative `scale`, finite `power`, and `point3 from` |
+| Spot light | Point fields plus `point3 to`, `coneangle` in (0,180], and `conedeltaangle` in [0,coneangle]; distinct effective endpoints |
 | Diffuse area light | `L`, `scale`, `twosided`, `power`, PNG/JPEG/EXR/HDR `filename` mutually exclusive with `L` |
 | Triangle mesh | `P`, `indices`, per-vertex `N`, `S`, and `uv`, scalar/texture `alpha`; exactly three vertices may omit indices |
 

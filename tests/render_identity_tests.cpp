@@ -20,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3448-byte empty-scene fixture includes field tags and all defaults.
+    // the 3475-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "f5b80a320ec4d5ae1b0ba1aeed4281cd4c003ace5880adc1cdb3fd43921c5743",
+                "66a1002e8c918565dba4e67de275cb66490149e804e9b42197e1cc80925a29a8",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -45,6 +45,7 @@ void identity_checks() {
     changed([](auto &s) { s.instance_reverse_orientation.push_back(1); }, "orientation");
     changed([](auto &s) { s.area_emissions.push_back({}); }, "area emission");
     changed([](auto &s) { s.point_lights.push_back({}); }, "point light count");
+    changed([](auto &s) { s.spot_lights.push_back({}); }, "spot light count");
     changed([](auto &s) { s.instance_emissions.push_back(0); }, "emission bindings");
     changed([](auto &s) { s.filter.y_radius += 1; }, "pixel filter");
     changed([](auto &s) { s.image_textures.push_back({}); }, "texture list");
@@ -75,6 +76,25 @@ void identity_checks() {
     setting_changed([](auto &s) { s.sampler.kind = SamplerKind::sobol; }, "sampler");
     setting_changed([](auto &s) { s.sampler.randomization = SobolRandomization::none; },
                     "randomizer");
+
+    RenderScene spots;
+    spots.spot_lights.resize(2);
+    spots.spot_lights[1].position.x = 1;
+    const auto spot_identity = render_identity(spots, settings);
+    const auto spot_changed = [&](auto change) {
+        auto copy = spots;
+        change(copy.spot_lights);
+        require(render_identity(copy, settings) != spot_identity, "spot identity payload");
+    };
+    spot_changed([](auto &v) { std::swap(v[0], v[1]); });
+    for (auto field : {&GeometryPoint::x, &GeometryPoint::y, &GeometryPoint::z})
+        spot_changed([=](auto &v) { v[0].position.*field += 1; });
+    for (std::size_t i = 0; i < 471; ++i)
+        spot_changed([=](auto &v) { v[0].intensity[i] += 1; });
+    for (std::size_t i = 0; i < 9; ++i)
+        spot_changed([=](auto &v) { v[0].light_from_world[i] += 1; });
+    spot_changed([](auto &v) { v[0].cos_falloff_start -= .1f; });
+    spot_changed([](auto &v) { v[0].cos_falloff_end -= .1f; });
 
     // Populate every deep asset family, then change leaf payloads without
     // changing vector sizes. Hashing only descriptors or addresses fails these.

@@ -3,6 +3,7 @@
 
 #include "pbrt.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -112,6 +113,62 @@ inline int exact_linear_determinant_sign(const Transform &transform) {
 
 inline bool exact_singular_linear(const Transform &transform) {
     return exact_linear_determinant_sign(transform) == 0;
+}
+
+inline std::optional<Transform> checked_inverse_affine(const Transform &transform) {
+    if (!(transform.values[12] == 0 && transform.values[13] == 0 && transform.values[14] == 0 &&
+          transform.values[15] == 1) ||
+        !std::ranges::all_of(transform.values, [](double value) { return std::isfinite(value); }) ||
+        exact_singular_linear(transform)) {
+        return std::nullopt;
+    }
+    // Eliminate the linear part with pivoting. Keep the affine last row exact.
+    std::array<std::array<double, 6>, 3> a{};
+    for (std::size_t row = 0; row < 3; ++row) {
+        for (std::size_t col = 0; col < 3; ++col) {
+            a[row][col] = transform.values[row * 4 + col];
+        }
+        a[row][3 + row] = 1;
+    }
+    for (std::size_t col = 0; col < 3; ++col) {
+        std::size_t pivot = col;
+        for (std::size_t row = col + 1; row < 3; ++row) {
+            if (std::abs(a[row][col]) > std::abs(a[pivot][col])) {
+                pivot = row;
+            }
+        }
+        std::swap(a[col], a[pivot]);
+        const double scale = a[col][col];
+        if (scale == 0 || !std::isfinite(scale)) {
+            return std::nullopt;
+        }
+        for (auto &value : a[col]) {
+            value /= scale;
+        }
+        for (std::size_t row = 0; row < 3; ++row) {
+            if (row == col) {
+                continue;
+            }
+            const double factor = a[row][col];
+            for (std::size_t i = 0; i < a[row].size(); ++i) {
+                a[row][i] -= factor * a[col][i];
+            }
+        }
+    }
+
+    Transform inverse;
+    for (std::size_t row = 0; row < 3; ++row) {
+        double translation = 0;
+        for (std::size_t col = 0; col < 3; ++col) {
+            inverse.values[row * 4 + col] = a[row][3 + col];
+            translation -= a[row][3 + col] * transform.values[col * 4 + 3];
+        }
+        inverse.values[row * 4 + 3] = translation;
+    }
+    if (!std::ranges::all_of(inverse.values, [](double value) { return std::isfinite(value); })) {
+        return std::nullopt;
+    }
+    return inverse;
 }
 
 } // namespace rypath::pbrt

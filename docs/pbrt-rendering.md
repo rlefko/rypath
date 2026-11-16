@@ -52,7 +52,8 @@ diagnosed even when not placed in the image.
 | Extended surfaces | Thin dielectric, diffuse transmission, nested mixes, finite-depth coated diffuse/conductor, measured tensor and legacy Fourier tables; see [surface materials](#extended-surface-materials) |
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
-| Point lighting | Up to 64 isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
+| Point lighting | Up to 64 combined point/spot sources; isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
+| Spot lighting | Spectral point-source emission with cubic cosine falloff, `from`/`to` aiming, representable static affine transforms and positive-power normalization; surface and homogeneous-volume illumination |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Homogeneous media | Named absorption/scattering/emission spectra, all 47 pinned measured presets, scoped interfaces and null boundaries; see [homogeneous media](#homogeneous-media) |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
@@ -136,15 +137,72 @@ follow existing visibility rules; ordinary glass remains a shadow occluder.
 Geometry-free homogeneous media use the same point estimator with analytic
 Beer–Lambert connections in the sky kernel.
 
-The declared profile permits at most 64 points, including zero-intensity records;
+The declared profile permits at most 64 combined point and spot sources, including zero-intensity records;
 excess inputs are resource errors. Active connections require finite squared
 distance at least `FLT_MIN`, representable arithmetic and positive shadow progress.
 Coincident active sources and extreme-scale failures reject the pending batch;
 there is no distance epsilon, intensity clamp or partial sample acceptance.
 Zero intensity at the sampled wavelength skips connection arithmetic. The
-all-point strategy can require 64 shadow queries per vertex and is not a claim
-of efficient many-light sampling. Spot, distant, projection and goniometric lights
+all-positional strategy can require 64 shadow queries per vertex and is not a claim
+of efficient many-light sampling. Distant, projection and goniometric lights
 remain unsupported. See [point-light validation](point-light-validation.md).
+
+## Spot lights
+
+`LightSource "spot"` shares the point light's spectral `I`, `scale`, `power`,
+parameter inheritance, endpoint-medium and finite visibility behavior. `from`
+defaults to (0,0,0), `to` to (0,0,1), `coneangle` to 30 degrees and
+`conedeltaangle` to 5 degrees. Both points are in declaration-local coordinates.
+The supported angle domain is `0 < coneangle <= 180` and
+`0 <= conedeltaangle <= coneangle`; effective `from` and `to` must differ.
+Defaults apply before these checks, so a cone smaller than five degrees needs
+an explicit smaller delta. Invalid pairs are source-located input errors.
+
+Following the [pinned implementation](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/lights.cpp),
+`coneangle` is the outer boundary; full intensity begins at
+`coneangle - conedeltaangle`. Let `cEnd` and `cStart` be their binary32 cosines.
+Between them, `t = (cosTheta - cEnd) / (cStart - cEnd)` and the angular factor
+is `t*t*(3-2*t)`, with zero outside and one inside. Zero delta is a hard edge
+that includes equality. A 180-degree hard cone is isotropic.
+The format page's description of the angle interval differs from this pinned
+code; this profile follows the code.
+
+Positive `power` multiplies photometrically prepared intensity by
+`power / (2*pi*((1-cStart)+(cStart-cEnd)/2))`. Finite nonpositive power retains
+intensity mode. The divisor uses the packed cosine thresholds, an explicit
+binary32 numerical adaptation. A cone with `cEnd == 1`, or a positive feather
+whose cosines coincide, is rejected instead of silently becoming a zero-width
+cone or hard edge. Native requests also reject subnormal cosine thresholds or
+positive feather intervals that GPU subnormal flushing would erase.
+
+The receiver-to-light direction is negated, mapped through the inverse composed
+light transform, and normalized before taking its local Z component. This
+preserves the pinned behavior under rotation, reflection, nonuniform scale and
+shear. A common positive matrix scale bounds GPU coefficients without changing
+the ideal normalized direction. Translation and native request validation reject
+nonfinite, singular or unrepresentable maps, including coefficients that would
+be lost to GPU subnormal flushing. Spot position coordinates must be normal
+binary32 or zero. Active connections also check receiver coordinates, angular
+products, sums and normalization divisions: subnormal flushing must not turn a
+negative cosine into an included hard-cone boundary. Unrepresentable connections
+reject the complete batch. Transformed directions use scale-safe normalization.
+This is a bounded floating-point profile, not arbitrary-scale exact arithmetic.
+PBRT's power normalization is retained under affine distortion; requested power
+is not guaranteed to equal integrated world-space flux after nonuniform scale
+or shear.
+
+At every eligible surface or medium vertex, each spot contributes its angular
+intensity divided by squared world distance with the existing BSDF/cosine or
+HG phase and shadow transmission. Sources are enumerated with unit delta-position
+MIS weight, without new sampler dimensions or changes to environment/area PDFs.
+Angular zero skips shadow traversal after safe direction evaluation. Spot lights
+have no camera-visible geometry, and delta-only surfaces receive no spot NEE.
+Geometry-free homogeneous media execute the same model in the sky kernel.
+
+Point and spot lists share the 64-source budget. Zero spectral intensity skips
+connection arithmetic; an active coincident source fails the batch. All spot
+fields participate in checkpoint identity; renderer and identity contracts are
+version 4. See [spot-light validation](spot-light-validation.md).
 
 ## Blackbody reflectance
 

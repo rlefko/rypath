@@ -336,18 +336,35 @@ struct MetalRenderScene::Impl {
             const auto encoded = std::bit_cast<std::array<wire::Word, words>>(medium);
             data.insert(data.end(), encoded.begin(), encoded.end());
         }
-        constexpr std::size_t point_words = sizeof(wire::PointLight) / sizeof(wire::Word);
-        if (data.size() > limit || scene.point_lights.size() > (limit - data.size()) / point_words)
-            return "Point lights exceed the shared GPU data budget";
-        parameters.point_begin = static_cast<wire::Word>(data.size());
-        parameters.point_count = static_cast<wire::Word>(scene.point_lights.size());
-        for (const auto &source : scene.point_lights) {
-            wire::PointLight point{};
-            point.position = {source.position.x, source.position.y, source.position.z};
-            std::ranges::copy(source.intensity, point.intensity);
-            const auto encoded = std::bit_cast<std::array<wire::Word, point_words>>(point);
+        constexpr std::size_t light_words = sizeof(wire::PositionalLight) / sizeof(wire::Word);
+        const auto count = scene.point_lights.size() + scene.spot_lights.size();
+        if (data.size() > limit || count > (limit - data.size()) / light_words)
+            return "Positional lights exceed the shared GPU data budget";
+        parameters.positional_begin = static_cast<wire::Word>(data.size());
+        parameters.positional_count = static_cast<wire::Word>(count);
+        const auto append = [&](const auto &source, wire::Word kind) {
+            wire::PositionalLight light{};
+            light.kind = kind;
+            light.position = {source.position.x, source.position.y, source.position.z};
+            std::ranges::copy(source.intensity, light.intensity);
+            if constexpr (std::is_same_v<std::decay_t<decltype(source)>, SpotLight>) {
+                // Common positive scaling leaves the normalized direction unchanged
+                // and prevents finite large direct-API matrices overflowing in MSL.
+                float scale = 0;
+                for (float v : source.light_from_world)
+                    scale = std::max(scale, std::abs(v));
+                for (std::size_t i = 0; i < 9; ++i)
+                    light.light_from_world[i] = source.light_from_world[i] / scale;
+                light.cos_falloff_start = source.cos_falloff_start;
+                light.cos_falloff_end = source.cos_falloff_end;
+            }
+            const auto encoded = std::bit_cast<std::array<wire::Word, light_words>>(light);
             data.insert(data.end(), encoded.begin(), encoded.end());
-        }
+        };
+        for (const auto &source : scene.point_lights)
+            append(source, wire::point_light);
+        for (const auto &source : scene.spot_lights)
+            append(source, wire::spot_light);
         parameters.material_data_words = static_cast<wire::Word>(data.size());
         if (data.empty())
             data.push_back(0);
@@ -1247,7 +1264,7 @@ struct MetalRenderScene::Impl {
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];
-        if (p.instance_count == 0 && (p.medium_count != 0 || p.point_count != 0))
+        if (p.instance_count == 0 && (p.medium_count != 0 || p.positional_count != 0))
             [encoder setBuffer:material_data offset:0 atIndex:30];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
@@ -1436,7 +1453,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                                           }),
             std::ranges::any_of(scene.materials,
                                 [](const auto &m) { return m.scattering == ScatteringKind::gltf; }),
-            !scene.point_lights.empty()};
+            !scene.point_lights.empty() || !scene.spot_lights.empty()};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];

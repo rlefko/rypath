@@ -65,6 +65,9 @@ struct GeometryHit {
     std::array<float, 2> patch_uv{};
 };
 
+// Exact singularity of a finite binary32 row-major 3x3 matrix.
+bool singular_linear_transform(const std::array<float, 9> &matrix);
+
 // An empty diagnostic means valid. These checks have no platform dependencies.
 std::string validate_geometry(const GeometryData &geometry);
 std::string validate_geometry_rays(std::span<const GeometryRay> rays);

@@ -91,6 +91,10 @@ bool zero_area(GeometryPoint a, GeometryPoint b, GeometryPoint c) {
 
 } // namespace
 
+bool singular_linear_transform(const std::array<float, 9> &matrix) {
+    return determinant_is_zero(matrix);
+}
+
 std::string validate_geometry(const GeometryData &geometry) {
     if (!size_fits<GeometryMesh>(geometry.meshes.size()) ||
         !size_fits<GeometryInstance>(geometry.instances.size())) {
