@@ -73,7 +73,12 @@ alone does not establish complete rendering or corpus compatibility.
 Parameters outside these schemas are diagnosed rather than silently discarded.
 Values use their PBRT types and cardinalities; optional settings stay omitted.
 The last option descriptor is checked at `WorldBegin`, while camera coordinate
-capture still occurs at each camera declaration.
+capture still occurs at each camera declaration. Perspective `lensradius` and
+`focaldistance` are retained and checked structurally. The renderer supports a
+normalized thin-lens camera for positive aperture radii; zero radius keeps the
+pinhole path and makes focal distance inert. Numerical limits and the distinction
+from realistic lens systems are in the [render profile](pbrt-rendering.md) and
+[depth-of-field record](depth-of-field-validation.md).
 
 | Descriptor | Checked settings |
 | --- | --- |
