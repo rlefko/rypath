@@ -132,7 +132,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "317bc704217bff960359a41436e886cae48e6f14d4addeb94c36f97acfc5e504",
+                "f7e2aba1605c0ff3ca4d632853c758704ed3c46faab55ee02777b5f99a610d4b",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
@@ -142,7 +142,7 @@ void codec(const std::filesystem::path &dir) {
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
     for (const auto offset : {std::size_t{12}, std::size_t{16}}) {
         auto legacy = original;
-        put(legacy, offset, 2, 4);
+        put(legacy, offset, 3, 4);
         rehash(legacy);
         write(path, legacy);
         require(!read_checkpoint(path).value, "legacy rendering contract rejection");

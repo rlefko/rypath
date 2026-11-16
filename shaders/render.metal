@@ -47,7 +47,7 @@ constant bool dielectric_enabled [[function_constant(6)]];
 constant bool surface_materials_enabled [[function_constant(7)]];
 constant bool media_enabled [[function_constant(8)]];
 constant bool gltf_enabled [[function_constant(9)]];
-constant bool point_lights_enabled [[function_constant(10)]];
+constant bool positional_lights_enabled [[function_constant(10)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -338,23 +338,99 @@ static uint dense_index(float wavelength) {
     return nm + uint(wavelength - float(nm) >= 0.5f) - 360u;
 }
 
-static const device wire::PointLight *point_record(const device uint *data,
-                                                   constant wire::Parameters &p, uint index) {
-    constexpr uint words = sizeof(wire::PointLight) / sizeof(uint);
-    if (p.point_count > 64 || index >= p.point_count || p.point_begin > p.material_data_words ||
-        p.point_count > (p.material_data_words - p.point_begin) / words)
+static const device wire::PositionalLight *
+positional_record(const device uint *data, constant wire::Parameters &p, uint index) {
+    constexpr uint words = sizeof(wire::PositionalLight) / sizeof(uint);
+    if (p.positional_count > 64 || index >= p.positional_count ||
+        p.positional_begin > p.material_data_words ||
+        p.positional_count > (p.material_data_words - p.positional_begin) / words)
         return nullptr;
-    return reinterpret_cast<const device wire::PointLight *>(data + p.point_begin + index * words);
+    return reinterpret_cast<const device wire::PositionalLight *>(data + p.positional_begin +
+                                                                  index * words);
+}
+
+static bool normal_or_zero(float value) {
+    const uint magnitude = as_type<uint>(value) & 0x7fffffffu;
+    return magnitude == 0 || (magnitude >= 0x00800000u && magnitude < 0x7f800000u);
 }
 
 static bool point_direction(float3 from, float3 to, thread float3 &direction,
-                            thread float &distance_squared) {
+                            thread float &distance_squared, bool spot) {
+    if (spot)
+        for (uint i = 0; i < 3; ++i)
+            if (!normal_or_zero(from[i]) || !normal_or_zero(to[i]))
+                return false;
     const float3 delta = to - from;
     distance_squared = dot(delta, delta);
     if (!(distance_squared >= FLT_MIN) || !isfinite(distance_squared))
         return false;
     direction = delta / sqrt(distance_squared);
+    if (spot) {
+        for (uint i = 0; i < 3; ++i)
+            if ((from[i] != to[i] && delta[i] == 0) || (delta[i] != 0 && direction[i] == 0) ||
+                !normal_or_zero(direction[i]))
+                return false;
+    }
     return all(isfinite(direction));
+}
+
+// Spot angular support can change if a signed subnormal flushes to zero at a
+// cone boundary. Reject such active connections rather than silently changing
+// the lobe. These helpers leave the existing isotropic point arithmetic alone.
+static bool spot_product(float a, float b, thread float &result) {
+    if (a != 0 && b != 0 && abs(a) < FLT_MIN / abs(b))
+        return false;
+    result = a * b;
+    return normal_or_zero(result) && (result != 0 || a == 0 || b == 0);
+}
+static bool spot_sum(float a, float b, thread float &result) {
+    result = a + b;
+    return normal_or_zero(result) && (result != 0 || a == -b);
+}
+static bool spot_divide(float a, float b, thread float &result) {
+    result = a / b;
+    return normal_or_zero(result) && (result != 0 || a == 0);
+}
+
+// wi points from the receiver toward the source. A spot emits along -wi.
+// Delta-position sources retain unit MIS weight and consume no random values.
+static bool positional_intensity(const device wire::PositionalLight &light, float3 wi,
+                                 thread float &intensity) {
+    if (light.kind == wire::point_light)
+        return true;
+    if (light.kind != wire::spot_light)
+        return false;
+    float3 w;
+    for (uint row = 0; row < 3; ++row) {
+        float terms[3];
+        for (uint col = 0; col < 3; ++col)
+            if (!spot_product(light.light_from_world[row * 3 + col], -wi[col], terms[col]))
+                return false;
+        float sum, component;
+        if (!spot_sum(terms[0], terms[1], sum) || !spot_sum(sum, terms[2], component))
+            return false;
+        w[row] = component;
+    }
+    const float scale = max(max(abs(w.x), abs(w.y)), abs(w.z));
+    if (!(scale >= FLT_MIN) || !isfinite(scale))
+        return false;
+    for (uint i = 0; i < 3; ++i) {
+        float component;
+        if (!spot_divide(w[i], scale, component))
+            return false;
+        w[i] = component;
+    }
+    float cosine;
+    if (!spot_divide(w.z, sqrt(dot(w, w)), cosine))
+        return false;
+    const float end = light.cos_falloff_end, start = light.cos_falloff_start;
+    // Keep the hard-edge equality branch explicit: Metal smoothstep has
+    // undefined results when the two bounds coincide.
+    const float t = start == end ? (cosine < end ? 0.0f : 1.0f)
+                                 : clamp((cosine - end) / (start - end), 0.0f, 1.0f);
+    const float falloff = start == end ? t : t * t * (3.0f - 2.0f * t);
+    intensity *= falloff;
+    return isfinite(intensity) && intensity >= 0;
 }
 
 static float sky_radiance(const device float *environment, constant wire::Parameters &p,
@@ -1615,17 +1691,22 @@ medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words, 
                       tr.value;
         }
     }
-    if (point_lights_enabled) {
-        for (uint i = 0; i < p.point_count; ++i) {
-            const auto light = point_record(data, p, i);
+    if (positional_lights_enabled) {
+        for (uint i = 0; i < p.positional_count; ++i) {
+            const auto light = positional_record(data, p, i);
             if (light == nullptr)
                 return {0, wire::invalid_hit};
-            const float intensity = light->intensity[dense_index(alpha.sample->wavelength)];
+            float intensity = light->intensity[dense_index(alpha.sample->wavelength)];
             if (intensity == 0)
                 continue;
             float distance_squared;
-            if (!point_direction(point, unpack(light->position), direction, distance_squared))
+            if (!point_direction(point, unpack(light->position), direction, distance_squared,
+                                 light->kind == wire::spot_light))
                 return {0, wire::invalid_arithmetic};
+            if (!positional_intensity(*light, direction, intensity))
+                return {0, wire::invalid_arithmetic};
+            if (intensity == 0)
+                continue;
             const auto tr =
                 medium_connection(ray(point, unpack(light->position) - point, 0, 0x1.fffffep-1f),
                                   scene, table, alpha, materials, data, medium);
@@ -1696,24 +1777,30 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                     break;
                 }
                 throughput *= s / total;
-                if (point_lights_enabled) {
+                if (positional_lights_enabled) {
                     float direct = 0;
-                    for (uint i = 0; i < p.point_count; ++i) {
-                        const auto light = point_record(material_data, p, i);
+                    for (uint i = 0; i < p.positional_count; ++i) {
+                        const auto light = positional_record(material_data, p, i);
                         if (light == nullptr) {
                             sample.status = wire::invalid_hit;
                             break;
                         }
-                        const float intensity = light->intensity[wavelength];
+                        float intensity = light->intensity[wavelength];
                         if (intensity == 0)
                             continue;
                         float3 direction;
                         float distance_squared;
                         if (!point_direction(point, unpack(light->position), direction,
-                                             distance_squared)) {
+                                             distance_squared, light->kind == wire::spot_light)) {
                             sample.status = wire::invalid_arithmetic;
                             break;
                         }
+                        if (!positional_intensity(*light, direction, intensity)) {
+                            sample.status = wire::invalid_arithmetic;
+                            break;
+                        }
+                        if (intensity == 0)
+                            continue;
                         const float tr = exp(-total * sqrt(distance_squared));
                         if (tr > 0)
                             direct += rypath_medium::phase(-incoming.direction, direction, m->g) *
@@ -2381,25 +2468,31 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 }
             }
         }
-        // Point lights are delta-position sources. Enumerating the bounded list
+        // Point and spot lights are delta-position sources. Enumerating the bounded list
         // needs neither a selection probability nor continuous-light MIS.
-        if (point_lights_enabled && !delta) {
-            for (uint i = 0; i < p.point_count; ++i) {
-                const auto light = point_record(material_data, p, i);
+        if (positional_lights_enabled && !delta) {
+            for (uint i = 0; i < p.positional_count; ++i) {
+                const auto light = positional_record(material_data, p, i);
                 if (light == nullptr) {
                     sample.status = wire::invalid_hit;
                     break;
                 }
-                const float intensity = light->intensity[dense_index(sample.wavelength)];
+                float intensity = light->intensity[dense_index(sample.wavelength)];
                 if (intensity == 0)
                     continue;
                 float3 direction;
                 float distance_squared;
                 if (!point_direction(point.position, unpack(light->position), direction,
-                                     distance_squared)) {
+                                     distance_squared, light->kind == wire::spot_light)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
+                if (!positional_intensity(*light, direction, intensity)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                if (intensity == 0)
+                    continue;
                 const float3 local = microfacet ? frame.local(direction) : float3(0);
                 const float cosine = both_hemispheres ? abs(local.z)
                                      : microfacet     ? (wo.z > 0 ? local.z : -local.z)

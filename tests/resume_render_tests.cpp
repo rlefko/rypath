@@ -290,11 +290,11 @@ int native() {
             settings.sampler.kind = sampler;
             auto whole = render_progressive(scene, settings);
             require(whole.completion == RenderCompletion::complete, whole.diagnostic);
-            if (!scene.point_lights.empty()) {
+            if (!scene.point_lights.empty() || !scene.spot_lights.empty()) {
                 bool positive = false;
                 for (const auto &pixel : whole.film.pixels)
                     positive = positive || pixel.sum[1] + pixel.correction[1] > 0;
-                require(positive, "point resume fixture has no positive signal");
+                require(positive, "positional light resume fixture has no positive signal");
             }
             std::uint64_t count = 0;
             RenderControl control;
@@ -313,8 +313,9 @@ int native() {
                     "native uninterrupted/resumed Film bits differ");
         }
     };
-    for (const auto fixture : {"image-secondary.pbrt", "media-reference/isotropic.pbrt",
-                               "point-lights/mixed.pbrt", "point-lights/volume.pbrt"}) {
+    for (const auto fixture :
+         {"image-secondary.pbrt", "media-reference/isotropic.pbrt", "point-lights/mixed.pbrt",
+          "point-lights/volume.pbrt", "spot-lights/mixed.pbrt", "spot-lights/volume.pbrt"}) {
         auto path =
             std::filesystem::path(RYPATH_SOURCE_DIR) / "tests/fixtures/pbrt-render" / fixture;
         auto checked = pbrt::check(path);
@@ -324,6 +325,8 @@ int native() {
             throw std::runtime_error("native fixture translation failed");
         if (std::string_view(fixture).starts_with("point-lights/"))
             require(!translated.scene->point_lights.empty(), "point fixture lost its light");
+        if (std::string_view(fixture).starts_with("spot-lights/"))
+            require(!translated.scene->spot_lights.empty(), "spot fixture lost its light");
         check_resume(*translated.scene);
     }
     // Empty geometry takes a distinct kernel. A scattering camera medium must
@@ -344,8 +347,16 @@ int native() {
     light.intensity.fill(1);
     empty.point_lights.push_back(light);
     check_resume(empty);
-    std::cout
-        << "Native resume: independent/Sobol textured, volume and point raw Film bits match\n";
+    empty.point_lights.clear();
+    SpotLight spot;
+    spot.position = light.position;
+    spot.intensity = light.intensity;
+    spot.cos_falloff_end = -1;
+    spot.cos_falloff_start = .5f;
+    empty.spot_lights.push_back(spot);
+    check_resume(empty);
+    std::cout << "Native resume: independent/Sobol textured, volume, point and spot raw Film bits "
+                 "match\n";
     return 0;
 }
 } // namespace

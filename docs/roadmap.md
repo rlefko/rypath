@@ -103,7 +103,9 @@ clarifies the work; completion is recorded in [status](status.md).
 32. **Broader PBRT rendering:** spectral point lighting adds a bounded all-point
     estimator for surfaces and homogeneous media, including geometry-free volumes.
     See [point-light validation](point-light-validation.md). Spectral spot lights
-    are the next bounded lighting extension; wider color spaces, additional
+    extend the same surface/volume estimator with affine cones and cubic cosine
+    falloff; see [spot validation](spot-light-validation.md). Spectral distant
+    lights are the next bounded lighting extension; wider color spaces, additional
     filters/samplers and faithfully rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented

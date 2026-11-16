@@ -89,6 +89,95 @@ std::optional<GeometryPoint> narrow_point(const Vector &vector) {
                          static_cast<float>(vector[2])};
 }
 
+// Only direction matters for a spot's inverse map: a positive common scale
+// cancels during normalization. Reuse the checked affine inverse used by scene construction.
+std::optional<std::array<float, 9>> spot_inverse(const Transform &transform,
+                                                 const Vector &direction) {
+    using Wide = long double;
+    Transform scaled = transform;
+    double linear_scale = 0;
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t col = 0; col < 3; ++col)
+            linear_scale = std::max(linear_scale, std::abs(transform.values[row * 4 + col]));
+    if (!(linear_scale > 0 && std::isfinite(linear_scale)))
+        return std::nullopt;
+    for (std::size_t row = 0; row < 3; ++row) {
+        scaled.values[row * 4 + 3] = 0;
+        for (std::size_t col = 0; col < 3; ++col) {
+            auto &value = scaled.values[row * 4 + col];
+            value /= linear_scale;
+            if (transform.values[row * 4 + col] != 0 && value == 0)
+                return std::nullopt;
+        }
+    }
+    const auto checked = checked_inverse_affine(scaled);
+    if (!checked)
+        return std::nullopt;
+    double inverse_scale = 0;
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t col = 0; col < 3; ++col)
+            inverse_scale = std::max(inverse_scale, std::abs(checked->values[row * 4 + col]));
+    if (!(inverse_scale > 0))
+        return std::nullopt;
+    std::array<std::array<Wide, 3>, 3> inverse{};
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t col = 0; col < 3; ++col) {
+            inverse[row][col] = Wide(checked->values[row * 4 + col]) / inverse_scale;
+            if (checked->values[row * 4 + col] != 0 && inverse[row][col] == 0)
+                return std::nullopt;
+        }
+    Vector z = direction;
+    const double scale = std::max({std::abs(z[0]), std::abs(z[1]), std::abs(z[2])});
+    if (!(scale > 0 && std::isfinite(scale)))
+        return std::nullopt;
+    for (auto &v : z) {
+        const double normalized = v / scale;
+        if (v != 0 && normalized == 0)
+            return std::nullopt;
+        v = normalized;
+    }
+    const double length = std::hypot(z[0], z[1], z[2]);
+    for (auto &v : z) {
+        const double normalized = v / length;
+        if (v != 0 && normalized == 0)
+            return std::nullopt;
+        v = normalized;
+    }
+    // Any orthonormal transverse frame yields the same rotationally symmetric cone.
+    Vector x = cross(std::abs(z[0]) < .9 ? Vector{1, 0, 0} : Vector{0, 1, 0}, z);
+    const double x_length = std::hypot(x[0], x[1], x[2]);
+    for (auto &v : x)
+        v /= x_length;
+    const std::array frame{x, cross(z, x), z};
+    std::array<Wide, 9> composed{};
+    Wide largest = 0;
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t col = 0; col < 3; ++col) {
+            auto &value = composed[row * 3 + col];
+            for (std::size_t k = 0; k < 3; ++k)
+                value += Wide(frame[row][k]) * inverse[k][col];
+            if (!std::isfinite(value))
+                return std::nullopt;
+            largest = std::max(largest, std::abs(value));
+        }
+    if (!(largest > 0))
+        return std::nullopt;
+    std::array<float, 9> packed{};
+    Transform check;
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t col = 0; col < 3; ++col) {
+            const auto index = row * 3 + col;
+            packed[index] = static_cast<float>(composed[index] / largest);
+            if (!std::isfinite(packed[index]) ||
+                (composed[index] != 0 && !std::isnormal(packed[index])))
+                return std::nullopt;
+            check.values[row * 4 + col] = packed[index];
+        }
+    if (exact_singular_linear(check))
+        return std::nullopt;
+    return packed;
+}
+
 int handedness(const GeometryTransform &transform) {
     Transform expanded;
     std::ranges::copy(transform.values, expanded.values.begin());
@@ -752,8 +841,9 @@ std::optional<float> Translator::image_emission(const Descriptor &descriptor, fl
 }
 
 void Translator::light(const Descriptor &descriptor) {
-    if (descriptor.authored.arguments.front().text == "point") {
-        if (scene_.point_lights.size() >= max_point_lights) {
+    const bool spot = descriptor.authored.arguments.front().text == "spot";
+    if (spot || descriptor.authored.arguments.front().text == "point") {
+        if (scene_.point_lights.size() + scene_.spot_lights.size() >= max_positional_lights) {
             spectral_limit(descriptor.authored.location);
             return;
         }
@@ -772,12 +862,103 @@ void Translator::light(const Descriptor &descriptor) {
                           m[4] * from[0] + m[5] * from[1] + m[6] * from[2] + m[7],
                           m[8] * from[0] + m[9] * from[1] + m[10] * from[2] + m[11]});
         if (!position) {
-            invalid(location(descriptor, "from"), "Point light position overflows binary32");
+            invalid(location(descriptor, "from"), "Positional light position overflows binary32");
             return;
         }
         const auto power = narrow(descriptor, "power", -1);
         if (!power)
             return;
+        if (spot) {
+            if (std::fpclassify(position->x) == FP_SUBNORMAL ||
+                std::fpclassify(position->y) == FP_SUBNORMAL ||
+                std::fpclassify(position->z) == FP_SUBNORMAL) {
+                invalid(location(descriptor, "from"),
+                        "Spot position would lose a nonzero component on the GPU");
+                return;
+            }
+            const double cone = number(descriptor, "coneangle", 30);
+            const double delta = number(descriptor, "conedeltaangle", 5);
+            if (!(cone > 0 && cone <= 180)) {
+                invalid(location(descriptor, "coneangle"), "Spot cone angle must be in (0, 180]");
+                return;
+            }
+            if (!(delta >= 0 && delta <= cone)) {
+                invalid(location(descriptor, "conedeltaangle"),
+                        "Spot cone delta angle must be in [0, coneangle]");
+                return;
+            }
+            SpotLight light;
+            light.position = *position;
+            light.cos_falloff_start =
+                static_cast<float>(std::cos((cone - delta) * std::numbers::pi / 180));
+            light.cos_falloff_end = static_cast<float>(std::cos(cone * std::numbers::pi / 180));
+            if (light.cos_falloff_end == 1) {
+                invalid(location(descriptor, "coneangle"),
+                        "Spot cone collapses in binary32 cosine space");
+                return;
+            }
+            if (delta > 0 && light.cos_falloff_start == light.cos_falloff_end) {
+                invalid(location(descriptor, "conedeltaangle"),
+                        "Spot positive feather collapses in binary32 cosine space");
+                return;
+            }
+            Vector to{0, 0, 1};
+            if (const auto *selected = parameter(descriptor, "to"))
+                for (std::size_t i = 0; i < 3; ++i)
+                    to[i] = selected->values[i].number;
+            // Subtract before scaling to preserve small differences beside large
+            // common coordinates; wider arithmetic also handles opposite endpoints.
+            std::array<long double, 3> difference{};
+            long double endpoint_scale = 0;
+            for (std::size_t i = 0; i < 3; ++i) {
+                difference[i] = static_cast<long double>(to[i]) - from[i];
+                endpoint_scale = std::max(endpoint_scale, std::abs(difference[i]));
+            }
+            if (!std::isfinite(endpoint_scale)) {
+                // On platforms where long double is binary64, opposite finite
+                // endpoints may overflow their difference. Scaling first is safe
+                // here because at least one component already dominates the axis.
+                endpoint_scale =
+                    std::max({std::abs(to[0]), std::abs(to[1]), std::abs(to[2]), std::abs(from[0]),
+                              std::abs(from[1]), std::abs(from[2])});
+                for (std::size_t i = 0; i < 3; ++i)
+                    difference[i] = to[i] / endpoint_scale - from[i] / endpoint_scale;
+                endpoint_scale = 0;
+                for (const auto value : difference)
+                    endpoint_scale = std::max(endpoint_scale, std::abs(value));
+            }
+            for (std::size_t i = 0; i < 3; ++i) {
+                if (to[i] != from[i] && difference[i] == 0) {
+                    invalid(location(descriptor, "to"),
+                            "Spot direction loses a nonzero component during normalization");
+                    return;
+                }
+            }
+            Vector direction{};
+            if (endpoint_scale > 0 && std::isfinite(endpoint_scale))
+                for (std::size_t i = 0; i < 3; ++i) {
+                    direction[i] = static_cast<double>(difference[i] / endpoint_scale);
+                    if (difference[i] != 0 && direction[i] == 0) {
+                        invalid(location(descriptor, "to"),
+                                "Spot direction loses a nonzero component during normalization");
+                        return;
+                    }
+                }
+            const auto inverse = spot_inverse(descriptor.transform, direction);
+            if (!inverse) {
+                invalid(location(descriptor, "to"), "Spot direction and affine inverse must remain "
+                                                    "nonsingular and representable in binary32");
+                return;
+            }
+            light.light_from_world = *inverse;
+            const double divisor = 2 * std::numbers::pi *
+                                   ((1. - light.cos_falloff_start) +
+                                    (double(light.cos_falloff_start) - light.cos_falloff_end) / 2);
+            const double multiplier = *power > 0 ? *power / divisor : 1.;
+            if (emission(descriptor, "I", multiplier, light.intensity))
+                scene_.spot_lights.push_back(std::move(light));
+            return;
+        }
         PointLight point;
         point.position = *position;
         const double multiplier = *power > 0 ? *power / (4. * std::numbers::pi) : 1.;
@@ -2644,6 +2825,11 @@ RenderTranslation Translator::run() {
             result_.provenance.push_back(
                 "Point lights: " + std::to_string(scene_.point_lights.size()) +
                 " (all-point direct evaluation; delta-position weights)");
+        }
+        if (!scene_.spot_lights.empty()) {
+            result_.provenance.push_back(
+                "Spot lights: " + std::to_string(scene_.spot_lights.size()) +
+                " (cubic cosine falloff; affine light-space directions; delta-position weights)");
         }
         if (auto images = image_filter_provenance(scene_, image_formats_); !images.empty()) {
             result_.provenance.push_back(std::move(images));

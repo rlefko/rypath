@@ -195,6 +195,14 @@ Canonical identity covers positions and intensities; renderer/identity contracts
 advance together. See the [point-light profile](pbrt-rendering.md#point-lights)
 and [validation](point-light-validation.md).
 
+Owned spot records add a checked inverse direction map and cosine thresholds.
+A shared tagged positional-light buffer packs points followed by spots and feeds
+the same surface and volume visibility loops, including geometry-free media.
+Spot attenuation follows the pinned cubic cosine model; the point branch retains
+its existing arithmetic. Both kinds share a 64-source bound and unit delta-position
+MIS weight. See the [spot profile](pbrt-rendering.md#spot-lights) and
+[validation](spot-light-validation.md).
+
 ## Homogeneous volume state and transport
 
 The checked PBRT scene owns homogeneous medium descriptors, including inherited

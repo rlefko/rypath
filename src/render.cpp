@@ -1148,15 +1148,53 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
 }
 
 std::string validate_render_scene(const RenderScene &scene) {
-    if (scene.point_lights.size() > max_point_lights)
-        return "Point lights exceed the limit of 64";
-    if (!scene.point_lights.empty() && scene.model != RenderModel::pbrt)
-        return "Point lights require the PBRT render model";
+    if (scene.point_lights.size() > max_positional_lights ||
+        scene.spot_lights.size() > max_positional_lights - scene.point_lights.size())
+        return "Positional lights exceed the combined limit of 64";
+    if ((!scene.point_lights.empty() || !scene.spot_lights.empty()) &&
+        scene.model != RenderModel::pbrt)
+        return "Positional lights require the PBRT render model";
     for (const auto &point : scene.point_lights) {
         if (!finite(point.position) || !std::ranges::all_of(point.intensity, [](float value) {
                 return std::isfinite(value) && value >= 0;
             }))
             return "Point positions and intensities must be finite, with nonnegative intensity";
+    }
+    for (const auto &spot : scene.spot_lights) {
+        if (!finite(spot.position) || !std::ranges::all_of(spot.intensity, [](float value) {
+                return std::isfinite(value) && value >= 0;
+            }))
+            return "Spot positions and intensities must be finite, with nonnegative intensity";
+        if (std::fpclassify(spot.position.x) == FP_SUBNORMAL ||
+            std::fpclassify(spot.position.y) == FP_SUBNORMAL ||
+            std::fpclassify(spot.position.z) == FP_SUBNORMAL)
+            return "Spot positions must remain representable on the GPU";
+        if (!std::ranges::all_of(spot.light_from_world,
+                                 [](float value) { return std::isfinite(value); }) ||
+            singular_linear_transform(spot.light_from_world))
+            return "Spot direction transforms must be finite and nonsingular";
+        float scale = 0;
+        for (float value : spot.light_from_world)
+            scale = std::max(scale, std::abs(value));
+        std::array<float, 9> packed{};
+        for (std::size_t i = 0; i < packed.size(); ++i) {
+            packed[i] = spot.light_from_world[i] / scale;
+            if (spot.light_from_world[i] != 0 &&
+                std::abs(packed[i]) < std::numeric_limits<float>::min())
+                return "Spot direction transforms lose coefficients in GPU packing";
+        }
+        if (singular_linear_transform(packed))
+            return "Spot direction transforms become singular in GPU packing";
+        if (!std::isfinite(spot.cos_falloff_start) || !std::isfinite(spot.cos_falloff_end) ||
+            spot.cos_falloff_end < -1 || spot.cos_falloff_end >= 1 ||
+            spot.cos_falloff_start < spot.cos_falloff_end || spot.cos_falloff_start > 1)
+            return "Spot cosine thresholds must describe a nonempty ordered cone";
+        if (std::fpclassify(spot.cos_falloff_start) == FP_SUBNORMAL ||
+            std::fpclassify(spot.cos_falloff_end) == FP_SUBNORMAL ||
+            (spot.cos_falloff_start != spot.cos_falloff_end &&
+             double(spot.cos_falloff_start) - spot.cos_falloff_end <
+                 std::numeric_limits<float>::min()))
+            return "Spot cosine thresholds or feather interval are not representable on the GPU";
     }
     const auto valid_medium = [&](std::uint32_t id) {
         return id == no_medium || id < scene.media.size();

@@ -62,61 +62,6 @@ bool affine(const Transform &transform) {
     return m[12] == 0 && m[13] == 0 && m[14] == 0 && m[15] == 1;
 }
 
-std::optional<Transform> inverse_affine(const Transform &transform) {
-    if (!affine(transform) ||
-        !std::ranges::all_of(transform.values, [](double value) { return std::isfinite(value); }) ||
-        exact_singular_linear(transform)) {
-        return std::nullopt;
-    }
-    // Eliminate the linear part with pivoting. Keep the affine last row exact.
-    std::array<std::array<double, 6>, 3> a{};
-    for (std::size_t row = 0; row < 3; ++row) {
-        for (std::size_t col = 0; col < 3; ++col) {
-            a[row][col] = transform.values[row * 4 + col];
-        }
-        a[row][3 + row] = 1;
-    }
-    for (std::size_t col = 0; col < 3; ++col) {
-        std::size_t pivot = col;
-        for (std::size_t row = col + 1; row < 3; ++row) {
-            if (std::abs(a[row][col]) > std::abs(a[pivot][col])) {
-                pivot = row;
-            }
-        }
-        std::swap(a[col], a[pivot]);
-        const double scale = a[col][col];
-        if (scale == 0 || !std::isfinite(scale)) {
-            return std::nullopt;
-        }
-        for (auto &value : a[col]) {
-            value /= scale;
-        }
-        for (std::size_t row = 0; row < 3; ++row) {
-            if (row == col) {
-                continue;
-            }
-            const double factor = a[row][col];
-            for (std::size_t i = 0; i < a[row].size(); ++i) {
-                a[row][i] -= factor * a[col][i];
-            }
-        }
-    }
-
-    Transform inverse;
-    for (std::size_t row = 0; row < 3; ++row) {
-        double translation = 0;
-        for (std::size_t col = 0; col < 3; ++col) {
-            inverse.values[row * 4 + col] = a[row][3 + col];
-            translation -= a[row][3 + col] * transform.values[col * 4 + 3];
-        }
-        inverse.values[row * 4 + 3] = translation;
-    }
-    if (!std::ranges::all_of(inverse.values, [](double value) { return std::isfinite(value); })) {
-        return std::nullopt;
-    }
-    return inverse;
-}
-
 Vector cross(const Vector &a, const Vector &b) {
     return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
@@ -216,7 +161,7 @@ std::optional<Transform> transform_argument(const Directive &directive) {
             m[i * 4 + 2] = forward[i];
             m[i * 4 + 3] = eye[i];
         }
-        return inverse_affine(result);
+        return checked_inverse_affine(result);
     } else if (directive.name != "Identity") {
         // PBRT writes the 16 input values in column-major order.
         for (std::size_t row = 0; row < 4; ++row) {
@@ -424,6 +369,16 @@ constexpr std::array point_light_fields{
     light_fields[1],
     Field{"power", "float"},
     Field{"from", "point3", 3},
+};
+
+constexpr std::array spot_light_fields{
+    point_light_fields[0],
+    point_light_fields[1],
+    point_light_fields[2],
+    point_light_fields[3],
+    Field{"to", "point3", 3},
+    Field{"coneangle", "float"},
+    Field{"conedeltaangle", "float"},
 };
 
 constexpr std::array area_light_fields{
@@ -958,7 +913,7 @@ void Interpreter::scan_after_include(const Directive &directive) {
             return;
         }
         dependencies(directive, "light", argument);
-        if (name == "LightSource" && argument == "point") {
+        if (name == "LightSource" && one_of(argument, {"point", "spot"})) {
             scan_parameter(point_light_fields.front());
             return;
         }
@@ -1244,7 +1199,7 @@ void Interpreter::option(const Directive &directive) {
         TransformSet world_from_camera{};
         bool invertible = true;
         for (std::size_t i = 0; i < state_.transform.size(); ++i) {
-            if (const auto inverse = inverse_affine(state_.transform[i])) {
+            if (const auto inverse = checked_inverse_affine(state_.transform[i])) {
                 world_from_camera[i] = *inverse;
             } else {
                 invertible = false;
@@ -1585,16 +1540,51 @@ void Interpreter::light(const Directive &directive) {
         scene_.area_lights.push_back(state_.area_light);
         return;
     }
-    if (!area && type == "point") {
+    if (!area && one_of(type, {"point", "spot"})) {
         Descriptor descriptor = describe(directive);
         descriptor.outside_medium = state_.media.outside;
-        validate(descriptor, directive, "light", point_light_fields);
+        if (type == "spot")
+            validate(descriptor, directive, "light", spot_light_fields);
+        else
+            validate(descriptor, directive, "light", point_light_fields);
+        if (type == "spot") {
+            const auto *cone_parameter = descriptor.effective_parameter("coneangle").parameter;
+            const auto *delta_parameter =
+                descriptor.effective_parameter("conedeltaangle").parameter;
+            const double cone = cone_parameter && cone_parameter->values.size() == 1
+                                    ? cone_parameter->values.front().number
+                                    : 30;
+            const double delta = delta_parameter && delta_parameter->values.size() == 1
+                                     ? delta_parameter->values.front().number
+                                     : 5;
+            if (!(cone > 0 && cone <= 180))
+                error("invalid-parameter",
+                      cone_parameter ? cone_parameter->location : directive.location,
+                      "Spot cone angle must be in (0, 180]");
+            if (!(delta >= 0 && delta <= cone))
+                error("invalid-parameter",
+                      delta_parameter ? delta_parameter->location : directive.location,
+                      "Spot cone delta angle must be in [0, coneangle]");
+            Vector from{}, to{0, 0, 1};
+            const auto *from_parameter = descriptor.effective_parameter("from").parameter;
+            const auto *to_parameter = descriptor.effective_parameter("to").parameter;
+            if (from_parameter && from_parameter->values.size() == 3)
+                for (std::size_t i = 0; i < 3; ++i)
+                    from[i] = from_parameter->values[i].number;
+            if (to_parameter && to_parameter->values.size() == 3)
+                for (std::size_t i = 0; i < 3; ++i)
+                    to[i] = to_parameter->values[i].number;
+            if (from == to)
+                error("invalid-parameter",
+                      to_parameter ? to_parameter->location : directive.location,
+                      "Spot from and to must be distinct");
+        }
         const auto count = std::ranges::count_if(scene_.lights, [](const Descriptor &light) {
-            return light.authored.arguments.front().text == "point";
+            return one_of(light.authored.arguments.front().text, {"point", "spot"});
         });
         if (count >= 64) {
             error("limit-exceeded", directive.location,
-                  "Point light count exceeds the limit of 64");
+                  "Combined point and spot light count exceeds the limit of 64");
             return;
         }
         scene_.lights.push_back(std::move(descriptor));
@@ -1993,7 +1983,7 @@ void Interpreter::state_directive(const Directive &directive) {
                 continue;
             }
             const Transform composed = replace ? *next : multiply(state_.transform[i], *next);
-            if (!inverse_affine(composed)) {
+            if (!checked_inverse_affine(composed)) {
                 error("invalid-transform", directive.location,
                       "Transform is singular or has no finite inverse");
             } else {
@@ -2107,7 +2097,7 @@ void Interpreter::texture_mapping(Descriptor &descriptor, bool spatial) {
         return;
     }
     descriptor.transform = capture_transform(descriptor.authored.location);
-    const auto inverse = inverse_affine(descriptor.transform);
+    const auto inverse = checked_inverse_affine(descriptor.transform);
     if (!inverse || !std::ranges::all_of(inverse->values, representable_float)) {
         error("invalid-parameter", descriptor.authored.location,
               "Texture mapping requires a finite, invertible affine transform");

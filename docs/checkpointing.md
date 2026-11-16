@@ -57,8 +57,9 @@ glTF support does not make older incompatible checkpoints resumable.
 
 The original target sample count is fixed: it controls texture footprints.
 Point-light positions and prepared spectral intensities participate in scene
-identity. The point-light change advances identity and renderer contracts to 3;
-earlier contracts are rejected, including checkpoints of scenes without point
+identity. Spot positions, intensities, inverse direction maps and cone thresholds
+also participate. The spot-light change advances identity and renderer contracts to 4;
+earlier contracts are rejected, including checkpoints of scenes without positional
 lights. Sampling, accumulation and file-format versions remain unchanged.
 
 Checkpointing does not add a PBRT sample override or allow extending a completed
