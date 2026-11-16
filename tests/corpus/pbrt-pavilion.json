@@ -1,0 +1,1146 @@
+{
+  "schema": 1,
+  "repository": "mmp/pbrt-v4-scenes",
+  "revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572",
+  "entry_points": [
+    "barcelona-pavilion/pavilion-day.pbrt",
+    "barcelona-pavilion/pavilion-night.pbrt"
+  ],
+  "coverage": "Complete file dependency closure of the two unchanged entry points; acquisition alone establishes no rendering conformance",
+  "upstream_format": "PBRT v4",
+  "comparison_settings": "Original geometry, materials, lighting, camera, film, sampler and authored integrator retained; any validation resolution/sample overrides must be separately recorded",
+  "total_bytes": 327674842,
+  "attribution": {
+    "pavilion": {
+      "author": "Hamza Cheggour",
+      "license": "CC-BY-2.0",
+      "source": "https://www.emirage.org/2013/04/24/free-download-archviz-project-pabellon-barcelona-3d-scene-v1-2-updated/"
+    },
+    "landscape": {
+      "author": "Jan-Walter Schliep, Burak Kahraman, and Timm Dapper (Laubwerk)",
+      "license": "CC-BY-4.0",
+      "source": "https://github.com/mmp/pbrt-v4-scenes/blob/30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572/README.md#landscape"
+    },
+    "measured_bsdf": {
+      "author": "RGL Material Database",
+      "license": "CC0-1.0",
+      "source": "https://rgl.epfl.ch/materials"
+    }
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 12747,
+      "git_blob_sha1": "b5a8ad69971fee42f7f1940879c5433032b3188b",
+      "asset_terms": "Upstream attribution document; retained unmodified",
+      "sha256": "570b84a7b0e13b7d69aaf8417c63f6fa48ed15ca58ea585f4c38974a34f33b08"
+    },
+    {
+      "path": "barcelona-pavilion/bsdfs/cm_white_spec.bsdf",
+      "bytes": 6951224,
+      "git_blob_sha1": "ccaedd6333f44489739ea38d9871fc8d1940b480",
+      "asset_terms": "CC0-1.0; RGL Material Database; see surface-materials/external-tables.json",
+      "reuse_basename": "cm_white_spec.bsdf",
+      "sha256": "55823e81337790eee58c8b7c6b5fa918bc56aea619e0a8e4bb31b4ee295ffed8"
+    },
+    {
+      "path": "barcelona-pavilion/geometry.pbrt",
+      "bytes": 43682,
+      "git_blob_sha1": "a42c1cc71f24165315e37ad28c82ea8c7d48acc9",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ce972f84f0fd8a3ae90ff55bdeecb2b7f3ab34c0a96f13d36d4e0596c1b74381"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00001.ply",
+      "bytes": 18741,
+      "git_blob_sha1": "47392572014332b53bc7a5fd180bd58a0c1759d6",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "61d10fd6678d3afa93ed3e93d2ad86c77f09351e5d6c417fd639a4e8b724cd9b"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00002.ply",
+      "bytes": 411,
+      "git_blob_sha1": "d7da56d741800712480e9e1f76d968c30a5b0857",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "5eb62002e1dfa8c504a1a156017a804d1ed20a7b2b00b09281403a9c95d6b748"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00004.ply",
+      "bytes": 40710,
+      "git_blob_sha1": "6c2e4e5bcc17e13760a0a48f55f92422c96cf437",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9921d0f21720b5576600e69fe5f96bed3129fd6c2bd4bc1c287d88c755391e72"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00005.ply",
+      "bytes": 59495,
+      "git_blob_sha1": "3f6cc100326055fb32540564176e025b2665a039",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "e445632123084b8989eee43a7c82b21058bfd91f948b7a69b1df6f1f594881ff"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00006.ply",
+      "bytes": 40710,
+      "git_blob_sha1": "4855e195be866abeb43d7fb7545c6f38a3ee97bf",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "f897095207ebb9124e79923a4a622a4a9f860ecb82b278599e4f065855933777"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00007.ply",
+      "bytes": 33461,
+      "git_blob_sha1": "76e78a134c7b76e37021fdc14064dd049d7f2d74",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "12103abe05bb66456a7c767edf3317cbc388f8f8f4bfd8191cbc445d743e6bc0"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00008.ply",
+      "bytes": 5136,
+      "git_blob_sha1": "c23ff48bb419cee4f33064c9a40c2fd360968b7d",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "c365599346ad438743651488b13d71bda6a86812b185b20f9801621e43dab56e"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00009.ply",
+      "bytes": 9605,
+      "git_blob_sha1": "8a6ba68c8cc7d0c9730e44b2e129b855d3fe43e9",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "cb49fd27a27a52e5d4a8d4977a83ee794e56b7cdd8ed8564ce107da12481b255"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00010.ply",
+      "bytes": 6728,
+      "git_blob_sha1": "f95abdaf2afd337b776cc5d3d4ab35eb6b932505",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "54870ad9c526dcaeafdb6ba67f8b8b04c1440d7ece6630f1d3d3d79cabd3f9af"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00011.ply",
+      "bytes": 6728,
+      "git_blob_sha1": "217c451f7860139fe9ae6d0bd57645f9a5bd127c",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "b630e551ed61043b76ddc105d623868813106a149daafe7445506e129b6c3e94"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00012.ply",
+      "bytes": 6728,
+      "git_blob_sha1": "cd79173e20e0ebed32ab2cf56bac9a2a8adc17ae",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "a79394c6168ca562e8e3f29bf6fd068e12849e131ed3675cdab42e82fe430416"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00013.ply",
+      "bytes": 6728,
+      "git_blob_sha1": "8399ab5ebeb5a57826ae467675877e7db6881977",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "42e8bfc43b876705981421ae8b3645f2017ccbdd2755a5be4aed49b7e6d5b7c4"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00014.ply",
+      "bytes": 74226,
+      "git_blob_sha1": "40e877a40a519a7415e7403ccdc12c0451292645",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "b4499ccb425f5ffe5a4d8038a9c70b9870c01d128119603a0b91d221f3586cd0"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00016.ply",
+      "bytes": 40710,
+      "git_blob_sha1": "c86595a3c19e4dcde666102cf6db55b6e4adeb61",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "cde0d9197899d52ba50684709c6eabbe584d198dd19262a6d8ba2c42eebd77e1"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00018.ply",
+      "bytes": 40710,
+      "git_blob_sha1": "a4c1e9f6c2c98e6c3d5c23ba58b8eb30de033119",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9a15454d0382dcf3ac68e44c3a3bd1c4767908376bfef709ff41f4e76ed6cc8c"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00019.ply",
+      "bytes": 73362,
+      "git_blob_sha1": "ae7766ea8f1523bab621feea7ff0f70735713b99",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "82e7165fe85fb7e2169a64165ece2dbc729caf1c8b905a473894c055c82576d2"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00020.ply",
+      "bytes": 73746,
+      "git_blob_sha1": "5543b6fb1effeae1a22751a3fdbaa5df73bf1dde",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "94c6edd37ea95323ae2cbeafb92cda92e4639d4ad084eb4afd14a2890ecbe6be"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00022.ply",
+      "bytes": 40710,
+      "git_blob_sha1": "b3305746207e3a157a20ca2a5e964ceef7cad105",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "df1a9b0a9be6374004085db6d98bdf267b6c366c98f2bf2cee8ae9f7ed8015da"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00024.ply",
+      "bytes": 40710,
+      "git_blob_sha1": "6f44c7c7bc246a215c9bc1e43eceb1e74c475652",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "7b8b1e7356e32516df12893908cb380954347d0c664256ffc9539818255df97d"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00025.ply",
+      "bytes": 73746,
+      "git_blob_sha1": "a95c6fe37c8fc62d292eb873cb297e0b93f3b66d",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "1a34e46222dd1113a5b8f5d84e60e9425244a990bfa5cb321b91f0a7494b5e9b"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00026.ply",
+      "bytes": 73554,
+      "git_blob_sha1": "9437a4f5010607149fd5b4291ce21359698dcf72",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "7b947d2049bbebb047988863fade27f1b246e265b743e5dd58e75587a22f59cf"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00027.ply",
+      "bytes": 4050,
+      "git_blob_sha1": "fe6ae26e7324f734c46d0580e010e486befe3181",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "6d2a16ddad2438330621b21b206ad2718ea4f9873d4295777cf8270349f54f05"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00028.ply",
+      "bytes": 1253,
+      "git_blob_sha1": "0b9b0bda0618f20ea45463c3645c3ffcb0c2fdff",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "5b4ee0b75622d5abe4f9ac6b787cce9d8c474f7250c3f81e500c023e731a8796"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00029.ply",
+      "bytes": 1131,
+      "git_blob_sha1": "911f1d0f9d7761fda01c7b2391f5f972441d58ef",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "8f6925e1da849dda41428c4af13be8603d883747a605f8d3bf85abbf16dd2704"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00030.ply",
+      "bytes": 835,
+      "git_blob_sha1": "3cadb99b338276dafe0ccaf344daa171a22d2b5d",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "e7300b202bda826fb53c3bfbe840910e6bbde40188fde22f4bffc88bf0598380"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00031.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "906cbe6b8549e39bbf61fdf794300cfde48d51b5",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "27a92e83ccacb2b82e4ec7f7c6641f8b08fcbd455b2beb6b6b5c1f97d5bf9877"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00032.ply",
+      "bytes": 7652,
+      "git_blob_sha1": "586224a0128228e0d5a96371da5e955a6c2e92a2",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "84e7707bac7e457d67583666cced88cac0558698692579a214a8271381f87336"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00033.ply",
+      "bytes": 18741,
+      "git_blob_sha1": "1ab1a9264f1d5b532e8ad82d6cde4c5f0c0df71c",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9f62dcd67c74097b27582316ec3a205fe460fd87aafafdf5d456100dc68f3591"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00034.ply",
+      "bytes": 18741,
+      "git_blob_sha1": "0bcb1ac1a99a8df5ff125303b73c27e561123c1d",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "0ba47086050c4578762ffd3fc0a5bda1c2d6617a9fc70774cc69b7be15920bcd"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00035.ply",
+      "bytes": 22437,
+      "git_blob_sha1": "471cf29afc4d9995aa000c8018c9953d9ad94397",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "1dbfe81d4ffcabf401f70055bd3b800a7a7204bf51b341f011707e7ec70320d7"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00036.ply",
+      "bytes": 22437,
+      "git_blob_sha1": "36e4031fa7c4c29967c8fb91768e31b814829318",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "66ac0227e35aa2f5d1ec10b031e3d728a1f11c144f737d84de354a88a1638978"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00037.ply",
+      "bytes": 3031,
+      "git_blob_sha1": "b176ae972dc8a51727e51ccd6c83e066def8896d",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9f2db26f05b3566d6ca653ccf0ea285dfd004aa017fdf11a80277bd19d3ce67f"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00038.ply",
+      "bytes": 3031,
+      "git_blob_sha1": "1b2f73d80b07b0a4b28a2a034e67d51100b4ecee",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "6c94a68222bb620d220d272d557c7c75f539af3fff23cda3e6fc0b25fbc739f5"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00039.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "966d4072d8ad00f6852cc1a2eeb91d30d55f8d11",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "38e642d5f27dc9c1522c6c8cb2b47ab353b16772b43070e632d7c83898cfef47"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00040.ply",
+      "bytes": 7652,
+      "git_blob_sha1": "67aec2a32f1e1cea1e16ee0dc721905f7f7eaf38",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "330231cc88b7a353ea905903bcad1a1128d504cdd1bc0d04c945f95aa7291fb2"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00041.ply",
+      "bytes": 3031,
+      "git_blob_sha1": "9d69d9b10dae90e3dafbf306439c83fa3c7c8938",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "dd7d8476b5569d7b301d28096bbbcbfd326617bf624691f5d00f046c76ec2792"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00042.ply",
+      "bytes": 33525,
+      "git_blob_sha1": "14ec9e7d0ebcd79b51ed828cd4c97dbcbb10c3fc",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ec064190ee2de49653bce066ea7e87dd8fa841f39aa678e4f148a8b05a712a9e"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00043.ply",
+      "bytes": 88967,
+      "git_blob_sha1": "1e305ff16913e720fc5bcdd9520d8b25a4980f56",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "d46f220cd67ba2e3ca2545fde77ac2496a6a688d1dba7c42b9af2fedad076ce1"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00044.ply",
+      "bytes": 15045,
+      "git_blob_sha1": "1b5f157893ed38e0ed8285e0ba93d6336e2a1b39",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "e6299f13bfde8dab8e552c2a67a293c63cd9cd86ca31e31b4bf9673c301dd71d"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00045.ply",
+      "bytes": 55702,
+      "git_blob_sha1": "5061bbd9e8a4149ca6060c60f5c44ce40ae4194a",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "a7114a3c6d579eea111b90204dad7eadee98b16a7bcf565b9dc8d19ed8f90cc4"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00046.ply",
+      "bytes": 18741,
+      "git_blob_sha1": "c06f04350adcaeed7dfd17a11d1c48ed0cedeaa8",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9ca697c592ce7f2f69264a5355a789ac56a147912cbb3269fb0ca12134ed581a"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00047.ply",
+      "bytes": 74182,
+      "git_blob_sha1": "d0785c6e9a3d6e6a70d60103ff0979256562ada5",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "b3d1987968e025bff56a4bcf8b61da8272a98b7517929ebaf8763f84afa6299e"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00048.ply",
+      "bytes": 411,
+      "git_blob_sha1": "5525e6d080aca00df12b38943efb344f25795103",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "d1fc2745c7ef390570112bb0063147e20cfb5e56a40eb02b753070bbb8ec4ac7"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00049.ply",
+      "bytes": 3031,
+      "git_blob_sha1": "404237b5a9a958b7d04bca77e2707730bd137af2",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "45a5c86dc0fdb3f01417269871fb86c684a06cb0c7d9d781389ab9802e9a2779"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00050.ply",
+      "bytes": 3031,
+      "git_blob_sha1": "4c02528dc5866b15e5e63f9698dcbc2a7597aac8",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "52eeff4c73316f21028170efacb7f610f7b88c1f143979a65a89bc437155b78d"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00051.ply",
+      "bytes": 22437,
+      "git_blob_sha1": "307294aa435288090edb5e27de1fc484bdd095b4",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ed2f85264e63ddab4ffe7f7562b592704e651c7e6efb18f64f9e0405d65e3e86"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00052.ply",
+      "bytes": 236807,
+      "git_blob_sha1": "cd2be7e1fda83d77bb38063261c50d68e72a1634",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "5c97543636ce37dfbabd06aa95ff02729037727627d037013f2997ab18ffece0"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00053.ply",
+      "bytes": 11411,
+      "git_blob_sha1": "61565163d8f0c67e8d90e89d86f1891f9c5a7b6f",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "c1c3360e11d3b6d38e487be684a27a55d3dc090b78324c4a6e053c8580f3b365"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00054.ply",
+      "bytes": 13539,
+      "git_blob_sha1": "7b3a5a98f98654fbad46c4c23e821e533832f270",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "440c40385d0057f30f8d539657c6d0ba60bd222d7e933c68e274c4c1536f5481"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00055.ply",
+      "bytes": 7683,
+      "git_blob_sha1": "c054dae611995bdc6d16bdcd1845bf4c64412895",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9ce9c6f96a1bbd6a0bd6f3c7920b56242725a8ea2ebd322e864296631742df12"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00056.ply",
+      "bytes": 11097,
+      "git_blob_sha1": "58716fce57af723b1402d991d8ce37a6c13ac013",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "294a703c19c0e50a5191b6827af08e929fdfa2802c4c4979a7a4f5bb5d8445fc"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00057.ply",
+      "bytes": 4242,
+      "git_blob_sha1": "9f33d6e79ee31b219ce0b9419df20bba586ea56f",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ab669a0589e7baf6a710c54cc0cbf4ce24f258d00749bfd8fde2a4c3ced18d77"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00058.ply",
+      "bytes": 1253,
+      "git_blob_sha1": "aac1c157e0f57bed3fba231e9fb3eb503949d00a",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "0f8dc86fe2638207c0c0a147a27f4dd6bfa83883c1ed43ba8626d8485d5aaeb6"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00059.ply",
+      "bytes": 1253,
+      "git_blob_sha1": "9c5bf377edac360af50807c9fd74a431d67101d0",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "2179f3e2c8f8721ea6af9ca9af508a10559551afab16ef02c2e3a19ebceaf21b"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00060.ply",
+      "bytes": 957,
+      "git_blob_sha1": "8efdcff77c695c4ae8bb55ed033b517a9e7f2158",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "5363559113239489b271a6482e8dc2eb51de71e2d9431aff064e8f49cfc4f6b3"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00061.ply",
+      "bytes": 1549,
+      "git_blob_sha1": "834c3f0fc151a5179fd27a2cfbe07c0b7090502f",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "a058a29a60ea79fd66b209e29743b130a3d0be5e9b3a4d45825175b350ea6415"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00062.ply",
+      "bytes": 957,
+      "git_blob_sha1": "013bf74c8477ae6a28d6c73a03662cf66226ed0b",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "4b1748a8bc66ee25d8e2f9d370fe597dff37a2836aa6533f02ca91755e3febb6"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00063.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "ef1cb40689915420ae7234cacb9d6283e1d7dbd2",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "570bbfdc463242b75493de9a4b0cb57f717a8d8fdcefe83e0a3c2bfe95459929"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00064.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "0d99193b5aa75cef5631f36d630cf859416517cb",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9ae20e770a7b93953b30fc0dd891777feb245e51924f3a773ee271acd2b6dadd"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00065.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "abea3c81fdef1840e1d669ebaa49afa3b1cdb688",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "58b1e80c2a1d632562d02058dffaa317b300431d936698566793b1452f5f66ff"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00066.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "172b8efda35ea0bda27f4bad493dd583485f1000",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "e1e80ffd24571d5db4d52178c7c9f2e25e9877892fcce60a2f78790f3c5f24b7"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00067.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "1bec85671c229aa0a8e3966ba4715f0373e179f1",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "d1968ef91a45f554b6a58267d6b094b1771d11ebafe78ced5c4f1776ac8cbaa3"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00068.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "7685d3c4b6c1d29d17b81da3f5d872acdbf20eee",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ea0938adf60ff931d2916a442f32ae88a8e27c1f994432da149f9ff03d797d8c"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00069.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "166c616abbf418569e75486630bfedbbb8738fa8",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "685ca1769e41de95869c3159cf6ba260be86ca570b59f820bf86cc799ca34b2e"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00070.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "8aff528e1a08f3c2abda6ce6efcb394c8f5f788b",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "7e2ef55ba243ac57b15b54c85580bcd2fccb0050ebbcb1371074bf93ba4521a4"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00071.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "ae36bc1ff42bcd60cbce9d3d56490b569cd8d65e",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "82ade6949fd66ad771010199692093fd4f5e82e288ccf026ce76abcb1f24eaa5"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00072.ply",
+      "bytes": 957,
+      "git_blob_sha1": "4c8ed5dfdc50cfd749d927319a6a3bb79cc08477",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "387cfc4b27298bb35e30420ab21ab83db6a2e64a78ac689e505060b95af81712"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00073.ply",
+      "bytes": 6447,
+      "git_blob_sha1": "4b7f1636eb35e29c8f6ffb40cf81449162477ea9",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "7b897a869fd7d85b17bf264eff5cdd3088cddd4617797ec918c40d6cfe11c587"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00074.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "5041996f9fcb481e71c073fa82269194339f4215",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "8b99b0463d62eec0c13541f56c8effa055e6bee07c5f4393ddc8657c98066895"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00075.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "adcdf1c983f6b5052366b9b2dfeaf7b91166120a",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ce9e9c801c55b2c9748b1d788f564d3c4b4c4477bc3d8981d9cedfd1acf1860c"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00076.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "6b74b8c3d8c0fbcc673af516ae6cbb812843f18d",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ffe2aa08bb8f9d4ec7c50491c5c58213bc2d6cb611f8706f1f963e36450af55a"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00077.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "42488608dea1d7034f58cb3458b11d8368979a76",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "1726b9d971c988c2320396d97942525abc3b86f6045a579894e90e89e5755d58"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00078.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "1eadde521225fd3dd4afe8e03b189b0939220354",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "a63a81f85c02370cf0781b53a6f6460ff94aedd6d33e23e8750a39d090c3fcc4"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00079.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "5bc9876548611e5ed725823c877de2996c8d19d6",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "9508395bc07a0961769436128d8bccf3de482a961135fc3396deb25ca59bbb26"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00080.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "2eca1da2ad43ca2315796e551a369217ea005282",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "e0072ea632dab61759b849e9180ece379024d9efab3ab7b7cf2ba16216e452f2"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00081.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "a9d34b7faac08b2f00ad85a8e6bcb767b9078ef8",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "121a5fb149c9345c2e4da8662edd93b43bccb3bc722589039458393028bb2eeb"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00082.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "0de0948a8767e862a5ebdcbeb509653832208a70",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "6ea5d40ddcf0e5f54e12b039cca587cef6fa43f306ed5ce92e980bb03020ce82"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00083.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "96d1562a79ce987f4b7627f10ef574df7d130241",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "60c996297824ab1fa07d8f6b6801d9099442c7167c7fd26591fed7c6b3789639"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00084.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "7b69ab279548d83dd1e9135e32138ae61ae9a06b",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "b7d4948510e2714014c2639b6530001bf173568f3588ebca220d50b7605b29d4"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00085.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "68579307f72724d85e46fe4092c00b1c331a8af5",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "917ac2e85282ff2c1ea931e4894c55b87c0471451db06d147f32030ed572881e"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00086.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "87ec878ce047c36ccbea1fdb2e3a797818746cfe",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "6c2560b9b647cfb8a2cc1be844e0b397648d6ab909f5ee8b8d162e1b2a12f0fe"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00087.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "549c6a81ef6edd00047c79b87ef03f85d7480f50",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "8816ab2a60f1919d930c2bbb4873367405e65dc48f11a9161248d636e67061ae"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00088.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "770d51b12e7dea4380f2757682d895fe56ece86f",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "d7764836939cd14bcf3a3996d6bbb9921f43957f612fcb5202b8bddaaf999471"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00089.ply",
+      "bytes": 1131,
+      "git_blob_sha1": "155bfd80d38bd014d221ac56024d465f13c03f49",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "7470faee4385ac8bc6b9b8876630c6e408e6c01944eb276240d2d313485488d8"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00090.ply",
+      "bytes": 835,
+      "git_blob_sha1": "19ca71b9ee9a8065841a91fa58c6bc0008b15e4a",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "4ac8cecb912e822e62ba5218179c868c9a85417cf564f88c192c943ceef83d81"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00091.ply",
+      "bytes": 3614,
+      "git_blob_sha1": "84f2a435635acdd59e3973f469e4e519326cfb03",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "22ce3b2165ff43863c87ebe7b9d21b58b908ef2656461504ffe1d04e9e13238c"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00092.ply",
+      "bytes": 1183,
+      "git_blob_sha1": "edffe24afe060734e8c3aa9703d0e5d873e05c9b",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "f9b503766e48157b7a35c1677fc07e1db6815e5ce9dd9b82c535de3c6b8160c5"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00093.ply",
+      "bytes": 3519,
+      "git_blob_sha1": "205ac71a062809e8aa9701b9cd420129f1c52ee9",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "4a3b47daf5d3cd732201136fa4beb2869d933ee4ef23e789bfbcb16d87327857"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00094.ply",
+      "bytes": 6015,
+      "git_blob_sha1": "5e14649263a77448a9a808331763fcb93225bfaf",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "f1c2f5b892e01ff6d8d68e60262d2e09aa2a5ef30877d529cce9c71c038742d4"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00095.ply",
+      "bytes": 12796,
+      "git_blob_sha1": "16c6e12c7dd5e41930f139a03eeb269afe0575c0",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "bbfcfb934c8dca8ec768bfbef7a19da312ea14dfdb8d032c30c2de598aacf281"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00096.ply",
+      "bytes": 111045,
+      "git_blob_sha1": "85ddd38e6ca14e6fc607d2620ae385977e76bf7f",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "a1039f4da00fde44f4531861a700fd25624f9080cbf4e2e2572f5babb7330a5d"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00097.ply",
+      "bytes": 246240,
+      "git_blob_sha1": "0dbc48729fc08b7c1adc9449c36e62ff3922e2be",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "410f0287038b920eabcd653f286b5a72ce2190e979c6d5a77d580db640a62f45"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00098.ply",
+      "bytes": 73405,
+      "git_blob_sha1": "fab36569641e867998f8631cb04d096a0af30e2a",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "6b708e7ff48ed863d6e1b343839ebeff453eb919104c6af043aa002da90dba64"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00099.ply",
+      "bytes": 293236,
+      "git_blob_sha1": "546a8781317cbf318122c16d8110b5bce3024f56",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "b5499b100640380781c50f4ca9fb2125cd7e1137a2077da39a10d17d15f37ef3"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00100.ply",
+      "bytes": 111045,
+      "git_blob_sha1": "ce4eaf43df92b0145fb152249f9d371a790ecddc",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "c069ac89566acdd04eedbae45785af90efed2b385d9c3f3eec957a03e0e646fa"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00101.ply",
+      "bytes": 246240,
+      "git_blob_sha1": "5f53c836e3ffa332a81c7288d076a2adfc278b32",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "0ed45c64cac3a4d2f90280605eb033d5a263a63325d35652ab887c257b8cf9aa"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00102.ply",
+      "bytes": 73405,
+      "git_blob_sha1": "4a0ab2b14904870c33341e596056d3e374c4e6ac",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "e0dcce220eacc73128c768a57c19c5f5c5fe7434ff17e9cb5531cc4fdcf10983"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00103.ply",
+      "bytes": 293236,
+      "git_blob_sha1": "61f2ec624c86fbed2ccfcee5dd697b7f70e1e8d2",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "d12e0d89d53c0ea45b1f688db6c6d5999b939c5a41f2a0b33d7b4654fe207526"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00104.ply",
+      "bytes": 111045,
+      "git_blob_sha1": "2d3e4fe9d7c795117762215d07022d98c6fbd351",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "e314306e5c66a2c4098aca28089e928b3b20873cc8ba9d2288f2335d391af4f1"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00105.ply",
+      "bytes": 246240,
+      "git_blob_sha1": "2f2c8b1665044ab92d54cf1dc67ade579a2f15db",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "d8be1f487052530e5b672092261ab53d97cba89c7bc821d8f165de921ec760b2"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00106.ply",
+      "bytes": 73405,
+      "git_blob_sha1": "08ff12d36f99e05ca85959d3cecce1dcedae4a25",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "29aa3e33015c5e7f064e7c668c84ddfb2b18120c63e0537f93d41f3cce6ca336"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00107.ply",
+      "bytes": 293236,
+      "git_blob_sha1": "e442b59b1744afae6d4305aac97bcba7267e660c",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "83822015beec6e53568ca6970beead4ddadce4c85b2bcb1c2397c11a1930bbbd"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00108.ply",
+      "bytes": 111045,
+      "git_blob_sha1": "65d6f6b28e4cfa6011caff52782d5e1c694bce6a",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "c21e73269920a4089e37b2afed04e5ef3b4d52be13423c31097a253927e9ff0f"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00109.ply",
+      "bytes": 246240,
+      "git_blob_sha1": "418682e67ae8c9a0c79af9536256fb07a1756200",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "6473edf15d7c3bc2129fe8bb455ab2d61b6d7f5dad27bb89bc0095899e2d5e3a"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00110.ply",
+      "bytes": 73405,
+      "git_blob_sha1": "35e8ed0911fd437c69e3ef31138aa90195236a40",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "c835f95eb0f18a71ae245c54184d6f21f09fa71fe0619b66e2acdfa9acd83319"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00111.ply",
+      "bytes": 293236,
+      "git_blob_sha1": "b9ac33abd306f846f905d1da50d4aede64713f91",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "7a2f73e8b7d5e0077b96a646daa030ec3e1b3bb0fdd8bc4c6d8ead2c1b10b455"
+    },
+    {
+      "path": "barcelona-pavilion/geometry/mesh_00114.ply",
+      "bytes": 66127,
+      "git_blob_sha1": "057e5faaa203e25242fe4656009ba5c9120a39f4",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "71be8dd8f93abddfca042169a28a719503fbf8d60f5ed4d4b240cafa74a65301"
+    },
+    {
+      "path": "barcelona-pavilion/materials.pbrt",
+      "bytes": 4576,
+      "git_blob_sha1": "1c62cb19c66621337e92b238762062d844dbecbc",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "271abca792daa653f5a9a70dc6ebca9b1d5ce5c06915a388da46c295670cc3ac"
+    },
+    {
+      "path": "barcelona-pavilion/pavilion-day.pbrt",
+      "bytes": 988,
+      "git_blob_sha1": "3bf0c713d51f7c27f69aca432fc8235ad701e8b5",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "94f863e7885c12a0a65bfc5af9b9a726a99000f882de2e0565fd1f191e7193c1"
+    },
+    {
+      "path": "barcelona-pavilion/pavilion-night.pbrt",
+      "bytes": 2026,
+      "git_blob_sha1": "2ce86239efc7d866339d65854ea98dc2e31cf150",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "ef24f82116858679ca1cd1ca5729121762469b82b023bf3dbdb6cfd215901373"
+    },
+    {
+      "path": "barcelona-pavilion/textures/Mies-BCN_M01.png",
+      "bytes": 663432,
+      "git_blob_sha1": "53ef0b832f909de1c7e66fff5afe3606e6d1c230",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "6979bf02b8e03b68dc3f58ff821e8bf6ddc9d9e7a117c23dd79bb40674219888"
+    },
+    {
+      "path": "barcelona-pavilion/textures/Mies-BCN_M081.png",
+      "bytes": 682383,
+      "git_blob_sha1": "5af5cc721d1af2e063b8afcb17cc9611bec27b27",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "7804af56c5c5b14d89b06d00166bddb3e9ebb17c4c9e5e1657b2e707d430cc1d"
+    },
+    {
+      "path": "barcelona-pavilion/textures/Mies-BCN_M081bump.png",
+      "bytes": 242260,
+      "git_blob_sha1": "a500fbf07678aa12d8edec788241e768e0b5d9b1",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "1daf1b3e98b10e4614e127e7f46a19e9e80a4cc4c8e3af70fe9fde4aa9da3eed"
+    },
+    {
+      "path": "barcelona-pavilion/textures/Mies-BCN_M11.png",
+      "bytes": 1582341,
+      "git_blob_sha1": "7badcc30d72f9eb9a1cd9cecad5a9f408d105c45",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "f174b4d955e94e11d3c5c9bff63b40ce50c0dee2d91aec4e6c72d592d6f075e4"
+    },
+    {
+      "path": "barcelona-pavilion/textures/Mies-BCN_M121.png",
+      "bytes": 425405,
+      "git_blob_sha1": "540298ee837b6b814b715d2ebf59292598e57338",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "fe657c5fd87d2041cebbba5ba06c651eaed8d74f6fe5fe9ce3e9df0f7205a4e9"
+    },
+    {
+      "path": "barcelona-pavilion/textures/grass_mid_seamless.png",
+      "bytes": 995668,
+      "git_blob_sha1": "d37e664d54ad4b6a88118cf73cdbc22b4ef938a7",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "a1805ff35f3ab2a429f7dbfc38840a99905fdc587f991753e2a3c5658bda48ed"
+    },
+    {
+      "path": "barcelona-pavilion/textures/night.exr",
+      "bytes": 2016734,
+      "git_blob_sha1": "c37b90dd4d323fc7bda2fe316ba887d203b07c89",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "50b581f4f0a8b4033b6500d4f5e95a8617ec16430af8aaef07f4359fa7cb7e8c"
+    },
+    {
+      "path": "barcelona-pavilion/textures/rocks.png",
+      "bytes": 808389,
+      "git_blob_sha1": "4dea7c51ec662314c817b46b78f7bb7fa3284e62",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "29fe898db73649b46b841b0dbeb53b82040cbc2bd65cd691a031a794dcdb59c8"
+    },
+    {
+      "path": "barcelona-pavilion/textures/sky.exr",
+      "bytes": 1880396,
+      "git_blob_sha1": "f2e4b0a4b922b05dcc6b8d5a427ff2b45197f744",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "8a95f42a49359e2eb726aa038d59c33c60270789a70495fa3adab91ca67586f7"
+    },
+    {
+      "path": "barcelona-pavilion/textures/water-raindrop.png",
+      "bytes": 168358,
+      "git_blob_sha1": "c312b32f7c1291d70898e47a39b02b535e870703",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "5798decc542c32f86481a45ee63cbc5f25a767575c9d59e64ad269b7343db06c"
+    },
+    {
+      "path": "barcelona-pavilion/textures/wood.png",
+      "bytes": 6684623,
+      "git_blob_sha1": "c2bd661579552d25ad7f2f0131aee2ac3408445a",
+      "asset_terms": "CC-BY-2.0; Hamza Cheggour; pinned README.md Barcelona Pavilion section",
+      "sha256": "744f1933104dc9704e41d7efff6e5eb53c8354801798e4013b89c1c1e4da828c"
+    },
+    {
+      "path": "landscape/geometry/mesh_00064.ply",
+      "bytes": 158247,
+      "git_blob_sha1": "340e54fc2c9edb7be403097871ad8df18b178ff8",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "735a0a0221543e949c6985714907523f89fe4e9a13a040abc2df77eb3b5046f9"
+    },
+    {
+      "path": "landscape/geometry/mesh_00065.ply",
+      "bytes": 25331755,
+      "git_blob_sha1": "27d0d1bb8d474235b032d591fee089c78893e5ad",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "4fa761703e08f60ee0d543411d128f52ce820c70bda079f9cb62529cf9e3d15f"
+    },
+    {
+      "path": "landscape/geometry/mesh_00066.ply",
+      "bytes": 9059467,
+      "git_blob_sha1": "af0573996f6fa4f998f8a70923d7092060971a80",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "1471e9cf73204155935a2e7d5b49cf7399419bb483a53ebe123021d60619b112"
+    },
+    {
+      "path": "landscape/geometry/mesh_00067.ply",
+      "bytes": 30149,
+      "git_blob_sha1": "43e329da9007f1ea9349607651a6e95ba6759dda",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "cc1c3d6a748fe1284eafa106dddc141d02619eabf86f05dd2c3ab996feccc69f"
+    },
+    {
+      "path": "landscape/geometry/mesh_00068.ply",
+      "bytes": 1149849,
+      "git_blob_sha1": "eb25c5ecad2ea3a7d27d871c43e1512f5d402f2c",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "baf1d9a88c439820dd0f5eeab0e5548f0af7ca93b3d79e81bed31c335381e706"
+    },
+    {
+      "path": "landscape/geometry/mesh_00069.ply",
+      "bytes": 58457809,
+      "git_blob_sha1": "03a4aeffc9d674a9681dc6172632efe42fb03f11",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "f1863ca68deaee37099512c6cad26d0d921a0a54afbbcc036f610babe1b53082"
+    },
+    {
+      "path": "landscape/geometry/mesh_00070.ply",
+      "bytes": 19036181,
+      "git_blob_sha1": "ca3a024e4d770159b970bb8a8e3cbde2164283fc",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "5c74b17740828206a01eb9cd5711a6b573295f10dfa19b2f61990d6004228e22"
+    },
+    {
+      "path": "landscape/geometry/mesh_00071.ply",
+      "bytes": 52800223,
+      "git_blob_sha1": "591f065239cb75a01fac13fe0a431015b2eac99f",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "403a679c8afcd0cf570e8e67a170a826f54d1106c7d9bb1cc5d7a6d7c506862b"
+    },
+    {
+      "path": "landscape/geometry/mesh_00072.ply",
+      "bytes": 14573571,
+      "git_blob_sha1": "fc0c711715baf4fab8dfc6d08f587131346e704a",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "c7f025f8702ad3fd8787266a8cf36e7891398e4e8fa9d145e9062e0895ade68d"
+    },
+    {
+      "path": "landscape/geometry/mesh_00078.ply",
+      "bytes": 260535,
+      "git_blob_sha1": "14a2fe4419bf2d9c25cf00901b2d4b3cd9ba08fe",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "066e1f61ef100af64d32d6196ec8baa5d1c1eb1b1ecd1dfcfb32559074f112ce"
+    },
+    {
+      "path": "landscape/geometry/mesh_00079.ply",
+      "bytes": 9289519,
+      "git_blob_sha1": "0ca13070b3063f327afca14a9db595d63c11a360",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "492be37c02ee84f7177638c0aa249f0e728f6c741d63675bec9e51521eb36087"
+    },
+    {
+      "path": "landscape/geometry/mesh_00080.ply",
+      "bytes": 13819871,
+      "git_blob_sha1": "be29244786e6d7da5fc2b2a389a172df44f2949b",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "aa73cb6c058efb42f93ea40f159efb0639b1fe57c30e0111cb552a74e0769086"
+    },
+    {
+      "path": "landscape/geometry/mesh_00081.ply",
+      "bytes": 5946043,
+      "git_blob_sha1": "fa0fc2eaafd1660364f769e0ed68a09e2b3eb481",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "2aa5aeae6078d8bae8ca551510d81922db6a95a8347e5d09cddb2e4c4a284f31"
+    },
+    {
+      "path": "landscape/geometry/mesh_00082.ply",
+      "bytes": 13339147,
+      "git_blob_sha1": "55f64ab583b41075a8ab7ba5803f387ccaf57268",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "db42689e848afe1c5b90bb6b3a42c4acd96e4dd53200a36fe9c2207eb38ef7e5"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_br_01_co.png",
+      "bytes": 428836,
+      "git_blob_sha1": "6d629bfd36a9ac857a8b09ff4dd05815d68a8044",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "6b0cc9543b4277770dd162f4b436caebad0e1c33597d3d0fca207edacc977338"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_lf_01_su_co.png",
+      "bytes": 252798,
+      "git_blob_sha1": "0d88030556a783ed6825d3d04ef5234cf0579f74",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "e02569396ccf8f54146d308bf71c989e8630bb45af17a08f77b4d16616b99127"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_lf_01_su_tr.png",
+      "bytes": 265598,
+      "git_blob_sha1": "965fcfb43231e1887dcde63add907e0e750ba097",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "46ded6b27dd2baf83a4f4f1c27f34c789aa204bc9cf4571b1877be4cfb9f6120"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_lf_02_su_co.png",
+      "bytes": 317748,
+      "git_blob_sha1": "4ca5abcd18adc71b91ab8037e027c77de14afe93",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "62d9b5f206391849c85908fb2d44bc47e0f5440c41664b660354a611e0782705"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_lf_02_su_tr.png",
+      "bytes": 401145,
+      "git_blob_sha1": "93b00b57b0087c6eb371124510633f9df06e56ca",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "4a8819591eac7cfa7a6037224d585397a3a43150fa329853d1ecaf6852e47172"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_lf_03_su_co.png",
+      "bytes": 251433,
+      "git_blob_sha1": "19b7eeddbfc376d6a2b68856e3ad9cfca5e5357e",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "d8f8d74344d1e0ad7d872f4a602fb271933bb36c7012400151242cd23fcb985e"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_lf_03_su_tr.png",
+      "bytes": 317542,
+      "git_blob_sha1": "eca8dab2b0721f9eeb5eb81bfca13c8837eec585",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "f471e0197027f15d56855f25292390f5ca5be97c67aaf4e1a50052d0a4bab65d"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_tr_03_co.png",
+      "bytes": 1435659,
+      "git_blob_sha1": "e4c976f91df821a0683fd8a94036868c29617ec6",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "e05907fb30d6dfadd1ff410b9bb4b53dacc8dda30261049f7cb2b7166e3eefc0"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_tr_03_di.png",
+      "bytes": 377226,
+      "git_blob_sha1": "239adb907291d96c45b1984647ffa6ddc723c9bb",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "b6c18f6058ea243dacca98994bc3ddb88ebd3db4deef52171b5ada9957422837"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_tr_03_sp.png",
+      "bytes": 1625521,
+      "git_blob_sha1": "f09a908e3b1603853c376418818889bd608f7fb8",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "18fadee4286d4cef0a8483e9a1bc483259eb6176a1f45185508b8fea17406c6c"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_tr_06_co2.png",
+      "bytes": 26190899,
+      "git_blob_sha1": "10f1da918b8dfddff6e553744139c2d2ae206197",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "22de6ed3834f9f91baa34bb6db68cafd8a6192d8421071779e43893ead6d700b"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_tr_06_di3.png",
+      "bytes": 20689136,
+      "git_blob_sha1": "77c7b5ef807694bad231a3fe848d043e069e366e",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "781170416dd2c11965d115685ee35f528bf8997b69e1941e296dde5c44f54a15"
+    },
+    {
+      "path": "landscape/textures/Betula_pendula_tr_06_sp2.png",
+      "bytes": 15193222,
+      "git_blob_sha1": "d03cef496041ca5aae22abb7b54b57c42c6bb25b",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "d9f596bc0c3a3f89da78e34fabe40b7c8b91e0997461d7de70e3a8e0a4abd6e0"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_br_01_co.png",
+      "bytes": 753569,
+      "git_blob_sha1": "1b3c3fcf72450a00fee11eb883c84a3831fb8091",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "1a941eef6b3bfe717be6e96bcb90da457a45e83d89fecb70bd715b466edfeab9"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_br_02_co.png",
+      "bytes": 64769,
+      "git_blob_sha1": "9627e3a755f6d20e4ceb547ffd9734b519e98194",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "7f077d297d95f1dc940d24e6271f52b7d1bc8498f9b36da8d166c0ff47c92078"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_lf_01_su_co_fr.png",
+      "bytes": 858204,
+      "git_blob_sha1": "fba0dd2745bd2f4aee907da0608e62b16e0c3b81",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "c703503a747455fbf0aaf2edfaa09da016bea02626daab59e6bdaed58fb486af"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_lf_01_su_tr.png",
+      "bytes": 689740,
+      "git_blob_sha1": "0cac5e9194bba2843441ad0f4aecc1d4a8730dd5",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "bd06a6161bb35bbcde2cb409e19cda8abd74730b0233f46e0c55e30b81f109ff"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_lf_02_su_co_fr.png",
+      "bytes": 697560,
+      "git_blob_sha1": "b055712f43b45444c953ccbcc50215ef3efc0fc7",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "a94b8d726152eaab6c31a3b59ef7c0d51888dbbc77d3de46b199243c57eed5de"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_lf_02_su_tr.png",
+      "bytes": 543319,
+      "git_blob_sha1": "3f6343e8fb6ada478630458e8ff58620ddecd0c5",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "46dc37a917ec1fefb5fca2271d05d90be13fa6ebb1a2263d7a2c75df27a65831"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_tr_02_co.png",
+      "bytes": 4361365,
+      "git_blob_sha1": "641de5e0904ad3b506f7bdf54480a7f39001c01a",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "bce3abfe4bf4a37733449dfb083645a9a8238ec2e662d59d02598f532b0c332a"
+    },
+    {
+      "path": "landscape/textures/Tilia_tomentosa_tr_02_di.png",
+      "bytes": 978996,
+      "git_blob_sha1": "0e15858098ffa72744d3a2a1cf68c4ad790e17ef",
+      "asset_terms": "CC-BY-4.0; Jan-Walter Schliep, Burak Kahraman, Timm Dapper / Laubwerk; pinned README.md Landscape section",
+      "sha256": "0c11c2e42e2aa5d12b07ab3df33006ac79520d0c4f24382a8f2c475ffe70ae3f"
+    }
+  ]
+}
