@@ -1,0 +1,38 @@
+{
+  "diffuse-direction": {
+    "bytes": 720,
+    "sha256": "ac301a2349a351c7caa52888c06400e925e6e7e06a03a330ec3fe37eb2ac6992"
+  },
+  "spectral-illuminance": {
+    "bytes": 758,
+    "sha256": "9cc707a5b25471404f4df9fff99793a2271634817bb1af21ff4854142f2a8098"
+  },
+  "affine-transform": {
+    "bytes": 1001,
+    "sha256": "574836259af20f528bf3163760e47526a8a46081a2f3bfea287bbccf04b306a0"
+  },
+  "mixed": {
+    "bytes": 931,
+    "sha256": "dfab80752c18e6115596a104ca33860b45bf40fbf6511349112e1d6cd2335b66"
+  },
+  "rough-reflection": {
+    "bytes": 755,
+    "sha256": "9dae916bbd31179cca598866442d1576891b2597ac57c80be3fa144ec010cfe5"
+  },
+  "rough-transmission": {
+    "bytes": 756,
+    "sha256": "1eec9b0f97726f0536caa7c12411005603bd37c28f33677775d0c6754d012d89"
+  },
+  "bounded-volume": {
+    "bytes": 1497,
+    "sha256": "d0cc17b4ae546d878d0941e8e13b35ce614fc8088b28defa63794b6b2812d857"
+  },
+  "unbounded-volume": {
+    "bytes": 888,
+    "sha256": "2fe749833641cbe414d3fe14c2190ebeebeac7590fa68e35a122d4b0a42c366f"
+  },
+  "external-quad": {
+    "bytes": 741,
+    "sha256": "7166e508f35239eb2cada93b25f51ce1eecc6f131953000a66a35ab74021d645"
+  }
+}

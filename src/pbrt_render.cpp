@@ -178,6 +178,104 @@ std::optional<std::array<float, 9>> spot_inverse(const Transform &transform,
     return packed;
 }
 
+// Small exact expansions certify the affine direction before its final rounding.
+// Refuse inputs whose low product bits would fall below binary64 subnormals.
+int least_bit_exponent(double value) {
+    const auto bits = std::bit_cast<std::uint64_t>(std::abs(value));
+    const auto exponent = static_cast<int>((bits >> 52) & 0x7ffU);
+    const auto significand =
+        (bits & ((std::uint64_t{1} << 52) - 1)) | (exponent ? std::uint64_t{1} << 52 : 0);
+    return (exponent ? exponent - 1023 - 52 : -1074) +
+           static_cast<int>(std::countr_zero(significand));
+}
+std::pair<double, double> two_sum(double a, double b) {
+    const double sum = a + b;
+    const double bv = sum - a;
+    return {sum, (a - (sum - bv)) + (b - bv)};
+}
+std::optional<Vector> distant_direction(const Transform &transform, const Vector &from,
+                                        const Vector &to) {
+    double endpoints = 0, matrix = 0;
+    for (std::size_t i = 0; i < 3; ++i) {
+        if (from[i] != to[i])
+            endpoints = std::max({endpoints, std::abs(from[i]), std::abs(to[i])});
+        for (std::size_t j = 0; j < 3; ++j)
+            matrix = std::max(matrix, std::abs(transform.values[4 * i + j]));
+    }
+    if (!(endpoints > 0 && matrix > 0 && std::isfinite(endpoints) && std::isfinite(matrix)))
+        return std::nullopt;
+    int endpoint_exp = 0, matrix_exp = 0;
+    std::frexp(endpoints, &endpoint_exp);
+    std::frexp(matrix, &matrix_exp);
+    bool certified = true;
+    const auto scale = [&](double value, int exponent) {
+        if (value != 0 && least_bit_exponent(value) - exponent < -1074) {
+            certified = false;
+            return 0.;
+        }
+        return std::scalbn(value, -exponent);
+    };
+    std::array<std::array<double, 2>, 3> delta{};
+    for (std::size_t j = 0; j < 3; ++j) {
+        if (from[j] == to[j])
+            continue;
+        const auto [hi, lo] = two_sum(scale(from[j], endpoint_exp), -scale(to[j], endpoint_exp));
+        delta[j] = {hi, lo};
+    }
+    Vector world{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        std::array<double, 12> expansion{};
+        std::size_t count = 0;
+        const auto add = [&](double value) {
+            std::size_t next = 0;
+            for (std::size_t k = 0; k < count; ++k) {
+                const auto [sum, error] = two_sum(value, expansion[k]);
+                if (error != 0)
+                    expansion[next++] = error;
+                value = sum;
+            }
+            if (value != 0)
+                expansion[next++] = value;
+            count = next;
+        };
+        for (std::size_t j = 0; j < 3; ++j) {
+            const double a = scale(transform.values[4 * i + j], matrix_exp);
+            for (const double b : delta[j]) {
+                if (a == 0 || b == 0)
+                    continue;
+                if (least_bit_exponent(a) + least_bit_exponent(b) < -1074) {
+                    certified = false;
+                    continue;
+                }
+                const double product = a * b;
+                add(std::fma(a, b, -product));
+                add(product);
+            }
+        }
+        for (std::size_t k = 0; k < count; ++k)
+            world[i] += expansion[k];
+        if (count != 0 && world[i] == 0)
+            certified = false;
+    }
+    const double world_max = std::max({std::abs(world[0]), std::abs(world[1]), std::abs(world[2])});
+    int world_exp = 0;
+    std::frexp(world_max, &world_exp);
+    for (auto &component : world)
+        component = scale(component, world_exp);
+    if (!certified)
+        return std::nullopt;
+    const double length = std::hypot(world[0], world[1], world[2]);
+    if (!(length > 0 && std::isfinite(length)))
+        return std::nullopt;
+    for (auto &component : world) {
+        const double normalized = component / length;
+        if (component != 0 && normalized == 0)
+            return std::nullopt;
+        component = normalized;
+    }
+    return world;
+}
+
 int handedness(const GeometryTransform &transform) {
     Transform expanded;
     std::ranges::copy(transform.values, expanded.values.begin());
@@ -241,6 +339,7 @@ class Translator {
     bool emission(const Descriptor &descriptor, string_view field, double light_multiplier,
                   std::array<float, 471> &dense);
     void light(const Descriptor &descriptor);
+    void distant_bounds(const Descriptor &descriptor);
     std::optional<float> image_emission(const Descriptor &descriptor, float illuminance = -1);
     std::uint32_t native_image(const Descriptor &descriptor);
     void constant_textures();
@@ -840,7 +939,144 @@ std::optional<float> Translator::image_emission(const Descriptor &descriptor, fl
     return static_cast<float>(amplitude);
 }
 
+void Translator::distant_bounds(const Descriptor &descriptor) {
+    // PBRT unions primitive bounds within an object before transforming the
+    // object's aggregate bound for each placement. Preserve that topology.
+    struct Bounds {
+        std::array<float, 3> lo{}, hi{};
+        bool empty = true;
+        void add(const std::array<float, 3> &p) {
+            if (empty) {
+                lo = hi = p;
+                empty = false;
+                return;
+            }
+            for (std::size_t i = 0; i < 3; ++i) {
+                lo[i] = std::min(lo[i], p[i]);
+                hi[i] = std::max(hi[i], p[i]);
+            }
+        }
+    };
+    bool valid = true;
+    const auto transformed = [&](const std::array<float, 3> &p, const Transform &transform) {
+        std::array<float, 3> result{};
+        std::array<float, 12> m{};
+        for (std::size_t i = 0; i < m.size(); ++i) {
+            m[i] = static_cast<float>(transform.values[i]);
+            valid &= std::isfinite(m[i]);
+        }
+        for (std::size_t i = 0; i < 3; ++i) {
+            // Explicit binary32 intermediates match the supported world domain.
+            const float x = m[4 * i] * p[0], y = m[4 * i + 1] * p[1], z = m[4 * i + 2] * p[2];
+            const float xy = x + y, xyz = xy + z;
+            result[i] = xyz + m[4 * i + 3];
+            valid &= std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+                     std::isfinite(xy) && std::isfinite(xyz) && std::isfinite(result[i]);
+        }
+        return result;
+    };
+    const auto shape_bounds = [&](const Shape &shape) {
+        Bounds result;
+        const auto &mesh = scene_.geometry.meshes[shape.mesh_index];
+        const auto add = [&](std::uint32_t index) {
+            const auto &p = mesh.positions[index];
+            result.add(transformed({p.x, p.y, p.z}, shape.descriptor.transform));
+        };
+        for (const auto &triangle : mesh.triangles)
+            for (const auto index : triangle)
+                add(index);
+        for (const auto &patch : mesh.patches)
+            for (const auto index : patch)
+                add(index);
+        return result;
+    };
+    const auto unite = [](Bounds &target, const Bounds &source) {
+        if (!source.empty) {
+            target.add(source.lo);
+            target.add(source.hi);
+        }
+    };
+    Bounds world;
+    for (const auto &shape : input_.shapes)
+        unite(world, shape_bounds(shape));
+    std::map<string_view, Bounds> objects;
+    for (const auto &placement : input_.placements) {
+        auto [found, first] = objects.try_emplace(placement.object);
+        if (first) {
+            const auto object = std::ranges::find(input_.objects, placement.object, &Object::name);
+            if (object == input_.objects.end()) {
+                valid = false;
+                continue;
+            }
+            for (const auto &shape : object->shapes)
+                unite(found->second, shape_bounds(shape));
+        }
+        const auto &bound = found->second;
+        if (!bound.empty)
+            for (unsigned corner = 0; corner < 8; ++corner) {
+                std::array<float, 3> p{};
+                for (unsigned i = 0; i < 3; ++i)
+                    p[i] = (corner & (1U << i)) ? bound.hi[i] : bound.lo[i];
+                world.add(transformed(p, placement.transform));
+            }
+    }
+    std::array<float, 3> diagonal{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const float sum = world.lo[i] + world.hi[i];
+        const float center = sum / 2;
+        diagonal[i] = world.hi[i] - center;
+        valid &= std::isfinite(sum) && std::isfinite(center) && std::isfinite(diagonal[i]);
+    }
+    const double radius = std::hypot(double(diagonal[0]), double(diagonal[1]), double(diagonal[2]));
+    const float packed = static_cast<float>(radius);
+    if (!valid || world.empty || !(radius > 0) || !std::isnormal(packed) ||
+        !std::isfinite(2 * packed)) {
+        unsupported(descriptor.authored.location,
+                    "Distant light requires nonempty scene bounds with positive finite binary32 "
+                    "radius and diameter");
+        return;
+    }
+    scene_.distant_scene_radius = packed;
+}
+
 void Translator::light(const Descriptor &descriptor) {
+    if (descriptor.authored.arguments.front().text == "distant") {
+        if (scene_.distant_lights.size() >= max_distant_lights ||
+            471U > limits_.total_values - spectral_values_) {
+            spectral_limit(descriptor.authored.location);
+            return;
+        }
+        spectral_values_ += 471U;
+        Vector from{}, to{0, 0, 1};
+        for (const auto &[name, target] : {std::pair{"from", &from}, std::pair{"to", &to}})
+            if (const auto *p = parameter(descriptor, name))
+                for (std::size_t i = 0; i < 3; ++i)
+                    (*target)[i] = p->values[i].number;
+        const auto world = distant_direction(descriptor.transform, from, to);
+        if (!world) {
+            unsupported(
+                location(descriptor, "to"),
+                "Distant affine direction cannot be certified without binary64 precision loss");
+            return;
+        }
+        const auto normalized = *world;
+        std::array<float, 3> direction{};
+        for (std::size_t i = 0; i < 3; ++i) {
+            direction[i] = static_cast<float>(normalized[i]);
+            if (!std::isfinite(direction[i]) ||
+                (normalized[i] != 0 && !std::isnormal(direction[i]))) {
+                unsupported(location(descriptor, "to"),
+                            "Distant direction loses a component in binary32");
+                return;
+            }
+        }
+        DistantLight distant;
+        distant.direction = {direction[0], direction[1], direction[2]};
+        const double illuminance = number(descriptor, "illuminance", -1);
+        if (emission(descriptor, "L", illuminance > 0 ? illuminance : 1., distant.radiance))
+            scene_.distant_lights.push_back(std::move(distant));
+        return;
+    }
     const bool spot = descriptor.authored.arguments.front().text == "spot";
     if (spot || descriptor.authored.arguments.front().text == "point") {
         if (scene_.point_lights.size() + scene_.spot_lights.size() >= max_positional_lights) {
@@ -2754,6 +2990,14 @@ RenderTranslation Translator::run() {
     if (!diagnostics_.diagnostics_truncated) {
         geometry();
     }
+    if (!diagnostics_.diagnostics_truncated &&
+        scene_.geometry.meshes.size() == input_.geometry.meshes.size()) {
+        const auto distant = std::ranges::find_if(input_.lights, [](const Descriptor &d) {
+            return d.authored.arguments.front().text == "distant";
+        });
+        if (distant != input_.lights.end())
+            distant_bounds(*distant);
+    }
     if (std::ranges::all_of(scene_.instance_media,
                             [](const MediumInterface &m) { return m.inside == m.outside; }))
         scene_.instance_media.clear();
@@ -2830,6 +3074,12 @@ RenderTranslation Translator::run() {
             result_.provenance.push_back(
                 "Spot lights: " + std::to_string(scene_.spot_lights.size()) +
                 " (cubic cosine falloff; affine light-space directions; delta-position weights)");
+        }
+        if (!scene_.distant_lights.empty()) {
+            result_.provenance.push_back(
+                "Distant lights: " + std::to_string(scene_.distant_lights.size()) +
+                " (all-distant direct evaluation; delta-direction weights; finite 2 * scene radius "
+                "visibility)");
         }
         if (auto images = image_filter_provenance(scene_, image_formats_); !images.empty()) {
             result_.provenance.push_back(std::move(images));

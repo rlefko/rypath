@@ -1196,6 +1196,35 @@ std::string validate_render_scene(const RenderScene &scene) {
                  std::numeric_limits<float>::min()))
             return "Spot cosine thresholds or feather interval are not representable on the GPU";
     }
+    if (scene.distant_lights.size() > max_distant_lights)
+        return "Distant lights exceed the limit of 64";
+    if (!scene.distant_lights.empty()) {
+        if (scene.model != RenderModel::pbrt)
+            return "Distant lights require the PBRT render model";
+        if (!std::ranges::any_of(scene.geometry.instances, [&](const auto &instance) {
+                if (instance.mesh_index >= scene.geometry.meshes.size())
+                    return false;
+                const auto &mesh = scene.geometry.meshes[instance.mesh_index];
+                return !mesh.triangles.empty() || !mesh.patches.empty();
+            }))
+            return "Distant lights require nonempty scene geometry";
+        const double diameter = 2 * double(scene.distant_scene_radius);
+        if (!std::isfinite(scene.distant_scene_radius) ||
+            scene.distant_scene_radius < std::numeric_limits<float>::min() ||
+            diameter > std::numeric_limits<float>::max())
+            return "Distant scene radius and diameter must be positive representable binary32 "
+                   "values";
+        for (const auto &light : scene.distant_lights) {
+            const auto d = light.direction;
+            const double norm = double(d.x) * d.x + double(d.y) * d.y + double(d.z) * d.z;
+            if (!finite(d) || std::abs(norm - 1) > 2e-6 || std::fpclassify(d.x) == FP_SUBNORMAL ||
+                std::fpclassify(d.y) == FP_SUBNORMAL || std::fpclassify(d.z) == FP_SUBNORMAL)
+                return "Distant light directions must be finite representable unit vectors";
+            if (!std::ranges::all_of(
+                    light.radiance, [](float value) { return std::isfinite(value) && value >= 0; }))
+                return "Distant radiance must be finite and nonnegative";
+        }
+    }
     const auto valid_medium = [&](std::uint32_t id) {
         return id == no_medium || id < scene.media.size();
     };

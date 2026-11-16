@@ -48,6 +48,7 @@ constant bool surface_materials_enabled [[function_constant(7)]];
 constant bool media_enabled [[function_constant(8)]];
 constant bool gltf_enabled [[function_constant(9)]];
 constant bool positional_lights_enabled [[function_constant(10)]];
+constant bool distant_lights_enabled [[function_constant(11)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -347,6 +348,17 @@ positional_record(const device uint *data, constant wire::Parameters &p, uint in
         return nullptr;
     return reinterpret_cast<const device wire::PositionalLight *>(data + p.positional_begin +
                                                                   index * words);
+}
+
+static const device wire::DistantLight *distant_record(const device uint *data,
+                                                       constant wire::Parameters &p, uint index) {
+    constexpr uint words = sizeof(wire::DistantLight) / sizeof(uint);
+    if (p.distant_count > 64 || index >= p.distant_count ||
+        p.distant_begin > p.material_data_words ||
+        p.distant_count > (p.material_data_words - p.distant_begin) / words)
+        return nullptr;
+    return reinterpret_cast<const device wire::DistantLight *>(data + p.distant_begin +
+                                                               index * words);
 }
 
 static bool normal_or_zero(float value) {
@@ -1122,11 +1134,11 @@ static bool spawn_boundary(ray incoming, float distance, SurfacePoint point, flo
 
 // Ordered nearest-hit traversal is essential: an any-hit query cannot determine
 // which medium occupies each interval. Distances here are always world lengths.
-static ConnectionTransmission medium_connection(ray incoming, instance_acceleration_structure scene,
-                                                MixedIntersectionTable table,
-                                                thread SurfaceAlpha &alpha,
-                                                const device wire::Material *materials,
-                                                const device uint *data, uint medium) {
+static ConnectionTransmission
+medium_connection(ray incoming, instance_acceleration_structure scene, MixedIntersectionTable table,
+                  thread SurfaceAlpha &alpha, const device wire::Material *materials,
+                  const device uint *data, uint medium, bool distant = false,
+                  float3 fixed_endpoint = float3(0)) {
     const constant auto &p = *alpha.parameters;
     const float length = metal::length(incoming.direction);
     if (!(length > 0) || !isfinite(length))
@@ -1134,11 +1146,13 @@ static ConnectionTransmission medium_connection(ray incoming, instance_accelerat
     float3 direction = incoming.direction / length;
     float remaining = incoming.max_distance * length;
     const bool finite_connection = isfinite(incoming.max_distance);
-    // Retain the original, already excluded endpoint. Subtracting projected
-    // advances would translate it sideways after every normal offset.
-    const float3 endpoint =
-        finite_connection ? fma(float3(incoming.max_distance), incoming.direction, incoming.origin)
-                          : float3(0);
+    // Retain the original endpoint across offsets: finite lights already exclude
+    // it once, while distant lights retain their unshortened PBRT endpoint and
+    // reapply ShadowEpsilon on every leg. Projected advances move it sideways.
+    const float3 endpoint = distant             ? fixed_endpoint
+                            : finite_connection ? fma(float3(incoming.max_distance),
+                                                      incoming.direction, incoming.origin)
+                                                : float3(0);
     if (!(remaining > 0) ||
         (finite_connection &&
          (!isfinite(remaining) || !all(isfinite(endpoint)) || all(endpoint == incoming.origin))))
@@ -1197,6 +1211,8 @@ static ConnectionTransmission medium_connection(ray incoming, instance_accelerat
             if (!(remaining > 0) || !isfinite(remaining))
                 return {0, wire::invalid_arithmetic};
             direction = delta / remaining;
+            if (distant)
+                remaining *= 1 - 0.0001f;
             // An endpoint inside the departure uncertainty slab has no
             // supported medium-side interpretation; never silently cross back.
             const float facing = dot(outgoing_normal, direction);
@@ -1209,14 +1225,15 @@ static ConnectionTransmission medium_connection(ray incoming, instance_accelerat
     }
 }
 
-static ConnectionTransmission connection_transmission(thread MixedIntersector &shadow, ray incoming,
-                                                      instance_acceleration_structure scene,
-                                                      MixedIntersectionTable table,
-                                                      thread SurfaceAlpha &alpha,
-                                                      const device wire::Material *materials,
-                                                      const device uint *data, uint medium) {
+static ConnectionTransmission
+connection_transmission(thread MixedIntersector &shadow, ray incoming,
+                        instance_acceleration_structure scene, MixedIntersectionTable table,
+                        thread SurfaceAlpha &alpha, const device wire::Material *materials,
+                        const device uint *data, uint medium, bool distant = false,
+                        float3 fixed_endpoint = float3(0)) {
     if (media_enabled)
-        return medium_connection(incoming, scene, table, alpha, materials, data, medium);
+        return medium_connection(incoming, scene, table, alpha, materials, data, medium, distant,
+                                 fixed_endpoint);
     const auto hit = visible_shadow(shadow, incoming, scene, table, alpha);
     return {hit.type == intersection_type::none ? 1.0f : 0.0f,
             hit.valid ? wire::success : wire::invalid_arithmetic};
@@ -1780,6 +1797,29 @@ medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words, 
             if (tr.value > 0)
                 result += rypath_medium::phase(wo, direction, g) * (intensity / distance_squared) *
                           tr.value;
+        }
+    }
+    if (distant_lights_enabled) {
+        for (uint i = 0; i < p.distant_count; ++i) {
+            const auto light = distant_record(data, p, i);
+            if (light == nullptr)
+                return {0, wire::invalid_hit};
+            const float radiance = light->radiance[dense_index(alpha.sample->wavelength)];
+            if (radiance == 0)
+                continue;
+            direction = unpack(light->direction);
+            // PBRT's delta-direction endpoint is based on the original vertex.
+            const float3 endpoint = point + direction * (2 * p.distant_scene_radius);
+            const float3 segment = endpoint - point;
+            if (!all(isfinite(endpoint)) || !all(isfinite(segment)) ||
+                !(dot(segment, direction) > 0))
+                return {0, wire::invalid_arithmetic};
+            const auto tr = medium_connection(ray(point, segment, 0, 1 - 0.0001f), scene, table,
+                                              alpha, materials, data, medium, true, endpoint);
+            if (tr.status != wire::success)
+                return tr;
+            if (tr.value > 0)
+                result += rypath_medium::phase(wo, direction, g) * radiance * tr.value;
         }
     }
     return {result, isfinite(result) && result >= 0 ? wire::success : wire::invalid_arithmetic};
@@ -2590,6 +2630,62 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 if (visibility.value > 0 && factor > 0)
                     sample.radiance +=
                         throughput * factor * (intensity / distance_squared) * visibility.value;
+                if (!isfinite(sample.radiance) || sample.radiance < 0) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+            }
+            if (sample.status != wire::success)
+                break;
+        }
+        // Delta-direction sources are enumerated with unit weight, without
+        // inverse-square attenuation, random draws, or continuous-light MIS.
+        if (distant_lights_enabled && !delta) {
+            for (uint i = 0; i < p.distant_count; ++i) {
+                const auto light = distant_record(material_data, p, i);
+                if (light == nullptr) {
+                    sample.status = wire::invalid_hit;
+                    break;
+                }
+                const float radiance = light->radiance[dense_index(sample.wavelength)];
+                if (radiance == 0)
+                    continue;
+                const float3 direction = unpack(light->direction);
+                const float3 local = microfacet ? frame.local(direction) : float3(0);
+                const float cosine = both_hemispheres ? abs(local.z)
+                                     : microfacet     ? (wo.z > 0 ? local.z : -local.z)
+                                                      : dot(n, direction);
+                if (cosine <= 0)
+                    continue;
+                float factor = rho * (cosine / pi);
+                if (microfacet) {
+                    const auto evaluated =
+                        evaluate_scattering(scattering, wo, local, material_random.z);
+                    factor = evaluated.valid ? evaluated.f * cosine : NAN;
+                }
+                const float3 endpoint = point.position + direction * (2 * p.distant_scene_radius);
+                const float3 origin = directional_offset
+                                          ? spawn_toward(incoming, hit.distance, point, direction)
+                                          : area_reference;
+                const float3 segment = endpoint - origin;
+                const float progress = dot(segment, direction);
+                if (!isfinite(factor) || factor < 0 || !all(isfinite(origin)) ||
+                    !all(isfinite(endpoint)) || !all(isfinite(segment)) || !(progress > 0) ||
+                    !isfinite(progress)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                const auto visibility = connection_transmission(
+                    shadow, ray(origin, segment, 0, 1 - 0.0001f), scene, intersection_table, alpha,
+                    materials, material_data,
+                    outgoing_medium(instance, current_medium, point.geometric_normal, direction),
+                    true, endpoint);
+                if (visibility.status != wire::success) {
+                    sample.status = visibility.status;
+                    break;
+                }
+                if (visibility.value > 0 && factor > 0)
+                    sample.radiance += throughput * factor * radiance * visibility.value;
                 if (!isfinite(sample.radiance) || sample.radiance < 0) {
                     sample.status = wire::invalid_arithmetic;
                     break;

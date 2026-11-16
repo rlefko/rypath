@@ -190,6 +190,10 @@ struct Medium {
     float g;
 };
 enum : Word { point_light = 0, spot_light = 1 };
+struct DistantLight {
+    Point direction;
+    float radiance[471];
+};
 struct PositionalLight {
     Point position;
     float intensity[471];
@@ -280,6 +284,9 @@ struct Parameters {
     Word boundary_limit = 4096;
     Word positional_begin;
     Word positional_count;
+    Word distant_begin;
+    Word distant_count;
+    float distant_scene_radius;
 };
 struct Sample {
     Word status;
@@ -346,6 +353,9 @@ static_assert(sizeof(PositionalLight) == 1944 && alignof(PositionalLight) == 4 &
                   __builtin_offsetof(PositionalLight, light_from_world) == 1900 &&
                   __builtin_offsetof(PositionalLight, cos_falloff_start) == 1936,
               "positional light layout");
+static_assert(sizeof(DistantLight) == 1896 && alignof(DistantLight) == 4 &&
+                  __builtin_offsetof(DistantLight, radiance) == 12,
+              "distant light layout");
 static_assert(sizeof(AreaEmission) == 1900 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
               "render area emission layout");
@@ -356,7 +366,10 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 212 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 224 && alignof(Parameters) == 4 &&
+                  __builtin_offsetof(Parameters, distant_begin) == 212 &&
+                  __builtin_offsetof(Parameters, distant_count) == 216 &&
+                  __builtin_offsetof(Parameters, distant_scene_radius) == 220 &&
                   __builtin_offsetof(Parameters, positional_begin) == 204 &&
                   __builtin_offsetof(Parameters, positional_count) == 208 &&
                   __builtin_offsetof(Parameters, film_scale) == 48 &&

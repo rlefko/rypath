@@ -32,6 +32,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
 | Constant and image infinite-light descriptors | Retained | Descriptor and reference checks | No normalization or light sampling |
 | Point/spot intensity, power, position, cone and declaration transform | Retained, including inherited parameters and endpoint medium | Checked spectral dependencies, finite parameters, spot angle/endpoint domains and a combined 64-light limit | See the [point](pbrt-rendering.md#point-lights) and [spot](pbrt-rendering.md#spot-lights) profiles |
+| Distant radiance, illuminance, direction and declaration transform | Retained with inherited parameters | Checked spectral dependencies, finite distinct endpoints and a separate 64-light limit | See the [distant profile](pbrt-rendering.md#distant-lights); translation additionally requires valid scene bounds |
 | Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | File spectra on diffuse/conductor/dielectric materials, homogeneous media, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
@@ -89,6 +90,7 @@ capture still occurs at each camera declaration.
 | Spectrum constant texture | Optional `value` of type `rgb`, `spectrum`, or `blackbody`, subject to the narrower render profile |
 | Float/spectrum imagemap | Nonempty string `filename`; string `mapping`, `encoding`, `filter`, `wrap`; float `uscale`, `vscale`, `udelta`, `vdelta`, `scale`, `maxanisotropy`; bool `invert` |
 | Infinite light | `L`, `scale`, `illuminance`, or square RGB PNG/JPEG/EXR/HDR `filename` |
+| Distant light | Spectral `L`, nonnegative `scale`, finite `illuminance`, and distinct `point3 from`/`to` |
 | Point light | Spectral `I`, nonnegative `scale`, finite `power`, and `point3 from` |
 | Spot light | Point fields plus `point3 to`, `coneangle` in (0,180], and `conedeltaangle` in [0,coneangle]; distinct effective endpoints |
 | Diffuse area light | `L`, `scale`, `twosided`, `power`, PNG/JPEG/EXR/HDR `filename` mutually exclusive with `L` |

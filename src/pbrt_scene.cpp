@@ -364,6 +364,11 @@ constexpr std::array light_fields{
     Field{"filename", "string"},
 };
 
+constexpr std::array distant_light_fields{
+    light_fields[0],          light_fields[1], light_fields[2], Field{"from", "point3", 3},
+    Field{"to", "point3", 3},
+};
+
 constexpr std::array point_light_fields{
     Field{.name = "I", .type = "spectral", .rule = Rule::emission, .allow_spectrum_file = true},
     light_fields[1],
@@ -917,7 +922,7 @@ void Interpreter::scan_after_include(const Directive &directive) {
             scan_parameter(point_light_fields.front());
             return;
         }
-        if ((name == "LightSource" && argument == "infinite") ||
+        if ((name == "LightSource" && one_of(argument, {"infinite", "distant"})) ||
             (name == "AreaLightSource" && argument == "diffuse")) {
             scan_parameter(light_fields.front());
             return;
@@ -1538,6 +1543,32 @@ void Interpreter::light(const Directive &directive) {
         }
         state_.area_light = std::make_shared<const Descriptor>(std::move(descriptor));
         scene_.area_lights.push_back(state_.area_light);
+        return;
+    }
+    if (!area && type == "distant") {
+        Descriptor descriptor = describe(directive);
+        validate(descriptor, directive, "light", distant_light_fields);
+        Vector from{}, to{0, 0, 1};
+        for (const auto &[name, target] : {std::pair{"from", &from}, std::pair{"to", &to}}) {
+            const auto *p = descriptor.effective_parameter(name).parameter;
+            if (p && p->values.size() == 3)
+                for (std::size_t i = 0; i < 3; ++i)
+                    (*target)[i] = p->values[i].number;
+        }
+        if (from == to)
+            error("invalid-parameter",
+                  descriptor.effective_parameter("to").parameter
+                      ? descriptor.effective_parameter("to").parameter->location
+                      : directive.location,
+                  "Distant from and to must be distinct");
+        if (std::ranges::count_if(scene_.lights, [](const Descriptor &light) {
+                return light.authored.arguments.front().text == "distant";
+            }) >= 64) {
+            error("limit-exceeded", directive.location,
+                  "Distant light count exceeds the limit of 64");
+            return;
+        }
+        scene_.lights.push_back(std::move(descriptor));
         return;
     }
     if (!area && one_of(type, {"point", "spot"})) {

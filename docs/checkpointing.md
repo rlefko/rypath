@@ -67,9 +67,11 @@ streams are unchanged. Invalid arithmetic, uncertain side or endpoint checks and
 the crossing budget still fail the entire batch. This policy does not promise
 support for arbitrary scales or coincident shells.
 
-Earlier renderer contracts, including 4, are rejected for every scene. Identity
-schema 4 remains current; its stream includes the renderer contract, so canonical
-hashes also change. Sampling, accumulation and file-format versions remain 1.
+Distant lighting advances the renderer contract to 6 and identity schema to 5.
+Its ordered directions, all radiance bins and finite-visibility scene radius
+participate in identity. Earlier renderer/identity contracts, including renderer
+5, are rejected for every scene. The identity stream also includes the renderer
+contract. Sampling, accumulation and file-format versions remain 1.
 
 Checkpointing does not add a PBRT sample override or allow extending a completed
 job. Batch size, file paths, output precision and presentation exposure may change.
