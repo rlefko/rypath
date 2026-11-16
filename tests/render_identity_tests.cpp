@@ -66,7 +66,9 @@ void identity_checks() {
     changed([](auto &s) { s.distant_lights.push_back({}); }, "distant light count");
     changed([](auto &s) { s.distant_scene_radius = 4; }, "distant scene radius");
     changed([](auto &s) { s.instance_emissions.push_back(0); }, "emission bindings");
-    changed([](auto &s) { s.filter.y_radius += 1; }, "pixel filter");
+    changed([](auto &s) { s.filter.kind = PixelFilterKind::triangle; }, "pixel filter kind");
+    changed([](auto &s) { s.filter.x_radius += 1; }, "pixel filter x radius");
+    changed([](auto &s) { s.filter.y_radius += 1; }, "pixel filter y radius");
     changed([](auto &s) { s.image_textures.push_back({}); }, "texture list");
     changed([](auto &s) { s.texture_camera.world_from_camera[8] = 2; }, "texture camera");
     changed([](auto &s) { s.instance_texture_frames.push_back({}); }, "texture frames");

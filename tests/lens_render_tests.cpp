@@ -228,7 +228,9 @@ void rays() {
         for (const bool reflected : {false, true})
             for (const bool sobol_sampler : {false, true})
                 for (const auto mode : {0u, 1u, 2u, 3u})
-                    for (const bool triangle : {false, true}) {
+                    for (const int filter_case : {0, 1, 2, 3}) {
+                        const bool triangle = filter_case == 2;
+                        const bool centered = filter_case != 0;
                         if (!sobol_sampler && mode != 0)
                             continue;
                         render_wire::Parameters p{};
@@ -283,8 +285,8 @@ void rays() {
                         p.sobol_scale_exponent = sobol_scale_exponent(p.width, p.height);
                         p.randomization = mode;
                         p.filter_kind = triangle ? render_wire::triangle_filter : 0;
-                        p.filter_x_radius = 2;
-                        p.filter_y_radius = 1.25f;
+                        p.filter_x_radius = filter_case == 3 ? .125f : centered ? 2 : .5f;
+                        p.filter_y_radius = filter_case == 3 ? .25f : centered ? 1.25f : .5f;
                         p.lens_radius = origin_case == 0 ? .375f : 1;
                         p.focal_distance = 4;
                         const auto values = lens_gpu_probe(p);
@@ -324,12 +326,32 @@ void rays() {
                                 v = sobol::camera_uniform(camera[1], p.sobol_scale_exponent,
                                                           pixel / p.width);
                             }
-                            const double x =
-                                (pixel % p.width + (triangle ? .5 + tent(u, 2) : u)) / p.width;
-                            const double y =
-                                (pixel / p.width + (triangle ? .5 + tent(v, 1.25) : v)) / p.height;
-                            const auto d =
-                                vector(p.forward) + vector(p.right) * x + vector(p.up) * y;
+                            const double x = (pixel % p.width +
+                                              (triangle   ? .5 + tent(u, 2)
+                                               : centered ? .5 + (2 * u - 1) * p.filter_x_radius
+                                                          : u)) /
+                                             p.width;
+                            const double y = (pixel / p.width +
+                                              (triangle   ? .5 + tent(v, 1.25)
+                                               : centered ? .5 + (2 * v - 1) * p.filter_y_radius
+                                                          : v)) /
+                                             p.height;
+                            auto d = vector(p.forward) + vector(p.right) * x + vector(p.up) * y;
+                            if (centered) {
+                                // Independently round the documented centered raster/FMA
+                                // contract before the high-precision geometric oracle.
+                                const float ox =
+                                    float(triangle ? tent(u, 2) : (2 * u - 1) * p.filter_x_radius);
+                                const float oy = float(triangle ? tent(v, 1.25)
+                                                                : (2 * v - 1) * p.filter_y_radius);
+                                const float fx =
+                                    ((float(pixel % p.width) + .5f) + ox) / float(p.width);
+                                const float fy =
+                                    ((float(pixel / p.width) + .5f) + oy) / float(p.height);
+                                d = {std::fma(fy, p.up.x, std::fma(fx, p.right.x, p.forward.x)),
+                                     std::fma(fy, p.up.y, std::fma(fx, p.right.y, p.forward.y)),
+                                     std::fma(fy, p.up.z, std::fma(fx, p.right.z, p.forward.z))};
+                            }
                             const auto aperture =
                                 disk(unit(lens[0], sobol_sampler), unit(lens[1], sobol_sampler));
                             const auto ideal =
@@ -426,6 +448,8 @@ void high_index_words() {
                 p.forward = {-.5f, .5f, 1};
                 p.right = {1, 0, 0};
                 p.up = {0, -1, 0};
+                p.filter_x_radius = 1.5f;
+                p.filter_y_radius = .75f;
                 p.lens_radius = .25f;
                 p.focal_distance = 4;
                 p.lens_x = {1, 0, 0};
@@ -457,6 +481,18 @@ void high_index_words() {
                                 std::equal(lens.begin(), lens.end(), actual[lane].lens_words),
                             "64-bit sample carry and upper Sobol sample range preserve lens/core "
                             "words");
+                    const double u = qmc ? sobol::camera_uniform(core[0], 3, pixel % p.width)
+                                         : unit(core[0], false);
+                    const double v = qmc ? sobol::camera_uniform(core[1], 3, pixel / p.width)
+                                         : unit(core[1], false);
+                    const double x = (pixel % p.width + .5 + (2 * u - 1) * 1.5) / p.width;
+                    const double y = (pixel / p.width + .5 + (2 * v - 1) * .75) / p.height;
+                    const auto aperture = disk(unit(lens[0], qmc), unit(lens[1], qmc)) * .25;
+                    const auto direction = normalized(
+                        (vector(p.forward) + vector(p.right) * x + vector(p.up) * y) * 4 -
+                        aperture);
+                    close(vector(actual[lane].direction), direction, 4e-6,
+                          "high-index anisotropic box lens direction");
                 }
             }
         }

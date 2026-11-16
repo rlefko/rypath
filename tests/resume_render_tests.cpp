@@ -373,6 +373,8 @@ int native() {
                 PerspectiveLens{.2f, 4, normalize(lens_scene.raster_camera.value().dx, 1),
                                 normalize(lens_scene.raster_camera.value().dy, -1)};
             check_resume(lens_scene);
+            lens_scene.filter = {PixelFilterKind::box, 1.5f, .75f};
+            check_resume(lens_scene);
         }
     }
     // Empty geometry takes a distinct kernel. A scattering camera medium must
@@ -394,6 +396,8 @@ int native() {
     empty.point_lights.push_back(light);
     check_resume(empty);
     empty.perspective_lens = PerspectiveLens{.15f, 3, {1, 0, 0}, {0, 1, 0}};
+    check_resume(empty);
+    empty.filter = {PixelFilterKind::box, .125f, 2.f};
     check_resume(empty);
     empty.point_lights.clear();
     SpotLight spot;
