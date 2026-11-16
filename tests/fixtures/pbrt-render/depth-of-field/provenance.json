@@ -1,0 +1,73 @@
+{
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "reference_coordinate_system": "world",
+  "coverage": "Five owned camera fixtures and a labeled CC0 Cornell derivative; selected scene coverage only",
+  "license": "GPL-3.0-only (owned scenes and chart); CC0-1.0 (Cornell derivative)",
+  "author": "rypath contributors (owned fixtures)",
+  "scenes": {
+    "pinhole-zero": {
+      "entry": "pinhole-zero.pbrt",
+      "dependencies": [],
+      "license": "GPL-3.0-only"
+    },
+    "focus-plane": {
+      "entry": "focus-plane.pbrt",
+      "dependencies": [],
+      "license": "GPL-3.0-only"
+    },
+    "defocus": {
+      "entry": "defocus.pbrt",
+      "dependencies": [],
+      "license": "GPL-3.0-only"
+    },
+    "default-focus": {
+      "entry": "default-focus.pbrt",
+      "dependencies": [],
+      "license": "GPL-3.0-only"
+    },
+    "texture-filtered": {
+      "entry": "texture-filtered.pbrt",
+      "dependencies": [
+        "assets/focus-chart.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "cornell-focus": {
+      "entry": "cornell-focus.pbrt",
+      "dependencies": [
+        "assets/Cornell.LICENSE.txt"
+      ],
+      "license": "CC0-1.0"
+    }
+  },
+  "external_assets": [
+    {
+      "scene": "cornell-focus",
+      "author": "Benedikt Bitterli; PBRT v4 conversion by Matt Pharr",
+      "license": "CC0-1.0",
+      "license_file": "assets/Cornell.LICENSE.txt",
+      "upstream_repository": "https://github.com/windingwind/web-falcor",
+      "upstream_revision": "e969701f3ebc0238003150dc0c0e7c3cc93aa1fc",
+      "upstream_path": "tests/gpu/assets/pbrt/cornell-box.pbrt",
+      "original": {
+        "bytes": 7253,
+        "sha256": "b2fc6654c966468119187d169a76ecec82e169a1058f3344e27e5103189d4e43"
+      },
+      "adapted_from": "../cornell-box-adapted.pbrt",
+      "adapted_source": {
+        "bytes": 4293,
+        "sha256": "652e63dc4806c5d3a33e6560b654eaf775fa80ef9e1df8243ebe1a9494698aa6"
+      },
+      "changes": "Retain existing adapted diffuse/triangle-area-light geometry and explicit CIE film, 8x8,4096 spp, independent sampler; add lensradius .12 and focaldistance 6.8. Runtime filter and sampler variants declared by comparison harness. Normalize trailing whitespace in this derivative."
+    }
+  ],
+  "owned_assets": [
+    {
+      "path": "assets/focus-chart.png",
+      "bytes": 2713,
+      "sha256": "7de6686b1015f352fd9489ce89a181a6e18acb06e080710dca652376609ef889",
+      "license": "GPL-3.0-only",
+      "generator": "scripts/generate_projection_samples.py:pattern_png (deterministic native RGB8 sRGB geometry chart)"
+    }
+  ]
+}
