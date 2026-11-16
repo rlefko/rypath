@@ -24,6 +24,17 @@ inline constexpr Word dielectric_lobe_block(Word bounce) { return 0x80000000u | 
 enum : Word { lens_x_dimension = 1022, lens_y_dimension = 1023, lens_block = 0xc0000000u };
 static_assert(dielectric_lobe_dimension(dielectric_max_depth - 1) < lens_x_dimension,
               "Disjoint lens dimensions");
+// Halton's 1000-prime table reserves its own non-overlapping extension tail.
+enum : Word {
+    halton_dielectric_max_depth = 110,
+    halton_dielectric_lobe_begin = 884,
+    halton_lens_x_dimension = 998,
+    halton_lens_y_dimension = 999
+};
+static_assert(4 + 8 * halton_dielectric_max_depth == halton_dielectric_lobe_begin,
+              "Disjoint Halton dielectric dimensions");
+static_assert(halton_dielectric_lobe_begin + halton_dielectric_max_depth <= halton_lens_x_dimension,
+              "Disjoint Halton lens dimensions");
 // Material-local v1 streams reserve a separate Philox counter domain. The
 // pixel and absolute sample index remain in the other counter words; the
 // stable selected material ID is mixed into the key, never a host address.

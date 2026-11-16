@@ -134,7 +134,7 @@ int pbrt(std::string_view scenario, const PbrtPaths &paths) {
         return 2;
     }
     if (filename == "unsupported-sampler.pbrt") {
-        std::cout << "Sampler type \"halton\"\nUnsupported features: 1\n"
+        std::cout << "Sampler type \"pmj02bn\"\nUnsupported features: 1\n"
                      "Rendering was not attempted.\n";
         return 2;
     }

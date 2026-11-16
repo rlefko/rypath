@@ -38,11 +38,11 @@ if(NOT exit STREQUAL "2" OR NOT stderr MATCHES "unsupported" OR
 endif()
 expect_existing_output()
 
-string(REPLACE "Sampler \"independent\"" "Sampler \"halton\"" unsupported_sampler "${valid_scene}")
+string(REPLACE "Sampler \"independent\"" "Sampler \"pmj02bn\"" unsupported_sampler "${valid_scene}")
 file(WRITE "${test_directory}/unsupported-sampler.pbrt" "${unsupported_sampler}")
 execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/unsupported-sampler.pbrt"
     --output "${output}" RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
-if(NOT exit STREQUAL "2" OR NOT stdout MATCHES "Sampler type \"halton\"" OR
+if(NOT exit STREQUAL "2" OR NOT stdout MATCHES "Sampler type \"pmj02bn\"" OR
    NOT stdout MATCHES "Unsupported features: 1\n" OR NOT stderr STREQUAL "" OR
    NOT stdout MATCHES "Rendering was not attempted" OR stdout MATCHES "Device:|Committed samples|Wrote PNG")
     message(FATAL_ERROR "Unexpected unsupported sampler result ${exit}: ${stdout}${stderr}")

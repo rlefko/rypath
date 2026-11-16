@@ -17,12 +17,11 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
         if (!result.diagnostic.empty()) {
             return result;
         }
-        const auto depth_limit =
-            scene_has_dielectrics(scene) ? sobol_dielectric_max_depth : sobol_max_depth;
-        if (settings.sampler.kind == SamplerKind::sobol &&
+        const auto depth_limit = sampler_max_depth(settings.sampler, scene_has_dielectrics(scene));
+        if (settings.sampler.kind != SamplerKind::independent &&
             (scene.model != RenderModel::pbrt || scene.max_depth > depth_limit)) {
-            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most " +
-                                std::to_string(depth_limit);
+            result.diagnostic =
+                "QMC requires PBRT rendering with maxdepth at most " + std::to_string(depth_limit);
             return result;
         }
         if (scene.raster_camera) {

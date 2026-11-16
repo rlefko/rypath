@@ -11,7 +11,7 @@ namespace rypath {
 
 const sobol::Tables &sobol_tables();
 
-enum class SamplerKind : std::uint32_t { independent = 0, sobol = 1 };
+enum class SamplerKind : std::uint32_t { independent = 0, sobol = 1, halton = 2, zsobol = 3 };
 enum class SobolRandomization : std::uint32_t {
     none = 0,
     permutedigits = 1,
@@ -29,7 +29,9 @@ inline constexpr std::uint32_t sobol_max_scale_exponent = sobol::max_scale_expon
 // Validate a nonempty absolute sample range, without allocating render resources.
 std::string validate_sampler_range(const RenderSampler &sampler, std::uint64_t seed,
                                    std::uint32_t width, std::uint32_t height,
-                                   std::uint64_t sample_begin, std::uint64_t sample_count);
+                                   std::uint64_t sample_begin, std::uint64_t sample_count,
+                                   std::uint64_t total_samples = 0);
+std::uint32_t sampler_max_depth(const RenderSampler &sampler, bool dielectrics);
 std::uint32_t sobol_scale_exponent(std::uint32_t width, std::uint32_t height);
 std::string sampler_description(const RenderSampler &sampler, bool dielectrics = false,
                                 bool perspective_lens = false);

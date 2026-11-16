@@ -1,0 +1,34 @@
+{
+  "cornell": {
+    "bytes": 4280,
+    "sha256": "d63cee4791cc8a84e6756b6c96ac1566230ae74f819d7b93d2818fcab31eb6e3"
+  },
+  "diffuse-area": {
+    "bytes": 1123,
+    "sha256": "6859f323abaacb8bc9351ed028b98e3f49f50268323273c19e13f87a635a0dd0"
+  },
+  "edge": {
+    "bytes": 949,
+    "sha256": "64b6804209104f4c3b45f73d162140b03ab656c579b9a984ca53c5ee8b16d476"
+  },
+  "explicit-defaults": {
+    "bytes": 1019,
+    "sha256": "e82551523924b787127b3e6d2871c024d80ed92900202f6b4f793f398dacb9c0"
+  },
+  "implicit-defaults": {
+    "bytes": 831,
+    "sha256": "07c22dff984db5ad486c903507eedfc86eee7425bf9944d7097ac71041161657"
+  },
+  "lens-texture": {
+    "bytes": 1092,
+    "sha256": "5740bd71833d50dde15c21709e239bd9ed6c4cbaafdfe60046672512328ca6e0"
+  },
+  "volume": {
+    "bytes": 832,
+    "sha256": "353cf1422f9f4dd003507e3f1a520f56392af6b6e1b03c0050bba948ddb8e1e9"
+  },
+  "edge-coarse": {
+    "bytes": 758,
+    "sha256": "54cd782d17970ac4036460272cddea8164ced3914aa656beb43cf03112c022ef"
+  }
+}

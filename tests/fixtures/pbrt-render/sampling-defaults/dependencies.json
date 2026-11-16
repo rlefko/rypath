@@ -1,0 +1,22 @@
+{
+  "cornell": [
+    {
+      "path": "assets/Cornell-LICENSE.txt",
+      "bytes": 370,
+      "sha256": "520b18c04d27fd9abca81364746178a9a3d52cff3c6204de05be5b68e547ee43"
+    }
+  ],
+  "diffuse-area": [],
+  "edge": [],
+  "explicit-defaults": [],
+  "implicit-defaults": [],
+  "lens-texture": [
+    {
+      "path": "assets/focus-chart.png",
+      "bytes": 2713,
+      "sha256": "7de6686b1015f352fd9489ce89a181a6e18acb06e080710dca652376609ef889"
+    }
+  ],
+  "volume": [],
+  "edge-coarse": []
+}

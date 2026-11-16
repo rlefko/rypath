@@ -5,6 +5,8 @@
 
 #include "../src/checkpoint_contract.h"
 #include "../src/lens_probe_wire.h"
+#include "../src/qmc_probe_wire.h"
+#include "../src/qmc_shared.h"
 #include "../src/render_wire.h"
 #include "../src/sampling_contract.h"
 #include "../src/sobol_probe_wire.h"
@@ -26,6 +28,7 @@ using namespace metal;
 using namespace metal::raytracing;
 namespace wire = rypath::render_wire;
 namespace sobol = rypath::sobol;
+namespace qmc = rypath::qmc;
 
 kernel void rypath_checkpoint_contract(device uint *result [[buffer(0)]]) {
     result[0] = rypath::checkpoint_contract::renderer;
@@ -92,9 +95,20 @@ static uint4 philox(uint4 counter, uint2 key) {
 static float u01(uint word) { return float(word >> 8) * 0x1.0p-24f; }
 
 static float sample_uniform(constant wire::Parameters &p, uint word) {
-    return p.sampler_kind == wire::sobol_sampler ? sobol::uniform(word) : u01(word);
+    if (p.sampler_kind == wire::halton_sampler)
+        return qmc::bits_float(word);
+    return p.sampler_kind == wire::independent_sampler ? u01(word) : sobol::uniform(word);
 }
 
+// Integer decisions quantize the actual Halton uniform, never its IEEE representation.
+static uint decision_word(constant wire::Parameters &p, uint word) {
+    return p.sampler_kind == wire::halton_sampler ? uint(qmc::bits_float(word) * 0x1p32f) : word;
+}
+static uint zdraw(constant wire::Parameters &p, const device sobol::Tables &tables, ulong index,
+                  uint dimension, uint axis = 0, bool pair = false) {
+    return qmc::zword(tables, index, dimension, axis, pair, p.sobol_scale_exponent,
+                      p.zsobol_log_spp, p.randomization, p.seed_low);
+}
 static uint4 medium_words(constant wire::Parameters &p, thread const wire::Sample &sample,
                           thread uint &draw) {
     return philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
@@ -125,6 +139,16 @@ static uint4 draw_words(constant wire::Parameters &p, const device sobol::Tables
                       uint2(p.seed_low, p.seed_high));
     }
     const uint d = 4 * block;
+    if (p.sampler_kind == wire::halton_sampler)
+        return uint4(qmc::float_bits(qmc::radical(d, index, p.randomization, p.seed_low)),
+                     qmc::float_bits(qmc::radical(d + 1, index, p.randomization, p.seed_low)),
+                     qmc::float_bits(qmc::radical(d + 2, index, p.randomization, p.seed_low)),
+                     qmc::float_bits(qmc::radical(d + 3, index, p.randomization, p.seed_low)));
+    if (p.sampler_kind == wire::zsobol_sampler)
+        return uint4(zdraw(p, tables, index, d, 0, true), zdraw(p, tables, index, d, 1, true),
+                     zdraw(p, tables, index, d + 2, 0, (block & 1) == 0),
+                     zdraw(p, tables, index, (block & 1) == 0 ? d + 2 : d + 3,
+                           (block & 1) == 0 ? 1 : 0, (block & 1) == 0));
     return uint4(sobol::word(tables, index, d, p.randomization, p.seed_low),
                  sobol::word(tables, index, d + 1, p.randomization, p.seed_low),
                  sobol::word(tables, index, d + 2, p.randomization, p.seed_low),
@@ -133,6 +157,13 @@ static uint4 draw_words(constant wire::Parameters &p, const device sobol::Tables
 
 static uint dielectric_lobe_word(constant wire::Parameters &p, const device sobol::Tables &tables,
                                  thread const wire::Sample &sample, ulong index, uint bounce) {
+    if (p.sampler_kind == wire::halton_sampler)
+        return qmc::float_bits(
+            qmc::radical(rypath::sampling_contract::halton_dielectric_lobe_begin + bounce, index,
+                         p.randomization, p.seed_low));
+    if (p.sampler_kind == wire::zsobol_sampler)
+        return zdraw(p, tables, index,
+                     rypath::sampling_contract::dielectric_lobe_dimension(bounce));
     if (p.sampler_kind == wire::sobol_sampler)
         return sobol::word(tables, index,
                            rypath::sampling_contract::dielectric_lobe_dimension(bounce),
@@ -141,6 +172,42 @@ static uint dielectric_lobe_word(constant wire::Parameters &p, const device sobo
                         rypath::sampling_contract::dielectric_lobe_block(bounce)),
                   uint2(p.seed_low, p.seed_high))
         .x;
+}
+
+static float2 gaussian_filter_offsets(constant wire::Parameters &p,
+                                      const device sobol::Tables &tables, float ux, float uy) {
+#pragma clang fp contract(off)
+    const device float *cdf =
+        reinterpret_cast<const device float *>(&tables) + sizeof(sobol::Tables) / sizeof(float);
+    const device float *marginal = cdf + p.gaussian_height * (p.gaussian_width + 1);
+    uint low = 0, high = p.gaussian_height;
+    while (low + 1 < high) {
+        const uint mid = (low + high) / 2;
+        if (marginal[mid] <= uy)
+            low = mid;
+        else
+            high = mid;
+    }
+    const uint row = low;
+    const float ty =
+        (float(row) + precise::divide(uy - marginal[row], marginal[row + 1] - marginal[row])) /
+        float(p.gaussian_height);
+    const device float *conditional = cdf + row * (p.gaussian_width + 1);
+    low = 0;
+    high = p.gaussian_width;
+    while (low + 1 < high) {
+        const uint mid = (low + high) / 2;
+        if (conditional[mid] <= ux)
+            low = mid;
+        else
+            high = mid;
+    }
+    const float tx = (float(low) + precise::divide(ux - conditional[low],
+                                                   conditional[low + 1] - conditional[low])) /
+                     float(p.gaussian_width);
+    const float x = (1 - tx) * (-p.filter_x_radius) + tx * p.filter_x_radius;
+    const float y = (1 - ty) * (-p.filter_y_radius) + ty * p.filter_y_radius;
+    return float2(x, y);
 }
 
 static wire::Sample begin_sample(constant wire::Parameters &p, const device sobol::Tables &tables,
@@ -156,6 +223,18 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
                       sobol::word(tables, index, 1, sobol::no_randomization, 0),
                       sobol::word(tables, index, 2, p.randomization, p.seed_low),
                       sobol::word(tables, index, 3, p.randomization, p.seed_low));
+    } else if (p.sampler_kind == wire::halton_sampler) {
+        index = qmc::halton_index(p.width, p.height, pixel % p.width, pixel / p.width,
+                                  (ulong(sample_high) << 32) | sample_low);
+        words = uint4(qmc::float_bits(qmc::halton_camera(0, p.width, index)),
+                      qmc::float_bits(qmc::halton_camera(1, p.height, index)),
+                      qmc::float_bits(qmc::radical(2, index, p.randomization, p.seed_low)),
+                      qmc::float_bits(qmc::radical(3, index, p.randomization, p.seed_low)));
+    } else if (p.sampler_kind == wire::zsobol_sampler) {
+        index = qmc::morton(pixel % p.width, pixel / p.width, p.zsobol_log_spp,
+                            (ulong(sample_high) << 32) | sample_low);
+        words = uint4(zdraw(p, tables, index, 1, 0, true), zdraw(p, tables, index, 1, 1, true),
+                      zdraw(p, tables, index, 0), zdraw(p, tables, index, 3));
     } else {
         words = philox(uint4(pixel, sample_low, sample_high, 0), uint2(p.seed_low, p.seed_high));
     }
@@ -167,6 +246,13 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
                                   p.randomization, p.seed_low),
                       sobol::word(tables, index, rypath::sampling_contract::lens_y_dimension,
                                   p.randomization, p.seed_low));
+        } else if (p.sampler_kind == wire::halton_sampler) {
+            lens_words =
+                uint2(qmc::float_bits(qmc::radical(998, index, p.randomization, p.seed_low)),
+                      qmc::float_bits(qmc::radical(999, index, p.randomization, p.seed_low)));
+        } else if (p.sampler_kind == wire::zsobol_sampler) {
+            lens_words = uint2(zdraw(p, tables, index, 1022, 0, true),
+                               zdraw(p, tables, index, 1022, 1, true));
         } else {
             lens_words =
                 philox(uint4(pixel, sample_low, sample_high, rypath::sampling_contract::lens_block),
@@ -174,7 +260,7 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
                     .xy;
         }
     }
-    return wire::Sample{wire::success,
+    wire::Sample result{wire::success,
                         pixel,
                         sample_low,
                         sample_high,
@@ -182,7 +268,22 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
                         0.0f,
                         0,
                         {words.x, words.y, words.z, words.w},
-                        {lens_words.x, lens_words.y}};
+                        {lens_words.x, lens_words.y},
+                        {0, 0}};
+    if (p.filter_kind == wire::gaussian_filter) {
+        const float ux =
+            p.sampler_kind == wire::sobol_sampler
+                ? sobol::camera_uniform(words.x, p.sobol_scale_exponent, pixel % p.width)
+                : sample_uniform(p, words.x);
+        const float uy =
+            p.sampler_kind == wire::sobol_sampler
+                ? sobol::camera_uniform(words.y, p.sobol_scale_exponent, pixel / p.width)
+                : sample_uniform(p, words.y);
+        const auto offsets = gaussian_filter_offsets(p, tables, ux, uy);
+        result.filter_offsets[0] = offsets.x;
+        result.filter_offsets[1] = offsets.y;
+    }
+    return result;
 }
 
 static float2 camera_uniforms(constant wire::Parameters &p, thread const wire::Sample &sample) {
@@ -192,7 +293,8 @@ static float2 camera_uniforms(constant wire::Parameters &p, thread const wire::S
                       sobol::camera_uniform(sample.random_words[1], p.sobol_scale_exponent,
                                             sample.pixel / p.width));
     }
-    return float2(u01(sample.random_words[0]), u01(sample.random_words[1]));
+    return float2(sample_uniform(p, sample.random_words[0]),
+                  sample_uniform(p, sample.random_words[1]));
 }
 
 static float triangle_offset(float u, float radius) {
@@ -244,11 +346,14 @@ static float3 primary_texture_point(constant wire::Parameters &p, thread const w
 
 // Preserve the historical half-pixel expression only when both axes are default.
 static bool centered_filter(constant wire::Parameters &p) {
-    return p.filter_kind == wire::triangle_filter || p.filter_x_radius != 0.5f ||
+    return p.filter_kind != wire::box_filter || p.filter_x_radius != 0.5f ||
            p.filter_y_radius != 0.5f;
 }
 
-static float filter_offset(constant wire::Parameters &p, float u, float radius) {
+static float filter_offset(constant wire::Parameters &p, thread const wire::Sample &sample, float u,
+                           float radius, uint axis) {
+    if (p.filter_kind == wire::gaussian_filter)
+        return sample.filter_offsets[axis];
     return p.filter_kind == wire::triangle_filter ? triangle_offset(u, radius)
                                                   : (2.0f * u - 1.0f) * radius;
 }
@@ -259,10 +364,10 @@ static ray lens_primary_ray(constant wire::Parameters &p, thread const wire::Sam
     float3 d;
     if (centered_filter(p)) {
         x = precise::divide((float(sample.pixel % p.width) + 0.5f) +
-                                filter_offset(p, uv.x, p.filter_x_radius),
+                                filter_offset(p, sample, uv.x, p.filter_x_radius, 0),
                             float(p.width));
         y = precise::divide((float(sample.pixel / p.width) + 0.5f) +
-                                filter_offset(p, uv.y, p.filter_y_radius),
+                                filter_offset(p, sample, uv.y, p.filter_y_radius, 1),
                             float(p.height));
         d = fma(float3(y), unpack(p.up), fma(float3(x), unpack(p.right), unpack(p.forward)));
     } else {
@@ -280,8 +385,8 @@ static ray lens_primary_ray(constant wire::Parameters &p, thread const wire::Sam
 
 static ray centered_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
     const float2 uv = camera_uniforms(p, sample);
-    const float ox = filter_offset(p, uv.x, p.filter_x_radius);
-    const float oy = filter_offset(p, uv.y, p.filter_y_radius);
+    const float ox = filter_offset(p, sample, uv.x, p.filter_x_radius, 0);
+    const float oy = filter_offset(p, sample, uv.y, p.filter_y_radius, 1);
     const float x = precise::divide((float(sample.pixel % p.width) + 0.5f) + ox, float(p.width));
     const float y = precise::divide((float(sample.pixel / p.width) + 0.5f) + oy, float(p.height));
     const float3 d =
@@ -325,10 +430,10 @@ static void texture_camera_rays(constant wire::Parameters &p, thread const wire:
     float3 d;
     if (centered_filter(p)) {
         const float x = precise::divide((float(sample.pixel % p.width) + 0.5f) +
-                                            filter_offset(p, uv.x, p.filter_x_radius),
+                                            filter_offset(p, sample, uv.x, p.filter_x_radius, 0),
                                         float(p.width));
         const float y = precise::divide((float(sample.pixel / p.width) + 0.5f) +
-                                            filter_offset(p, uv.y, p.filter_y_radius),
+                                            filter_offset(p, sample, uv.y, p.filter_y_radius, 1),
                                         float(p.height));
         d = fma(float3(y), unpack(p.up), fma(float3(x), unpack(p.right), unpack(p.forward)));
     } else {
@@ -2713,10 +2818,11 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         const uint4 bsdf_words = draw_words(p, tables, sample, index, 1 + 2 * bounce);
         // A null slot intentionally contributes zero. This gives every emitter
         // an exact dyadic PMF and avoids altering the BSDF and sky streams.
-        const uint selected =
-            p.sampler_kind == wire::sobol_sampler
-                ? (p.emitter_slots == 1 ? 0 : bsdf_words.w >> (clz(p.emitter_slots) + 1))
-                : bsdf_words.w & (p.emitter_slots - 1u);
+        const uint selected = p.sampler_kind != wire::independent_sampler
+                                  ? (p.emitter_slots == 1 ? 0
+                                                          : decision_word(p, bsdf_words.w) >>
+                                                                (clz(p.emitter_slots) + 1))
+                                  : bsdf_words.w & (p.emitter_slots - 1u);
         if (!delta && selected < p.emitter_count) {
             const wire::Emitter emitter = emitters[selected];
             if (emitter.instance >= p.instance_count) {
@@ -2742,8 +2848,11 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                  (gltf_enabled && emission.gltf_material != 0xffffffffu)) &&
                 !same_triangle) {
                 SurfacePoint target;
-                const float2 light_uv = patch_light ? patch_sample_uv(light_words.z, light_words.w)
-                                                    : triangle_uv(light_words.z, light_words.w);
+                const float2 light_uv = patch_light
+                                            ? patch_sample_uv(decision_word(p, light_words.z),
+                                                              decision_word(p, light_words.w))
+                                            : triangle_uv(decision_word(p, light_words.z),
+                                                          decision_word(p, light_words.w));
                 if (!surface_point(light_uv, emitter.kind, light_instance, emitter.primitive,
                                    positions, triangles, patches, normals, p.normal_count,
                                    PointSource::area_sample, target)) {
@@ -2997,7 +3106,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         }
         ++sample.scatterings;
         if (sample.scatterings >= 3) {
-            if (bsdf_words.z >= 0xc0000000u) {
+            if (decision_word(p, bsdf_words.z) >= 0xc0000000u) {
                 break;
             }
             throughput /= 0.75f;
@@ -3034,4 +3143,42 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         sample.status = wire::invalid_arithmetic;
     }
     output[lane] = sample;
+}
+
+// Tests the shared algorithms without geometry, camera normalization, or film conversion.
+kernel void rypath_qmc_probe(const device sobol::Tables &tables [[buffer(0)]],
+                             const device rypath::qmc_probe::Query *queries [[buffer(1)]],
+                             device rypath::qmc_probe::Result *results [[buffer(2)]],
+                             constant uint &count [[buffer(3)]],
+                             uint lane [[thread_position_in_grid]]) {
+    if (lane >= count)
+        return;
+    const auto q = queries[lane];
+    const ulong sample = (ulong(q.sample_high) << 32) | q.sample_low;
+    ulong index;
+    float cx, cy, scalar, px, py;
+    if (q.kind == wire::halton_sampler) {
+        index = qmc::halton_index(q.width, q.height, q.x, q.y, sample);
+        cx = qmc::halton_camera(0, q.width, index);
+        cy = qmc::halton_camera(1, q.height, index);
+        scalar = qmc::radical(q.dimension, index, q.mode, q.seed);
+        px = scalar;
+        py = qmc::radical(q.dimension + 1, index, q.mode, q.seed);
+    } else {
+        const ulong morton = qmc::morton(q.x, q.y, q.log_spp, sample);
+        index = qmc::zindex(morton, q.dimension, q.exponent, q.log_spp);
+        cx = sobol::uniform(
+            qmc::zword(tables, morton, 1, 0, true, q.exponent, q.log_spp, q.mode, q.seed));
+        cy = sobol::uniform(
+            qmc::zword(tables, morton, 1, 1, true, q.exponent, q.log_spp, q.mode, q.seed));
+        scalar = sobol::uniform(qmc::zword(tables, morton, q.dimension, 0, false, q.exponent,
+                                           q.log_spp, q.mode, q.seed));
+        px = sobol::uniform(qmc::zword(tables, morton, q.dimension, 0, true, q.exponent, q.log_spp,
+                                       q.mode, q.seed));
+        py = sobol::uniform(qmc::zword(tables, morton, q.dimension, 1, true, q.exponent, q.log_spp,
+                                       q.mode, q.seed));
+    }
+    results[lane] = {{uint(index), uint(index >> 32), qmc::float_bits(cx), qmc::float_bits(cy),
+                      qmc::float_bits(scalar), qmc::float_bits(px), qmc::float_bits(py),
+                      0x514d4331u}};
 }

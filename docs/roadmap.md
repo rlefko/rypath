@@ -124,8 +124,10 @@ clarifies the work; completion is recorded in [status](status.md).
     Loop subdivision and inline bilinear meshes extend the existing triangle/patch
     geometry profile; see [mesh validation](mesh-shape-validation.md). Analytic
     primitives, curves and motion remain separate geometry work.
-    Wider color spaces, additional camera models and
-    filters/samplers and faithfully rendered upstream entry points remain.
+    Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
+    camera sampling; see [sampling validation](sampling-defaults-validation.md).
+    Wider color spaces, additional cameras, filters/samplers and faithfully
+    rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented
     material approximations and portable PBRT bundles. STL (merged in PR #35) adds bounded

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Original rypath sampling/defaults fixture; see README.md.
+Camera "perspective" "float fov" [53.1301023542]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "gaussian" "float xradius" [.0625] "float yradius" [.0625] "float sigma" [.01]
+Sampler "halton" "string randomization" ["permutedigits"] "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [0]
+WorldBegin
+LightSource "infinite" "rgb L" [.1 .2 .3]
+Material "diffuse" "rgb reflectance" [0 0 0]
+AreaLightSource "diffuse" "rgb L" [4 .25 1]
+Shape "trianglemesh" "point3 P" [.51 -7 8 .51 7 8 7 7 8 7 -7 8] "integer indices" [0 1 2 0 2 3]

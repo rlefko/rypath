@@ -22,7 +22,7 @@ void identity_checks() {
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
     // the 3629-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "0cab46b6c96626bc2ecc09d127d3dc26a3ed0e902596a1917bbd97863321b08b",
+                "0cfc3f6f3cd4b2a3bf3d2dd6e070d18f6defa213ecd3caf5a875d91424f58535",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -347,12 +347,14 @@ void identity_checks() {
     copy.materials[1].table = std::make_shared<BsdfTable>(*table);
     require(render_identity(copy, settings) == render_identity(scene, settings),
             "sharing topology excluded");
-    settings.sampler.kind = SamplerKind::sobol;
-    settings.seed = UINT64_MAX;
-    auto equivalent = settings;
-    equivalent.seed = UINT32_MAX;
-    require(render_identity(scene, settings) == render_identity(scene, equivalent),
-            "Sobol signed seed canonicalization");
+    for (auto kind : {SamplerKind::sobol, SamplerKind::halton, SamplerKind::zsobol}) {
+        settings.sampler.kind = kind;
+        settings.seed = UINT64_MAX;
+        auto equivalent = settings;
+        equivalent.seed = UINT32_MAX;
+        require(render_identity(scene, settings) == render_identity(scene, equivalent),
+                "QMC signed seed canonicalization");
+    }
 }
 } // namespace
 int main(int argc, char **argv) {

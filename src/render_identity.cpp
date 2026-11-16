@@ -190,6 +190,8 @@ class Canonical {
         FIELD(kind);
         FIELD(x_radius);
         FIELD(y_radius);
+        if (x.kind == PixelFilterKind::gaussian)
+            FIELD(sigma);
     }
     void value(const AreaEmission &x) {
         FIELD(power);
@@ -358,7 +360,7 @@ Sha256Digest render_identity(const RenderScene &scene, const RenderSettings &set
     out.field("height", settings.height);
     // Fixed target spp affects texture footprints and is part of the integrand.
     out.field("samples", settings.samples);
-    if (settings.sampler.kind == SamplerKind::sobol)
+    if (settings.sampler.kind != SamplerKind::independent)
         out.field("seed", static_cast<std::uint32_t>(sobol_signed_seed(settings.seed)));
     else
         out.field("seed", settings.seed);

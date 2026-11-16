@@ -317,3 +317,14 @@ source-located diagnostics. It rejects malformed manifold topology instead of
 depending on upstream's unchecked adjacency assumptions. No PBRT library is
 linked into the product. The optional geometry oracle links the existing cached
 CPU reference separately; see [mesh validation](../../docs/mesh-shape-validation.md).
+
+## Sampling and Gaussian reconstruction
+
+`src/qmc_shared.h` adapts Halton and ZSobol indexing, radical inverses, hashing
+and randomization from the same pinned PBRT implementation. `primes.inc`
+retains its 1,000 prime bases; see [sampling provenance](sampling.md).
+`src/gaussian_filter.cpp` adapts the Gaussian midpoint tabulation, `FastExp`
+and piecewise-constant CDF construction. Both retain Apache-2.0 notices.
+The normalized positive table uses unit film weights, a documented numerical
+adaptation. Optional probes link the cached CPU reference; the product adds no
+PBRT runtime dependency.

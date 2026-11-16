@@ -116,7 +116,7 @@ RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &s
             loaded.value->settings.samples != settings.samples ||
             loaded.value->settings.sampler.kind != settings.sampler.kind ||
             loaded.value->settings.sampler.randomization != settings.sampler.randomization ||
-            (settings.sampler.kind == SamplerKind::sobol
+            (settings.sampler.kind != SamplerKind::independent
                  ? sobol_signed_seed(loaded.value->settings.seed) !=
                        sobol_signed_seed(settings.seed)
                  : loaded.value->settings.seed != settings.seed) ||

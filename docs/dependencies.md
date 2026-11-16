@@ -219,3 +219,10 @@ path-coverage policy are project adaptations, described in the
 `8f492390ddc7a2ae221a1369ef560589cf8c70fb` retain their separate model/metadata
 licenses and complete hashes in the [fixture manifest](../tests/fixtures/gltf/external/README.md).
 No full corpus is fetched by the build.
+
+Halton/ZSobol and Gaussian filtering adapt the existing pinned PBRT source under
+its Apache-2.0 notice. The fixed prime bases and shared routines add no runtime
+library or network acquisition. Gaussian table compilation disables floating
+contraction to retain its pinned binary32 operation order. See the
+[PBRT source record](../third_party/pbrt/README.md) and
+[sampling validation](sampling-defaults-validation.md).
