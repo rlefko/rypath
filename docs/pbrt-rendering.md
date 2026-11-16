@@ -39,7 +39,7 @@ diagnosed even when not placed in the image.
 | Component | Rendered behavior and limits |
 | --- | --- |
 | Descriptors | Explicit perspective camera, RGB film, box or triangle filter, independent or Sobol sampler, and path or volpath integrator; no substitution of omitted PBRT defaults |
-| Camera | Pinhole, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
+| Camera | Pinhole or perspective thin lens, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
 | Filter | Box radii 0.5 or triangle radii defaulting independently to 2 |
@@ -71,7 +71,7 @@ unsupported. Float narrowing rejects overflow, collapsed spectral knots or
 shutter intervals, and invalid packed camera coefficients.
 
 Non-sRGB reconstruction, legacy `color` parameters, Ptex, fractional emitting alpha, emitting object members, other external mesh
-formats, heterogeneous media, motion, lens effects, and other cameras, filters, samplers, and
+formats, heterogeneous media, motion, realistic lens systems, and other cameras, filters, samplers, and
 integrators remain unsupported. The core texture boundary below lists the
 additional exclusions.
 Rendering requires Metal. The [unchanged CC0 Cornell fixture](../tests/fixtures/pbrt/README.md)
@@ -86,6 +86,38 @@ offsets and area-light Jacobians use the geometric plane. Image reflectance uses
 owned, position-indexed UVs. Constant reflectance and emission are UV-independent.
 Degenerate one-sided emitter orientations and the supported numeric domain are
 specified in [triangle-attribute validation](pbrt-attribute-validation.md).
+
+## Perspective depth of field
+
+`Camera "perspective" "float lensradius" [.1] "float focaldistance" [4]`
+enables a circular thin lens. Radius defaults to zero (the existing pinhole);
+focal distance defaults to `1e6` and measures axial distance along camera +Z.
+Both positive lens parameters and their ratio must remain normal binary32
+values. Zero radius leaves focal distance inert, including its scene identity.
+Camera scale/shear and animation remain unsupported.
+
+Uniform concentric-disk samples originate on the aperture and target the
+corresponding point on the focal plane. The normalized aperture integral has
+unit camera weight, following PBRT perspective-camera semantics; aperture size
+does not multiply brightness. This model does not simulate lens elements,
+diffraction, aberrations or polygonal aperture blades. The camera's authored
+medium applies to every aperture point; no geometric medium classification is
+performed at the lens.
+
+Lens draws use Sobol dimensions 1022/1023 or Philox counter block `0xc0000000`,
+without shifting existing camera, wavelength or transport draws. All supported
+Sobol randomizations and existing depth limits remain available. Primary and
+neighboring differential rays reuse one aperture point. Texture mapping remains
+camera-centered; primary derivatives use the aperture-relative hit point. The
+existing camera-based approximation for indirect footprints remains unchanged.
+
+The aperture is quantized at the binary32 world origin. Directions and primary
+derivatives use that realized displacement consistently. Preflight and native
+requests bound complete filter/aperture support and reject overflow, collapsed
+aperture axes or potentially vanishing directions. They do not discard individual
+samples or silently substitute a pinhole. The
+[depth-of-field validation record](depth-of-field-validation.md) describes the
+numerical domain, regression tests and matched reference comparisons.
 
 ## Constant textures
 
@@ -329,8 +361,10 @@ alpha/null handling and delta-position estimator with point/spot/goniometric
 lights. Surface and homogeneous-medium vertices enumerate every source with
 unit MIS weight and no additional sampler dimensions. Geometry-free media bind
 the same image resources. Projection lights have no camera-visible geometry.
-All effective records and owned images participate in renderer contract 8 and
-identity schema 7. See [projection validation](projection-light-validation.md).
+All effective records and owned images participate in scene identity. Projection
+support introduced renderer contract 8 and identity schema 7; see
+[projection validation](projection-light-validation.md) and the
+[current checkpoint contracts](checkpointing.md).
 
 ## Distant lights
 

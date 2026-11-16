@@ -307,18 +307,28 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
     const auto seed = settings.sampler.kind == rypath::SamplerKind::sobol
                           ? std::to_string(rypath::sobol_signed_seed(settings.seed))
                           : std::to_string(settings.seed);
-    Metadata metadata{{"rypath.version", RYPATH_VERSION},
-                      {"rypath.profile", std::move(profile)},
-                      {"rypath.scene", std::move(scene)},
-                      {"rypath.sampler",
-                       rypath::sampler_description(settings.sampler,
-                                                   rypath::scene_has_dielectrics(render_scene))},
-                      {"rypath.seed", seed},
-                      {"rypath.samplesPerPixel", std::to_string(settings.samples)},
-                      {"rypath.batchSize", std::to_string(settings.batch_size)},
-                      {"rypath.exposure", exposure.str()},
-                      {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
-                      {"rypath.overrides", std::move(overrides)}};
+    Metadata metadata{
+        {"rypath.version", RYPATH_VERSION},
+        {"rypath.profile", std::move(profile)},
+        {"rypath.scene", std::move(scene)},
+        {"rypath.sampler",
+         rypath::sampler_description(settings.sampler, rypath::scene_has_dielectrics(render_scene),
+                                     render_scene.perspective_lens.has_value())},
+        {"rypath.seed", seed},
+        {"rypath.samplesPerPixel", std::to_string(settings.samples)},
+        {"rypath.batchSize", std::to_string(settings.batch_size)},
+        {"rypath.exposure", exposure.str()},
+        {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
+        {"rypath.overrides", std::move(overrides)}};
+    if (render_scene.perspective_lens) {
+        std::ostringstream camera;
+        camera.imbue(std::locale::classic());
+        camera << std::setprecision(std::numeric_limits<float>::max_digits10)
+               << "perspective thin lens; radius=" << render_scene.perspective_lens->radius
+               << "; focal distance=" << render_scene.perspective_lens->focal_distance
+               << "; normalized aperture; unit ray weight";
+        metadata.emplace_back("rypath.camera", camera.str());
+    }
     if (const auto description = surface_model_description(render_scene); !description.empty())
         metadata.emplace_back("rypath.materialModel", description);
     if (std::any_of(render_scene.materials.begin(), render_scene.materials.end(),
@@ -498,7 +508,8 @@ int render_pbrt(int argc, char *argv[]) {
         << "Scene: " << entry.string() << '\n'
         << "Render profile: pbrt-spectral-v1\n"
         << "Sampler: "
-        << rypath::sampler_description(settings.sampler, rypath::scene_has_dielectrics(scene))
+        << rypath::sampler_description(settings.sampler, rypath::scene_has_dielectrics(scene),
+                                       scene.perspective_lens.has_value())
         << '\n'
         << "Light sampling: separate environment and uniform triangle area (differs from PBRT)\n"
         << "Color: calibrated CIE 1931 XYZ / sRGB\n"

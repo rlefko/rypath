@@ -267,11 +267,22 @@ bool dielectric_dimensions() {
                           local != sampling_contract::dielectric_lobe_block(bounce),
                       "Material local counters are disjoint from outer and dielectric streams");
     }
-    pass &= check(!used[1021] && !used[1022] && !used[1023], "Sobol tail keeps reserved words");
+    pass &= check(!used[sampling_contract::lens_x_dimension] &&
+                      !used[sampling_contract::lens_y_dimension] &&
+                      sampling_contract::lens_x_dimension != sampling_contract::lens_y_dimension,
+                  "Lens Sobol dimensions do not overlap transport or dielectric draws");
+    used[sampling_contract::lens_x_dimension] = true;
+    used[sampling_contract::lens_y_dimension] = true;
+    pass &= check(!used[1021], "Remaining Sobol tail word stays reserved");
     pass &= check(sampler_description({}) == "philox4x32-10-v1 (sequence differs from PBRT)" &&
                       sampler_description({}, true) ==
                           "philox4x32-10-v1+dielectric-v1 (sequence differs from PBRT)",
                   "Sampler provenance identifies dielectric extension without renaming legacy");
+    pass &= check(sampler_description({}, false, true) ==
+                          "philox4x32-10-v1+lens-v1 (sequence differs from PBRT)" &&
+                      sampler_description({}, true, true) ==
+                          "philox4x32-10-v1+dielectric-v1+lens-v1 (sequence differs from PBRT)",
+                  "Sampler provenance identifies lens extension");
     return pass;
 }
 

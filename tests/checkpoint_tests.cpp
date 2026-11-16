@@ -132,7 +132,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "ec26c67263c4641d44fab4a4e480009d3da897141fbdc4c913a0446787d1e1ac",
+                "19a802a15c00a114df15d576dc6f1dfd3a3f54a56ac58820c17929afca642a8d",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
@@ -141,16 +141,19 @@ void codec(const std::filesystem::path &dir) {
     require(original == read(dir / "copy.bin"), "byte exact serialization");
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
     for (const auto [offset, version] :
-         std::array<std::pair<std::size_t, std::uint32_t>, 10>{{{12, 3},
+         std::array<std::pair<std::size_t, std::uint32_t>, 13>{{{12, 3},
                                                                 {12, 4},
                                                                 {12, 5},
                                                                 {12, 6},
+                                                                {12, 7},
                                                                 {16, 3},
                                                                 {16, 4},
                                                                 {16, 5},
                                                                 {16, 6},
                                                                 {16, 7},
-                                                                {16, 8}}}) {
+                                                                {16, 8},
+                                                                {16, 9},
+                                                                {20, 1}}}) {
         auto legacy = original;
         put(legacy, offset, version, 4);
         rehash(legacy);

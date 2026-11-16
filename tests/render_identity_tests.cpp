@@ -20,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3604-byte empty-scene fixture includes field tags and all defaults.
+    // the 3629-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "08e9abaed00103609671c015a2d2d912f1353e3cf16f0367d0414af68d8d4de3",
+                "9aa34ca626d3d93253b8db9796fce753ab8506f7dcc175ec196b886cd72fb328",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -40,6 +40,21 @@ void identity_checks() {
     changed([](auto &s) { s.camera.origin.x += 1; }, "camera");
     changed([](auto &s) { s.model = RenderModel::pbrt; }, "render model");
     changed([](auto &s) { s.raster_camera = RasterCamera{}; }, "raster camera presence");
+    changed([](auto &s) { s.perspective_lens = PerspectiveLens{}; }, "lens presence");
+    RenderScene lens_scene;
+    lens_scene.perspective_lens = PerspectiveLens{.25f, 4, {1, 0, 0}, {0, 1, 0}};
+    const auto lens_identity = render_identity(lens_scene, settings);
+    const auto lens_changed = [&](auto change) {
+        auto copy = lens_scene;
+        change(*copy.perspective_lens);
+        require(render_identity(copy, settings) != lens_identity, "lens identity payload");
+    };
+    lens_changed([](auto &lens) { lens.radius += .1f; });
+    lens_changed([](auto &lens) { lens.focal_distance += 1; });
+    for (auto axis : {&PerspectiveLens::camera_x, &PerspectiveLens::camera_y})
+        for (auto component : {&GeometryPoint::x, &GeometryPoint::y, &GeometryPoint::z})
+            lens_changed([=](auto &lens) { (lens.*axis).*component += .1f; });
+
     changed([](auto &s) { s.environment[470] = 1; }, "environment spectrum");
     changed([](auto &s) { ++s.max_depth; }, "integrator depth");
     changed([](auto &s) { s.instance_reverse_orientation.push_back(1); }, "orientation");

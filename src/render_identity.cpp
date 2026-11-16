@@ -180,6 +180,12 @@ class Canonical {
         FIELD(dx);
         FIELD(dy);
     }
+    void value(const PerspectiveLens &x) {
+        FIELD(radius);
+        FIELD(focal_distance);
+        FIELD(camera_x);
+        FIELD(camera_y);
+    }
     void value(const PixelFilter &x) {
         FIELD(kind);
         FIELD(x_radius);
@@ -309,6 +315,7 @@ class Canonical {
         FIELD(camera);
         FIELD(model);
         FIELD(raster_camera);
+        FIELD(perspective_lens);
         FIELD(environment);
         FIELD(max_depth);
         FIELD(instance_reverse_orientation);

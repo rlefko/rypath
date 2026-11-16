@@ -31,7 +31,8 @@ std::string validate_sampler_range(const RenderSampler &sampler, std::uint64_t s
                                    std::uint32_t width, std::uint32_t height,
                                    std::uint64_t sample_begin, std::uint64_t sample_count);
 std::uint32_t sobol_scale_exponent(std::uint32_t width, std::uint32_t height);
-std::string sampler_description(const RenderSampler &sampler, bool dielectrics = false);
+std::string sampler_description(const RenderSampler &sampler, bool dielectrics = false,
+                                bool perspective_lens = false);
 // Decode the low word of a seed accepted by validate_sampler_range.
 std::int32_t sobol_signed_seed(std::uint64_t seed);
 

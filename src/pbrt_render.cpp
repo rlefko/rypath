@@ -494,9 +494,7 @@ void Translator::film(const Descriptor &descriptor) {
 }
 
 void Translator::camera(const Descriptor &descriptor, const Descriptor *film_descriptor) {
-    if (number(descriptor, "lensradius", 0) != 0) {
-        unsupported(location(descriptor, "lensradius"), "The perspective camera must be pinhole");
-    }
+    const double authored_radius = number(descriptor, "lensradius", 0);
     const auto open = narrow(descriptor, "shutteropen", 0);
     const auto close = narrow(descriptor, "shutterclose", 1);
     const auto iso = film_descriptor ? narrow(*film_descriptor, "iso", 100) : std::optional{100.f};
@@ -614,6 +612,31 @@ void Translator::camera(const Descriptor &descriptor, const Descriptor *film_des
         }
     }
     scene_.raster_camera = raster;
+    if (authored_radius != 0) {
+        const auto radius = narrow(descriptor, "lensradius", 0);
+        const auto focus = narrow(descriptor, "focaldistance", 1e6);
+        const auto camera_x = narrow_point(x);
+        const auto camera_y = narrow_point(y);
+        if (!radius || !focus || !camera_x || !camera_y) {
+            return;
+        }
+        if (!std::isnormal(*radius) || *radius <= 0) {
+            invalid(location(descriptor, "lensradius"),
+                    "Perspective lens radius must be positive and normal in binary32");
+            return;
+        }
+        if (!std::isnormal(*focus) || *focus <= 0) {
+            invalid(location(descriptor, "focaldistance"),
+                    "Perspective focal distance must be positive and normal in binary32");
+            return;
+        }
+        scene_.perspective_lens = PerspectiveLens{*radius, *focus, *camera_x, *camera_y};
+        const auto message = validate_lens_support(raster, *scene_.perspective_lens, scene_.filter,
+                                                   result_.settings.width, result_.settings.height);
+        if (!message.empty()) {
+            invalid(location(descriptor, "lensradius"), message);
+        }
+    }
 }
 
 void Translator::filter(const Descriptor &descriptor) {
@@ -3313,6 +3336,15 @@ RenderTranslation Translator::run() {
                           << " (x radius " << scene_.filter.x_radius << ", y radius "
                           << scene_.filter.y_radius << ')';
         result_.provenance.push_back(filter_provenance.str());
+        if (scene_.perspective_lens) {
+            std::ostringstream lens;
+            lens.imbue(std::locale::classic());
+            lens << std::setprecision(std::numeric_limits<float>::max_digits10)
+                 << "Perspective lens: radius " << scene_.perspective_lens->radius
+                 << ", focal distance " << scene_.perspective_lens->focal_distance
+                 << " (normalized aperture; unit ray weight; lens-v1 sampling)";
+            result_.provenance.push_back(lens.str());
+        }
         if (!scene_.point_lights.empty()) {
             result_.provenance.push_back(
                 "Point lights: " + std::to_string(scene_.point_lights.size()) +

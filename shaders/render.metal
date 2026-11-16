@@ -4,6 +4,7 @@
 #include <metal_stdlib>
 
 #include "../src/checkpoint_contract.h"
+#include "../src/lens_probe_wire.h"
 #include "../src/render_wire.h"
 #include "../src/sampling_contract.h"
 #include "../src/sobol_probe_wire.h"
@@ -158,6 +159,21 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
     } else {
         words = philox(uint4(pixel, sample_low, sample_high, 0), uint2(p.seed_low, p.seed_high));
     }
+    uint2 lens_words(0);
+    if (p.lens_radius > 0) {
+        if (p.sampler_kind == wire::sobol_sampler) {
+            lens_words =
+                uint2(sobol::word(tables, index, rypath::sampling_contract::lens_x_dimension,
+                                  p.randomization, p.seed_low),
+                      sobol::word(tables, index, rypath::sampling_contract::lens_y_dimension,
+                                  p.randomization, p.seed_low));
+        } else {
+            lens_words =
+                philox(uint4(pixel, sample_low, sample_high, rypath::sampling_contract::lens_block),
+                       uint2(p.seed_low, p.seed_high))
+                    .xy;
+        }
+    }
     return wire::Sample{wire::success,
                         pixel,
                         sample_low,
@@ -165,7 +181,8 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
                         360.0f + 470.0f * sample_uniform(p, words.z),
                         0.0f,
                         0,
-                        {words.x, words.y, words.z, words.w}};
+                        {words.x, words.y, words.z, words.w},
+                        {lens_words.x, lens_words.y}};
 }
 
 static float2 camera_uniforms(constant wire::Parameters &p, thread const wire::Sample &sample) {
@@ -183,6 +200,71 @@ static float triangle_offset(float u, float radius) {
     // around its center. The existing camera uniform grid includes u = 0.
     const float s = 2.0f * u - 1.0f;
     return radius * precise::divide(s, 1.0f + precise::sqrt(1.0f - abs(s)));
+}
+
+// Uniform concentric disk mapping, following PBRT's perspective camera model.
+// The lens integral is normalized: the camera sample retains unit weight.
+struct LensPoint {
+    float3 origin;
+    float3 offset;
+};
+static LensPoint lens_point(constant wire::Parameters &p, thread const wire::Sample &sample) {
+    if (!(p.lens_radius > 0))
+        return {unpack(p.origin), float3(0)};
+    const float2 u = 2.0f * float2(sample_uniform(p, sample.lens_words[0]),
+                                   sample_uniform(p, sample.lens_words[1])) -
+                     1.0f;
+    if (all(u == float2(0)))
+        return {unpack(p.origin), float3(0)};
+    float radius, theta;
+    if (abs(u.x) > abs(u.y)) {
+        radius = u.x;
+        theta = (pi / 4.0f) * precise::divide(u.y, u.x);
+    } else {
+        radius = u.y;
+        theta = pi / 2.0f - (pi / 4.0f) * precise::divide(u.x, u.y);
+    }
+    const float2 disk = (p.lens_radius * radius) * float2(cos(theta), sin(theta));
+    const float3 ideal = disk.x * unpack(p.lens_x) + disk.y * unpack(p.lens_y);
+    const float3 origin = unpack(p.origin) + ideal;
+    // Use the actual binary32 aperture point everywhere. At large translations
+    // the aperture is quantized; mixing this origin with the ideal displacement
+    // would move the focus plane and corrupt primary texture differentials.
+    return {origin, origin - unpack(p.origin)};
+}
+
+static float3 lens_offset(constant wire::Parameters &p, thread const wire::Sample &sample) {
+    return lens_point(p, sample).offset;
+}
+
+static float3 primary_texture_point(constant wire::Parameters &p, thread const wire::Sample &sample,
+                                    float3 relative_p) {
+    return p.lens_radius > 0 ? relative_p - lens_offset(p, sample) : relative_p;
+}
+
+static ray lens_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
+    const float2 uv = camera_uniforms(p, sample);
+    float x, y;
+    float3 d;
+    if (p.filter_kind == wire::triangle_filter) {
+        x = precise::divide((float(sample.pixel % p.width) + 0.5f) +
+                                triangle_offset(uv.x, p.filter_x_radius),
+                            float(p.width));
+        y = precise::divide((float(sample.pixel / p.width) + 0.5f) +
+                                triangle_offset(uv.y, p.filter_y_radius),
+                            float(p.height));
+        d = fma(float3(y), unpack(p.up), fma(float3(x), unpack(p.right), unpack(p.forward)));
+    } else {
+        x = (float(sample.pixel % p.width) + uv.x) / float(p.width);
+        y = (float(sample.pixel / p.width) + uv.y) / float(p.height);
+        d = unpack(p.forward) + x * unpack(p.right) + y * unpack(p.up);
+    }
+    const auto lens = lens_point(p, sample);
+    // The raster coefficients transform a camera-space vector whose z is one.
+    // Divide by focal distance before normalization to avoid constructing a
+    // potentially enormous world-space focus point.
+    d -= precise::divide(lens.offset, float3(p.focal_distance));
+    return ray(lens.origin, rypath_texture_direction(d));
 }
 
 static ray triangle_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
@@ -206,6 +288,8 @@ static ray triangle_primary_ray(constant wire::Parameters &p, thread const wire:
 }
 
 static ray primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
+    if (p.lens_radius > 0)
+        return lens_primary_ray(p, sample);
     if (p.filter_kind == wire::triangle_filter) {
         return triangle_primary_ray(p, sample);
     }
@@ -243,6 +327,43 @@ static void texture_camera_rays(constant wire::Parameters &p, thread const wire:
     }
     dx = d + unpack(p.right) / float(p.width);
     dy = d + unpack(p.up) / float(p.height);
+    if (p.lens_radius > 0) {
+        const float3 shift = precise::divide(lens_offset(p, sample), float3(p.focal_distance));
+        dx -= shift;
+        dy -= shift;
+    }
+}
+
+kernel void rypath_lens_probe(constant wire::Parameters &p [[buffer(0)]],
+                              device rypath::lens_probe::Result *output [[buffer(1)]],
+                              const device sobol::Tables &tables [[buffer(12)]],
+                              uint lane [[thread_position_in_grid]]) {
+    if (lane >= p.lane_count)
+        return;
+    ulong index = 0;
+    wire::Sample sample = begin_sample(p, tables, lane, index);
+    const ray r = primary_ray(p, sample);
+    float3 dx, dy;
+    texture_camera_rays(p, sample, dx, dy);
+    dx = rypath_texture_direction(dx);
+    dy = rypath_texture_direction(dy);
+    const float3 offset = lens_offset(p, sample);
+    const float3 n(0.2f, -0.1f, 1.0f);
+    const float t = precise::divide(4.0f - dot(n, offset), dot(n, r.direction));
+    const float3 relative_p = offset + t * r.direction;
+    float3 dpdx(NAN), dpdy(NAN);
+    rypath_texture_primary_dp(primary_texture_point(p, sample, relative_p), n, r.direction, dx, dy,
+                              1.0f, dpdx, dpdy);
+    output[lane] = {{r.origin.x, r.origin.y, r.origin.z},
+                    {r.direction.x, r.direction.y, r.direction.z},
+                    {dx.x, dx.y, dx.z},
+                    {dy.x, dy.y, dy.z},
+                    {offset.x, offset.y, offset.z},
+                    {sample.lens_words[0], sample.lens_words[1]},
+                    {sample.random_words[0], sample.random_words[1], sample.random_words[2],
+                     sample.random_words[3]},
+                    {dpdx.x, dpdx.y, dpdx.z},
+                    {dpdy.x, dpdy.y, dpdy.z}};
 }
 
 static float demo_reflectance(const device wire::Material &material, constant wire::Parameters &p,
@@ -858,8 +979,9 @@ image_reflectance(const device wire::Instance &instance, uint primitive, uint ki
         texture_camera_rays(p, sample, rx, ry);
         if (!all(isfinite(rx)) || !all(isfinite(ry)))
             return NAN;
-        primary = rypath_texture_primary_dp(relative_p, point.geometric_normal, primary_direction,
-                                            rx, ry, tp.spp_scale, dpdx, dpdy);
+        const float3 lens_relative_p = primary_texture_point(p, sample, relative_p);
+        primary = rypath_texture_primary_dp(lens_relative_p, point.geometric_normal,
+                                            primary_direction, rx, ry, tp.spp_scale, dpdx, dpdy);
     }
     if (!primary) {
         rypath_texture_approximate_dp(relative_p, point.geometric_normal,
@@ -1009,8 +1131,9 @@ surface_texture_context(const device wire::Instance &instance, uint primitive, u
         texture_camera_rays(p, sample, rx, ry);
         if (!all(isfinite(rx)) || !all(isfinite(ry)))
             return false;
-        primary = rypath_texture_primary_dp(relative_p, point.geometric_normal, primary_direction,
-                                            rx, ry, tp.spp_scale, dpdx, dpdy);
+        const float3 lens_relative_p = primary_texture_point(p, sample, relative_p);
+        primary = rypath_texture_primary_dp(lens_relative_p, point.geometric_normal,
+                                            primary_direction, rx, ry, tp.spp_scale, dpdx, dpdy);
     }
     if (footprints && !primary) {
         rypath_texture_approximate_dp(relative_p, point.geometric_normal,
@@ -1924,8 +2047,12 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
     const rypath_image_light::Images light_images{image_textures, image_levels,  image_texels,
                                                   image_transfer, image_spectra, illuminant,
                                                   &texture_p};
-    if (p.model == wire::pbrt_model && !all(isfinite(primary_ray(p, sample).direction))) {
+    const ray camera_ray = primary_ray(p, sample);
+    if (p.model == wire::pbrt_model &&
+        (!all(isfinite(camera_ray.origin)) || !all(isfinite(camera_ray.direction)))) {
         sample.status = wire::invalid_arithmetic;
+        output[lane] = sample;
+        return;
     }
     // With no geometry a non-vacuum camera medium occupies all space. Its
     // endpoint is infinity; positive extinction never reaches the environment.
@@ -2104,8 +2231,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
     uint boundary_crossings = 0;
 
     while (true) {
-        if (!all(isfinite(incoming.direction)) || !isfinite(throughput) ||
-            !isfinite(sample.radiance)) {
+        if (!all(isfinite(incoming.origin)) || !all(isfinite(incoming.direction)) ||
+            !isfinite(throughput) || !isfinite(sample.radiance)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }

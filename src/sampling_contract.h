@@ -19,6 +19,11 @@ inline constexpr Word dielectric_lobe_dimension(Word bounce) {
     return dielectric_lobe_begin + bounce;
 }
 inline constexpr Word dielectric_lobe_block(Word bounce) { return 0x80000000u | bounce; }
+// Lens draws occupy the unused Sobol tail and a separate Philox counter block.
+// Neither extension advances or renumbers the existing transport dimensions.
+enum : Word { lens_x_dimension = 1022, lens_y_dimension = 1023, lens_block = 0xc0000000u };
+static_assert(dielectric_lobe_dimension(dielectric_max_depth - 1) < lens_x_dimension,
+              "Disjoint lens dimensions");
 // Material-local v1 streams reserve a separate Philox counter domain. The
 // pixel and absolute sample index remain in the other counter words; the
 // stable selected material ID is mixed into the key, never a host address.

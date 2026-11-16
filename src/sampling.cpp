@@ -79,17 +79,19 @@ std::string validate_sampler_range(const RenderSampler &sampler, std::uint64_t s
 
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-std::string sampler_description(const RenderSampler &sampler, bool dielectrics) {
+std::string sampler_description(const RenderSampler &sampler, bool dielectrics,
+                                bool perspective_lens) {
+    const std::string lens = perspective_lens ? "+lens-v1" : "";
     switch (sampler.kind) {
     case SamplerKind::independent:
-        return dielectrics ? "philox4x32-10-v1+dielectric-v1 (sequence differs from PBRT)"
-                           : "philox4x32-10-v1 (sequence differs from PBRT)";
+        return std::string(dielectrics ? "philox4x32-10-v1+dielectric-v1" : "philox4x32-10-v1") +
+               lens + " (sequence differs from PBRT)";
     case SamplerKind::sobol: {
         const auto mode = randomization_name(sampler.randomization);
         if (mode.empty()) {
             return "invalid Sobol randomization mode";
         }
-        return std::string(dielectrics ? "sobol-v1+dielectric-v1 / " : "sobol-v1 / ") +
+        return std::string(dielectrics ? "sobol-v1+dielectric-v1" : "sobol-v1") + lens + " / " +
                std::string(mode) + " (PBRT camera variates; rypath transport dimensions)";
     }
     }

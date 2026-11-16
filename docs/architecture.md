@@ -51,6 +51,15 @@ An owned filter record selects the original half-pixel box path or normalized
 triangle sampling. Triangle camera arithmetic has dimension-aware support checks
 in translation, progressive setup, and each native request. Samples beyond film
 bounds remain attached to their source pixel with unit weight.
+An optional perspective lens retains radius, focal distance and the captured
+camera-plane axes, including reflected rigid poses. Uniform disk samples add a
+normalized aperture integral with unit camera weight. Primary rays and texture
+differentials share the realized binary32 aperture displacement, so world-origin
+rounding cannot give them different focus planes. Dimension-aware validation
+bounds the full filter/aperture support, including world-space rounding, before
+translation completes and at progressive/direct-request boundaries. Zero radius
+retains the original pinhole arithmetic. See
+[depth-of-field validation](depth-of-field-validation.md).
 The render session owns uploaded variable-length spectral data. Film records
 its sensor model and exposure independently of raw XYZ; the demo retains its
 original relative response while PBRT uses calibrated finite-depth transport.
@@ -379,7 +388,13 @@ direction/interval matrices in an owned read-only Metal buffer. Sampler settings
 travel through the progressive driver and direct request boundary. Checked
 absolute sample indices, fixed dimension assignments, and finite depth bounds
 prevent table reuse or overflow. The demo and independent PBRT sampling retain
-their original Philox sequence. See [Sobol validation](pbrt-sobol-validation.md).
+their original Philox sequence. Active perspective lenses append `lens-v1`:
+Sobol dimensions 1022/1023 or a disjoint independent Philox counter block, without
+renumbering camera, wavelength, transport or dielectric draws. Inactive lenses
+consume no lens draws. Sampling contract 2, renderer contract 10 and identity
+schema 8 reject earlier checkpoints globally. See
+[Sobol validation](pbrt-sobol-validation.md) and
+[depth-of-field validation](depth-of-field-validation.md).
 
 Scoped PBRT area declarations bind independently of materials to directly placed
 triangle meshes. The translator owns deduplicated dense emission tables and

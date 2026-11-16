@@ -1,0 +1,26 @@
+{
+  "pinhole-zero": {
+    "bytes": 970,
+    "sha256": "22f3f0adc43ab84a25ce9a3707049ea1da9e1c40d6b31907e477165e90289946"
+  },
+  "focus-plane": {
+    "bytes": 972,
+    "sha256": "c076e878b91515da9968842945df7ac8e354a99ae8ec20eb929c27ec421b952a"
+  },
+  "defocus": {
+    "bytes": 972,
+    "sha256": "0d7609efc8558d7d17c815c8a104495d4625b3fb754735be1356f8b4a4babbf0"
+  },
+  "default-focus": {
+    "bytes": 946,
+    "sha256": "c27a71b727e619d3f7ddb821af865ca5c9597c5b2f2ec2e0df00556ead3eded8"
+  },
+  "texture-filtered": {
+    "bytes": 1031,
+    "sha256": "6c900375a34f46bc0acd09e1ce7dd7ec79f7bfdcbe49fbb99c2945527af0949e"
+  },
+  "cornell-focus": {
+    "bytes": 4365,
+    "sha256": "0a62b54b538e26aa30f70166d3e3cef1cde1a7d8d88c1c6f0b62f1e8edd303ea"
+  }
+}

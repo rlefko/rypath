@@ -110,6 +110,13 @@ wire::Parameters camera_parameters(const RenderScene &scene) {
     if (scene.model == RenderModel::pbrt) {
         const auto &camera = *scene.raster_camera;
         result.origin = pack(camera.origin);
+        if (scene.perspective_lens) {
+            const auto &lens = *scene.perspective_lens;
+            result.lens_radius = lens.radius;
+            result.focal_distance = lens.focal_distance;
+            result.lens_x = pack(lens.camera_x);
+            result.lens_y = pack(lens.camera_y);
+        }
         // Reuse the demo camera slots for the PBRT world-space raster basis.
         result.forward = pack(camera.corner);
         result.right = pack(camera.dx);
@@ -1177,6 +1184,21 @@ struct MetalRenderScene::Impl {
                 return result;
             }
         }
+        if (parameters.lens_radius != 0) {
+            const RasterCamera camera{unpack(parameters.origin), unpack(parameters.forward),
+                                      unpack(parameters.right), unpack(parameters.up)};
+            const PerspectiveLens lens{parameters.lens_radius, parameters.focal_distance,
+                                       unpack(parameters.lens_x), unpack(parameters.lens_y)};
+            const PixelFilter filter{parameters.filter_kind == wire::triangle_filter
+                                         ? PixelFilterKind::triangle
+                                         : PixelFilterKind::box,
+                                     parameters.filter_x_radius, parameters.filter_y_radius};
+            result.diagnostic =
+                validate_lens_support(camera, lens, filter, request.width, request.height);
+            if (!result.diagnostic.empty()) {
+                return result;
+            }
+        }
         const auto max_width = metal::group_width(device, pipeline);
         const auto group_width =
             request.threadgroup_width == 0 ? max_width : request.threadgroup_width;
@@ -1298,7 +1320,9 @@ struct MetalRenderScene::Impl {
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];
-        if (p.instance_count == 0 && (p.medium_count != 0 || p.positional_count != 0))
+        // The sky pipeline may retain this argument even when runtime medium
+        // and light counts are zero. upload_auxiliary_data supplies a sentinel.
+        if (p.instance_count == 0)
             [encoder setBuffer:material_data offset:0 atIndex:30];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];

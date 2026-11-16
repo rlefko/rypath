@@ -114,7 +114,10 @@ clarifies the work; completion is recorded in [status](status.md).
     see [goniometric validation](goniometric-light-validation.md). Projection lights
     add native RGB perspective images, affine scale/shear and light-space power
     normalization; see [projection validation](projection-light-validation.md).
-    Wider color spaces, additional
+    Perspective depth of field adds normalized uniform-disk thin-lens sampling,
+    shared-aperture primary texture differentials and complete camera-support
+    bounds; see [depth-of-field validation](depth-of-field-validation.md).
+    Wider color spaces, additional camera models and
     filters/samplers and faithfully rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented

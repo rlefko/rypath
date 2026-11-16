@@ -32,6 +32,18 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 return result;
             }
         }
+        if (scene.perspective_lens) {
+            if (!scene.raster_camera || scene.model != RenderModel::pbrt) {
+                result.diagnostic = "Perspective lens requires a PBRT raster camera";
+                return result;
+            }
+            result.diagnostic =
+                validate_lens_support(*scene.raster_camera, *scene.perspective_lens, scene.filter,
+                                      settings.width, settings.height);
+            if (!result.diagnostic.empty()) {
+                return result;
+            }
+        }
         if (!((scene.model == RenderModel::demo && scene.exposure == 1) ||
               (scene.model == RenderModel::pbrt && std::isfinite(scene.exposure) &&
                scene.exposure >= 0))) {

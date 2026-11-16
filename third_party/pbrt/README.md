@@ -32,6 +32,23 @@ The adaptations retain PBRT's copyright and [Apache-2.0 license](LICENSE.txt).
 The [image texture validation record](../../docs/image-texture-validation.md)
 describes the numerical contract.
 
+## Perspective thin-lens adaptation
+
+`shaders/render.metal` adapts the perspective thin-lens ray construction and
+shared-aperture ray differentials from pinned
+[cameras.cpp](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/cameras.cpp).
+Its uniform concentric disk mapping follows
+[util/sampling.h](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/util/sampling.h)
+at the same revision, under the upstream copyright and [Apache-2.0 terms](LICENSE.txt).
+The normalized aperture retains unit camera weight. The `lens-v1` sampling
+extension reserves Sobol dimensions 1022/1023 and an independent Philox counter
+block without changing existing draws; that assignment is rypath's adaptation.
+Stable scaled ray construction, reuse of the realized binary32 world-space
+aperture displacement for rays and derivatives, and full-support numerical bounds
+are also rypath adaptations. See
+[depth-of-field validation](../../docs/depth-of-field-validation.md) for limits
+and evidence; these adaptations do not establish realistic-lens support.
+
 ## Core texture and surface adaptations
 
 `shaders/texture_graph.h` adapts typed texture evaluation, mappings, checkerboard,
