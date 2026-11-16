@@ -1,0 +1,50 @@
+{
+  "loop-level0": {
+    "bytes": 623,
+    "sha256": "ec956822369c5130b783c22b08fadd812d07b1d62298f1b5278b8c7c1fa34a68"
+  },
+  "loop-level3": {
+    "bytes": 623,
+    "sha256": "bf0f07cb097f3b8f42a09db3d56cc689bc2c9b8e0b0ed77b9a187550d557827a"
+  },
+  "loop-boundary": {
+    "bytes": 662,
+    "sha256": "01aeacc01a250f48ccf1cb474d7b00e045ae1712808157c7bb502b50a82e5456"
+  },
+  "loop-powered": {
+    "bytes": 675,
+    "sha256": "8f3efa3a1c7060f5c35819adb7db6aa796d0269c3f825cd888caf7419fb815f5"
+  },
+  "quad-textured": {
+    "bytes": 758,
+    "sha256": "1eed36b76eb0e45d9a26dc7f72469bd045c56ed710da8f285e43f04e2d2f41e8"
+  },
+  "quad-alpha": {
+    "bytes": 778,
+    "sha256": "819a034284174205b1bf232471ab100c98c8c2da3aa4790d91960dd6cc7986e1"
+  },
+  "quad-affine": {
+    "bytes": 688,
+    "sha256": "610fc07da31ee0773bd37a0551f6461127f8c861cc5a6580843598663f45b76f"
+  },
+  "quad-powered": {
+    "bytes": 664,
+    "sha256": "b68f1bf067bb987645dfcd0f8783b8b7e2c195ab568f17dbff84e7b3c66c4bfb"
+  },
+  "quad-volume": {
+    "bytes": 835,
+    "sha256": "9fecf70cc615d43bec4e87cd31cf5220c8a544480ca92fe4866e83ad41154cac"
+  },
+  "bathroom-6040": {
+    "bytes": 623,
+    "sha256": "b4a04d9fc1a647aea4f9b95eed6935d000517136e9c28cc4547d1658b3c0c2f7"
+  },
+  "bathroom-6995": {
+    "bytes": 624,
+    "sha256": "66fc67ad50c6988238e1cd23103204c5da2c2d2a0eea9c45c5ba499931d58869"
+  },
+  "quad-image-powered": {
+    "bytes": 687,
+    "sha256": "fca4d8ea777beb60416431b3a22f0922a981bb7b15b2422d8f5ccdc223ac9f9a"
+  }
+}

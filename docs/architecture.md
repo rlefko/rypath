@@ -42,6 +42,15 @@ pyramids, and native-resolution views. Incomplete analysis returns diagnostics
 and a partial inventory, without a complete scene handle.
 No spectral reconstruction, light normalization, or renderer defaults are applied.
 
+Inline bilinear meshes reuse the PLY quad representation without its cyclic-index
+conversion. Loop subdivision is portable checked preprocessing: an indexed
+manifold topology applies pinned refinement and limit stencils in object space,
+producing shared triangles and unnormalized limit normals. Independent scalar,
+scratch and cumulative-work limits bound expansion before allocation. Both
+declarations reuse existing graphics-state registration and render translation;
+no new GPU primitive or sampling contract is introduced. See
+[mesh validation](mesh-shape-validation.md).
+
 A separate portable translator consumes a complete checked scene and shared
 effective-parameter selections. It owns narrowed camera, material curves,
 environment/area-emission samples, and per-instance bindings, with source-located diagnostics

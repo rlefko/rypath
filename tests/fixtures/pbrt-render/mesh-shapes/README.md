@@ -1,0 +1,7 @@
+# Mesh shape comparison fixtures
+
+Original GPL-3.0-only wrappers isolate Loop limit-surface refinement and inline bilinear patches. The two byte-for-byte extracted Shape blocks are from Mareck’s Contemporary Bathroom, pinned in provenance.json, licensed CC0/public domain by the upstream root README retained in assets/UPSTREAM-README.md. Source and extract byte counts and SHA-256 hashes, source line numbers, control-face counts, refinement counts, and bounds are retained. These selected-asset wrappers replace camera, transforms, materials, lighting and render settings; they are not unmodified upstream entry points or evidence of complete bathroom compatibility.
+
+The declared comparison protocol is 8×8, 4096 samples per pixel, sixteen independent seed randomizations per backend (rypath 0–15, PBRT16–31), independent and fast-Owen Sobol, world coordinates with one PBRT worker thread, and five combined standard errors plus 2e-5 times max(1, abs(reference)). Seed region means are replicates. Powered Loop emission is normalized per generated triangle, not over the complete mesh. No denoising or display transform enters the comparison. Run scripts/compare_mesh_shapes.py; --pbrt-only checks inputs without claiming backend agreement.
+
+The owned GPL-3.0-only assets/asymmetric.hdr is copied byte-for-byte from the area-power suite; its origin, byte count and SHA-256 are recorded in provenance.json. The separate quad-image-powered case retains the constant-power case and tests UV-dependent emission with per-patch positive-power normalization.

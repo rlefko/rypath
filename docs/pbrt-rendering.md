@@ -45,7 +45,7 @@ diagnosed even when not placed in the image.
 | Filter | Positive normal binary32 box radii defaulting independently to 0.5 or triangle radii defaulting independently to 2 |
 | Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
 | Integrator | Explicit path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol (0–113 when any translated material is dielectric), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
-| Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive for path; volpath permits empty geometry |
+| Geometry | Checked inline triangles/bilinear meshes, Loop subdivision triangles, and PLY triangles/bilinear quads with supported vertex attributes and single-level instances, including affine geometry transforms; at least one placed primitive for path; volpath permits empty geometry |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
 | Dielectrics | Smooth and anisotropic single-scattering GGX reflection/transmission, scalar or spectral eta, textured roughness and mapped frames; see [dielectric profile](#spectral-ggx-dielectrics) |
@@ -637,6 +637,32 @@ pinned behavior, numerical adaptations, and measured evidence. APNG, PFM, BMP, T
 spaces and Ptex remain outside the image-input boundary. EXR/RGBE support and
 linear EXR output are defined separately in the [HDR record](hdr-image-validation.md);
 checkpointing and UI changes remain deferred.
+
+## Subdivision and inline bilinear geometry
+
+`Shape "loopsubdiv"` refines its authored triangle control mesh and projects the
+result to PBRT's limit surface, including at level zero. It supplies raw limit
+normals and the existing triangle default UV convention. Material and scalar
+texture evaluation, alpha, medium interfaces and direct area emission use the
+same paths as explicit triangles. Normals preserve relative magnitudes and signs;
+transform/orientation validation applies after subdivision. This is PBRT's finite
+triangle representation of the limit surface, not exact smooth-surface tracing.
+
+`Shape "bilinearmesh"` retains exact tensor-product patches, including curved
+patches, with optional vertex normals and UVs. It shares the PLY quad intersection,
+texture footprint, derivative certification, alpha and light-PDF contracts below.
+Its indices are already tensor ordered and do not undergo PLY's cyclic conversion.
+Both families retain existing static-instance and emitting-object restrictions.
+
+Positive area power normalizes every generated triangle or patch independently.
+Increasing Loop levels increases the number of emitters and thus aggregate
+authored power; it does not keep total mesh power fixed. Constant and image
+emission share the existing power preparation after placement transforms.
+Schema/topology limits and deferred controls are in the
+[structural profile](pbrt-profile.md#subdivision-and-inline-bilinear-meshes);
+selected upstream geometry and numerical evidence are in the
+[validation record](mesh-shape-validation.md). No new sampler dimensions or
+checkpoint schema are introduced: identity includes the complete lowered mesh.
 
 ## External PLY geometry
 

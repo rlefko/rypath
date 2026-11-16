@@ -38,7 +38,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | File spectra on diffuse/conductor/dielectric materials, homogeneous media, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
-| Inline trianglemesh, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry | Not submitted to Metal |
+| Inline trianglemesh/bilinearmesh, Loop subdivision, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry; bounded manifold Loop refinement | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
 | Other external meshes, image formats and textures outside the core profile, other file-spectrum consumers | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
@@ -104,12 +104,38 @@ from realistic lens systems are in the [render profile](pbrt-rendering.md) and
 | Projection light | Required RGB/RGBA `filename`, nonnegative `scale`, finite `power`, and `fov` strictly between 0 and 180 degrees |
 | Diffuse area light | `L`, `scale`, `twosided`, `power`, PNG/JPEG/EXR/HDR `filename` mutually exclusive with `L` |
 | Triangle mesh | `P`, `indices`, per-vertex `N`, `S`, and `uv`, scalar/texture `alpha`; exactly three vertices may omit indices |
+| Bilinear mesh | `P`, four-wide `indices`, per-vertex `N` and `uv`, scalar/texture `alpha`; exactly four vertices may omit indices |
+| Loop subdivision | Required `P` and triangle `indices`; integer `levels` (default 3), inert string `scheme`, scalar/texture `alpha` |
 
 Triangle normals, tangents, and UVs are narrowed into owned indexed arrays. Face
 indices remain unsupported. Triangle `vector3 S`, alpha, material bump/normal maps,
 and infinite-light images follow the core rendering profile. Portals remain explicit
 unsupported features. RGB reflectance is checked against PBRT's [0,1] rule;
 sampled spectral values remain authored, without the demo's reflectance limits.
+
+### Subdivision and inline bilinear meshes
+
+Inline bilinear indices use tensor order `(p00,p10,p01,p11)` directly, unlike
+cyclic PLY quad indices. Missing UVs use the geometric patch parameters. Malformed
+indices/attributes and singular patches fail rather than dropping input data.
+Nonempty `emissionfilename` remains an inventoried but unsupported sampling-image
+input; an empty string is inert. Face indices remain unsupported. `S` and true
+shape displacement/edge-length settings are not inline bilinear parameters.
+
+Loop subdivision matches pinned PBRT's refinement, final limit projection and
+raw limit normals. Nonpositive `levels` performs zero refinements but still
+projects and generates normals. Every string `scheme` is inert, as upstream;
+`nlevels` is not an alias. Loop does not accept authored normals, UVs, tangents or
+displacement. Generated object-space triangles retain shared vertices; existing
+shape registration applies transforms, orientation, materials, alpha and media.
+
+The supported control topology is consistently wound manifold triangles with
+optional boundaries and disconnected components. Repeated indices, duplicate or
+degenerate faces, nonmanifold edges, disconnected vertex fans and unused vertices
+produce source-located errors. No welding, face removal or orientation repair is
+performed. Generated nonfinite geometry or collapsed triangles also fail. The
+[validation record](mesh-shape-validation.md) separates adaptation, numerical
+domain and measured evidence.
 
 ## Homogeneous medium structure
 
@@ -393,10 +419,14 @@ The diagnostic limit also marks analysis incomplete.
 | JPEG scans / cumulative DCT blocks | 256 / 2²² |
 | Texture graph depth / worst-case visits | 64 / 4,096 |
 | PLY refinement depth / texture evaluation work | 64 / 2²⁴ |
+| Loop control and converter scratch per shape | 256 MiB |
+| Loop topology/refinement/stencil work per scene | 2²⁶ visits, including conservative sort charges |
 
 Tests inject smaller limits to exercise every boundary cheaply. Translation also
 bounds repeated effective-parameter checks and expanded geometry against the
-total-value budget. External assets are deduplicated by kind and resolved path,
+total-value budget. Loop output charges six scalar values per vertex (position
+and normal) plus three per face; growth is checked before allocation and workspace
+and work have independent bounds. External assets are deduplicated by kind and resolved path,
 preserving the first source location; repeated Include edges remain separate.
 Cumulative resolved external-path bytes are bounded by the 64 MiB expansion
 budget. Interpretation stops when the diagnostic budget is exhausted. These

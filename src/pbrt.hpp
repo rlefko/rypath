@@ -61,6 +61,8 @@ struct Limits {
     ImageLimits image{};
     std::size_t bsdf_file_bytes = 128 * 1024 * 1024;
     std::size_t bsdf_working_bytes = 512 * 1024 * 1024;
+    std::size_t subdivision_scratch_bytes = 256 * 1024 * 1024;
+    std::size_t subdivision_work = 64 * 1024 * 1024;
 };
 enum class ValueKind { number, integer, boolean, string };
 struct Value {

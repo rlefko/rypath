@@ -35,3 +35,6 @@ tests/fixtures/stl/external/** -text whitespace=-blank-at-eof,-blank-at-eol
 third_party/cgltf/** -text whitespace=-blank-at-eol,-blank-at-eof
 third_party/mikktspace/** -text whitespace=-blank-at-eol,-blank-at-eof
 tests/fixtures/gltf/external/** -text whitespace=-blank-at-eol,-blank-at-eof
+
+# Preserve pinned upstream Loop excerpts and their attribution byte for byte.
+tests/fixtures/pbrt-render/mesh-shapes/assets/** -text whitespace=-blank-at-eol,-blank-at-eof

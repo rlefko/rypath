@@ -105,7 +105,7 @@ target_include_directories(rypath_bsdf_tables PUBLIC "${CMAKE_CURRENT_SOURCE_DIR
 rypath_configure_host_target(rypath_bsdf_tables)
 
 add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp
-    src/spectrum_file.cpp)
+    src/spectrum_file.cpp src/loop_subdivision.cpp)
 target_include_directories(rypath_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_pbrt PRIVATE rypath_geometry PUBLIC rypath_image rypath_pbrt_spectra rypath_bsdf_tables)
 rypath_configure_host_target(rypath_pbrt)

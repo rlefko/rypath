@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "bsdf_table.hpp"
+#include "loop_subdivision.hpp"
 #include "pbrt.hpp"
 #include "pbrt_numeric.hpp"
 #include "pbrt_spectra.hpp"
@@ -424,6 +425,24 @@ constexpr std::array mesh_fields{
     alpha_field,
 };
 
+constexpr std::array bilinear_fields{
+    Field{"P", "point3", 3, true, true},
+    Field{"indices", "integer", 4, true},
+    Field{"N", "normal", 3, true},
+    Field{"uv", "point2", 2, true},
+    Field{"faceIndices", "integer", 1, true, false, true},
+    Field{"emissionfilename", "string"},
+    alpha_field,
+};
+
+constexpr std::array loop_fields{
+    Field{"P", "point3", 3, true, true},
+    Field{"indices", "integer", 3, true, true},
+    Field{"levels", "integer"},
+    Field{"scheme", "string"},
+    alpha_field,
+};
+
 constexpr std::array ply_fields{
     Field{"filename", "string", 1, false, true},
     alpha_field,
@@ -582,6 +601,7 @@ class Interpreter {
     bool budget_exceeded_ = false;
     std::size_t attribute_order_ = 0;
     std::size_t mesh_values_ = 0;
+    std::size_t subdivision_work_ = 0;
     std::size_t validation_values_ = 0;
     bool validation_exhausted_ = false;
     std::size_t scope_overflow_ = 0;
@@ -623,6 +643,7 @@ class Interpreter {
     std::shared_ptr<const CheckedSpectrumSource> spectrum_file(const Value &filename);
     void shape(const Directive &directive);
     void ply_shape(const Directive &directive, Descriptor descriptor);
+    void loop_shape(const Directive &directive, Descriptor descriptor);
     void register_mesh(const Location &location, Descriptor descriptor, GeometryMesh mesh);
     bool charge_mesh(std::size_t count, const Location &location);
     void medium(const Directive &directive);
@@ -1721,11 +1742,9 @@ void Interpreter::shape(const Directive &directive) {
         unsupported(directive.location,
                     "Diffuse area lights on shapes inside object definitions are unsupported");
     }
-    if (!one_of(type, {"trianglemesh", "plymesh"})) {
+    if (!one_of(type, {"trianglemesh", "plymesh", "bilinearmesh", "loopsubdiv"})) {
         dependencies(directive, "shape", type);
-        deferred_type(
-            directive, type,
-            one_of(type, {"sphere", "cylinder", "disk", "bilinearmesh", "curve", "loopsubdiv"}));
+        deferred_type(directive, type, one_of(type, {"sphere", "cylinder", "disk", "curve"}));
         return;
     }
     ++result_.inventory.meshes;
@@ -1734,21 +1753,38 @@ void Interpreter::shape(const Directive &directive) {
         ply_shape(directive, std::move(descriptor));
         return;
     }
-    const auto fields = validate(descriptor, directive, "shape", mesh_fields);
+    if (type == "loopsubdiv") {
+        loop_shape(directive, std::move(descriptor));
+        return;
+    }
+    const bool bilinear = type == "bilinearmesh";
+    const auto fields = validate(descriptor, directive, "shape",
+                                 bilinear ? std::span<const Field>(bilinear_fields)
+                                          : std::span<const Field>(mesh_fields));
     shape_controls(descriptor);
+    if (bilinear) {
+        dependencies(directive, "shape", type);
+        if (const auto found = fields.find("emissionfilename");
+            found != fields.end() && !found->second->values.front().text.empty()) {
+            unsupported(found->second->location,
+                        "Bilinear emission sampling images are outside the rendering profile");
+        }
+    }
     if (!fields.contains("P")) {
         return;
     }
     const auto &positions = *fields.at("P");
     const auto vertex_count = positions.values.size() / 3;
     const auto *indices = fields.contains("indices") ? fields.at("indices") : nullptr;
-    if (!indices && vertex_count != 3) {
+    const std::size_t corners = bilinear ? 4 : 3;
+    if (!indices && vertex_count != corners) {
         error("missing-parameter", directive.location,
-              "Triangle meshes with more or fewer than three vertices require indices");
+              bilinear ? "Bilinear meshes with more or fewer than four vertices require indices"
+                       : "Triangle meshes with more or fewer than three vertices require indices");
         return;
     }
-    const std::size_t index_count = indices ? indices->values.size() : 3;
-    const std::size_t triangle_count = index_count / 3;
+    const std::size_t index_count = indices ? indices->values.size() : corners;
+    const std::size_t primitive_count = index_count / corners;
     const auto check_count = [&](string_view name, std::size_t expected) -> const Parameter * {
         const auto found = fields.find(name);
         if (found == fields.end()) {
@@ -1764,7 +1800,7 @@ void Interpreter::shape(const Directive &directive) {
     const auto *normals = check_count("N", vertex_count * 3);
     const auto *tangents = check_count("S", vertex_count * 3);
     const auto *uvs = check_count("uv", vertex_count * 2);
-    check_count("faceIndices", triangle_count);
+    check_count("faceIndices", primitive_count);
     if ((!normals && fields.contains("N")) || (!uvs && fields.contains("uv"))) {
         return;
     }
@@ -1815,10 +1851,30 @@ void Interpreter::shape(const Directive &directive) {
             mesh.uvs.push_back(uv);
         }
     }
-    mesh.triangles.reserve(triangle_count);
-    if (!indices) {
+    if (bilinear) {
+        mesh.patches.reserve(primitive_count);
+        if (!indices) {
+            mesh.patches.push_back({0, 1, 2, 3});
+        } else {
+            for (std::size_t i = 0; i < index_count; i += 4) {
+                std::array<std::uint32_t, 4> patch{};
+                for (std::size_t corner = 0; corner < patch.size(); ++corner) {
+                    const auto &value = indices->values[i + corner];
+                    if (value.integer < 0 ||
+                        static_cast<std::size_t>(value.integer) >= vertex_count) {
+                        error("invalid-geometry", value.location,
+                              "Bilinear index is out of bounds");
+                        return;
+                    }
+                    patch[corner] = static_cast<std::uint32_t>(value.integer);
+                }
+                mesh.patches.push_back(patch);
+            }
+        }
+    } else if (!indices) {
         mesh.triangles.push_back({0, 1, 2});
     } else {
+        mesh.triangles.reserve(primitive_count);
         for (std::size_t i = 0; i < index_count; i += 3) {
             std::array<std::uint32_t, 3> triangle{};
             for (std::size_t corner = 0; corner < triangle.size(); ++corner) {
@@ -1841,6 +1897,72 @@ void Interpreter::shape(const Directive &directive) {
         return;
     }
     register_mesh(directive.location, std::move(descriptor), std::move(checked.meshes.front()));
+}
+
+void Interpreter::loop_shape(const Directive &directive, Descriptor descriptor) {
+    const auto fields = validate(descriptor, directive, "shape", loop_fields);
+    shape_controls(descriptor);
+    if (!fields.contains("P") || !fields.contains("indices")) {
+        return;
+    }
+    const auto &positions = *fields.at("P");
+    const auto &indices = *fields.at("indices");
+    const std::size_t control_vertices = positions.values.size() / 3;
+    const std::size_t control_faces = indices.values.size() / 3;
+    const std::size_t scratch = limits_.subdivision_scratch_bytes;
+    if (control_vertices > scratch / sizeof(GeometryPoint) ||
+        control_faces > (scratch - control_vertices * sizeof(GeometryPoint)) /
+                            sizeof(std::array<std::uint32_t, 3>)) {
+        error("limit-exceeded", directive.location,
+              "Loop control geometry exceeds the subdivision scratch budget");
+        return;
+    }
+    const std::size_t control_bytes = control_vertices * sizeof(GeometryPoint) +
+                                      control_faces * sizeof(std::array<std::uint32_t, 3>);
+    GeometryMesh control;
+    control.positions.reserve(control_vertices);
+    for (std::size_t i = 0; i < positions.values.size(); i += 3) {
+        GeometryPoint point;
+        float *components[] = {&point.x, &point.y, &point.z};
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const auto &value = positions.values[i + axis];
+            if (!representable_float(value.number)) {
+                error("invalid-geometry", value.location,
+                      "Loop vertex coordinate overflows binary32");
+                return;
+            }
+            *components[axis] = static_cast<float>(value.number);
+        }
+        control.positions.push_back(point);
+    }
+    control.triangles.reserve(control_faces);
+    for (std::size_t i = 0; i < indices.values.size(); i += 3) {
+        std::array<std::uint32_t, 3> triangle{};
+        for (std::size_t corner = 0; corner < 3; ++corner) {
+            const auto &value = indices.values[i + corner];
+            if (value.integer < 0 ||
+                static_cast<std::size_t>(value.integer) >= control.positions.size()) {
+                error("invalid-geometry", value.location, "Loop triangle index is out of bounds");
+                return;
+            }
+            triangle[corner] = static_cast<std::uint32_t>(value.integer);
+        }
+        control.triangles.push_back(triangle);
+    }
+    const auto *levels = fields.contains("levels") ? fields.at("levels") : nullptr;
+    auto generated = subdivide_loop(control, levels ? levels->values.front().integer : 3,
+                                    {limits_.total_values - mesh_values_, scratch - control_bytes,
+                                     limits_.subdivision_work - subdivision_work_});
+    subdivision_work_ += generated.work;
+    if (!generated.mesh) {
+        error(generated.limit_exceeded ? "limit-exceeded" : "invalid-geometry",
+              generated.limit_exceeded && levels ? levels->location : directive.location,
+              std::move(generated.diagnostic));
+        return;
+    }
+    if (charge_mesh(generated.scalar_values, directive.location)) {
+        register_mesh(directive.location, std::move(descriptor), std::move(*generated.mesh));
+    }
 }
 
 void Interpreter::ply_shape(const Directive &directive, Descriptor descriptor) {
