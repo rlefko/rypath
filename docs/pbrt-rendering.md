@@ -52,6 +52,7 @@ diagnosed even when not placed in the image.
 | Extended surfaces | Thin dielectric, diffuse transmission, nested mixes, finite-depth coated diffuse/conductor, measured tensor and legacy Fourier tables; see [surface materials](#extended-surface-materials) |
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
+| Point lighting | Up to 64 isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Homogeneous media | Named absorption/scattering/emission spectra, all 47 pinned measured presets, scoped interfaces and null boundaries; see [homogeneous media](#homogeneous-media) |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
@@ -105,6 +106,45 @@ material payload. Float constants accept signed values that narrow to finite
 binary32. Composite graphs retain signed spectral operands until the final
 material reflectance clamp. See the historical [constant texture validation
 record](pbrt-texture-validation.md) and current core profile below.
+
+## Point lights
+
+`LightSource "point"` accepts `I` in the existing RGB, blackbody, numeric,
+built-in and checked-file emission profiles. Omitted `I` uses the declaration's
+color-space illuminant (currently sRGB D65). `scale` defaults to one. Intensity
+uses the same pinned photometric preparation as other spectral lights, including
+RGB base-illuminant normalization. Positive `power` additionally multiplies by
+`power / (4 * pi)`; finite nonpositive power retains intensity mode.
+
+The declaration transform acts on `point3 from`, which defaults to the origin.
+Scaling or shearing the transform moves that position without changing isotropic
+intensity. Light parameters inherit from `Attribute "light"`; definitions inside
+objects remain global rather than instanced. Nonempty endpoint medium names
+must resolve, but direct-light connections use the receiver's medium and crossed
+boundaries. A light's endpoint medium alone does not require `volpath`.
+
+At each eligible scattering vertex, rypath sums all point sources with
+`I(lambda) / distance_squared`, BSDF times receiver cosine or HG phase, and
+visibility/transmittance. Delta-position contributions have unit MIS weight;
+they do not change environment/area probabilities or consume new sampler
+dimensions. Delta-only surfaces have no point next-event estimate. Point lights
+have no visible geometry and add no camera-hit or escaped-ray emission.
+
+Finite shadow rays offset the receiver but end at the point's position, without
+an emitter-normal offset. Alpha, null boundaries and homogeneous attenuation
+follow existing visibility rules; ordinary glass remains a shadow occluder.
+Geometry-free homogeneous media use the same point estimator with analytic
+Beer–Lambert connections in the sky kernel.
+
+The declared profile permits at most 64 points, including zero-intensity records;
+excess inputs are resource errors. Active connections require finite squared
+distance at least `FLT_MIN`, representable arithmetic and positive shadow progress.
+Coincident active sources and extreme-scale failures reject the pending batch;
+there is no distance epsilon, intensity clamp or partial sample acceptance.
+Zero intensity at the sampled wavelength skips connection arithmetic. The
+all-point strategy can require 64 shadow queries per vertex and is not a claim
+of efficient many-light sampling. Spot, distant, projection and goniometric lights
+remain unsupported. See [point-light validation](point-light-validation.md).
 
 ## Blackbody reflectance
 

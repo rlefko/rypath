@@ -100,14 +100,16 @@ clarifies the work; completion is recorded in [status](status.md).
     absorption-coupled emission under explicit `volpath`, HG phase sampling,
     scoped interfaces, null boundaries and all 47 measured presets. Independent
     analytic/Metal/PBRT validation; heterogeneous media remain separate.
-32. **Broader PBRT rendering:** wider color spaces, additional
-    spectra, texture filters and formats, filters/samplers, and faithfully rendered
-    pinned upstream entry points.
+32. **Broader PBRT rendering:** spectral point lighting adds a bounded all-point
+    estimator for surfaces and homogeneous media, including geometry-free volumes.
+    See [point-light validation](point-light-validation.md). Spectral spot lights
+    are the next bounded lighting extension; wider color spaces, additional
+    filters/samplers and faithfully rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented
-    material approximations and portable PBRT bundles. The STL change adds bounded
+    material approximations and portable PBRT bundles. STL (merged in PR #35) adds bounded
     ASCII/binary triangles, explicit vendor-color interpretation and Materialise
-    coverage. The static glTF/GLB change adds selected-scene triangles and explicit
+    coverage. Static glTF/GLB (merged in PR #36) adds selected-scene triangles and explicit
     metallic-roughness/texture/alpha rendering extensions; see the [glTF profile](gltf-import.md).
     Broader mesh profiles, glTF animation/extensions and further PLY variants remain.
     See [STL validation](stl-validation.md).

@@ -178,6 +178,23 @@ The bounded static C11 OpenEXRCore subset owns codec work through scoped allocat
 callbacks and adds no installed-SDK product dependency. Metadata identifies the
 render settings and overrides, without defining checkpoint identity.
 
+## Spectral point illumination
+
+Checked point descriptors retain intensity parameters, declaration transforms,
+and endpoint-medium names. Translation shares spectral emission preparation with
+other lights and owns a bounded list of world positions and dense intensities.
+The Metal session packs these records into its existing auxiliary-data arena,
+with explicit offset/count bounds and host/shader layout assertions.
+
+Surface and medium vertices sum all point lights using inverse-square intensity
+and unit delta-position MIS weights. Finite shadow connections reuse alpha,
+null-boundary and homogeneous-transmittance traversal. The geometry-free sky
+kernel uses analytic homogeneous connections. Scene specialization removes point
+work when absent, preserving existing sampler streams and continuous-light PDFs.
+Canonical identity covers positions and intensities; renderer/identity contracts
+advance together. See the [point-light profile](pbrt-rendering.md#point-lights)
+and [validation](point-light-validation.md).
+
 ## Homogeneous volume state and transport
 
 The checked PBRT scene owns homogeneous medium descriptors, including inherited
