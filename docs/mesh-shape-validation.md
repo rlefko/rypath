@@ -76,5 +76,70 @@ box-filter cases, plus the demo checkpoint payload. These must remain byte-exact
 
 Supported Debug, Release and ASan/UBSan presets, portable compilation, Python
 tools, formatting/static analysis and strict Metal API validation are required.
-Measurements and exact revision/toolchain identities will be recorded below
-after validation; the protocol itself is not a passing test result.
+
+## Measured evidence
+
+Implementation and test revision: `ff81056`, 2026-11-16, based on `42c3079`.
+Hardware: Apple M4 Max; macOS 26.6 (25G5065a), Xcode 26.6 (17F113),
+CMake 4.0.3 and Ninja 1.13.2. Portable checks use Clang 18.1.8 with Metal
+disabled. Timings below are validation costs, not renderer benchmarks.
+
+The final geometry oracle passed **36/36 cases** with exact triangle indices.
+Maximum scaled component errors were `8.01e-9` for positions and `3.00e-8`
+for raw normals; maximum relative normal-length error was `1.944e-6`, and
+maximum normalized-direction chord error was `1.116e-6`. All remain below the
+predeclared thresholds. The clean-revision report, independent probe, inputs
+and per-process outputs are retained in
+`build/mesh-loop-oracle-final/loop-oracle-jhaa0e0j`.
+Three deliberate mutations (omitted limit projection, reversed normals and
+incorrect boundary weight) were each detected by the portable oracle tests;
+local records are in `.cache/mesh-shapes/mutations.json`.
+
+The clean-revision image comparison passed **24/24 cases and 360/360 RGB
+gates** in 79.92 s. The maximum absolute difference / threshold ratio was
+**0.605417** (powered quad, independent sampler, top-left red). All 768 raw
+PFMs, process records, seed measurements, fixture hashes and build provenance
+are retained in `build/mesh-shape-reference-final/mesh-shapes-e9um_q1y`.
+The original two-worker reference failure remains at
+`build/mesh-shape-reference/mesh-shapes-_4bwwkig/quad-volume-independent/pbrt/17.process.json`;
+the separate 32-input single-worker check is recorded in
+`build/mesh-volume-single-thread-reference/summary.json`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Release `rypath_pbrt_reference` | `fc45e18fadb09b7ebd2c1adc25f58e1bed05b819a14f004953dcd3544e248de4` |
+| Release `rypath_loop_subdivision_dump` | `746c28822febdff78f3f09a49ef603f9d010448b0b2ace0656ce261e9515d0ad` |
+| Release `rypath.metallib` | `9b902e19b4b5aeaaa3813dd65a80ced24a43e50881fd4a6b6b41c3308b734d4f` |
+| Pinned CPU PBRT | `4fd27e940f295fdb14f8407dbad7ef2e05dba9e9e2980c4a5cc3cad3da9b43b2` |
+
+All **69 legacy scene PFMs** and the demo raw checkpoint payload are byte-exact
+against the untouched `42c3079` build. The reports under
+`.cache/mesh-shapes/{baseline,candidate}/report.json` retain input and output
+hashes. The measured candidate renderer and shader hashes match the committed
+implementation's Release artifacts.
+
+The complete native Release and ASan/UBSan suites each passed **180/180**,
+with no skips, in 149.14 s and 89.64 s respectively (four CTest workers).
+Portable Clang 18 passed **137/137** in 11.91 s. Debug passed **178/178** in
+332.54 s with the two new integration targets excluded; both new integration
+tests also passed in focused runs.
+The required pre-push hook additionally configures, builds and runs the complete
+Debug suite. These logs are retained in `.cache/mesh-shapes/`.
+
+All **176 Python tests** passed, as did all-file pre-commit checks and
+Clang-tidy on the six changed project translation units. Apple static analysis
+of `metal_backend.mm` and `metal_geometry.mm` completed without diagnostics.
+Logs and the final static-analysis index are under `.cache/mesh-shapes/`.
+
+Strict Metal API validation (`MTL_DEBUG_LAYER=1`, four CTest workers) passed
+**45/45** tests without skips in 166.66 s, including the new mesh integration
+tests. The full verbose log is `.cache/mesh-shapes/metal-api-tests.log`.
+Metal shader validation was not enabled.
+
+Independent review of the committed diff found no remaining material defect or
+blocking acceptance gap. Combined unequal subdivision normals, nonuniform scale,
+reflection, reverse orientation and direct lighting are exercised in components,
+not in one upstream fixture. Existing normal transformation and shader paths
+remain unchanged. This evidence establishes the selected geometry profile;
+full upstream entry-point compatibility and broad convergence studies remain
+separate acceptance work.

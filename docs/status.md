@@ -23,7 +23,10 @@ Offline MVP completion and full pinned-corpus coverage remain unestablished.
 
 ## Validation
 
-The [mesh record](mesh-shape-validation.md) defines the fixed geometry/image
-protocol and records revision-specific evidence separately from earlier checks.
+At implementation revision `ff81056`, the [mesh record](mesh-shape-validation.md)
+records 36 passing geometry-oracle cases, 24 image cases / 360 statistical gates,
+69 byte-exact legacy scenes, complete Release and ASan/UBSan suites (180 each),
+portable Clang 18 tests (137), and strict M4 Max Metal API validation (45).
+It separates current evidence from earlier checks.
 Area-power, box-filter, lighting, media, material, importer, texture, HDR and
 checkpoint records retain historical evidence for their named revisions.
