@@ -124,7 +124,8 @@ clarifies the work; completion is recorded in [status](status.md).
     Loop subdivision and inline bilinear meshes extend the existing triangle/patch
     geometry profile; see [mesh validation](mesh-shape-validation.md). Native sphere,
     disk and open cylinder, four-wavelength vacuum BDPT, finite film clamping and
-    an explicit large-scene profile target the pinned Pavilion day/night scenes;
+    an explicit large-scene profile render the pinned Pavilion day/night scenes
+    at their authored resolution and sample counts;
     see [Pavilion validation](pavilion-validation.md). Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).

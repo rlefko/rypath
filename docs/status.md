@@ -5,7 +5,7 @@
 Sampling and PBRT defaults merged in
 [PR #49](https://github.com/rlefko/rypath/pull/49) at `46b20f4`.
 
-The current compatibility slice targets the pinned Barcelona Pavilion day and
+The current compatibility slice renders the pinned Barcelona Pavilion day and
 night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport,
 BDPT camera/light connections and splats, finite sensor-space film clamping,
 raw EXR export, and an explicit bounded large-scene profile. Checkpoint
@@ -20,6 +20,14 @@ additional camera/film models and broader material semantics remain on the
 remain unestablished.
 
 ## Validation
+
+The Pavilion implementation completes both unchanged 1600×850 entry points:
+day at 256 spp and night at 512 spp, with verified PNG, raw FLOAT EXR and
+checkpoints. Local Debug, Release and ASan/UBSan pass 204 tests each; Metal API
+validation passes all 58 native tests. The packet comparison passes 150 gates,
+and 89 legacy reference images plus demo accumulation remain exact. See the
+[Pavilion record](pavilion-validation.md) for artifact hashes, compiler checks,
+checkpoint provenance and the remaining coated-BDPT comparison limitation.
 
 Historical implementation `ba1982b` passed Debug, Release and ASan/UBSan checks (186 each),
 portable CTest (140), Python checks (186), all 270 pinned PBRT comparison gates,

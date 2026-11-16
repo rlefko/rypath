@@ -42,12 +42,13 @@ families. Scalar entry points and full-family scattering probes keep their
 existing dispatch behavior. Cold Metal pipeline creation remains a separate
 startup cost that must be included in end-to-end timing.
 
-The renderer translation unit uses Metal `-Os` while retaining `-fno-fast-math`.
+The renderer and all-family packet-scattering probe use Metal `-Os` while
+retaining `-fno-fast-math`.
 Apple recommends size optimization to limit code duplication from inlining and
 unrolling in complex shaders; see its
 [shader-library guidance](https://developer.apple.com/documentation/metal/minimizing-the-binary-size-of-a-shader-library).
 This is a compiler configuration change, with the same estimator and sampling
-expressions. It also affects scalar entry points in that translation unit, so
+expressions. It also affects scalar entry points in the renderer translation unit, so
 legacy output validation covers those paths.
 
 Packet transport is selected by BDPT or a finite `Film.maxcomponentvalue`.
@@ -208,15 +209,86 @@ multi-bounce diffuse transport, smooth/rough glass, four-interface delta paths,
 mirrors, both environment types, mixed delta lights, thin-lens Gaussian splats,
 and depth-zero finite clamping.
 
-The material-specialized candidate preserves all 89 legacy reference PFMs
-byte-for-byte against main `46b20f4`, and preserves the demo's raw sums,
-compensations and counts. Its record is
-`.cache/pavilion-validation/legacy-specialized/report.json`. The Python policy
-and comparison-helper suite passes 204 tests. All four new native material-family
-tests pass, including unbound mix children for thin dielectric, diffuse
-transmission, measured and Fourier materials. The Metal-disabled LLVM build
-passes all 148 tests. Final full-scene artifacts and build checks will be recorded
-after their runs finish.
+The final frame-corrected implementation passes all 204 Debug, Release and ASan/UBSan
+tests and all 58 native tests with Metal API validation. All four new native
+material-family tests pass, including unbound mix children for thin dielectric,
+diffuse transmission, measured and Fourier materials. The Metal-disabled LLVM
+Debug and Release builds each pass all 148 tests. The Python policy and
+comparison-helper suite passes 204 tests. Native build/API records are under
+`.cache/pavilion-validation/`; portable include-fix records are under
+`.cache/ci-portability/`.
+
+The frame-corrected candidate preserves all 89 legacy reference PFMs byte-for-byte
+against main `46b20f4`, plus the demo's raw sums, compensations and counts, with
+zero unused Film planes. Its record is
+`.cache/pavilion-validation/legacy-frame/report.json`.
+
+The corrected candidate also passes all 150 packet comparison gates across the
+ten cases. All 160 matching-input rypath PFMs remain byte-identical to the
+preceding size-optimized candidate. Records are retained in
+`.cache/packet-transport-frame/packet-transport-ocuedi64/` and
+`.cache/pavilion-validation/frame-validation-summary.json`; no seeds, models or
+tolerances changed.
+
+The subsequent probe-only `-Os` change preserves all 31 other complete linked
+shader modules exactly on this toolchain, including renderer/intersection
+helpers, constants, attributes and metadata. Comparing only the renderer's input
+AIR would be insufficient because the library has shared weak helper definitions.
+The complete linked-module hashes and comparison method are retained in
+`.cache/ci-portability/probe-os/linked-module-review.json`. This establishes
+compiler-input equality for these artifacts, not device-machine-code equality
+or a promise about other toolchains. The probe retains all 1,024 × 13 numerical
+checks and passes native execution and Metal API validation, including a focused
+ASan/UBSan run of the updated host probe. Hosted Xcode 16.4 / Metal 32023.620 on
+Apple Paravirtual initially failed pipeline creation with `CompilerError` code 2
+under the probe's default optimization. With probe `-Os`, all checks execute and
+pass (maximum error `3.09944e-6`, unchanged tolerance `2e-5`); the entire macOS
+job passes. The particular compiler pass responsible for the failure is unknown.
+
+The surface-frame regression covers 18 axis, skew, exact Pavilion and invalid
+inputs, checking an independent double-cross-product basis, orthonormality,
+handedness and local/world round trips. The previously failing authored samples
+also pass with the uninstrumented production library: day pixel 265846/sample 76
+and night pixel 691195/sample 74. Those replays preserve 1600×850 resolution,
+authored sample targets, Halton sampling and seed zero. Records are under
+`.cache/pavilion-frame-fix-validation/`.
+
+Both authored 1600×850 renders are complete, including PNG and
+unexposed/unclamped FLOAT EXR output:
+
+| Scene | Samples per pixel | Camera samples | Compatible checkpoint continuation |
+| --- | ---: | ---: | --- |
+| Day | 256 | 348,160,000 | Accepted [0,68); corrected implementation [68,256) |
+| Night | 512 | 696,320,000 | Accepted [0,72); corrected implementation [72,512) |
+
+An independent checkpoint decoder verifies checksums, every finite Film plane,
+uniform counts and contiguous provenance. PNG chunk checks and independent
+OpenEXR readbacks pass. All 159 source files still match their manifest SHA-256
+and Git blob hashes. The complete records are
+`.cache/pavilion-validation/full-day-evidence.json` and
+`full-night-evidence.json`, with commands, binary hashes and process statistics.
+The resumed segments take 818.956 and 2,576.074 seconds respectively, including
+setup and concurrent validation work. These are not uninterrupted-job benchmarks.
+
+The images use the frozen production renderer library SHA-256
+`2baa69c490215f8bb77a0d19872e39c5d6fbb4e1d2a8977be1cc1566a2eb3638`.
+The final probe-optimized library is
+`016f2848f47fc793fa4fae3289ffedf3186915e5600688461ba442854b4c019b`;
+the linked-module comparison above establishes unchanged production compiler
+inputs on the tested toolchain. Images and external assets remain outside Git.
+
+| Completed artifact | SHA-256 |
+| --- | --- |
+| Day PNG | `9a11a751947bf9a0f5d7eb30cccaaba9d4226a191a39e06a3857c986411e4e85` |
+| Day raw FLOAT EXR | `e369fbd416f77698cfb6bd9b8dc60e55022d5daa1ba7132452b0d4e3aeed39d3` |
+| Night PNG | `eb10e903ffb22668fab85c4f8cebf9116f5ce1ce25cbbafe77d667f8d9e785ee` |
+| Night raw FLOAT EXR | `6abbef5a937f7bebf975cc50c16b880a41843a2aaccb6f909e34e3c813249dac` |
+
+Visual inspection finds coherent camera framing, geometry, vegetation, glass,
+lighting and pool reflections, qualitatively consistent with the lower-resolution
+PBRT previews. Both images retain Monte Carlo noise, especially night. Completing
+the authored settings establishes execution and selected-scene coverage; it does
+not establish full-scene convergence or remove the coated-model boundary below.
 
 The material-specialized `-O2` replay also passes all 150 packet comparison gates,
 retained at `.cache/packet-transport-specialized/packet-transport-rw0sm0yc/`.
