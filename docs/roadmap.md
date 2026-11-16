@@ -108,8 +108,9 @@ clarifies the work; completion is recorded in [status](status.md).
     See [point-light validation](point-light-validation.md). Spectral spot lights
     extend the same surface/volume estimator with affine cones and cubic cosine
     falloff; see [spot validation](spot-light-validation.md). Spectral distant
-    lights are the next bounded lighting extension; wider color spaces, additional
-    filters/samplers and faithfully rendered upstream entry points remain.
+    lights add PBRT finite scene-bound visibility and delta-direction surface/volume
+    illumination; see [distant validation](distant-light-validation.md). Wider color
+    spaces, additional filters/samplers and faithfully rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented
     material approximations and portable PBRT bundles. STL (merged in PR #35) adds bounded
