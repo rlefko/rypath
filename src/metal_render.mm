@@ -1320,7 +1320,9 @@ struct MetalRenderScene::Impl {
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];
-        if (p.instance_count == 0 && (p.medium_count != 0 || p.positional_count != 0))
+        // The sky pipeline may retain this argument even when runtime medium
+        // and light counts are zero. upload_auxiliary_data supplies a sentinel.
+        if (p.instance_count == 0)
             [encoder setBuffer:material_data offset:0 atIndex:30];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
