@@ -132,7 +132,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "6bbd67b227d9ca9322228343959a00373dd434f7ee13cc31e897f6edf69852b7",
+                "f8192c0a33351d0967d0aa74a25d17118645aeb734b505ab83effd40dc1c8d52",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
@@ -140,8 +140,8 @@ void codec(const std::filesystem::path &dir) {
     require(write_checkpoint(checked(result), dir / "copy.bin").empty(), "checkpoint rewrite");
     require(original == read(dir / "copy.bin"), "byte exact serialization");
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
-    for (const auto [offset, version] :
-         std::array<std::pair<std::size_t, std::uint32_t>, 3>{{{12, 3}, {16, 3}, {16, 4}}}) {
+    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 5>{
+             {{12, 3}, {12, 4}, {16, 3}, {16, 4}, {16, 5}}}) {
         auto legacy = original;
         put(legacy, offset, version, 4);
         rehash(legacy);
