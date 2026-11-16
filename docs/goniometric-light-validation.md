@@ -77,3 +77,87 @@ python3 scripts/compare_goniometric_lights.py \
   --rypath build/release/rypath_pbrt_reference --output-dir build/goniometric-comparison
 python3 scripts/generate_goniometric_samples.py --output-dir build/goniometric-samples
 ```
+
+## Measured evidence
+
+Implementation `ef31a48` and execution repair `f2365a7` were validated on the
+40-core Apple M4 Max with macOS 26.6 (25G5065a), Xcode 26.6 (17F113) and
+CMake 4.0.3. Debug, Release and ASan/UBSan pass 172/172 tests each after the
+repair. The Metal-disabled LLVM 18 build passes 132/132, and all 135 Python
+checks pass on `ef31a48`; the subsequent repair changes Metal specialization
+only. Changed C++ units pass Clang-Tidy 18, and the repaired Objective-C++ unit
+passes Apple Clang Static Analyzer. Independent identity encoding reconstructs
+the prior golden before deriving the new renderer-7/identity-6 bytes.
+
+The final Release comparison passes all 135 region/channel gates across nine
+fixtures, including bounded and geometry-free volumes and the pinned external
+RGB diagram. The largest difference uses 47.53% of its permitted bound
+(geometry-free volume, top-right region, red channel). The unchanged threshold
+is five combined standard errors plus `2e-5 * max(1, abs(reference))`.
+Final fixture, executable and metallib hashes, commands, process diagnostics
+and seed measurements are retained in
+`build/goniometric-comparison-resources/goniometric-j3_0lvpy`.
+This run used the exact source later committed as `f2365a7`; comparison
+provenance records the preceding `ef31a48` with a dirty checkout. The accompanying
+`build/goniometric-resources-artifacts.json` retains the execution-diff hash,
+source hashes and unchanged-artifact checks. The rypath comparison executable
+SHA-256 is `57fd20c91f708bd66629332f16e13e018160af77af77e47159dc08dd2e01d7d4`
+and metallib SHA-256 is
+`66d5d4244c4ee86d7e6a145e1080120965ba13c2e382b97191fff90c49a26328`.
+The pinned PBRT executable SHA-256 is
+`4fd27e940f295fdb14f8407dbad7ef2e05dba9e9e2980c4a5cc3cad3da9b43b2`.
+
+Ten earlier environment, point, spot, distant, conductor and dielectric scenes
+retain byte-identical raw PFM output against clean baseline `61ccba3`, whose
+source tree equals main `1dc7b1f`. Both renderers use the same authored 8×8,
+4,096-spp, independent-seed-0 inputs without overrides. The reproducible script,
+source states, binary/metallib hashes and per-scene results are retained under
+`build/goniometric-baselines-resources`.
+
+Four isolated mutations fail the intended checks: reversing angular orientation
+and replacing nearest lookup with bilinear each fail the asymmetric-map oracle;
+renormalizing the transformed direction fails the actual-inverse boundary
+regression; halving power normalization fails the white-map power integral.
+Mutation sources, binaries and diagnostics are retained under
+`build/goniometric-mutations`. The power comparison covers ordinary finite map
+means; it does not establish PBRT rounding equivalence for the widened binary64
+sum adaptation described above.
+
+Strict Metal API validation initially exposed missing sky image-buffer bindings
+in the earlier point/spot and resume paths. The repair specializes goniometric
+image access separately, preserving image-free point/spot variants. An overlapping
+pre-push rebuild then invalidated one executable path during validation; its
+isolated rerun passes all 42 Metal tests with no skips in 293.98 seconds.
+`build/goniometric-metal-api-isolated.log` retains that complete result separately
+from the interrupted run. This includes image-free point/spot and resume paths,
+active goniometric sky lookup, and existing environment-image paths.
+
+Both generated scenes complete in the actual Release renderer at 768×512 with
+512 and 4,096 spp, Sobol fast-Owen seed 17, batch size 8 and finite depth 6.
+The surface scene demonstrates angular patterns, rotation, colored emission and
+rough reflection; the bounded-fog scene demonstrates the same profiles through
+homogeneous scattering and finite visibility. Each 4,096-spp render commits
+1,610,612,736 samples. FLOAT EXRs, complete checkpoints, PNGs published from those
+checkpoints, logs and input/binary hashes are retained in
+`build/goniometric-gallery` (`build/goniometric-samples` for 512 spp).
+These undenoised samples demonstrate integration; they do not establish
+convergence or performance results.
+
+Reproduce the gallery with the generator and render commands below; use
+`angular-fog` in place of `angular-studio` for the second scene.
+
+```sh
+python3 scripts/generate_goniometric_samples.py \
+  --output-dir build/goniometric-gallery --samples 4096
+build/release/rypath --render-pbrt build/goniometric-gallery/angular-studio.pbrt \
+  --output build/goniometric-gallery/angular-studio.exr \
+  --checkpoint build/goniometric-gallery/angular-studio.rycp --batch-size 8
+build/release/rypath --render-pbrt build/goniometric-gallery/angular-studio.pbrt \
+  --resume build/goniometric-gallery/angular-studio.rycp \
+  --output build/goniometric-gallery/angular-studio.png
+```
+
+Independent implementation and numerical review found no remaining actionable
+issues, including a separate review of the resource-specialization repair.
+Long-run convergence, original upstream-scene acceptance and M4 Max performance
+benchmarks remain outside this bounded change.
