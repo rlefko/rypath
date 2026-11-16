@@ -5,11 +5,21 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <iostream>
+namespace {
+void metal_error(const char *operation, NSError *error) {
+    std::cerr << operation << ": "
+              << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
+}
+} // namespace
 int main(int argc, char **argv) {
     @autoreleasepool {
-        if (argc != 2)
+        if (argc != 2) {
+            std::cerr << "Expected one packet scattering metallib argument; received " << argc - 1
+                      << '\n';
             return 2;
+        }
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (!device) {
             std::cerr << "No Metal device\n";
@@ -19,25 +29,56 @@ int main(int argc, char **argv) {
             return 1;
 #endif
         }
-        NSError *error = nil;
-        auto library = [device
-            newLibraryWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]]
-                        error:&error];
-        if (!library) {
-            std::cerr << error.localizedDescription.UTF8String << '\n';
+        const auto maximum_group = device.maxThreadsPerThreadgroup;
+        std::cout << "Packet scattering device: " << device.name.UTF8String << "; maximum group "
+                  << maximum_group.width << 'x' << maximum_group.height << 'x'
+                  << maximum_group.depth << "; library: " << argv[1] << std::endl;
+        auto path = [NSString stringWithUTF8String:argv[1]];
+        if (!path) {
+            std::cerr << "Packet scattering metallib path is not valid UTF-8\n";
             return 2;
         }
-        auto pipeline = [device
-            newComputePipelineStateWithFunction:[library
-                                                    newFunctionWithName:@"packet_scattering_probe"]
-                                          error:&error];
-        if (!pipeline)
+        NSError *error = nil;
+        auto library = [device newLibraryWithURL:[NSURL fileURLWithPath:path] error:&error];
+        if (!library) {
+            metal_error("Packet scattering library load failed", error);
             return 2;
-        auto output = [device newBufferWithLength:(1024 * 13 * 4 + 4) * sizeof(float)
-                                          options:MTLResourceStorageModeShared];
-        if (!output)
+        }
+        auto function = [library newFunctionWithName:@"packet_scattering_probe"];
+        if (!function) {
+            std::cerr << "Metal library has no packet_scattering_probe function\n";
+            return 2;
+        }
+        error = nil;
+        auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) {
+            metal_error("Packet scattering pipeline creation failed", error);
+            return 2;
+        }
+        const auto maximum_threads = pipeline.maxTotalThreadsPerThreadgroup;
+        const auto group_width = std::min(NSUInteger{32}, maximum_threads);
+        std::cout << "Packet scattering pipeline: execution width " << pipeline.threadExecutionWidth
+                  << ", maximum threads " << maximum_threads
+                  << "; dispatch 1025 threads, group width " << group_width << std::endl;
+        if (group_width == 0) {
+            std::cerr << "Packet scattering pipeline reports zero maximum threads\n";
             return 3;
-        auto guard = static_cast<float *>(output.contents) + 1024 * 13 * 4;
+        }
+        constexpr std::size_t output_values = std::size_t{1024} * 13 * 4;
+        auto output = [device newBufferWithLength:(output_values + 4) * sizeof(float)
+                                          options:MTLResourceStorageModeShared];
+        if (!output) {
+            std::cerr << "Packet scattering output allocation failed: requested "
+                      << (output_values + 4) * sizeof(float) << " bytes; device maximum "
+                      << device.maxBufferLength << '\n';
+            return 3;
+        }
+        auto output_data = static_cast<float *>(output.contents);
+        if (!output_data) {
+            std::cerr << "Packet scattering shared output buffer has no CPU mapping\n";
+            return 3;
+        }
+        auto guard = output_data + output_values;
         guard[0] = 12345;
         std::array<unsigned, 72> table{};
         table[0] = 1;
@@ -61,30 +102,49 @@ int main(int argc, char **argv) {
         auto table_buffer = [device newBufferWithBytes:table.data()
                                                 length:sizeof(table)
                                                options:MTLResourceStorageModeShared];
-        if (!table_buffer)
+        if (!table_buffer) {
+            std::cerr << "Packet scattering table allocation failed: requested " << sizeof(table)
+                      << " bytes; device maximum " << device.maxBufferLength << '\n';
             return 3;
+        }
         auto queue = [device newCommandQueue];
         auto command = [queue commandBuffer];
         auto encoder = [command computeCommandEncoder];
-        if (!queue || !command || !encoder)
+        if (!queue || !command || !encoder) {
+            std::cerr << "Packet scattering command allocation failed: queue " << (queue != nil)
+                      << ", command " << (command != nil) << ", encoder " << (encoder != nil)
+                      << '\n';
             return 3;
+        }
         [encoder setComputePipelineState:pipeline];
         [encoder setBuffer:output offset:0 atIndex:0];
         [encoder setBuffer:table_buffer offset:0 atIndex:1];
         [encoder dispatchThreads:MTLSizeMake(1025, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+            threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
         [encoder endEncoding];
         [command commit];
         [command waitUntilCompleted];
-        if (command.status != MTLCommandBufferStatusCompleted)
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            std::cerr << "Packet scattering command status "
+                      << static_cast<unsigned long>(command.status) << '\n';
+            metal_error("Packet scattering GPU execution failed", command.error);
             return 3;
-        if (guard[0] != 12345)
+        }
+        if (guard[0] != 12345) {
+            std::cerr << "Packet scattering guard overwritten at byte offset "
+                      << output_values * sizeof(float) << ": expected 12345, observed " << guard[0]
+                      << '\n';
             return 3;
+        }
         const float *p = static_cast<const float *>(output.contents);
+        if (!p) {
+            std::cerr << "Packet scattering output has no CPU mapping after GPU completion\n";
+            return 3;
+        }
         float worst[13] = {};
         for (unsigned n = 0; n < 1024; ++n)
             for (unsigned c = 0; c < 13; ++c) {
-                auto q = p + (n * 13 + c) * 4;
+                auto q = p + (std::size_t{n} * 13 + c) * 4;
                 worst[c] = std::max(worst[c], q[0]);
                 if (c == 11 && !(q[3] > 1e-7f)) {
                     std::cerr
