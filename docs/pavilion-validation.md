@@ -77,6 +77,15 @@ sampling and accumulation contracts are 11/13/4/2. Finite-clamp exposure is part
 of identity; unclamped exposure remains a presentation setting. Older contracts
 are rejected explicitly. See [checkpointing](checkpointing.md).
 
+The Pavilion bump-frame correction applies the existing orthogonality check
+after the existing tangent-plane projection. Previously accepted paths retain
+the same projection arithmetic; the estimator, sample mapping and accumulation
+are unchanged, so the contract versions remain unchanged after review. Failed
+batches never commit their staged Film state. Checkpoints therefore retain a
+valid accepted prefix and resume at its absolute sample count. As with other
+compatible builds, future samples are not promised bitwise identical across
+compiler configurations.
+
 ## Analytic geometry
 
 Sphere, disk and open cylinder use native Metal bounding-box primitives and

@@ -864,9 +864,11 @@ Conductors retain
 the existing geometry, alpha, bump/normal map, and instance semantics; even a
 constant conductor prepares a surface tangent frame for anisotropic scattering.
 Unused material declarations and their dependencies are checked as well.
-Mapped normals and tangents form a single orthonormal frame. Normalized tangent/
-normal residuals above `64 * FLT_EPSILON`, or degenerate frames, fail visibly;
-smaller roundoff residuals are projected away. The geometric normal controls
+Mapped normals and tangents form a single orthonormal frame. The normalized
+tangent is projected onto the normal's tangent plane and normalized again.
+The resulting tangent/normal residual must be at most `64 * FLT_EPSILON`;
+nonfinite, degenerate or unsuccessfully projected frames fail visibly. This
+numerical orthonormalization is a rypath adaptation. The geometric normal controls
 emission and ray offsets, without an extra geometric-hemisphere BSDF clip.
 
 The transport uses a single-scattering anisotropic Trowbridge–Reitz (GGX) model

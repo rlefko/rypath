@@ -2002,12 +2002,31 @@ static bool scattering_frame(rypath_surface_detail::Frame frame, thread Scatteri
         !rypath_surface_detail::unit_vector(frame.dpdu, result.x))
         return false;
     const float projection = dot(result.x, result.z);
-    if (!isfinite(projection) || abs(projection) > 64.0f * FLT_EPSILON)
+    if (!isfinite(projection))
         return false;
     if (!rypath_surface_detail::unit_vector(result.x - projection * result.z, result.x))
         return false;
+    // Bump partials may have finite normal drift; validate the projected basis.
+    if (abs(dot(result.x, result.z)) > 64.0f * FLT_EPSILON)
+        return false;
     result.y = cross(result.z, result.x);
     return all(isfinite(result.y));
+}
+
+kernel void rypath_scattering_frame_probe(const device float4 *input [[buffer(0)]],
+                                          device float4 *output [[buffer(1)]],
+                                          constant uint &count [[buffer(2)]],
+                                          uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    rypath_surface_detail::Frame frame{};
+    frame.n = input[2 * index].xyz;
+    frame.dpdu = input[2 * index + 1].xyz;
+    ScatteringFrame basis{};
+    const bool valid = scattering_frame(frame, basis);
+    output[3 * index] = valid ? float4(basis.x, 1) : float4(0);
+    output[3 * index + 1] = valid ? float4(basis.y, 1) : float4(0);
+    output[3 * index + 2] = valid ? float4(basis.z, 1) : float4(0);
 }
 
 // Continuous light proposals. Zero f/PDF is a valid unsupported direction;

@@ -1588,8 +1588,10 @@ struct MetalRenderScene::Impl {
                 const auto *record = output_bytes + lane * stride;
                 std::memcpy(&value, record, sizeof(value));
                 if (value.status != wire::success) {
-                    result.diagnostic =
-                        sample_error(value.status) + " at packet lane " + std::to_string(lane);
+                    result.diagnostic = sample_error(value.status) + " at pixel " +
+                                        std::to_string(request.pixel_begin + lane) + " sample " +
+                                        std::to_string(request.sample_begin) + " (packet lane " +
+                                        std::to_string(lane) + ")";
                     return result;
                 }
                 const std::uint64_t sample =
