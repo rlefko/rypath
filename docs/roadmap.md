@@ -117,6 +117,8 @@ clarifies the work; completion is recorded in [status](status.md).
     Perspective depth of field adds normalized uniform-disk thin-lens sampling,
     shared-aperture primary texture differentials and complete camera-support
     bounds; see [depth-of-field validation](depth-of-field-validation.md).
+    Configurable box radii add normalized rectangular pixel footprints with
+    matching lens/texture differentials; see [box-filter validation](box-filter-validation.md).
     Wider color spaces, additional camera models and
     filters/samplers and faithfully rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
