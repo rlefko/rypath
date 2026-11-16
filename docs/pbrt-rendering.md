@@ -57,7 +57,7 @@ diagnosed even when not placed in the image.
 | Spot lighting | Spectral point-source emission with cubic cosine falloff, `from`/`to` aiming, representable static affine transforms and positive-power normalization; surface and homogeneous-volume illumination |
 | Goniometric lighting | Spectral `I`, `scale`, optional `power`, required native square scalar image diagram, rigid/reflected declaration transforms; surface and homogeneous-volume illumination with nearest equal-area lookup |
 | Distant lighting | Up to 64 directional sources with spectral `L`, `scale`, `illuminance` and affine `from`/`to`; finite PBRT scene-bound visibility for surfaces and homogeneous media |
-| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
+| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power normalizes each generated primitive |
 | Homogeneous media | Named absorption/scattering/emission spectra, all 47 pinned measured presets, scoped interfaces and null boundaries; see [homogeneous media](#homogeneous-media) |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
 | Output | Explicit filename override; PNG display encoding or linear EXR with authored/default HALF or FLOAT precision; no bitwise PBRT image equivalence |
@@ -629,7 +629,7 @@ its PDF uses actual quantized CDF intervals and includes the uniform component.
 The importance grid has at most 128 cells per axis; native texel mass is distributed
 by area overlap into those cells, independently of native radiance resolution.
 Black maps use a uniform CDF. BSDF escape and NEE use complementary power weights
-with this PDF. Portals, multiple environments, positive area `power`, instanced
+with this PDF. Portals, multiple environments, instanced
 emitters, and authored bilinear emission-sampling controls remain deferred.
 
 The [core texture validation record](core-texture-validation.md) distinguishes
@@ -1096,8 +1096,29 @@ radiance. An empty image filename is inert. An RGB PNG/JPEG/EXR/HDR filename use
 resolution, clamp-wrapped bilinear sampling at `(u, 1-v)`, and RGBIlluminant/D65
 spectral reconstruction. Combining a nonempty filename with effective `L` is
 invalid. Image emitters retain the existing geometric proposal and MIS density.
-The authored finite value determines whether power is positive; this deferred
-parameter is not narrowed to float. Transformed emitters use checked world-space
+Positive `power` applies independently to every generated triangle or bilinear
+patch, including primitives created by displacement refinement. It retains authored
+`scale` and multiplies radiance by `power / (pi * area * sides * imageMean)`, where
+`sides` is two for `twosided` and one otherwise. `imageMean` is one for all spectral
+`L` forms, including RGB; RGB does not introduce another luminance divisor. For an
+image it is the arithmetic mean of native linear RGB texel luminance, using the
+existing sRGB coefficients. A positive finite image mean is required even with
+zero scale or an unused declaration. Black RGB spectra remain black; numeric
+spectra retain their existing positive photometric-integral requirement. Image
+power folds into image scale before multiplying the reconstructed spectrum, so
+small native radiance can retain a representable final result. Positive-power
+constant declarations reject nonzero base emission lost during binary32 packing;
+they do not silently turn that unsupported domain into black.
+
+Preparation uses final rounded world vertices after displacement. Triangle areas
+use the world-space cross product; bilinear areas follow pinned PBRT's rectangle
+classification or fixed 3×3 quadrilateral estimate, accumulated in binary64. This
+normalization area does not replace the local differential area used in PDFs.
+The positive factor must be normal binary32, and nonzero GPU intermediates and
+products must remain finite normal binary32. Predictable failures receive
+source-located errors; runtime invalid arithmetic fails the whole sample batch.
+Finite nonpositive power canonicalizes to zero and preserves legacy output.
+Power remains binary64 until per-primitive preparation. Transformed emitters use checked world-space
 geometry for both native acceleration and shading, while preserving source
 instance/primitive ordering and effective orientation. The authored scene stays
 unchanged.

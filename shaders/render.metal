@@ -1519,6 +1519,36 @@ static bool apply_surface_detail(
     return true;
 }
 
+static bool area_power_factor(const device wire::Instance &instance, uint primitive, uint kind,
+                              SurfaceAlpha resources, thread float &factor) {
+    factor = 1;
+    if (instance.area_power_begin == 0xffffffffu)
+        return true;
+    const uint count =
+        kind == wire::triangle_primitive ? instance.triangle_count : instance.patch_count;
+    const uint begin = instance.area_power_begin;
+    if (primitive >= count || begin >= resources.parameters->material_data_words ||
+        primitive >= resources.parameters->material_data_words - begin)
+        return false;
+    factor = as_type<float>(resources.material_data[begin + primitive]);
+    return factor > 0 && isnormal(factor);
+}
+static bool scale_area_power(const device wire::Instance &instance, uint primitive, uint kind,
+                             SurfaceAlpha resources, thread float &radiance) {
+    if (instance.area_power_begin == 0xffffffffu)
+        return true;
+    float factor;
+    if (!area_power_factor(instance, primitive, kind, resources, factor))
+        return false;
+    const float product = radiance * factor;
+    if (!(radiance == 0 || (isfinite(radiance) && isnormal(radiance))) ||
+        !(product == 0 || (isfinite(product) && isnormal(product))) ||
+        (radiance > 0 && product == 0))
+        return false;
+    radiance = product;
+    return true;
+}
+
 // Only certified binary alpha can reach an emitter. Constant-zero alpha keeps
 // PBRT's special invisible light behavior; an all-zero image emits nothing.
 static bool area_radiance(const device wire::AreaEmission &emission,
@@ -1563,7 +1593,7 @@ static bool area_radiance(const device wire::AreaEmission &emission,
     const bool masked =
         alpha_enabled && instance.alpha_root != 0xffffffffu && instance.invisible_emitter == 0u;
     if (!masked && !(area_image_enabled && emission.image_texture != 0xffffffffu))
-        return true;
+        return scale_area_power(instance, primitive, kind, resources, radiance);
     graph_wire::Context context{};
     float3 dpdu, dpdv;
     if (!surface_texture_context(instance, primitive, kind, uv, point, resources.positions,
@@ -1583,11 +1613,25 @@ static bool area_radiance(const device wire::AreaEmission &emission,
             return true;
         }
     }
-    if (area_image_enabled && emission.image_texture != 0xffffffffu)
-        radiance = rypath_image_light::area_radiance(
-            images, emission.image_texture, emission.image_scale, float2(context.u, context.v),
-            resources.sample->wavelength);
-    return isfinite(radiance) && radiance >= 0;
+    if (area_image_enabled && emission.image_texture != 0xffffffffu) {
+        float scale = emission.image_scale;
+        const bool powered = instance.area_power_begin != 0xffffffffu;
+        if (powered) {
+            float factor;
+            if (!area_power_factor(instance, primitive, kind, resources, factor))
+                return false;
+            scale *= factor;
+            if (!(scale == 0 || (isfinite(scale) && isnormal(scale))) ||
+                (emission.image_scale > 0 && scale == 0))
+                return false;
+        }
+        radiance = rypath_image_light::area_radiance(images, emission.image_texture, scale,
+                                                     float2(context.u, context.v),
+                                                     resources.sample->wavelength, powered);
+        return isfinite(radiance) && radiance >= 0;
+    }
+    return isfinite(radiance) && radiance >= 0 &&
+           scale_area_power(instance, primitive, kind, resources, radiance);
 }
 
 static float power_weight(float a, float b) {

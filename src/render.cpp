@@ -1538,6 +1538,10 @@ std::string validate_render_scene(const RenderScene &scene) {
         return "Area emission requires the PBRT render model";
     }
     for (const auto &emission : scene.area_emissions) {
+        if (!std::isfinite(emission.power) || emission.power < 0)
+            return "Area power must be finite and nonnegative";
+        if (emission.power > 0 && emission.gltf_material != UINT32_MAX)
+            return "glTF emission cannot specify area power";
         if (!std::ranges::all_of(emission.radiance,
                                  [](float value) { return std::isfinite(value) && value >= 0; })) {
             return "PBRT area radiance must be finite and nonnegative";
@@ -1563,6 +1567,13 @@ std::string validate_render_scene(const RenderScene &scene) {
             return "Instance " + std::to_string(i) + ": " + error;
         }
     }
+    std::vector<std::vector<float>> power_factors;
+    std::size_t failed_instance;
+    if (auto error = prepare_area_power(scene, power_factors, failed_instance); !error.empty())
+        return (failed_instance == SIZE_MAX
+                    ? ""
+                    : "Instance " + std::to_string(failed_instance) + ": ") +
+               error;
     std::vector<GeometryPoint> normals;
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
         const auto &instance = scene.geometry.instances[i];

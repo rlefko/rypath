@@ -392,9 +392,10 @@ class Translator {
     bool supports_rgb_space(string_view color_space, const Location &source);
     std::optional<float> blackbody_temperature(const Parameter &parameter);
     bool blackbody_emission(const Parameter &parameter, std::optional<float> scale,
-                            double light_multiplier, std::array<float, 471> &dense);
+                            double light_multiplier, std::array<float, 471> &dense,
+                            bool checked_power = false);
     bool emission(const Descriptor &descriptor, string_view field, double light_multiplier,
-                  std::array<float, 471> &dense);
+                  std::array<float, 471> &dense, bool checked_power = false);
     void light(const Descriptor &descriptor);
     void distant_bounds(const Descriptor &descriptor);
     std::optional<float> image_emission(const Descriptor &descriptor, float illuminance = -1);
@@ -810,7 +811,8 @@ std::optional<float> Translator::blackbody_temperature(const Parameter &paramete
 }
 
 bool Translator::blackbody_emission(const Parameter &parameter, std::optional<float> scale,
-                                    double light_multiplier, std::array<float, 471> &dense) {
+                                    double light_multiplier, std::array<float, 471> &dense,
+                                    bool checked_power) {
     const auto temperature = blackbody_temperature(parameter);
     if (!temperature || !scale) {
         return false;
@@ -844,17 +846,27 @@ bool Translator::blackbody_emission(const Parameter &parameter, std::optional<fl
             invalid(parameter.location, "Normalized emission spectrum overflows binary32");
             return false;
         }
+        if (checked_power && normalized > 0 && static_cast<float>(normalized) == 0) {
+            invalid(parameter.location,
+                    "Positive area power loses nonzero base emission in binary32");
+            return false;
+        }
         dense[i] = static_cast<float>(normalized);
     }
     return true;
 }
 
 bool Translator::emission(const Descriptor &descriptor, string_view field, double light_multiplier,
-                          std::array<float, 471> &dense) {
+                          std::array<float, 471> &dense, bool checked_power) {
     const auto scale = narrow(descriptor, "scale", 1);
+    if (checked_power && scale && number(descriptor, "scale", 1) > 0 && *scale == 0) {
+        invalid(location(descriptor, "scale"),
+                "Positive area power loses nonzero base scale in binary32");
+        return false;
+    }
     const auto [selected, color_space] = descriptor.effective_parameter(field);
     if (selected && selected->type == "blackbody") {
-        return blackbody_emission(*selected, scale, light_multiplier, dense);
+        return blackbody_emission(*selected, scale, light_multiplier, dense, checked_power);
     }
     const auto &source = selected ? selected->location : descriptor.authored.location;
     double normalization = 0;
@@ -871,6 +883,11 @@ bool Translator::emission(const Descriptor &descriptor, string_view field, doubl
                 return false;
             }
             rgb_scale = 2 * static_cast<float>(peak.number);
+            if (checked_power && peak.number > 0 && rgb_scale == 0) {
+                invalid(peak.location,
+                        "Positive area power loses nonzero emission RGB in binary32");
+                return false;
+            }
         }
         if (!supports_rgb_space(selected ? color_space : descriptor.color_space, source)) {
             return false;
@@ -940,6 +957,10 @@ bool Translator::emission(const Descriptor &descriptor, string_view field, doubl
         const double normalized = value * amplitude;
         if (!float_representable(normalized)) {
             invalid(source, "Normalized emission spectrum overflows binary32");
+            return false;
+        }
+        if (checked_power && normalized > 0 && static_cast<float>(normalized) == 0) {
+            invalid(source, "Positive area power loses nonzero base emission in binary32");
             return false;
         }
         value = static_cast<float>(normalized);
@@ -2755,16 +2776,14 @@ void Translator::geometry() {
                             "directly");
     }
 
+    std::map<const ImagePyramid *, std::optional<double>> area_power_means;
     for (const auto &descriptor : input_.area_lights) {
         if (diagnostics_.diagnostics_truncated) {
             return;
         }
         const bool positive_power = number(*descriptor, "power", -1) > 0;
-        if (positive_power) {
-            unsupported(location(*descriptor, "power"),
-                        "Positive power for diffuse area lights is unsupported");
-        }
         AreaEmission area;
+        area.power = positive_power ? number(*descriptor, "power", -1) : 0;
         area.two_sided = boolean(*descriptor, "twosided", false);
         const auto placed = area_lights.find(descriptor.get());
         bool emitted = false;
@@ -2772,16 +2791,32 @@ void Translator::geometry() {
             if (supports_rgb_space(descriptor->color_space, descriptor->authored.location)) {
                 if (const auto scale = image_emission(*descriptor)) {
                     area.image_scale = *scale;
-                    if (placed != area_lights.end() && !positive_power) {
+                    if (positive_power && number(*descriptor, "scale", 1) > 0 && *scale == 0) {
+                        invalid(location(*descriptor, "scale"),
+                                "Positive area power loses nonzero base scale in binary32");
+                        continue;
+                    }
+                    if (placed != area_lights.end() || positive_power) {
                         area.image_texture = native_image(*descriptor);
                     }
                     emitted = true;
                 }
             }
         } else {
-            emitted = emission(*descriptor, "L", 1., area.radiance);
+            emitted = emission(*descriptor, "L", 1., area.radiance, positive_power);
         }
-        if (!emitted || positive_power || placed == area_lights.end()) {
+        if (positive_power && descriptor->native_image && area.image_texture != UINT32_MAX) {
+            const auto *image = scene_.image_textures[area.image_texture].image.get();
+            auto [mean, inserted] = area_power_means.try_emplace(image);
+            if (inserted)
+                mean->second = area_image_mean(*image);
+            if (!mean->second) {
+                invalid(location(*descriptor, "power"),
+                        "Positive area power requires a positive finite image mean");
+                continue;
+            }
+        }
+        if (!emitted || placed == area_lights.end()) {
             continue;
         }
         const auto uncharged_samples = descriptor->checked_spectrum("L") || descriptor->native_image
@@ -2887,6 +2922,24 @@ void Translator::geometry() {
                 }
             }
         }
+    }
+    std::vector<std::vector<float>> power_factors;
+    std::size_t failed_instance;
+    if (const auto error = prepare_area_power(scene_, power_factors, failed_instance,
+                                              limits_.total_values - spectral_values_);
+        !error.empty()) {
+        if (failed_instance < scene_.geometry.instances.size()) {
+            const auto &shape =
+                *bindings[scene_.geometry.instances[failed_instance].mesh_index].shape;
+            invalid(shape.area_light ? location(*shape.area_light, "power")
+                                     : shape.descriptor.authored.location,
+                    error);
+        } else {
+            invalid(entry_, error);
+        }
+    } else {
+        for (const auto &factors : power_factors)
+            spectral_values_ += factors.size();
     }
 }
 

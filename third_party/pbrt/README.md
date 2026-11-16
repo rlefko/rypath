@@ -294,3 +294,14 @@ not convert units or divide by `(1-g)`. The table is compiled locally and needs
 no runtime asset, download or PBRT library. The optional
 `scripts/pbrt_medium_probe.cpp` validates dense preparation against the cached
 pinned CPU PBRT build; production remains independent of that reference.
+
+## Area-light power
+
+`src/area_power.cpp` adapts the rectangle classification and fixed 3×3 bilinear
+patch area estimate from PBRT's `BilinearPatch` at the same pinned revision,
+`b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`. The source retains PBRT's Apache-2.0
+copyright and license notice; see [LICENSE.txt](LICENSE.txt). Preparation uses
+binary64 arithmetic over rypath's rounded world-space binary32 vertices, a
+documented numerical adaptation rather than bit-identical upstream arithmetic.
+The estimator's local area PDFs remain independent of this normalization area.
+See [area-power validation](../../docs/area-power-validation.md).

@@ -3,11 +3,15 @@
 #include "area_reference.hpp"
 #include "metal_render.hpp"
 #include "pbrt_render.hpp"
+#include "rgb_spectrum.hpp"
+#include "texture_footprint.hpp"
+#include <bit>
 
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <numbers>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -208,6 +212,94 @@ void primary_emission() {
     scene.instance_reverse_orientation = {0};
     scene.area_emissions.front().two_sided = true;
     verify(2);
+}
+
+void power_scaling() {
+    for (const bool volume : {false, true}) {
+        auto powered = oracle_scene();
+        // The single off-axis triangle has area 0.625, so full power implies
+        // an exactly representable factor two with the authored spectrum intact.
+        powered.area_emissions.front().power = 1.25 * std::numbers::pi;
+        if (volume) {
+            powered.volume_transport = true;
+            powered.max_depth = 3;
+            powered.media.push_back({});
+            powered.media.front().sigma_s.fill(.2f);
+            powered.media.front().sigma_a.fill(.1f);
+            powered.camera_medium = 0;
+            powered.instance_media.resize(powered.geometry.instances.size(), {0, 0});
+        }
+        auto baked = powered;
+        baked.area_emissions.front().power = 0;
+        for (auto &value : baked.area_emissions.front().radiance)
+            value *= 2;
+        auto actual = sample(*build(powered), request(8192));
+        auto expected = sample(*build(baked), request(8192));
+        std::size_t signal = 0;
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            require(actual[i].sample == expected[i].sample &&
+                        actual[i].scatterings == expected[i].scatterings,
+                    "Area power changed path sampling");
+            require(std::abs(actual[i].radiance - expected[i].radiance) <=
+                        3e-5f * std::max(1e-7f, expected[i].radiance),
+                    "Area power differs from independently baked spectrum in surface/volume NEE");
+            signal += actual[i].radiance > 0;
+        }
+        require(signal > 100, "Area power NEE comparison has no signal");
+    }
+    auto hit = scene_base();
+    hit.max_depth = 0;
+    hit.area_emissions = {constant_emission(3)};
+    hit.area_emissions.front().power = 4 * std::numbers::pi;
+    add_mesh(hit, quad(-1, 1, -1, 1, 0), 0, 0); // Each triangle area 2.
+    for (bool two_sided : {false, true}) {
+        hit.area_emissions.front().two_sided = two_sided;
+        const auto values = sample(*build(hit), request(37));
+        require(std::ranges::all_of(
+                    values, [&](const auto &s) { return s.radiance == (two_sided ? 3 : 6); }),
+                "Depth-zero power and two-sided normalization");
+    }
+}
+
+void image_power_dynamic_range() {
+    auto scene = scene_base();
+    scene.max_depth = 0;
+    scene.area_emissions = {constant_emission(0)};
+    scene.area_emissions.front().power = 4 * std::numbers::pi;
+    scene.area_emissions.front().image_texture = 0;
+    scene.area_emissions.front().image_scale = 1e-20f;
+    auto mesh = quad(-1, 1, -1, 1, 0);
+    mesh.uvs = {{0, 0}, {0, 1}, {1, 1}, {1, 0}};
+    add_mesh(scene, std::move(mesh), 0, 0);
+    auto image = std::make_shared<ImagePyramid>();
+    image->encoding = ImageEncoding::linear;
+    image->wrap = ImageWrap::clamp;
+    image->storage = ImageStorage::linear_float;
+    image->native_base = true;
+    image->levels = {{1, 1, 0}};
+    image->texels = {std::bit_cast<std::uint32_t>(1e-30f), std::bit_cast<std::uint32_t>(1e-30f),
+                     std::bit_cast<std::uint32_t>(1e-30f), 0};
+    scene.image_textures.push_back({image});
+    scene.instance_texture_frames.resize(1);
+    const SurfaceTransforms identity;
+    require(prepare_texture_triangle_frames(scene.geometry.meshes.front(), identity.shape,
+                                            identity.placement,
+                                            scene.instance_texture_frames.front())
+                .empty(),
+            "Dynamic-range image frames");
+    auto query = request(37);
+    query.total_samples = query.sample_count;
+    const auto values = sample(*build(scene), query);
+    for (const auto &value : values) {
+        // Each triangle area 2: factor 2e30, combined scale 2e10.
+        const double expected = 2e-20 * pbrt_d65()[std::lround(value.wavelength) - 360];
+        require(value.radiance > 0 && std::abs(value.radiance - expected) < 3e-5 * expected,
+                "Image power must fold factor into scale before the spectrum product");
+    }
+    scene.area_emissions.front().image_scale = 0;
+    const auto zero = sample(*build(scene), query);
+    require(std::ranges::all_of(zero, [](const auto &s) { return s.radiance == 0; }),
+            "Explicit zero image scale remains black");
 }
 
 void null_slots_and_last_hit() {
@@ -481,6 +573,8 @@ int main(int argc, char **argv) {
         require(native.status == GeometryStatus::success && native.scene, native.diagnostic);
         analytic(*native.scene);
         primary_emission();
+        power_scaling();
+        image_power_dynamic_range();
         null_slots_and_last_hit();
         finite_segments(1);
         finite_segments(65536);

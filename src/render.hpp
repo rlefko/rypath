@@ -160,6 +160,7 @@ struct PerspectiveLens {
     GeometryPoint camera_y{0, 1, 0};
 };
 struct AreaEmission {
+    double power = 0; // Canonical nonnegative authored power; zero preserves legacy radiance.
     std::array<float, 471> radiance{};
     bool two_sided = false;
     std::uint32_t image_texture = UINT32_MAX;
@@ -288,7 +289,14 @@ std::string validate_raster_support(const RasterCamera &camera, const PixelFilte
 std::string validate_lens_support(const RasterCamera &camera, const PerspectiveLens &lens,
                                   const PixelFilter &filter, std::uint32_t width,
                                   std::uint32_t height);
+// Factors indexed by source instance, then triangles followed by patches.
+// Empty entries preserve legacy emission. Image means are evaluated once per table.
+std::string prepare_area_power(const RenderScene &scene, std::vector<std::vector<float>> &factors,
+                               std::size_t &failed_instance,
+                               std::size_t max_factors = 128 * 1024 * 1024);
 // Shared by area geometry preflight and Metal's world-space emitter upload.
+std::optional<double> area_image_mean(const ImagePyramid &image);
+
 std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                                                const GeometryTransform &transform);
 std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);

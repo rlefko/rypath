@@ -192,6 +192,7 @@ class Canonical {
         FIELD(y_radius);
     }
     void value(const AreaEmission &x) {
+        FIELD(power);
         FIELD(radiance);
         FIELD(two_sided);
         FIELD(image_texture);

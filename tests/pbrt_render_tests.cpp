@@ -1418,8 +1418,6 @@ void rejects_blackbody_lights(const fs::path &scratch) {
     rejected("AreaLightSource \"diffuse\" \"float scale\" 2e32\n    \"blackbody L\" 0.2\n"
              "AreaLightSource \"\"\n",
              1, "invalid-render-value", "Normalized emission spectrum overflows binary32", 5);
-    rejected("AreaLightSource \"diffuse\" \"blackbody L\" 2850\n    \"float power\" 1e-46\n", 2,
-             "unsupported-render-feature", "Positive power", 5);
 }
 
 void blackbody_reflectance_translation(const fs::path &scratch) {
@@ -1857,10 +1855,9 @@ Scale -2 3 1
         translation(write(scratch, "area-positive-power.pbrt",
                           std::string(basic) + "AreaLightSource \"diffuse\" \"float power\" 1\n" +
                               std::string(triangle)));
-    require(positive.exit_code() == 2 && !positive.scene &&
-                positive.diagnostics.front().location.line == 7 &&
-                positive.diagnostics.front().message.find("Positive power") != std::string::npos,
-            "Positive area power receives a source-located render diagnostic");
+    require(positive.exit_code() == 0 && positive.scene &&
+                positive.scene->area_emissions.front().power == 1,
+            "Positive area power translates");
     const auto extreme = translation(write(scratch, "area-unrepresentable.pbrt",
                                            std::string(basic) +
                                                "AreaLightSource \"diffuse\"\n"

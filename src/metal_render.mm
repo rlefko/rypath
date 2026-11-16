@@ -1143,6 +1143,35 @@ struct MetalRenderScene::Impl {
             packed_knots.emplace_back();
         }
 
+        // Geometry backends split triangle/patch instances; factors retain the
+        // source placement and select the matching primitive range.
+        std::vector<std::vector<float>> source_power_factors;
+        std::size_t failed_power_instance;
+        if (auto error = prepare_area_power(scene, source_power_factors, failed_power_instance);
+            !error.empty())
+            return error;
+        const auto power_limit =
+            std::min<std::size_t>(128 * 1024 * 1024, device.maxBufferLength / sizeof(wire::Word));
+        for (std::size_t ordinal = 0; ordinal < packed_instances.size(); ++ordinal) {
+            const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
+            if (scene.instance_emissions.empty())
+                break;
+            const auto &power_factors = source_power_factors[source];
+            if (power_factors.empty())
+                continue;
+            auto &packed = packed_instances[ordinal];
+            const auto &mesh = meshes[geometry_data.instances[source].mesh_index];
+            const auto begin =
+                MetalGeometryAccess::primitive_kind(*geometry, ordinal) == PrimitiveKind::triangle
+                    ? 0
+                    : mesh.triangles.size();
+            const auto count = std::size_t{packed.triangle_count} + packed.patch_count;
+            if (packed_data.size() > power_limit || count > power_limit - packed_data.size())
+                return "Area power factors exceed the shared GPU data budget";
+            packed.area_power_begin = static_cast<wire::Word>(packed_data.size());
+            for (std::size_t j = 0; j < count; ++j)
+                packed_data.push_back(std::bit_cast<wire::Word>(power_factors[begin + j]));
+        }
         if (auto error = upload_auxiliary_data(scene, packed_data); !error.empty())
             return error;
         instances = upload(device, packed_instances);

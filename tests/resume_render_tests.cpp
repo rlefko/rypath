@@ -5,6 +5,7 @@
 #include "render_identity.hpp"
 #include <unistd.h>
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <iostream>
@@ -312,7 +313,9 @@ int native() {
             control = {};
             control.initial_film = &partial.film;
             std::optional<RenderCheckpoint> disk_checkpoint;
-            if (scene.perspective_lens) {
+            if (scene.perspective_lens ||
+                std::ranges::any_of(scene.area_emissions,
+                                    [](const auto &e) { return e.power > 0; })) {
                 const auto path = std::filesystem::temp_directory_path() /
                                   ("rypath-lens-resume-" + std::to_string(getpid()) + ".bin");
                 RenderCheckpoint checkpoint;
@@ -337,11 +340,13 @@ int native() {
         }
     };
     for (const auto fixture :
-         {"image-secondary.pbrt", "media-reference/isotropic.pbrt", "point-lights/mixed.pbrt",
-          "point-lights/volume.pbrt", "spot-lights/mixed.pbrt", "spot-lights/volume.pbrt",
-          "goniometric-lights/mixed-lighting.pbrt", "goniometric-lights/bounded-volume.pbrt",
-          "goniometric-lights/geometry-free-volume.pbrt", "projection-lights/mixed-lighting.pbrt",
-          "projection-lights/bounded-volume.pbrt", "projection-lights/geometry-free-volume.pbrt"}) {
+         {"image-secondary.pbrt", "area-power/unequal-triangles.pbrt", "area-power/hdr-image.pbrt",
+          "area-power/homogeneous-volume.pbrt", "media-reference/isotropic.pbrt",
+          "point-lights/mixed.pbrt", "point-lights/volume.pbrt", "spot-lights/mixed.pbrt",
+          "spot-lights/volume.pbrt", "goniometric-lights/mixed-lighting.pbrt",
+          "goniometric-lights/bounded-volume.pbrt", "goniometric-lights/geometry-free-volume.pbrt",
+          "projection-lights/mixed-lighting.pbrt", "projection-lights/bounded-volume.pbrt",
+          "projection-lights/geometry-free-volume.pbrt"}) {
         std::cout << "Resume fixture: " << fixture << std::endl;
         auto path =
             std::filesystem::path(RYPATH_SOURCE_DIR) / "tests/fixtures/pbrt-render" / fixture;

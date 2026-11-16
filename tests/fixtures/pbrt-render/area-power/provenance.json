@@ -1,0 +1,77 @@
+{
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "reference_coordinate_system": "world",
+  "coverage": "Seven selected owned power wrappers; external PLY asset coverage only",
+  "license": "GPL-3.0-only owned assets; external geometry CC BY 2.0",
+  "scenes": {
+    "unequal-triangles": {
+      "entry": "unequal-triangles.pbrt",
+      "dependencies": []
+    },
+    "affine-two-sided": {
+      "entry": "affine-two-sided.pbrt",
+      "dependencies": []
+    },
+    "curved-patch": {
+      "entry": "curved-patch.pbrt",
+      "dependencies": [
+        "assets/curved-light.ply"
+      ]
+    },
+    "hdr-image": {
+      "entry": "hdr-image.pbrt",
+      "dependencies": [
+        "assets/asymmetric.hdr"
+      ]
+    },
+    "mixed-lighting": {
+      "entry": "mixed-lighting.pbrt",
+      "dependencies": []
+    },
+    "homogeneous-volume": {
+      "entry": "homogeneous-volume.pbrt",
+      "dependencies": [
+        "assets/emission.spd"
+      ]
+    },
+    "external-ply": {
+      "entry": "external-ply.pbrt",
+      "dependencies": [
+        "assets/sportscar-quad.ply",
+        "assets/Sportscar.NOTICE.md"
+      ]
+    }
+  },
+  "owned_assets": [
+    {
+      "path": "assets/curved-light.ply",
+      "bytes": 263,
+      "sha256": "101350551b05451a2f1f76b2ed282f994e32fa0f22e24bf1bae1814a2a456592"
+    },
+    {
+      "path": "assets/asymmetric.hdr",
+      "bytes": 77,
+      "sha256": "7672d7fb5233e9da07713ed9043d560e21e44aa7a6b834537e331fb797ba6863",
+      "generator": "4x2 linear RGBE, pixels row-major: [(8, 1, 0.25), (0.125, 3, 0.25), (0.5, 0.125, 5), (1, 1, 1), (0.125, 0.125, 0.125), (2, 0.5, 0.125), (0.25, 2, 1), (4, 0.25, 2)]"
+    },
+    {
+      "path": "assets/emission.spd",
+      "bytes": 74,
+      "sha256": "560cb3c129fd5324e39e1923b450957db21329b18c13a275737ff19c78aa0fa6"
+    }
+  ],
+  "external_assets": [
+    {
+      "upstream_revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572",
+      "upstream_path": "sportscar/geometry/Plane_0000_m000.ply",
+      "author": "Yasutoshi Mori",
+      "license": "CC BY 2.0",
+      "license_url": "https://creativecommons.org/licenses/by/2.0/",
+      "unchanged": true,
+      "path": "assets/sportscar-quad.ply",
+      "bytes": 412,
+      "sha256": "91fa58d0b64fb8f5d2a49844cd5a1e64e7f71d52f904dd3e20aa76c866b5ba62",
+      "license_file": "assets/Sportscar.NOTICE.md"
+    }
+  ]
+}
