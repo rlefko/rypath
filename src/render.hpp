@@ -139,6 +139,7 @@ struct PixelFilter {
     float x_radius = 0.5f;
     float y_radius = 0.5f;
     float sigma = 0.5f;
+    bool operator==(const PixelFilter &) const = default;
 };
 
 struct RenderCamera {
@@ -212,6 +213,8 @@ struct SurfaceTransforms {
     std::array<double, 16> placement{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     bool authored_reverse = false;
 };
+enum class IntegratorKind : std::uint32_t { path, volpath, bdpt };
+enum class SpectralTransport : std::uint32_t { scalar, packet };
 struct RenderScene {
     GeometryData geometry;
     std::vector<SpectralMaterial> materials;
@@ -251,6 +254,13 @@ struct RenderScene {
     std::uint32_t camera_medium = no_medium;
     // Empty means no authored transitions; equal sides retain the ray's medium.
     std::vector<MediumInterface> instance_media{};
+    IntegratorKind integrator = IntegratorKind::path;
+    SpectralTransport spectral_transport = SpectralTransport::scalar;
+    double max_component_value = std::numeric_limits<double>::infinity();
+    // Acceptance/resource policy does not change the radiometric scene identity.
+    ImageLimits image_limits{};
+    std::size_t triangle_frame_limit = render_patch_corner_limit;
+    std::size_t preparation_byte_limit = std::numeric_limits<std::size_t>::max();
 };
 struct RenderSettings {
     std::uint32_t width = 256;
@@ -270,10 +280,29 @@ struct RenderSample {
     // the other samplers retain their raw integer uniform words.
     std::array<std::uint32_t, 4> random_words{};
 };
+struct PacketSplat {
+    std::array<float, 2> raster{};
+    std::array<float, 4> radiance{};
+    std::uint32_t strategy = 0;
+};
+struct PacketSample {
+    std::uint32_t pixel = 0;
+    std::uint64_t sample = 0;
+    std::array<float, 4> wavelengths{};
+    std::array<float, 4> wavelength_pdfs{};
+    std::array<float, 4> radiance{};
+    float filter_weight = 1;
+    std::uint32_t splat_begin = 0;
+    std::uint32_t splat_count = 0;
+};
 struct FilmPixel {
     std::array<double, 3> sum{};
     std::array<double, 3> correction{};
     std::uint64_t count = 0;
+    std::array<double, 3> splat_sum{}, splat_correction{};
+    std::array<double, 3> compatibility_sum{}, compatibility_correction{};
+    std::array<double, 3> compatibility_splat_sum{}, compatibility_splat_correction{};
+    double weight_sum = 0, weight_correction = 0;
     bool operator==(const FilmPixel &) const = default;
 };
 struct Film {
@@ -282,7 +311,35 @@ struct Film {
     std::vector<FilmPixel> pixels;
     RenderModel model = RenderModel::demo;
     double exposure = 1;
+    bool packet = false;
+    double max_component_value = std::numeric_limits<double>::infinity();
+    PixelFilter filter{};
+    // False selects canonical unclamped output; accumulation always retains both.
+    bool compatibility_output = false;
     bool operator==(const Film &) const = default;
+};
+
+double filter_integral(const PixelFilter &filter);
+double filter_evaluate(const PixelFilter &filter, double x, double y);
+std::array<double, 3> packet_sensor_xyz(const PacketSample &sample,
+                                        const std::array<float, 4> &radiance);
+std::array<double, 3> film_mean(const Film &film, const FilmPixel &pixel);
+std::string validate_film_accumulation(const Film &film);
+Film make_packet_film(const RenderScene &scene, const RenderSettings &settings);
+
+// Packet owners are reduced in absolute-sample, pixel order. Splats retain their
+// strategy order and never advance destination sample counts.
+class PacketFilmBatch {
+  public:
+    PacketFilmBatch(const Film &film, std::uint64_t sample_count);
+    std::string add(std::span<const PacketSample> samples, std::span<const PacketSplat> splats);
+    std::string commit(Film &film);
+
+  private:
+    Film staged_;
+    std::uint64_t begin_ = 0, end_ = 0, next_sample_ = 0;
+    std::uint32_t next_pixel_ = 0;
+    std::string error_;
 };
 
 std::string validate_render_settings(const RenderSettings &settings);
@@ -297,16 +354,20 @@ std::string prepare_area_power(const RenderScene &scene, std::vector<std::vector
                                std::size_t &failed_instance,
                                std::size_t max_factors = 128 * 1024 * 1024);
 // Shared by area geometry preflight and Metal's world-space emitter upload.
-std::optional<double> area_image_mean(const ImagePyramid &image);
+std::optional<double> area_image_mean(const ImagePyramid &image, const ImageLimits &limits = {});
 
 std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                                                const GeometryTransform &transform);
 std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_patch_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_render_scene(const RenderScene &scene);
-std::string validate_image_light(const ImagePyramid &image);
-std::string validate_goniometric_image(const ImagePyramid &image);
-std::string validate_projection_image(const ImagePyramid &image);
+// Three times logical shading/staging storage plus fixed tables and packet
+// workspace. Excludes native acceleration structures, driver scratch and pipelines.
+std::string validate_render_preparation_budget(const RenderScene &scene,
+                                               std::size_t *estimated_bytes = nullptr);
+std::string validate_image_light(const ImagePyramid &image, const ImageLimits &limits = {});
+std::string validate_goniometric_image(const ImagePyramid &image, const ImageLimits &limits = {});
+std::string validate_projection_image(const ImagePyramid &image, const ImageLimits &limits = {});
 bool instance_uses_texture_context(const RenderScene &scene, std::size_t index);
 RenderScene make_demo_scene();
 Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model = RenderModel::demo,

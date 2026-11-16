@@ -8,6 +8,7 @@
 #include "pbrt.hpp"
 #include "pbrt_render.hpp"
 #include "render_job.hpp"
+#include "resource_limits.hpp"
 #include "stl.hpp"
 
 #include <algorithm>
@@ -298,6 +299,18 @@ std::string surface_model_description(const rypath::RenderScene &scene) {
     return result;
 }
 
+std::string render_sampler_description(const rypath::RenderSettings &settings,
+                                       const rypath::RenderScene &scene) {
+    const bool packet = scene.spectral_transport == rypath::SpectralTransport::packet;
+    auto description = rypath::sampler_description(settings.sampler,
+                                                   !packet && rypath::scene_has_dielectrics(scene),
+                                                   !packet && scene.perspective_lens.has_value());
+    if (packet)
+        description +=
+            "; packet fixed dimension allocation [0,920); keyed material-local Philox streams";
+    return description;
+}
+
 Metadata render_metadata(const rypath::RenderSettings &settings, std::string scene,
                          std::string profile, const rypath::RenderScene &render_scene,
                          std::string overrides) {
@@ -307,19 +320,16 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
     const auto seed = settings.sampler.kind != rypath::SamplerKind::independent
                           ? std::to_string(rypath::sobol_signed_seed(settings.seed))
                           : std::to_string(settings.seed);
-    Metadata metadata{
-        {"rypath.version", RYPATH_VERSION},
-        {"rypath.profile", std::move(profile)},
-        {"rypath.scene", std::move(scene)},
-        {"rypath.sampler",
-         rypath::sampler_description(settings.sampler, rypath::scene_has_dielectrics(render_scene),
-                                     render_scene.perspective_lens.has_value())},
-        {"rypath.seed", seed},
-        {"rypath.samplesPerPixel", std::to_string(settings.samples)},
-        {"rypath.batchSize", std::to_string(settings.batch_size)},
-        {"rypath.exposure", exposure.str()},
-        {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
-        {"rypath.overrides", std::move(overrides)}};
+    Metadata metadata{{"rypath.version", RYPATH_VERSION},
+                      {"rypath.profile", std::move(profile)},
+                      {"rypath.scene", std::move(scene)},
+                      {"rypath.sampler", render_sampler_description(settings, render_scene)},
+                      {"rypath.seed", seed},
+                      {"rypath.samplesPerPixel", std::to_string(settings.samples)},
+                      {"rypath.batchSize", std::to_string(settings.batch_size)},
+                      {"rypath.exposure", exposure.str()},
+                      {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
+                      {"rypath.overrides", std::move(overrides)}};
     if (render_scene.perspective_lens) {
         std::ostringstream camera;
         camera.imbue(std::locale::classic());
@@ -327,6 +337,8 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                << "perspective thin lens; radius=" << render_scene.perspective_lens->radius
                << "; focal distance=" << render_scene.perspective_lens->focal_distance
                << "; normalized aperture; unit ray weight";
+        if (render_scene.spectral_transport == rypath::SpectralTransport::packet)
+            camera << "; fixed packet header block 1";
         metadata.emplace_back("rypath.camera", camera.str());
     }
     if (const auto description = surface_model_description(render_scene); !description.empty())
@@ -338,8 +350,31 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                     }))
         metadata.emplace_back(
             "rypath.materialSampling",
-            "material-local-philox-v1; deterministic keyed local walks; stable-ID mix");
-    if (render_scene.volume_transport) {
+            render_scene.spectral_transport == rypath::SpectralTransport::packet
+                ? "role-separated material-local Philox; deterministic keyed local walks; "
+                  "stable-ID mix"
+                : "material-local-philox-v1; deterministic keyed local walks; stable-ID mix");
+    if (render_scene.spectral_transport == rypath::SpectralTransport::packet) {
+        metadata.emplace_back("rypath.integrator",
+                              render_scene.integrator == rypath::IntegratorKind::bdpt
+                                  ? "bdpt; vacuum surface transport; balance MIS; camera splats"
+                              : render_scene.integrator == rypath::IntegratorKind::volpath
+                                  ? "volpath; vacuum surface transport; power MIS"
+                                  : "path; vacuum surface transport; power MIS");
+        metadata.emplace_back(
+            "rypath.spectralTransport",
+            "four shared-geometry visible wavelengths; secondary termination for dispersion");
+        metadata.emplace_back(
+            "rypath.packetSampling",
+            "fixed dimension allocation [0,920); keyed material-local Philox streams");
+        if (std::isfinite(render_scene.max_component_value)) {
+            metadata.emplace_back("rypath.filmApproximation",
+                                  "exposed CIE sensor XYZ max-component clamp before filtering; "
+                                  "each camera sample and each splat clamped separately");
+            metadata.emplace_back("rypath.maxComponentValue",
+                                  std::to_string(render_scene.max_component_value));
+        }
+    } else if (render_scene.volume_transport) {
         metadata.emplace_back("rypath.integrator",
                               "volpath; scalar homogeneous spectral transport");
         metadata.emplace_back(
@@ -435,8 +470,9 @@ int render_pbrt(int argc, char *argv[]) {
     }
     const std::filesystem::path entry = argv[2];
     rypath::CheckpointOptions checkpoints;
-    std::filesystem::path output;
+    std::filesystem::path output, raw_output;
     std::uint64_t batch_size = 8;
+    auto resource_profile = rypath::ResourceProfile::standard;
     std::set<std::string_view> seen;
     for (int index = 3; index < argc; index += 2) {
         const std::string_view option = argv[index];
@@ -452,6 +488,13 @@ int render_pbrt(int argc, char *argv[]) {
                 return render_error(diagnostic);
         } else if (option == "--output") {
             output = argv[index + 1];
+        } else if (option == "--raw-output") {
+            raw_output = argv[index + 1];
+        } else if (option == "--resource-profile") {
+            const auto parsed = rypath::parse_resource_profile(argv[index + 1]);
+            if (!parsed)
+                return render_error("--resource-profile requires standard or large");
+            resource_profile = *parsed;
         } else if (option == "--batch-size") {
             if (!parse_unsigned(std::string_view{argv[index + 1]}, batch_size) || batch_size == 0) {
                 return render_error("--batch-size must be a positive unsigned integer");
@@ -469,17 +512,21 @@ int render_pbrt(int argc, char *argv[]) {
     if (const auto diagnostic = rypath::validate_checkpoint_paths(checkpoints, output, {});
         !diagnostic.empty())
         return render_error(diagnostic);
+    if (!raw_output.empty() && raw_output.extension() != ".exr")
+        return render_error("--raw-output requires a .exr path");
+    const auto resources = rypath::resource_limits(resource_profile);
     rypath::pbrt::RenderTranslation translated;
     std::vector<std::filesystem::path> inputs{entry};
     {
-        const auto checked = rypath::pbrt::check(entry);
+        const auto checked = rypath::pbrt::check(entry, resources.pbrt);
         if (checked.exit_code() != 0) {
             std::cout << rypath::pbrt::report(checked);
             return checked.exit_code();
         }
         for (const auto &dependency : checked.document.dependencies)
             inputs.push_back(dependency.resolved_path);
-        translated = rypath::pbrt::translate(checked, rypath::pbrt::Location{entry.string()});
+        translated = rypath::pbrt::translate(checked, rypath::pbrt::Location{entry.string()},
+                                             resources.pbrt);
     }
     for (const auto &diagnostic : translated.diagnostics) {
         std::cerr << rypath::pbrt::format_diagnostic(diagnostic);
@@ -493,6 +540,19 @@ int render_pbrt(int argc, char *argv[]) {
         return render_error("PBRT translation returned no render scene");
     }
     const auto &scene = owned_scene.value();
+    if (!raw_output.empty()) {
+        auto protected_paths = inputs;
+        protected_paths.push_back(output);
+        if (const auto diagnostic =
+                rypath::validate_checkpoint_paths(checkpoints, raw_output, protected_paths);
+            !diagnostic.empty())
+            return render_error(diagnostic);
+        rypath::CheckpointOptions raw_guard;
+        raw_guard.output = raw_output;
+        if (const auto diagnostic = rypath::validate_checkpoint_paths(raw_guard, output, inputs);
+            !diagnostic.empty())
+            return render_error("raw output must not alias the primary output or scene inputs");
+    }
     translated.settings.batch_size = batch_size;
     const auto &settings = translated.settings;
     if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
@@ -503,28 +563,30 @@ int render_pbrt(int argc, char *argv[]) {
     const bool qmc = settings.sampler.kind != rypath::SamplerKind::independent;
     const auto seed = qmc ? std::to_string(rypath::sobol_signed_seed(settings.seed))
                           : std::to_string(settings.seed);
-    std::cout
-        << "rypath " RYPATH_VERSION "\n"
-        << "Scene: " << entry.string() << '\n'
-        << "Render profile: pbrt-spectral-v1\n"
-        << "Sampler: "
-        << rypath::sampler_description(settings.sampler, rypath::scene_has_dielectrics(scene),
-                                       scene.perspective_lens.has_value())
-        << '\n'
-        << "Light sampling: separate environment and uniform triangle area (differs from PBRT)\n"
-        << "Color: calibrated CIE 1931 XYZ / sRGB\n"
-        << "Resolution: " << settings.width << 'x' << settings.height << '\n'
-        << "Samples per pixel: " << settings.samples << '\n'
-        << "Batch size: " << settings.batch_size << '\n'
-        << "Seed: " << seed << '\n'
-        << "Finite path maxdepth: " << scene.max_depth << '\n'
-        << "Output override: " << output.string() << " (Film.filename overridden; "
-        << output_description(output, precision)
-        << (output.extension() == ".png" ? "; Film.savefp16 overridden" : "; Film.savefp16 honored")
-        << ")\n";
+    std::cout << "rypath " RYPATH_VERSION "\n"
+              << "Scene: " << entry.string() << '\n'
+              << "Render profile: pbrt-spectral-v1\n"
+              << "Resource profile: " << rypath::resource_profile_name(resource_profile) << '\n'
+              << "Sampler: " << render_sampler_description(settings, scene) << '\n'
+              << (scene.spectral_transport == rypath::SpectralTransport::packet
+                      ? "Light sampling: uniform emitter selection with reciprocal endpoint PDFs "
+                        "(differs from PBRT)\n"
+                      : "Light sampling: separate environment and uniform triangle area (differs "
+                        "from PBRT)\n")
+              << "Color: calibrated CIE 1931 XYZ / sRGB\n"
+              << "Resolution: " << settings.width << 'x' << settings.height << '\n'
+              << "Samples per pixel: " << settings.samples << '\n'
+              << "Batch size: " << settings.batch_size << '\n'
+              << "Seed: " << seed << '\n'
+              << "Finite path maxdepth: " << scene.max_depth << '\n'
+              << "Output override: " << output.string() << " (Film.filename overridden; "
+              << output_description(output, precision)
+              << (output.extension() == ".png" ? "; Film.savefp16 overridden"
+                                               : "; Film.savefp16 honored")
+              << ")\n";
     if (const auto description = surface_model_description(scene); !description.empty())
         std::cout << "Surface model: " << description << '\n';
-    if (scene.volume_transport)
+    if (scene.volume_transport && scene.spectral_transport == rypath::SpectralTransport::scalar)
         std::cout
             << "Medium sampling: medium-local-philox-v1; hybrid with QMC samplers; independent "
                "segment counters\n";
@@ -549,7 +611,30 @@ int render_pbrt(int argc, char *argv[]) {
         translation_provenance += item;
     }
     metadata.emplace_back("rypath.sceneTranslation", std::move(translation_provenance));
-    return finish_job(job, settings, output, precision, metadata);
+    const int status = finish_job(job, settings, output, precision, metadata);
+    if (status != 0 || raw_output.empty())
+        return status;
+    auto raw = job.render.film;
+    raw.compatibility_output = false;
+    raw.exposure = 1;
+    std::erase_if(metadata, [](const auto &item) {
+        return item.first == "rypath.filmApproximation" ||
+               item.first == "rypath.maxComponentValue" || item.first == "rypath.exposure";
+    });
+    metadata.emplace_back("rypath.exposure", "1");
+    metadata.emplace_back("rypath.filmOutput", "unclamped unexposed raw Monte Carlo estimate; "
+                                               "camera reconstruction plus normalized splats");
+    if (!job.identity.empty()) {
+        metadata.emplace_back("rypath.checkpointIdentity", job.identity);
+        metadata.emplace_back("rypath.checkpointProvenance",
+                              rypath::checkpoint_provenance(job.segments));
+    }
+    if (const auto diagnostic =
+            rypath::write_exr(raw, raw_output, rypath::ExrPrecision::float32, metadata);
+        !diagnostic.empty())
+        return render_error(diagnostic);
+    std::cout << "Raw output: " << raw_output.string() << " (EXR FLOAT; unexposed; unclamped)\n";
+    return 0;
 }
 
 } // namespace
@@ -557,7 +642,7 @@ int render_pbrt(int argc, char *argv[]) {
 int main(int argc, char *argv[]) {
     if (argc == 1 || (argc == 2 && std::string_view{argv[1]} == "--help")) {
         std::cout << "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
-                     "       rypath --check-pbrt SCENE\n"
+                     "       rypath --check-pbrt SCENE [--resource-profile standard|large]\n"
                      "       rypath --check-obj MODEL.obj\n"
                      "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
                      "       rypath --check-gltf MODEL [--gltf-scene INDEX]\n"
@@ -566,6 +651,7 @@ int main(int argc, char *argv[]) {
                      "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
                      "              [--stl-colors auto|viscam|magics]\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
+                     "           [--resource-profile standard|large] [--raw-output PATH.exr]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n"
                      "       Render options: [--checkpoint PATH] [--resume PATH]\n"
@@ -590,9 +676,19 @@ int main(int argc, char *argv[]) {
         if (argc > 1 && std::string_view{argv[1]} == "--render-pbrt") {
             return render_pbrt(argc, argv);
         }
-        if (argc == 3 && std::string_view{argv[1]} == "--check-pbrt" &&
+        if ((argc == 3 || argc == 5) && std::string_view{argv[1]} == "--check-pbrt" &&
             !std::string_view{argv[2]}.starts_with("--")) {
-            const auto result = rypath::pbrt::check(argv[2]);
+            auto profile = rypath::ResourceProfile::standard;
+            if (argc == 5) {
+                const auto parsed = rypath::parse_resource_profile(argv[4]);
+                if (std::string_view{argv[3]} != "--resource-profile" || !parsed)
+                    return argument_error();
+                profile = *parsed;
+            }
+            const auto resources = rypath::resource_limits(profile);
+            if (argc == 5)
+                std::cout << "Resource profile: " << rypath::resource_profile_name(profile) << '\n';
+            const auto result = rypath::pbrt::check(argv[2], resources.pbrt);
             std::cout << rypath::pbrt::report(result);
             return result.exit_code();
         }

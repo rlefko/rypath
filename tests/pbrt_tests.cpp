@@ -909,11 +909,20 @@ void geometry_tests(const fs::path &directory) {
         std::string_view body;
         std::string_view code;
     };
+    const auto collapsed = check(write_file(directory, "retained-zero.pbrt", R"(WorldBegin
+Shape "trianglemesh" "point3 P" [16777216 0 0 16777217 0 0 16777216 1 0]
+"integer indices" [0 1 2]
+)"));
+    if (collapsed.exit_code() != 0 || !collapsed.scene)
+        throw std::runtime_error(report(collapsed));
+    require(find_diagnostic(collapsed.document, "zero-measure-triangles").severity ==
+                    Severity::warning &&
+                collapsed.inventory.triangles == 1 &&
+                collapsed.scene->geometry.meshes[0].triangles[0] ==
+                    std::array<std::uint32_t, 3>{0, 1, 2},
+            "binary32-collapsed PBRT face retained with source warning and primitive ID");
     constexpr std::array bad{
         Invalid{R"(Shape "trianglemesh" "point3 P" [0 0 0 1e39 0 0 0 1 0]
-"integer indices" [0 1 2])",
-                "invalid-geometry"},
-        Invalid{R"(Shape "trianglemesh" "point3 P" [16777216 0 0 16777217 0 0 16777216 1 0]
 "integer indices" [0 1 2])",
                 "invalid-geometry"},
         Invalid{R"(Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0]

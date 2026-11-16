@@ -62,12 +62,12 @@ add_library(rypath_geometry STATIC src/geometry.cpp src/bilinear.cpp src/mesh_di
 target_include_directories(rypath_geometry PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_geometry)
 
-add_library(rypath_png STATIC third_party/lodepng/lodepng.cpp)
+add_library(rypath_png STATIC third_party/lodepng/lodepng.cpp src/png_allocator.cpp)
 target_include_directories(rypath_png PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lodepng")
 set_target_properties(rypath_png PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES)
 target_compile_definitions(rypath_png PUBLIC LODEPNG_NO_COMPILE_ENCODER
     LODEPNG_NO_COMPILE_DISK LODEPNG_NO_COMPILE_ANCILLARY_CHUNKS LODEPNG_NO_COMPILE_CPP
-    LODEPNG_MAX_ALLOC=134217728 LODEPNG_MAX_BLOCKS=65536)
+    LODEPNG_NO_COMPILE_ALLOCATORS LODEPNG_MAX_ALLOC=1073741824 LODEPNG_MAX_BLOCKS=65536)
 if(RYPATH_ENABLE_SANITIZERS)
     target_compile_options(rypath_png PRIVATE -fsanitize=address,undefined
         -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
@@ -104,7 +104,7 @@ add_library(rypath_bsdf_tables STATIC src/bsdf_table.cpp)
 target_include_directories(rypath_bsdf_tables PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_bsdf_tables)
 
-add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp
+add_library(rypath_pbrt STATIC src/pbrt.cpp src/pbrt_parser.cpp src/pbrt_scene.cpp src/ply.cpp src/resource_limits.cpp
     src/spectrum_file.cpp src/loop_subdivision.cpp)
 target_include_directories(rypath_pbrt PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_pbrt PRIVATE rypath_geometry PUBLIC rypath_image rypath_pbrt_spectra rypath_bsdf_tables)
@@ -134,7 +134,7 @@ if(NOT rypath_prime_digest STREQUAL "a34ecb94f6f5c678cc4ab632e06b2ed3e7481f28adf
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_prime_table}")
 
-add_library(rypath_render STATIC src/render.cpp src/area_power.cpp src/sampling.cpp src/gaussian_filter.cpp src/triangle_attributes.cpp
+add_library(rypath_render STATIC src/render.cpp src/packet_film.cpp src/area_power.cpp src/sampling.cpp src/gaussian_filter.cpp src/triangle_attributes.cpp
     src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp)
 set_source_files_properties(src/gaussian_filter.cpp PROPERTIES COMPILE_OPTIONS
     "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off>")

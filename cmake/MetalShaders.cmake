@@ -21,8 +21,11 @@ set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cach
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
 set(rypath_metal_air_files)
-foreach(shader IN ITEMS smoke geometry render gltf_texture_probe texture_probe hdr_texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe conductor_probe gltf_probe dielectric_probe layered_probe table_bsdf_probe medium_probe)
+foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe render gltf_texture_probe texture_probe hdr_texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe conductor_probe gltf_probe dielectric_probe layered_probe table_bsdf_probe medium_probe)
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
+    if(shader STREQUAL "packet_scattering_probe")
+        set(source "${CMAKE_CURRENT_SOURCE_DIR}/tests/packet_scattering_probe.metal")
+    endif()
     set(air "${rypath_runtime_directory}/CMakeFiles/rypath-${shader}.air")
     set(shader_options)
     set(shader_dependencies "${source}")
@@ -32,11 +35,12 @@ foreach(shader IN ITEMS smoke geometry render gltf_texture_probe texture_probe h
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/medium_probe_wire.h")
     endif()
-    if(shader STREQUAL "geometry" OR shader STREQUAL "render" OR shader STREQUAL "masked_probe")
+    if(shader STREQUAL "geometry" OR shader STREQUAL "render" OR shader STREQUAL "masked_probe" OR shader STREQUAL "analytic_probe")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies
             "${CMAKE_CURRENT_SOURCE_DIR}/src/geometry_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bilinear.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/analytic.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/intersection.h"
         )
     endif()
@@ -58,7 +62,10 @@ foreach(shader IN ITEMS smoke geometry render gltf_texture_probe texture_probe h
             "${CMAKE_CURRENT_SOURCE_DIR}/src/conductor_probe_wire.h")
     endif()
     if(shader STREQUAL "render")
-        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_transport.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_walk.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/dielectric.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/sampling_contract.h")
@@ -79,10 +86,13 @@ foreach(shader IN ITEMS smoke geometry render gltf_texture_probe texture_probe h
             "${CMAKE_CURRENT_SOURCE_DIR}/src/texture_graph_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
     endif()
-    if(shader STREQUAL "render" OR shader STREQUAL "layered_probe" OR shader STREQUAL "table_bsdf_probe")
+    if(shader STREQUAL "render" OR shader STREQUAL "layered_probe" OR shader STREQUAL "table_bsdf_probe" OR shader STREQUAL "packet_scattering_probe")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scattering.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_scattering.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_layered.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_spectrum_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gltf_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/layered.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/transmission.h"
@@ -131,7 +141,7 @@ foreach(shader IN ITEMS smoke geometry render gltf_texture_probe texture_probe h
             "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
     endif()
-    if(shader STREQUAL "masked_probe")
+    if(shader STREQUAL "masked_probe" OR shader STREQUAL "analytic_probe")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/masked_probe_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/masked_intersection.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/alpha_hash.h")
@@ -140,7 +150,7 @@ foreach(shader IN ITEMS smoke geometry render gltf_texture_probe texture_probe h
         OUTPUT "${air}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
         COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
-            "-fmodules-cache-path=${rypath_metal_cache}" ${shader_options} -c "${source}" -o "${air}"
+            "-fmodules-cache-path=${rypath_metal_cache}" "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders" ${shader_options} -c "${source}" -o "${air}"
         DEPENDS ${shader_dependencies}
         VERBATIM
     )

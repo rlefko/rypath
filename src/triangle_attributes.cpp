@@ -178,6 +178,9 @@ std::string validate_normal_emission(const GeometryMesh &mesh, const GeometryTra
         if (std::ranges::any_of(triangle, [&](auto index) { return index >= normals.size(); })) {
             return "Emitter normal index is out of range";
         }
+        if (!triangle_has_area(mesh.positions[triangle[0]], mesh.positions[triangle[1]],
+                               mesh.positions[triangle[2]]))
+            continue;
         std::array<GeometryPoint, 3> p{};
         for (std::size_t corner = 0; corner < 3; ++corner) {
             const auto world = area_world_vertex(mesh.positions[triangle[corner]], transform);

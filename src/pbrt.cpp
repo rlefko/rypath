@@ -126,6 +126,9 @@ std::string report(const Result &result) {
     if (result.inventory.patches != 0) {
         output << result.inventory.patches << " bilinear patches, ";
     }
+    if (result.inventory.analytics != 0) {
+        output << result.inventory.analytics << " analytic surfaces, ";
+    }
     output << result.inventory.instances << " object placements\n"
            << "Rendering was not attempted.\n";
     return output.str();

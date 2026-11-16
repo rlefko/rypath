@@ -20,11 +20,27 @@ enum class ImageFileFormat { png, jpeg, exr, hdr };
 enum class ImageWrap { repeat, clamp, black };
 enum class ImageFilter { bilinear, trilinear, point, ewa };
 
+inline constexpr std::uint32_t image_dimension_ceiling = 8192;
+inline constexpr std::size_t image_file_ceiling = std::size_t{128} * 1024 * 1024;
+inline constexpr std::size_t image_retained_ceiling = std::size_t{2} * 1024 * 1024 * 1024;
+inline constexpr std::size_t image_scratch_ceiling = std::size_t{1} * 1024 * 1024 * 1024;
+
 struct ImageLimits {
     std::uint32_t max_dimension = 4096;
     std::size_t retained_bytes = 256 * 1024 * 1024;
     std::size_t scratch_bytes = 256 * 1024 * 1024;
+    std::size_t file_bytes = 16 * 1024 * 1024;
+    // Per-allocation ceiling, independent of the conservative peak scratch estimate.
+    std::size_t png_allocation_bytes = 128 * 1024 * 1024;
 };
+
+constexpr bool valid_image_limits(const ImageLimits &limits) {
+    return limits.max_dimension > 0 && limits.max_dimension <= image_dimension_ceiling &&
+           limits.file_bytes <= image_file_ceiling &&
+           limits.retained_bytes <= image_retained_ceiling &&
+           limits.scratch_bytes <= image_scratch_ceiling &&
+           limits.png_allocation_bytes <= image_scratch_ceiling;
+}
 
 struct DecodedImage {
     std::uint32_t width = 0;

@@ -6,6 +6,7 @@
 #include <metal_stdlib>
 
 #include "../src/geometry_wire.h"
+#include "analytic.h"
 #include "bilinear.h"
 
 using MixedIntersector =
@@ -40,10 +41,11 @@ struct PatchPayload {
     uint instance;
     uint primitive;
     metal::float2 uv;
+    uint primitive_kind;
 };
 
 inline PatchPayload empty_patch_payload() {
-    return {INFINITY, 0xffffffffu, 0xffffffffu, {0.0f, 0.0f}};
+    return {INFINITY, 0xffffffffu, 0xffffffffu, {0.0f, 0.0f}, rypath::geometry_wire::miss};
 }
 
 struct SurfaceHit {
@@ -54,6 +56,7 @@ struct SurfaceHit {
     float distance;
     metal::float2 coordinates;
     bool valid;
+    uint primitive_kind = 0;
 };
 
 inline SurfaceHit trace_surface(thread MixedIntersector &trace, metal::raytracing::ray ray,
@@ -71,7 +74,8 @@ inline SurfaceHit trace_surface(thread MixedIntersector &trace, metal::raytracin
                 payload.primitive,
                 hit.distance,
                 payload.uv,
-                payload.t == hit.distance && payload.instance != 0xffffffffu};
+                payload.t == hit.distance && payload.instance != 0xffffffffu,
+                payload.primitive_kind};
     }
     if (hit.type == metal::raytracing::intersection_type::triangle) {
         return {hit.type,
@@ -80,7 +84,8 @@ inline SurfaceHit trace_surface(thread MixedIntersector &trace, metal::raytracin
                 hit.primitive_id,
                 hit.distance,
                 hit.triangle_barycentric_coord,
-                true};
+                true,
+                rypath::geometry_wire::triangle};
     }
     return {hit.type, 0, 0, 0, 0, {0, 0}, hit.type == metal::raytracing::intersection_type::none};
 }

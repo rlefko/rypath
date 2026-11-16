@@ -160,7 +160,7 @@ void malformed(const std::filesystem::path &directory) {
     require(success(decode_exr(changed)).width == 19,
             "display window expanded or constrained data window");
     changed = input;
-    put32(changed, attribute(changed, "dataWindow") + 8, 5000);
+    put32(changed, attribute(changed, "dataWindow") + 8, 9000);
     ImageLimits generous;
     generous.max_dimension = 8192;
     require(decode_exr(changed, generous).limit_exceeded, "global decode dimension cap ignored");
@@ -251,6 +251,33 @@ void output() {
     });
     require(result.empty() && nested, "nested TLS allocation scope");
 }
+void large_profile_boundary() {
+    std::vector<float> rgb(std::size_t{8192} * 3);
+    for (std::size_t i = 0; i < rgb.size(); ++i)
+        rgb[i] = static_cast<float>(i % 17) / 16.f;
+    ImageLimits limits{.max_dimension = 8192,
+                       .retained_bytes = rgb.size() * sizeof(float),
+                       .scratch_bytes = std::size_t{4} * 1024 * 1024};
+    const auto bytes = encode({8192, 1, rgb, ExrPrecision::half}, limits);
+    require(decode_exr(bytes).limit_exceeded, "standard EXR axis limit changed");
+    const auto image = success(decode_exr(bytes, limits));
+    require(image.width == 8192 && image.height == 1 && image.floating_rgb == rgb,
+            "large EXR boundary changed exact HALF-representable values");
+    --limits.retained_bytes;
+    require(decode_exr(bytes, limits).limit_exceeded, "large EXR ignored exact retained boundary");
+    ++limits.retained_bytes;
+    limits.scratch_bytes = 1;
+    require(decode_exr(bytes, limits).limit_exceeded, "large EXR ignored scratch limit");
+    limits.scratch_bytes = std::size_t{4} * 1024 * 1024;
+    limits.max_dimension = 8193;
+    // Film output uses its own authored extent and may exceed texture limits.
+    // Keep that output contract separate from the decoder's hard 8192 axis cap.
+    rgb.resize(std::size_t{8193} * 3);
+    limits.retained_bytes = rgb.size() * sizeof(float);
+    const auto wider_output = encode({8193, 1, rgb, ExrPrecision::half}, limits);
+    require(!wider_output.empty() && decode_exr(wider_output, limits).limit_exceeded,
+            "EXR output extent was incorrectly coupled to input texture policy");
+}
 void budgets(const std::filesystem::path &directory) {
     const auto input = read(directory / "zip.exr");
     ImageLimits limits;
@@ -315,6 +342,7 @@ int main(int argc, char **argv) {
         fixtures(directory);
         malformed(directory);
         output();
+        large_profile_boundary();
         budgets(directory);
         std::cout << "EXR: 10 classic codecs, independent samples, tiles/origins, bounded failure "
                      "and output checks passed\n";

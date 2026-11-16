@@ -573,6 +573,9 @@ PlyMesh Decoder::decode() {
         fail("Unexpected data after declared PLY elements");
     }
 
+    // Preserve every face and index, including zero-measure triangles. The
+    // scene interpreter reports their retained/nonhittable classification at
+    // the shape's source location; native intersection never accepts them.
     GeometryData checked;
     checked.meshes.push_back(std::move(mesh_));
     if (const auto message = validate_geometry(checked); !message.empty()) {

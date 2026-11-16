@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "image_texture.hpp"
+#include "png_allocator.hpp"
 
 #include "ewa_reference.hpp"
 
 #include <algorithm>
 #include <array>
+#include <barrier>
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -19,6 +23,11 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+
+// Supported external allocator symbols used by the pinned LodePNG decoder.
+void *lodepng_malloc(std::size_t bytes);
+void *lodepng_realloc(void *pointer, std::size_t bytes);
+void lodepng_free(void *pointer);
 
 namespace {
 
@@ -712,6 +721,44 @@ void decode_jpeg_profiles() {
             "JPEG ignored its axis, byte, or work budget");
 }
 
+void large_jpeg_boundary() {
+    // Baseline gray JPEG with one zero DC/EOB pair per block: 8192x1 needs
+    // only 256 entropy bytes, exercising the decoder rather than a header stub.
+    Bytes jpeg{0xff, 0xd8};
+    const auto segment = [&](std::uint8_t marker, const Bytes &data) {
+        jpeg.insert(jpeg.end(), {0xff, marker, static_cast<std::uint8_t>((data.size() + 2) >> 8),
+                                 static_cast<std::uint8_t>(data.size() + 2)});
+        jpeg.insert(jpeg.end(), data.begin(), data.end());
+    };
+    Bytes quantization(65, 1);
+    quantization[0] = 0;
+    segment(0xdb, quantization);
+    segment(0xc0, {8, 0, 1, 0x20, 0, 1, 1, 0x11, 0});
+    for (const auto kind : {0, 0x10}) {
+        Bytes table(18, 0);
+        table[0] = static_cast<std::uint8_t>(kind);
+        table[1] = 1;
+        segment(0xc4, table);
+    }
+    segment(0xda, {1, 1, 0, 0, 63, 0});
+    jpeg.insert(jpeg.end(), 256, 0);
+    jpeg.insert(jpeg.end(), {0xff, 0xd9});
+    require(decode_jpeg(jpeg).limit_exceeded, "standard JPEG axis limit changed");
+    ImageLimits large{.max_dimension = 8192,
+                      .retained_bytes = std::size_t{8192} * 3,
+                      .scratch_bytes = std::size_t{1024} * 1024};
+    const auto image = success(decode_jpeg(jpeg, large));
+    require(image.width == 8192 && image.height == 1 &&
+                image.rgb == Bytes(std::size_t{8192} * 3, 128),
+            "large JPEG boundary did not decode exact constant pixels");
+    --large.retained_bytes;
+    require(decode_jpeg(jpeg, large).limit_exceeded,
+            "large JPEG ignored exact retained byte boundary");
+    ++large.retained_bytes;
+    large.scratch_bytes = 1;
+    require(decode_jpeg(jpeg, large).limit_exceeded, "large JPEG ignored scratch limit");
+}
+
 void append_jpeg_segment(Bytes &jpeg, std::uint8_t marker, std::span<const std::uint8_t> data) {
     const auto size = data.size() + 2;
     jpeg.insert(jpeg.end(), {0xff, marker, static_cast<std::uint8_t>(size >> 8),
@@ -830,6 +877,53 @@ void deflate_allocation_limit() {
     require(!result.value && !result.unsupported && result.limit_exceeded &&
                 result.diagnostic.find("could not allocate") != std::string::npos,
             "PNG16 decoder allocation failure was not reported as a resource limit");
+    const auto permitted = success(
+        decode_png(fixture(3072, 4096), {.png_allocation_bytes = std::size_t{1024} * 1024 * 1024}));
+    require(permitted.rgb.size() == std::size_t{3072} * 4096 * 6 &&
+                permitted.alpha.size() == std::size_t{3072} * 4096 * 2,
+            "explicit large PNG allocation ceiling did not decode the legacy fixture");
+
+    const auto small = fixture(33, 1);
+    const auto rejected = [&] { return decode_png(small, {.png_allocation_bytes = 1}); };
+    const auto accepted = [&] { return decode_png(small); };
+    auto low = std::async(std::launch::async, rejected);
+    auto high = std::async(std::launch::async, accepted);
+    require(low.get().limit_exceeded && high.get().value && accepted().value,
+            "PNG allocation policy leaked between concurrent calls or after failure");
+}
+
+void png_allocator_scope() {
+    auto *original = static_cast<std::uint8_t *>(lodepng_malloc(64));
+    require(original != nullptr, "default PNG allocator rejected small allocation");
+    original[0] = 42;
+    bool caught = false;
+    try {
+        PngAllocationScope tiny(1);
+        require(lodepng_realloc(original, 128) == nullptr && original[0] == 42,
+                "rejected PNG realloc damaged the original allocation");
+        throw 42; // Exercise exception unwinding without catching assertion failures.
+    } catch (int) {
+        caught = true;
+    }
+    require(caught, "PNG allocator exception test did not exercise unwinding");
+    lodepng_free(original);
+    auto *restored = lodepng_malloc(64);
+    require(restored != nullptr, "PNG allocation policy was not restored after exception");
+    lodepng_free(restored);
+
+    std::barrier rendezvous(2);
+    auto worker = [&](std::size_t cap) {
+        PngAllocationScope scope(cap);
+        rendezvous.arrive_and_wait();
+        void *pointer = lodepng_malloc(2);
+        const bool permitted = pointer != nullptr;
+        lodepng_free(pointer);
+        rendezvous.arrive_and_wait();
+        return permitted;
+    };
+    auto low = std::async(std::launch::async, worker, 1);
+    auto high = std::async(std::launch::async, worker, 64);
+    require(!low.get() && high.get(), "PNG allocator scope is not isolated per thread");
 }
 
 DecodedImage gray_strip(std::span<const std::uint8_t> values, bool vertical = false) {
@@ -1451,6 +1545,7 @@ int main(int argc, char *argv[]) {
         decode_profiles(argv[1]);
         decode_adam7_profiles();
         decode_jpeg_profiles();
+        large_jpeg_boundary();
         jpeg_dct_work_limit();
         decode_16_bit_profiles();
         decode_indexed_profiles();
@@ -1459,6 +1554,7 @@ int main(int argc, char *argv[]) {
         decode_errors();
         deflate_work_limit();
         deflate_allocation_limit();
+        png_allocator_scope();
         mip_pyramid();
         mip_pyramid_16_bit();
         npot_black_and_native_view();

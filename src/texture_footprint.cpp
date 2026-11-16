@@ -252,6 +252,16 @@ std::string prepare_texture_triangle_frames(const GeometryMesh &mesh,
     // frame. Conjugating the placement by a translation leaves its linear
     // action on the resulting tangents unchanged.
     for (const auto &triangle : mesh.triangles) {
+        for (const auto index : triangle)
+            if (index >= mesh.positions.size())
+                return "Triangle texture frame vertex index is out of range";
+        if (!triangle_has_area(mesh.positions[triangle[0]], mesh.positions[triangle[1]],
+                               mesh.positions[triangle[2]])) {
+            // Retain the source primitive ordinal. This zero-measure face can
+            // never reach shading; the parser diagnoses its retained status.
+            prepared.push_back({});
+            continue;
+        }
         std::array<FloatVector, 3> p{};
         std::array<UV, 3> uv{{{0, 0}, {1, 0}, {1, 1}}};
         for (std::size_t i = 0; i < triangle.size(); ++i) {

@@ -23,6 +23,7 @@ struct AcceptedPatch {
     uint primitive;
     float t;
     float2 uv;
+    uint primitive_kind = 0;
 
     bool matches(const thread Query &query) const {
         return query.get_committed_intersection_type() == intersection_type::bounding_box &&
@@ -88,9 +89,9 @@ inline SurfaceHit trace_masked_surface(metal::raytracing::ray ray,
             query.abort();
             return invalid_hit();
         }
-        const auto patch = static_cast<const device rypath::geometry_wire::Patch *>(
+        const auto record = static_cast<const device rypath::geometry_wire::ProceduralRecord *>(
             query.get_candidate_primitive_data());
-        if (!patch) {
+        if (!record) {
             query.abort();
             return invalid_hit();
         }
@@ -98,17 +99,30 @@ inline SurfaceHit trace_masked_surface(metal::raytracing::ray ray,
                                 ? ray.max_distance
                                 : query.get_committed_distance();
         PatchPredicate<Alpha> accept{alpha, instance, geometry, primitive, true};
-        const auto hit = intersect_bilinear_if(
-            patch_corner(*patch, 0), patch_corner(*patch, 1), patch_corner(*patch, 2),
-            patch_corner(*patch, 3), query.get_candidate_ray_origin(),
-            query.get_candidate_ray_direction(), ray.min_distance, t_max, accept);
+        AnalyticIntersection hit{false, INFINITY, {0, 0}};
+        if (record->kind == rypath::geometry_wire::bilinear_patch) {
+            const device auto &patch = record->patch;
+            const auto found = intersect_bilinear_if(
+                patch_corner(patch, 0), patch_corner(patch, 1), patch_corner(patch, 2),
+                patch_corner(patch, 3), query.get_candidate_ray_origin(),
+                query.get_candidate_ray_direction(), ray.min_distance, t_max, accept);
+            hit = {found.hit, found.t, found.uv};
+        } else if (record->kind == rypath::geometry_wire::analytic) {
+            hit = intersect_analytic_if(record->analytic, query.get_candidate_ray_origin(),
+                                        query.get_candidate_ray_direction(), ray.min_distance,
+                                        t_max, accept);
+        } else {
+            query.abort();
+            return invalid_hit();
+        }
         if (!accept.valid) {
             query.abort();
             return invalid_hit();
         }
         if (hit.hit) {
             query.commit_bounding_box_intersection(hit.t);
-            const AcceptedPatch candidate{instance, geometry, primitive, hit.t, hit.uv};
+            const AcceptedPatch candidate{instance, geometry, primitive,
+                                          hit.t,    hit.uv,   record->kind};
             // Retain the UV from the exact committed candidate, including ties
             // with other primitives or multiple roots rounded to the same t.
             if (candidate.matches(query)) {
@@ -125,11 +139,17 @@ inline SurfaceHit trace_masked_surface(metal::raytracing::ray ray,
                 query.get_committed_primitive_id(),
                 query.get_committed_distance(),
                 query.get_committed_triangle_barycentric_coord(),
-                true};
+                true,
+                rypath::geometry_wire::triangle};
     case intersection_type::bounding_box:
-        return {intersection_type::bounding_box, accepted_patch.instance, accepted_patch.geometry,
-                accepted_patch.primitive,        accepted_patch.t,        accepted_patch.uv,
-                accepted_patch.matches(query)};
+        return {intersection_type::bounding_box,
+                accepted_patch.instance,
+                accepted_patch.geometry,
+                accepted_patch.primitive,
+                accepted_patch.t,
+                accepted_patch.uv,
+                accepted_patch.matches(query),
+                accepted_patch.primitive_kind};
     case intersection_type::none:
         return {intersection_type::none, 0, 0, 0, 0, {0, 0}, true};
     default:

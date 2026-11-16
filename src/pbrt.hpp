@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -56,6 +57,13 @@ struct Limits {
     std::size_t token_bytes = 64 * 1024;
     std::size_t list_values = 1'000'000;
     std::size_t total_values = 2'000'000;
+    // Separate from unique decoded scalar values: six coordinates per frame
+    // previously shared the default total_values allowance.
+    std::size_t triangle_frame_entries = 2'000'000 / 6;
+    // Expanded placements consume normal entries independently of decoded data.
+    // The default retains historical total_values/three-coordinate accounting.
+    std::size_t shading_normal_entries = 2'000'000 / 3;
+    std::size_t preparation_bytes = std::numeric_limits<std::size_t>::max();
     std::size_t directives = 100'000;
     std::size_t diagnostics = 100;
     ImageLimits image{};
@@ -217,6 +225,7 @@ struct Inventory {
     std::size_t triangles = 0;
     std::size_t instances = 0;
     std::size_t patches = 0;
+    std::size_t analytics = 0;
 };
 struct Result {
     Document document;

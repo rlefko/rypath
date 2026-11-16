@@ -854,6 +854,16 @@ class Builder {
                            "Mapped material requires authored UV coordinates on every face corner");
             const auto &mesh = part.geometry;
             if (part.material) {
+                // Authored OBJ materials require a genuine surface frame,
+                // including untextured bindings. PBRT null slots are separate.
+                for (const auto &t : mesh.triangles)
+                    if (t[0] < mesh.positions.size() && t[1] < mesh.positions.size() &&
+                        t[2] < mesh.positions.size() &&
+                        !triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]],
+                                           mesh.positions[t[2]]))
+                        diagnostic(
+                            Severity::error, where, "obj.material.frame",
+                            "Authored material requires a nonzero-area triangle texture frame");
                 constexpr std::size_t coordinates_per_frame = 6;
                 if (mesh.triangles.size() >
                     (limits.input.total_values - std::min(value_work, limits.input.total_values)) /

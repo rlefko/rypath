@@ -187,10 +187,11 @@ int component(std::string_view name) {
 
 ImageResult<DecodedImage> decode_exr(std::span<const std::uint8_t> bytes,
                                      const ImageLimits &requested_limits) {
-    constexpr std::size_t max_bytes = std::size_t{256} * 1024 * 1024;
-    const ImageLimits limits{std::min(requested_limits.max_dimension, 4096u),
-                             std::min(requested_limits.retained_bytes, max_bytes),
-                             std::min(requested_limits.scratch_bytes, max_bytes)};
+    if (!valid_image_limits(requested_limits) || bytes.size() > requested_limits.file_bytes)
+        return {.value = {},
+                .diagnostic = "EXR: input exceeds the configured limit",
+                .limit_exceeded = true};
+    const auto &limits = requested_limits;
     BudgetScope scope(limits.scratch_bytes);
     try {
         if (!limits.max_dimension)

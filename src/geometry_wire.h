@@ -17,11 +17,32 @@ using Word = std::uint32_t;
 
 // Standard Metal acceleration structures support eight visibility mask bits.
 enum : Word { all_visible = 0xffu };
-enum : Word { miss = 0u, triangle = 1u, bilinear_patch = 2u, invalid_hit = 3u };
+enum : Word { miss = 0u, triangle = 1u, bilinear_patch = 2u, invalid_hit = 3u, analytic = 4u };
 
 // These corners are copied into the acceleration structure as per-primitive data.
 struct Patch {
     float corners[4][3];
+};
+
+// The first word tags every procedural primitive's embedded record.
+struct Analytic {
+    Word kind;
+    Word subtype;
+    float radius;
+    float z_min;
+    float z_max;
+    float phi_max;
+    float inner_radius;
+    float height;
+};
+
+// BLAS-only tag; the Patch shading ABI remains unchanged.
+struct ProceduralRecord {
+    Word kind;
+    union {
+        Patch patch;
+        Analytic analytic;
+    };
 };
 
 struct Ray {
@@ -43,6 +64,12 @@ struct Closest {
 
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "geometry wire scalar width");
 static_assert(sizeof(Patch) == 48 && alignof(Patch) == 4, "geometry wire patch size and alignment");
+static_assert(sizeof(ProceduralRecord) == 52 && alignof(ProceduralRecord) == 4 &&
+                  __builtin_offsetof(ProceduralRecord, patch) == 4,
+              "geometry wire procedural record");
+static_assert(sizeof(Analytic) == 32 && alignof(Analytic) == 4 &&
+                  __builtin_offsetof(Analytic, radius) == 8,
+              "geometry wire analytic layout");
 static_assert(sizeof(Ray) == 32 && alignof(Ray) == 4, "geometry wire ray size and alignment");
 static_assert(__builtin_offsetof(Ray, direction) == 12 && __builtin_offsetof(Ray, t_min) == 24 &&
                   __builtin_offsetof(Ray, t_max) == 28,

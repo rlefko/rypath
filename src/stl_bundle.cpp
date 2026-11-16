@@ -163,6 +163,12 @@ void validate(const Asset &asset, const Limits &limits, std::size_t scratch) {
             if (!error.empty())
                 throw std::runtime_error("STL checked geometry: " + error);
         }
+        // STL conversion retains its strict authored-facet policy; the native
+        // geometry API's PBRT null-slot support does not relax this adapter.
+        for (const auto &t : mesh.triangles)
+            if (!triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]],
+                                   mesh.positions[t[2]]))
+                fail("STL geometry has a zero-area facet");
         if (const auto error = validate_area_geometry(mesh, {}); !error.empty())
             throw std::runtime_error("STL native triangle rendering range: " + error);
         for (auto p : mesh.positions)

@@ -58,7 +58,7 @@ void jpeg_free(void *pointer) {
 #define STBI_NO_STDIO
 #define STBI_NO_HDR
 #define STBI_NO_LINEAR
-#define STBI_MAX_DIMENSIONS 4096
+#define STBI_MAX_DIMENSIONS 8192
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_MALLOC(size) jpeg_malloc(size)

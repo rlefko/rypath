@@ -23,8 +23,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = struct.Struct('<8s5I2Q')
-METADATA = struct.Struct('<IIQQQIIId32sI')
-PIXEL = struct.Struct('<6dQ')
+METADATA = struct.Struct('<IIQQQIIIdBBdIfff32sI')
+PIXEL = struct.Struct('<6dQ20d')
 TARGET = 256
 SIDE = 32
 TOLERANCE = 2e-5
@@ -54,6 +54,13 @@ class Checkpoint:
     randomization: int
     model: int
     exposure: float
+    packet: bool
+    compatibility_output: bool
+    max_component_value: float
+    filter_kind: int
+    filter_x_radius: float
+    filter_y_radius: float
+    filter_sigma: float
     identity: bytes
     segments: tuple
     pixels: tuple
@@ -65,12 +72,12 @@ class Checkpoint:
 
 
 def decode(data):
-    """Decode version-1 little-endian records without invoking the C++ codec."""
+    """Decode format-2 records independently, including every packet film plane."""
     if len(data) < HEADER.size + METADATA.size + 32:
         raise ValueError('truncated checkpoint')
     magic, *values = HEADER.unpack_from(data)
     versions, metadata_size, payload_size = values[:5], values[5], values[6]
-    if magic != b'RYPCHK\r\n' or versions != [1, 9, 11, 2, 1]:
+    if magic != b'RYPCHK\r\n' or versions != [2, 11, 13, 4, 2]:
         raise ValueError('unsupported checkpoint header/contract')
     if (metadata_size < METADATA.size or metadata_size > 1024**2 or
             payload_size > 4 * 1024**3 or payload_size % PIXEL.size or
@@ -79,13 +86,21 @@ def decode(data):
     if hashlib.sha256(data[:-32]).digest() != data[-32:]:
         raise ValueError('checkpoint checksum mismatch')
     fields = METADATA.unpack_from(data, HEADER.size)
-    width, height, target, batch, seed, sampler, randomization, model, exposure, identity, n = fields
-    if (not width or not height or not target or not batch or sampler not in (0, 1) or
+    (width, height, target, batch, seed, sampler, randomization, model, exposure,
+     packet, compatibility_output, clamp, filter_kind, xr, yr, sigma, identity, n) = fields
+    if (not width or not height or not target or not batch or sampler not in range(4) or
             randomization not in range(4) or model not in (0, 1) or
             not math.isfinite(exposure) or exposure < 0 or
-            (model == 0 and exposure != 1) or n > 1024 or
+            (model == 0 and (exposure != 1 or packet)) or n > 1024 or
+            packet not in (0, 1) or compatibility_output not in (0, 1) or
+            not clamp > 0 or filter_kind not in range(3) or
+            not all(math.isfinite(v) for v in (xr, yr, sigma)) or xr <= 0 or yr <= 0 or
+            (filter_kind == 2 and sigma <= 0) or
             width * height * PIXEL.size != payload_size):
         raise ValueError('invalid checkpoint settings')
+    integral = filter_integral(filter_kind, xr, yr, sigma)
+    if packet and (not integral > 0 or not math.isfinite(integral)):
+        raise ValueError('invalid packet reconstruction filter')
     metadata_end = HEADER.size + metadata_size
     at = HEADER.size + METADATA.size
     segments = []
@@ -120,11 +135,29 @@ def decode(data):
     if count > target or end != count:
         raise ValueError('sample count/provenance mismatch')
     for pixel in pixels:
-        if (pixel[6] != count or not all(math.isfinite(v) for v in pixel[:6]) or
-                not all(math.isfinite(pixel[c] + pixel[c + 3]) for c in range(3)) or
-                (not count and any(v != 0 for v in pixel[:6]))):
+        floating = pixel[:6] + pixel[7:]
+        pairs = [(pixel[start + c], pixel[start + c + 3])
+                 for start in (0, 7, 13, 19) for c in range(3)]
+        pairs.append((pixel[25], pixel[26]))
+        if (pixel[6] != count or not all(math.isfinite(v) for v in floating) or
+                not all(math.isfinite(a + b) for a, b in pairs) or
+                (not count and any(v != 0 for v in floating)) or
+                (packet and count and not pixel[25] + pixel[26] > 0)):
             raise ValueError('invalid pixel state')
-    return Checkpoint(*fields[:-1], tuple(segments), pixels, raw)
+    return Checkpoint(width, height, target, batch, seed, sampler, randomization, model,
+                      exposure, bool(packet), bool(compatibility_output), clamp, filter_kind,
+                      xr, yr, sigma, identity, tuple(segments), pixels, raw)
+
+
+def filter_integral(kind, x, y, sigma):
+    if kind == 0:
+        return 4 * x * y
+    if kind == 1:
+        return x * x * y * y
+    def integral(radius):
+        gaussian = math.exp(-radius * radius / (2 * sigma * sigma)) / (math.sqrt(2 * math.pi) * sigma)
+        return math.erf(radius / (math.sqrt(2) * sigma)) - 2 * radius * gaussian
+    return integral(x) * integral(y)
 
 
 def read_checkpoint(path):
@@ -136,20 +169,28 @@ def read_checkpoint(path):
 def compare(reference, resumed, exact):
     """Apply the fixed raw XYZ mean gate; same binary additionally requires bits."""
     keys = ('width', 'height', 'target', 'seed', 'sampler', 'randomization', 'model',
-            'exposure', 'identity', 'count')
+            'exposure', 'identity', 'count', 'packet', 'compatibility_output',
+            'max_component_value', 'filter_kind', 'filter_x_radius', 'filter_y_radius', 'filter_sigma')
     if any(getattr(reference, key) != getattr(resumed, key) for key in keys):
         raise ValueError('checkpoint identity/settings/count mismatch')
     if reference.count != reference.target:
         raise ValueError('comparison requires a completed target')
     worst = 0.0
     for a, b in zip(reference.pixels, resumed.pixels):
-        for c in range(3):
-            expected = (a[c] + a[c + 3]) / reference.count
-            actual = (b[c] + b[c + 3]) / resumed.count
+        # Check each raw/clamped camera/splat plane independently. A matching
+        # combined image must not conceal a missing plane or changed weights.
+        expected_values, actual_values = [], []
+        for start in (0, 7, 13, 19):
+            for c in range(3):
+                expected_values.append((a[start + c] + a[start + c + 3]) / reference.count)
+                actual_values.append((b[start + c] + b[start + c + 3]) / resumed.count)
+        expected_values.append((a[25] + a[26]) / reference.count)
+        actual_values.append((b[25] + b[26]) / resumed.count)
+        for expected, actual in zip(expected_values, actual_values):
             normalized = abs(expected - actual) / max(1.0, abs(expected))
             worst = max(worst, normalized)
             if normalized > TOLERANCE:
-                raise ValueError(f'raw XYZ mean differs: {normalized} > {TOLERANCE}')
+                raise ValueError(f'raw XYZ/film accumulation differs: {normalized} > {TOLERANCE}')
     if exact and reference.raw_pixels != resumed.raw_pixels:
         raise ValueError('same-binary raw pixel state bytes differ')
     return worst

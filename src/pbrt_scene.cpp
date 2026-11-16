@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#include "analytic.hpp"
 #include "bsdf_table.hpp"
 #include "loop_subdivision.hpp"
 #include "pbrt.hpp"
@@ -441,6 +442,11 @@ constexpr std::array bilinear_fields{
     alpha_field,
 };
 
+constexpr std::array sphere_fields{Field{"radius", "float"}, Field{"zmin", "float"},
+                                   Field{"zmax", "float"}, Field{"phimax", "float"}, alpha_field};
+constexpr std::array disk_fields{Field{"radius", "float"}, Field{"innerradius", "float"},
+                                 Field{"height", "float"}, Field{"phimax", "float"}, alpha_field};
+
 constexpr std::array loop_fields{
     Field{"P", "point3", 3, true, true},
     Field{"indices", "integer", 3, true, true},
@@ -648,6 +654,7 @@ class Interpreter {
     void light(const Directive &directive);
     std::shared_ptr<const CheckedSpectrumSource> spectrum_file(const Value &filename);
     void shape(const Directive &directive);
+    void analytic_shape(const Directive &directive, Descriptor descriptor);
     void ply_shape(const Directive &directive, Descriptor descriptor);
     void loop_shape(const Directive &directive, Descriptor descriptor);
     void register_mesh(const Location &location, Descriptor descriptor, GeometryMesh mesh);
@@ -1305,7 +1312,7 @@ void Interpreter::validate_option(const PendingOption &pending) {
         schema = type == "independent" ? std::span<const Field>{sampler_fields}
                                        : std::span<const Field>{sobol_sampler_fields};
     } else if (directive.name == "Integrator") {
-        supported_type = type == "volpath" ? "volpath" : "path";
+        supported_type = (type == "volpath" || type == "bdpt") ? type : "path";
         known = one_of(type, {"function", "simplepath", "lightpath", "simplevolpath", "volpath",
                               "bdpt", "mlt", "ambientocclusion", "randomwalk", "sppm"});
         schema = integrator_fields;
@@ -1757,13 +1764,24 @@ void Interpreter::shape(const Directive &directive) {
         unsupported(directive.location,
                     "Diffuse area lights on shapes inside object definitions are unsupported");
     }
-    if (!one_of(type, {"trianglemesh", "plymesh", "bilinearmesh", "loopsubdiv"})) {
+    if (one_of(type, {"cone", "paraboloid", "hyperboloid"})) {
+        error("legacy-shape", directive.location,
+              "PBRT v4 removed analytic Shape type \"" + std::string(type) + "\"");
+        authored_dependencies(directive, {"shape", type});
+        return;
+    }
+    if (!one_of(type, {"trianglemesh", "plymesh", "bilinearmesh", "loopsubdiv", "sphere", "disk",
+                       "cylinder"})) {
         dependencies(directive, "shape", type);
         deferred_type(directive, type, one_of(type, {"sphere", "cylinder", "disk", "curve"}));
         return;
     }
     ++result_.inventory.meshes;
     Descriptor descriptor = describe(directive);
+    if (one_of(type, {"sphere", "disk", "cylinder"})) {
+        analytic_shape(directive, std::move(descriptor));
+        return;
+    }
     if (type == "plymesh") {
         ply_shape(directive, std::move(descriptor));
         return;
@@ -1914,6 +1932,60 @@ void Interpreter::shape(const Directive &directive) {
     register_mesh(directive.location, std::move(descriptor), std::move(checked.meshes.front()));
 }
 
+void Interpreter::analytic_shape(const Directive &directive, Descriptor descriptor) {
+    const auto type = directive.arguments.front().text;
+    const auto fields = validate(descriptor, directive, "shape",
+                                 type == "disk" ? std::span<const Field>(disk_fields)
+                                                : std::span<const Field>(sphere_fields));
+    shape_controls(descriptor);
+    bool valid = true;
+    const auto read = [&](string_view name, float fallback) {
+        const auto found = fields.find(name);
+        if (found == fields.end())
+            return fallback;
+        const auto &value = found->second->values.front();
+        if (!representable_float(value.number)) {
+            error("invalid-geometry", value.location, "Analytic parameter overflows binary32");
+            valid = false;
+            return fallback;
+        }
+        return static_cast<float>(value.number);
+    };
+    GeometryAnalytic shape;
+    shape.kind = type == "sphere" ? AnalyticKind::sphere
+                 : type == "disk" ? AnalyticKind::disk
+                                  : AnalyticKind::cylinder;
+    shape.radius = read("radius", 1);
+    shape.inner_radius = read("innerradius", 0);
+    shape.height = read("height", 0);
+    const float phi = std::clamp(read("phimax", 360), 0.f, 360.f);
+    shape.phi_max = phi * (std::numbers::pi_v<float> / 180.f);
+    float z0 = read("zmin", type == "sphere" ? -shape.radius : -1),
+          z1 = read("zmax", type == "sphere" ? shape.radius : 1);
+    if (z0 > z1)
+        std::swap(z0, z1);
+    if (type == "sphere" && shape.radius > 0) {
+        z0 = std::clamp(z0, -shape.radius, shape.radius);
+        z1 = std::clamp(z1, -shape.radius, shape.radius);
+    }
+    shape.z_min = z0;
+    shape.z_max = z1;
+    if (!valid)
+        return;
+    if (const auto error = validate_analytic(shape); !error.empty()) {
+        auto source = directive.location;
+        if (const auto found = fields.find("radius"); found != fields.end() && !(shape.radius > 0))
+            source = found->second->location;
+        this->error("invalid-geometry", source, error);
+        return;
+    }
+    if (!charge_mesh(7, directive.location))
+        return;
+    GeometryMesh mesh;
+    mesh.analytics.push_back(shape);
+    register_mesh(directive.location, std::move(descriptor), std::move(mesh));
+}
+
 void Interpreter::loop_shape(const Directive &directive, Descriptor descriptor) {
     const auto fields = validate(descriptor, directive, "shape", loop_fields);
     shape_controls(descriptor);
@@ -2051,8 +2123,25 @@ bool Interpreter::charge_mesh(std::size_t count, const Location &location) {
 
 void Interpreter::register_mesh(const Location &location, Descriptor descriptor,
                                 GeometryMesh mesh) {
+    std::size_t zero_count = 0, first_zero = 0;
+    for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+        const auto indices = mesh.triangles[i];
+        if (!triangle_has_area(mesh.positions[indices[0]], mesh.positions[indices[1]],
+                               mesh.positions[indices[2]])) {
+            if (zero_count == 0)
+                first_zero = i;
+            ++zero_count;
+        }
+    }
+    if (zero_count != 0)
+        issue(Severity::warning, "zero-measure-triangles", location,
+              "Retained " + std::to_string(zero_count) +
+                  " zero-area triangles after binary32 conversion as nonhittable primitives; "
+                  "indices and primitive IDs are preserved (first primitive " +
+                  std::to_string(first_zero) + ")");
     result_.inventory.triangles += mesh.triangles.size();
     result_.inventory.patches += mesh.patches.size();
+    result_.inventory.analytics += mesh.analytics.size();
     const auto mesh_index = static_cast<std::uint32_t>(scene_.geometry.meshes.size());
     scene_.geometry.meshes.push_back(std::move(mesh));
     Shape checked_shape{std::move(descriptor), state_.material, state_.reverse, mesh_index,

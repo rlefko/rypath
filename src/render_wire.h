@@ -48,7 +48,7 @@ enum : Word {
 enum : Word { no_emission = 0xffffffffu };
 enum : Word { no_normals = 0xffffffffu };
 enum : Word { environment_grid_limit = 128 };
-enum : Word { triangle_primitive = 1, patch_primitive = 2 };
+enum : Word { triangle_primitive = 1, patch_primitive = 2, analytic_primitive = 4 };
 
 struct Point {
     float x;
@@ -183,6 +183,8 @@ struct Instance {
     Word inside_medium = 0xffffffffu;
     Word outside_medium = 0xffffffffu;
     Word area_power_begin = 0xffffffffu; // Per-primitive float words in material data.
+    Word analytic_begin = 0xffffffffu;   // geometry_wire::Analytic records in material data.
+    Word analytic_count = 0;
 };
 struct Medium {
     float sigma_a[471];
@@ -301,6 +303,15 @@ struct Parameters {
     Word gaussian_width = 0;
     Word gaussian_height = 0;
     float filter_sigma = .5f;
+    Word packet_transport = 0;
+    Word bidirectional = 0;
+    Word packet_lane_bytes = 0;
+    float packet_filter_weight = 1;
+    Point scene_center;
+    float scene_radius = 1;
+    Point camera_normal;
+    float camera_image_area = 1;
+    float camera_plane_depth = 1;
 };
 struct Sample {
     Word status;
@@ -350,7 +361,7 @@ static_assert(sizeof(GltfMaterial) == 68 && sizeof(MaterialAuxiliary) == 180 &&
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 112 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 120 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
                   __builtin_offsetof(Instance, emission) == 68 &&
@@ -359,7 +370,9 @@ static_assert(sizeof(Instance) == 112 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, patch_count) == 80 &&
                   __builtin_offsetof(Instance, uv_begin) == 84 &&
                   __builtin_offsetof(Instance, frame_begin) == 88 &&
-                  __builtin_offsetof(Instance, area_power_begin) == 108,
+                  __builtin_offsetof(Instance, area_power_begin) == 108 &&
+                  __builtin_offsetof(Instance, analytic_begin) == 112 &&
+                  __builtin_offsetof(Instance, analytic_count) == 116,
               "render instance layout");
 static_assert(sizeof(Medium) == 5656 && alignof(Medium) == 4 &&
                   __builtin_offsetof(Medium, g) == 5652,
@@ -388,7 +401,7 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 272 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 324 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, zsobol_log_spp) == 256 &&
                   __builtin_offsetof(Parameters, gaussian_width) == 260 &&
                   __builtin_offsetof(Parameters, gaussian_height) == 264 &&

@@ -128,6 +128,7 @@ GaussianFilterCompilation compile_gaussian_filter(const PixelFilter &filter) {
     if (!build_cdf(row_integrals, filter.y_radius, distribution.marginal_cdf, integral) ||
         !(integral > 0))
         return fail("Gaussian table has a zero or nonfinite binary32 integral");
+    distribution.integral = integral;
     return {std::move(distribution), {}};
 }
 

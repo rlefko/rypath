@@ -1,3 +1,100 @@
+add_executable(rypath_pbrt_packet_tests pbrt_packet_tests.cpp)
+target_link_libraries(rypath_pbrt_packet_tests PRIVATE rypath_pbrt_render)
+rypath_configure_host_target(rypath_pbrt_packet_tests)
+add_test(NAME pbrt.packet COMMAND rypath_pbrt_packet_tests)
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_packet_render_tests packet_render_tests.cpp)
+    target_link_libraries(rypath_packet_render_tests PRIVATE rypath_metal_backend)
+    set_target_properties(rypath_packet_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_packet_render_tests)
+    add_test(NAME metal.packet_render COMMAND rypath_packet_render_tests)
+    set_tests_properties(metal.packet_render PROPERTIES TIMEOUT 300)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_packet_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        target_compile_definitions(rypath_packet_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_RAY_TRACING=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.packet_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+add_executable(rypath_degenerate_triangle_tests degenerate_triangle_tests.cpp)
+target_link_libraries(rypath_degenerate_triangle_tests PRIVATE rypath_pbrt_render rypath_metal_backend)
+rypath_configure_host_target(rypath_degenerate_triangle_tests)
+add_test(NAME geometry.zero_measure COMMAND rypath_degenerate_triangle_tests)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.zero_measure COMMAND rypath_degenerate_triangle_tests --native "${rypath_metal_library}")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_degenerate_triangle_tests PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        target_compile_definitions(rypath_degenerate_triangle_tests PRIVATE RYPATH_ALLOW_NO_METAL_RAY_TRACING=1)
+    endif()
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.zero_measure PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+add_executable(rypath_pbrt_analytic_tests pbrt_analytic_tests.cpp)
+target_link_libraries(rypath_pbrt_analytic_tests PRIVATE rypath_pbrt_render)
+rypath_configure_host_target(rypath_pbrt_analytic_tests)
+add_test(NAME pbrt.analytic COMMAND rypath_pbrt_analytic_tests)
+
+add_executable(rypath_packet_driver_tests packet_driver_tests.cpp)
+target_link_libraries(rypath_packet_driver_tests PRIVATE rypath_metal_backend)
+rypath_configure_host_target(rypath_packet_driver_tests)
+add_test(NAME render.packet_driver COMMAND rypath_packet_driver_tests)
+
+add_executable(rypath_analytic_geometry_tests analytic_geometry_tests.cpp)
+target_link_libraries(rypath_analytic_geometry_tests PRIVATE rypath_metal_backend)
+rypath_configure_host_target(rypath_analytic_geometry_tests)
+add_test(NAME geometry.analytic COMMAND rypath_analytic_geometry_tests)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.analytic_geometry COMMAND rypath_analytic_geometry_tests --native "${rypath_metal_library}")
+    add_executable(rypath_analytic_render_tests analytic_render_tests.cpp)
+    target_link_libraries(rypath_analytic_render_tests PRIVATE rypath_pbrt_render rypath_metal_backend)
+    rypath_configure_host_target(rypath_analytic_render_tests)
+    set_target_properties(rypath_analytic_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    add_test(NAME metal.analytic_render COMMAND rypath_analytic_render_tests)
+    set_tests_properties(metal.analytic_render PROPERTIES TIMEOUT 120)
+
+    foreach(suite IN ITEMS analytic_masked packet_scattering)
+        add_executable(rypath_${suite}_probe ${suite}_probe.mm)
+        target_link_libraries(rypath_${suite}_probe PRIVATE rypath_metal_backend "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+        set_target_properties(rypath_${suite}_probe PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+        target_compile_options(rypath_${suite}_probe PRIVATE -fobjc-arc)
+        rypath_configure_host_target(rypath_${suite}_probe)
+        add_test(NAME metal.${suite} COMMAND rypath_${suite}_probe "${rypath_metal_library}")
+        if(RYPATH_ALLOW_NO_METAL_DEVICE)
+            target_compile_definitions(rypath_${suite}_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+            set_tests_properties(metal.${suite} PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+    foreach(target IN ITEMS rypath_analytic_geometry_tests rypath_analytic_masked_probe rypath_analytic_render_tests)
+        if(RYPATH_ALLOW_NO_METAL_DEVICE)
+            target_compile_definitions(${target} PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        endif()
+        if(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+            target_compile_definitions(${target} PRIVATE RYPATH_ALLOW_NO_METAL_RAY_TRACING=1)
+        endif()
+    endforeach()
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.analytic_geometry metal.analytic_masked metal.analytic_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+foreach(suite IN ITEMS resource_limits packet_spectrum)
+    add_executable(rypath_${suite}_tests ${suite}_tests.cpp)
+    target_link_libraries(rypath_${suite}_tests PRIVATE rypath_pbrt)
+    rypath_configure_host_target(rypath_${suite}_tests)
+    add_test(NAME core.${suite} COMMAND rypath_${suite}_tests)
+endforeach()
+
+target_link_libraries(rypath_resource_limits_tests PRIVATE rypath_render rypath_pbrt_render)
+
 # glTF portable image and scene contracts.
 foreach(suite IN ITEMS gltf_texture gltf_scene)
     add_executable(rypath_${suite}_tests ${suite}_tests.cpp)
@@ -171,7 +268,7 @@ endfunction()
 
 string(CONCAT help_text
     "Usage: rypath [--help | --version | --metal-info | --metal-smoke-test]\n"
-    "       rypath --check-pbrt SCENE\n"
+    "       rypath --check-pbrt SCENE [--resource-profile standard|large]\n"
     "       rypath --check-obj MODEL.obj\n"
     "       rypath --convert-obj MODEL.obj --output DIRECTORY\n"
     "       rypath --check-gltf MODEL [--gltf-scene INDEX]\n"
@@ -180,6 +277,7 @@ string(CONCAT help_text
     "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
     "              [--stl-colors auto|viscam|magics]\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
+    "           [--resource-profile standard|large] [--raw-output PATH.exr]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n"
     "       Render options: [--checkpoint PATH] [--resume PATH]\n"
@@ -715,6 +813,16 @@ add_test(NAME cli.render_pbrt COMMAND "${CMAKE_COMMAND}"
     "-Dallow_no_ray_tracing=${RYPATH_ALLOW_NO_METAL_RAY_TRACING}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/check_pbrt_render_cli.cmake")
 set_tests_properties(cli.render_pbrt PROPERTIES TIMEOUT 60
+    SKIP_REGULAR_EXPRESSION "${render_skip_regex}")
+
+add_test(NAME cli.raw_output COMMAND "${CMAKE_COMMAND}"
+    "-Dexecutable=$<TARGET_FILE:rypath>"
+    "-Dtest_directory=${CMAKE_CURRENT_BINARY_DIR}/pbrt-render/$<CONFIG>/raw-cli"
+    "-Dmetal_enabled=${RYPATH_ENABLE_METAL}"
+    "-Dallow_no_device=${RYPATH_ALLOW_NO_METAL_DEVICE}"
+    "-Dallow_no_ray_tracing=${RYPATH_ALLOW_NO_METAL_RAY_TRACING}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/check_raw_output_cli.cmake")
+set_tests_properties(cli.raw_output PROPERTIES TIMEOUT 60
     SKIP_REGULAR_EXPRESSION "${render_skip_regex}")
 
 if(RYPATH_ENABLE_METAL)

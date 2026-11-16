@@ -247,7 +247,16 @@ void invalid(const fs::path &directory) {
                     std::string::npos &&
                 !polygon.document.dependencies.front().visited && polygon.inventory.triangles == 0,
             report(polygon));
-    diagnostic(check_mesh(directory, replace(triangle, "3 0 1 2", "3 0 1 1")), "invalid-geometry");
+    const auto retained = check_mesh(directory, replace(triangle, "3 0 1 2", "3 0 1 1"));
+    if (retained.exit_code() != 0 || !retained.scene)
+        throw std::runtime_error(report(retained));
+    const auto warning = std::ranges::find(retained.document.diagnostics, "zero-measure-triangles",
+                                           &Diagnostic::code);
+    require(warning != retained.document.diagnostics.end() &&
+                warning->severity == Severity::warning && retained.inventory.triangles == 1 &&
+                retained.scene->geometry.meshes[0].triangles[0] ==
+                    std::array<std::uint32_t, 3>{0, 1, 1},
+            "PLY zero-area slot retains indices and receives a warning");
     diagnostic(check_mesh(directory,
                           replace(replace(triangle, "float y", "double y"), "0 1 0", "0 1e50 0")),
                "invalid-ply");

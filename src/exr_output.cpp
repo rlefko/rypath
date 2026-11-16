@@ -67,6 +67,8 @@ std::string write_exr(const Film &film, const std::filesystem::path &path, ExrPr
     if (pixels == 0 || pixels != film.pixels.size() ||
         pixels > std::numeric_limits<std::size_t>::max() / (3 * sizeof(float)))
         return "invalid EXR film dimensions";
+    if (const auto diagnostic = validate_film_accumulation(film); !diagnostic.empty())
+        return diagnostic;
     if (!std::isfinite(film.exposure))
         return "cannot write a film with nonfinite exposure";
     std::vector<float> rgb;
@@ -78,7 +80,7 @@ std::string write_exr(const Film &film, const std::filesystem::path &path, ExrPr
         const auto finite = [](double value) { return std::isfinite(value); };
         if (!std::ranges::all_of(pixel.sum, finite) ||
             !std::ranges::all_of(pixel.correction, finite) ||
-            !std::ranges::all_of(film_mean(pixel), finite))
+            !std::ranges::all_of(film_mean(film, pixel), finite))
             return "cannot write a film with nonfinite XYZ values";
         for (const double value : linear_rgb(film, pixel)) {
             if (!std::isfinite(value))
