@@ -974,6 +974,111 @@ std::string validate_raster_support(const RasterCamera &camera, const PixelFilte
     return {};
 }
 
+// Enclose the complete raster/filter and aperture support before device execution.
+// These conservative bounds include binary32 rounding and Metal subnormal flushing.
+std::string validate_lens_support(const RasterCamera &camera, const PerspectiveLens &lens,
+                                  const PixelFilter &filter, std::uint32_t width,
+                                  std::uint32_t height) {
+    if (!std::isnormal(lens.radius) || lens.radius <= 0 || !std::isnormal(lens.focal_distance) ||
+        lens.focal_distance <= 0) {
+        return "Perspective lens radius and focal distance must be positive normal binary32 values";
+    }
+    const double ratio = double{lens.radius} / lens.focal_distance;
+    if (ratio < float_min || ratio > float_max) {
+        return "Perspective lens radius/focal distance ratio is not normal binary32";
+    }
+    if (!valid_raster_camera(camera) || !valid_pixel_filter(filter) || width == 0 || height == 0 ||
+        !finite(lens.camera_x) || !finite(lens.camera_y)) {
+        return "Perspective lens requires finite raster coefficients, axes and positive dimensions";
+    }
+    const auto u = to_vector(lens.camera_x);
+    const auto v = to_vector(lens.camera_y);
+    const auto corner = to_vector(camera.corner);
+    const auto dx = to_vector(camera.dx);
+    const auto dy = to_vector(camera.dy);
+    constexpr double tolerance = 128 * float_roundoff;
+    if (std::abs(dot(u, u) - 1) > tolerance || std::abs(dot(v, v) - 1) > tolerance ||
+        std::abs(dot(u, v)) > tolerance ||
+        squared_length(cross(u, dx)) > tolerance * tolerance * squared_length(dx) ||
+        squared_length(cross(v, dy)) > tolerance * tolerance * squared_length(dy)) {
+        return "Perspective lens axes must be rigid and aligned with the raster basis";
+    }
+    const auto x = triangle_raster_interval(width, filter.x_radius);
+    const auto y = triangle_raster_interval(height, filter.y_radius);
+    if (!x || !y || !triangle_ray_range(camera, *x, *y)) {
+        return "Perspective lens filter support exceeds the safe binary32 raster direction range";
+    }
+    const double x_abs = std::max(std::abs((*x)[0]), std::abs((*x)[1]));
+    const double y_abs = std::max(std::abs((*y)[0]), std::abs((*y)[1]));
+    const auto origin = to_vector(camera.origin);
+    Vector direction_error{}, aperture_bound{};
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const double offset = lens.radius * (std::abs(u[axis]) + std::abs(v[axis]));
+        const double ideal_error = 32 * float_roundoff * offset + 8 * float_min;
+        const double origin_bound = std::abs(origin[axis]) + offset + ideal_error;
+        if (origin_bound * (1 + float_roundoff) + float_min > float_max) {
+            return "Perspective lens aperture origin overflows binary32";
+        }
+        // The shader subtracts the camera center from the rounded ray origin.
+        // Bound addition and subtraction rounding, including permitted RTZ.
+        const double origin_error = 2 * float_roundoff * origin_bound + float_min;
+        const double offset_error = ideal_error + origin_error +
+                                    2 * float_roundoff * (offset + ideal_error + origin_error) +
+                                    float_min;
+        const double raster_bound =
+            std::abs(corner[axis]) + x_abs * std::abs(dx[axis]) + y_abs * std::abs(dy[axis]);
+        aperture_bound[axis] = offset / lens.focal_distance;
+        direction_error[axis] = 32 * float_roundoff * raster_bound + 8 * float_min +
+                                offset_error / lens.focal_distance +
+                                8 * float_roundoff * aperture_bound[axis];
+        double direction_bound = 0;
+        for (const double column : *x) {
+            direction_bound =
+                std::max(direction_bound,
+                         endpoint_bound(*y, dy[axis], std::fma(column, dx[axis], corner[axis])));
+        }
+        if (offset + offset_error > float_max ||
+            direction_bound + aperture_bound[axis] + direction_error[axis] > float_max) {
+            return "Perspective lens aperture or direction overflows binary32";
+        }
+    }
+    // Each independent aperture axis must move the binary32 world origin.
+    // Otherwise a nominally positive aperture silently becomes a pinhole/line.
+    std::array<Vector, 2> aperture_diameters{};
+    std::size_t diameter_index = 0;
+    for (const auto &basis : {u, v}) {
+        bool moves = false;
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const double displacement = lens.radius * basis[axis];
+            aperture_diameters[diameter_index][axis] =
+                double{static_cast<float>(origin[axis] + displacement)} -
+                static_cast<float>(origin[axis] - displacement);
+            moves = moves || static_cast<float>(origin[axis] + displacement) != origin[axis] ||
+                    static_cast<float>(origin[axis] - displacement) != origin[axis];
+        }
+        if (!moves) {
+            return "Perspective lens aperture collapses at the binary32 camera origin";
+        }
+        ++diameter_index;
+    }
+    if (squared_length(cross(aperture_diameters[0], aperture_diameters[1])) == 0) {
+        return "Perspective lens aperture axes collapse at the binary32 camera origin";
+    }
+    const auto normal = cross(dx, dy);
+    const Vector abs_normal{std::abs(normal[0]), std::abs(normal[1]), std::abs(normal[2])};
+    const double separation = std::abs(dot(normal, corner)) - dot_error(normal, corner);
+    const double aperture_projection = ratio * (std::abs(dot(normal, u)) + dot_error(normal, u) +
+                                                std::abs(dot(normal, v)) + dot_error(normal, v));
+    const double uncertainty = x_abs * (std::abs(dot(normal, dx)) + dot_error(normal, dx)) +
+                               y_abs * (std::abs(dot(normal, dy)) + dot_error(normal, dy)) +
+                               aperture_projection + dot(abs_normal, direction_error);
+    if (!(separation > (uncertainty + (abs_normal[0] + abs_normal[1] + abs_normal[2]) * float_min) *
+                           (1 + double_slack))) {
+        return "Perspective lens direction can collapse in binary32 over the aperture support";
+    }
+    return {};
+}
+
 std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                                                const GeometryTransform &transform) {
     const auto point = apply_transform(transform, to_vector(position), true);
@@ -1524,6 +1629,16 @@ std::string validate_render_scene(const RenderScene &scene) {
     }
     if (auto error = validate_image_textures(scene); !error.empty()) {
         return error;
+    }
+    if (scene.perspective_lens) {
+        if (scene.model != RenderModel::pbrt || !scene.raster_camera) {
+            return "Perspective lens requires a PBRT raster camera";
+        }
+        if (const auto error = validate_lens_support(*scene.raster_camera, *scene.perspective_lens,
+                                                     PixelFilter{}, 1, 1);
+            !error.empty()) {
+            return error;
+        }
     }
     if (scene.model == RenderModel::pbrt) {
         if (!scene.raster_camera || !valid_raster_camera(*scene.raster_camera)) {

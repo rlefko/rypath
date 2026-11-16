@@ -292,6 +292,10 @@ struct Parameters {
     Word distant_begin;
     Word distant_count;
     float distant_scene_radius;
+    float lens_radius = 0;
+    float focal_distance = 1e6f;
+    Point lens_x;
+    Point lens_y;
 };
 struct Sample {
     Word status;
@@ -302,6 +306,7 @@ struct Sample {
     float radiance;
     Word scatterings;
     Word random_words[4];
+    Word lens_words[2]{};
 };
 
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "render wire scalar width");
@@ -376,7 +381,11 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 224 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 256 && alignof(Parameters) == 4 &&
+                  __builtin_offsetof(Parameters, lens_radius) == 224 &&
+                  __builtin_offsetof(Parameters, focal_distance) == 228 &&
+                  __builtin_offsetof(Parameters, lens_x) == 232 &&
+                  __builtin_offsetof(Parameters, lens_y) == 244 &&
                   __builtin_offsetof(Parameters, distant_begin) == 212 &&
                   __builtin_offsetof(Parameters, distant_count) == 216 &&
                   __builtin_offsetof(Parameters, distant_scene_radius) == 220 &&
@@ -398,7 +407,8 @@ static_assert(sizeof(Parameters) == 224 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, randomization) == 176 &&
                   __builtin_offsetof(Parameters, sobol_scale_exponent) == 180,
               "render parameter layout");
-static_assert(sizeof(Sample) == 44 && alignof(Sample) == 4 &&
+static_assert(sizeof(Sample) == 52 && alignof(Sample) == 4 &&
+                  __builtin_offsetof(Sample, lens_words) == 44 &&
                   __builtin_offsetof(Sample, wavelength) == 16 &&
                   __builtin_offsetof(Sample, random_words) == 28,
               "render sample layout");

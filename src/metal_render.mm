@@ -110,6 +110,13 @@ wire::Parameters camera_parameters(const RenderScene &scene) {
     if (scene.model == RenderModel::pbrt) {
         const auto &camera = *scene.raster_camera;
         result.origin = pack(camera.origin);
+        if (scene.perspective_lens) {
+            const auto &lens = *scene.perspective_lens;
+            result.lens_radius = lens.radius;
+            result.focal_distance = lens.focal_distance;
+            result.lens_x = pack(lens.camera_x);
+            result.lens_y = pack(lens.camera_y);
+        }
         // Reuse the demo camera slots for the PBRT world-space raster basis.
         result.forward = pack(camera.corner);
         result.right = pack(camera.dx);
@@ -1173,6 +1180,21 @@ struct MetalRenderScene::Impl {
                                      parameters.filter_y_radius};
             result.diagnostic =
                 validate_raster_support(camera, filter, request.width, request.height);
+            if (!result.diagnostic.empty()) {
+                return result;
+            }
+        }
+        if (parameters.lens_radius != 0) {
+            const RasterCamera camera{unpack(parameters.origin), unpack(parameters.forward),
+                                      unpack(parameters.right), unpack(parameters.up)};
+            const PerspectiveLens lens{parameters.lens_radius, parameters.focal_distance,
+                                       unpack(parameters.lens_x), unpack(parameters.lens_y)};
+            const PixelFilter filter{parameters.filter_kind == wire::triangle_filter
+                                         ? PixelFilterKind::triangle
+                                         : PixelFilterKind::box,
+                                     parameters.filter_x_radius, parameters.filter_y_radius};
+            result.diagnostic =
+                validate_lens_support(camera, lens, filter, request.width, request.height);
             if (!result.diagnostic.empty()) {
                 return result;
             }

@@ -65,6 +65,7 @@ foreach(shader IN ITEMS smoke geometry render gltf_texture_probe texture_probe h
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/sobol_probe_wire.h")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/lens_probe_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_footprint.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/texture_graph.h"

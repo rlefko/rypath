@@ -327,7 +327,6 @@ void rejects_unsupported_profile(const fs::path &scratch) {
     };
     constexpr std::array cases{
         Rejection{R"(Camera "perspective")", "", 1},
-        Rejection{R"(Camera "perspective")", R"(Camera "perspective" "float lensradius" [0.1])", 1},
         Rejection{R"(Camera "perspective")", "Scale 2 1 1\nCamera \"perspective\"", 2},
         Rejection{R"(Film "rgb")", R"(Film "rgb" "float whitebalance" [6500])", 2},
         Rejection{R"(Film "rgb")", R"(Film "rgb" "float cropwindow" [0.1 0.8 0.2 0.9])", 2},

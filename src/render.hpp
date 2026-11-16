@@ -153,6 +153,12 @@ struct RasterCamera {
     GeometryPoint dx;
     GeometryPoint dy;
 };
+struct PerspectiveLens {
+    float radius = 0;
+    float focal_distance = 1e6f;
+    GeometryPoint camera_x{1, 0, 0};
+    GeometryPoint camera_y{0, 1, 0};
+};
 struct AreaEmission {
     std::array<float, 471> radiance{};
     bool two_sided = false;
@@ -211,6 +217,7 @@ struct RenderScene {
     RenderCamera camera;
     RenderModel model = RenderModel::demo;
     std::optional<RasterCamera> raster_camera{};
+    std::optional<PerspectiveLens> perspective_lens{};
     std::array<float, 471> environment{};
     std::uint32_t max_depth = 5;
     double exposure = 1;
@@ -278,6 +285,9 @@ struct Film {
 std::string validate_render_settings(const RenderSettings &settings);
 std::string validate_raster_support(const RasterCamera &camera, const PixelFilter &filter,
                                     std::uint32_t width, std::uint32_t height);
+std::string validate_lens_support(const RasterCamera &camera, const PerspectiveLens &lens,
+                                  const PixelFilter &filter, std::uint32_t width,
+                                  std::uint32_t height);
 // Shared by area geometry preflight and Metal's world-space emitter upload.
 std::optional<GeometryPoint> area_world_vertex(GeometryPoint position,
                                                const GeometryTransform &transform);

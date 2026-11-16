@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "checkpoint.hpp"
 #include "pbrt_render.hpp"
 #include "render_driver.hpp"
+#include "render_identity.hpp"
+#include <unistd.h>
 
 #include <bit>
 #include <cmath>
@@ -308,6 +311,24 @@ int native() {
                     "native cancellation did not commit the expected point in the sequence");
             control = {};
             control.initial_film = &partial.film;
+            std::optional<RenderCheckpoint> disk_checkpoint;
+            if (scene.perspective_lens) {
+                const auto path = std::filesystem::temp_directory_path() /
+                                  ("rypath-lens-resume-" + std::to_string(getpid()) + ".bin");
+                RenderCheckpoint checkpoint;
+                checkpoint.film = partial.film;
+                checkpoint.settings = settings;
+                checkpoint.identity = render_identity(scene, settings);
+                checkpoint.segments = {{0, 6, "lens-test", "Metal", "native", "test"}};
+                require(write_checkpoint(checkpoint, path).empty(), "lens checkpoint write");
+                auto restored = read_checkpoint(path);
+                std::filesystem::remove(path);
+                require(restored.value.has_value(), restored.diagnostic);
+                disk_checkpoint = std::move(restored.value);
+                require(disk_checkpoint->identity == render_identity(scene, settings),
+                        "lens checkpoint identity survives disk round trip");
+                control.initial_film = &disk_checkpoint->film;
+            }
             settings.batch_size = 4;
             auto resumed = render_progressive(scene, settings, control);
             require(resumed.completion == RenderCompletion::complete &&
@@ -340,6 +361,19 @@ int native() {
             require(!translated.scene->projection_lights.empty(),
                     "projection fixture lost its light");
         check_resume(*translated.scene);
+        if (std::string_view(fixture) == "image-secondary.pbrt") {
+            auto &lens_scene = *translated.scene;
+            const auto normalize = [](GeometryPoint p, float sign) {
+                const auto length = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+                return GeometryPoint{sign * p.x / length, sign * p.y / length, sign * p.z / length};
+            };
+            if (!lens_scene.raster_camera)
+                throw std::runtime_error("lens resume fixture requires raster camera");
+            lens_scene.perspective_lens =
+                PerspectiveLens{.2f, 4, normalize(lens_scene.raster_camera.value().dx, 1),
+                                normalize(lens_scene.raster_camera.value().dy, -1)};
+            check_resume(lens_scene);
+        }
     }
     // Empty geometry takes a distinct kernel. A scattering camera medium must
     // retain point contributions through cancellation and a changed batch size.
@@ -358,6 +392,8 @@ int native() {
     light.position = {1, 0, 0};
     light.intensity.fill(1);
     empty.point_lights.push_back(light);
+    check_resume(empty);
+    empty.perspective_lens = PerspectiveLens{.15f, 3, {1, 0, 0}, {0, 1, 0}};
     check_resume(empty);
     empty.point_lights.clear();
     SpotLight spot;
