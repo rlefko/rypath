@@ -62,6 +62,9 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/src/conductor_probe_wire.h")
     endif()
     if(shader STREQUAL "render")
+        # Bound code growth in the mixed-material renderer. Default -O2 can
+        # exhaust the runtime compiler on full Pavilion scenes; retain strict FP.
+        list(APPEND shader_options -Os)
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_transport.h"

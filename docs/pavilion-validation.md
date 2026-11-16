@@ -42,6 +42,14 @@ families. Scalar entry points and full-family scattering probes keep their
 existing dispatch behavior. Cold Metal pipeline creation remains a separate
 startup cost that must be included in end-to-end timing.
 
+The renderer translation unit uses Metal `-Os` while retaining `-fno-fast-math`.
+Apple recommends size optimization to limit code duplication from inlining and
+unrolling in complex shaders; see its
+[shader-library guidance](https://developer.apple.com/documentation/metal/minimizing-the-binary-size-of-a-shader-library).
+This is a compiler configuration change, with the same estimator and sampling
+expressions. It also affects scalar entry points in that translation unit, so
+legacy output validation covers those paths.
+
 Packet transport is selected by BDPT or a finite `Film.maxcomponentvalue`.
 `path` and `volpath` then use the packet camera-path estimator with direct-light
 MIS. Packet transport currently requires vacuum at the camera, every placed
@@ -200,6 +208,25 @@ tests pass, including unbound mix children for thin dielectric, diffuse
 transmission, measured and Fourier materials. The Metal-disabled LLVM build
 passes all 148 tests. Final full-scene artifacts and build checks will be recorded
 after their runs finish.
+
+The material-specialized `-O2` replay also passes all 150 packet comparison gates,
+retained at `.cache/packet-transport-specialized/packet-transport-rw0sm0yc/`.
+However, its full-material Pavilion previews fail to compile on this machine:
+the Metal compiler aborts in an LLVM machine-function pass with an allocation
+error after about 43 minutes for day and 47 minutes for night. No samples were
+committed; automatic retries were stopped. Reduced diagnostics are retained in
+`.cache/pavilion-validation/day-compiler-crash.json` and the corresponding night
+record. The failed pass is not identified more specifically.
+
+Changing only the renderer compilation to `-Os` completes both 320×170, 16-sample
+previews, including PNG and raw EXR output, in 14.924 and 15.970 seconds. The
+unchanged host executables and the 17 unchanged shader modules isolate the
+configuration change. These end-to-end observations include concurrent work;
+they establish successful compilation and rendering, not a controlled throughput
+benchmark. The `-Os` build also preserves all 89 legacy PFMs and the demo's raw
+accumulation exactly, plus the retained coated and measured control PFMs. Records
+are under `.cache/pavilion-size-experiment/` and
+`.cache/pavilion-validation/legacy-os/`.
 
 ### Coated-material comparison boundary
 
