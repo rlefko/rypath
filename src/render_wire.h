@@ -182,6 +182,7 @@ struct Instance {
     Word invisible_emitter = 0;
     Word inside_medium = 0xffffffffu;
     Word outside_medium = 0xffffffffu;
+    Word area_power_begin = 0xffffffffu; // Per-primitive float words in material data.
 };
 struct Medium {
     float sigma_a[471];
@@ -344,7 +345,7 @@ static_assert(sizeof(GltfMaterial) == 68 && sizeof(MaterialAuxiliary) == 180 &&
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 108 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 112 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
                   __builtin_offsetof(Instance, emission) == 68 &&
@@ -352,7 +353,8 @@ static_assert(sizeof(Instance) == 108 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, patch_begin) == 76 &&
                   __builtin_offsetof(Instance, patch_count) == 80 &&
                   __builtin_offsetof(Instance, uv_begin) == 84 &&
-                  __builtin_offsetof(Instance, frame_begin) == 88,
+                  __builtin_offsetof(Instance, frame_begin) == 88 &&
+                  __builtin_offsetof(Instance, area_power_begin) == 108,
               "render instance layout");
 static_assert(sizeof(Medium) == 5656 && alignof(Medium) == 4 &&
                   __builtin_offsetof(Medium, g) == 5652,

@@ -40,14 +40,45 @@ static inline float illuminant_spectrum(Images images, float3 rgb, float wavelen
 }
 
 static inline float area_radiance(Images images, uint index, float scale, float2 uv,
-                                  float wavelength) {
+                                  float wavelength, bool checked_power = false) {
     if (index >= images.parameters->texture_count)
         return NAN;
     const device wire::ImageTexture &texture = images.textures[index];
     const float3 rgb =
         rypath_image::lookup_base(texture, images.levels, images.texels, images.transfer,
                                   *images.parameters, float2(uv.x, 1.0f - uv.y));
-    return scale * illuminant_spectrum(images, rgb, wavelength);
+    if (!checked_power)
+        return scale * illuminant_spectrum(images, rgb, wavelength);
+    if (scale == 0)
+        return 0;
+    const float nearest = round(wavelength);
+    if (!isfinite(wavelength) || nearest < 360 || nearest > 830)
+        return NAN;
+    // Preserve zero spectra and explicit zero scale, but fail the entire dispatch
+    // when a nonzero intermediate is lost before a later multiplier can restore it.
+    if (!all(isfinite(rgb)) || any(rgb < 0) || any((rgb != 0) & !isnormal(rgb)))
+        return NAN;
+    const float amplitude = 2 * max(max(rgb.x, rgb.y), rgb.z);
+    if (amplitude == 0)
+        return 0;
+    if (!isnormal(amplitude))
+        return NAN;
+    const float3 normalized_rgb = rgb / amplitude;
+    if (any((normalized_rgb != 0) & !isnormal(normalized_rgb)) ||
+        any((rgb > 0) & (normalized_rgb == 0)))
+        return NAN;
+    const float reconstructed = rypath_image::spectrum(normalized_rgb, wavelength, images.spectra);
+    const float untinted = amplitude * reconstructed;
+    const float d65 = images.illuminant[uint(nearest) - 360u];
+    const float spectral = untinted * d65;
+    const float result = scale * spectral;
+    if (!isfinite(reconstructed) || reconstructed < 0 ||
+        !(reconstructed == 0 || isnormal(reconstructed)) ||
+        !(untinted == 0 || isnormal(untinted)) || (reconstructed > 0 && untinted == 0) ||
+        !(spectral == 0 || isnormal(spectral)) || (untinted > 0 && d65 > 0 && spectral == 0) ||
+        !(result == 0 || isnormal(result)) || (scale > 0 && spectral > 0 && result == 0))
+        return NAN;
+    return result;
 }
 
 static inline float3 square_to_sphere(float2 uv) {
