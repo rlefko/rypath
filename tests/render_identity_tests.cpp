@@ -22,7 +22,7 @@ void identity_checks() {
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
     // the 3629-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "9aa34ca626d3d93253b8db9796fce753ab8506f7dcc175ec196b886cd72fb328",
+                "0cab46b6c96626bc2ecc09d127d3dc26a3ed0e902596a1917bbd97863321b08b",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -257,6 +257,7 @@ void identity_checks() {
     }
     deep([](auto &s) { s.point_lights.pop_back(); }, "populated point count");
     deep([](auto &s) { std::swap(s.point_lights[0], s.point_lights[1]); }, "point order");
+    deep([](auto &s) { s.area_emissions[0].power = 3; }, "area power");
     deep([](auto &s) { s.area_emissions[0].gltf_material = 0; }, "glTF emitter binding");
     deep(
         [](auto &s) {

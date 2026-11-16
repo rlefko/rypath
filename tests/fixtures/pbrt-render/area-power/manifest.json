@@ -1,0 +1,30 @@
+{
+  "unequal-triangles": {
+    "bytes": 877,
+    "sha256": "fe0889991eb7f5add628e845f714abbc9dcfe3c3c3d0295b715b80b674388e92"
+  },
+  "affine-two-sided": {
+    "bytes": 901,
+    "sha256": "a87de7bc145e6d5e7d23f07811d14cafa16c1e3fb6cc77279dba6543726cbd36"
+  },
+  "curved-patch": {
+    "bytes": 791,
+    "sha256": "1a1055bcfb413a5bdf3d442af65042e742d6d17924109305697ae86b7390f50d"
+  },
+  "hdr-image": {
+    "bytes": 887,
+    "sha256": "1cc20a65cecc6cb09fc485e15013692d1c2c80cb380823e4eab21c99f2a5a307"
+  },
+  "mixed-lighting": {
+    "bytes": 908,
+    "sha256": "b0990a4d76692eb3951249720b586f5ea6cf12d86d73b9fd22c45fb9610b1cfa"
+  },
+  "homogeneous-volume": {
+    "bytes": 1020,
+    "sha256": "a7608428dcae21000638d54a962b1bb920afc9641fd5657ed277ff0fc1db3403"
+  },
+  "external-ply": {
+    "bytes": 879,
+    "sha256": "020bb178c601a5f5a62152eee510103386b0a132d413c85f5b7bc96c00d5c723"
+  }
+}

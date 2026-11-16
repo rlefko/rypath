@@ -71,8 +71,8 @@ double patch_area(const std::array<V, 4> &p) {
     return area;
 }
 bool normal_or_zero(float x) { return x == 0 || (std::isfinite(x) && std::isnormal(x)); }
-std::string prepare_instance_power(const RenderScene &scene, std::size_t index, double mean,
-                                   std::vector<float> &factors) {
+std::string prepare_instance_power(const RenderScene &scene, std::size_t index,
+                                   std::vector<float> &factors, double mean) {
     const auto &emission = scene.area_emissions[scene.instance_emissions[index]];
     const auto &instance = scene.geometry.instances[index];
     if (instance.mesh_index >= scene.geometry.meshes.size())
@@ -208,7 +208,7 @@ std::string prepare_area_power(const RenderScene &scene, std::vector<std::vector
         if (binding == no_area_emission || scene.area_emissions[binding].power == 0)
             continue;
         failed_instance = i;
-        if (auto error = prepare_instance_power(scene, i, means[binding], factors[i]);
+        if (auto error = prepare_instance_power(scene, i, factors[i], means[binding]);
             !error.empty())
             return error;
     }
