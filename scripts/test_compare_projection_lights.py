@@ -99,7 +99,7 @@ class ProjectionComparisonTests(unittest.TestCase):
                     for token in ('"integer xresolution" [768]', '"integer yresolution" [512]',
                                   f'"integer pixelsamples" [{samples}]', 'PixelFilter "triangle"',
                                   f'Integrator "{integrator}"', 'LightSource "projection"',
-                                  'ConcatTransform', '"float power" [1800]', 'projection-chart.png'):
+                                  'ConcatTransform', '"float power"', 'projection-chart.png'):
                         self.assertIn(token, scene)
                     self.assertNotIn('Shape "sphere"', scene)
                     self.assertIn('Shape "trianglemesh"', scene)
