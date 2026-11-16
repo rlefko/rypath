@@ -386,6 +386,13 @@ constexpr std::array spot_light_fields{
     Field{"conedeltaangle", "float"},
 };
 
+constexpr std::array goniometric_light_fields{
+    point_light_fields[0],
+    point_light_fields[1],
+    point_light_fields[2],
+    Field{.name = "filename", .type = "string", .required = true},
+};
+
 constexpr std::array area_light_fields{
     light_fields[0],
     light_fields[1],
@@ -556,7 +563,7 @@ class Interpreter {
         bsdf_cache_;
     std::map<std::pair<std::size_t, bool>, std::shared_ptr<const CheckedImageSource>>
         decoded_images_;
-    using ImageVariant = std::tuple<std::size_t, ImageEncoding, ImageWrap, float, bool, bool>;
+    using ImageVariant = std::tuple<std::size_t, ImageEncoding, ImageWrap, float, bool, bool, bool>;
     std::map<ImageVariant, std::shared_ptr<const ImagePyramid>> image_pyramids_;
     std::map<const ImagePyramid *, bool> binary_pyramids_;
     ImageLimits image_limits_;
@@ -604,7 +611,7 @@ class Interpreter {
                                                       const CheckedImageSource &source,
                                                       ImageEncoding encoding, ImageWrap wrap,
                                                       float gamma = 1, bool native = false,
-                                                      bool gltf = false);
+                                                      bool gltf = false, bool goniometric = false);
     void light(const Directive &directive);
     std::shared_ptr<const CheckedSpectrumSource> spectrum_file(const Value &filename);
     void shape(const Directive &directive);
@@ -732,10 +739,9 @@ void Interpreter::dependencies(const Directive &directive, string_view target, s
     } else if (target == "shape" && type == "bilinearmesh") {
         file("emissionfilename", DependencyKind::image);
     } else if ((target == "texture" && one_of(type, {"imagemap", "ptex"})) ||
-               (target == "light" && type == "projection")) {
+               (target == "light" && one_of(type, {"projection", "goniometric"}))) {
         file("filename", DependencyKind::image, true);
-    } else if ((target == "light" && one_of(type, {"infinite", "goniometric"})) ||
-               directive.name == "AreaLightSource") {
+    } else if ((target == "light" && type == "infinite") || directive.name == "AreaLightSource") {
         file("filename", DependencyKind::image);
     } else if (target == "medium" && type == "nanovdb") {
         file("filename", DependencyKind::scene, true);
@@ -918,7 +924,7 @@ void Interpreter::scan_after_include(const Directive &directive) {
             return;
         }
         dependencies(directive, "light", argument);
-        if (name == "LightSource" && one_of(argument, {"point", "spot"})) {
+        if (name == "LightSource" && one_of(argument, {"point", "spot", "goniometric"})) {
             scan_parameter(point_light_fields.front());
             return;
         }
@@ -1571,10 +1577,24 @@ void Interpreter::light(const Directive &directive) {
         scene_.lights.push_back(std::move(descriptor));
         return;
     }
-    if (!area && one_of(type, {"point", "spot"})) {
+    if (!area && one_of(type, {"point", "spot", "goniometric"})) {
         Descriptor descriptor = describe(directive);
         descriptor.outside_medium = state_.media.outside;
-        if (type == "spot")
+        if (type == "goniometric") {
+            validate(descriptor, directive, "light", goniometric_light_fields);
+            const auto *filename = descriptor.effective_parameter("filename").parameter;
+            if (filename && filename->values.size() == 1) {
+                if (filename->values.front().text.empty()) {
+                    error("invalid-parameter", filename->location,
+                          "Goniometric image filename must be nonempty");
+                } else if (const auto source = image_source(filename->values.front())) {
+                    descriptor.native_image =
+                        image_pyramid(filename->location, *source, ImageEncoding::srgb,
+                                      ImageWrap::clamp, 1, true, false, true);
+                    descriptor.native_image_source = source;
+                }
+            }
+        } else if (type == "spot")
             validate(descriptor, directive, "light", spot_light_fields);
         else
             validate(descriptor, directive, "light", point_light_fields);
@@ -1611,11 +1631,11 @@ void Interpreter::light(const Directive &directive) {
                       "Spot from and to must be distinct");
         }
         const auto count = std::ranges::count_if(scene_.lights, [](const Descriptor &light) {
-            return one_of(light.authored.arguments.front().text, {"point", "spot"});
+            return one_of(light.authored.arguments.front().text, {"point", "spot", "goniometric"});
         });
         if (count >= 64) {
             error("limit-exceeded", directive.location,
-                  "Combined point and spot light count exceeds the limit of 64");
+                  "Combined point, spot, and goniometric light count exceeds the limit of 64");
             return;
         }
         scene_.lights.push_back(std::move(descriptor));
@@ -2504,11 +2524,10 @@ std::shared_ptr<const DecodedImage> Interpreter::decode_image(const std::filesys
     }
 }
 
-std::shared_ptr<const ImagePyramid> Interpreter::image_pyramid(const Location &location,
-                                                               const CheckedImageSource &source,
-                                                               ImageEncoding encoding,
-                                                               ImageWrap wrap, float gamma,
-                                                               bool native, bool gltf) {
+std::shared_ptr<const ImagePyramid>
+Interpreter::image_pyramid(const Location &location, const CheckedImageSource &source,
+                           ImageEncoding encoding, ImageWrap wrap, float gamma, bool native,
+                           bool gltf, bool goniometric) {
     if (!gltf)
         encoding = image_effective_encoding(*source.pixels, encoding);
     if (encoding != ImageEncoding::gamma) {
@@ -2517,15 +2536,16 @@ std::shared_ptr<const ImagePyramid> Interpreter::image_pyramid(const Location &l
     const auto dependency_index =
         inventoried_paths_.at({DependencyKind::image, source.resolved_path});
     auto [cached, first_attempt] = image_pyramids_.try_emplace(
-        ImageVariant{dependency_index, encoding, wrap, gamma, native, gltf});
+        ImageVariant{dependency_index, encoding, wrap, gamma, native, gltf, goniometric});
     if (!first_attempt) {
         return cached->second;
     }
     try {
         auto pyramid =
-            gltf     ? build_gltf_image_pyramid(*source.pixels, encoding, image_limits_)
-            : native ? build_image_base(*source.pixels, encoding, wrap, image_limits_, gamma)
-                     : build_image_pyramid(*source.pixels, encoding, wrap, image_limits_, gamma);
+            goniometric ? build_goniometric_image_base(*source.pixels, image_limits_)
+            : gltf      ? build_gltf_image_pyramid(*source.pixels, encoding, image_limits_)
+            : native    ? build_image_base(*source.pixels, encoding, wrap, image_limits_, gamma)
+                        : build_image_pyramid(*source.pixels, encoding, wrap, image_limits_, gamma);
         if (!pyramid.value) {
             issue(pyramid.unsupported ? Severity::unsupported : Severity::error,
                   pyramid.unsupported      ? "unsupported-feature"

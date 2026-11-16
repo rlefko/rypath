@@ -180,6 +180,14 @@ struct SpotLight {
     float cos_falloff_start = 1;
     float cos_falloff_end = 0;
 };
+struct GoniometricLight {
+    GeometryPoint position{};
+    std::array<float, 471> intensity{};
+    // Actual inverse declaration transform followed by PBRT's Y/Z swap.
+    // Unlike spot cones, this unit-direction map must not be rescaled.
+    std::array<float, 9> light_from_world{1, 0, 0, 0, 0, 1, 0, 1, 0};
+    std::uint32_t image_texture = UINT32_MAX;
+};
 struct SurfaceTransforms {
     std::array<double, 16> shape{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     std::array<double, 16> placement{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -199,6 +207,7 @@ struct RenderScene {
     std::vector<AreaEmission> area_emissions{};
     std::vector<PointLight> point_lights{};
     std::vector<SpotLight> spot_lights{};
+    std::vector<GoniometricLight> goniometric_lights{};
     std::vector<DistantLight> distant_lights{};
     float distant_scene_radius = 0;
     // Empty or one emission index (or no_area_emission) per source instance.
@@ -264,6 +273,7 @@ std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTrans
 std::string validate_patch_geometry(const GeometryMesh &mesh, const GeometryTransform &transform);
 std::string validate_render_scene(const RenderScene &scene);
 std::string validate_image_light(const ImagePyramid &image);
+std::string validate_goniometric_image(const ImagePyramid &image);
 bool instance_uses_texture_context(const RenderScene &scene, std::size_t index);
 RenderScene make_demo_scene();
 Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model = RenderModel::demo,

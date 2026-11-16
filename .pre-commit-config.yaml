@@ -32,7 +32,7 @@ repos:
       - id: check-merge-conflict
       - id: check-yaml
       - id: end-of-file-fixer
-        exclude: ^(.*\.hdr$|tests/fixtures/pbrt-render/image-assets/PngSuite\.LICENSE$|third_party/lodepng/|third_party/openexr/|third_party/tinyobjloader/|third_party/earcut/|third_party/cgltf/|third_party/mikktspace/|third_party/stb/stb_image\.h$|LICENSE$|third_party/cie/(CIE_xyz_1931_2deg\.csv(_metadata\.json)?|LICENSE\.txt)$|tests/fixtures/(obj|stl|gltf)/external/|tests/fixtures/pbrt/(cornell-box\.pbrt|LICENSE\.txt)$)
+        exclude: ^(.*\.hdr$|tests/fixtures/pbrt-render/(image-assets|goniometric-lights/assets)/PngSuite\.LICENSE$|third_party/lodepng/|third_party/openexr/|third_party/tinyobjloader/|third_party/earcut/|third_party/cgltf/|third_party/mikktspace/|third_party/stb/stb_image\.h$|LICENSE$|third_party/cie/(CIE_xyz_1931_2deg\.csv(_metadata\.json)?|LICENSE\.txt)$|tests/fixtures/(obj|stl|gltf)/external/|tests/fixtures/pbrt/(cornell-box\.pbrt|LICENSE\.txt)$)
       - id: trailing-whitespace
         exclude: ^(.*\.hdr$|third_party/lodepng/|third_party/openexr/|third_party/tinyobjloader/|third_party/earcut/|third_party/cgltf/|third_party/mikktspace/|third_party/stb/stb_image\.h$|LICENSE$|third_party/cie/(CIE_xyz_1931_2deg\.csv(_metadata\.json)?|LICENSE\.txt)$|tests/fixtures/(obj|stl|gltf)/external/|tests/fixtures/pbrt/cornell-box\.pbrt$|tests/fixtures/pbrt-render/cornell-box-(adapted|attributes|sobol-(fastowen|owen|permutedigits))\.pbrt$)
 

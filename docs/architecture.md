@@ -196,12 +196,25 @@ advance together. See the [point-light profile](pbrt-rendering.md#point-lights)
 and [validation](point-light-validation.md).
 
 Owned spot records add a checked inverse direction map and cosine thresholds.
-A shared tagged positional-light buffer packs points followed by spots and feeds
-the same surface and volume visibility loops, including geometry-free media.
+A shared tagged positional-light buffer packs points, spots and goniometric
+sources and feeds the same surface and volume visibility loops, including
+geometry-free media.
 Spot attenuation follows the pinned cubic cosine model; the point branch retains
-its existing arithmetic. Both kinds share a 64-source bound and unit delta-position
+its existing arithmetic. All three kinds share a 64-source bound and unit delta-position
 MIS weight. See the [spot profile](pbrt-rendering.md#spot-lights) and
 [validation](spot-light-validation.md).
+
+Goniometric records add a native scalar image binding and the actual inverse
+of the declaration's linear transform, followed by PBRT's Y/Z swap. Translation
+accepts rigid transforms and reflections within the documented Gram tolerance;
+it preserves the inverse without direction normalization or common rescaling.
+Square gray/RGB/RGBA maps reuse the bounded image codecs and native storage.
+RGB becomes a quantized scalar average; lookup uses the pinned equal-area map,
+nearest texels and clamp boundaries. All positional visibility loops, including
+geometry-free homogeneous media, apply the angular factor to spectral intensity
+without additional random dimensions. Identity covers the ordered records and
+owned map contents. See the [goniometric profile](pbrt-rendering.md#goniometric-lights)
+and [validation](goniometric-light-validation.md).
 
 Distant sources have a separate bounded direction/radiance buffer and a shared
 scene radius. Translation computes PBRT-style bounds from prepared geometry,

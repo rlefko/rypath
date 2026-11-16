@@ -901,6 +901,27 @@ std::string validate_image_light(const ImagePyramid &image) {
     return {};
 }
 
+std::string validate_goniometric_image(const ImagePyramid &image) {
+    if (!image.native_base || image.levels.size() != 1 || image.source_channels != 1 ||
+        image.wrap != ImageWrap::clamp || image.gltf)
+        return "Goniometric lights require a native scalar image with clamp boundaries";
+    const auto &level = image.levels.front();
+    if (level.width == 0 || level.width != level.height ||
+        level.width > ImageLimits{}.max_dimension)
+        return "Goniometric image must be square and within the dimension limit";
+    for (std::uint32_t y = 0; y < level.height; ++y) {
+        for (std::uint32_t x = 0; x < level.width; ++x) {
+            const auto rgb = image_base_texel_linear_rgb(image, x, y);
+            if (!rgb || !std::isfinite((*rgb)[0]) || (*rgb)[0] < 0 || (*rgb)[0] != (*rgb)[1] ||
+                (*rgb)[0] != (*rgb)[2])
+                return "Goniometric image requires finite nonnegative scalar samples";
+            if (std::fpclassify((*rgb)[0]) == FP_SUBNORMAL)
+                return "Goniometric scalar samples must remain representable on the GPU";
+        }
+    }
+    return {};
+}
+
 std::string validate_render_settings(const RenderSettings &settings) {
     if (!valid_film_size(settings.width, settings.height)) {
         return "Render dimensions must be positive and fit the film and 32-bit pixel indices";
@@ -1149,9 +1170,12 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
 
 std::string validate_render_scene(const RenderScene &scene) {
     if (scene.point_lights.size() > max_positional_lights ||
-        scene.spot_lights.size() > max_positional_lights - scene.point_lights.size())
+        scene.spot_lights.size() > max_positional_lights - scene.point_lights.size() ||
+        scene.goniometric_lights.size() >
+            max_positional_lights - scene.point_lights.size() - scene.spot_lights.size())
         return "Positional lights exceed the combined limit of 64";
-    if ((!scene.point_lights.empty() || !scene.spot_lights.empty()) &&
+    if ((!scene.point_lights.empty() || !scene.spot_lights.empty() ||
+         !scene.goniometric_lights.empty()) &&
         scene.model != RenderModel::pbrt)
         return "Positional lights require the PBRT render model";
     for (const auto &point : scene.point_lights) {
@@ -1195,6 +1219,42 @@ std::string validate_render_scene(const RenderScene &scene) {
              double(spot.cos_falloff_start) - spot.cos_falloff_end <
                  std::numeric_limits<float>::min()))
             return "Spot cosine thresholds or feather interval are not representable on the GPU";
+    }
+    std::set<const ImagePyramid *> checked_goniometric;
+    for (const auto &light : scene.goniometric_lights) {
+        if (!finite(light.position) || std::fpclassify(light.position.x) == FP_SUBNORMAL ||
+            std::fpclassify(light.position.y) == FP_SUBNORMAL ||
+            std::fpclassify(light.position.z) == FP_SUBNORMAL)
+            return "Goniometric positions must be finite and representable on the GPU";
+        if (!std::ranges::all_of(light.intensity, [](float value) {
+                return std::isfinite(value) && value >= 0 && std::fpclassify(value) != FP_SUBNORMAL;
+            }))
+            return "Goniometric intensity must be nonnegative and representable on the GPU";
+        const auto &m = light.light_from_world;
+        if (!std::ranges::all_of(m, [](float value) {
+                return std::isfinite(value) && std::fpclassify(value) != FP_SUBNORMAL;
+            }))
+            return "Goniometric direction transforms must be finite and representable";
+        // The checked inverse of a declaration accepted at 64 epsilon can have
+        // twice that Gram error after inversion and narrowing to binary32.
+        constexpr double tolerance = 128 * std::numeric_limits<float>::epsilon();
+        for (std::size_t row = 0; row < 3; ++row) {
+            for (std::size_t col = 0; col < 3; ++col) {
+                double gram = 0;
+                for (std::size_t k = 0; k < 3; ++k)
+                    gram += double(m[3 * row + k]) * m[3 * col + k];
+                if (std::abs(gram - (row == col ? 1 : 0)) > tolerance)
+                    return "Goniometric direction transforms must have an orthonormal linear part";
+            }
+        }
+        if (light.image_texture >= scene.image_textures.size() ||
+            !scene.image_textures[light.image_texture].image)
+            return "Goniometric light requires a valid owned scalar image";
+        const auto &image = *scene.image_textures[light.image_texture].image;
+        if (checked_goniometric.insert(&image).second) {
+            if (const auto error = validate_goniometric_image(image); !error.empty())
+                return error;
+        }
     }
     if (scene.distant_lights.size() > max_distant_lights)
         return "Distant lights exceed the limit of 64";

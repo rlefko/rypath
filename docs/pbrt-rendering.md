@@ -52,8 +52,9 @@ diagnosed even when not placed in the image.
 | Extended surfaces | Thin dielectric, diffuse transmission, nested mixes, finite-depth coated diffuse/conductor, measured tensor and legacy Fourier tables; see [surface materials](#extended-surface-materials) |
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
-| Point lighting | Up to 64 combined point/spot sources; isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
+| Point lighting | Up to 64 combined point/spot/goniometric sources; isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
 | Spot lighting | Spectral point-source emission with cubic cosine falloff, `from`/`to` aiming, representable static affine transforms and positive-power normalization; surface and homogeneous-volume illumination |
+| Goniometric lighting | Spectral `I`, `scale`, optional `power`, required native square scalar image diagram, rigid/reflected declaration transforms; surface and homogeneous-volume illumination with nearest equal-area lookup |
 | Distant lighting | Up to 64 directional sources with spectral `L`, `scale`, `illuminance` and affine `from`/`to`; finite PBRT scene-bound visibility for surfaces and homogeneous media |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Homogeneous media | Named absorption/scattering/emission spectra, all 47 pinned measured presets, scoped interfaces and null boundaries; see [homogeneous media](#homogeneous-media) |
@@ -138,15 +139,15 @@ follow existing visibility rules; ordinary glass remains a shadow occluder.
 Geometry-free homogeneous media use the same point estimator with analytic
 Beer–Lambert connections in the sky kernel.
 
-The declared profile permits at most 64 combined point and spot sources, including zero-intensity records;
+The declared profile permits at most 64 combined point, spot and goniometric
+sources, including zero-intensity records;
 excess inputs are resource errors. Active connections require finite squared
 distance at least `FLT_MIN`, representable arithmetic and positive shadow progress.
 Coincident active sources and extreme-scale failures reject the pending batch;
 there is no distance epsilon, intensity clamp or partial sample acceptance.
 Zero intensity at the sampled wavelength skips connection arithmetic. The
 all-positional strategy can require 64 shadow queries per vertex and is not a claim
-of efficient many-light sampling. Projection and goniometric lights
-remain unsupported. See [point-light validation](point-light-validation.md).
+of efficient many-light sampling. Projection lights remain unsupported. See [point-light validation](point-light-validation.md).
 
 ## Spot lights
 
@@ -200,11 +201,77 @@ Angular zero skips shadow traversal after safe direction evaluation. Spot lights
 have no camera-visible geometry, and delta-only surfaces receive no spot NEE.
 Geometry-free homogeneous media execute the same model in the sky kernel.
 
-Point and spot lists share the 64-source budget. Zero spectral intensity skips
-connection arithmetic; an active coincident source fails the batch. All spot
+Point, spot and goniometric lists share the 64-source budget. Zero spectral
+intensity skips connection arithmetic; an active coincident source fails the batch. All spot
 fields participate in checkpoint identity. Spot lighting introduced renderer
 and identity contracts 4; [checkpointing](checkpointing.md) records the current
 versions. See [spot-light validation](spot-light-validation.md).
+
+## Goniometric lights
+
+`LightSource "goniometric"` accepts the same spectral `I` forms and photometric
+preparation as point lights, with omitted `I` using D65, nonnegative `scale`
+(default one), and finite `power` (default -1). It requires a nonempty square
+`string filename` in the existing bounded PNG/JPEG/OpenEXR/Radiance HDR profiles.
+Supported decoded gray, RGB and RGBA inputs become a native-resolution scalar
+map; alpha does not modulate emission. The declaration origin supplies position;
+`from`, `to` and spot cone parameters are outside this schema. Effective light
+parameters inherit and override normally, checked files remain owned, and lights
+inside object definitions remain global rather than instanced.
+
+Gray values preserve their source representation after the existing decode.
+RGB/RGBA conversion follows the pinned PBRT code: decode linear components,
+sum and divide by three in binary32, then write the scalar through the source
+image format and encoding. This quantizes byte RGB averages back through their
+encoding; HALF averages round back to HALF, and FLOAT averages remain binary32.
+For 16-bit PNG RGB, each decoded component first rounds to HALF and the scalar
+average rounds to HALF again. Gray inputs avoid that averaging/write round trip.
+The retained map contains one replicated scalar channel, no mip pyramid or
+power-of-two resize. Negative or nonfinite source color/scalar values, source
+sum or format overflow, and binary32 subnormal scalars are rejected. These are
+explicit numerical restrictions on the broader PBRT input model; alpha is
+ignored rather than averaged into the diagram.
+
+Following the [pinned light implementation](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/lights.cpp),
+negate the unit receiver-to-light direction, apply the actual inverse declaration
+linear transform, then swap Y and Z. Feed that result directly to PBRT's
+polynomial equal-area sphere-to-square map and nearest-texel lookup with clamp
+boundaries. There is no additional V flip, bilinear filtering, direction
+renormalization or common matrix rescaling. Nearest-texel boundaries make these
+operations observably different even for nearly orthonormal transforms.
+
+The declaration linear transform must be orthonormal within absolute Gram-entry
+error `64 * FLT_EPSILON`; rigid transforms and reflections are supported.
+Scale or shear beyond that tolerance is unsupported. Translation computes the
+checked actual inverse, including accepted near-tolerance deviations, and rejects
+singularity, overflow or coefficients lost in binary32. The direct scene API
+validates the supplied inverse map at `128 * FLT_EPSILON` to accommodate inversion
+and binary32 narrowing. Positions, intensities and inverse coefficients must be
+finite normal binary32 or zero. Unrepresentable runtime angular arithmetic fails
+the complete pending batch.
+
+Finite nonpositive `power` leaves intensity mode unchanged. Positive power
+multiplies photometrically prepared intensity by
+`power / (4 * pi * mean_prepared_scalar)`, in addition to `scale`. The mean uses
+the decoded retained scalar samples accumulated in binary64. This widened sum
+is a numerical adaptation that avoids binary32 accumulation overflow; it does
+not reproduce PBRT's exact binary32 summation rounding. Positive power requires
+a positive finite mean and representable normalization. A black map is valid
+without positive power, and zero spectral intensity remains black.
+
+At every eligible surface or medium vertex, rypath sums all positional sources;
+goniometric intensity receives the scalar angular factor before inverse-square
+attenuation, the existing BSDF/cosine or HG phase, and finite visibility and
+homogeneous transmittance. Geometry-free homogeneous media use the same model
+in the sky kernel. These delta-position terms have unit MIS weight, consume no
+new sampler dimensions, and leave environment/area probabilities unchanged.
+There is no visible source geometry, and delta-only surfaces receive no
+next-event term. Point, spot and goniometric sources share the 64-source limit,
+including black records. Existing finite-connection failures reject the whole
+batch. Ordered positions, every spectral bin, inverse maps, image bindings and
+owned scalar texels participate in checkpoint identity. See
+[checkpointing](checkpointing.md) and the
+[goniometric validation record](goniometric-light-validation.md).
 
 ## Distant lights
 
@@ -218,8 +285,8 @@ nonpositive illuminance leaves it unchanged. This follows pinned PBRT's
 implementation without an additional world-up cosine or pi factor.
 
 Up to 64 distant lights are evaluated at each eligible surface or volume
-vertex, separately from the combined 64 point/spot bound. Their delta-direction
-contributions use unit weight, no inverse-square attenuation and no extra
+vertex, separately from the combined 64 point/spot/goniometric bound. Their
+delta-direction contributions use unit weight, no inverse-square attenuation and no extra
 sampler coordinates. Smooth delta-only BSDFs have no distant NEE term. Sources
 have no camera-visible disk, and do not change environment/area-light MIS.
 

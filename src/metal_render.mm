@@ -337,7 +337,8 @@ struct MetalRenderScene::Impl {
             data.insert(data.end(), encoded.begin(), encoded.end());
         }
         constexpr std::size_t light_words = sizeof(wire::PositionalLight) / sizeof(wire::Word);
-        const auto count = scene.point_lights.size() + scene.spot_lights.size();
+        const auto count =
+            scene.point_lights.size() + scene.spot_lights.size() + scene.goniometric_lights.size();
         if (data.size() > limit || count > (limit - data.size()) / light_words)
             return "Positional lights exceed the shared GPU data budget";
         parameters.positional_begin = static_cast<wire::Word>(data.size());
@@ -358,6 +359,10 @@ struct MetalRenderScene::Impl {
                 light.cos_falloff_start = source.cos_falloff_start;
                 light.cos_falloff_end = source.cos_falloff_end;
             }
+            if constexpr (std::is_same_v<std::decay_t<decltype(source)>, GoniometricLight>) {
+                std::ranges::copy(source.light_from_world, light.light_from_world);
+                light.image_texture = source.image_texture;
+            }
             const auto encoded = std::bit_cast<std::array<wire::Word, light_words>>(light);
             data.insert(data.end(), encoded.begin(), encoded.end());
         };
@@ -365,6 +370,8 @@ struct MetalRenderScene::Impl {
             append(source, wire::point_light);
         for (const auto &source : scene.spot_lights)
             append(source, wire::spot_light);
+        for (const auto &source : scene.goniometric_lights)
+            append(source, wire::goniometric_light);
         constexpr std::size_t distant_words = sizeof(wire::DistantLight) / sizeof(wire::Word);
         if (data.size() > limit ||
             scene.distant_lights.size() > (limit - data.size()) / distant_words)
@@ -1266,7 +1273,7 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:illuminant offset:0 atIndex:29];
             [encoder setBuffer:material_data offset:0 atIndex:30];
         }
-        if (p.instance_count == 0 && graph_parameters.environment_image != max_index) {
+        if (p.instance_count == 0 && texture_p.texture_count != 0) {
             [encoder setBuffer:image_textures offset:0 atIndex:17];
             [encoder setBuffer:image_levels offset:0 atIndex:18];
             [encoder setBuffer:image_texels offset:0 atIndex:19];
@@ -1467,7 +1474,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                                           }),
             std::ranges::any_of(scene.materials,
                                 [](const auto &m) { return m.scattering == ScatteringKind::gltf; }),
-            !scene.point_lights.empty() || !scene.spot_lights.empty(),
+            !scene.point_lights.empty() || !scene.spot_lights.empty() ||
+                !scene.goniometric_lights.empty(),
             !scene.distant_lights.empty()};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
@@ -1507,7 +1515,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             if (!result.diagnostic.empty())
                 return result;
         }
-        if (impl->parameters.instance_count != 0 || scene.environment_image != max_index) {
+        if (impl->parameters.instance_count != 0 || !scene.image_textures.empty()) {
             try {
                 if (impl->parameters.instance_count != 0)
                     result.diagnostic = impl->upload_shading(scene, geometry_data);

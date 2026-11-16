@@ -291,7 +291,7 @@ int native() {
             auto whole = render_progressive(scene, settings);
             require(whole.completion == RenderCompletion::complete, whole.diagnostic);
             if (!scene.point_lights.empty() || !scene.spot_lights.empty() ||
-                !scene.distant_lights.empty()) {
+                !scene.distant_lights.empty() || !scene.goniometric_lights.empty()) {
                 bool positive = false;
                 for (const auto &pixel : whole.film.pixels)
                     positive = positive || pixel.sum[1] + pixel.correction[1] > 0;
@@ -316,7 +316,10 @@ int native() {
     };
     for (const auto fixture :
          {"image-secondary.pbrt", "media-reference/isotropic.pbrt", "point-lights/mixed.pbrt",
-          "point-lights/volume.pbrt", "spot-lights/mixed.pbrt", "spot-lights/volume.pbrt"}) {
+          "point-lights/volume.pbrt", "spot-lights/mixed.pbrt", "spot-lights/volume.pbrt",
+          "goniometric-lights/mixed-lighting.pbrt", "goniometric-lights/bounded-volume.pbrt",
+          "goniometric-lights/geometry-free-volume.pbrt"}) {
+        std::cout << "Resume fixture: " << fixture << std::endl;
         auto path =
             std::filesystem::path(RYPATH_SOURCE_DIR) / "tests/fixtures/pbrt-render" / fixture;
         auto checked = pbrt::check(path);
@@ -328,6 +331,9 @@ int native() {
             require(!translated.scene->point_lights.empty(), "point fixture lost its light");
         if (std::string_view(fixture).starts_with("spot-lights/"))
             require(!translated.scene->spot_lights.empty(), "spot fixture lost its light");
+        if (std::string_view(fixture).starts_with("goniometric-lights/"))
+            require(!translated.scene->goniometric_lights.empty(),
+                    "goniometric fixture lost its light");
         check_resume(*translated.scene);
     }
     // Empty geometry takes a distinct kernel. A scattering camera medium must
@@ -375,7 +381,7 @@ int native() {
     empty.distant_lights.push_back(distant);
     empty.distant_scene_radius = 4;
     check_resume(empty);
-    std::cout << "Native resume: independent/Sobol textured, volume, point, spot and distant raw "
+    std::cout << "Native resume: independent/Sobol textured, volume and all positional/distant raw "
                  "Film bits "
                  "match\n";
     return 0;

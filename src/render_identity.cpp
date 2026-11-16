@@ -208,6 +208,12 @@ class Canonical {
         FIELD(cos_falloff_start);
         FIELD(cos_falloff_end);
     }
+    void value(const GoniometricLight &x) {
+        FIELD(position);
+        FIELD(intensity);
+        FIELD(light_from_world);
+        FIELD(image_texture);
+    }
     void value(const DistantLight &x) {
         FIELD(direction);
         FIELD(radiance);
@@ -284,6 +290,7 @@ class Canonical {
     void value(const RenderScene &x) {
         FIELD(point_lights);
         FIELD(spot_lights);
+        FIELD(goniometric_lights);
         FIELD(distant_lights);
         FIELD(distant_scene_radius);
         FIELD(geometry);

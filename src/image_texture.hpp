@@ -90,6 +90,10 @@ ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEn
 ImageResult<ImagePyramid> build_image_base(const DecodedImage &image, ImageEncoding encoding,
                                            ImageWrap wrap, const ImageLimits &limits = {},
                                            float gamma = 1);
+// Native PBRT goniometric Y map: gray is retained; RGB is averaged in decoded
+// linear space and rounded back to the source storage. Alpha is ignored.
+ImageResult<ImagePyramid> build_goniometric_image_base(const DecodedImage &image,
+                                                       const ImageLimits &limits = {});
 const std::array<float, 256> &image_transfer_table(ImageEncoding encoding);
 std::optional<std::array<float, 3>> image_linear_rgb(const ImagePyramid &image, float s, float t,
                                                      float dsdx, float dtdx, float dsdy, float dtdy,

@@ -1052,7 +1052,7 @@ bool nonopaque_alpha(const SourcePixels &source) {
 
 ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding authored,
                                       ImageWrap wrap, const ImageLimits &limits, float gamma,
-                                      bool native) {
+                                      bool native, bool goniometric = false) {
     const auto encoding = image_effective_encoding(image, authored);
     if (!valid_profile(encoding, wrap) ||
         (encoding == ImageEncoding::gamma && !(gamma > 0 && std::isfinite(gamma)))) {
@@ -1080,10 +1080,13 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
         image.floating_alpha.size() != (floating ? alpha_samples : 0) ||
         (image.source_channels != 1 && image.source_channels != 3 && image.source_channels != 4))
         return {.value = {}, .diagnostic = "Image dimensions do not match the decoded channels"};
-    for (const auto &samples : {std::span(image.floating_rgb), std::span(image.floating_alpha)}) {
+    for (const auto &samples :
+         {std::span<const float>(image.floating_rgb),
+          goniometric ? std::span<const float>{} : std::span<const float>(image.floating_alpha)}) {
         for (float value : samples) {
-            if (!std::isfinite(value) || (image.sample_format == ImageSampleFormat::half &&
-                                          decode_half(encode_half(value)) != value))
+            if (!std::isfinite(value) || (goniometric && value < 0) ||
+                (image.sample_format == ImageSampleFormat::half &&
+                 decode_half(encode_half(value)) != value))
                 return {.value = {}, .diagnostic = "Invalid finite decoded image sample"};
         }
     }
@@ -1137,7 +1140,9 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
                          .levels = {},
                          .texels = {},
                          .storage = storage,
-                         .source_channels = alpha ? 4u : (image.source_channels == 1 ? 1u : 3u),
+                         .source_channels = goniometric ? 1u
+                                            : alpha     ? 4u
+                                                        : (image.source_channels == 1 ? 1u : 3u),
                          .native_base = native};
     try {
         if (custom)
@@ -1148,8 +1153,24 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
         if (native) {
             pyramid.levels.push_back(level);
             for (std::size_t i = 0; i < pixels; ++i) {
-                if (is_half || floating) {
-                    append_texel(pyramid, source.pixel<3>(i), color);
+                if (goniometric && image.source_channels != 1) {
+                    const auto rgb = source.pixel<3>(i);
+                    // PBRT ImageChannelValues::Average sums in binary32 before
+                    // division; do not replace this with an overflow-safe mean.
+                    const float scalar = ((0.0f + rgb[0]) + rgb[1] + rgb[2]) / 3.0f;
+                    if (!std::isfinite(scalar) || std::fpclassify(scalar) == FP_SUBNORMAL)
+                        throw std::runtime_error(
+                            "Goniometric scalar is nonfinite or binary32 subnormal");
+                    append_texel(pyramid, Rgb{scalar, scalar, scalar}, color);
+                } else if (is_half || floating) {
+                    auto rgb = source.pixel<3>(i);
+                    if (goniometric) {
+                        const float scalar = rgb[0];
+                        if (std::fpclassify(scalar) == FP_SUBNORMAL)
+                            throw std::runtime_error("Goniometric scalar is binary32 subnormal");
+                        rgb = {scalar, scalar, scalar};
+                    }
+                    append_texel(pyramid, rgb, color);
                 } else {
                     // Native PBRT consumers read source codes without a mip write round trip.
                     pyramid.texels.push_back(
@@ -1181,6 +1202,13 @@ ImageResult<ImagePyramid> build_image_pyramid(const DecodedImage &image, ImageEn
 ImageResult<ImagePyramid> build_image_base(const DecodedImage &image, ImageEncoding encoding,
                                            ImageWrap wrap, const ImageLimits &limits, float gamma) {
     return build_image(image, encoding, wrap, limits, gamma, true);
+}
+
+ImageResult<ImagePyramid> build_goniometric_image_base(const DecodedImage &image,
+                                                       const ImageLimits &limits) {
+    if (image.width != image.height)
+        return {.value = {}, .diagnostic = "A goniometric light image must be square"};
+    return build_image(image, ImageEncoding::srgb, ImageWrap::clamp, limits, 1, true, true);
 }
 
 const std::array<float, 256> &image_transfer_table(ImageEncoding encoding) {
