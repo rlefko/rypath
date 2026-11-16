@@ -2,39 +2,37 @@
 
 ## Current milestone
 
-The declared mesh profiles are merged: polygonal OBJ/MTL in
-[PR #34](https://github.com/rlefko/rypath/pull/34), STL in
-[PR #35](https://github.com/rlefko/rypath/pull/35), and static glTF/GLB in
-[PR #36](https://github.com/rlefko/rypath/pull/36), through `cf110a5`.
-Their import profiles and validation records retain the supported semantics,
-material adaptations and deferred features.
+Polygonal OBJ/MTL, STL and static glTF/GLB profiles are merged in PRs #34–36.
+Spectral point lighting merged in [PR #37](https://github.com/rlefko/rypath/pull/37),
+through `fc41487`. Their profiles retain the supported semantics, adaptations
+and deferred features.
 
-Spectral point lighting adds up to 64 PBRT point sources, transformed positions,
-photometric intensity/power, finite visibility and direct surface/volume
-illumination, including geometry-free homogeneous media. Checkpoints now use
-renderer and identity contract 3. See the [point-light profile](pbrt-rendering.md#point-lights)
-and [validation record](point-light-validation.md).
+Spectral spot lighting extends direct surface and homogeneous-volume illumination,
+including geometry-free fog, with cubic cosine falloff, affine aiming and
+photometric power. Point and spot sources share a 64-light bound. Renderer and
+checkpoint identity contracts are now version 4. See the
+[spot profile](pbrt-rendering.md#spot-lights) and
+[validation record](spot-light-validation.md).
 
-The next bounded compatibility task is spectral spot lighting. Long-run
-convergence, licensed corpus acceptance and measured M4 Max benchmarks remain
-on the [roadmap](roadmap.md). This does not establish offline MVP completion or
-full pinned-corpus coverage.
+The next bounded lighting task is spectral distant lights. Long-run convergence,
+licensed corpus acceptance and measured M4 Max benchmarks remain on the
+[roadmap](roadmap.md). Offline MVP completion and full pinned-corpus coverage
+remain unestablished.
 
 ## Validation
 
-Point-light implementation `ed5c120` passes Debug, Release and ASan/UBSan (165/165 each),
-Metal-disabled LLVM 18 tests (128/128), all 115 Python checks, changed-unit
-Clang-Tidy, Objective-C++ analysis and repository hooks on M4 Max. All 39 Metal
-tests also pass with API validation enabled and no GPU availability skips.
+Spot implementation `708bb55` passes Debug, Release and ASan/UBSan
+(167/167 each), Metal-disabled LLVM 18 (129/129), 119 Python checks,
+changed-unit Clang-Tidy, native analysis and hooks on M4 Max. All 40 Metal tests
+pass with API validation and no availability skips.
 
-Eight matched PBRT scenes pass all 120 independent-seed region/channel gates.
-Native checks cover light equations, GGX evaluation, finite visibility, alpha,
-glass, Beer attenuation and independent HG quadrature. Actual shader mutations
-detect incorrect MIS and omitted geometry-free illumination. Six existing scenes
-retain byte-identical linear outputs against `cf110a5`; point-lit checkpoints
-resume to exact Film state under independent and Sobol sampling.
+Independent cone/BSDF/visibility and HG-quadrature checks pass. Four actual shader
+mutations are detected; review-driven regressions reject subnormal angular-support
+changes. Eight matched PBRT scenes pass all 120 region/channel gates, with an
+explicit reference-only uniform sampler for the affine case to avoid a pinned
+PBRT light-bound defect. Nine baseline scenes retain byte-identical linear
+outputs, and spot-lit checkpoints resume to exact Film state with both samplers.
 
-Earlier [glTF](gltf-validation.md), [STL](stl-validation.md),
-[OBJ](obj-validation.md), surface, media, texture, HDR and checkpoint records
-retain historical evidence for those revisions. Their test counts are not
-counts for the point-light revision.
+Earlier [point](point-light-validation.md), [glTF](gltf-validation.md),
+[STL](stl-validation.md), [OBJ](obj-validation.md), surface, media, texture, HDR
+and checkpoint records retain historical evidence for their recorded revisions.
