@@ -24,7 +24,7 @@ def wire(count=3, target=3, segments=None, sums=(2., 3., 4.), correction=(0., 0.
             raw = text.encode()
             metadata += struct.pack('<I', len(raw)) + raw
     payload = PIXEL.pack(*sums, *correction, count)
-    data = HEADER.pack(b'RYPCHK\r\n', 1, 8, 9, 2, 1, len(metadata), len(payload)) + metadata + payload
+    data = HEADER.pack(b'RYPCHK\r\n', 1, 8, 10, 2, 1, len(metadata), len(payload)) + metadata + payload
     return data + hashlib.sha256(data).digest()
 
 
@@ -51,8 +51,8 @@ class CheckpointValidatorTests(unittest.TestCase):
             with self.subTest(cut=cut), self.assertRaises(ValueError):
                 decode(raw[:cut])
         # Independently mutate all five authenticated contract words. In
-        # particular, pre-lens renderer 8 / identity 7 / sampling 1 fail.
-        for offset, version in ((8, 3), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (20, 1), (20, 3), (24, 3)):
+        # particular, pre-lens renderer 9 / identity 7 / sampling 1 fail.
+        for offset, version in ((8, 3), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (16, 9), (20, 1), (20, 3), (24, 3)):
             with self.subTest(contract_offset=offset, version=version):
                 bad = bytearray(raw)
                 struct.pack_into('<I', bad, offset, version)

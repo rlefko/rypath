@@ -2413,7 +2413,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     // Pinned PBRT reports zero light PDF at an exactly tangent
                     // endpoint; the BSDF technique then receives full weight.
                     weight =
-                        patch_hit && light_cosine == 0.0f ? 1.0f
+                        light_cosine == 0.0f ? 1.0f
                         : previous_microfacet
                             ? power_weight(previous_bsdf_pdf,
                                            area_light_pdf(point.inverse_area_pdf, light_cosine,
