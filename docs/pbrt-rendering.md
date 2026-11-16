@@ -54,6 +54,7 @@ diagnosed even when not placed in the image.
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
 | Point lighting | Up to 64 combined point/spot sources; isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
 | Spot lighting | Spectral point-source emission with cubic cosine falloff, `from`/`to` aiming, representable static affine transforms and positive-power normalization; surface and homogeneous-volume illumination |
+| Distant lighting | Up to 64 directional sources with spectral `L`, `scale`, `illuminance` and affine `from`/`to`; finite PBRT scene-bound visibility for surfaces and homogeneous media |
 | Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power unsupported |
 | Homogeneous media | Named absorption/scattering/emission spectra, all 47 pinned measured presets, scoped interfaces and null boundaries; see [homogeneous media](#homogeneous-media) |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
@@ -144,7 +145,7 @@ Coincident active sources and extreme-scale failures reject the pending batch;
 there is no distance epsilon, intensity clamp or partial sample acceptance.
 Zero intensity at the sampled wavelength skips connection arithmetic. The
 all-positional strategy can require 64 shadow queries per vertex and is not a claim
-of efficient many-light sampling. Distant, projection and goniometric lights
+of efficient many-light sampling. Projection and goniometric lights
 remain unsupported. See [point-light validation](point-light-validation.md).
 
 ## Spot lights
@@ -201,8 +202,50 @@ Geometry-free homogeneous media execute the same model in the sky kernel.
 
 Point and spot lists share the 64-source budget. Zero spectral intensity skips
 connection arithmetic; an active coincident source fails the batch. All spot
-fields participate in checkpoint identity; renderer and identity contracts are
-version 4. See [spot-light validation](spot-light-validation.md).
+fields participate in checkpoint identity. Spot lighting introduced renderer
+and identity contracts 4; [checkpointing](checkpointing.md) records the current
+versions. See [spot-light validation](spot-light-validation.md).
+
+## Distant lights
+
+`LightSource "distant"` accepts `L`, `scale`, `illuminance`, `point3 from`
+and `point3 to`. Defaults are D65, scale 1, illuminance -1, from `(0,0,0)`
+and to `(0,0,1)`. The direction toward the source is the normalized affine
+vector image of **from minus to**; translation has no effect. Numeric, file,
+named, blackbody and sRGB spectra use the existing illuminant preparation.
+Positive illuminance multiplies photometrically normalized radiance; finite
+nonpositive illuminance leaves it unchanged. This follows pinned PBRT's
+implementation without an additional world-up cosine or pi factor.
+
+Up to 64 distant lights are evaluated at each eligible surface or volume
+vertex, separately from the combined 64 point/spot bound. Their delta-direction
+contributions use unit weight, no inverse-square attenuation and no extra
+sampler coordinates. Smooth delta-only BSDFs have no distant NEE term. Sources
+have no camera-visible disk, and do not change environment/area-light MIS.
+
+Visibility intentionally follows PBRT's finite proxy: the endpoint is the
+original scattering position plus the source direction times twice the scene
+bounding-sphere radius. Receiver offsets leave that endpoint fixed. Each
+segment, including a segment respawned after a null boundary, ends at
+`1 - 0.0001` of its endpoint parameter. This can give positive distant
+illumination through unbounded homogeneous fog; it is not infinite-distance
+extinction. Existing environment visibility remains infinite.
+
+Bounds use the final prepared referenced vertices, including displacement.
+Shape bounds are unioned inside each object before all eight aggregate corners
+are transformed for a placement. Unused vertices and object definitions are
+excluded; null and alpha-zero geometry contribute. Planar geometry can have a
+positive radius. Empty or zero-radius bounds, unrepresentable bounds/diameters,
+and direction arithmetic that cannot retain its represented inputs receive
+source-located diagnostics. Geometry-free distant scenes are unsupported even
+when emission is black. The direct scene API requires callers to provide a
+positive finite `distant_scene_radius` using the same bounds convention.
+
+The numerical profile uses world coordinates. Pinned comparisons explicitly
+select PBRT's `--render-coord-sys world`, rather than claiming bitwise agreement
+with its default camera-relative arithmetic. Unsupported precision at a runtime
+endpoint or boundary rejects the whole pending batch. See the
+[distant validation record](distant-light-validation.md).
 
 ## Blackbody reflectance
 

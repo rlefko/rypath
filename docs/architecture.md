@@ -178,7 +178,7 @@ The bounded static C11 OpenEXRCore subset owns codec work through scoped allocat
 callbacks and adds no installed-SDK product dependency. Metadata identifies the
 render settings and overrides, without defining checkpoint identity.
 
-## Spectral point illumination
+## Spectral delta illumination
 
 Checked point descriptors retain intensity parameters, declaration transforms,
 and endpoint-medium names. Translation shares spectral emission preparation with
@@ -202,6 +202,16 @@ Spot attenuation follows the pinned cubic cosine model; the point branch retains
 its existing arithmetic. Both kinds share a 64-source bound and unit delta-position
 MIS weight. See the [spot profile](pbrt-rendering.md#spot-lights) and
 [validation](spot-light-validation.md).
+
+Distant sources have a separate bounded direction/radiance buffer and a shared
+scene radius. Translation computes PBRT-style bounds from prepared geometry,
+retaining object aggregation before instance transforms. Certified affine
+arithmetic prepares the unit source direction. Surface and medium vertices sum
+all distant sources with unit delta weight and no inverse-square factor or
+additional random dimensions. Finite `2 * radius` connections retain their
+original endpoint with PBRT's per-segment cutoff. Geometry-free distant scenes
+are diagnosed explicitly. See the [profile](pbrt-rendering.md#distant-lights)
+and [validation](distant-light-validation.md).
 
 ## Homogeneous volume state and transport
 
