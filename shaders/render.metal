@@ -49,6 +49,7 @@ constant bool media_enabled [[function_constant(8)]];
 constant bool gltf_enabled [[function_constant(9)]];
 constant bool positional_lights_enabled [[function_constant(10)]];
 constant bool distant_lights_enabled [[function_constant(11)]];
+constant bool goniometric_lights_enabled [[function_constant(12)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -424,6 +425,9 @@ static bool positional_intensity(const device wire::PositionalLight &light, floa
         w[row] = component;
     }
     if (light.kind == wire::goniometric_light) {
+        // Point/spot-only sky variants do not bind image resources.
+        if (!goniometric_lights_enabled)
+            return false;
         // Pinned PBRT maps the actual inverse-transformed unit direction. Do
         // not normalize or rescale it: nearest-texel boundaries are discontinuous.
         const float scale = rypath_image_light::goniometric_scale(images, light.image_texture, w);

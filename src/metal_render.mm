@@ -1476,7 +1476,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                 [](const auto &m) { return m.scattering == ScatteringKind::gltf; }),
             !scene.point_lights.empty() || !scene.spot_lights.empty() ||
                 !scene.goniometric_lights.empty(),
-            !scene.distant_lights.empty()};
+            !scene.distant_lights.empty(),
+            !scene.goniometric_lights.empty()};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];
