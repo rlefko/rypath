@@ -132,21 +132,33 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "3453b11effa8debcf443bd33f3ffb9b9693ba6e171a6ee932137265a8b43ec87",
+                "0e1a860be7019eb406215cb7030a407c76bec630511e32f075b106ed480e890d",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
     exact(c, checked(result));
     require(write_checkpoint(checked(result), dir / "copy.bin").empty(), "checkpoint rewrite");
     require(original == read(dir / "copy.bin"), "byte exact serialization");
+    for (auto kind : {SamplerKind::halton, SamplerKind::zsobol}) {
+        auto qmc = c;
+        qmc.settings.sampler.kind = kind;
+        qmc.settings.sampler.randomization = SobolRandomization::permutedigits;
+        qmc.settings.samples = 16;
+        for (auto &pixel : qmc.film.pixels)
+            pixel.count = 8;
+        qmc.segments.back().end = 8;
+        require(write_checkpoint(qmc, dir / "qmc.bin").empty(), "QMC checkpoint publication");
+        exact(qmc, checked(read_checkpoint(dir / "qmc.bin")));
+    }
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
     for (const auto [offset, version] :
-         std::array<std::pair<std::size_t, std::uint32_t>, 15>{{{12, 3},
+         std::array<std::pair<std::size_t, std::uint32_t>, 18>{{{12, 3},
                                                                 {12, 4},
                                                                 {12, 5},
                                                                 {12, 6},
                                                                 {12, 7},
                                                                 {12, 8},
+                                                                {12, 9},
                                                                 {16, 3},
                                                                 {16, 4},
                                                                 {16, 5},
@@ -155,7 +167,9 @@ void codec(const std::filesystem::path &dir) {
                                                                 {16, 8},
                                                                 {16, 9},
                                                                 {16, 10},
-                                                                {20, 1}}}) {
+                                                                {16, 11},
+                                                                {20, 1},
+                                                                {20, 2}}}) {
         auto legacy = original;
         put(legacy, offset, version, 4);
         rehash(legacy);

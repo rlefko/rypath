@@ -38,13 +38,13 @@ diagnosed even when not placed in the image.
 
 | Component | Rendered behavior and limits |
 | --- | --- |
-| Descriptors | Explicit perspective camera, RGB film, box or triangle filter, independent or Sobol sampler, and path or volpath integrator; no substitution of omitted PBRT defaults |
+| Descriptors | Perspective camera, RGB film, box/triangle/Gaussian filter, independent/Sobol/Halton/ZSobol sampler, and path/volpath integrator; omitted descriptors use pinned PBRT defaults |
 | Camera | Pinhole or perspective thin lens, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
-| Filter | Positive normal binary32 box radii defaulting independently to 0.5 or triangle radii defaulting independently to 2 |
-| Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
-| Integrator | Explicit path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol (0–113 when any translated material is dielectric), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
+| Filter | Positive normal binary32 box radii defaulting to 0.5, triangle radii to 2, or tabulated Gaussian radii 1.5 and sigma 0.5 |
+| Sampler | Philox independent, PBRT interval Sobol, Halton, or ZSobol with pinned randomizations and versioned rypath transport dimensions |
+| Integrator | Path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling, 0–127 with Sobol/ZSobol (0–113 with dielectrics), or 0–124 with Halton (0–110 with dielectrics), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles/bilinear meshes, Loop subdivision triangles, and PLY triangles/bilinear quads with supported vertex attributes and single-level instances, including affine geometry transforms; at least one placed primitive for path; volpath permits empty geometry |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
@@ -86,6 +86,16 @@ offsets and area-light Jacobians use the geometric plane. Image reflectance uses
 owned, position-indexed UVs. Constant reflectance and emission are UV-independent.
 Degenerate one-sided emitter orientations and the supported numeric domain are
 specified in [triangle-attribute validation](pbrt-attribute-validation.md).
+
+## Omitted descriptors
+
+Missing camera, film, filter, sampler and integrator declarations resolve to
+perspective, RGB, Gaussian, ZSobol and volpath respectively. Explicit unsupported
+types remain unsupported. Defaults are effective render data; structural
+preflight retains only authored descriptors. An omitted camera stays at identity
+in vacuum and does not define the named `camera` coordinate system, regardless
+of prior option transforms or medium state. The implicit RGB film starts in sRGB.
+Each applied default is recorded in render provenance.
 
 ## Perspective depth of field
 
@@ -741,6 +751,39 @@ pixel coordinates. Filtering can introduce further rounding differences between
 renderers. See the [Sobol validation record](pbrt-sobol-validation.md), and
 [PLY validation record](pbrt-ply-validation.md).
 
+## Halton and ZSobol sampling
+
+`halton` defaults to 16 samples and `permutedigits`, supporting `none`,
+`permutedigits`, and `owen`; `fastowen` is invalid. Pixel samples use the pinned
+base-2/base-3 mapping with resolution capped at 128 per axis. Camera values
+ignore the seed; pinned Halton Owen also ignores it. Repeated seeds therefore
+cannot supply independent error bars for `none` or `owen`. Checked wide index
+multiplication avoids the pinned CPU implementation's signed-int overflow at
+large indices; that extension is tested mathematically rather than against
+undefined upstream arithmetic.
+
+Halton retains floating variates directly. Dimensions 0/1 are camera, 2 is
+wavelength, and 3 is reserved. Eight transport dimensions begin at `4+8b`.
+The lens uses 998/999. Maximum depth is 124, or 110 with dielectric lobe
+choices at `884+b`; dimensions never wrap. Discrete emitter choices and
+roulette use scaled uniforms; area samples retain the declared midpoint grid.
+
+`zsobol` defaults to 16 samples and `fastowen`, supporting all four Sobol
+randomizations. Following pinned PBRT, a positive non-power-of-two authored
+count uses the next lower power of two. A warning and provenance record retain
+both authored and effective counts. The final effective budget is immutable
+through dispatch and resume. Requests outside it fail before execution.
+With `m=ceil(log2(max(width,height)))` and `k=log2(effective spp)`, the supported
+domain requires `m<=26` and `2m+k<=52`.
+
+ZSobol wavelength uses scalar dimension 0; its primary camera pair starts at
+1 and shares the shuffled index and full 64-bit pair hash. Transport begins at
+4, dielectric choices at 908, and the lens pair at 1022, retaining Sobol's
+127/113 depth limits. Scalar and pair draws are distinct pinned operations.
+Both new samplers use rypath's downstream dimension schedule and existing
+separate material/media Philox streams; equal seeds do not imply equal PBRT paths.
+See [sampling/default validation](sampling-defaults-validation.md).
+
 ## Pixel reconstruction
 
 Box filtering samples a normalized rectangle around each pixel center, with independent
@@ -749,7 +792,7 @@ with independent radii defaulting to two.
 Each radius must narrow to a positive normal binary32 value. Invalid radii and
 unrepresentable camera arithmetic produce source-located errors before device
 acquisition. Radii may exceed film dimensions when the camera arithmetic remains
-supported; the renderer applies no arbitrary radius cap.
+supported for box and triangle filters; Gaussian has the table bounds below.
 
 Samples retain their originating pixel and unit filter weight, including when
 positions lie outside the image. There is no clipping, splatting, edge
@@ -764,6 +807,19 @@ Half-pixel box rendering and the demo retain their original camera arithmetic.
 The terminal reports the effective filter and both radii. No new CLI option is
 needed; use `PixelFilter "triangle" "float xradius" [1.5] "float yradius" [.75]`
 in the scene, or omit either radius to use its default of two.
+
+Gaussian reconstruction uses radii 1.5 and sigma 0.5 by default. It follows
+PBRT's full 2D midpoint table with `floor(32*radius)` cells per axis, then samples
+its normalized piecewise-constant distribution. This is not a continuous
+Gaussian inverse. The positive table gives a mathematically constant PBRT
+`f[cell]/pdf` weight; rypath normalizes it to unit weight and retains raw counts,
+with documented floating-point differences from PBRT's weighted normalization.
+
+Tables require 1–4096 cells per axis and at most 1,048,576 total cells. Empty,
+nonfinite or zero-mass tables and normalization values that would collapse on
+Metal fail before rendering. Zero cells and rows remain valid; CDF inversion
+skips their plateaus. The native session owns the compiled distribution, and
+primary rays and texture differentials reuse the same sampled offsets.
 
 ## Spectral GGX conductors
 
@@ -921,11 +977,10 @@ subsurface transport, hair/curves, or full PBRT corpus compatibility.
 
 ## Homogeneous media
 
-An explicit `Integrator "volpath"` enables homogeneous participating media.
-`path` retains vacuum surface behavior and rejects active camera media or placed
-medium transitions. Unused medium definitions are still validated. Omitted
-integrator, camera, film, filter and sampler descriptors remain outside this
-profile; PBRT's default volumetric integrator is not silently installed.
+`Integrator "volpath"`, including the pinned default when omitted, enables
+homogeneous participating media. `path` retains vacuum surface behavior and rejects
+active camera media or placed medium transitions. Unused medium definitions are
+still validated. The terminal and output provenance identify applied defaults.
 
 | Parameter | Default and interpretation |
 | --- | --- |
@@ -992,7 +1047,7 @@ caustic sampler. Finite scattering-depth and existing material-model limits
 continue to apply.
 
 Variable-length medium work uses `medium-local-philox-v1`, a separate versioned
-Philox stream under both independent and Sobol samplers. The Sobol camera and
+Philox stream under every supported sampler. The selected camera and
 surface sequence is retained; volumetric events form an explicitly labeled
 hybrid. Samples still enter raw XYZ accumulation only through complete validated
 batches. No denoising, tone mapping or radiance clamp is introduced.

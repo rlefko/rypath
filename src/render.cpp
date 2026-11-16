@@ -3,6 +3,7 @@
 #include "render.hpp"
 #include "bilinear.hpp"
 #include "bsdf_table.hpp"
+#include "gaussian_filter.hpp"
 #include "triangle_attributes.hpp"
 
 #include "cie_xyz_data.hpp"
@@ -123,6 +124,10 @@ bool valid_pixel_filter(const PixelFilter &filter) {
     case PixelFilterKind::triangle:
         return std::isnormal(filter.x_radius) && filter.x_radius > 0 &&
                std::isnormal(filter.y_radius) && filter.y_radius > 0;
+    case PixelFilterKind::gaussian:
+        return std::isnormal(filter.x_radius) && filter.x_radius > 0 &&
+               std::isnormal(filter.y_radius) && filter.y_radius > 0 &&
+               std::isnormal(filter.sigma) && filter.sigma > 0;
     }
     return false;
 }
@@ -950,7 +955,7 @@ std::string validate_render_settings(const RenderSettings &settings) {
         return "Total render sample count exceeds 64-bit capacity";
     }
     return validate_sampler_range(settings.sampler, settings.seed, settings.width, settings.height,
-                                  0, settings.samples);
+                                  0, settings.samples, settings.samples);
 }
 
 std::string validate_raster_support(const RasterCamera &camera, const PixelFilter &filter,
@@ -1473,6 +1478,11 @@ std::string validate_render_scene(const RenderScene &scene) {
     }
     if (!valid_pixel_filter(scene.filter)) {
         return "Invalid pixel filter or radius";
+    }
+    if (scene.filter.kind == PixelFilterKind::gaussian) {
+        auto compiled = compile_gaussian_filter(scene.filter);
+        if (!compiled.diagnostic.empty())
+            return compiled.diagnostic;
     }
     if (scene.model == RenderModel::demo &&
         (scene.filter.kind != PixelFilterKind::box || scene.filter.x_radius != 0.5f ||

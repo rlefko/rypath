@@ -2,31 +2,29 @@
 
 ## Current milestone
 
-Area-light power merged in [PR #47](https://github.com/rlefko/rypath/pull/47)
-at `42c3079`, following perspective depth of field and configurable box radii.
+Loop subdivision and inline bilinear meshes merged in
+[PR #48](https://github.com/rlefko/rypath/pull/48) at `b2eae1c`.
 
-The current geometry slice adds checked Loop subdivision and inline bilinear
-meshes. Loop refinement preserves limit positions and raw normals; inline quads
-reuse the existing exact patch backend. Both use existing materials, alpha,
-static instances, media and direct area lights, including per-generated-primitive
-power. Independent topology/scratch/work bounds reject invalid or excessive
-subdivision. See the [profile](pbrt-rendering.md) and
-[validation record](mesh-shape-validation.md).
-Identity schema 9, renderer contract 11 and sampling contract 2 remain unchanged.
+The current compatibility slice adds Halton, ZSobol, tabulated Gaussian filtering
+and pinned PBRT defaults for omitted descriptors. Explicit unsupported features
+still receive diagnostics. Stable absolute sample identities, owned filter
+distributions and fixed ZSobol budgets support progressive execution and resume.
+See the [render profile](pbrt-rendering.md) and
+[sampling validation](sampling-defaults-validation.md).
+Identity/renderer/sampling contracts are 10/12/3; format and accumulation remain 1.
 
-Selected licensed Loop excerpts extend asset coverage, without establishing
-support for the original bathroom scene. Halton and default-Gaussian/descriptor
-handling are recurring blockers in inspected upstream entry points; a complete
-pinned inventory and licensed dependency closures remain acceptance work. Long-run
-convergence and measured M4 Max benchmarks remain on the [roadmap](roadmap.md).
+Selected owned and CC0-derived fixtures exercise sampling, filtering, lenses and
+homogeneous media. They do not establish additional unmodified upstream scene
+coverage. Analytic geometry, additional film/camera/filter/sampler models, advanced
+materials and heterogeneous media remain broader conformance work. A complete
+pinned inventory, licensed dependency closures, long-run convergence and measured
+M4 Max benchmarks remain acceptance work on the [roadmap](roadmap.md).
 Offline MVP completion and full pinned-corpus coverage remain unestablished.
 
 ## Validation
 
-At implementation revision `ff81056`, the [mesh record](mesh-shape-validation.md)
-records 36 passing geometry-oracle cases, 24 image cases / 360 statistical gates,
-69 byte-exact legacy scenes, complete Release and ASan/UBSan suites (180 each),
-portable Clang 18 tests (137), and strict M4 Max Metal API validation (45).
-It separates current evidence from earlier checks.
-Area-power, box-filter, lighting, media, material, importer, texture, HDR and
-checkpoint records retain historical evidence for their named revisions.
+Current sampling/default checks and their exact implementation revision will be
+recorded in the [sampling record](sampling-defaults-validation.md) before delivery.
+The [mesh record](mesh-shape-validation.md) retains historical evidence for
+`ff81056`; earlier area-power, camera, lighting, material, media, texture, importer,
+HDR and checkpoint records likewise identify their own validation revisions.

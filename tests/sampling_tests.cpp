@@ -222,7 +222,7 @@ bool validation() {
                   "Independent sampler accepts the full 64-bit seed and index");
     // Fixed underlying types permit these values so public API validation can reject them.
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-    constexpr auto invalid_kind = static_cast<SamplerKind>(2);
+    constexpr auto invalid_kind = static_cast<SamplerKind>(4);
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     constexpr auto invalid_mode = static_cast<SobolRandomization>(4);
     pass &= check(

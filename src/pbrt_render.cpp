@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "pbrt_render.hpp"
+#include "gaussian_filter.hpp"
 
 #include "mesh_displacement.hpp"
 #include "pbrt_numeric.hpp"
@@ -371,7 +372,8 @@ class Translator {
     void issue(Severity severity, string_view code, const Location &source, std::string message);
     void unsupported(const Location &source, std::string message);
     void invalid(const Location &source, std::string message);
-    const Descriptor *required(string_view name);
+    std::map<string_view, Descriptor> implicit_options_;
+    const Descriptor *option(string_view name, string_view default_type);
     std::optional<float> narrow(const Descriptor &descriptor, string_view name, double fallback);
     std::map<std::string, std::uint32_t, std::less<>> medium_indices_;
     void media();
@@ -444,14 +446,23 @@ void Translator::invalid(const Location &source, std::string message) {
     issue(Severity::error, "invalid-render-value", source, std::move(message));
 }
 
-const Descriptor *Translator::required(string_view name) {
+const Descriptor *Translator::option(string_view name, string_view default_type) {
     const auto found = std::ranges::find_if(
         input_.options, [name](const Descriptor &option) { return option.authored.name == name; });
     if (found != input_.options.end()) {
         return &*found;
     }
-    unsupported(entry_, "The spectral render profile requires an explicit " + std::string(name));
-    return nullptr;
+    auto &descriptor = implicit_options_[name];
+    descriptor.authored.location = entry_;
+    descriptor.authored.name = name;
+    descriptor.authored.arguments.push_back(
+        Value{.kind = ValueKind::string, .location = entry_, .text = std::string(default_type)});
+    result_.provenance.emplace_back("PBRT default " + std::string(name) + ": " +
+                                    std::string(default_type));
+    // These initial defaults are independent of the final graphics state.
+    // In particular, an omitted Camera retains identity/vacuum and creates
+    // no named coordinate system; the interpreter handles explicit Cameras.
+    return &descriptor;
 }
 
 std::optional<float> Translator::narrow(const Descriptor &descriptor, string_view name,
@@ -642,10 +653,14 @@ void Translator::camera(const Descriptor &descriptor, const Descriptor *film_des
 }
 
 void Translator::filter(const Descriptor &descriptor) {
-    const bool triangle = descriptor.authored.arguments.front().text == "triangle";
-    scene_.filter.kind = triangle ? PixelFilterKind::triangle : PixelFilterKind::box;
+    const auto &type = descriptor.authored.arguments.front().text;
+    const bool triangle = type == "triangle";
+    const bool gaussian = type == "gaussian";
+    scene_.filter.kind = gaussian   ? PixelFilterKind::gaussian
+                         : triangle ? PixelFilterKind::triangle
+                                    : PixelFilterKind::box;
     const auto radius = [&](string_view name) {
-        const auto value = narrow(descriptor, name, triangle ? 2. : 0.5);
+        const auto value = narrow(descriptor, name, gaussian ? 1.5 : triangle ? 2. : 0.5);
         if (value && (!std::isnormal(*value) || *value <= 0)) {
             invalid(location(descriptor, name),
                     std::string(name) + " must be positive and normal in binary32");
@@ -654,19 +669,31 @@ void Translator::filter(const Descriptor &descriptor) {
     };
     scene_.filter.x_radius = radius("xradius");
     scene_.filter.y_radius = radius("yradius");
+    if (gaussian) {
+        scene_.filter.sigma = narrow(descriptor, "sigma", 0.5).value_or(0);
+        const auto compiled = compile_gaussian_filter(scene_.filter);
+        if (!compiled.diagnostic.empty())
+            invalid(descriptor.authored.location, compiled.diagnostic);
+    }
 }
 
 void Translator::sampler(const Descriptor &descriptor) {
     auto &settings = result_.settings;
-    const bool sobol = descriptor.authored.arguments.front().text == "sobol";
+    const auto &type = descriptor.authored.arguments.front().text;
+    const bool independent = type == "independent";
+    const bool halton = type == "halton";
+    const bool zsobol = type == "zsobol";
     settings.samples =
-        static_cast<std::uint64_t>(integer(descriptor, "pixelsamples", sobol ? 16 : 4));
+        static_cast<std::uint64_t>(integer(descriptor, "pixelsamples", independent ? 4 : 16));
     settings.seed = static_cast<std::uint64_t>(integer(descriptor, "seed", 0));
-    if (!sobol) {
+    if (independent) {
         return;
     }
-    settings.sampler.kind = SamplerKind::sobol;
-    const auto randomization = string(descriptor, "randomization").value_or("fastowen");
+    settings.sampler.kind = halton   ? SamplerKind::halton
+                            : zsobol ? SamplerKind::zsobol
+                                     : SamplerKind::sobol;
+    const auto randomization =
+        string(descriptor, "randomization").value_or(halton ? "permutedigits" : "fastowen");
     if (randomization == "none") {
         settings.sampler.randomization = SobolRandomization::none;
     } else if (randomization == "permutedigits") {
@@ -674,7 +701,17 @@ void Translator::sampler(const Descriptor &descriptor) {
     } else if (randomization == "owen") {
         settings.sampler.randomization = SobolRandomization::owen;
     }
-    if (!std::has_single_bit(settings.samples)) {
+    if (zsobol && !std::has_single_bit(settings.samples)) {
+        const auto authored = settings.samples;
+        settings.samples = std::bit_floor(authored);
+        issue(Severity::warning, "zsobol-effective-sample-count",
+              location(descriptor, "pixelsamples"),
+              "ZSobol authored pixelsamples " + std::to_string(authored) + " uses " +
+                  std::to_string(settings.samples) +
+                  " effective samples per pixel, following pinned PBRT");
+        result_.provenance.push_back("ZSobol pixelsamples: authored " + std::to_string(authored) +
+                                     ", effective " + std::to_string(settings.samples));
+    } else if (!halton && !std::has_single_bit(settings.samples)) {
         issue(Severity::warning, "sobol-non-power-of-two", location(descriptor, "pixelsamples"),
               "Sobol pixelsamples is not a power of two; rendering the requested " +
                   std::to_string(settings.samples) + " samples per pixel");
@@ -684,13 +721,14 @@ void Translator::sampler(const Descriptor &descriptor) {
 void Translator::integrator(const Descriptor &descriptor) {
     scene_.volume_transport = descriptor.authored.arguments.front().text == "volpath";
     const auto depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 5));
-    const bool sobol = result_.settings.sampler.kind == SamplerKind::sobol;
-    const auto limit = sobol ? sobol_max_depth : render_emergency_limit;
+    const bool qmc = result_.settings.sampler.kind != SamplerKind::independent;
+    const auto limit =
+        qmc ? sampler_max_depth(result_.settings.sampler, false) : render_emergency_limit;
     if (depth > limit) {
         unsupported(
             location(descriptor, "maxdepth"),
-            std::string(sobol ? "Sobol path maxdepth exceeds the limit of "
-                              : "Path maxdepth exceeds the spectral render profile limit of ") +
+            std::string(qmc ? "QMC path maxdepth exceeds the limit of "
+                            : "Path maxdepth exceeds the spectral render profile limit of ") +
                 std::to_string(limit));
     }
     scene_.max_depth = depth;
@@ -3261,22 +3299,22 @@ void Translator::media() {
 }
 
 RenderTranslation Translator::run() {
-    const auto *film_descriptor = required("Film");
+    const auto *film_descriptor = option("Film", "rgb");
     if (film_descriptor) {
         film(*film_descriptor);
     }
-    const auto *filter_descriptor = required("PixelFilter");
+    const auto *filter_descriptor = option("PixelFilter", "gaussian");
     if (filter_descriptor) {
         filter(*filter_descriptor);
     }
-    if (const auto *descriptor = required("Camera")) {
+    if (const auto *descriptor = option("Camera", "perspective")) {
         camera(*descriptor, film_descriptor);
     }
-    const auto *sampler_descriptor = required("Sampler");
+    const auto *sampler_descriptor = option("Sampler", "zsobol");
     if (sampler_descriptor) {
         sampler(*sampler_descriptor);
     }
-    const auto *integrator_descriptor = required("Integrator");
+    const auto *integrator_descriptor = option("Integrator", "volpath");
     if (integrator_descriptor) {
         integrator(*integrator_descriptor);
     }
@@ -3323,22 +3361,25 @@ RenderTranslation Translator::run() {
         (scene_.camera_medium != no_medium ||
          std::ranges::any_of(scene_.instance_media,
                              [](const MediumInterface &m) { return m.inside != m.outside; })))
-        unsupported(entry_, "Homogeneous media require an explicit volpath integrator");
+        unsupported(entry_, "Homogeneous media require the volpath integrator");
     if (!diagnostics_.diagnostics_truncated &&
         scene_.instance_materials.size() == input_.geometry.instances.size()) {
         texture_frames();
     }
     const auto &settings = result_.settings;
-    if (integrator_descriptor && settings.sampler.kind == SamplerKind::sobol &&
-        scene_has_dielectrics(scene_) && scene_.max_depth > sobol_dielectric_max_depth) {
+    if (integrator_descriptor && settings.sampler.kind != SamplerKind::independent &&
+        scene_has_dielectrics(scene_) &&
+        scene_.max_depth > sampler_max_depth(settings.sampler, true)) {
         unsupported(location(*integrator_descriptor, "maxdepth"),
-                    "Sobol dielectric path maxdepth exceeds the limit of " +
-                        std::to_string(sobol_dielectric_max_depth));
+                    "QMC dielectric path maxdepth exceeds the limit of " +
+                        std::to_string(sampler_max_depth(settings.sampler, true)));
     }
     std::string sampler_error;
-    if (sampler_descriptor && film_descriptor && settings.sampler.kind == SamplerKind::sobol) {
-        sampler_error = validate_sampler_range(settings.sampler, settings.seed, settings.width,
-                                               settings.height, 0, settings.samples);
+    if (sampler_descriptor && film_descriptor &&
+        settings.sampler.kind != SamplerKind::independent) {
+        sampler_error =
+            validate_sampler_range(settings.sampler, settings.seed, settings.width, settings.height,
+                                   0, settings.samples, settings.samples);
         if (!sampler_error.empty()) {
             const auto &source =
                 sobol_scale_exponent(settings.width, settings.height) > sobol_max_scale_exponent
@@ -3359,7 +3400,7 @@ RenderTranslation Translator::run() {
             [severity](const Diagnostic &diagnostic) { return diagnostic.severity == severity; });
     };
     if (filter_descriptor &&
-        (scene_.filter.kind == PixelFilterKind::triangle || scene_.filter.x_radius != 0.5f ||
+        (scene_.filter.kind != PixelFilterKind::box || scene_.filter.x_radius != 0.5f ||
          scene_.filter.y_radius != 0.5f) &&
         scene_.raster_camera && !has(Severity::error) && !diagnostics_.diagnostics_truncated) {
         const auto message = validate_raster_support(
@@ -3380,10 +3421,15 @@ RenderTranslation Translator::run() {
         std::ostringstream filter_provenance;
         filter_provenance.imbue(std::locale::classic());
         filter_provenance << "Pixel filter: "
-                          << (scene_.filter.kind == PixelFilterKind::triangle ? "triangle" : "box")
+                          << (scene_.filter.kind == PixelFilterKind::gaussian   ? "gaussian"
+                              : scene_.filter.kind == PixelFilterKind::triangle ? "triangle"
+                                                                                : "box")
                           << std::setprecision(std::numeric_limits<float>::max_digits10)
                           << " (x radius " << scene_.filter.x_radius << ", y radius "
                           << scene_.filter.y_radius << ')';
+        if (scene_.filter.kind == PixelFilterKind::gaussian)
+            filter_provenance << " (sigma " << scene_.filter.sigma
+                              << "; normalized PBRT midpoint table; unit sample weight)";
         result_.provenance.push_back(filter_provenance.str());
         if (scene_.perspective_lens) {
             std::ostringstream lens;

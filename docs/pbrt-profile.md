@@ -26,7 +26,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | --- | --- | --- | --- |
 | Current v4 directive forms and typed scalar/array parameters | Checked, with owned locations and numeric lexemes | Type/cardinality and supported descriptor schemas checked | Not attempted |
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
-| Perspective camera, RGB film, box/triangle filter, independent or Sobol sampler, path/volpath integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
+| Perspective camera, RGB film, box/triangle/Gaussian filter, independent/Sobol/Halton/ZSobol sampler, path/volpath integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse, conductor, dielectric and extended surface materials and named bindings | Retained | Last matching typed parameter wins; dielectric float eta precedes spectral eta; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
 | Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
@@ -85,8 +85,10 @@ from realistic lens systems are in the [render profile](pbrt-rendering.md) and
 | Perspective camera | `fov`, `lensradius`, `focaldistance`, `frameaspectratio`, four-value `screenwindow`, `shutteropen`, `shutterclose` |
 | RGB film | `filename`, `xresolution`, `yresolution`, four-value `pixelbounds`/`cropwindow`, `diagonal`, `iso`, `whitebalance`, named `sensor`, `savefp16`, `maxcomponentvalue` |
 | Box or triangle filter | `xradius`, `yradius` |
+| Gaussian filter | `xradius`, `yradius`, `sigma` |
+| Halton sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, or `owen`) |
 | Independent sampler | `pixelsamples`, `seed` |
-| Sobol sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, `fastowen`, or `owen`) |
+| Sobol or ZSobol sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, `fastowen`, or `owen`) |
 | Path or volumetric path integrator | `maxdepth`, `regularize`, `lightsampler` |
 | BVH | `maxnodeprims`, `splitmethod` |
 | Diffuse material | `reflectance`, including a spectrum texture reference, scalar `displacement`, RGB image `normalmap`; named definitions require `string type` |

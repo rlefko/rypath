@@ -166,3 +166,9 @@ remains 2, and accumulation/file-format remain 1. Canonical emission includes
 binary64 power, with finite nonpositive authored values represented as zero.
 Factors derive from final world geometry and image content already covered by
 identity. Older renderer/identity checkpoints are rejected for every scene.
+
+Sampling/default compatibility advances renderer to 12, identity to 10 and
+sampling to 3. Format and accumulation remain 1. Gaussian sigma participates in
+filter identity; effective ZSobol sample count is the fixed target already
+included in identity. New QMC seeds use canonical signed 32-bit encoding.
+Earlier contracts are rejected explicitly; no automatic migration is attempted.

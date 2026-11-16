@@ -23,7 +23,7 @@ enum : Word {
     boundary_exhaustion = 4
 };
 enum : Word { demo_model = 0, pbrt_model = 1 };
-enum : Word { box_filter = 0, triangle_filter = 1 };
+enum : Word { box_filter = 0, triangle_filter = 1, gaussian_filter = 2 };
 enum : Word {
     bilinear_texture_filter = 0,
     trilinear_texture_filter = 1,
@@ -36,7 +36,7 @@ enum : Word {
     linear_half_texel_format = 2,
     linear_float_texel_format = 3
 };
-enum : Word { independent_sampler = 0, sobol_sampler = 1 };
+enum : Word { independent_sampler = 0, sobol_sampler = 1, halton_sampler = 2, zsobol_sampler = 3 };
 enum : Word {
     sampled_material = 0,
     constant_material = 1,
@@ -297,6 +297,10 @@ struct Parameters {
     float focal_distance = 1e6f;
     Point lens_x;
     Point lens_y;
+    Word zsobol_log_spp = 0;
+    Word gaussian_width = 0;
+    Word gaussian_height = 0;
+    float filter_sigma = .5f;
 };
 struct Sample {
     Word status;
@@ -308,6 +312,7 @@ struct Sample {
     Word scatterings;
     Word random_words[4];
     Word lens_words[2]{};
+    float filter_offsets[2]{};
 };
 
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "render wire scalar width");
@@ -383,7 +388,11 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 256 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 272 && alignof(Parameters) == 4 &&
+                  __builtin_offsetof(Parameters, zsobol_log_spp) == 256 &&
+                  __builtin_offsetof(Parameters, gaussian_width) == 260 &&
+                  __builtin_offsetof(Parameters, gaussian_height) == 264 &&
+                  __builtin_offsetof(Parameters, filter_sigma) == 268 &&
                   __builtin_offsetof(Parameters, lens_radius) == 224 &&
                   __builtin_offsetof(Parameters, focal_distance) == 228 &&
                   __builtin_offsetof(Parameters, lens_x) == 232 &&
@@ -409,7 +418,8 @@ static_assert(sizeof(Parameters) == 256 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, randomization) == 176 &&
                   __builtin_offsetof(Parameters, sobol_scale_exponent) == 180,
               "render parameter layout");
-static_assert(sizeof(Sample) == 52 && alignof(Sample) == 4 &&
+static_assert(sizeof(Sample) == 60 && alignof(Sample) == 4 &&
+                  __builtin_offsetof(Sample, filter_offsets) == 52 &&
                   __builtin_offsetof(Sample, lens_words) == 44 &&
                   __builtin_offsetof(Sample, wavelength) == 16 &&
                   __builtin_offsetof(Sample, random_words) == 28,

@@ -56,8 +56,8 @@ effective-parameter selections. It owns narrowed camera, material curves,
 environment/area-emission samples, and per-instance bindings, with source-located diagnostics
 for the narrower [rendering profile](pbrt-rendering.md). It reuses checked geometry
 instead of reinterpreting transforms. Only successful translation reaches Metal.
-An owned filter record selects the original half-pixel box path or normalized
-triangle sampling. Triangle camera arithmetic has dimension-aware support checks
+An owned filter record selects box, triangle, or normalized tabulated Gaussian
+sampling. Gaussian CDFs are compiled portably and owned by the native session. Triangle camera arithmetic has dimension-aware support checks
 in translation, progressive setup, and each native request. Samples beyond film
 bounds remain attached to their source pixel with unit weight.
 An optional perspective lens retains radius, focal distance and the captured
@@ -392,16 +392,18 @@ sample accounting. The [rendering record](rendering.md) specifies the Lambertian
 environment estimator, MIS/roulette, wavelength and sensor conventions, and
 bounded ray-origin behavior.
 
-PBRT Sobol sampling uses a shared integer CPU/MSL implementation and pinned
-direction/interval matrices in an owned read-only Metal buffer. Sampler settings
+PBRT Sobol, Halton and ZSobol sampling use shared CPU/MSL routines and pinned
+direction/interval matrices or prime tables. Sampler settings
 travel through the progressive driver and direct request boundary. Checked
 absolute sample indices, fixed dimension assignments, and finite depth bounds
 prevent table reuse or overflow. The demo and independent PBRT sampling retain
 their original Philox sequence. Active perspective lenses append `lens-v1`:
-Sobol dimensions 1022/1023 or a disjoint independent Philox counter block, without
+Sobol/ZSobol dimensions 1022/1023, Halton dimensions 998/999, or a disjoint
+independent Philox counter block, without
 renumbering camera, wavelength, transport or dielectric draws. Inactive lenses
-consume no lens draws. Current sampling contract 2, renderer contract 11 and identity
-schema 9 reject earlier checkpoints globally. See
+consume no lens draws. Current sampling contract 3, renderer contract 12 and identity
+schema 10 reject earlier checkpoints globally. See
+[sampling/defaults validation](sampling-defaults-validation.md),
 [Sobol validation](pbrt-sobol-validation.md) and
 [depth-of-field validation](depth-of-field-validation.md).
 

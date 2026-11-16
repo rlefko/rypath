@@ -248,6 +248,12 @@ constexpr std::array filter_fields{
     Field{"yradius", "float", 1, false, false, false, Rule::positive},
 };
 
+constexpr std::array gaussian_filter_fields{
+    filter_fields[0],
+    filter_fields[1],
+    Field{"sigma", "float", 1, false, false, false, Rule::positive},
+};
+
 constexpr std::array sampler_fields{
     Field{"pixelsamples", "integer", 1, false, false, false, Rule::positive},
     Field{"seed", "integer"},
@@ -1289,14 +1295,15 @@ void Interpreter::validate_option(const PendingOption &pending) {
         known = one_of(type, {"gbuffer", "spectral"});
         schema = film_fields;
     } else if (directive.name == "PixelFilter") {
-        supported_type = type == "triangle" ? "triangle" : "box";
-        known = one_of(type, {"gaussian", "mitchell", "sinc"});
-        schema = filter_fields;
+        supported_type = one_of(type, {"triangle", "gaussian"}) ? type : "box";
+        known = one_of(type, {"mitchell", "sinc"});
+        schema = type == "gaussian" ? std::span<const Field>{gaussian_filter_fields}
+                                    : std::span<const Field>{filter_fields};
     } else if (directive.name == "Sampler") {
-        supported_type = type == "sobol" ? "sobol" : "independent";
-        known = one_of(type, {"zsobol", "paddedsobol", "halton", "pmj02bn", "stratified"});
-        schema = type == "sobol" ? std::span<const Field>{sobol_sampler_fields}
-                                 : std::span<const Field>{sampler_fields};
+        supported_type = one_of(type, {"sobol", "halton", "zsobol"}) ? type : "independent";
+        known = one_of(type, {"paddedsobol", "pmj02bn", "stratified"});
+        schema = type == "independent" ? std::span<const Field>{sampler_fields}
+                                       : std::span<const Field>{sobol_sampler_fields};
     } else if (directive.name == "Integrator") {
         supported_type = type == "volpath" ? "volpath" : "path";
         known = one_of(type, {"function", "simplepath", "lightpath", "simplevolpath", "volpath",
@@ -1313,6 +1320,14 @@ void Interpreter::validate_option(const PendingOption &pending) {
         return;
     }
     const auto fields = validate(descriptor, directive, {}, schema);
+    if (directive.name == "Sampler" && type == "halton") {
+        const auto randomization = fields.find("randomization");
+        if (randomization != fields.end() &&
+            randomization->second->values.front().text == "fastowen") {
+            error("invalid-parameter", randomization->second->location,
+                  "Halton does not support fastowen randomization");
+        }
+    }
     if (directive.name == "Film") {
         validate_film_bounds(fields);
     } else if (directive.name == "Camera") {

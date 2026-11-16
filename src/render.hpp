@@ -132,12 +132,13 @@ struct SpectralMaterial {
     GltfMaterialParameters gltf{};
 };
 enum class RenderModel { demo, pbrt };
-enum class PixelFilterKind { box, triangle };
+enum class PixelFilterKind { box, triangle, gaussian };
 
 struct PixelFilter {
     PixelFilterKind kind = PixelFilterKind::box;
     float x_radius = 0.5f;
     float y_radius = 0.5f;
+    float sigma = 0.5f;
 };
 
 struct RenderCamera {
@@ -265,7 +266,8 @@ struct RenderSample {
     float wavelength = 0;
     float radiance = 0;
     std::uint32_t scatterings = 0;
-    // Raw camera/wavelength words permit exact CPU/MSL sampler diagnostics.
+    // Camera/wavelength diagnostics: Halton stores binary32 IEEE bits;
+    // the other samplers retain their raw integer uniform words.
     std::array<std::uint32_t, 4> random_words{};
 };
 struct FilmPixel {

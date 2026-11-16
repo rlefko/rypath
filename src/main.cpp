@@ -304,7 +304,7 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
     std::ostringstream exposure;
     exposure << std::setprecision(std::numeric_limits<double>::max_digits10)
              << render_scene.exposure;
-    const auto seed = settings.sampler.kind == rypath::SamplerKind::sobol
+    const auto seed = settings.sampler.kind != rypath::SamplerKind::independent
                           ? std::to_string(rypath::sobol_signed_seed(settings.seed))
                           : std::to_string(settings.seed);
     Metadata metadata{
@@ -344,7 +344,7 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                               "volpath; scalar homogeneous spectral transport");
         metadata.emplace_back(
             "rypath.mediumSampling",
-            "medium-local-philox-v1; hybrid with Sobol; independent segment counters");
+            "medium-local-philox-v1; hybrid with QMC samplers; independent segment counters");
         metadata.emplace_back("rypath.mediumModel",
                               "PBRT dense homogeneous spectra; analytic segment emission and "
                               "shadow transmittance; HG g clamped to [-0.99,0.99]");
@@ -500,9 +500,9 @@ int render_pbrt(int argc, char *argv[]) {
     }
     const auto precision =
         translated.save_fp16 ? rypath::ExrPrecision::half : rypath::ExrPrecision::float32;
-    const bool sobol = settings.sampler.kind == rypath::SamplerKind::sobol;
-    const auto seed = sobol ? std::to_string(rypath::sobol_signed_seed(settings.seed))
-                            : std::to_string(settings.seed);
+    const bool qmc = settings.sampler.kind != rypath::SamplerKind::independent;
+    const auto seed = qmc ? std::to_string(rypath::sobol_signed_seed(settings.seed))
+                          : std::to_string(settings.seed);
     std::cout
         << "rypath " RYPATH_VERSION "\n"
         << "Scene: " << entry.string() << '\n'
@@ -525,8 +525,9 @@ int render_pbrt(int argc, char *argv[]) {
     if (const auto description = surface_model_description(scene); !description.empty())
         std::cout << "Surface model: " << description << '\n';
     if (scene.volume_transport)
-        std::cout << "Medium sampling: medium-local-philox-v1; hybrid with Sobol; independent "
-                     "segment counters\n";
+        std::cout
+            << "Medium sampling: medium-local-philox-v1; hybrid with QMC samplers; independent "
+               "segment counters\n";
     for (const auto &item : translated.provenance) {
         std::cout << item << '\n';
     }
@@ -537,10 +538,17 @@ int render_pbrt(int argc, char *argv[]) {
                                                     << "Committed samples per pixel: " << count
                                                     << '/' << settings.samples << std::endl;
                                             });
-    const auto metadata =
+    auto metadata =
         render_metadata(settings, entry.string(), "pbrt-spectral-v1", scene,
                         output.extension() == ".exr" ? "Film.filename; batch size"
                                                      : "Film.filename; Film.savefp16; batch size");
+    std::string translation_provenance;
+    for (const auto &item : translated.provenance) {
+        if (!translation_provenance.empty())
+            translation_provenance += '\n';
+        translation_provenance += item;
+    }
+    metadata.emplace_back("rypath.sceneTranslation", std::move(translation_provenance));
     return finish_job(job, settings, output, precision, metadata);
 }
 

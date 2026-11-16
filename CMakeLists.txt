@@ -127,9 +127,17 @@ if(NOT rypath_sobol_digest STREQUAL "349a336cd9dff8bdc06cd30490b1cf887c3f041c5fd
     message(FATAL_ERROR "Unexpected PBRT Sobol data SHA-256: ${rypath_sobol_digest}")
 endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_sobol_tables}")
+set(rypath_prime_table "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pbrt/primes.inc")
+file(SHA256 "${rypath_prime_table}" rypath_prime_digest)
+if(NOT rypath_prime_digest STREQUAL "a34ecb94f6f5c678cc4ab632e06b2ed3e7481f28adfd1d40967809c94abf7c4e")
+    message(FATAL_ERROR "Pinned PBRT prime table checksum mismatch")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_prime_table}")
 
-add_library(rypath_render STATIC src/render.cpp src/area_power.cpp src/sampling.cpp src/triangle_attributes.cpp
+add_library(rypath_render STATIC src/render.cpp src/area_power.cpp src/sampling.cpp src/gaussian_filter.cpp src/triangle_attributes.cpp
     src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp)
+set_source_files_properties(src/gaussian_filter.cpp PROPERTIES COMPILE_OPTIONS
+    "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off>")
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
     PRIVATE "${rypath_generated_directory}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 target_link_libraries(rypath_render PRIVATE rypath_geometry PUBLIC rypath_rgb_spectrum rypath_image rypath_bsdf_tables)

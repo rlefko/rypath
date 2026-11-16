@@ -1,0 +1,38 @@
+{
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "coverage": "Owned sampling/filter fixtures and a labeled CC0 Cornell derivative; no new unmodified upstream entry-point conformance",
+  "owned_scenes": [
+    "edge",
+    "diffuse-area",
+    "lens-texture",
+    "volume",
+    "implicit-defaults",
+    "explicit-defaults",
+    "edge-coarse"
+  ],
+  "owned_license": "GPL-3.0-only",
+  "owned_assets": [
+    {
+      "path": "assets/focus-chart.png",
+      "bytes": 2713,
+      "sha256": "7de6686b1015f352fd9489ce89a181a6e18acb06e080710dca652376609ef889",
+      "origin": "Unchanged owned focus chart from box-filters/assets/focus-chart.png",
+      "license": "GPL-3.0-only"
+    }
+  ],
+  "external_assets": [
+    {
+      "path": "cornell.pbrt",
+      "license": "CC0-1.0",
+      "author": "Benedikt Bitterli; PBRT v4 conversion by Matt Pharr",
+      "upstream_repository": "https://github.com/windingwind/web-falcor",
+      "upstream_revision": "e969701f3ebc0238003150dc0c0e7c3cc93aa1fc",
+      "upstream_path": "tests/gpu/assets/pbrt/cornell-box.pbrt",
+      "upstream_bytes": 7253,
+      "upstream_sha256": "b2fc6654c966468119187d169a76ecec82e169a1058f3344e27e5103189d4e43",
+      "changes": "Derivative of existing cornell-box-adapted.pbrt: 8x8, CIE1931/ISO100, FLOAT output, maxdepth5, Gaussian and declared randomized sampler variants",
+      "license_file": "assets/Cornell-LICENSE.txt",
+      "input_dependencies": []
+    }
+  ]
+}

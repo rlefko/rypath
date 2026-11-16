@@ -4,6 +4,7 @@
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
 
+#include "gaussian_filter.hpp"
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
 #include "render_wire.h"
@@ -107,8 +108,8 @@ GeometryPoint unpack(wire::Point point) { return {point.x, point.y, point.z}; }
 
 wire::Parameters camera_parameters(const RenderScene &scene) {
     wire::Parameters result{};
-    result.filter_kind =
-        scene.filter.kind == PixelFilterKind::triangle ? wire::triangle_filter : wire::box_filter;
+    result.filter_kind = static_cast<wire::Word>(scene.filter.kind);
+    result.filter_sigma = scene.filter.sigma;
     result.filter_x_radius = scene.filter.x_radius;
     result.filter_y_radius = scene.filter.y_radius;
     if (scene.model == RenderModel::pbrt) {
@@ -266,7 +267,8 @@ std::string validate_request(const RenderRequest &request) {
     if (request.boundary_limit == 0 || request.boundary_limit > medium_boundary_limit)
         return "Invalid Metal medium boundary limit";
     return validate_sampler_range(request.sampler, request.seed, request.width, request.height,
-                                  request.sample_begin, request.sample_count);
+                                  request.sample_begin, request.sample_count,
+                                  request.total_samples);
 }
 
 std::string sample_error(wire::Word status) {
@@ -1195,21 +1197,20 @@ struct MetalRenderScene::Impl {
         if (!result.diagnostic.empty()) {
             return result;
         }
-        const auto depth_limit = dielectrics ? sobol_dielectric_max_depth : sobol_max_depth;
-        if (request.sampler.kind == SamplerKind::sobol &&
+        const auto depth_limit = sampler_max_depth(request.sampler, dielectrics);
+        if (request.sampler.kind != SamplerKind::independent &&
             (parameters.model != wire::pbrt_model || parameters.max_depth > depth_limit)) {
-            result.diagnostic = "Sobol requires PBRT rendering with maxdepth at most " +
+            result.diagnostic = "QMC sampling requires PBRT rendering with maxdepth at most " +
                                 std::to_string(depth_limit);
             return result;
         }
-        if (parameters.filter_kind == wire::triangle_filter || parameters.filter_x_radius != 0.5f ||
+        if (parameters.filter_kind != wire::box_filter || parameters.filter_x_radius != 0.5f ||
             parameters.filter_y_radius != 0.5f) {
             const RasterCamera camera{unpack(parameters.origin), unpack(parameters.forward),
                                       unpack(parameters.right), unpack(parameters.up)};
-            const PixelFilter filter{parameters.filter_kind == wire::triangle_filter
-                                         ? PixelFilterKind::triangle
-                                         : PixelFilterKind::box,
-                                     parameters.filter_x_radius, parameters.filter_y_radius};
+            const PixelFilter filter{static_cast<PixelFilterKind>(parameters.filter_kind),
+                                     parameters.filter_x_radius, parameters.filter_y_radius,
+                                     parameters.filter_sigma};
             result.diagnostic =
                 validate_raster_support(camera, filter, request.width, request.height);
             if (!result.diagnostic.empty()) {
@@ -1221,10 +1222,9 @@ struct MetalRenderScene::Impl {
                                       unpack(parameters.right), unpack(parameters.up)};
             const PerspectiveLens lens{parameters.lens_radius, parameters.focal_distance,
                                        unpack(parameters.lens_x), unpack(parameters.lens_y)};
-            const PixelFilter filter{parameters.filter_kind == wire::triangle_filter
-                                         ? PixelFilterKind::triangle
-                                         : PixelFilterKind::box,
-                                     parameters.filter_x_radius, parameters.filter_y_radius};
+            const PixelFilter filter{static_cast<PixelFilterKind>(parameters.filter_kind),
+                                     parameters.filter_x_radius, parameters.filter_y_radius,
+                                     parameters.filter_sigma};
             result.diagnostic =
                 validate_lens_support(camera, lens, filter, request.width, request.height);
             if (!result.diagnostic.empty()) {
@@ -1277,7 +1277,11 @@ struct MetalRenderScene::Impl {
         p.lane_count = request.pixel_count * request.sample_count;
         p.sampler_kind = static_cast<wire::Word>(request.sampler.kind);
         p.randomization = static_cast<wire::Word>(request.sampler.randomization);
-        p.sobol_scale_exponent = request.sampler.kind == SamplerKind::sobol
+        p.zsobol_log_spp = request.sampler.kind == SamplerKind::zsobol
+                               ? static_cast<wire::Word>(std::bit_width(request.total_samples) - 1)
+                               : 0;
+        p.sobol_scale_exponent = (request.sampler.kind == SamplerKind::sobol ||
+                                  request.sampler.kind == SamplerKind::zsobol)
                                      ? sobol_scale_exponent(request.width, request.height)
                                      : 0;
 
@@ -1568,13 +1572,27 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             return result;
         }
         const auto &tables = sobol_tables();
-        if (sizeof(tables) > impl->device.maxBufferLength) {
-            result.diagnostic = "Metal Sobol tables exceed device buffer limit";
+        std::vector<wire::Word> sampling_words(sizeof(tables) / sizeof(wire::Word));
+        std::memcpy(sampling_words.data(), &tables, sizeof(tables));
+        if (scene.filter.kind == PixelFilterKind::gaussian) {
+            auto compiled = compile_gaussian_filter(scene.filter);
+            if (!compiled.diagnostic.empty()) {
+                result.diagnostic = compiled.diagnostic;
+                return result;
+            }
+            const auto &distribution = compiled.distribution;
+            impl->parameters.gaussian_width = distribution.width;
+            impl->parameters.gaussian_height = distribution.height;
+            for (const auto value : distribution.conditional_cdf)
+                sampling_words.push_back(std::bit_cast<wire::Word>(value));
+            for (const auto value : distribution.marginal_cdf)
+                sampling_words.push_back(std::bit_cast<wire::Word>(value));
+        }
+        if (sampling_words.size() > impl->device.maxBufferLength / sizeof(wire::Word)) {
+            result.diagnostic = "Metal sampling tables exceed device buffer limit";
             return result;
         }
-        impl->sampling_tables = [impl->device newBufferWithBytes:&tables
-                                                          length:sizeof(tables)
-                                                         options:MTLResourceStorageModeShared];
+        impl->sampling_tables = upload(impl->device, sampling_words);
         if (impl->sampling_tables == nil) {
             result.diagnostic = "Metal Sobol table buffer allocation failed";
             return result;

@@ -506,6 +506,24 @@ add_executable(rypath_sampling_tests sampling_tests.cpp)
 target_link_libraries(rypath_sampling_tests PRIVATE rypath_render)
 rypath_configure_host_target(rypath_sampling_tests)
 add_test(NAME render.sobol_sampling COMMAND rypath_sampling_tests)
+
+add_executable(rypath_qmc_sampling_tests qmc_sampling_tests.cpp)
+target_link_libraries(rypath_qmc_sampling_tests PRIVATE rypath_render)
+target_compile_options(rypath_qmc_sampling_tests PRIVATE
+    "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off>")
+rypath_configure_host_target(rypath_qmc_sampling_tests)
+add_test(NAME render.qmc_sampling COMMAND rypath_qmc_sampling_tests)
+
+add_executable(rypath_gaussian_filter_tests gaussian_filter_tests.cpp)
+target_link_libraries(rypath_gaussian_filter_tests PRIVATE rypath_render)
+rypath_configure_host_target(rypath_gaussian_filter_tests)
+add_test(NAME render.gaussian_filter COMMAND rypath_gaussian_filter_tests)
+
+add_executable(rypath_pbrt_sampling_defaults_tests pbrt_sampling_defaults_tests.cpp)
+target_link_libraries(rypath_pbrt_sampling_defaults_tests PRIVATE rypath_pbrt_render rypath_checkpoint)
+rypath_configure_host_target(rypath_pbrt_sampling_defaults_tests)
+add_test(NAME pbrt.sampling_defaults COMMAND rypath_pbrt_sampling_defaults_tests
+    "${CMAKE_CURRENT_BINARY_DIR}/sampling-defaults")
 set_tests_properties(render.sobol_sampling PROPERTIES TIMEOUT 30)
 
 set(ray_tracing_test_options)
@@ -707,6 +725,42 @@ if(RYPATH_ENABLE_METAL)
     endif()
 
     add_executable(rypath_sobol_render_tests sobol_render_tests.cpp sobol_probe.mm)
+    add_executable(rypath_qmc_render_tests qmc_render_tests.cpp qmc_probe.mm)
+    set_target_properties(rypath_qmc_render_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_qmc_render_tests PRIVATE -ffp-contract=off
+        "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    target_compile_definitions(rypath_qmc_render_tests PRIVATE
+        "$<$<BOOL:${RYPATH_ALLOW_NO_METAL_DEVICE}>:RYPATH_ALLOW_NO_METAL_DEVICE=1>"
+        "$<$<BOOL:${RYPATH_ALLOW_NO_METAL_RAY_TRACING}>:RYPATH_ALLOW_NO_METAL_RAY_TRACING=1>")
+    target_link_libraries(rypath_qmc_render_tests PRIVATE rypath_metal_backend)
+    rypath_configure_host_target(rypath_qmc_render_tests)
+    add_test(NAME metal.qmc_render COMMAND rypath_qmc_render_tests)
+    set_tests_properties(metal.qmc_render PROPERTIES TIMEOUT 120)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.qmc_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    add_executable(rypath_gaussian_render_tests gaussian_render_tests.cpp)
+    set_target_properties(rypath_gaussian_render_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_link_libraries(rypath_gaussian_render_tests PRIVATE rypath_render rypath_metal_backend)
+    rypath_configure_host_target(rypath_gaussian_render_tests)
+    add_test(NAME metal.gaussian_filter COMMAND rypath_gaussian_render_tests --metal ${ray_tracing_test_options})
+    set_tests_properties(metal.gaussian_filter PROPERTIES TIMEOUT 90)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.gaussian_filter PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    add_executable(rypath_qmc_checkpoint_tests qmc_checkpoint_tests.cpp)
+    set_target_properties(rypath_qmc_checkpoint_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_link_libraries(rypath_qmc_checkpoint_tests PRIVATE rypath_metal_backend rypath_checkpoint)
+    rypath_configure_host_target(rypath_qmc_checkpoint_tests)
+    add_test(NAME metal.qmc_checkpoint COMMAND rypath_qmc_checkpoint_tests --metal ${ray_tracing_test_options})
+    set_tests_properties(metal.qmc_checkpoint PROPERTIES TIMEOUT 90)
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.qmc_checkpoint PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     set_target_properties(rypath_sobol_render_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
         OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
