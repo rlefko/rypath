@@ -52,7 +52,8 @@ diagnosed even when not placed in the image.
 | Extended surfaces | Thin dielectric, diffuse transmission, nested mixes, finite-depth coated diffuse/conductor, measured tensor and legacy Fourier tables; see [surface materials](#extended-surface-materials) |
 | Textures | Typed float/spectrum graphs, PNG/JPEG/EXR/HDR imagemaps, core procedural textures, and UV/planar/spherical/cylindrical/3D mappings; see the bounded core profile below |
 | Environment | Zero or one infinite light: a square RGB PNG/JPEG/EXR/HDR equal-area map or constant emission with nonnegative numeric or file spectrum, nonnegative linear sRGB emission, blackbody or built-in named emission, or omitted L using sRGB D65; scale defaults to 1, illuminance defaults to -1 |
-| Point lighting | Up to 64 combined point/spot/goniometric sources; isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
+| Point lighting | Up to 64 combined point/spot/goniometric/projection sources; isotropic point lights with spectral `I`, nonnegative `scale`, optional `power` and transformed `from`; direct surface and homogeneous-volume illumination |
+| Projection lighting | Native rectangular RGB images, nearest perspective lookup, affine scale/shear, optional photometric power, and direct surface/homogeneous-volume illumination |
 | Spot lighting | Spectral point-source emission with cubic cosine falloff, `from`/`to` aiming, representable static affine transforms and positive-power normalization; surface and homogeneous-volume illumination |
 | Goniometric lighting | Spectral `I`, `scale`, optional `power`, required native square scalar image diagram, rigid/reflected declaration transforms; surface and homogeneous-volume illumination with nearest equal-area lookup |
 | Distant lighting | Up to 64 directional sources with spectral `L`, `scale`, `illuminance` and affine `from`/`to`; finite PBRT scene-bound visibility for surfaces and homogeneous media |
@@ -139,7 +140,7 @@ follow existing visibility rules; ordinary glass remains a shadow occluder.
 Geometry-free homogeneous media use the same point estimator with analytic
 Beer–Lambert connections in the sky kernel.
 
-The declared profile permits at most 64 combined point, spot and goniometric
+The declared profile permits at most 64 combined point, spot, goniometric and projection
 sources, including zero-intensity records;
 excess inputs are resource errors. Active connections require finite squared
 distance at least `FLT_MIN`, representable arithmetic and positive shadow progress.
@@ -147,7 +148,7 @@ Coincident active sources and extreme-scale failures reject the pending batch;
 there is no distance epsilon, intensity clamp or partial sample acceptance.
 Zero intensity at the sampled wavelength skips connection arithmetic. The
 all-positional strategy can require 64 shadow queries per vertex and is not a claim
-of efficient many-light sampling. Projection lights remain unsupported. See [point-light validation](point-light-validation.md).
+of efficient many-light sampling. See [point-light validation](point-light-validation.md).
 
 ## Spot lights
 
@@ -201,7 +202,7 @@ Angular zero skips shadow traversal after safe direction evaluation. Spot lights
 have no camera-visible geometry, and delta-only surfaces receive no spot NEE.
 Geometry-free homogeneous media execute the same model in the sky kernel.
 
-Point, spot and goniometric lists share the 64-source budget. Zero spectral
+Point, spot, goniometric and projection lists share the 64-source budget. Zero spectral
 intensity skips connection arithmetic; an active coincident source fails the batch. All spot
 fields participate in checkpoint identity. Spot lighting introduced renderer
 and identity contracts 4; [checkpointing](checkpointing.md) records the current
@@ -266,12 +267,70 @@ homogeneous transmittance. Geometry-free homogeneous media use the same model
 in the sky kernel. These delta-position terms have unit MIS weight, consume no
 new sampler dimensions, and leave environment/area probabilities unchanged.
 There is no visible source geometry, and delta-only surfaces receive no
-next-event term. Point, spot and goniometric sources share the 64-source limit,
+next-event term. Point, spot, goniometric and projection sources share the 64-source limit,
 including black records. Existing finite-connection failures reject the whole
 batch. Ordered positions, every spectral bin, inverse maps, image bindings and
 owned scalar texels participate in checkpoint identity. See
 [checkpointing](checkpointing.md) and the
 [goniometric validation record](goniometric-light-validation.md).
+
+## Projection lights
+
+`LightSource "projection"` requires a nonempty RGB/RGBA `filename` in the bounded
+PNG/JPEG/OpenEXR/Radiance HDR profiles. Native dimensions may be rectangular or
+non-power-of-two; there is no mip pyramid or resize. Alpha is ignored. Image
+color uses the existing sRGB/D65 profile and RGBIlluminant spectral reconstruction.
+There is no separate `I` or `L` spectrum, nor `from`/`to` parameter. The declaration
+origin supplies position. Parameters inherit from `Attribute "light"`; checked
+images remain owned, and lights declared inside objects remain global.
+
+`scale` is nonnegative and defaults to one. Finite `power` defaults to -1;
+nonpositive power retains scale mode. `fov` defaults to 90 degrees and controls
+the shorter image dimension. Both authored and narrowed FOV must lie strictly
+between 0 and 180 degrees, with positive normal binary32 projection coefficients.
+For aspect `a = width / height`, the symmetric screen half-extents are `(a,1)`
+when wide and `(1,1/a)` otherwise.
+
+The [pinned PBRT implementation](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/lights.cpp)
+appends a local Y reflection to the declaration transform. rypath applies that
+actual inverse to the unit world light-to-receiver direction, without direction
+normalization or common matrix rescaling. Rotation, reflection, nonuniform scale
+and shear are supported. Coefficients and position must survive binary32 packing
+as finite normal values or exact zero; singularity after narrowing is rejected.
+There is no arbitrary scale or condition-number cutoff, but active connections
+must remain representable.
+
+A local direction with `z < 0.001` contributes zero. This is an angular test on
+the actual inverse-transformed direction, not a world-space distance cutoff.
+For example, an on-axis declaration Z scale of 500 passes, while 2000 is dark.
+Perspective multiplies X/Y by the inverse half-FOV tangent before division by Z.
+Inclusive screen bounds become UV offsets with no extra V flip. Native nearest
+lookup clamps UV endpoints to the last texel; it does not use bilinear filtering.
+
+Scale is divided by D65 photometry. Positive power additionally multiplies by
+`power / (A * mean(luminance(texel) * cos(theta)^3))`, evaluated at light-space texel centers,
+where `A = 4 * tan(fov/2)^2 * max(a, 1/a)`. The sum and derived normalization use
+binary64, a numerical adaptation from PBRT's binary32 accumulation. A positive
+power requires a positive finite integral, even for zero scale. Normalization
+retains PBRT's light-space definition without an affine Jacobian; scale or shear
+can change integrated world-space flux despite a fixed authored power.
+
+Projection images reject negative, nonfinite and positive binary32-subnormal
+RGB, and values that overflow RGBIlluminant reconstruction. This is narrower
+than PBRT's negative-channel clamping. Runtime checks cover inverse mapping,
+projection, normalized RGB divisions and reconstructed spectral products.
+Nonfinite or lost nonzero intermediates fail the pending batch without partial
+Film accumulation; they do not silently become black or out-of-bounds samples.
+Zero source scale skips connection arithmetic. Black maps are valid without
+positive power. Other image consumers retain their established numerical policy.
+
+Projection records share the combined 64-source bound, finite endpoint visibility,
+alpha/null handling and delta-position estimator with point/spot/goniometric
+lights. Surface and homogeneous-medium vertices enumerate every source with
+unit MIS weight and no additional sampler dimensions. Geometry-free media bind
+the same image resources. Projection lights have no camera-visible geometry.
+All effective records and owned images participate in renderer contract 8 and
+identity schema 7. See [projection validation](projection-light-validation.md).
 
 ## Distant lights
 
@@ -285,7 +344,7 @@ nonpositive illuminance leaves it unchanged. This follows pinned PBRT's
 implementation without an additional world-up cosine or pi factor.
 
 Up to 64 distant lights are evaluated at each eligible surface or volume
-vertex, separately from the combined 64 point/spot/goniometric bound. Their
+vertex, separately from the combined 64 point/spot/goniometric/projection bound. Their
 delta-direction contributions use unit weight, no inverse-square attenuation and no extra
 sampler coordinates. Smooth delta-only BSDFs have no distant NEE term. Sources
 have no camera-visible disk, and do not change environment/area-light MIS.

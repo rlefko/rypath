@@ -112,7 +112,9 @@ clarifies the work; completion is recorded in [status](status.md).
     illumination; see [distant validation](distant-light-validation.md). Goniometric
     lights add native scalar angular diagrams to positional surface/volume lighting;
     see [goniometric validation](goniometric-light-validation.md). Projection lights
-    are the next bounded lighting extension. Wider color spaces, additional
+    add native RGB perspective images, affine scale/shear and light-space power
+    normalization; see [projection validation](projection-light-validation.md).
+    Wider color spaces, additional
     filters/samplers and faithfully rendered upstream entry points remain.
     JSON preflight reports remain follow-up work.
 33. **Mesh import profiles:** polygonal OBJ/MTL merged in PR #34, with documented

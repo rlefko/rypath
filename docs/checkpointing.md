@@ -69,14 +69,20 @@ support for arbitrary scales or coincident shells.
 
 Distant lighting introduced renderer contract 6 and identity schema 5.
 Its ordered directions, all radiance bins and finite-visibility scene radius
-participate in identity. Goniometric lighting advances renderer to 7 and identity
+participate in identity. Goniometric lighting introduced renderer 7 and identity
 to 6: ordered positions, all spectral intensity bins, actual inverse direction
 maps, image bindings and owned scalar map contents participate. Earlier
-renderer/identity contracts, including renderer 6, are rejected for every scene.
+renderer/identity contracts are rejected for every scene.
 The identity stream also includes the renderer contract. Sampling, accumulation
 and file-format versions remain 1. See the
 [goniometric profile](pbrt-rendering.md#goniometric-lights) and
 [validation record](goniometric-light-validation.md).
+
+Projection lighting advances renderer to 8 and identity to 7. Ordered positions,
+actual inverse maps, image bindings/scales, projection coefficients and deep image
+contents participate. Renderer 7 and identity 6 checkpoints are rejected, including
+for scenes without projection lights. Sampling, accumulation and file-format
+contracts remain 1. See [projection validation](projection-light-validation.md).
 
 Checkpointing does not add a PBRT sample override or allow extending a completed
 job. Batch size, file paths, output precision and presentation exposure may change.
