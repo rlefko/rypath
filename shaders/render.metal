@@ -49,6 +49,7 @@ constant bool media_enabled [[function_constant(8)]];
 constant bool gltf_enabled [[function_constant(9)]];
 constant bool positional_lights_enabled [[function_constant(10)]];
 constant bool distant_lights_enabled [[function_constant(11)]];
+constant bool goniometric_lights_enabled [[function_constant(12)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -407,10 +408,10 @@ static bool spot_divide(float a, float b, thread float &result) {
 // wi points from the receiver toward the source. A spot emits along -wi.
 // Delta-position sources retain unit MIS weight and consume no random values.
 static bool positional_intensity(const device wire::PositionalLight &light, float3 wi,
-                                 thread float &intensity) {
+                                 rypath_image_light::Images images, thread float &intensity) {
     if (light.kind == wire::point_light)
         return true;
-    if (light.kind != wire::spot_light)
+    if (light.kind != wire::spot_light && light.kind != wire::goniometric_light)
         return false;
     float3 w;
     for (uint row = 0; row < 3; ++row) {
@@ -422,6 +423,19 @@ static bool positional_intensity(const device wire::PositionalLight &light, floa
         if (!spot_sum(terms[0], terms[1], sum) || !spot_sum(sum, terms[2], component))
             return false;
         w[row] = component;
+    }
+    if (light.kind == wire::goniometric_light) {
+        // Point/spot-only sky variants do not bind image resources.
+        if (!goniometric_lights_enabled)
+            return false;
+        // Pinned PBRT maps the actual inverse-transformed unit direction. Do
+        // not normalize or rescale it: nearest-texel boundaries are discontinuous.
+        const float scale = rypath_image_light::goniometric_scale(images, light.image_texture, w);
+        float product;
+        if (!(scale >= 0) || !isfinite(scale) || !spot_product(intensity, scale, product))
+            return false;
+        intensity = product;
+        return true;
     }
     const float scale = max(max(abs(w.x), abs(w.y)), abs(w.z));
     if (!(scale >= FLT_MIN) || !isfinite(scale))
@@ -1783,9 +1797,9 @@ medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words, 
                 continue;
             float distance_squared;
             if (!point_direction(point, unpack(light->position), direction, distance_squared,
-                                 light->kind == wire::spot_light))
+                                 light->kind != wire::point_light))
                 return {0, wire::invalid_arithmetic};
-            if (!positional_intensity(*light, direction, intensity))
+            if (!positional_intensity(*light, direction, images, intensity))
                 return {0, wire::invalid_arithmetic};
             if (intensity == 0)
                 continue;
@@ -1844,6 +1858,9 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
     }
     ulong index = 0;
     wire::Sample sample = begin_sample(p, tables, lane, index);
+    const rypath_image_light::Images light_images{image_textures, image_levels,  image_texels,
+                                                  image_transfer, image_spectra, illuminant,
+                                                  &texture_p};
     if (p.model == wire::pbrt_model && !all(isfinite(primary_ray(p, sample).direction))) {
         sample.status = wire::invalid_arithmetic;
     }
@@ -1896,11 +1913,11 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                         float3 direction;
                         float distance_squared;
                         if (!point_direction(point, unpack(light->position), direction,
-                                             distance_squared, light->kind == wire::spot_light)) {
+                                             distance_squared, light->kind != wire::point_light)) {
                             sample.status = wire::invalid_arithmetic;
                             break;
                         }
-                        if (!positional_intensity(*light, direction, intensity)) {
+                        if (!positional_intensity(*light, direction, light_images, intensity)) {
                             sample.status = wire::invalid_arithmetic;
                             break;
                         }
@@ -2572,7 +2589,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 }
             }
         }
-        // Point and spot lights are delta-position sources. Enumerating the bounded list
+        // Positional lights are delta-position sources. Enumerating the bounded list
         // needs neither a selection probability nor continuous-light MIS.
         if (positional_lights_enabled && !delta) {
             for (uint i = 0; i < p.positional_count; ++i) {
@@ -2587,11 +2604,11 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 float3 direction;
                 float distance_squared;
                 if (!point_direction(point.position, unpack(light->position), direction,
-                                     distance_squared, light->kind == wire::spot_light)) {
+                                     distance_squared, light->kind != wire::point_light)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
-                if (!positional_intensity(*light, direction, intensity)) {
+                if (!positional_intensity(*light, direction, light_images, intensity)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }

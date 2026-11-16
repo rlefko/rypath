@@ -178,6 +178,39 @@ std::optional<std::array<float, 9>> spot_inverse(const Transform &transform,
     return packed;
 }
 
+// PBRT applies this inverse directly to a unit world direction; unlike spot lights,
+// neither a common rescaling nor normalization preserves its equal-area lookup.
+std::optional<std::array<float, 9>> goniometric_inverse(const Transform &transform) {
+    const auto &m = transform.values;
+    const Vector x{m[0], m[4], m[8]}, y{m[1], m[5], m[9]}, z{m[2], m[6], m[10]};
+    constexpr double tolerance = 64 * std::numeric_limits<float>::epsilon();
+    const std::array gram_errors{dot(x, x) - 1, dot(y, y) - 1, dot(z, z) - 1,
+                                 dot(x, y),     dot(x, z),     dot(y, z)};
+    if (!std::ranges::all_of(gram_errors,
+                             [](double error) { return std::abs(error) <= tolerance; }))
+        return std::nullopt;
+    Transform linear = transform;
+    linear.values[3] = linear.values[7] = linear.values[11] = 0;
+    const auto inverse = checked_inverse_affine(linear);
+    if (!inverse)
+        return std::nullopt;
+    std::array<float, 9> packed{};
+    Transform check;
+    constexpr std::array<std::size_t, 3> rows{0, 2, 1}; // swapYZ * inverse
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t col = 0; col < 3; ++col) {
+            const double value = inverse->values[rows[row] * 4 + col];
+            const float narrowed = static_cast<float>(value);
+            if (!std::isfinite(narrowed) || (value != 0 && !std::isnormal(narrowed)))
+                return std::nullopt;
+            packed[row * 3 + col] = narrowed;
+            check.values[row * 4 + col] = narrowed;
+        }
+    if (exact_singular_linear(check))
+        return std::nullopt;
+    return packed;
+}
+
 // Small exact expansions certify the affine direction before its final rounding.
 // Refuse inputs whose low product bits would fall below binary64 subnormals.
 int least_bit_exponent(double value) {
@@ -1077,9 +1110,92 @@ void Translator::light(const Descriptor &descriptor) {
             scene_.distant_lights.push_back(std::move(distant));
         return;
     }
+    if (descriptor.authored.arguments.front().text == "goniometric") {
+        if (scene_.point_lights.size() + scene_.spot_lights.size() +
+                    scene_.goniometric_lights.size() >=
+                max_positional_lights ||
+            471U > limits_.total_values - spectral_values_) {
+            spectral_limit(descriptor.authored.location);
+            return;
+        }
+        spectral_values_ += 471U;
+        if (!descriptor.native_image) {
+            invalid(location(descriptor, "filename"), "Goniometric light requires a checked image");
+            return;
+        }
+        if (const auto error = validate_goniometric_image(*descriptor.native_image);
+            !error.empty()) {
+            invalid(location(descriptor, "filename"), error);
+            return;
+        }
+        const auto &m = descriptor.transform.values;
+        const auto position = narrow_point({m[3], m[7], m[11]});
+        if (!position || (m[3] != 0 && !std::isnormal(position->x)) ||
+            (m[7] != 0 && !std::isnormal(position->y)) ||
+            (m[11] != 0 && !std::isnormal(position->z))) {
+            invalid(descriptor.authored.location,
+                    "Goniometric position must remain representable in binary32");
+            return;
+        }
+        const auto inverse = goniometric_inverse(descriptor.transform);
+        if (!inverse) {
+            unsupported(descriptor.authored.location,
+                        "Goniometric light requires an orthonormal linear transform with a "
+                        "nonsingular inverse representable in binary32");
+            return;
+        }
+        double multiplier = 1;
+        const double power = number(descriptor, "power", -1);
+        if (power > 0) {
+            const auto &image = *descriptor.native_image;
+            const auto &base = image.levels.front();
+            // Accumulate decoded binary32 scalar samples in binary64. This bounded
+            // widened mean avoids PBRT's binary32 sum overflow on large bright maps.
+            double sum = 0;
+            for (std::uint32_t y = 0; y < base.height; ++y)
+                for (std::uint32_t x = 0; x < base.width; ++x) {
+                    const auto scalar = image_base_texel_linear_rgb(image, x, y);
+                    if (!scalar) {
+                        invalid(location(descriptor, "filename"),
+                                "Goniometric scalar image lookup failed");
+                        return;
+                    }
+                    sum += (*scalar)[0];
+                }
+            const double mean = sum / (double(base.width) * base.height);
+            if (!(mean > 0 && std::isfinite(mean))) {
+                invalid(location(descriptor, "power"),
+                        "Positive goniometric power requires a positive finite map mean");
+                return;
+            }
+            multiplier = power / (4 * std::numbers::pi * mean);
+            if (!float_representable(multiplier)) {
+                invalid(location(descriptor, "power"),
+                        "Goniometric power normalization overflows binary32");
+                return;
+            }
+        }
+        GoniometricLight light;
+        light.position = *position;
+        light.light_from_world = *inverse;
+        if (emission(descriptor, "I", multiplier, light.intensity)) {
+            if (std::ranges::any_of(light.intensity, [](float value) {
+                    return std::fpclassify(value) == FP_SUBNORMAL;
+                })) {
+                invalid(location(descriptor, "I"),
+                        "Goniometric intensity would lose a nonzero component on the GPU");
+                return;
+            }
+            light.image_texture = native_image(descriptor);
+            scene_.goniometric_lights.push_back(std::move(light));
+        }
+        return;
+    }
     const bool spot = descriptor.authored.arguments.front().text == "spot";
     if (spot || descriptor.authored.arguments.front().text == "point") {
-        if (scene_.point_lights.size() + scene_.spot_lights.size() >= max_positional_lights) {
+        if (scene_.point_lights.size() + scene_.spot_lights.size() +
+                scene_.goniometric_lights.size() >=
+            max_positional_lights) {
             spectral_limit(descriptor.authored.location);
             return;
         }
@@ -3074,6 +3190,12 @@ RenderTranslation Translator::run() {
             result_.provenance.push_back(
                 "Spot lights: " + std::to_string(scene_.spot_lights.size()) +
                 " (cubic cosine falloff; affine light-space directions; delta-position weights)");
+        }
+        if (!scene_.goniometric_lights.empty()) {
+            result_.provenance.push_back(
+                "Goniometric lights: " + std::to_string(scene_.goniometric_lights.size()) +
+                " (native scalar equal-area maps; actual inverse directions; delta-position "
+                "weights)");
         }
         if (!scene_.distant_lights.empty()) {
             result_.provenance.push_back(

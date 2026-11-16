@@ -67,11 +67,16 @@ streams are unchanged. Invalid arithmetic, uncertain side or endpoint checks and
 the crossing budget still fail the entire batch. This policy does not promise
 support for arbitrary scales or coincident shells.
 
-Distant lighting advances the renderer contract to 6 and identity schema to 5.
+Distant lighting introduced renderer contract 6 and identity schema 5.
 Its ordered directions, all radiance bins and finite-visibility scene radius
-participate in identity. Earlier renderer/identity contracts, including renderer
-5, are rejected for every scene. The identity stream also includes the renderer
-contract. Sampling, accumulation and file-format versions remain 1.
+participate in identity. Goniometric lighting advances renderer to 7 and identity
+to 6: ordered positions, all spectral intensity bins, actual inverse direction
+maps, image bindings and owned scalar map contents participate. Earlier
+renderer/identity contracts, including renderer 6, are rejected for every scene.
+The identity stream also includes the renderer contract. Sampling, accumulation
+and file-format versions remain 1. See the
+[goniometric profile](pbrt-rendering.md#goniometric-lights) and
+[validation record](goniometric-light-validation.md).
 
 Checkpointing does not add a PBRT sample override or allow extending a completed
 job. Batch size, file paths, output precision and presentation exposure may change.

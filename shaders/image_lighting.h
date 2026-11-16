@@ -99,6 +99,28 @@ static inline float3 transform_direction(const constant float *matrix, float3 di
                   dot(float3(matrix[6], matrix[7], matrix[8]), direction));
 }
 
+// Goniometric diagrams are native scalar maps. PBRT uses nearest lookup here,
+// not the bilinear filter used by area and environment emission.
+static inline float goniometric_scale(Images images, uint index, float3 direction) {
+    if (index >= images.parameters->texture_count || !all(isfinite(direction)) ||
+        abs(dot(direction, direction) - 1.0f) > 0.001f)
+        return NAN;
+    const float2 uv = sphere_to_square(direction, true);
+    const device wire::ImageTexture &texture = images.textures[index];
+    if (!rypath_image::valid_lookup(texture, *images.parameters, uv, float2(0), float2(0)) ||
+        texture.channels != 1u || texture.wrap != 1u || texture.level_count != 1u)
+        return NAN;
+    const device wire::TextureLevel &level = images.levels[texture.level_begin];
+    if (level.width != level.height ||
+        !rypath_image::valid_level(level, images.parameters->texel_word_count,
+                                   texture.texel_format))
+        return NAN;
+    const int2 pixel = int2(uv * float2(level.width, level.height));
+    return rypath_image::texel(images.texels, images.transfer, level, pixel.x, pixel.y,
+                               texture.wrap, texture.texel_format, texture.transfer_offset)
+        .x;
+}
+
 static inline float environment_radiance(Images images, constant wire::TextureGraphParameters &p,
                                          float3 world_direction, float wavelength) {
     if (p.environment_image >= images.parameters->texture_count)

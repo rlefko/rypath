@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Original rypath goniometric acceptance wrapper; asset terms recorded separately.
+Camera "perspective" "float fov" [28]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [3]
+WorldBegin
+AttributeBegin
+Translate .2 -.1 1
+LightSource "goniometric" "string filename" ["assets/asymmetric.png"] "spectrum I" [360 4 830 4]
+AttributeEnd
+LightSource "point" "point3 from" [-1 -.7 0] "spectrum I" [360 2 830 2]
+LightSource "spot" "point3 from" [1 0 1] "point3 to" [0 0 3] "spectrum I" [360 1 830 1]
+LightSource "distant" "point3 from" [0 1 0] "point3 to" [0 0 3] "spectrum L" [360 .1 830 .1]
+LightSource "infinite" "spectrum L" [360 .1 830 .1]
+Material "diffuse" "spectrum reflectance" [360 .6 830 .6]
+Shape "trianglemesh" "point3 P" [-4 -4 3 4 -4 3 4 4 3 -4 4 3] "integer indices" [0 2 1 0 3 2]

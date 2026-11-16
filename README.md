@@ -13,9 +13,11 @@ trilinear, and bounded EWA mip filtering. Floating inputs retain linear signed
 and above-one samples, with pinned PBRT resampling and consumer semantics.
 The PBRT profile includes inline triangles, external PLY triangles and bilinear
 quads, per-vertex shading normals and UVs, constant environment lighting,
-directly placed diffuse emitters and spectral point/spot/distant lights with sampled, RGB,
-blackbody, built-in named, or file emission,
-and box or triangle pixel filtering. Spectral conductors add polished and anisotropic
+directly placed diffuse emitters and spectral point/spot/goniometric/distant lights
+with sampled, RGB, blackbody, built-in named, or file emission.
+[Goniometric lights](docs/pbrt-rendering.md#goniometric-lights) add native square
+scalar emission diagrams with equal-area nearest lookup. The profile also supports
+box or triangle pixel filtering. Spectral conductors add polished and anisotropic
 GGX metals with named/numeric/file optical constants and scalar roughness textures,
 including bump and normal maps. Spectral dielectrics add polished and frosted
 anisotropic glass with wavelength-dependent refraction and textured roughness.

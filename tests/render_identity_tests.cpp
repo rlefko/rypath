@@ -20,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3537-byte empty-scene fixture includes field tags and all defaults.
+    // the 3571-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "0892be9743e380ac14958f8b9d78a74b7ca52d4ccbc06214a0da85b51d422e23",
+                "948aad08e5cc661116e3fc5dc97aab2bcace2e4d0b05790dd73aea9020563d5f",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -46,6 +46,7 @@ void identity_checks() {
     changed([](auto &s) { s.area_emissions.push_back({}); }, "area emission");
     changed([](auto &s) { s.point_lights.push_back({}); }, "point light count");
     changed([](auto &s) { s.spot_lights.push_back({}); }, "spot light count");
+    changed([](auto &s) { s.goniometric_lights.push_back({}); }, "goniometric light count");
     changed([](auto &s) { s.distant_lights.push_back({}); }, "distant light count");
     changed([](auto &s) { s.distant_scene_radius = 4; }, "distant scene radius");
     changed([](auto &s) { s.instance_emissions.push_back(0); }, "emission bindings");
@@ -97,6 +98,44 @@ void identity_checks() {
         spot_changed([=](auto &v) { v[0].light_from_world[i] += 1; });
     spot_changed([](auto &v) { v[0].cos_falloff_start -= .1f; });
     spot_changed([](auto &v) { v[0].cos_falloff_end -= .1f; });
+
+    RenderScene goniometric;
+    goniometric.goniometric_lights.resize(2);
+    goniometric.goniometric_lights[1].position.x = 1;
+    auto scalar = std::make_shared<ImagePyramid>();
+    scalar->encoding = ImageEncoding::linear;
+    scalar->wrap = ImageWrap::clamp;
+    scalar->source_channels = 1;
+    scalar->native_base = true;
+    scalar->levels = {{1, 1, 0}};
+    scalar->texels = {0x00404040};
+    goniometric.image_textures.push_back({scalar});
+    goniometric.goniometric_lights[0].image_texture = 0;
+    const auto goniometric_identity = render_identity(goniometric, settings);
+    const auto goniometric_changed = [&](auto change) {
+        auto copy = goniometric;
+        change(copy);
+        require(render_identity(copy, settings) != goniometric_identity,
+                "goniometric identity payload");
+    };
+    goniometric_changed([](auto &s) { s.goniometric_lights.pop_back(); });
+    goniometric_changed(
+        [](auto &s) { std::swap(s.goniometric_lights[0], s.goniometric_lights[1]); });
+    for (std::size_t light = 0; light < 2; ++light) {
+        for (auto field : {&GeometryPoint::x, &GeometryPoint::y, &GeometryPoint::z})
+            goniometric_changed([=](auto &s) { s.goniometric_lights[light].position.*field += 1; });
+        for (std::size_t i = 0; i < 471; ++i)
+            goniometric_changed([=](auto &s) { s.goniometric_lights[light].intensity[i] += 1; });
+        for (std::size_t i = 0; i < 9; ++i)
+            goniometric_changed(
+                [=](auto &s) { s.goniometric_lights[light].light_from_world[i] += 1; });
+        goniometric_changed([=](auto &s) { s.goniometric_lights[light].image_texture ^= 1; });
+    }
+    goniometric_changed([](auto &s) {
+        auto copy = std::make_shared<ImagePyramid>(*s.image_textures[0].image);
+        copy->texels[0] ^= 1;
+        s.image_textures[0].image = copy;
+    });
 
     RenderScene distant;
     distant.distant_scene_radius = 4;
