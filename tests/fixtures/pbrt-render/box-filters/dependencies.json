@@ -1,0 +1,12 @@
+{
+  "pinhole-anisotropic": [],
+  "focus-plane": [],
+  "defocus": [],
+  "texture-filtered": [
+    {
+      "path": "assets/focus-chart.png",
+      "bytes": 2713,
+      "sha256": "7de6686b1015f352fd9489ce89a181a6e18acb06e080710dca652376609ef889"
+    }
+  ]
+}

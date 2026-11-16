@@ -1,0 +1,18 @@
+{
+  "pinhole-anisotropic": {
+    "bytes": 896,
+    "sha256": "b83722f33bfa1c729b26c32d3a55a99d4ae0394445e9711ffe42f9e52af3aa97"
+  },
+  "focus-plane": {
+    "bytes": 972,
+    "sha256": "c076e878b91515da9968842945df7ac8e354a99ae8ec20eb929c27ec421b952a"
+  },
+  "defocus": {
+    "bytes": 972,
+    "sha256": "0d7609efc8558d7d17c815c8a104495d4625b3fb754735be1356f8b4a4babbf0"
+  },
+  "texture-filtered": {
+    "bytes": 1031,
+    "sha256": "6c900375a34f46bc0acd09e1ce7dd7ec79f7bfdcbe49fbb99c2945527af0949e"
+  }
+}

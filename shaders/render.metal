@@ -242,16 +242,27 @@ static float3 primary_texture_point(constant wire::Parameters &p, thread const w
     return p.lens_radius > 0 ? relative_p - lens_offset(p, sample) : relative_p;
 }
 
+// Preserve the historical half-pixel expression only when both axes are default.
+static bool centered_filter(constant wire::Parameters &p) {
+    return p.filter_kind == wire::triangle_filter || p.filter_x_radius != 0.5f ||
+           p.filter_y_radius != 0.5f;
+}
+
+static float filter_offset(constant wire::Parameters &p, float u, float radius) {
+    return p.filter_kind == wire::triangle_filter ? triangle_offset(u, radius)
+                                                  : (2.0f * u - 1.0f) * radius;
+}
+
 static ray lens_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
     const float2 uv = camera_uniforms(p, sample);
     float x, y;
     float3 d;
-    if (p.filter_kind == wire::triangle_filter) {
+    if (centered_filter(p)) {
         x = precise::divide((float(sample.pixel % p.width) + 0.5f) +
-                                triangle_offset(uv.x, p.filter_x_radius),
+                                filter_offset(p, uv.x, p.filter_x_radius),
                             float(p.width));
         y = precise::divide((float(sample.pixel / p.width) + 0.5f) +
-                                triangle_offset(uv.y, p.filter_y_radius),
+                                filter_offset(p, uv.y, p.filter_y_radius),
                             float(p.height));
         d = fma(float3(y), unpack(p.up), fma(float3(x), unpack(p.right), unpack(p.forward)));
     } else {
@@ -267,10 +278,10 @@ static ray lens_primary_ray(constant wire::Parameters &p, thread const wire::Sam
     return ray(lens.origin, rypath_texture_direction(d));
 }
 
-static ray triangle_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
+static ray centered_primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
     const float2 uv = camera_uniforms(p, sample);
-    const float ox = triangle_offset(uv.x, p.filter_x_radius);
-    const float oy = triangle_offset(uv.y, p.filter_y_radius);
+    const float ox = filter_offset(p, uv.x, p.filter_x_radius);
+    const float oy = filter_offset(p, uv.y, p.filter_y_radius);
     const float x = precise::divide((float(sample.pixel % p.width) + 0.5f) + ox, float(p.width));
     const float y = precise::divide((float(sample.pixel / p.width) + 0.5f) + oy, float(p.height));
     const float3 d =
@@ -290,8 +301,8 @@ static ray triangle_primary_ray(constant wire::Parameters &p, thread const wire:
 static ray primary_ray(constant wire::Parameters &p, thread const wire::Sample &sample) {
     if (p.lens_radius > 0)
         return lens_primary_ray(p, sample);
-    if (p.filter_kind == wire::triangle_filter) {
-        return triangle_primary_ray(p, sample);
+    if (centered_filter(p)) {
+        return centered_primary_ray(p, sample);
     }
     const float2 uv = camera_uniforms(p, sample);
     const float x = (float(sample.pixel % p.width) + uv.x) / float(p.width);
@@ -312,12 +323,12 @@ static void texture_camera_rays(constant wire::Parameters &p, thread const wire:
                                 thread float3 &dx, thread float3 &dy) {
     const float2 uv = camera_uniforms(p, sample);
     float3 d;
-    if (p.filter_kind == wire::triangle_filter) {
+    if (centered_filter(p)) {
         const float x = precise::divide((float(sample.pixel % p.width) + 0.5f) +
-                                            triangle_offset(uv.x, p.filter_x_radius),
+                                            filter_offset(p, uv.x, p.filter_x_radius),
                                         float(p.width));
         const float y = precise::divide((float(sample.pixel / p.width) + 0.5f) +
-                                            triangle_offset(uv.y, p.filter_y_radius),
+                                            filter_offset(p, uv.y, p.filter_y_radius),
                                         float(p.height));
         d = fma(float3(y), unpack(p.up), fma(float3(x), unpack(p.right), unpack(p.forward)));
     } else {

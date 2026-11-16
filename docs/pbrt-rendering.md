@@ -42,7 +42,7 @@ diagnosed even when not placed in the image.
 | Camera | Pinhole or perspective thin lens, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
-| Filter | Box radii 0.5 or triangle radii defaulting independently to 2 |
+| Filter | Positive normal binary32 box radii defaulting independently to 0.5 or triangle radii defaulting independently to 2 |
 | Sampler | `independent` uses Philox4x32-10 with its own sequence; `sobol` uses the PBRT v4 interval sequence and supports all four Sobol randomizations |
 | Integrator | Explicit path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling and 0–127 with Sobol (0–113 when any translated material is dielectric), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
 | Geometry | Checked inline triangles and PLY triangles/bilinear quads with per-vertex normals/UVs and single-level instances, including affine geometry transforms; at least one placed primitive for path; volpath permits empty geometry |
@@ -717,7 +717,9 @@ renderers. See the [Sobol validation record](pbrt-sobol-validation.md), and
 
 ## Pixel reconstruction
 
-Triangle filtering samples the normalized separable tent around each pixel center.
+Box filtering samples a normalized rectangle around each pixel center, with independent
+radii defaulting to 0.5. Triangle filtering samples the normalized separable tent
+with independent radii defaulting to two.
 Each radius must narrow to a positive normal binary32 value. Invalid radii and
 unrepresentable camera arithmetic produce source-located errors before device
 acquisition. Radii may exceed film dimensions when the camera arithmetic remains
@@ -729,8 +731,9 @@ renormalization, or additional radius factor. The selected sampler supplies the
 two camera uniforms independently of wavelength and transport dimensions.
 The finite uniform grids include zero and exclude one. Philox's sequence differs
 from PBRT; Sobol's raw camera variates match the pinned sampler before filtering.
-The [filter validation record](pbrt-filter-validation.md)
-describes inverse sampling, float bounds, and independent acceptance tests.
+The [box-radius validation record](box-filter-validation.md) and
+[triangle-filter validation record](pbrt-filter-validation.md)
+describe inverse sampling, float bounds, and independent acceptance tests.
 Half-pixel box rendering and the demo retain their original camera arithmetic.
 The terminal reports the effective filter and both radii. No new CLI option is
 needed; use `PixelFilter "triangle" "float xradius" [1.5] "float yradius" [.75]`

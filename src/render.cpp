@@ -120,7 +120,6 @@ bool valid_raster_camera(const RasterCamera &camera) {
 bool valid_pixel_filter(const PixelFilter &filter) {
     switch (filter.kind) {
     case PixelFilterKind::box:
-        return filter.x_radius == 0.5f && filter.y_radius == 0.5f;
     case PixelFilterKind::triangle:
         return std::isnormal(filter.x_radius) && filter.x_radius > 0 &&
                std::isnormal(filter.y_radius) && filter.y_radius > 0;
@@ -134,11 +133,11 @@ constexpr double float_min = std::numeric_limits<float>::min();
 constexpr double float_roundoff = std::numeric_limits<float>::epsilon();
 constexpr double double_slack = 8. * std::numeric_limits<double>::epsilon();
 
-// Triangle rays evaluate ((float(pixel) + 0.5f) + offset) / float(extent).
-// Enclose both outer pixels using the full closed tent support and allow for
+// Centered filter rays evaluate ((float(pixel) + 0.5f) + offset) / float(extent).
+// Enclose both outer pixels using the full closed filter support and allow for
 // the Metal precise operations, including possible subnormal flushing.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-std::optional<std::array<double, 2>> triangle_raster_interval(std::uint32_t extent, float radius) {
+std::optional<std::array<double, 2>> filter_raster_interval(std::uint32_t extent, float radius) {
     const double offset_bound = radius * (1. + 4. * float_roundoff) + float_min;
     const double last_center = static_cast<float>(extent - 1) + 0.5f;
     if (last_center + offset_bound > float_max) {
@@ -168,8 +167,8 @@ double subnormal_magnitude(double value) {
     return std::abs(value) < float_min ? std::abs(value) : 0.;
 }
 
-bool triangle_ray_range(const RasterCamera &camera, const std::array<double, 2> &x,
-                        const std::array<double, 2> &y) {
+bool filter_ray_range(const RasterCamera &camera, const std::array<double, 2> &x,
+                      const std::array<double, 2> &y) {
     const auto corner = to_vector(camera.corner);
     const auto dx = to_vector(camera.dx);
     const auto dy = to_vector(camera.dy);
@@ -959,17 +958,17 @@ std::string validate_raster_support(const RasterCamera &camera, const PixelFilte
     if (!valid_pixel_filter(filter)) {
         return "Invalid pixel filter or radius";
     }
-    if (filter.kind == PixelFilterKind::box) {
+    if (filter.kind == PixelFilterKind::box && filter.x_radius == 0.5f && filter.y_radius == 0.5f) {
         return {};
     }
     if (!valid_raster_camera(camera) || width == 0 || height == 0) {
-        return "Triangle filter requires finite nondegenerate raster coefficients and positive "
+        return "Pixel filter requires finite nondegenerate raster coefficients and positive "
                "dimensions";
     }
-    const auto x = triangle_raster_interval(width, filter.x_radius);
-    const auto y = triangle_raster_interval(height, filter.y_radius);
-    if (!x || !y || !triangle_ray_range(camera, *x, *y)) {
-        return "Triangle filter support exceeds the safe binary32 raster direction range";
+    const auto x = filter_raster_interval(width, filter.x_radius);
+    const auto y = filter_raster_interval(height, filter.y_radius);
+    if (!x || !y || !filter_ray_range(camera, *x, *y)) {
+        return "Pixel filter support exceeds the safe binary32 raster direction range";
     }
     return {};
 }
@@ -1003,9 +1002,9 @@ std::string validate_lens_support(const RasterCamera &camera, const PerspectiveL
         squared_length(cross(v, dy)) > tolerance * tolerance * squared_length(dy)) {
         return "Perspective lens axes must be rigid and aligned with the raster basis";
     }
-    const auto x = triangle_raster_interval(width, filter.x_radius);
-    const auto y = triangle_raster_interval(height, filter.y_radius);
-    if (!x || !y || !triangle_ray_range(camera, *x, *y)) {
+    const auto x = filter_raster_interval(width, filter.x_radius);
+    const auto y = filter_raster_interval(height, filter.y_radius);
+    if (!x || !y || !filter_ray_range(camera, *x, *y)) {
         return "Perspective lens filter support exceeds the safe binary32 raster direction range";
     }
     const double x_abs = std::max(std::abs((*x)[0]), std::abs((*x)[1]));
@@ -1475,8 +1474,10 @@ std::string validate_render_scene(const RenderScene &scene) {
     if (!valid_pixel_filter(scene.filter)) {
         return "Invalid pixel filter or radius";
     }
-    if (scene.model == RenderModel::demo && scene.filter.kind != PixelFilterKind::box) {
-        return "Triangle filtering requires the PBRT render model";
+    if (scene.model == RenderModel::demo &&
+        (scene.filter.kind != PixelFilterKind::box || scene.filter.x_radius != 0.5f ||
+         scene.filter.y_radius != 0.5f)) {
+        return "Nondefault filtering requires the PBRT render model";
     }
     if (auto error = validate_geometry(scene.geometry); !error.empty()) {
         return error;

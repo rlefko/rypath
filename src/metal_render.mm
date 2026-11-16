@@ -107,6 +107,10 @@ GeometryPoint unpack(wire::Point point) { return {point.x, point.y, point.z}; }
 
 wire::Parameters camera_parameters(const RenderScene &scene) {
     wire::Parameters result{};
+    result.filter_kind =
+        scene.filter.kind == PixelFilterKind::triangle ? wire::triangle_filter : wire::box_filter;
+    result.filter_x_radius = scene.filter.x_radius;
+    result.filter_y_radius = scene.filter.y_radius;
     if (scene.model == RenderModel::pbrt) {
         const auto &camera = *scene.raster_camera;
         result.origin = pack(camera.origin);
@@ -123,10 +127,6 @@ wire::Parameters camera_parameters(const RenderScene &scene) {
         result.up = pack(camera.dy);
         result.model = wire::pbrt_model;
         result.max_depth = scene.max_depth;
-        result.filter_kind = scene.filter.kind == PixelFilterKind::triangle ? wire::triangle_filter
-                                                                            : wire::box_filter;
-        result.filter_x_radius = scene.filter.x_radius;
-        result.filter_y_radius = scene.filter.y_radius;
         return result;
     }
     const auto &camera = scene.camera;
@@ -1173,11 +1173,14 @@ struct MetalRenderScene::Impl {
                                 std::to_string(depth_limit);
             return result;
         }
-        if (parameters.filter_kind == wire::triangle_filter) {
+        if (parameters.filter_kind == wire::triangle_filter || parameters.filter_x_radius != 0.5f ||
+            parameters.filter_y_radius != 0.5f) {
             const RasterCamera camera{unpack(parameters.origin), unpack(parameters.forward),
                                       unpack(parameters.right), unpack(parameters.up)};
-            const PixelFilter filter{PixelFilterKind::triangle, parameters.filter_x_radius,
-                                     parameters.filter_y_radius};
+            const PixelFilter filter{parameters.filter_kind == wire::triangle_filter
+                                         ? PixelFilterKind::triangle
+                                         : PixelFilterKind::box,
+                                     parameters.filter_x_radius, parameters.filter_y_radius};
             result.diagnostic =
                 validate_raster_support(camera, filter, request.width, request.height);
             if (!result.diagnostic.empty()) {

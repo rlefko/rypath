@@ -597,7 +597,8 @@ void Translator::camera(const Descriptor &descriptor, const Descriptor *film_des
     }
     const RasterCamera raster{origin.value(), packed_corner.value(), packed_dx.value(),
                               packed_dy.value()};
-    if (scene_.filter.kind == PixelFilterKind::box) {
+    if (scene_.filter.kind == PixelFilterKind::box && scene_.filter.x_radius == 0.5f &&
+        scene_.filter.y_radius == 0.5f) {
         const auto c = to_vector(raster.corner);
         const auto u = to_vector(raster.dx);
         const auto v = to_vector(raster.dy);
@@ -640,25 +641,18 @@ void Translator::camera(const Descriptor &descriptor, const Descriptor *film_des
 }
 
 void Translator::filter(const Descriptor &descriptor) {
-    if (descriptor.authored.arguments.front().text == "triangle") {
-        scene_.filter.kind = PixelFilterKind::triangle;
-        const auto radius = [&](string_view name) {
-            const auto value = narrow(descriptor, name, 2.);
-            if (value && (!std::isnormal(*value) || *value <= 0)) {
-                invalid(location(descriptor, name),
-                        std::string(name) + " must be positive and normal in binary32");
-            }
-            return value.value_or(0.f);
-        };
-        scene_.filter.x_radius = radius("xradius");
-        scene_.filter.y_radius = radius("yradius");
-        return;
-    }
-    for (const auto name : {"xradius", "yradius"}) {
-        if (number(descriptor, name, 0.5) != 0.5) {
-            unsupported(location(descriptor, name), "Box filter radius must be 0.5 on each axis");
+    const bool triangle = descriptor.authored.arguments.front().text == "triangle";
+    scene_.filter.kind = triangle ? PixelFilterKind::triangle : PixelFilterKind::box;
+    const auto radius = [&](string_view name) {
+        const auto value = narrow(descriptor, name, triangle ? 2. : 0.5);
+        if (value && (!std::isnormal(*value) || *value <= 0)) {
+            invalid(location(descriptor, name),
+                    std::string(name) + " must be positive and normal in binary32");
         }
-    }
+        return value.value_or(0.f);
+    };
+    scene_.filter.x_radius = radius("xradius");
+    scene_.filter.y_radius = radius("yradius");
 }
 
 void Translator::sampler(const Descriptor &descriptor) {
@@ -3311,7 +3305,9 @@ RenderTranslation Translator::run() {
             diagnostics_.diagnostics,
             [severity](const Diagnostic &diagnostic) { return diagnostic.severity == severity; });
     };
-    if (filter_descriptor && scene_.filter.kind == PixelFilterKind::triangle &&
+    if (filter_descriptor &&
+        (scene_.filter.kind == PixelFilterKind::triangle || scene_.filter.x_radius != 0.5f ||
+         scene_.filter.y_radius != 0.5f) &&
         scene_.raster_camera && !has(Severity::error) && !diagnostics_.diagnostics_truncated) {
         const auto message = validate_raster_support(
             *scene_.raster_camera, scene_.filter, result_.settings.width, result_.settings.height);

@@ -1,0 +1,9 @@
+{
+  "ownership": "Original rypath fixtures; pinhole emitter adapted from owned triangle-filter.pbrt; lens scenes and focus chart copied unchanged from depth-of-field with declared closure.",
+  "license": "GPL-3.0-only",
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "filter_radii": {
+    "x": 1.5,
+    "y": 0.75
+  }
+}

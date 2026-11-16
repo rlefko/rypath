@@ -93,9 +93,8 @@ RenderScene sky(PixelFilter filter) {
     return scene;
 }
 
-RenderScene emitter_edge(PixelFilter filter, float min_y) {
+RenderScene emitter_edge(PixelFilter filter, float min_y, float x = 0.75F) {
     auto scene = sky(filter);
-    constexpr float x = 0.75F;
     scene.geometry.meshes.push_back(
         {.positions = {{x, min_y, 1}, {x, 4, 1}, {4, 4, 1}, {4, min_y, 1}},
          .triangles = {{0, 1, 2}, {0, 2, 3}}});
@@ -133,6 +132,8 @@ struct OracleCase {
     float min_y;
     std::uint64_t seed;
     double probability;
+    float min_x = .75F;
+    double control_probability = 0;
 };
 
 void analytic(MetalRenderScene &renderer, const OracleCase &test) {
@@ -156,19 +157,26 @@ void analytic(MetalRenderScene &renderer, const OracleCase &test) {
               << " observed=" << observed << " expected=" << test.probability
               << " analytic_se=" << se << " limit=" << limit << '\n';
     require(std::abs(observed - test.probability) <= limit,
-            "Triangle-filter coverage falls outside the analytic binomial bound");
+            "Pixel-filter coverage falls outside the analytic binomial bound");
 
-    const auto box = sample(*build(emitter_edge({}, test.min_y)), query);
+    const auto box = sample(*build(emitter_edge({}, test.min_y, test.min_x)), query);
+    std::uint32_t control_hits = 0;
     for (std::size_t i = 0; i < box.size(); ++i) {
-        require(box[i].radiance == 0 && box[i].scatterings == 0 &&
+        require((box[i].radiance == 0 || box[i].radiance == 1) && box[i].scatterings == 0 &&
                     box[i].random_words == samples[i].random_words &&
                     box[i].wavelength == samples[i].wavelength,
-                "Half-box control reached the emitter or changed the Philox/wavelength stream");
+                "Half-box control changed the Philox/wavelength stream or radiance weight");
+        control_hits += box[i].radiance == 1 ? 1U : 0U;
     }
+    const double control_mean = double(control_hits) / paths;
+    const double control_limit =
+        6 * std::sqrt(test.control_probability * (1 - test.control_probability) / paths) + 2e-5;
+    require(std::abs(control_mean - test.control_probability) <= control_limit,
+            "Half-box control differs from its analytic coverage");
 }
 
-void constant_sky() {
-    auto scene = sky(default_triangle);
+void constant_sky(PixelFilter filter = default_triangle) {
+    auto scene = sky(filter);
     scene.environment.fill(0.625F);
     const auto query = RenderRequest{
         .width = 2, .height = 3, .seed = edge_seed, .pixel_count = 6, .sample_count = 29};
@@ -183,8 +191,8 @@ void constant_sky() {
     }
 }
 
-void batch_identity() {
-    const auto scene = emitter_edge(anisotropic, 0.25F);
+void batch_identity(PixelFilter filter = anisotropic) {
+    const auto scene = emitter_edge(filter, 0.25F);
     auto settings =
         RenderSettings{.width = 2, .height = 3, .samples = 259, .batch_size = 1, .seed = edge_seed};
     const auto one = render_progressive(scene, settings);
@@ -202,8 +210,8 @@ void batch_identity() {
         "Filtered batch identity fixture never reached the emitter");
 }
 
-void failed_batch() {
-    auto scene = sky({PixelFilterKind::triangle, 3, 1});
+void failed_batch(PixelFilterKind kind = PixelFilterKind::triangle) {
+    auto scene = sky({kind, 3, 1});
     scene.environment.fill(0.625F);
     constexpr RasterCamera wide{{}, {0, 0.5F, 1}, {1e38F, 0, 0}, {0, -1, 0}};
     scene.raster_camera = wide;
@@ -213,6 +221,9 @@ void failed_batch() {
                 !validate_raster_support(wide, scene.filter, 1, 1).empty(),
             "Raster validation did not distinguish finite and overflowing triangle support");
     auto renderer = build(scene);
+    // The native session must retain its packed filter and camera rather than
+    // borrowing or consulting the caller's construction storage.
+    scene = {};
     auto film = make_film(4, 1, RenderModel::pbrt);
     auto query = RenderRequest{
         .width = 4, .height = 1, .seed = edge_seed, .pixel_count = 4, .sample_count = 1};
@@ -289,6 +300,23 @@ int main(int argc, char **argv) {
         constant_sky();
         batch_identity();
         failed_batch();
+        const OracleCase box_edge{"Box edge", {PixelFilterKind::box, 1, 1}, -4, edge_seed, 1. / 8};
+        const OracleCase box_corner{
+            "Box corner", {PixelFilterKind::box, 1.5F, .75F}, .25F, corner_seed, 1. / 12};
+        analytic(*build(emitter_edge(box_edge.filter, box_edge.min_y)), box_edge);
+        analytic(*build(emitter_edge(box_corner.filter, box_corner.min_y)), box_corner);
+        const OracleCase narrow{"Narrow box edge",
+                                {PixelFilterKind::box, .125F, .25F},
+                                -4,
+                                edge_seed,
+                                .25,
+                                .0625F,
+                                7. / 16};
+        analytic(*build(emitter_edge(narrow.filter, narrow.min_y, narrow.min_x)), narrow);
+        constant_sky(box_corner.filter);
+        constant_sky(narrow.filter);
+        batch_identity(box_corner.filter);
+        failed_batch(PixelFilterKind::box);
     } catch (const std::exception &error) {
         std::cerr << "Triangle filter test failure. " << error.what() << '\n';
         return 1;
