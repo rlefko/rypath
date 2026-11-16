@@ -310,6 +310,93 @@ void finite_segments(float scale, bool anisotropic_parameterization = false,
     verify(-1.015625F, 0.43F, 0.59F, true);
 }
 
+RenderScene tangent_triangle_scene(float camera_x = 5.5F) {
+    auto scene = scene_base();
+    scene.max_depth = 2;
+    scene.environment.fill(0);
+    scene.materials = {{.kind = SpectralMaterialKind::constant, .constant = 0.055F}, black};
+    // The floor and source meet at an ordinary perpendicular junction. Native
+    // traversal can accept a tiny positive source hit when the floor's spawned
+    // reference lies in the source plane; reconstruction then gives a segment
+    // exactly tangent to the source, rather than a positive endpoint cosine.
+    scene.raster_camera = RasterCamera{
+        {camera_x, 8, -8}, {-1e-25F, -8.5F, 12.6039848F}, {2e-25F, 0, 0}, {0, 2e-25F, 0}};
+    add_mesh(scene,
+             {.positions = {{-30, -0.5F, -15}, {30, -0.5F, -15}, {30, -0.5F, 30}, {-30, -0.5F, 30}},
+              .triangles = {{0, 3, 2}, {0, 2, 1}}},
+             0);
+    auto emission = constant_emission(2);
+    emission.two_sided = true;
+    scene.area_emissions.push_back(emission);
+    add_mesh(scene,
+             {.positions = {{5.5F, 2.5F, 4.275F},
+                            {5.5F, 2.5F, 4.725F},
+                            {5.5F, -0.5F, 4.725F},
+                            {5.5F, -0.5F, 4.275F}},
+              .triangles = {{0, 1, 2}, {0, 2, 3}}},
+             1, 0);
+    return scene;
+}
+
+void tangent_triangle_emission() {
+    auto native = build(tangent_triangle_scene());
+    auto query = request(16);
+    query.seed = 17;
+    const auto values = sample(*native, query);
+    // Every light proposal is tangent, so area NEE is zero. An accepted BSDF
+    // hit has PBRT light PDF zero and unit MIS weight: rho * Le = .055 * 2.
+    const double expected = 2 * double(0.055F);
+    require(values[2].scatterings == 1 && std::abs(values[2].radiance - expected) < 1e-7,
+            "Exactly tangent triangle emission lost its full BSDF contribution");
+    for (const auto &value : values)
+        require(value.scatterings == 1 &&
+                    (value.radiance == 0 || std::abs(value.radiance - expected) < 1e-7),
+                "Tangent triangle emission produced an unexpected contribution");
+    auto film = make_film(1, 1, RenderModel::pbrt);
+    FilmBatch batch(film, query.sample_count);
+    require(batch.add(values).empty() && batch.commit(film).empty() &&
+                film.pixels.front().count == query.sample_count,
+            "Tangent triangle samples did not commit the complete Film batch");
+
+    // Move the reference to either side of the source plane. Sample 3 hits
+    // the source only from the left; both sides retain ordinary finite area
+    // NEE. Its nonunit BSDF MIS weight must not become the tangent fallback.
+    auto left = build(tangent_triangle_scene(5.375F));
+    auto right = build(tangent_triangle_scene(5.625F));
+    const auto left_values = sample(*left, query);
+    const auto right_values = sample(*right, query);
+    const double bsdf_hit = left_values[3].radiance - right_values[3].radiance;
+    require(right_values[3].radiance > 0 && right_values[3].radiance < 0.002F && bsdf_hit > 0.09 &&
+                bsdf_hit < 0.105,
+            "Positive-cosine triangle emission lost its ordinary nonunit MIS weight");
+
+    // A rough conductor uses the separate continuous-microfacet MIS branch.
+    // Its reference remains in the same source plane, so accepted source hits
+    // retain the passive conductor's finite positive contribution with weight1.
+    auto rough_scene = tangent_triangle_scene();
+    auto &conductor = rough_scene.materials[0];
+    conductor = SpectralMaterial{};
+    conductor.scattering = ScatteringKind::conductor;
+    conductor.eta.knots = {{360, 1.2F}, {830, 1.2F}};
+    conductor.k.knots = {{360, 2}, {830, 2}};
+    conductor.u_roughness = conductor.v_roughness = 0.3F;
+    conductor.remap_roughness = false;
+    rough_scene.instance_surface_transforms.resize(2);
+    rough_scene.instance_texture_frames.resize(2);
+    const auto &transforms = rough_scene.instance_surface_transforms[0];
+    const auto frame_error = prepare_texture_triangle_frames(
+        rough_scene.geometry.meshes[0], transforms.shape, transforms.placement,
+        rough_scene.instance_texture_frames[0]);
+    require(frame_error.empty(), frame_error);
+    auto rough = build(rough_scene);
+    const auto rough_values = sample(*rough, query);
+    require(rough_values[0].scatterings == 1 && rough_values[0].radiance > 0,
+            "Exactly tangent triangle emission lost its rough BSDF contribution");
+    for (const auto &value : rough_values)
+        require(std::isfinite(value.radiance) && value.radiance >= 0 && value.radiance <= 2,
+                "Tangent rough-conductor emission exceeded its passive throughput bound");
+}
+
 void batches_and_failure() {
     auto scene = oracle_scene();
     auto settings =
@@ -399,6 +486,7 @@ int main(int argc, char **argv) {
         finite_segments(65536);
         finite_segments(1, true);
         finite_segments(1, true, true);
+        tangent_triangle_emission();
         batches_and_failure();
     } catch (const std::exception &error) {
         std::cerr << "Area-light test failure. " << error.what() << '\n';

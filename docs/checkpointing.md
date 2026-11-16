@@ -78,11 +78,17 @@ and file-format versions remain 1. See the
 [goniometric profile](pbrt-rendering.md#goniometric-lights) and
 [validation record](goniometric-light-validation.md).
 
-Projection lighting advances renderer to 8 and identity to 7. Ordered positions,
+Projection lighting introduced renderer 8 and identity 7. Ordered positions,
 actual inverse maps, image bindings/scales, projection coefficients and deep image
 contents participate. Renderer 7 and identity 6 checkpoints are rejected, including
 for scenes without projection lights. Sampling, accumulation and file-format
 contracts remain 1. See [projection validation](projection-light-validation.md).
+
+Renderer contract 9 applies the exact-tangent emitter-hit PDF rule to triangles
+as well as bilinear patches. An accepted hit with zero endpoint cosine receives
+the BSDF technique's full weight; other invalid arithmetic still rejects the
+batch. Identity schema remains 7. Earlier renderer checkpoints are rejected,
+including scenes without area lights. See [tangent emission validation](tangent-emission-validation.md).
 
 Checkpointing does not add a PBRT sample override or allow extending a completed
 job. Batch size, file paths, output precision and presentation exposure may change.
