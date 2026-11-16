@@ -318,7 +318,7 @@ struct MetalRenderScene::Impl {
     wire::Parameters parameters{};
     bool dielectrics = false;
 
-    std::string upload_medium_data(const RenderScene &scene, std::vector<wire::Word> &data) {
+    std::string upload_auxiliary_data(const RenderScene &scene, std::vector<wire::Word> &data) {
         constexpr std::size_t words = sizeof(wire::Medium) / sizeof(wire::Word);
         const auto limit =
             std::min<std::size_t>(128 * 1024 * 1024, device.maxBufferLength / sizeof(wire::Word));
@@ -336,11 +336,23 @@ struct MetalRenderScene::Impl {
             const auto encoded = std::bit_cast<std::array<wire::Word, words>>(medium);
             data.insert(data.end(), encoded.begin(), encoded.end());
         }
+        constexpr std::size_t point_words = sizeof(wire::PointLight) / sizeof(wire::Word);
+        if (data.size() > limit || scene.point_lights.size() > (limit - data.size()) / point_words)
+            return "Point lights exceed the shared GPU data budget";
+        parameters.point_begin = static_cast<wire::Word>(data.size());
+        parameters.point_count = static_cast<wire::Word>(scene.point_lights.size());
+        for (const auto &source : scene.point_lights) {
+            wire::PointLight point{};
+            point.position = {source.position.x, source.position.y, source.position.z};
+            std::ranges::copy(source.intensity, point.intensity);
+            const auto encoded = std::bit_cast<std::array<wire::Word, point_words>>(point);
+            data.insert(data.end(), encoded.begin(), encoded.end());
+        }
         parameters.material_data_words = static_cast<wire::Word>(data.size());
         if (data.empty())
             data.push_back(0);
         material_data = upload(device, data);
-        return material_data == nil ? "Metal medium data allocation failed" : "";
+        return material_data == nil ? "Metal auxiliary data allocation failed" : "";
     }
 
     std::string upload_textures(const RenderScene &scene,
@@ -1073,7 +1085,7 @@ struct MetalRenderScene::Impl {
             packed_knots.emplace_back();
         }
 
-        if (auto error = upload_medium_data(scene, packed_data); !error.empty())
+        if (auto error = upload_auxiliary_data(scene, packed_data); !error.empty())
             return error;
         instances = upload(device, packed_instances);
         positions = upload(device, packed_positions);
@@ -1235,7 +1247,7 @@ struct MetalRenderScene::Impl {
         }
         [encoder setBuffer:environment offset:0 atIndex:7];
         [encoder setBuffer:sampling_tables offset:0 atIndex:12];
-        if (p.instance_count == 0 && p.medium_count != 0)
+        if (p.instance_count == 0 && (p.medium_count != 0 || p.point_count != 0))
             [encoder setBuffer:material_data offset:0 atIndex:30];
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
@@ -1422,9 +1434,9 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                                               return m.scattering ==
                                                                      ScatteringKind::null_interface;
                                                           }),
-            std::ranges::any_of(scene.materials, [](const auto &m) {
-                return m.scattering == ScatteringKind::gltf;
-            })};
+            std::ranges::any_of(scene.materials,
+                                [](const auto &m) { return m.scattering == ScatteringKind::gltf; }),
+            !scene.point_lights.empty()};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];
@@ -1459,7 +1471,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         }
         if (impl->parameters.instance_count == 0) {
             std::vector<wire::Word> data;
-            result.diagnostic = impl->upload_medium_data(scene, data);
+            result.diagnostic = impl->upload_auxiliary_data(scene, data);
             if (!result.diagnostic.empty())
                 return result;
         }

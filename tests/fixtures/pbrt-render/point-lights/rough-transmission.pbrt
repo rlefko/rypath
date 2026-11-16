@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Owned point-light wrapper; external geometry terms are recorded separately.
+Camera "perspective" "float fov" [28]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [1]
+WorldBegin
+LightSource "point" "point3 from" [.5 .4 4] "spectrum I" [360 4 830 4]
+Material "dielectric" "float eta" [1.5] "float roughness" [.3] "bool remaproughness" [false]
+Shape "trianglemesh" "point3 P" [-4 -4 3 4 -4 3 4 4 3 -4 4 3] "integer indices" [0 2 1 0 3 2]

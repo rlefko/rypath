@@ -47,6 +47,7 @@ constant bool dielectric_enabled [[function_constant(6)]];
 constant bool surface_materials_enabled [[function_constant(7)]];
 constant bool media_enabled [[function_constant(8)]];
 constant bool gltf_enabled [[function_constant(9)]];
+constant bool point_lights_enabled [[function_constant(10)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -335,6 +336,25 @@ kernel void rypath_probe_blackbody(const device float2 *queries [[buffer(0)]],
 static uint dense_index(float wavelength) {
     const uint nm = uint(wavelength);
     return nm + uint(wavelength - float(nm) >= 0.5f) - 360u;
+}
+
+static const device wire::PointLight *point_record(const device uint *data,
+                                                   constant wire::Parameters &p, uint index) {
+    constexpr uint words = sizeof(wire::PointLight) / sizeof(uint);
+    if (p.point_count > 64 || index >= p.point_count || p.point_begin > p.material_data_words ||
+        p.point_count > (p.material_data_words - p.point_begin) / words)
+        return nullptr;
+    return reinterpret_cast<const device wire::PointLight *>(data + p.point_begin + index * words);
+}
+
+static bool point_direction(float3 from, float3 to, thread float3 &direction,
+                            thread float &distance_squared) {
+    const float3 delta = to - from;
+    distance_squared = dot(delta, delta);
+    if (!(distance_squared >= FLT_MIN) || !isfinite(distance_squared))
+        return false;
+    direction = delta / sqrt(distance_squared);
+    return all(isfinite(direction));
 }
 
 static float sky_radiance(const device float *environment, constant wire::Parameters &p,
@@ -1595,6 +1615,27 @@ medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words, 
                       tr.value;
         }
     }
+    if (point_lights_enabled) {
+        for (uint i = 0; i < p.point_count; ++i) {
+            const auto light = point_record(data, p, i);
+            if (light == nullptr)
+                return {0, wire::invalid_hit};
+            const float intensity = light->intensity[dense_index(alpha.sample->wavelength)];
+            if (intensity == 0)
+                continue;
+            float distance_squared;
+            if (!point_direction(point, unpack(light->position), direction, distance_squared))
+                return {0, wire::invalid_arithmetic};
+            const auto tr =
+                medium_connection(ray(point, unpack(light->position) - point, 0, 0x1.fffffep-1f),
+                                  scene, table, alpha, materials, data, medium);
+            if (tr.status != wire::success)
+                return tr;
+            if (tr.value > 0)
+                result += rypath_medium::phase(wo, direction, g) * (intensity / distance_squared) *
+                          tr.value;
+        }
+    }
     return {result, isfinite(result) && result >= 0 ? wire::success : wire::invalid_arithmetic};
 }
 
@@ -1655,6 +1696,37 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                     break;
                 }
                 throughput *= s / total;
+                if (point_lights_enabled) {
+                    float direct = 0;
+                    for (uint i = 0; i < p.point_count; ++i) {
+                        const auto light = point_record(material_data, p, i);
+                        if (light == nullptr) {
+                            sample.status = wire::invalid_hit;
+                            break;
+                        }
+                        const float intensity = light->intensity[wavelength];
+                        if (intensity == 0)
+                            continue;
+                        float3 direction;
+                        float distance_squared;
+                        if (!point_direction(point, unpack(light->position), direction,
+                                             distance_squared)) {
+                            sample.status = wire::invalid_arithmetic;
+                            break;
+                        }
+                        const float tr = exp(-total * sqrt(distance_squared));
+                        if (tr > 0)
+                            direct += rypath_medium::phase(-incoming.direction, direction, m->g) *
+                                      (intensity / distance_squared) * tr;
+                    }
+                    if (sample.status != wire::success)
+                        break;
+                    sample.radiance += throughput * direct;
+                    if (!isfinite(sample.radiance) || sample.radiance < 0) {
+                        sample.status = wire::invalid_arithmetic;
+                        break;
+                    }
+                }
                 const auto phase_words = medium_words(p, sample, draw);
                 const float3 wi = rypath_medium::phase_sample(
                     -incoming.direction, m->g, float2(u01(phase_words.x), u01(phase_words.y)));
@@ -2308,6 +2380,66 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     }
                 }
             }
+        }
+        // Point lights are delta-position sources. Enumerating the bounded list
+        // needs neither a selection probability nor continuous-light MIS.
+        if (point_lights_enabled && !delta) {
+            for (uint i = 0; i < p.point_count; ++i) {
+                const auto light = point_record(material_data, p, i);
+                if (light == nullptr) {
+                    sample.status = wire::invalid_hit;
+                    break;
+                }
+                const float intensity = light->intensity[dense_index(sample.wavelength)];
+                if (intensity == 0)
+                    continue;
+                float3 direction;
+                float distance_squared;
+                if (!point_direction(point.position, unpack(light->position), direction,
+                                     distance_squared)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                const float3 local = microfacet ? frame.local(direction) : float3(0);
+                const float cosine = both_hemispheres ? abs(local.z)
+                                     : microfacet     ? (wo.z > 0 ? local.z : -local.z)
+                                                      : dot(n, direction);
+                if (cosine <= 0)
+                    continue;
+                float factor = rho * (cosine / pi);
+                if (microfacet) {
+                    const auto evaluated =
+                        evaluate_scattering(scattering, wo, local, material_random.z);
+                    factor = evaluated.valid ? evaluated.f * cosine : NAN;
+                }
+                const float3 origin = directional_offset
+                                          ? spawn_toward(incoming, hit.distance, point, direction)
+                                          : area_reference;
+                const float3 segment = unpack(light->position) - origin;
+                const float progress = dot(segment, direction);
+                if (!isfinite(factor) || factor < 0 || !all(isfinite(origin)) ||
+                    !all(isfinite(segment)) || !(progress > 0) || !isfinite(progress)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                const auto visibility = connection_transmission(
+                    shadow, ray(origin, segment, 0, 0x1.fffffep-1f), scene, intersection_table,
+                    alpha, materials, material_data,
+                    outgoing_medium(instance, current_medium, point.geometric_normal, direction));
+                if (visibility.status != wire::success) {
+                    sample.status = visibility.status;
+                    break;
+                }
+                if (visibility.value > 0 && factor > 0)
+                    sample.radiance +=
+                        throughput * factor * (intensity / distance_squared) * visibility.value;
+                if (!isfinite(sample.radiance) || sample.radiance < 0) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+            }
+            if (sample.status != wire::success)
+                break;
         }
         float3 wi;
         float continuation_pdf = 0;

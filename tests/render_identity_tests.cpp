@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace {
 using namespace rypath;
@@ -19,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3420-byte empty-scene fixture includes field tags and all defaults.
+    // the 3448-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "0f9e949a1842d3b5f0540422652fab61e35ec03f4f19c213a0163a59a9eae652",
+                "f5b80a320ec4d5ae1b0ba1aeed4281cd4c003ace5880adc1cdb3fd43921c5743",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -43,6 +44,7 @@ void identity_checks() {
     changed([](auto &s) { ++s.max_depth; }, "integrator depth");
     changed([](auto &s) { s.instance_reverse_orientation.push_back(1); }, "orientation");
     changed([](auto &s) { s.area_emissions.push_back({}); }, "area emission");
+    changed([](auto &s) { s.point_lights.push_back({}); }, "point light count");
     changed([](auto &s) { s.instance_emissions.push_back(0); }, "emission bindings");
     changed([](auto &s) { s.filter.y_radius += 1; }, "pixel filter");
     changed([](auto &s) { s.image_textures.push_back({}); }, "texture list");
@@ -99,12 +101,25 @@ void identity_checks() {
     scene.media.push_back({});
     scene.instance_surface_transforms.push_back({});
     scene.area_emissions.push_back({});
+    scene.point_lights = {{{1, 2, 3}, {}}, {{4, 5, 6}, {}}};
     const auto populated = render_identity(scene, settings);
     auto deep = [&](auto mutate, std::string_view name) {
         auto copy = scene;
         mutate(copy);
         require(render_identity(copy, settings) != populated, name);
     };
+    // Every point and wavelength contributes to identity, including dark bins.
+    for (std::size_t light = 0; light < scene.point_lights.size(); ++light) {
+        for (auto coordinate : {&GeometryPoint::x, &GeometryPoint::y, &GeometryPoint::z})
+            deep([=](auto &s) { s.point_lights[light].position.*coordinate += 1; },
+                 "point position component");
+        for (std::size_t wavelength = 0; wavelength < scene.point_lights[light].intensity.size();
+             ++wavelength)
+            deep([=](auto &s) { s.point_lights[light].intensity[wavelength] = 1; },
+                 "point spectral intensity bin");
+    }
+    deep([](auto &s) { s.point_lights.pop_back(); }, "populated point count");
+    deep([](auto &s) { std::swap(s.point_lights[0], s.point_lights[1]); }, "point order");
     deep([](auto &s) { s.area_emissions[0].gltf_material = 0; }, "glTF emitter binding");
     deep(
         [](auto &s) {

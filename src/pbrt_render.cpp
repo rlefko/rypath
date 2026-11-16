@@ -149,7 +149,7 @@ class Translator {
     std::optional<float> blackbody_temperature(const Parameter &parameter);
     bool blackbody_emission(const Parameter &parameter, std::optional<float> scale,
                             double light_multiplier, std::array<float, 471> &dense);
-    bool emission(const Descriptor &descriptor, double light_multiplier,
+    bool emission(const Descriptor &descriptor, string_view field, double light_multiplier,
                   std::array<float, 471> &dense);
     void light(const Descriptor &descriptor);
     std::optional<float> image_emission(const Descriptor &descriptor, float illuminance = -1);
@@ -587,10 +587,10 @@ bool Translator::blackbody_emission(const Parameter &parameter, std::optional<fl
     return true;
 }
 
-bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
+bool Translator::emission(const Descriptor &descriptor, string_view field, double light_multiplier,
                           std::array<float, 471> &dense) {
     const auto scale = narrow(descriptor, "scale", 1);
-    const auto [selected, color_space] = descriptor.effective_parameter("L");
+    const auto [selected, color_space] = descriptor.effective_parameter(field);
     if (selected && selected->type == "blackbody") {
         return blackbody_emission(*selected, scale, light_multiplier, dense);
     }
@@ -642,7 +642,7 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
             dense = *named;
             normalization = pbrt_y_inner_product(dense);
         } else {
-            const auto *file = descriptor.checked_spectrum("L");
+            const auto *file = descriptor.checked_spectrum(field);
             if (!file) {
                 invalid(source, "Emission spectrum filename requires a checked spectrum file");
                 return false;
@@ -659,7 +659,7 @@ bool Translator::emission(const Descriptor &descriptor, double light_multiplier,
             normalization = resample_emission(knots, dense);
         }
     } else {
-        auto knots = spectrum(descriptor, "L", SpectrumRole::emission);
+        auto knots = spectrum(descriptor, field, SpectrumRole::emission);
         if (!knots) {
             return false;
         }
@@ -752,6 +752,39 @@ std::optional<float> Translator::image_emission(const Descriptor &descriptor, fl
 }
 
 void Translator::light(const Descriptor &descriptor) {
+    if (descriptor.authored.arguments.front().text == "point") {
+        if (scene_.point_lights.size() >= max_point_lights) {
+            spectral_limit(descriptor.authored.location);
+            return;
+        }
+        if (471U > limits_.total_values - spectral_values_) {
+            spectral_limit(descriptor.authored.location);
+            return;
+        }
+        spectral_values_ += 471U;
+        Vector from{};
+        if (const auto *parameter = descriptor.effective_parameter("from").parameter)
+            for (std::size_t i = 0; i < 3; ++i)
+                from[i] = parameter->values[i].number;
+        const auto &m = descriptor.transform.values;
+        const auto position =
+            narrow_point({m[0] * from[0] + m[1] * from[1] + m[2] * from[2] + m[3],
+                          m[4] * from[0] + m[5] * from[1] + m[6] * from[2] + m[7],
+                          m[8] * from[0] + m[9] * from[1] + m[10] * from[2] + m[11]});
+        if (!position) {
+            invalid(location(descriptor, "from"), "Point light position overflows binary32");
+            return;
+        }
+        const auto power = narrow(descriptor, "power", -1);
+        if (!power)
+            return;
+        PointLight point;
+        point.position = *position;
+        const double multiplier = *power > 0 ? *power / (4. * std::numbers::pi) : 1.;
+        if (emission(descriptor, "I", multiplier, point.intensity))
+            scene_.point_lights.push_back(std::move(point));
+        return;
+    }
     const auto illuminance = narrow(descriptor, "illuminance", -1);
     if (descriptor.native_image) {
         const auto &m = descriptor.transform.values;
@@ -781,7 +814,7 @@ void Translator::light(const Descriptor &descriptor) {
     } else {
         const double multiplier =
             illuminance && *illuminance > 0 ? *illuminance / std::numbers::pi : 1.;
-        emission(descriptor, multiplier, scene_.environment);
+        emission(descriptor, "L", multiplier, scene_.environment);
     }
 }
 
@@ -2064,7 +2097,7 @@ void Translator::geometry() {
                 }
             }
         } else {
-            emitted = emission(*descriptor, 1., area.radiance);
+            emitted = emission(*descriptor, "L", 1., area.radiance);
         }
         if (!emitted || positive_power || placed == area_lights.end()) {
             continue;
@@ -2466,7 +2499,7 @@ void Translator::media() {
                         }
                         for (std::size_t i = 0; i < light.authored.parameters.size(); ++i)
                             light.effective_authored.push_back(i);
-                        emission(light, 1., medium.emission);
+                        emission(light, "L", 1., medium.emission);
                     } else {
                         const double normalization = pbrt_y_inner_product(raw);
                         if (!(normalization > 0 && std::isfinite(normalization)))
@@ -2525,10 +2558,13 @@ RenderTranslation Translator::run() {
         }
     }
 
-    if (input_.lights.size() > 1) {
-        unsupported(input_.lights[1].authored.location, "Only one infinite light is supported");
-    }
+    bool infinite_seen = false;
     for (const auto &descriptor : input_.lights) {
+        if (descriptor.authored.arguments.front().text == "infinite") {
+            if (infinite_seen)
+                unsupported(descriptor.authored.location, "Only one infinite light is supported");
+            infinite_seen = true;
+        }
         if (diagnostics_.diagnostics_truncated) {
             break;
         }
@@ -2604,6 +2640,11 @@ RenderTranslation Translator::run() {
                           << " (x radius " << scene_.filter.x_radius << ", y radius "
                           << scene_.filter.y_radius << ')';
         result_.provenance.push_back(filter_provenance.str());
+        if (!scene_.point_lights.empty()) {
+            result_.provenance.push_back(
+                "Point lights: " + std::to_string(scene_.point_lights.size()) +
+                " (all-point direct evaluation; delta-position weights)");
+        }
         if (auto images = image_filter_provenance(scene_, image_formats_); !images.empty()) {
             result_.provenance.push_back(std::move(images));
         }

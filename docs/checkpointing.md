@@ -56,6 +56,11 @@ These fields participate in the versioned renderer/identity contract; adding
 glTF support does not make older incompatible checkpoints resumable.
 
 The original target sample count is fixed: it controls texture footprints.
+Point-light positions and prepared spectral intensities participate in scene
+identity. The point-light change advances identity and renderer contracts to 3;
+earlier contracts are rejected, including checkpoints of scenes without point
+lights. Sampling, accumulation and file-format versions remain unchanged.
+
 Checkpointing does not add a PBRT sample override or allow extending a completed
 job. Batch size, file paths, output precision and presentation exposure may change.
 Restored Film uses the current validated exposure without modifying raw values.

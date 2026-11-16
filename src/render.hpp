@@ -160,6 +160,11 @@ struct AreaEmission {
     float image_scale = 1;
     std::uint32_t gltf_material = UINT32_MAX;
 };
+inline constexpr std::uint32_t max_point_lights = 64;
+struct PointLight {
+    GeometryPoint position{};
+    std::array<float, 471> intensity{};
+};
 struct SurfaceTransforms {
     std::array<double, 16> shape{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     std::array<double, 16> placement{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -177,6 +182,7 @@ struct RenderScene {
     double exposure = 1;
     std::vector<std::uint32_t> instance_reverse_orientation{};
     std::vector<AreaEmission> area_emissions{};
+    std::vector<PointLight> point_lights{};
     // Empty or one emission index (or no_area_emission) per source instance.
     std::vector<std::uint32_t> instance_emissions{};
     PixelFilter filter{};
