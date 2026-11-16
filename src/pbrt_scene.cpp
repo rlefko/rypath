@@ -393,6 +393,13 @@ constexpr std::array goniometric_light_fields{
     Field{.name = "filename", .type = "string", .required = true},
 };
 
+constexpr std::array projection_light_fields{
+    light_fields[1],
+    Field{"power", "float"},
+    Field{"fov", "float"},
+    Field{.name = "filename", .type = "string", .required = true},
+};
+
 constexpr std::array area_light_fields{
     light_fields[0],
     light_fields[1],
@@ -1577,10 +1584,25 @@ void Interpreter::light(const Directive &directive) {
         scene_.lights.push_back(std::move(descriptor));
         return;
     }
-    if (!area && one_of(type, {"point", "spot", "goniometric"})) {
+    if (!area && one_of(type, {"point", "spot", "goniometric", "projection"})) {
         Descriptor descriptor = describe(directive);
         descriptor.outside_medium = state_.media.outside;
-        if (type == "goniometric") {
+        if (type == "projection") {
+            validate(descriptor, directive, "light", projection_light_fields);
+            const auto *filename = descriptor.effective_parameter("filename").parameter;
+            if (filename && filename->values.size() == 1) {
+                if (filename->values.front().text.empty())
+                    error("invalid-parameter", filename->location,
+                          "Projection image filename must be nonempty");
+                else
+                    native_image(descriptor, "filename", ImageEncoding::srgb, ImageWrap::clamp);
+            }
+            const auto *fov = descriptor.effective_parameter("fov").parameter;
+            if (fov && fov->values.size() == 1 &&
+                !(fov->values.front().number > 0 && fov->values.front().number < 180))
+                error("invalid-parameter", fov->location,
+                      "Projection field of view must be in (0, 180)");
+        } else if (type == "goniometric") {
             validate(descriptor, directive, "light", goniometric_light_fields);
             const auto *filename = descriptor.effective_parameter("filename").parameter;
             if (filename && filename->values.size() == 1) {
@@ -1631,11 +1653,13 @@ void Interpreter::light(const Directive &directive) {
                       "Spot from and to must be distinct");
         }
         const auto count = std::ranges::count_if(scene_.lights, [](const Descriptor &light) {
-            return one_of(light.authored.arguments.front().text, {"point", "spot", "goniometric"});
+            return one_of(light.authored.arguments.front().text,
+                          {"point", "spot", "goniometric", "projection"});
         });
         if (count >= 64) {
             error("limit-exceeded", directive.location,
-                  "Combined point, spot, and goniometric light count exceeds the limit of 64");
+                  "Combined point, spot, goniometric, and projection light count exceeds the limit "
+                  "of 64");
             return;
         }
         scene_.lights.push_back(std::move(descriptor));

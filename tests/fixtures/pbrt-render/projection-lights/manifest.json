@@ -1,0 +1,46 @@
+{
+  "constant": {
+    "bytes": 699,
+    "sha256": "59747b73967003f683116cc2b6bcced8cf76060cbc5f99ac819c9615ba41b94a"
+  },
+  "landscape": {
+    "bytes": 738,
+    "sha256": "7d0dd7a14d42d9bd667217d49717795b1dc38b1cdf5f9ef3ea5f064b48868a7b"
+  },
+  "portrait": {
+    "bytes": 737,
+    "sha256": "b472ebf95c072a838cac8866cffa0702ff42e1e167df23ac7ce3190a1a8264b3"
+  },
+  "affine": {
+    "bytes": 816,
+    "sha256": "93ece78656583bb2baf14aff2dcabbda8be6bb42678c001b2fa986d4fb149f49"
+  },
+  "power": {
+    "bytes": 757,
+    "sha256": "fc9a3b0421043d078b296bd95d929cdbe1bdf63ef65d71d78bdd28f76b8462eb"
+  },
+  "mixed-lighting": {
+    "bytes": 1026,
+    "sha256": "fdad62cbbfdb4d3b3110c9ff4370c41bdf07731b0a6f00e95e99494ac092b541"
+  },
+  "rough-reflection": {
+    "bytes": 795,
+    "sha256": "7a796a09645422b0ee40470e98718627c4c6714659a969dae21832514400ae6c"
+  },
+  "rough-transmission": {
+    "bytes": 772,
+    "sha256": "bfbe1f88448b4de10aacce685c73a55afe82e51fa9f9c0914c221e4da59dc4d2"
+  },
+  "bounded-volume": {
+    "bytes": 1485,
+    "sha256": "cc97d25a62292a273801650278d0208c79c97c24238b18d92f60a3ee36d9f152"
+  },
+  "geometry-free-volume": {
+    "bytes": 732,
+    "sha256": "911448853ca8cbfce43607aedec7a78c37900f17ee6ee70ce314341acb673b6b"
+  },
+  "external-map": {
+    "bytes": 720,
+    "sha256": "11b7b1b1d6acfba23248f1a5df2269fb88892dbb7f84ffa8918aa1de98e5552b"
+  }
+}

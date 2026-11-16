@@ -1,0 +1,84 @@
+{
+  "constant": [
+    {
+      "path": "assets/constant.png",
+      "bytes": 72,
+      "sha256": "33f406b78d9f3e3da5a4a41009f9abed0e26251dece60d46141c73b68d3bbb33"
+    }
+  ],
+  "landscape": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "portrait": [
+    {
+      "path": "assets/portrait.png",
+      "bytes": 90,
+      "sha256": "20453f427f7ac8daac39e86aaad0a749a1c6d59efdbcce2a95f5ed52574e6ce2"
+    }
+  ],
+  "affine": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "power": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "mixed-lighting": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "rough-reflection": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "rough-transmission": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "bounded-volume": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "geometry-free-volume": [
+    {
+      "path": "assets/landscape.png",
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca"
+    }
+  ],
+  "external-map": [
+    {
+      "path": "assets/z03n2c08.png",
+      "bytes": 232,
+      "sha256": "939abfc6e0a3e349bb5bcd8c4e427a6cdb2c7e0c23a773aefa1c4fc9f07e4cb4"
+    },
+    {
+      "path": "assets/PngSuite.LICENSE",
+      "bytes": 167,
+      "sha256": "71e1f5bf865131b5d9996e76a78372146283e5089e50f900ae927a6458b62101"
+    }
+  ]
+}

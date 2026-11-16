@@ -121,6 +121,24 @@ static inline float goniometric_scale(Images images, uint index, float3 directio
         .x;
 }
 
+// Projection uses source-row UVs and nearest clamped RGB, independently of
+// the bilinear area/environment image reconstruction.
+static inline float3 projection_rgb(Images images, uint index, float2 uv) {
+    if (index >= images.parameters->texture_count)
+        return float3(NAN);
+    const device wire::ImageTexture &texture = images.textures[index];
+    if (!rypath_image::valid_lookup(texture, *images.parameters, uv, float2(0), float2(0)) ||
+        texture.channels != 3u || texture.wrap != 1u || texture.level_count != 1u || texture.gltf)
+        return float3(NAN);
+    const device wire::TextureLevel &level = images.levels[texture.level_begin];
+    if (!rypath_image::valid_level(level, images.parameters->texel_word_count,
+                                   texture.texel_format))
+        return float3(NAN);
+    const int2 pixel = int2(uv * float2(level.width, level.height));
+    return rypath_image::texel(images.texels, images.transfer, level, pixel.x, pixel.y,
+                               texture.wrap, texture.texel_format, texture.transfer_offset);
+}
+
 static inline float environment_radiance(Images images, constant wire::TextureGraphParameters &p,
                                          float3 world_direction, float wavelength) {
     if (p.environment_image >= images.parameters->texture_count)

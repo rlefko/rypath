@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Owned projection-light wrapper; asset terms are recorded separately.
+Camera "perspective" "float fov" [28]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "volpath" "integer maxdepth" [3]
+WorldBegin
+AttributeBegin
+Translate 1 .7 1
+LightSource "projection" "string filename" ["assets/landscape.png"] "float scale" [1000]
+AttributeEnd
+MakeNamedMedium "fog" "string type" "homogeneous" "spectrum sigma_a" [360 .3 830 .3] "spectrum sigma_s" [360 .7 830 .7] "float g" [.65]
+AttributeBegin
+Material "interface"
+MediumInterface "fog" ""
+Shape "trianglemesh" "point3 P" [-2 -2 2 -2 2 2 2 2 2 2 -2 2] "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [-2 -2 4 2 -2 4 2 2 4 -2 2 4] "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [-2 -2 2 -2 -2 4 -2 2 4 -2 2 2] "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [2 -2 2 2 2 2 2 2 4 2 -2 4] "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [-2 -2 2 2 -2 2 2 -2 4 -2 -2 4] "integer indices" [0 1 2 0 2 3]
+Shape "trianglemesh" "point3 P" [-2 2 2 -2 2 4 2 2 4 2 2 2] "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+Material "diffuse" "spectrum reflectance" [360 .6 830 .6]
+Shape "trianglemesh" "point3 P" [-4 -4 5 4 -4 5 4 4 5 -4 4 5] "integer indices" [0 2 1 0 3 2]

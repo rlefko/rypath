@@ -214,6 +214,15 @@ class Canonical {
         FIELD(light_from_world);
         FIELD(image_texture);
     }
+    void value(const ProjectionLight &x) {
+        FIELD(position);
+        FIELD(light_from_world);
+        FIELD(image_texture);
+        FIELD(image_scale);
+        FIELD(inv_tan_half_fov);
+        FIELD(screen_half_width);
+        FIELD(screen_half_height);
+    }
     void value(const DistantLight &x) {
         FIELD(direction);
         FIELD(radiance);
@@ -291,6 +300,7 @@ class Canonical {
         FIELD(point_lights);
         FIELD(spot_lights);
         FIELD(goniometric_lights);
+        FIELD(projection_lights);
         FIELD(distant_lights);
         FIELD(distant_scene_radius);
         FIELD(geometry);

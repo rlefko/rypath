@@ -49,7 +49,7 @@ constant bool media_enabled [[function_constant(8)]];
 constant bool gltf_enabled [[function_constant(9)]];
 constant bool positional_lights_enabled [[function_constant(10)]];
 constant bool distant_lights_enabled [[function_constant(11)]];
-constant bool goniometric_lights_enabled [[function_constant(12)]];
+constant bool positional_images_enabled [[function_constant(12)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -408,10 +408,12 @@ static bool spot_divide(float a, float b, thread float &result) {
 // wi points from the receiver toward the source. A spot emits along -wi.
 // Delta-position sources retain unit MIS weight and consume no random values.
 static bool positional_intensity(const device wire::PositionalLight &light, float3 wi,
-                                 rypath_image_light::Images images, thread float &intensity) {
+                                 rypath_image_light::Images images, float wavelength,
+                                 thread float &intensity) {
     if (light.kind == wire::point_light)
         return true;
-    if (light.kind != wire::spot_light && light.kind != wire::goniometric_light)
+    if (light.kind != wire::spot_light && light.kind != wire::goniometric_light &&
+        light.kind != wire::projection_light)
         return false;
     float3 w;
     for (uint row = 0; row < 3; ++row) {
@@ -424,9 +426,69 @@ static bool positional_intensity(const device wire::PositionalLight &light, floa
             return false;
         w[row] = component;
     }
+    if (light.kind == wire::projection_light) {
+        if (!positional_images_enabled)
+            return false;
+        if (w.z < 0.001f) {
+            intensity = 0;
+            return true;
+        }
+        const float2 bounds(light.screen_half_width, light.screen_half_height);
+        float2 projected, uv;
+        for (uint i = 0; i < 2; ++i) {
+            float product, component;
+            if (!spot_product(w[i], light.inv_tan_half_fov, product) ||
+                !spot_divide(product, w.z, component))
+                return false;
+            projected[i] = component;
+        }
+        if (any(projected < -bounds) || any(projected > bounds)) {
+            intensity = 0;
+            return true;
+        }
+        for (uint i = 0; i < 2; ++i) {
+            float numerator, denominator, component;
+            if (!spot_sum(projected[i], bounds[i], numerator) ||
+                !spot_product(2.0f, bounds[i], denominator) ||
+                !spot_divide(numerator, denominator, component))
+                return false;
+            uv[i] = component;
+        }
+        const float3 rgb = rypath_image_light::projection_rgb(images, light.image_texture, uv);
+        if (!all(isfinite(rgb)) || any(rgb < 0))
+            return false;
+        for (uint i = 0; i < 3; ++i)
+            if (!normal_or_zero(rgb[i]))
+                return false;
+        float amplitude;
+        if (!spot_product(2.0f, max(max(rgb.x, rgb.y), rgb.z), amplitude))
+            return false;
+        if (amplitude == 0) {
+            intensity = 0;
+            return true;
+        }
+        float3 normalized;
+        for (uint i = 0; i < 3; ++i) {
+            float component;
+            if (!spot_divide(rgb[i], amplitude, component))
+                return false;
+            normalized[i] = component;
+        }
+        const float nearest = round(wavelength);
+        if (nearest < 360.0f || nearest > 830.0f)
+            return false;
+        const float spectral = rypath_image::spectrum(normalized, wavelength, images.spectra);
+        float value, illuminated;
+        if (!(spectral >= 0) || !normal_or_zero(spectral) ||
+            !spot_product(amplitude, spectral, value) ||
+            !spot_product(value, images.illuminant[uint(nearest) - 360u], illuminated) ||
+            !spot_product(illuminated, light.image_scale, intensity))
+            return false;
+        return true;
+    }
     if (light.kind == wire::goniometric_light) {
         // Point/spot-only sky variants do not bind image resources.
-        if (!goniometric_lights_enabled)
+        if (!positional_images_enabled)
             return false;
         // Pinned PBRT maps the actual inverse-transformed unit direction. Do
         // not normalize or rescale it: nearest-texel boundaries are discontinuous.
@@ -1799,7 +1861,8 @@ medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words, 
             if (!point_direction(point, unpack(light->position), direction, distance_squared,
                                  light->kind != wire::point_light))
                 return {0, wire::invalid_arithmetic};
-            if (!positional_intensity(*light, direction, images, intensity))
+            if (!positional_intensity(*light, direction, images, alpha.sample->wavelength,
+                                      intensity))
                 return {0, wire::invalid_arithmetic};
             if (intensity == 0)
                 continue;
@@ -1917,7 +1980,8 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                             sample.status = wire::invalid_arithmetic;
                             break;
                         }
-                        if (!positional_intensity(*light, direction, light_images, intensity)) {
+                        if (!positional_intensity(*light, direction, light_images,
+                                                  sample.wavelength, intensity)) {
                             sample.status = wire::invalid_arithmetic;
                             break;
                         }
@@ -2608,7 +2672,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
-                if (!positional_intensity(*light, direction, light_images, intensity)) {
+                if (!positional_intensity(*light, direction, light_images, sample.wavelength,
+                                          intensity)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }

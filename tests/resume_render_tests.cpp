@@ -291,7 +291,8 @@ int native() {
             auto whole = render_progressive(scene, settings);
             require(whole.completion == RenderCompletion::complete, whole.diagnostic);
             if (!scene.point_lights.empty() || !scene.spot_lights.empty() ||
-                !scene.distant_lights.empty() || !scene.goniometric_lights.empty()) {
+                !scene.distant_lights.empty() || !scene.goniometric_lights.empty() ||
+                !scene.projection_lights.empty()) {
                 bool positive = false;
                 for (const auto &pixel : whole.film.pixels)
                     positive = positive || pixel.sum[1] + pixel.correction[1] > 0;
@@ -318,7 +319,8 @@ int native() {
          {"image-secondary.pbrt", "media-reference/isotropic.pbrt", "point-lights/mixed.pbrt",
           "point-lights/volume.pbrt", "spot-lights/mixed.pbrt", "spot-lights/volume.pbrt",
           "goniometric-lights/mixed-lighting.pbrt", "goniometric-lights/bounded-volume.pbrt",
-          "goniometric-lights/geometry-free-volume.pbrt"}) {
+          "goniometric-lights/geometry-free-volume.pbrt", "projection-lights/mixed-lighting.pbrt",
+          "projection-lights/bounded-volume.pbrt", "projection-lights/geometry-free-volume.pbrt"}) {
         std::cout << "Resume fixture: " << fixture << std::endl;
         auto path =
             std::filesystem::path(RYPATH_SOURCE_DIR) / "tests/fixtures/pbrt-render" / fixture;
@@ -334,6 +336,9 @@ int native() {
         if (std::string_view(fixture).starts_with("goniometric-lights/"))
             require(!translated.scene->goniometric_lights.empty(),
                     "goniometric fixture lost its light");
+        if (std::string_view(fixture).starts_with("projection-lights/"))
+            require(!translated.scene->projection_lights.empty(),
+                    "projection fixture lost its light");
         check_resume(*translated.scene);
     }
     // Empty geometry takes a distinct kernel. A scattering camera medium must

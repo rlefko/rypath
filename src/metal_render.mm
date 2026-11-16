@@ -337,8 +337,8 @@ struct MetalRenderScene::Impl {
             data.insert(data.end(), encoded.begin(), encoded.end());
         }
         constexpr std::size_t light_words = sizeof(wire::PositionalLight) / sizeof(wire::Word);
-        const auto count =
-            scene.point_lights.size() + scene.spot_lights.size() + scene.goniometric_lights.size();
+        const auto count = scene.point_lights.size() + scene.spot_lights.size() +
+                           scene.goniometric_lights.size() + scene.projection_lights.size();
         if (data.size() > limit || count > (limit - data.size()) / light_words)
             return "Positional lights exceed the shared GPU data budget";
         parameters.positional_begin = static_cast<wire::Word>(data.size());
@@ -347,7 +347,18 @@ struct MetalRenderScene::Impl {
             wire::PositionalLight light{};
             light.kind = kind;
             light.position = {source.position.x, source.position.y, source.position.z};
-            std::ranges::copy(source.intensity, light.intensity);
+            if constexpr (std::is_same_v<std::decay_t<decltype(source)>, ProjectionLight>) {
+                // A projection has image radiance, never a separate dense I spectrum.
+                std::ranges::fill(light.intensity, source.image_scale == 0 ? 0.f : 1.f);
+                std::ranges::copy(source.light_from_world, light.light_from_world);
+                light.image_texture = source.image_texture;
+                light.image_scale = source.image_scale;
+                light.inv_tan_half_fov = source.inv_tan_half_fov;
+                light.screen_half_width = source.screen_half_width;
+                light.screen_half_height = source.screen_half_height;
+            } else {
+                std::ranges::copy(source.intensity, light.intensity);
+            }
             if constexpr (std::is_same_v<std::decay_t<decltype(source)>, SpotLight>) {
                 // Common positive scaling leaves the normalized direction unchanged
                 // and prevents finite large direct-API matrices overflowing in MSL.
@@ -372,6 +383,8 @@ struct MetalRenderScene::Impl {
             append(source, wire::spot_light);
         for (const auto &source : scene.goniometric_lights)
             append(source, wire::goniometric_light);
+        for (const auto &source : scene.projection_lights)
+            append(source, wire::projection_light);
         constexpr std::size_t distant_words = sizeof(wire::DistantLight) / sizeof(wire::Word);
         if (data.size() > limit ||
             scene.distant_lights.size() > (limit - data.size()) / distant_words)
@@ -1475,9 +1488,9 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             std::ranges::any_of(scene.materials,
                                 [](const auto &m) { return m.scattering == ScatteringKind::gltf; }),
             !scene.point_lights.empty() || !scene.spot_lights.empty() ||
-                !scene.goniometric_lights.empty(),
+                !scene.goniometric_lights.empty() || !scene.projection_lights.empty(),
             !scene.distant_lights.empty(),
-            !scene.goniometric_lights.empty()};
+            !scene.goniometric_lights.empty() || !scene.projection_lights.empty()};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];

@@ -211,6 +211,30 @@ std::optional<std::array<float, 9>> goniometric_inverse(const Transform &transfo
     return packed;
 }
 
+// Projection uses the actual affine inverse, including PBRT's final Y flip.
+// No common scaling or normalization preserves the hither test.
+std::optional<std::array<float, 9>> projection_inverse(const Transform &transform) {
+    Transform linear = transform;
+    linear.values[3] = linear.values[7] = linear.values[11] = 0;
+    const auto inverse = checked_inverse_affine(linear);
+    if (!inverse)
+        return std::nullopt;
+    Transform check;
+    std::array<float, 9> packed{};
+    for (std::size_t row = 0; row < 3; ++row)
+        for (std::size_t col = 0; col < 3; ++col) {
+            const double value = inverse->values[row * 4 + col] * (row == 1 ? -1 : 1);
+            const float narrowed = static_cast<float>(value);
+            if (!std::isfinite(narrowed) || (value != 0 && !std::isnormal(narrowed)))
+                return std::nullopt;
+            packed[row * 3 + col] = narrowed;
+            check.values[row * 4 + col] = narrowed;
+        }
+    if (exact_singular_linear(check))
+        return std::nullopt;
+    return packed;
+}
+
 // Small exact expansions certify the affine direction before its final rounding.
 // Refuse inputs whose low product bits would fall below binary64 subnormals.
 int least_bit_exponent(double value) {
@@ -1110,9 +1134,117 @@ void Translator::light(const Descriptor &descriptor) {
             scene_.distant_lights.push_back(std::move(distant));
         return;
     }
+    if (descriptor.authored.arguments.front().text == "projection") {
+        if (scene_.point_lights.size() + scene_.spot_lights.size() +
+                scene_.goniometric_lights.size() + scene_.projection_lights.size() >=
+            max_positional_lights) {
+            spectral_limit(descriptor.authored.location);
+            return;
+        }
+        if (!descriptor.native_image) {
+            invalid(location(descriptor, "filename"),
+                    "Projection light requires a checked RGB image");
+            return;
+        }
+        if (const auto error = validate_projection_image(*descriptor.native_image);
+            !error.empty()) {
+            invalid(location(descriptor, "filename"), error);
+            return;
+        }
+        const auto &m = descriptor.transform.values;
+        const auto position = narrow_point({m[3], m[7], m[11]});
+        if (!position || (m[3] != 0 && !std::isnormal(position->x)) ||
+            (m[7] != 0 && !std::isnormal(position->y)) ||
+            (m[11] != 0 && !std::isnormal(position->z))) {
+            invalid(descriptor.authored.location,
+                    "Projection position must remain normal binary32 or zero");
+            return;
+        }
+        const auto inverse = projection_inverse(descriptor.transform);
+        if (!inverse) {
+            unsupported(descriptor.authored.location,
+                        "Projection light requires a nonsingular affine inverse whose coefficients "
+                        "remain normal binary32 or zero");
+            return;
+        }
+        const auto fov = narrow(descriptor, "fov", 90);
+        const auto scale = narrow(descriptor, "scale", 1);
+        if (!fov || !scale)
+            return;
+        // Reject pre-narrowing loss instead of turning authored emission silently black.
+        if (number(descriptor, "scale", 1) != 0 && *scale == 0) {
+            invalid(location(descriptor, "scale"),
+                    "Projection scale loses a nonzero value in binary32");
+            return;
+        }
+        // Match the pinned binary32 Perspective coefficient before widened integration.
+        const float tangent = std::tan((std::numbers::pi_v<float> / 180.f) * *fov / 2.f);
+        const float inv_tan = 1.f / tangent;
+        if (!(*fov > 0 && *fov < 180 && std::isnormal(inv_tan) && inv_tan > 0)) {
+            invalid(location(descriptor, "fov"),
+                    "Projection FOV requires a positive normal binary32 perspective coefficient");
+            return;
+        }
+        const auto &image = *descriptor.native_image;
+        const auto &base = image.levels.front();
+        const float aspect = float(base.width) / float(base.height);
+        const float half_width = aspect > 1 ? aspect : 1;
+        const float half_height = aspect > 1 ? 1 : 1 / aspect;
+        double amplitude = *scale / pbrt_y_inner_product(pbrt_d65());
+        const double power = number(descriptor, "power", -1);
+        if (power > 0) {
+            constexpr std::array<double, 3> luminance{0.212673499227, 0.715151622536,
+                                                      0.072174878238};
+            // Binary64 accumulation is a bounded adaptation of PBRT's float sum.
+            // Integrate native texel centers in light space, without an affine Jacobian.
+            double sum = 0;
+            for (std::uint32_t y = 0; y < base.height; ++y)
+                for (std::uint32_t x = 0; x < base.width; ++x) {
+                    const auto rgb = image_base_texel_linear_rgb(image, x, y);
+                    if (!rgb) {
+                        invalid(location(descriptor, "filename"), "Projection texel lookup failed");
+                        return;
+                    }
+                    const double sx = (2 * (double(x) + .5) / base.width - 1) * half_width;
+                    const double sy = (2 * (double(y) + .5) / base.height - 1) * half_height;
+                    const double px = sx / inv_tan, py = sy / inv_tan;
+                    const double cosine = 1 / std::sqrt(1 + px * px + py * py);
+                    sum += ((*rgb)[0] * luminance[0] + (*rgb)[1] * luminance[1] +
+                            (*rgb)[2] * luminance[2]) *
+                           cosine * cosine * cosine;
+                }
+            const double area = 4 * double(tangent) * tangent * half_width * half_height;
+            const double integral = area * sum / (double(base.width) * base.height);
+            if (!(integral > 0 && std::isfinite(integral))) {
+                invalid(location(descriptor, "power"),
+                        "Positive projection power requires a positive finite image integral");
+                return;
+            }
+            if (amplitude != 0)
+                amplitude *= power / integral;
+        }
+        const float packed_amplitude = static_cast<float>(amplitude);
+        if ((*scale != 0 && amplitude == 0) || !float_representable(2 * amplitude) ||
+            (amplitude != 0 && !std::isnormal(packed_amplitude))) {
+            invalid(
+                location(descriptor, "scale"),
+                "Projection image amplitude must remain normal binary32 or zero without overflow");
+            return;
+        }
+        ProjectionLight light;
+        light.position = *position;
+        light.light_from_world = *inverse;
+        light.image_texture = native_image(descriptor);
+        light.image_scale = packed_amplitude;
+        light.inv_tan_half_fov = inv_tan;
+        light.screen_half_width = half_width;
+        light.screen_half_height = half_height;
+        scene_.projection_lights.push_back(std::move(light));
+        return;
+    }
     if (descriptor.authored.arguments.front().text == "goniometric") {
         if (scene_.point_lights.size() + scene_.spot_lights.size() +
-                    scene_.goniometric_lights.size() >=
+                    scene_.goniometric_lights.size() + scene_.projection_lights.size() >=
                 max_positional_lights ||
             471U > limits_.total_values - spectral_values_) {
             spectral_limit(descriptor.authored.location);
@@ -1194,7 +1326,7 @@ void Translator::light(const Descriptor &descriptor) {
     const bool spot = descriptor.authored.arguments.front().text == "spot";
     if (spot || descriptor.authored.arguments.front().text == "point") {
         if (scene_.point_lights.size() + scene_.spot_lights.size() +
-                scene_.goniometric_lights.size() >=
+                scene_.goniometric_lights.size() + scene_.projection_lights.size() >=
             max_positional_lights) {
             spectral_limit(descriptor.authored.location);
             return;
@@ -3196,6 +3328,11 @@ RenderTranslation Translator::run() {
                 "Goniometric lights: " + std::to_string(scene_.goniometric_lights.size()) +
                 " (native scalar equal-area maps; actual inverse directions; delta-position "
                 "weights)");
+        }
+        if (!scene_.projection_lights.empty()) {
+            result_.provenance.push_back(
+                "Projection lights: " + std::to_string(scene_.projection_lights.size()) +
+                " (native RGB perspective maps; actual affine inverse; delta-position weights)");
         }
         if (!scene_.distant_lights.empty()) {
             result_.provenance.push_back(
