@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <csignal>
 #include <exception>
 #include <iomanip>
