@@ -36,7 +36,8 @@ An already complete checkpoint can publish an image without acquiring a GPU.
 ## Identity and compatible continuation
 
 Resume restores every raw binary64 XYZ sum, Neumaier compensation term and
-64-bit count. No image readback, averaging or output conversion reconstructs this
+64-bit count, including packet camera/splat and exposed clamped planes plus
+reconstruction weights. No image readback, averaging or output conversion reconstructs this
 state. The next sample index is the uniform committed count. Random draws remain
 functions of pixel, seed, absolute sample and the existing sampler domains.
 Cancellation does not selectively discard slow paths or change the estimator.
@@ -102,8 +103,10 @@ checkpoints for pinhole scenes whose rendering sequence is unchanged. See
 [depth-of-field validation](depth-of-field-validation.md).
 
 Checkpointing does not add a PBRT sample override or allow extending a completed
-job. Batch size, file paths, output precision and presentation exposure may change.
-Restored Film uses the current validated exposure without modifying raw values.
+job. Batch size, file paths and output precision may change. Exposure may change for
+unclamped rendering, where it remains presentation-only. With finite film
+clamping, exposure affects sample accumulation and participates in scene identity;
+a changed exposure rejects resume.
 
 Compatible builds and supported native Metal GPUs may continue a checkpoint when
 the canonical identity and declared renderer, sampling, accumulation and identity
@@ -122,17 +125,18 @@ guidance. Unknown checkpoint versions fail without a force-resume option.
 Changes to transport models, numerical policy, sample mapping, canonical fields,
 or accumulation semantics must review and bump the appropriate shared contract
 in `checkpoint_contract.h`. Intentional incompatible changes reject old files;
-there is no v1 migration. Compiler configuration must preserve the declared
+there is no automatic migration. Compiler configuration must preserve the declared
 precision policy, including existing shader `-fno-fast-math` settings.
 
 ## Format, limits and publication
 
-Version 1 uses explicit little-endian integers and IEEE binary64 bit patterns.
+Version 2 uses explicit little-endian integers and IEEE binary64 bit patterns.
 The 44-byte header contains the eight-byte `RYPCHK\r\n` magic, five uint32
 contract versions, and uint64 metadata/pixel-payload lengths. Metadata stores
-render settings, Film model/exposure, 32-byte identity and bounded provenance.
-Each pixel occupies 56 bytes: three sums, three corrections, then its uint64
-count. A trailing 32-byte SHA-256 covers all preceding bytes. The
+render settings, Film model/exposure, packet/output flags, clamp, filter, 32-byte
+identity and bounded provenance. Each pixel occupies 216 bytes: raw camera XYZ
+sums/corrections and uint64 count; raw splat, clamped camera and clamped splat
+XYZ sums/corrections; then reconstruction weight sum/correction. A trailing 32-byte SHA-256 covers all preceding bytes. The
 [NIST SHA-256 specification](https://csrc.nist.gov/pubs/fips/180-4/upd1/final)
 defines the hash; it detects corruption and is not an authenticity signature.
 
@@ -172,3 +176,11 @@ sampling to 3. Format and accumulation remain 1. Gaussian sigma participates in
 filter identity; effective ZSobol sample count is the fixed target already
 included in identity. New QMC seeds use canonical signed 32-bit encoding.
 Earlier contracts are rejected explicitly; no automatic migration is attempted.
+
+Packet transport advances format/identity/renderer/sampling/accumulation to
+2/11/13/4/2. Every accumulation plane persists without output conversion;
+splats never increment destination counts. Canonical identity includes analytic
+geometry, integrator, spectral transport, film clamp and finite-clamp exposure.
+Resource profiles are execution limits and do not change effective scene identity.
+See [Pavilion transport](pavilion-validation.md) for normalization and deterministic
+reduction order. Earlier format and contract versions are rejected explicitly.

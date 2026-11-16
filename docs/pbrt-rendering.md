@@ -28,6 +28,23 @@ or unavailable Metal, and 1 means invalid input, resource, numeric, execution,
 or output failure. Errors take precedence. Rejected scenes do not acquire a GPU
 or change an existing output.
 
+
+## Pavilion packet transport
+
+BDPT, finite `Film.maxcomponentvalue`, native analytic shapes and the explicit
+`--resource-profile large` are described in the [Pavilion compatibility and
+validation record](pavilion-validation.md). Packet modes use four shared-path
+visible wavelengths and require vacuum at camera, surface and light endpoints.
+They preserve raw accumulation separately from exposed, clamped sensor values.
+`--raw-output PATH.exr` additionally exports unexposed, unclamped FLOAT linear
+sRGB. Unclamped scalar path/volpath keep their existing transport and media rules.
+
+The packet light sampler selects uniformly among area primitives, positional and
+distant sources, and one environment slot. The scalar lighting descriptions below
+continue to describe the older separate environment/area/all-positional estimators.
+Different proposals can produce different means after nonlinear finite clamping;
+plausible appearance alone does not establish equivalence to PBRT.
+
 ## Compatibility
 
 Semantics are pinned to [PBRT v4 b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f](https://github.com/mmp/pbrt-v4/tree/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f).
@@ -38,14 +55,14 @@ diagnosed even when not placed in the image.
 
 | Component | Rendered behavior and limits |
 | --- | --- |
-| Descriptors | Perspective camera, RGB film, box/triangle/Gaussian filter, independent/Sobol/Halton/ZSobol sampler, and path/volpath integrator; omitted descriptors use pinned PBRT defaults |
+| Descriptors | Perspective camera, RGB film, box/triangle/Gaussian filter, independent/Sobol/Halton/ZSobol sampler, and path/volpath/bdpt integrator; omitted descriptors use pinned PBRT defaults |
 | Camera | Pinhole or perspective thin lens, local +Z, PBRT raster orientation and smaller-axis FOV, aspect ratio/screen window; translation/rotation/reflection |
 | Pose | Gram matrix and absolute determinant within `64 * FLT_EPSILON` of orthonormality; retain accepted basis without repair; scale/shear unsupported |
-| Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, no finite contribution clamp |
+| Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, optional positive finite sensor-space contribution clamp |
 | Filter | Positive normal binary32 box radii defaulting to 0.5, triangle radii to 2, or tabulated Gaussian radii 1.5 and sigma 0.5 |
 | Sampler | Philox independent, PBRT interval Sobol, Halton, or ZSobol with pinned randomizations and versioned rypath transport dimensions |
-| Integrator | Path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling, 0–127 with Sobol/ZSobol (0–113 with dielectrics), or 0–124 with Halton (0–110 with dielectrics), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
-| Geometry | Checked inline triangles/bilinear meshes, Loop subdivision triangles, and PLY triangles/bilinear quads with supported vertex attributes and single-level instances, including affine geometry transforms; at least one placed primitive for path; volpath permits empty geometry |
+| Integrator | BDPT or finite film clamp selects four-wavelength vacuum transport at depth 0–64; otherwise path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling, 0–127 with Sobol/ZSobol (0–113 with dielectrics), or 0–124 with Halton (0–110 with dielectrics), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
+| Geometry | Native sphere/disk/open cylinder, checked inline triangles/bilinear meshes, Loop subdivision triangles, and PLY triangles/bilinear quads with supported vertex attributes and single-level instances, including affine geometry transforms; at least one placed primitive for scalar path; packet modes and volpath permit empty geometry |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
 | Dielectrics | Smooth and anisotropic single-scattering GGX reflection/transmission, scalar or spectral eta, textured roughness and mapped frames; see [dielectric profile](#spectral-ggx-dielectrics) |
@@ -57,7 +74,7 @@ diagnosed even when not placed in the image.
 | Spot lighting | Spectral point-source emission with cubic cosine falloff, `from`/`to` aiming, representable static affine transforms and positive-power normalization; surface and homogeneous-volume illumination |
 | Goniometric lighting | Spectral `I`, `scale`, optional `power`, required native square scalar image diagram, rigid/reflected declaration transforms; surface and homogeneous-volume illumination with nearest equal-area lookup |
 | Distant lighting | Up to 64 directional sources with spectral `L`, `scale`, `illuminance` and affine `from`/`to`; finite PBRT scene-bound visibility for surfaces and homogeneous media |
-| Area lighting | Directly placed diffuse triangle and bilinear patch emitters; numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power normalizes each generated primitive |
+| Area lighting | Directly placed diffuse triangle, bilinear patch and analytic emitters (see [analytic power restrictions](pavilion-validation.md#analytic-geometry)); numeric/file/RGB/blackbody/built-in named/default-D65 or RGB PNG/JPEG/EXR/HDR image emission, nonnegative scale (default 1), and twosided (default false); finite nonpositive power is inert, positive power normalizes each generated primitive |
 | Homogeneous media | Named absorption/scattering/emission spectra, all 47 pinned measured presets, scoped interfaces and null boundaries; see [homogeneous media](#homogeneous-media) |
 | Acceleration | Omitted or untuned BVH descriptor maps to native Metal structures |
 | Output | Explicit filename override; PNG display encoding or linear EXR with authored/default HALF or FLOAT precision; no bitwise PBRT image equivalence |
@@ -628,7 +645,7 @@ Cyclic quads are triangulated, longest edges are refined in the shape-definition
 metric with shared midpoints, displacement is evaluated in original object space,
 and normals are rebuilt before Metal acceleration construction. Placement does
 not trigger another refinement. Bounds are 64 refinement levels, 2²⁴ texture
-node visits, the existing 2,000,000 scalar-value budget, and bounded scratch
+node visits, the configured scalar-value budget (standard: 2,000,000), and bounded scratch
 storage. Other shape displacement remains unsupported.
 
 Infinite image lights require a square RGB PNG/JPEG/EXR/HDR in PBRT's equal-area
@@ -942,6 +959,9 @@ explicit **compatibility approximation**: finite internal truncation and
 stochastic value/PDF estimates do not establish an uncapped unbiased layered
 solution. Diagnostics and `rypath.materialModel` EXR metadata record each
 coating's depth/sample settings. The outer path depth remains independent.
+The packet coated-diffuse path comparison passes its matched PBRT gates, while
+the coated BDPT comparison has a documented discrepancy; see the
+[Pavilion coating controls](pavilion-validation.md#coated-material-comparison-boundary).
 
 Mix selection hashes the world hit position, outgoing direction and stable
 material ID; it is independent of allocation addresses and execution order.
@@ -1052,7 +1072,10 @@ surface sequence is retained; volumetric events form an explicitly labeled
 hybrid. Samples still enter raw XYZ accumulation only through complete validated
 batches. No denoising, tone mapping or radiance clamp is introduced.
 
-## Spectral and transport contract
+## Scalar spectral and transport contract
+
+This section describes unclamped scalar path/volpath. Packet transport uses the
+separate [four-wavelength, finite-depth contract](pavilion-validation.md#model-and-estimator).
 
 Numeric materials retain their authored knots, narrowed to float after validation.
 Piecewise-linear values are zero outside the supplied interval; materials are
@@ -1144,7 +1167,9 @@ omitted L uses the light declaration's space. Only the consumed space must be
 sRGB. Numeric spectra remain independent of ColorSpace. These context-specific
 rules follow the [pinned parameter implementation](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/paramdict.cpp).
 
-Each path retains one uniformly sampled wavelength with density 1/470. Raw
+Each unclamped scalar path/volpath retains one uniformly sampled wavelength with
+density 1/470. Packet modes follow their separate
+[spectral and film contract](pavilion-validation.md#model-and-estimator). Raw scalar
 unexposed XYZ receives `470 * L(lambda) * CIE_nearest(lambda)`, without the
 demo's Y-reference division. Film projection applies
 `(shutterclose - shutteropen) * ISO / 100`, then the linear sRGB matrix. Display
@@ -1155,7 +1180,8 @@ material/light model. Area lighting adds its own proposal and complementary
 emissive-hit MIS; wavelength sampling and roulette are unchanged.
 
 Diffuse materials use the [existing Lambertian NEE/MIS](rendering.md); conductors and dielectrics
-use their scattering contracts above. All retain compensated roulette. Escape and sided surface emission precede the depth cutoff.
+use their scattering contracts above. Scalar modes retain compensated roulette.
+Escape and sided surface emission precede the depth cutoff.
 At an opaque hit, the authored cutoff precedes another direct-light estimate or
 scattering, and the emergency watchdog. Depth zero preserves visible sky and
 emission; non-emitting opaque hits are black. This targets the finite-depth integral, not infinite-depth transport.
@@ -1199,13 +1225,13 @@ The positive factor must be normal binary32, and nonzero GPU intermediates and
 products must remain finite normal binary32. Predictable failures receive
 source-located errors; runtime invalid arithmetic fails the whole sample batch.
 Finite nonpositive power canonicalizes to zero and preserves legacy output.
-Power remains binary64 until per-primitive preparation. Transformed emitters use checked world-space
+Power remains binary64 until per-primitive preparation. Transformed triangle/patch emitters use checked world-space
 geometry for both native acceleration and shading, while preserving source
 instance/primitive ordering and effective orientation. The authored scene stays
 unchanged.
 
-Each scattering vertex draws one area sample separately from the existing
-environment sample. Real primitives occupy N of M=bit_ceil(N) equally likely
+In scalar transport, each scattering vertex draws one area sample separately
+from the existing environment sample. Real primitives occupy N of M=bit_ceil(N) equally likely
 slots; unused slots contribute zero. The area sample and BSDF-hit emission use
 complementary power weights including the exact 1/M selection probability.
 Triangle samples are uniform in area; patch samples are uniform in parameter

@@ -2,28 +2,26 @@
 
 ## Current milestone
 
-Loop subdivision and inline bilinear meshes merged in
-[PR #48](https://github.com/rlefko/rypath/pull/48) at `b2eae1c`.
+Sampling and PBRT defaults merged in
+[PR #49](https://github.com/rlefko/rypath/pull/49) at `46b20f4`.
 
-The current compatibility slice adds Halton, ZSobol, tabulated Gaussian filtering
-and pinned PBRT defaults for omitted descriptors. Explicit unsupported features
-still receive diagnostics. Stable absolute sample identities, owned filter
-distributions and fixed ZSobol budgets support progressive execution and resume.
-See the [render profile](pbrt-rendering.md) and
-[sampling validation](sampling-defaults-validation.md).
-Identity/renderer/sampling contracts are 10/12/3; format and accumulation remain 1.
+The current compatibility slice targets the pinned Barcelona Pavilion day and
+night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport,
+BDPT camera/light connections and splats, finite sensor-space film clamping,
+raw EXR export, and an explicit bounded large-scene profile. Checkpoint
+format/identity/renderer/sampling/accumulation contracts are 2/11/13/4/2.
+See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
+acceptance targets and current validation. Unsupported media and geometry receive
+diagnostics rather than substitutions.
 
-Selected owned and CC0-derived fixtures exercise sampling, filtering, lenses and
-homogeneous media. They do not establish additional unmodified upstream scene
-coverage. Analytic geometry, additional film/camera/filter/sampler models, advanced
-materials and heterogeneous media remain broader conformance work. A complete
-pinned inventory, licensed dependency closures, long-run convergence and measured
-M4 Max benchmarks remain acceptance work on the [roadmap](roadmap.md).
-Offline MVP completion and full pinned-corpus coverage remain unestablished.
+This remains selected-scene coverage. Curves, motion, heterogeneous media,
+additional camera/film models and broader material semantics remain on the
+[roadmap](roadmap.md). Offline MVP acceptance and full pinned-corpus coverage
+remain unestablished.
 
 ## Validation
 
-Implementation `ba1982b` passed Debug, Release and ASan/UBSan checks (186 each),
+Historical implementation `ba1982b` passed Debug, Release and ASan/UBSan checks (186 each),
 portable CTest (140), Python checks (186), all 270 pinned PBRT comparison gates,
 48 Metal tests with API validation, and exact legacy output comparisons for
 81 scenes plus the demo.

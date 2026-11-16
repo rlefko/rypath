@@ -328,3 +328,22 @@ and piecewise-constant CDF construction. Both retain Apache-2.0 notices.
 The normalized positive table uses unit film weights, a documented numerical
 adaptation. Optional probes link the cached CPU reference; the product adds no
 PBRT runtime dependency.
+
+## Analytic surfaces and packet BDPT
+
+`src/analytic.hpp` and `shaders/analytic.h` adapt sphere/disk/cylinder
+parameterizations and intersection equations from `src/pbrt/shapes.{h,cpp}` at
+`b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`. Rypath adds native Metal bounding-box
+traversal, checked affine area Jacobians and a consistent outward-normal rule
+for reflected shapes; these adaptations are described in the
+[Pavilion record](../../docs/pavilion-validation.md).
+
+`src/packet_spectrum_shared.h` adapts visible-wavelength sampling and secondary
+termination from `src/pbrt/util/spectrum.h`. `shaders/packet_layered.h` adapts
+the finite layered walk from `src/pbrt/bxdfs.h`. `shaders/packet_transport.h` and
+`shaders/packet_walk.h` adapt vacuum subpaths, connection strategies and balance
+MIS from `src/pbrt/cpu/integrators.cpp`, with perspective camera importance from
+`src/pbrt/cameras.{h,cpp}`. These files retain upstream copyright and Apache-2.0
+notices. The four-lane scattering interface, bounded workspace, deterministic
+host film reduction and checkpoint integration are rypath adaptations. No PBRT
+library is linked into the renderer.

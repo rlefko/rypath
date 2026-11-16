@@ -31,6 +31,14 @@ barycentrics; opaque occlusion uses a separate any-hit query. The test-only doub
 reference independently transforms vertices and scans all triangles. See
 [native geometry](geometry.md) for numerical limits, ownership, and validation.
 
+Native sphere, disk and open cylinder primitives add conservative bounding boxes
+and analytic intersection functions to the shared instance acceleration structure.
+Packet transport adds four shared wavelengths, mode-aware scattering, vacuum BDPT
+and camera splats. A bounded per-lane workspace and canonical host reduction keep
+all film planes resumable without floating-point atomics. The
+[Pavilion record](pavilion-validation.md) defines estimator choices, film clamping,
+resource budgets, reflected analytic orientation and validation.
+
 ## PBRT preflight boundary
 
 The portable reader owns source records, decoded tokens, authored numeric lexemes,
@@ -59,7 +67,8 @@ instead of reinterpreting transforms. Only successful translation reaches Metal.
 An owned filter record selects box, triangle, or normalized tabulated Gaussian
 sampling. Gaussian CDFs are compiled portably and owned by the native session. Triangle camera arithmetic has dimension-aware support checks
 in translation, progressive setup, and each native request. Samples beyond film
-bounds remain attached to their source pixel with unit weight.
+bounds remain attached to their source pixel. Scalar modes use unit weights;
+packet Gaussian samples retain the table integral as their reconstruction weight.
 An optional perspective lens retains radius, focal distance and the captured
 camera-plane axes, including reflected rigid poses. Uniform disk samples add a
 normalized aperture integral with unit camera weight. Primary rays and texture
@@ -401,8 +410,9 @@ their original Philox sequence. Active perspective lenses append `lens-v1`:
 Sobol/ZSobol dimensions 1022/1023, Halton dimensions 998/999, or a disjoint
 independent Philox counter block, without
 renumbering camera, wavelength, transport or dielectric draws. Inactive lenses
-consume no lens draws. Current sampling contract 3, renderer contract 12 and identity
-schema 10 reject earlier checkpoints globally. See
+consume no lens draws. Current sampling contract 4, renderer contract 13 and identity
+schema 11 reject earlier checkpoints globally. Packet modes use their separate
+fixed 920-dimension allocation; the scalar lens extensions above remain unchanged. See
 [sampling/defaults validation](sampling-defaults-validation.md),
 [Sobol validation](pbrt-sobol-validation.md) and
 [depth-of-field validation](depth-of-field-validation.md).
@@ -417,16 +427,20 @@ legacy emission keeps an absent-factor sentinel. The power is part of canonical
 identity. See the [rendering profile](pbrt-rendering.md).
 
 Scoped PBRT area declarations bind independently of materials to directly placed
-triangle meshes. The translator owns deduplicated dense emission tables and
-source-instance bindings. The native session maps these to packed triangle
-references and constant-time emitting-hit lookup. A separate uniform-area light
-sample complements BSDF-hit emission through MIS; finite endpoint-to-endpoint
+triangle, patch and analytic surfaces. The translator owns deduplicated dense
+emission tables and source-instance bindings. The native session maps these to
+packed primitive references and constant-time emitting-hit lookup. In scalar
+transport, a separate area-light sample complements BSDF-hit emission through
+MIS; finite endpoint-to-endpoint
 visibility reuses native any-hit traversal. The [area-light record](pbrt-area-validation.md)
 states the estimator, numerical domain, and independent acceptance criteria.
-Transformed emitters use checked world-space vertices for both native traversal
+Transformed mesh emitters use checked world-space vertices for both native traversal
 and shading, avoiding observed conditioning failures in highly anisotropic
 object-space parameterizations. This preparation preserves authored records,
 instance/primitive ordering, and effective orientation.
+Analytic emitters retain object-space parameterizations and use affine area
+Jacobians. Packet transport uses its unified light selection and BDPT balance MIS
+as described in the [Pavilion record](pavilion-validation.md).
 
 Inline meshes also own optional position-indexed normals and UVs. The native
 renderer prepares a deduplicated normal table from each original source
