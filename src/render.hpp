@@ -162,6 +162,12 @@ struct AreaEmission {
 };
 inline constexpr std::uint32_t max_positional_lights = 64;
 inline constexpr std::uint32_t max_point_lights = max_positional_lights;
+inline constexpr std::uint32_t max_distant_lights = 64;
+struct DistantLight {
+    // Unit world direction from the scattering vertex toward the source.
+    GeometryPoint direction{};
+    std::array<float, 471> radiance{};
+};
 struct PointLight {
     GeometryPoint position{};
     std::array<float, 471> intensity{};
@@ -193,6 +199,8 @@ struct RenderScene {
     std::vector<AreaEmission> area_emissions{};
     std::vector<PointLight> point_lights{};
     std::vector<SpotLight> spot_lights{};
+    std::vector<DistantLight> distant_lights{};
+    float distant_scene_radius = 0;
     // Empty or one emission index (or no_area_emission) per source instance.
     std::vector<std::uint32_t> instance_emissions{};
     PixelFilter filter{};

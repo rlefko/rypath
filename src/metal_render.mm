@@ -365,6 +365,20 @@ struct MetalRenderScene::Impl {
             append(source, wire::point_light);
         for (const auto &source : scene.spot_lights)
             append(source, wire::spot_light);
+        constexpr std::size_t distant_words = sizeof(wire::DistantLight) / sizeof(wire::Word);
+        if (data.size() > limit ||
+            scene.distant_lights.size() > (limit - data.size()) / distant_words)
+            return "Distant lights exceed the shared GPU data budget";
+        parameters.distant_begin = static_cast<wire::Word>(data.size());
+        parameters.distant_count = static_cast<wire::Word>(scene.distant_lights.size());
+        parameters.distant_scene_radius = scene.distant_scene_radius;
+        for (const auto &source : scene.distant_lights) {
+            wire::DistantLight light{};
+            light.direction = {source.direction.x, source.direction.y, source.direction.z};
+            std::ranges::copy(source.radiance, light.radiance);
+            const auto encoded = std::bit_cast<std::array<wire::Word, distant_words>>(light);
+            data.insert(data.end(), encoded.begin(), encoded.end());
+        }
         parameters.material_data_words = static_cast<wire::Word>(data.size());
         if (data.empty())
             data.push_back(0);
@@ -1453,7 +1467,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                                           }),
             std::ranges::any_of(scene.materials,
                                 [](const auto &m) { return m.scattering == ScatteringKind::gltf; }),
-            !scene.point_lights.empty() || !scene.spot_lights.empty()};
+            !scene.point_lights.empty() || !scene.spot_lights.empty(),
+            !scene.distant_lights.empty()};
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];

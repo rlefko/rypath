@@ -290,11 +290,12 @@ int native() {
             settings.sampler.kind = sampler;
             auto whole = render_progressive(scene, settings);
             require(whole.completion == RenderCompletion::complete, whole.diagnostic);
-            if (!scene.point_lights.empty() || !scene.spot_lights.empty()) {
+            if (!scene.point_lights.empty() || !scene.spot_lights.empty() ||
+                !scene.distant_lights.empty()) {
                 bool positive = false;
                 for (const auto &pixel : whole.film.pixels)
                     positive = positive || pixel.sum[1] + pixel.correction[1] > 0;
-                require(positive, "positional light resume fixture has no positive signal");
+                require(positive, "light resume fixture has no positive signal");
             }
             std::uint64_t count = 0;
             RenderControl control;
@@ -355,7 +356,27 @@ int native() {
     spot.cos_falloff_start = .5f;
     empty.spot_lights.push_back(spot);
     check_resume(empty);
-    std::cout << "Native resume: independent/Sobol textured, volume, point and spot raw Film bits "
+    // Distant volume visibility needs the finite scene-radius policy. Off-axis
+    // geometry exercises the geometry kernel without blocking the camera rays.
+    empty.spot_lights.clear();
+    GeometryMesh off_axis;
+    off_axis.positions = {{2, 0, 1}, {3, 0, 1}, {2, 1, 1}};
+    off_axis.triangles = {{0, 1, 2}};
+    empty.geometry.meshes.push_back(std::move(off_axis));
+    empty.geometry.instances.push_back({0, {}});
+    SpectralMaterial distant_geometry;
+    distant_geometry.kind = SpectralMaterialKind::constant;
+    distant_geometry.constant = .5f;
+    empty.materials.push_back(distant_geometry);
+    empty.instance_materials.push_back(0);
+    DistantLight distant;
+    distant.direction = {0, 0, -1};
+    distant.radiance.fill(1);
+    empty.distant_lights.push_back(distant);
+    empty.distant_scene_radius = 4;
+    check_resume(empty);
+    std::cout << "Native resume: independent/Sobol textured, volume, point, spot and distant raw "
+                 "Film bits "
                  "match\n";
     return 0;
 }

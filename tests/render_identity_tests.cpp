@@ -20,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3475-byte empty-scene fixture includes field tags and all defaults.
+    // the 3537-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "f88d376b2f0cb8290eb3ff8b5884dff06ee6b4acf4affd3590d70364da82c845",
+                "0892be9743e380ac14958f8b9d78a74b7ca52d4ccbc06214a0da85b51d422e23",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -46,6 +46,8 @@ void identity_checks() {
     changed([](auto &s) { s.area_emissions.push_back({}); }, "area emission");
     changed([](auto &s) { s.point_lights.push_back({}); }, "point light count");
     changed([](auto &s) { s.spot_lights.push_back({}); }, "spot light count");
+    changed([](auto &s) { s.distant_lights.push_back({}); }, "distant light count");
+    changed([](auto &s) { s.distant_scene_radius = 4; }, "distant scene radius");
     changed([](auto &s) { s.instance_emissions.push_back(0); }, "emission bindings");
     changed([](auto &s) { s.filter.y_radius += 1; }, "pixel filter");
     changed([](auto &s) { s.image_textures.push_back({}); }, "texture list");
@@ -95,6 +97,30 @@ void identity_checks() {
         spot_changed([=](auto &v) { v[0].light_from_world[i] += 1; });
     spot_changed([](auto &v) { v[0].cos_falloff_start -= .1f; });
     spot_changed([](auto &v) { v[0].cos_falloff_end -= .1f; });
+
+    RenderScene distant;
+    distant.distant_scene_radius = 4;
+    distant.distant_lights.resize(2);
+    distant.distant_lights[0].direction = {0, 0, -1};
+    distant.distant_lights[1].direction = {0, 1, 0};
+    const auto distant_identity = render_identity(distant, settings);
+    const auto distant_changed = [&](auto change, std::string_view name) {
+        auto copy = distant;
+        change(copy);
+        require(render_identity(copy, settings) != distant_identity, name);
+    };
+    distant_changed([](auto &s) { s.distant_lights.pop_back(); }, "populated distant count");
+    distant_changed([](auto &s) { std::swap(s.distant_lights[0], s.distant_lights[1]); },
+                    "distant list order");
+    distant_changed([](auto &s) { s.distant_scene_radius = 8; }, "populated distant radius");
+    for (std::size_t light = 0; light < distant.distant_lights.size(); ++light) {
+        for (auto coordinate : {&GeometryPoint::x, &GeometryPoint::y, &GeometryPoint::z})
+            distant_changed([=](auto &s) { s.distant_lights[light].direction.*coordinate += .25f; },
+                            "distant direction component");
+        for (std::size_t wavelength = 0; wavelength < 471; ++wavelength)
+            distant_changed([=](auto &s) { s.distant_lights[light].radiance[wavelength] = 1; },
+                            "distant spectral radiance bin");
+    }
 
     // Populate every deep asset family, then change leaf payloads without
     // changing vector sizes. Hashing only descriptors or addresses fails these.
