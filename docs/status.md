@@ -14,6 +14,12 @@ power and numerical limits. Renderer contract 8 and identity schema 7 reject
 incompatible checkpoints. See the [profile](pbrt-rendering.md#projection-lights)
 and [validation record](projection-light-validation.md).
 
+An exact-tangent triangle emitter hit now uses the same zero-light-PDF rule as
+bilinear patches, repairing a high-sample failure at a floor/light junction.
+Renderer contract 9 rejects prior checkpoints; identity remains 7. See the
+[tangent emission record](tangent-emission-validation.md) for the reduced
+regression, original reproduction and prism-dispersion demonstration.
+
 The next bounded acceptance task is to inventory supported unmodified upstream
 entry points and their licensed dependency closures. Long-run convergence and
 measured M4 Max benchmarks remain on the [roadmap](roadmap.md). Offline MVP

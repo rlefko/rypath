@@ -631,6 +631,13 @@ alignment across the complete patch; uncertain fields are diagnosed. Two-sided
 emission does not need that sidedness restriction. See the
 [PLY validation record](pbrt-ply-validation.md) for the estimator, bounds and evidence.
 
+For accepted triangle and patch emitter hits, an exactly zero endpoint cosine
+gives the light proposal zero PDF and the BSDF technique full MIS weight,
+following pinned PBRT's tangent convention. Nonzero-cosine arithmetic retains
+its checked domain. This handles a finite-precision endpoint case; it does not
+guarantee visibility accuracy at arbitrarily close surface junctions. See
+[tangent emission validation](tangent-emission-validation.md).
+
 ## Sobol sampling
 
 `Sampler "sobol"` accepts a signed 32-bit seed and `none`, `permutedigits`,
