@@ -54,6 +54,12 @@ constant bool gltf_enabled [[function_constant(9)]];
 constant bool positional_lights_enabled [[function_constant(10)]];
 constant bool distant_lights_enabled [[function_constant(11)]];
 constant bool positional_images_enabled [[function_constant(12)]];
+// Packet-only family specialization leaves the scalar entry contract unchanged.
+constant bool packet_thin_dielectric_enabled [[function_constant(13)]];
+constant bool packet_diffuse_transmission_enabled [[function_constant(14)]];
+constant bool packet_measured_enabled [[function_constant(15)]];
+constant bool packet_fourier_enabled [[function_constant(16)]];
+constant bool packet_coated_enabled [[function_constant(17)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],

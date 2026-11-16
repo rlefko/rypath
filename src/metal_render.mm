@@ -1870,6 +1870,22 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];
+        if (impl->parameters.packet_transport) {
+            // Scan every material, including children reached through mix nodes.
+            const ScatteringKind families[] = {ScatteringKind::thin_dielectric,
+                                               ScatteringKind::diffuse_transmission,
+                                               ScatteringKind::measured, ScatteringKind::fourier};
+            for (NSUInteger i = 0; i < std::size(families); ++i) {
+                const bool enabled = std::ranges::any_of(
+                    scene.materials, [&](const auto &m) { return m.scattering == families[i]; });
+                [constants setConstantValue:&enabled type:MTLDataTypeBool atIndex:13 + i];
+            }
+            const bool coated = std::ranges::any_of(scene.materials, [](const auto &m) {
+                return m.scattering == ScatteringKind::coated_diffuse ||
+                       m.scattering == ScatteringKind::coated_conductor;
+            });
+            [constants setConstantValue:&coated type:MTLDataTypeBool atIndex:17];
+        }
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,
                                               intersection, constants);
         if (impl->pipeline == nil) {

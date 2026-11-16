@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "bsdf_table.hpp"
+#include "bsdf_table_fixture.hpp"
 #include "metal_render.hpp"
 #include "packet_wire.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <numbers>
 #include <stdexcept>
@@ -223,6 +226,93 @@ void area_black_environment() {
     std::cout << "Area path mean Y " << reference.mean() << ", paired BDPT difference "
               << differences.mean() << ", tolerance " << tolerance << '\n';
 }
+int specialized_surface_family(ScatteringKind kind) {
+    // Each pipeline enables just one new family. Bind only a mix root so a scan
+    // of instance-bound materials would miss the child and disable its code.
+    auto scene = base();
+    scene.environment.fill(1);
+    scene.max_depth = 2;
+    auto child = scene.materials.front();
+    child.scattering = kind;
+    child.constant = kind == ScatteringKind::thin_dielectric ? 0 : .4f;
+    if (kind == ScatteringKind::thin_dielectric)
+        child.eta.knots = {{360, 1.5f}, {830, 1.5f}};
+    if (kind == ScatteringKind::diffuse_transmission)
+        child.surface.transmittance = .6f;
+    if (kind == ScatteringKind::measured || kind == ScatteringKind::fourier) {
+        const bool fourier = kind == ScatteringKind::fourier;
+        const auto path =
+            std::filesystem::temp_directory_path() /
+            ("rypath-packet-family-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+             (fourier ? ".bsdf" : ".tensor"));
+        table_fixture::write(path, fourier ? table_fixture::fourier() : table_fixture::measured());
+        const auto table =
+            read_bsdf_table(path, fourier ? BsdfTableKind::fourier : BsdfTableKind::measured);
+        std::filesystem::remove(path);
+        require(table.table != nullptr, table.diagnostic);
+        child.table = table.table;
+    }
+    scene.materials.push_back(child);
+    auto &root = scene.materials.front();
+    root.scattering = ScatteringKind::mix;
+    root.surface.first_material = 1;
+    root.surface.second_material = 1;
+    scene.instance_texture_frames.emplace_back();
+    const auto &transform = scene.instance_surface_transforms.front();
+    require(prepare_texture_triangle_frames(scene.geometry.meshes.front(), transform.shape,
+                                            transform.placement,
+                                            scene.instance_texture_frames.front())
+                .empty(),
+            "Packet surface fixture frame preparation failed");
+    require(validate_render_scene(scene).empty(), validate_render_scene(scene));
+    auto built = build_metal_renderer(scene);
+#if defined(RYPATH_ALLOW_NO_METAL_DEVICE)
+    if (built.status == GeometryStatus::no_device) {
+        std::cout << "SKIP packet native surface: no device\n";
+        return 77;
+    }
+#endif
+#if defined(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+    if (built.status == GeometryStatus::no_ray_tracing) {
+        std::cout << "SKIP packet native surface: no ray tracing\n";
+        return 77;
+    }
+#endif
+    require(built.status == GeometryStatus::success && built.scene, built.diagnostic);
+    bool signal = false;
+    Moments illumination;
+    for (unsigned absolute = 0; absolute < 8; ++absolute) {
+        RenderRequest query{.width = 4,
+                            .height = 4,
+                            .seed = 619,
+                            .pixel_count = 16,
+                            .sample_begin = absolute,
+                            .sample_count = 1,
+                            .total_samples = 8};
+        const auto output = dispatch(*built.scene, query);
+        for (const auto &sample : output.packet_samples) {
+            double average = 0;
+            for (float radiance : sample.radiance) {
+                signal |= radiance > 0;
+                average += radiance / 4;
+                if (kind == ScatteringKind::thin_dielectric)
+                    require(std::abs(radiance - 1) < 2e-5f,
+                            "Specialized packet thin sheet lost unit illumination");
+            }
+            illumination.add(average);
+        }
+    }
+    // R+T=1 preserves unit illumination in expectation. The two MIS
+    // strategies fluctuate per path; packet lanes share their direction,
+    // so use packet averages as the independent observations.
+    if (kind == ScatteringKind::diffuse_transmission)
+        require(std::abs(illumination.mean() - 1) <=
+                    6 * std::sqrt(illumination.variance_mean()) + .002,
+                "Specialized packet diffuse transmission lost unit illumination");
+    require(signal, "Specialized packet table/mix child lost transported signal");
+    return 0;
+}
 void point_identity() {
     auto scene = base();
     scene.raster_camera = RasterCamera{{}, {-.001f, -.001f, 1}, {.002f, 0, 0}, {0, .002f, 0}};
@@ -252,8 +342,25 @@ void point_identity() {
             "Packet point-light analytic radiance identity");
 }
 } // namespace
-int main() {
+int main(int argc, char **argv) {
     try {
+        if (argc != 1) {
+            require(argc == 3 && std::string_view(argv[1]) == "--surface-family",
+                    "Expected --surface-family FAMILY");
+            constexpr std::array names{"thin_dielectric", "diffuse_transmission", "measured",
+                                       "fourier"};
+            constexpr std::array kinds{ScatteringKind::thin_dielectric,
+                                       ScatteringKind::diffuse_transmission,
+                                       ScatteringKind::measured, ScatteringKind::fourier};
+            const auto found = std::ranges::find(names, std::string_view(argv[2]));
+            require(found != names.end(), "Unknown packet surface family");
+            const int status =
+                specialized_surface_family(kinds[static_cast<std::size_t>(found - names.begin())]);
+            if (status != 0)
+                return status;
+            std::cout << "PASS packet specialized family/mix child " << argv[2] << '\n';
+            return 0;
+        }
         const auto start = std::chrono::steady_clock::now();
         auto capability = build_metal_renderer(base());
         std::cout << "Packet first-scene setup seconds "

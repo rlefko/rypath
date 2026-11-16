@@ -58,6 +58,67 @@ inline bool has_gltf() {
     return true;
 #endif
 }
+inline bool has_coated() {
+#if defined(RYPATH_PACKET_RENDER)
+    return packet_coated_enabled;
+#else
+    return true;
+#endif
+}
+inline bool has_thin_dielectric() {
+#if defined(RYPATH_PACKET_RENDER)
+    return packet_thin_dielectric_enabled;
+#else
+    return true;
+#endif
+}
+inline bool has_diffuse_transmission() {
+#if defined(RYPATH_PACKET_RENDER)
+    return packet_diffuse_transmission_enabled;
+#else
+    return true;
+#endif
+}
+inline bool has_measured() {
+#if defined(RYPATH_PACKET_RENDER)
+    return packet_measured_enabled;
+#else
+    return true;
+#endif
+}
+inline bool has_fourier() {
+#if defined(RYPATH_PACKET_RENDER)
+    return packet_fourier_enabled;
+#else
+    return true;
+#endif
+}
+// Keep specialized table dispatch in the renderer namespace: shared scalar and
+// probe AIR must retain their unspecialized table symbols.
+inline TableBsdfEvaluation table_evaluate(const device uint *table, float3 wo, float3 wi,
+                                          float wavelength) {
+#if defined(RYPATH_PACKET_RENDER)
+    if (has_fourier() && table[0] == RYPATH_TABLE_FOURIER)
+        return tb_fourier_eval(table, wo, wi);
+    if (has_measured() && table[0] == RYPATH_TABLE_MEASURED)
+        return tb_measured_eval(table, wo, wi, wavelength);
+    return {float3(0), 0, false, false};
+#else
+    return table_bsdf_evaluate(table, wo, wi, wavelength);
+#endif
+}
+inline TableBsdfSample table_sample(const device uint *table, float3 wo, float2 u,
+                                    float wavelength) {
+#if defined(RYPATH_PACKET_RENDER)
+    if (has_fourier() && table[0] == RYPATH_TABLE_FOURIER)
+        return tb_fourier_sample(table, wo, u);
+    if (has_measured() && table[0] == RYPATH_TABLE_MEASURED)
+        return tb_measured_sample(table, wo, u, wavelength);
+    return {float3(0), float3(0), 0, false, false, false};
+#else
+    return table_bsdf_sample(table, wo, u, wavelength);
+#endif
+}
 inline rypath_scattering::Evaluation scalar_evaluate(const thread rypath_scattering::Prepared &p,
                                                      float3 wo, float3 wi) {
     if (p.kind == 0)
@@ -69,12 +130,12 @@ inline rypath_scattering::Evaluation scalar_evaluate(const thread rypath_scatter
     if (has_gltf() && p.kind == 11)
         return rypath_gltf::evaluate(p.gltf, wo, wi);
     if (has_surface()) {
-        if (p.kind == 3)
+        if (has_thin_dielectric() && p.kind == 3)
             return rypath_transmission::thin_evaluate(p.dielectric.eta, wo, wi);
-        if (p.kind == 4)
+        if (has_diffuse_transmission() && p.kind == 4)
             return rypath_transmission::diffuse_evaluate(p.reflectance, p.transmittance, wo, wi);
         if (p.kind == 7 || p.kind == 8) {
-            auto e = table_bsdf_evaluate(p.table, wo, wi, p.wavelength);
+            auto e = table_evaluate(p.table, wo, wi, p.wavelength);
             float f = rypath_scattering::spectral_value(e.value, e.rgb, p);
             return {f, e.pdf, e.valid && isfinite(f) && f >= 0};
         }
@@ -92,14 +153,14 @@ inline rypath_scattering::Sample scalar_sample(const thread rypath_scattering::P
     if (has_gltf() && p.kind == 11)
         return rypath_gltf::sample(p.gltf, wo, uc, u);
     if (has_surface()) {
-        if (p.kind == 3)
+        if (has_thin_dielectric() && p.kind == 3)
             return rypath_transmission::thin_sample(p.dielectric.eta, wo, uc, u);
-        if (p.kind == 4)
+        if (has_diffuse_transmission() && p.kind == 4)
             return rypath_transmission::diffuse_sample(p.reflectance, p.transmittance, wo, uc, u);
         if (p.kind == 7 || p.kind == 8) {
             // Luminance selects the shared table direction; a black hero does
             // not reject support belonging to another packet wavelength.
-            auto e = table_bsdf_sample(p.table, wo, u, p.wavelength);
+            auto e = table_sample(p.table, wo, u, p.wavelength);
             return {e.wi, 1, e.pdf, false, e.accepted, e.valid};
         }
     }
@@ -205,7 +266,7 @@ inline float mode_scale(const thread rypath_scattering::Prepared &p, float3 wo, 
     if (p.kind == 2)
         return wo.z > 0 ? p.dielectric.eta * p.dielectric.eta
                         : 1 / (p.dielectric.eta * p.dielectric.eta);
-    if ((p.kind == 7 || p.kind == 8) && p.table[0] == RYPATH_TABLE_FOURIER) {
+    if (has_fourier() && (p.kind == 7 || p.kind == 8) && p.table[0] == RYPATH_TABLE_FOURIER) {
         float eta = tb_f(p.table, 4);
         return wi.z < 0 ? eta * eta : 1 / (eta * eta);
     }
@@ -215,7 +276,7 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
                  TransportMode mode = TransportMode::Radiance) {
     (void)mode;
     auto q = proposal(p);
-    if (has_surface() && (q.kind == 5 || q.kind == 6))
+    if (has_surface() && has_coated() && (q.kind == 5 || q.kind == 6))
         return rypath_packet_layered::directional_pdf(layered(p), wo, wi).pdf;
     return scalar_evaluate(q, wo, wi).pdf;
 }
@@ -225,7 +286,7 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
     if (!compatible(p))
         return {float4(0), 0, 0, false};
     Evaluation e{float4(0), pdf(p, wo, wi, mode), pdf(p, wi, wo, opposite(mode)), true};
-    if (has_surface() && (p.lane[0].kind == 5 || p.lane[0].kind == 6)) {
+    if (has_surface() && has_coated() && (p.lane[0].kind == 5 || p.lane[0].kind == 6)) {
         auto q = layered(p);
         auto a =
             rypath_packet_layered::evaluate(q, wo, wi, seed, mode == TransportMode::Importance);
@@ -250,7 +311,7 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         return out;
     }
     auto q = proposal(p);
-    if (has_surface() && (q.kind == 5 || q.kind == 6)) {
+    if (has_surface() && has_coated() && (q.kind == 5 || q.kind == 6)) {
         auto a = rypath_packet_layered::sample(layered(p), wo, uc, u, seed,
                                                mode == TransportMode::Importance);
         out.wi = a.wi;
@@ -262,7 +323,7 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         out.pdf_is_proportional = true;
     } else {
         auto a = scalar_sample(q, wo, uc, u);
-        if (has_surface() && q.kind == 3 && a.valid && wo.z != 0) {
+        if (has_surface() && has_thin_dielectric() && q.kind == 3 && a.valid && wo.z != 0) {
             float R = 0, n = 0;
             for (uint i = 0; i < 4; ++i)
                 if (p.active_mask & (1u << i)) {
@@ -294,7 +355,7 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
                                                      abs(wo.z), v.conductor.eta, v.conductor.k, f);
                     else if (has_dielectric() && q.kind == 2)
                         f = a.weight * a.pdf * mode_scale(v, wo, a.wi, mode);
-                    else if (has_surface() && q.kind == 3) {
+                    else if (has_surface() && has_thin_dielectric() && q.kind == 3) {
                         float R = 0;
                         out.valid =
                             out.valid && rypath_dielectric::fresnel(abs(wo.z), v.dielectric.eta, R);
@@ -314,7 +375,8 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
     out.transmission = wo.z * out.wi.z < 0;
     if (out.transmission && q.kind == 2)
         out.eta = wo.z > 0 ? q.dielectric.eta : 1 / q.dielectric.eta;
-    if (out.transmission && (q.kind == 7 || q.kind == 8) && q.table[0] == RYPATH_TABLE_FOURIER) {
+    if (has_fourier() && out.transmission && (q.kind == 7 || q.kind == 8) &&
+        q.table[0] == RYPATH_TABLE_FOURIER) {
         float eta = tb_f(q.table, 4);
         out.eta = wo.z > 0 ? eta : 1 / eta;
     }
