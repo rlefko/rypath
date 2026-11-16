@@ -23,8 +23,12 @@ Offline MVP completion and full pinned-corpus coverage remain unestablished.
 
 ## Validation
 
-Current sampling/default checks and their exact implementation revision will be
-recorded in the [sampling record](sampling-defaults-validation.md) before delivery.
+Implementation `ba1982b` passed Debug, Release and ASan/UBSan checks (186 each),
+portable CTest (140), Python checks (186), all 270 pinned PBRT comparison gates,
+48 Metal tests with API validation, and exact legacy output comparisons for
+81 scenes plus the demo.
+See the [sampling record](sampling-defaults-validation.md) for the toolchain,
+GPU validation, tolerances and artifact hashes.
 The [mesh record](mesh-shape-validation.md) retains historical evidence for
 `ff81056`; earlier area-power, camera, lighting, material, media, texture, importer,
 HDR and checkpoint records likewise identify their own validation revisions.
