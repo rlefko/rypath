@@ -973,6 +973,7 @@ endif()
 
 add_executable(rypath_medium_render_tests medium_render_tests.cpp)
 target_link_libraries(rypath_medium_render_tests PRIVATE rypath_metal_backend rypath_pbrt_render)
+target_compile_definitions(rypath_medium_render_tests PRIVATE RYPATH_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 set_target_properties(rypath_medium_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
 rypath_configure_host_target(rypath_medium_render_tests)
 if(RYPATH_ENABLE_METAL)

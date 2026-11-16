@@ -229,6 +229,9 @@ without an inferred nested IOR stack. Shadow transport crosses null boundaries
 and evaluates medium transmittance; ordinary glass remains an occluder for direct
 light shadow rays. Opaque boundary alpha and finite boundary-chain work are
 validated. Resource, numerical and work-limit failures reject the pending batch.
+Null departures use a ray-anchored normal offset with an outgoing-side error
+certificate. Finite visibility retains a fixed endpoint across crossings;
+see [bounded-fog validation](bounded-fog-validation.md).
 Raw compensated XYZ accumulation remains independent of presentation.
 
 ## Spectral conductor scattering

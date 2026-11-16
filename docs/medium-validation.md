@@ -73,6 +73,8 @@ infinite distance multiplication; positive extinction cannot escape an infinite
 medium because an unrepresentable collision distance overflowed.
 
 Existing ray-origin and endpoint offsets slightly shorten optical intervals.
+The [bounded-fog repair](bounded-fog-validation.md) replaces projected progress
+with certified null-boundary departure and preserves finite connection endpoints.
 Their geometric precision limits still apply; arbitrary coincident/open shells,
 tiny gaps and huge coordinates are not newly guaranteed. Spectral coefficients
 use PBRT's nearest-integer-nanometer dense lookup. Binary32 underflow and finite

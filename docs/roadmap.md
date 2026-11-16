@@ -100,9 +100,9 @@ clarifies the work; completion is recorded in [status](status.md).
     absorption-coupled emission under explicit `volpath`, HG phase sampling,
     scoped interfaces, null boundaries and all 47 measured presets. Independent
     analytic/Metal/PBRT validation; heterogeneous media remain separate.
-    Isolate the inherited large bounded-fog arithmetic failure recorded during
-    [spot demonstrations](spot-light-validation.md#demonstration-images-and-a-bounded-medium-follow-up)
-    as a numerical-reliability follow-up.
+    The [bounded-fog reliability follow-up](bounded-fog-validation.md) replaces
+    projected-progress rejection with certified null departure and preserves
+    finite visibility endpoints.
 32. **Broader PBRT rendering:** spectral point lighting adds a bounded all-point
     estimator for surfaces and homogeneous media, including geometry-free volumes.
     See [point-light validation](point-light-validation.md). Spectral spot lights

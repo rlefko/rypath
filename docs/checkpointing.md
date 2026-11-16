@@ -58,9 +58,18 @@ glTF support does not make older incompatible checkpoints resumable.
 The original target sample count is fixed: it controls texture footprints.
 Point-light positions and prepared spectral intensities participate in scene
 identity. Spot positions, intensities, inverse direction maps and cone thresholds
-also participate. The spot-light change advances identity and renderer contracts to 4;
-earlier contracts are rejected, including checkpoints of scenes without positional
-lights. Sampling, accumulation and file-format versions remain unchanged.
+also participate. Spot lighting advanced the identity schema to 4. Renderer
+contract 5 changes bounded-medium numerical paths: null boundaries use a
+ray-anchored conservative normal offset with an outgoing-side certificate, and
+finite medium visibility retains its excluded endpoint across crossings instead
+of subtracting projected displacement. The transport model, PDFs and random
+streams are unchanged. Invalid arithmetic, uncertain side or endpoint checks and
+the crossing budget still fail the entire batch. This policy does not promise
+support for arbitrary scales or coincident shells.
+
+Earlier renderer contracts, including 4, are rejected for every scene. Identity
+schema 4 remains current; its stream includes the renderer contract, so canonical
+hashes also change. Sampling, accumulation and file-format versions remain 1.
 
 Checkpointing does not add a PBRT sample override or allow extending a completed
 job. Batch size, file paths, output precision and presentation exposure may change.
