@@ -188,6 +188,17 @@ struct GoniometricLight {
     std::array<float, 9> light_from_world{1, 0, 0, 0, 0, 1, 0, 1, 0};
     std::uint32_t image_texture = UINT32_MAX;
 };
+struct ProjectionLight {
+    GeometryPoint position{};
+    // Actual inverse declaration transform followed by PBRT's local Y flip.
+    // Scale and shear are significant; do not normalize or rescale this map.
+    std::array<float, 9> light_from_world{1, 0, 0, 0, -1, 0, 0, 0, 1};
+    std::uint32_t image_texture = UINT32_MAX;
+    float image_scale = 1;
+    float inv_tan_half_fov = 1;
+    float screen_half_width = 1;
+    float screen_half_height = 1;
+};
 struct SurfaceTransforms {
     std::array<double, 16> shape{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     std::array<double, 16> placement{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -208,6 +219,7 @@ struct RenderScene {
     std::vector<PointLight> point_lights{};
     std::vector<SpotLight> spot_lights{};
     std::vector<GoniometricLight> goniometric_lights{};
+    std::vector<ProjectionLight> projection_lights{};
     std::vector<DistantLight> distant_lights{};
     float distant_scene_radius = 0;
     // Empty or one emission index (or no_area_emission) per source instance.
@@ -274,6 +286,7 @@ std::string validate_patch_geometry(const GeometryMesh &mesh, const GeometryTran
 std::string validate_render_scene(const RenderScene &scene);
 std::string validate_image_light(const ImagePyramid &image);
 std::string validate_goniometric_image(const ImagePyramid &image);
+std::string validate_projection_image(const ImagePyramid &image);
 bool instance_uses_texture_context(const RenderScene &scene, std::size_t index);
 RenderScene make_demo_scene();
 Film make_film(std::uint32_t width, std::uint32_t height, RenderModel model = RenderModel::demo,

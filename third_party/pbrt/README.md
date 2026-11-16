@@ -46,7 +46,10 @@ from `util/mesh.h`, with explicit work/scratch limits and stable host arithmetic
 `shaders/alpha_hash.h` adapts the packed-ray MurmurHash64A convention from
 `util/hash.h`; the native query traversal is rypath code. `shaders/image_lighting.h`
 adapts equal-area projection, native light image addressing, and RGBIlluminant
-reconstruction from `util/vecmath.h`, `lights.h`, and `util/spectrum.h`. The bounded
+reconstruction from `util/vecmath.h`, `lights.h`, and `util/spectrum.h`.
+Projection lookup follows the perspective mapping, nearest image addressing and
+RGBIlluminant definition in `lights.cpp`, `util/transform.cpp` and `util/image.h`.
+Checked affine arithmetic and widened photometric sums are rypath adaptations. The bounded
 CDF mixture and its matched PDF are rypath's proposal, not PBRT's sampler.
 All cited sources use revision `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f` and retain
 the upstream copyright and [Apache-2.0 terms](LICENSE.txt).

@@ -1,0 +1,121 @@
+{
+  "coverage": "Ten original focused projection-light scenes plus an owned wrapper around an unchanged pinned PNGSuite RGB image; selected asset coverage, not stock corpus conformance",
+  "license": "GPL-3.0-only",
+  "author": "rypath contributors",
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "reference_coordinate_system": "world",
+  "external_assets": [
+    {
+      "path": "assets/z03n2c08.png",
+      "bytes": 232,
+      "sha256": "939abfc6e0a3e349bb5bcd8c4e427a6cdb2c7e0c23a773aefa1c4fc9f07e4cb4",
+      "author": "Willem van Schaik",
+      "license": "PNGSuite permissive license (retained verbatim)",
+      "license_file": "assets/PngSuite.LICENSE",
+      "upstream_revision": "af1a5bc352164740c1cc1354942b1c6b72eacb8a",
+      "upstream_path": "tests/pngsuite/primary/z03n2c08.png",
+      "upstream_url": "https://github.com/nothings/stb/blob/af1a5bc352164740c1cc1354942b1c6b72eacb8a/tests/pngsuite/primary/z03n2c08.png",
+      "unchanged": true
+    }
+  ],
+  "scenes": {
+    "constant": {
+      "entry": "constant.pbrt",
+      "dependencies": [
+        "assets/constant.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "landscape": {
+      "entry": "landscape.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "portrait": {
+      "entry": "portrait.pbrt",
+      "dependencies": [
+        "assets/portrait.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "affine": {
+      "entry": "affine.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "power": {
+      "entry": "power.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "mixed-lighting": {
+      "entry": "mixed-lighting.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "rough-reflection": {
+      "entry": "rough-reflection.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "rough-transmission": {
+      "entry": "rough-transmission.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "bounded-volume": {
+      "entry": "bounded-volume.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "geometry-free-volume": {
+      "entry": "geometry-free-volume.pbrt",
+      "dependencies": [
+        "assets/landscape.png"
+      ],
+      "license": "GPL-3.0-only"
+    },
+    "external-map": {
+      "entry": "external-map.pbrt",
+      "dependencies": [
+        "assets/z03n2c08.png",
+        "assets/PngSuite.LICENSE"
+      ],
+      "license": "GPL-3.0-only (wrapper); see external asset terms"
+    }
+  },
+  "owned_maps": {
+    "constant.png": {
+      "bytes": 72,
+      "sha256": "33f406b78d9f3e3da5a4a41009f9abed0e26251dece60d46141c73b68d3bbb33",
+      "encoding": "native RGB8 sRGB PNG; deterministic geometric quadrants",
+      "license": "GPL-3.0-only"
+    },
+    "landscape.png": {
+      "bytes": 91,
+      "sha256": "b0a62e553b01218d62e8808c56856f00ec6409fceaf53b50ef690c85f7bc71ca",
+      "encoding": "native RGB8 sRGB PNG; deterministic geometric quadrants",
+      "license": "GPL-3.0-only"
+    },
+    "portrait.png": {
+      "bytes": 90,
+      "sha256": "20453f427f7ac8daac39e86aaad0a749a1c6d59efdbcce2a95f5ed52574e6ce2",
+      "encoding": "native RGB8 sRGB PNG; deterministic geometric quadrants",
+      "license": "GPL-3.0-only"
+    }
+  }
+}

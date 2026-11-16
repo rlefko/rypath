@@ -189,7 +189,7 @@ struct Medium {
     float emission[471];
     float g;
 };
-enum : Word { point_light = 0, spot_light = 1, goniometric_light = 2 };
+enum : Word { point_light = 0, spot_light = 1, goniometric_light = 2, projection_light = 3 };
 struct DistantLight {
     Point direction;
     float radiance[471];
@@ -202,6 +202,10 @@ struct PositionalLight {
     float cos_falloff_start;
     float cos_falloff_end;
     Word image_texture;
+    float image_scale;
+    float inv_tan_half_fov;
+    float screen_half_width;
+    float screen_half_height;
 };
 struct AreaEmission {
     float radiance[471];
@@ -348,12 +352,16 @@ static_assert(sizeof(Instance) == 108 && alignof(Instance) == 4 &&
 static_assert(sizeof(Medium) == 5656 && alignof(Medium) == 4 &&
                   __builtin_offsetof(Medium, g) == 5652,
               "homogeneous medium layout");
-static_assert(sizeof(PositionalLight) == 1948 && alignof(PositionalLight) == 4 &&
+static_assert(sizeof(PositionalLight) == 1964 && alignof(PositionalLight) == 4 &&
                   __builtin_offsetof(PositionalLight, intensity) == 12 &&
                   __builtin_offsetof(PositionalLight, kind) == 1896 &&
                   __builtin_offsetof(PositionalLight, light_from_world) == 1900 &&
                   __builtin_offsetof(PositionalLight, cos_falloff_start) == 1936 &&
-                  __builtin_offsetof(PositionalLight, image_texture) == 1944,
+                  __builtin_offsetof(PositionalLight, image_texture) == 1944 &&
+                  __builtin_offsetof(PositionalLight, image_scale) == 1948 &&
+                  __builtin_offsetof(PositionalLight, inv_tan_half_fov) == 1952 &&
+                  __builtin_offsetof(PositionalLight, screen_half_width) == 1956 &&
+                  __builtin_offsetof(PositionalLight, screen_half_height) == 1960,
               "positional light layout");
 static_assert(sizeof(DistantLight) == 1896 && alignof(DistantLight) == 4 &&
                   __builtin_offsetof(DistantLight, radiance) == 12,

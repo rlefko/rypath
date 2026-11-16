@@ -901,6 +901,23 @@ std::string validate_image_light(const ImagePyramid &image) {
     return {};
 }
 
+std::string validate_projection_image(const ImagePyramid &image) {
+    if (image.gltf || image.wrap != ImageWrap::clamp)
+        return "Projection lights require a native RGB image with clamp boundaries";
+    if (const auto error = validate_image_light(image); !error.empty())
+        return error;
+    const auto &level = image.levels.front();
+    for (std::uint32_t y = 0; y < level.height; ++y)
+        for (std::uint32_t x = 0; x < level.width; ++x) {
+            const auto rgb = image_base_texel_linear_rgb(image, x, y);
+            if (!rgb || !std::ranges::all_of(*rgb, [](float value) {
+                    return std::fpclassify(value) != FP_SUBNORMAL;
+                }))
+                return "Projection RGB samples must remain representable on the GPU";
+        }
+    return {};
+}
+
 std::string validate_goniometric_image(const ImagePyramid &image) {
     if (!image.native_base || image.levels.size() != 1 || image.source_channels != 1 ||
         image.wrap != ImageWrap::clamp || image.gltf)
@@ -1172,10 +1189,13 @@ std::string validate_render_scene(const RenderScene &scene) {
     if (scene.point_lights.size() > max_positional_lights ||
         scene.spot_lights.size() > max_positional_lights - scene.point_lights.size() ||
         scene.goniometric_lights.size() >
-            max_positional_lights - scene.point_lights.size() - scene.spot_lights.size())
+            max_positional_lights - scene.point_lights.size() - scene.spot_lights.size() ||
+        scene.projection_lights.size() > max_positional_lights - scene.point_lights.size() -
+                                             scene.spot_lights.size() -
+                                             scene.goniometric_lights.size())
         return "Positional lights exceed the combined limit of 64";
     if ((!scene.point_lights.empty() || !scene.spot_lights.empty() ||
-         !scene.goniometric_lights.empty()) &&
+         !scene.goniometric_lights.empty() || !scene.projection_lights.empty()) &&
         scene.model != RenderModel::pbrt)
         return "Positional lights require the PBRT render model";
     for (const auto &point : scene.point_lights) {
@@ -1255,6 +1275,37 @@ std::string validate_render_scene(const RenderScene &scene) {
             if (const auto error = validate_goniometric_image(image); !error.empty())
                 return error;
         }
+    }
+    std::set<const ImagePyramid *> checked_projection;
+    for (const auto &light : scene.projection_lights) {
+        const auto representable = [](float value) {
+            return std::isfinite(value) && std::fpclassify(value) != FP_SUBNORMAL;
+        };
+        if (!representable(light.position.x) || !representable(light.position.y) ||
+            !representable(light.position.z))
+            return "Projection positions must be finite and representable on the GPU";
+        if (!representable(light.image_scale) || light.image_scale < 0)
+            return "Projection scale must be nonnegative and representable on the GPU";
+        if (!std::ranges::all_of(light.light_from_world, representable) ||
+            singular_linear_transform(light.light_from_world))
+            return "Projection direction transforms must be finite, representable and nonsingular";
+        if (!representable(light.inv_tan_half_fov) || !(light.inv_tan_half_fov > 0))
+            return "Projection inverse tangent must be positive and representable on the GPU";
+        if (light.image_texture >= scene.image_textures.size() ||
+            !scene.image_textures[light.image_texture].image)
+            return "Projection light requires a valid owned RGB image";
+        const auto &image = *scene.image_textures[light.image_texture].image;
+        if (checked_projection.insert(&image).second)
+            if (const auto error = validate_projection_image(image); !error.empty())
+                return error;
+        const auto &level = image.levels.front();
+        const float aspect = float(level.width) / float(level.height);
+        const float half_width = aspect > 1 ? aspect : 1;
+        const float half_height = aspect > 1 ? 1 : 1 / aspect;
+        if (light.screen_half_width != half_width || light.screen_half_height != half_height ||
+            !representable(2 * light.screen_half_width) ||
+            !representable(2 * light.screen_half_height))
+            return "Projection screen bounds must match the native image aspect ratio";
     }
     if (scene.distant_lights.size() > max_distant_lights)
         return "Distant lights exceed the limit of 64";

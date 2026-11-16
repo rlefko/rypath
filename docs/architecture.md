@@ -196,11 +196,11 @@ advance together. See the [point-light profile](pbrt-rendering.md#point-lights)
 and [validation](point-light-validation.md).
 
 Owned spot records add a checked inverse direction map and cosine thresholds.
-A shared tagged positional-light buffer packs points, spots and goniometric
+A shared tagged positional-light buffer packs points, spots, goniometric and projection
 sources and feeds the same surface and volume visibility loops, including
 geometry-free media.
 Spot attenuation follows the pinned cubic cosine model; the point branch retains
-its existing arithmetic. All three kinds share a 64-source bound and unit delta-position
+its existing arithmetic. All four kinds share a 64-source bound and unit delta-position
 MIS weight. See the [spot profile](pbrt-rendering.md#spot-lights) and
 [validation](spot-light-validation.md).
 
@@ -215,6 +215,15 @@ geometry-free homogeneous media, apply the angular factor to spectral intensity
 without additional random dimensions. Identity covers the ordered records and
 owned map contents. See the [goniometric profile](pbrt-rendering.md#goniometric-lights)
 and [validation](goniometric-light-validation.md).
+
+Projection records own an RGB image binding, scalar scale, actual inverse affine
+map with local Y flip, inverse half-FOV tangent and aspect-dependent screen
+half-extents. A wavelength-aware positional helper performs nearest perspective
+lookup and checked RGBIlluminant reconstruction for all three transport paths.
+Scale/shear remain in the actual inverse, including the local near-direction
+cutoff. Shared positional-image specialization retains image-free point/spot
+sky variants. See the [projection profile](pbrt-rendering.md#projection-lights)
+and [validation](projection-light-validation.md).
 
 Distant sources have a separate bounded direction/radiance buffer and a shared
 scene radius. Translation computes PBRT-style bounds from prepared geometry,

@@ -20,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3571-byte empty-scene fixture includes field tags and all defaults.
+    // the 3604-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "948aad08e5cc661116e3fc5dc97aab2bcace2e4d0b05790dd73aea9020563d5f",
+                "26ad35f2381955f670198c2c35cbd2cd9ca2d1beb7855f9196b53c5e6cef5a92",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -47,6 +47,7 @@ void identity_checks() {
     changed([](auto &s) { s.point_lights.push_back({}); }, "point light count");
     changed([](auto &s) { s.spot_lights.push_back({}); }, "spot light count");
     changed([](auto &s) { s.goniometric_lights.push_back({}); }, "goniometric light count");
+    changed([](auto &s) { s.projection_lights.push_back({}); }, "projection light count");
     changed([](auto &s) { s.distant_lights.push_back({}); }, "distant light count");
     changed([](auto &s) { s.distant_scene_radius = 4; }, "distant scene radius");
     changed([](auto &s) { s.instance_emissions.push_back(0); }, "emission bindings");
@@ -132,6 +133,40 @@ void identity_checks() {
         goniometric_changed([=](auto &s) { s.goniometric_lights[light].image_texture ^= 1; });
     }
     goniometric_changed([](auto &s) {
+        auto copy = std::make_shared<ImagePyramid>(*s.image_textures[0].image);
+        copy->texels[0] ^= 1;
+        s.image_textures[0].image = copy;
+    });
+
+    RenderScene projection;
+    projection.projection_lights.resize(2);
+    projection.projection_lights[1].position.x = 1;
+    auto projected_image = std::make_shared<ImagePyramid>(*scalar);
+    projected_image->source_channels = 3;
+    projection.image_textures.push_back({projected_image});
+    projection.projection_lights[0].image_texture = 0;
+    const auto projection_identity = render_identity(projection, settings);
+    const auto projection_changed = [&](auto change) {
+        auto copy = projection;
+        change(copy);
+        require(render_identity(copy, settings) != projection_identity,
+                "projection identity payload");
+    };
+    projection_changed([](auto &s) { s.projection_lights.pop_back(); });
+    projection_changed([](auto &s) { std::swap(s.projection_lights[0], s.projection_lights[1]); });
+    for (std::size_t light = 0; light < 2; ++light) {
+        for (auto field : {&GeometryPoint::x, &GeometryPoint::y, &GeometryPoint::z})
+            projection_changed([=](auto &s) { s.projection_lights[light].position.*field += 1; });
+        for (std::size_t i = 0; i < 9; ++i)
+            projection_changed(
+                [=](auto &s) { s.projection_lights[light].light_from_world[i] += 1; });
+        projection_changed([=](auto &s) { s.projection_lights[light].image_texture ^= 1; });
+        for (auto field :
+             {&ProjectionLight::image_scale, &ProjectionLight::inv_tan_half_fov,
+              &ProjectionLight::screen_half_width, &ProjectionLight::screen_half_height})
+            projection_changed([=](auto &s) { s.projection_lights[light].*field += 1; });
+    }
+    projection_changed([](auto &s) {
         auto copy = std::make_shared<ImagePyramid>(*s.image_textures[0].image);
         copy->texels[0] ^= 1;
         s.image_textures[0].image = copy;
