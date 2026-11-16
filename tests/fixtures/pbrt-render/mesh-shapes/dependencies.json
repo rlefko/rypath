@@ -1,0 +1,42 @@
+{
+  "loop-level0": [],
+  "loop-level3": [],
+  "loop-boundary": [],
+  "loop-powered": [],
+  "quad-textured": [],
+  "quad-alpha": [],
+  "quad-affine": [],
+  "quad-powered": [],
+  "quad-volume": [],
+  "bathroom-6040": [
+    {
+      "path": "assets/bathroom-6040.pbrt",
+      "bytes": 82692,
+      "sha256": "35981661bff696deaefd9cec6a6044926fdbaa853640615843153787b53169d1"
+    },
+    {
+      "path": "assets/UPSTREAM-README.md",
+      "bytes": 12747,
+      "sha256": "570b84a7b0e13b7d69aaf8417c63f6fa48ed15ca58ea585f4c38974a34f33b08"
+    }
+  ],
+  "bathroom-6995": [
+    {
+      "path": "assets/bathroom-6995.pbrt",
+      "bytes": 94981,
+      "sha256": "79fe12967bb16c54a0f5a99bc9cb1fef7dbbcb1969a9e46236a01c9f6f328048"
+    },
+    {
+      "path": "assets/UPSTREAM-README.md",
+      "bytes": 12747,
+      "sha256": "570b84a7b0e13b7d69aaf8417c63f6fa48ed15ca58ea585f4c38974a34f33b08"
+    }
+  ],
+  "quad-image-powered": [
+    {
+      "path": "assets/asymmetric.hdr",
+      "bytes": 77,
+      "sha256": "7672d7fb5233e9da07713ed9043d560e21e44aa7a6b834537e331fb797ba6863"
+    }
+  ]
+}

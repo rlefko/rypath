@@ -305,3 +305,15 @@ binary64 arithmetic over rypath's rounded world-space binary32 vertices, a
 documented numerical adaptation rather than bit-identical upstream arithmetic.
 The estimator's local area PDFs remain independent of this normalization area.
 See [area-power validation](../../docs/area-power-validation.md).
+
+## Loop subdivision
+
+`src/loop_subdivision.cpp` adapts the Loop stencils, limit projection and raw
+tangent-cross-product normals from `src/pbrt/util/loopsubdiv.cpp` at the same
+pinned revision, `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`. The source retains
+the upstream copyright and Apache-2.0 notice; see [LICENSE.txt](LICENSE.txt).
+Rypath adds checked indexed topology, deterministic allocation bounds and
+source-located diagnostics. It rejects malformed manifold topology instead of
+depending on upstream's unchecked adjacency assumptions. No PBRT library is
+linked into the product. The optional geometry oracle links the existing cached
+CPU reference separately; see [mesh validation](../../docs/mesh-shape-validation.md).

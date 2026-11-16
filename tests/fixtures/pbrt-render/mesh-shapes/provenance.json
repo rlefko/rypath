@@ -1,0 +1,146 @@
+{
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "reference_coordinate_system": "world",
+  "coverage": "Owned selected-asset wrappers and synthetic cases; no claim of unmodified bathroom entry-point support",
+  "scenes": {
+    "loop-level0": {
+      "entry": "loop-level0.pbrt",
+      "dependencies": []
+    },
+    "loop-level3": {
+      "entry": "loop-level3.pbrt",
+      "dependencies": []
+    },
+    "loop-boundary": {
+      "entry": "loop-boundary.pbrt",
+      "dependencies": []
+    },
+    "loop-powered": {
+      "entry": "loop-powered.pbrt",
+      "dependencies": []
+    },
+    "quad-textured": {
+      "entry": "quad-textured.pbrt",
+      "dependencies": []
+    },
+    "quad-alpha": {
+      "entry": "quad-alpha.pbrt",
+      "dependencies": []
+    },
+    "quad-affine": {
+      "entry": "quad-affine.pbrt",
+      "dependencies": []
+    },
+    "quad-powered": {
+      "entry": "quad-powered.pbrt",
+      "dependencies": []
+    },
+    "quad-volume": {
+      "entry": "quad-volume.pbrt",
+      "dependencies": []
+    },
+    "bathroom-6040": {
+      "entry": "bathroom-6040.pbrt",
+      "dependencies": [
+        "assets/bathroom-6040.pbrt",
+        "assets/UPSTREAM-README.md"
+      ]
+    },
+    "bathroom-6995": {
+      "entry": "bathroom-6995.pbrt",
+      "dependencies": [
+        "assets/bathroom-6995.pbrt",
+        "assets/UPSTREAM-README.md"
+      ]
+    },
+    "quad-image-powered": {
+      "entry": "quad-image-powered.pbrt",
+      "dependencies": [
+        "assets/asymmetric.hdr"
+      ]
+    }
+  },
+  "external_assets": [
+    {
+      "path": "assets/bathroom-6040.pbrt",
+      "bytes": 82692,
+      "sha256": "35981661bff696deaefd9cec6a6044926fdbaa853640615843153787b53169d1",
+      "upstream_path": "contemporary-bathroom/geometry.pbrt",
+      "upstream_revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572",
+      "line": 6040,
+      "control_faces": 2048,
+      "level2_faces": 32768,
+      "source_bytes": 322644,
+      "source_sha256": "44e9ad8deaa0e59ee92fa96948961f0965638184cb8b8b886b864487f12f8b33",
+      "unchanged": true,
+      "author": "Mareck via Blend Swap",
+      "license": "CC0",
+      "license_url": "http://creativecommons.org/publicdomain/mark/1.0/",
+      "license_file": "assets/UPSTREAM-README.md",
+      "bounds": [
+        [
+          -2.422043,
+          0.134721,
+          -0.95215
+        ],
+        [
+          -0.774449,
+          0.599819,
+          -0.186952
+        ]
+      ],
+      "upstream_license_label": "CC Zero (Public Domain)",
+      "upstream_url": "https://github.com/mmp/pbrt-v4-scenes/blob/30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572/contemporary-bathroom/geometry.pbrt#L6040",
+      "license_designation": "Upstream root README: CC Zero (Public Domain), linking publicdomain/mark/1.0"
+    },
+    {
+      "path": "assets/bathroom-6995.pbrt",
+      "bytes": 94981,
+      "sha256": "79fe12967bb16c54a0f5a99bc9cb1fef7dbbcb1969a9e46236a01c9f6f328048",
+      "upstream_path": "contemporary-bathroom/geometry.pbrt",
+      "upstream_revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572",
+      "line": 6995,
+      "control_faces": 2336,
+      "level2_faces": 37376,
+      "source_bytes": 322644,
+      "source_sha256": "44e9ad8deaa0e59ee92fa96948961f0965638184cb8b8b886b864487f12f8b33",
+      "unchanged": true,
+      "author": "Mareck via Blend Swap",
+      "license": "CC0",
+      "license_url": "http://creativecommons.org/publicdomain/mark/1.0/",
+      "license_file": "assets/UPSTREAM-README.md",
+      "bounds": [
+        [
+          -2.416572,
+          0.126586,
+          -0.946237
+        ],
+        [
+          -0.77992,
+          0.599536,
+          -0.192865
+        ]
+      ],
+      "upstream_license_label": "CC Zero (Public Domain)",
+      "upstream_url": "https://github.com/mmp/pbrt-v4-scenes/blob/30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572/contemporary-bathroom/geometry.pbrt#L6995",
+      "license_designation": "Upstream root README: CC Zero (Public Domain), linking publicdomain/mark/1.0"
+    }
+  ],
+  "owned_assets": [
+    {
+      "path": "assets/asymmetric.hdr",
+      "bytes": 77,
+      "sha256": "7672d7fb5233e9da07713ed9043d560e21e44aa7a6b834537e331fb797ba6863",
+      "license": "GPL-3.0-only",
+      "origin": "Original rypath RGBE texture copied unchanged from tests/fixtures/pbrt-render/area-power/assets/asymmetric.hdr",
+      "generator": "4x2 linear RGBE; exact existing area-power fixture asset"
+    }
+  ],
+  "upstream_license": {
+    "path": "assets/UPSTREAM-README.md",
+    "bytes": 12747,
+    "sha256": "570b84a7b0e13b7d69aaf8417c63f6fa48ed15ca58ea585f4c38974a34f33b08",
+    "upstream_path": "README.md",
+    "upstream_revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572"
+  }
+}
