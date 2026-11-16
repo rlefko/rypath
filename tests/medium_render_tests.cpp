@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "metal_render.hpp"
+#include "pbrt_render.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -121,6 +122,136 @@ void slabs() {
             return std::exp(-double(scene.media[0].sigma_a[static_cast<std::size_t>(i)]));
         },
         "Wavelength-dependent Beer transmission");
+}
+void bounded_fog_regression() {
+    const auto path = std::string(RYPATH_TEST_SOURCE_DIR) +
+                      "/fixtures/pbrt-render/bounded-fog/point-boundary.pbrt";
+    const auto checked = pbrt::check(path);
+    auto translated = pbrt::translate(checked, pbrt::Location{path});
+    if (!translated.scene)
+        throw std::runtime_error("Translate bounded fog regression");
+    auto renderer = build(*translated.scene);
+    // Actual native closest-hit/visibility path: the parent rejects this valid
+    // near-tangent connection after reconstructing a null hit off its ray.
+    const auto paths = sample(*renderer, {.width = 768,
+                                          .height = 512,
+                                          .seed = 17,
+                                          .pixel_begin = 45101,
+                                          .pixel_count = 1,
+                                          .sample_begin = 41,
+                                          .sample_count = 1,
+                                          .total_samples = 512,
+                                          .sampler = translated.settings.sampler});
+    require(paths.front().pixel == 45101 && paths.front().sample == 41,
+            "Bounded fog regression sample identity");
+}
+void grazing_beer() {
+    // x=y follows the shared diagonal of each quad. Shallow incidence tests
+    // both sides, including translated and nonuniformly scaled instances.
+    for (bool reverse : {false, true}) {
+        for (bool transformed : {false, true}) {
+            auto scene = base();
+            scene.media = {medium(.6f, 0)};
+            scene.max_depth = 0;
+            plane(scene, .001f, false, {0, no_medium});
+            plane(scene, .002f, true, {0, no_medium});
+            const float z_scale = transformed ? 2.f : 1.f;
+            const float translation = transformed ? .25f : 0.f;
+            for (auto &instance : scene.geometry.instances) {
+                instance.transform.values[0] = transformed ? 2.f : 1.f;
+                instance.transform.values[5] = transformed ? 2.f : 1.f;
+                instance.transform.values[10] = z_scale;
+                instance.transform.values[11] = translation;
+            }
+            const float low = translation + z_scale * .001f;
+            const float high = translation + z_scale * .002f;
+            scene.raster_camera =
+                RasterCamera{{0, 0, reverse ? high + z_scale * .001f : translation},
+                             {1, 1, reverse ? -.001f : .001f},
+                             {1e-10f, 0, 0},
+                             {0, 1e-10f, 0}};
+            // Independent geometric chord length; account for binary32 authored
+            // plane placement without borrowing any renderer offset arithmetic.
+            const double chord = double(high - low) * std::sqrt(2. + .001 * .001) / .001;
+            mean_gate(
+                sample(*build(scene), request(16384)),
+                [=](const auto &) { return std::exp(-.6 * chord); },
+                "Grazing shared-edge Beer chord");
+        }
+    }
+}
+void finite_point_endpoint() {
+    auto scene = base();
+    scene.environment.fill(0);
+    scene.media = {medium(.4f, 0)};
+    SpectralMaterial diffuse;
+    diffuse.kind = SpectralMaterialKind::constant;
+    diffuse.scattering = ScatteringKind::diffuse;
+    diffuse.constant = .5f;
+    scene.materials.push_back(diffuse);
+    plane(scene, 1, false, {}, 1);
+    plane(scene, .25f, false, {0, no_medium});
+    plane(scene, .5f, true, {0, no_medium});
+    PointLight light;
+    light.position = {0, 0, 0};
+    light.intensity.fill(2);
+    scene.point_lights.push_back(light);
+    // Opaque geometry just beyond the point light must never enter the finite
+    // connection after a null crossing. It is behind the camera as well.
+    plane(scene, -5e-6f, true, {}, 1);
+    // Camera and shadow each traverse .25 units of absorber; distance and cosine
+    // to the unit-distance point light are one. Lambert's BRDF is .5/pi.
+    mean_gate(
+        sample(*build(scene), request()),
+        [](const auto &) { return std::exp(-.4 * .5) / std::numbers::pi; },
+        "Finite point endpoint and two Beer segments");
+}
+void oblique_point_endpoint() {
+    auto scene = base();
+    scene.environment.fill(0);
+    scene.media = {medium(0, 0)};
+    SpectralMaterial diffuse;
+    diffuse.kind = SpectralMaterialKind::constant;
+    diffuse.scattering = ScatteringKind::diffuse;
+    diffuse.constant = .5f;
+    scene.materials.push_back(diffuse);
+    plane(scene, 1, false, {}, 1);
+    // x+z=.5. Large tangential extent makes the conservative normal offset
+    // resolvable independently of binary32 endpoint rounding. The offset has a
+    // transverse component relative to the oblique connection to (1,0,-1).
+    GeometryMesh boundary;
+    boundary.positions = {
+        {-128, -128, 128.5f}, {128, -128, -127.5f}, {128, 128, -127.5f}, {-128, 128, 128.5f}};
+    boundary.triangles = {{0, 1, 2}, {0, 2, 3}};
+    const auto index = static_cast<unsigned>(scene.geometry.meshes.size());
+    scene.geometry.meshes.push_back(std::move(boundary));
+    scene.geometry.instances.push_back({index, {}});
+    scene.instance_materials.push_back(0);
+    scene.instance_media.push_back({});
+    scene.instance_reverse_orientation.push_back(0);
+    PointLight light;
+    light.position = {1, 0, -1};
+    light.intensity.fill(2);
+    scene.point_lights.push_back(light);
+    const auto unobstructed = sample(*build(scene), request(64));
+    // The true endpoint is x=1. The ideal receiver connection reaches x=.995
+    // at z=-.99; the camera offset moves that intersection further right.
+    // Subtracting projected progress while keeping the old direction instead
+    // translates that endpoint left through this blocker (x<=.993).
+    GeometryMesh blocker;
+    blocker.positions = {{-2, -2, -.99f}, {.993f, -2, -.99f}, {.993f, 2, -.99f}, {-2, 2, -.99f}};
+    blocker.triangles = {{0, 1, 2}, {0, 2, 3}};
+    scene.geometry.meshes.push_back(std::move(blocker));
+    scene.geometry.instances.push_back({index + 1, {}});
+    scene.instance_materials.push_back(1);
+    scene.instance_media.push_back({});
+    scene.instance_reverse_orientation.push_back(0);
+    const auto protected_endpoint = sample(*build(scene), request(64));
+    for (std::size_t i = 0; i < unobstructed.size(); ++i) {
+        require(unobstructed[i].radiance > .01f, "Oblique point oracle is illuminated");
+        near(protected_endpoint[i].radiance, unobstructed[i].radiance, 0,
+             "Oblique finite endpoint remains clear of adjacent blocker");
+    }
 }
 void infinite_emission() {
     for (bool empty : {false, true}) {
@@ -363,6 +494,10 @@ int main(int argc, char **argv) {
         }
         require(capability.status == GeometryStatus::success && capability.scene,
                 capability.diagnostic);
+        bounded_fog_regression();
+        grazing_beer();
+        finite_point_endpoint();
+        oblique_point_endpoint();
         slabs();
         infinite_emission();
         nested_and_orientation();
@@ -372,7 +507,8 @@ int main(int argc, char **argv) {
         surface_stream();
         failures();
         std::cout
-            << "PASS Beer/emission, infinite source/depth, nested/split/oriented media, "
+            << "PASS bounded fog, grazing Beer, finite point endpoints, Beer/emission, infinite "
+               "source/depth, nested/split/oriented media, "
                "independent phase/MIS quadrature, glass, sampler partitions and failed Film\n";
         return 0;
     } catch (const std::exception &e) {

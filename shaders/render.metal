@@ -1117,6 +1117,8 @@ struct ConnectionTransmission {
     uint status;
 };
 static float3 spawn_toward(ray incoming, float distance, SurfacePoint point, float3 direction);
+static bool spawn_boundary(ray incoming, float distance, SurfacePoint point, float3 direction,
+                           thread float3 &origin);
 
 // Ordered nearest-hit traversal is essential: an any-hit query cannot determine
 // which medium occupies each interval. Distances here are always world lengths.
@@ -1129,8 +1131,18 @@ static ConnectionTransmission medium_connection(ray incoming, instance_accelerat
     const float length = metal::length(incoming.direction);
     if (!(length > 0) || !isfinite(length))
         return {0, wire::invalid_arithmetic};
-    const float3 direction = incoming.direction / length;
+    float3 direction = incoming.direction / length;
     float remaining = incoming.max_distance * length;
+    const bool finite_connection = isfinite(incoming.max_distance);
+    // Retain the original, already excluded endpoint. Subtracting projected
+    // advances would translate it sideways after every normal offset.
+    const float3 endpoint =
+        finite_connection ? fma(float3(incoming.max_distance), incoming.direction, incoming.origin)
+                          : float3(0);
+    if (!(remaining > 0) ||
+        (finite_connection &&
+         (!isfinite(remaining) || !all(isfinite(endpoint)) || all(endpoint == incoming.origin))))
+        return {0, wire::invalid_arithmetic};
     incoming = ray(incoming.origin, direction, 0.0f, remaining);
     MixedIntersector closest;
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
@@ -1173,14 +1185,26 @@ static ConnectionTransmission medium_connection(ray incoming, instance_accelerat
                            alpha.triangles, alpha.patches, alpha.normals, p.normal_count,
                            PointSource::native_hit, point))
             return {0, wire::invalid_arithmetic};
-        medium = outgoing_medium(instance, medium, point.geometric_normal, direction);
-        const float3 origin = spawn_toward(incoming, hit.distance, point, direction);
-        const float advance = dot(origin - incoming.origin, direction);
-        if (!all(isfinite(origin)) || !isfinite(advance) || !(advance > 0))
+        float3 origin;
+        if (!spawn_boundary(incoming, hit.distance, point, direction, origin))
             return {0, wire::invalid_arithmetic};
-        remaining -= advance;
-        if (remaining <= 0)
-            return {transmission, wire::success};
+        const float3 outgoing_normal = dot(point.geometric_normal, direction) < 0
+                                           ? -point.geometric_normal
+                                           : point.geometric_normal;
+        if (finite_connection) {
+            const float3 delta = endpoint - origin;
+            remaining = metal::length(delta);
+            if (!(remaining > 0) || !isfinite(remaining))
+                return {0, wire::invalid_arithmetic};
+            direction = delta / remaining;
+            // An endpoint inside the departure uncertainty slab has no
+            // supported medium-side interpretation; never silently cross back.
+            const float facing = dot(outgoing_normal, direction);
+            const float facing_error = gamma_bound(5) * dot(abs(outgoing_normal), abs(direction));
+            if (!(facing > facing_error))
+                return {0, wire::invalid_arithmetic};
+        }
+        medium = outgoing_medium(instance, medium, point.geometric_normal, direction);
         incoming = ray(origin, direction, 0.0f, remaining);
     }
 }
@@ -1375,6 +1399,47 @@ static float3 spawn_origin(ray incoming, float t, SurfacePoint point, float3 n) 
 static float3 spawn_toward(ray incoming, float t, SurfacePoint point, float3 direction) {
     const float3 ng = point.geometric_normal;
     return spawn_origin(incoming, t, point, dot(ng, direction) < 0.0f ? -ng : ng);
+}
+
+// Null crossings have no scattering event. Anchor the offset at the ray hit,
+// rather than introducing the reconstruction's tangential displacement. Normal
+// separation, not displacement projected onto the old ray, certifies departure.
+static bool spawn_boundary(ray incoming, float t, SurfacePoint point, float3 direction,
+                           thread float3 &origin) {
+    if (!(t >= 0) || !isfinite(t))
+        return false;
+    const float3 ng = point.geometric_normal;
+    const float3 n = dot(ng, direction) < 0 ? -ng : ng;
+    const float facing = dot(n, direction);
+    if (!(facing > gamma_bound(5) * dot(abs(n), abs(direction))))
+        return false;
+    float3 position = fma(float3(t), incoming.direction, incoming.origin);
+    float3 ray_error = gamma_bound(2) * (abs(t * incoming.direction) + abs(incoming.origin));
+    if (point.patch) {
+        for (uint axis = 0; axis < 3; ++axis) {
+            const auto value = BilinearNumber(t) * incoming.direction[axis] + incoming.origin[axis];
+            position[axis] = value.high;
+            ray_error[axis] =
+                abs(value.low) +
+                0x1p-40f * (abs(t * incoming.direction[axis]) + abs(incoming.origin[axis])) +
+                128.0f * FLT_MIN;
+        }
+    }
+    const float3 error = point.error + abs(point.position - position) + ray_error;
+    // Account for summation and for the rounded geometric normal not having
+    // exactly unit length. Outward rounding additionally protects the addition.
+    const float norm_lower = dot(n, n) * (1 - gamma_bound(4));
+    const float height = dot(abs(n), error) * (1 + gamma_bound(8)) / norm_lower;
+    origin = round_out(fma(float3(height), n, position), n);
+    if (!(norm_lower > 0) || !isfinite(height) || !all(isfinite(origin)) ||
+        all(origin == incoming.origin))
+        return false;
+    const float3 departure = origin - point.position;
+    const float separation = dot(n, departure);
+    const float rounding = gamma_bound(5) * dot(abs(n), abs(departure));
+    const float uncertainty = dot(abs(n), point.error) * (1 + gamma_bound(4));
+    return isfinite(separation) && isfinite(rounding) && isfinite(uncertainty) &&
+           separation - rounding > uncertainty;
 }
 
 // Reflect independent midpoint coordinates into the triangle. The unequal
@@ -2057,9 +2122,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             }
             current_medium = outgoing_medium(instance, current_medium, point.geometric_normal,
                                              incoming.direction);
-            const float3 origin = spawn_toward(incoming, hit.distance, point, incoming.direction);
-            if (!all(isfinite(origin)) ||
-                !(dot(origin - incoming.origin, incoming.direction) > 0)) {
+            float3 origin;
+            if (!spawn_boundary(incoming, hit.distance, point, incoming.direction, origin)) {
                 sample.status = wire::invalid_arithmetic;
                 break;
             }

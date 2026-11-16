@@ -1,0 +1,24 @@
+# Original rypath regression; reduced from the generated bounded fog demo.
+# Pixel 45101, sample 41 at 768x512/seed17/Sobol/512spp rejected a valid null crossing.
+LookAt 7.7 3.6 -9 0 2.0 2.5 0 1 0
+Camera "perspective" "float fov" [39]
+Film "rgb" "integer xresolution" [768] "integer yresolution" [512]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "triangle" "float xradius" [1] "float yradius" [1]
+Sampler "sobol" "integer pixelsamples" [512] "integer seed" [17]
+Integrator "volpath" "integer maxdepth" [6]
+WorldBegin
+MakeNamedMedium "haze" "string type" "homogeneous" "spectrum sigma_a" [360 .018 830 .018] "spectrum sigma_s" [360 .16 830 .16] "float g" [.2]
+AttributeBegin
+Material "interface"
+MediumInterface "haze" ""
+Shape "trianglemesh" "point3 P" [-6 0 -2 6 0 -2 6 6 -2 -6 6 -2 -6 0 9 6 0 9 6 6 9 -6 6 9]
+ "integer indices" [0 3 2 0 2 1 4 5 6 4 6 7 0 4 7 0 7 3 1 2 6 1 6 5 0 1 5 0 5 4 3 7 6 3 6 2]
+AttributeEnd
+LightSource "point" "point3 from" [-3.5 5.1 0.3]
+ "rgb I" [1 0.34 0.08]
+ "float power" [40]
+LightSource "point" "point3 from" [3.6 4.9 4]
+ "rgb I" [0.07 0.56 1]
+ "float power" [48]
+LightSource "infinite" "float scale" [.012]
