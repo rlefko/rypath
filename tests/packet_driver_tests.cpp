@@ -277,7 +277,7 @@ void film_contract() {
                 quadrature += filter_evaluate(
                     filter, (double(x) + .5) / n * 2 * filter.x_radius - filter.x_radius,
                     (double(y) + .5) / n * 2 * filter.y_radius - filter.y_radius);
-        quadrature *= 4 * filter.x_radius * filter.y_radius / double(n * n);
+        quadrature *= 4.0 * filter.x_radius * filter.y_radius / (double(n) * n);
         require(std::abs(quadrature - filter_integral(filter)) < 2e-6,
                 "Filter analytic integral disagrees with independent midpoint quadrature");
     }
