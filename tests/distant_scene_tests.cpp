@@ -56,7 +56,8 @@ int main() try {
             std::string("LightSource \"distant\" \"float scale\" [2] \"float illuminance\" [") + e +
                 "]\n" + triangle);
         close(value.distant_lights[0].radiance[195],
-              base.distant_lights[0].radiance[195] * (std::string(e) == "3" ? 6.f : 2.f),
+              static_cast<double>(base.distant_lights[0].radiance[195]) *
+                  (std::string(e) == "3" ? 6.0 : 2.0),
               "positive illuminance only, no pi or world-up correction");
     }
     const auto affine = scene(
