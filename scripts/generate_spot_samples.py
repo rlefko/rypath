@@ -85,17 +85,10 @@ def main():
     s += sphere((1.55, 1.25, 3), 0.7)
     s += diffuse((0.45, 0.49, 0.57)) + box((-0.35, -0.05, 4.1), (0.45, 1.9, 4.9))
     (destination / 'chromatic-studio.pbrt').write_text(s)
-    s = header((7.7, 3.6, -9), (0, 2.0, 2.5), 'volpath', args.samples, args.width, args.height)
-    s += 'MakeNamedMedium "haze" "string type" "homogeneous" "spectrum sigma_a" [360 .018 830 .018] "spectrum sigma_s" [360 .16 830 .16] "float g" [.2]\n'
-    s += 'AttributeBegin\nMaterial "interface"\nMediumInterface "haze" ""\n' + box((-6, 0, -2), (6, 6, 9)) + 'AttributeEnd\n'
+    s = 'MakeNamedMedium "haze" "string type" "homogeneous" "spectrum sigma_a" [360 .018 830 .018] "spectrum sigma_s" [360 .16 830 .16] "float g" [.2]\nMediumInterface "" "haze"\n'
+    s += header((7.7, 3.6, -9), (0, 2.0, 2.5), 'volpath', args.samples, args.width, args.height)
     s += spot((-3.5, 5.1, 0.3), (0.1, 0.1, 3.6), (1, 0.34, 0.08), 40, 16, 7)
     s += spot((3.6, 4.9, 4), (-1.2, 0.1, 1.5), (0.07, 0.56, 1), 48, 18, 8)
-    s += 'LightSource "infinite" "float scale" [.012]\n'
-    s += floor_and_back()
-    s += diffuse((0.34, 0.38, 0.43)) + box((-0.8, -0.05, 2.3), (0.8, 0.3, 3.9))
-    s += 'Material "coateddiffuse" "rgb reflectance" [.55 .58 .62] "float roughness" [.2]\n' + sphere((0, 1.05, 3.1), 0.75)
-    s += diffuse((0.025, 0.028, 0.035)) + box((-3.8, 5.15, 0), (-3.2, 5.45, 0.6))
-    s += diffuse((0.025, 0.028, 0.035)) + box((3.3, 4.95, 3.7), (3.9, 5.25, 4.3))
     (destination / 'crossed-fog-beams.pbrt').write_text(s)
     print('Generated chromatic-studio.pbrt and crossed-fog-beams.pbrt')
 

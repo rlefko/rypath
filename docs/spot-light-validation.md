@@ -1,7 +1,7 @@
 # Spectral spot-light validation
 
 Implementation: `708bb55`. The measurements cover this implementation;
-the following validation-documentation commit does not change rendering behavior.
+subsequent validation-documentation and sample changes do not change rendering behavior.
 
 The [spot profile](pbrt-rendering.md#spot-lights) adds directional delta-position
 emission to surface and homogeneous-volume transport, including geometry-free
@@ -116,7 +116,32 @@ python3 scripts/compare_spot_lights.py \
 python3 scripts/generate_spot_samples.py --output-dir build/spot-samples
 ```
 
-The sample generator creates original surface and bounded-fog demonstrations;
-PNG previews are display-encoded separately from raw accumulation. These checks
-establish the declared spot profile, not many-light performance, arbitrary-scale
-accuracy or offline MVP completion.
+## Demonstration images and a bounded-medium follow-up
+
+The sample generator creates an original surface scene and geometry-free crossing
+beams in unbounded homogeneous haze. Both render at 768×512 and 512 spp; the fog
+demonstration also completes at 4,096 spp. PNGs are display-encoded from completed
+checkpoints, with linear FLOAT EXRs retained and no denoising.
+
+```sh
+python3 scripts/generate_spot_samples.py --output-dir build/spot-samples
+build/release/rypath --render-pbrt build/spot-samples/chromatic-studio.pbrt \
+  --output build/spot-samples/chromatic-studio.png
+python3 scripts/generate_spot_samples.py --samples 4096 --output-dir build/spot-fog
+build/release/rypath --render-pbrt build/spot-fog/crossed-fog-beams.pbrt \
+  --output build/spot-fog/crossed-fog-beams.png
+```
+
+The earlier generator at `7177cf8` enclosed haze in a triangle box. Its default
+768×512, 512-spp Sobol render (seed 17, batch size eight) fails after 40 committed
+spp with invalid arithmetic at lane 4141. Replacing its spots with points
+reproduces the same failure on both this implementation and clean main `fc41487`;
+replacing the sphere's coating with diffuse also leaves the failure unchanged.
+The failing batch contributes no Film samples. Boundary winding and interface
+scoping are valid; the exact inherited transport failure remains to be isolated.
+The current demonstration explicitly changes the scene to unbounded haze with
+no geometry. This is not a fix for the bounded-medium failure, which remains a
+separate numerical-reliability follow-up.
+
+These checks establish the declared spot profile, not many-light performance,
+arbitrary-scale accuracy or offline MVP completion.

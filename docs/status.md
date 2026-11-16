@@ -14,7 +14,10 @@ checkpoint identity contracts are now version 4. See the
 [spot profile](pbrt-rendering.md#spot-lights) and
 [validation record](spot-light-validation.md).
 
-The next bounded lighting task is spectral distant lights. Long-run convergence,
+The next bounded lighting task is spectral distant lights. A larger fog
+demonstration also exposed an inherited bounded-medium arithmetic failure,
+reproduced on main; its [diagnosis record](spot-light-validation.md#demonstration-images-and-a-bounded-medium-follow-up)
+is a separate reliability follow-up. Long-run convergence,
 licensed corpus acceptance and measured M4 Max benchmarks remain on the
 [roadmap](roadmap.md). Offline MVP completion and full pinned-corpus coverage
 remain unestablished.
