@@ -114,6 +114,8 @@ clarifies the work; completion is recorded in [status](status.md).
     see [goniometric validation](goniometric-light-validation.md). Projection lights
     add native RGB perspective images, affine scale/shear and light-space power
     normalization; see [projection validation](projection-light-validation.md).
+    Positive diffuse area-light power adds per-primitive geometry/image
+    normalization; see [area-power validation](area-power-validation.md).
     Perspective depth of field adds normalized uniform-disk thin-lens sampling,
     shared-aperture primary texture differentials and complete camera-support
     bounds; see [depth-of-field validation](depth-of-field-validation.md).

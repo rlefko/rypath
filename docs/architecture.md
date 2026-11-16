@@ -391,10 +391,19 @@ prevent table reuse or overflow. The demo and independent PBRT sampling retain
 their original Philox sequence. Active perspective lenses append `lens-v1`:
 Sobol dimensions 1022/1023 or a disjoint independent Philox counter block, without
 renumbering camera, wavelength, transport or dielectric draws. Inactive lenses
-consume no lens draws. Sampling contract 2, renderer contract 10 and identity
-schema 8 reject earlier checkpoints globally. See
+consume no lens draws. Current sampling contract 2, renderer contract 11 and identity
+schema 9 reject earlier checkpoints globally. See
 [Sobol validation](pbrt-sobol-validation.md) and
 [depth-of-field validation](depth-of-field-validation.md).
+
+Positive diffuse area power is prepared per final generated primitive after
+displacement. Portable preparation computes each shared image's native luminance
+mean once, bounds the factor table, and uses rounded world geometry for triangle
+and pinned PBRT bilinear normalization areas. Metal source-instance/kind mappings
+select factors in the shared auxiliary buffer. Central emission evaluation applies
+them to hits and both surface/volume NEE without changing proposals or PDFs;
+legacy emission keeps an absent-factor sentinel. The power is part of canonical
+identity. See the [rendering profile](pbrt-rendering.md).
 
 Scoped PBRT area declarations bind independently of materials to directly placed
 triangle meshes. The translator owns deduplicated dense emission tables and

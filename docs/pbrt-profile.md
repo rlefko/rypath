@@ -342,8 +342,9 @@ in an immutable binding for subsequent shapes; attribute scopes restore it and
 independent. Emitting object-definition members are outside this profile, including
 bindings inherited into a definition. An area declaration active at an ordinary
 `ObjectInstance` does not change its members. A declaration without shapes emits
-nothing. Positive `power` is structurally recognized but unsupported by the render
-translator; structural success alone is not rendering compatibility.
+nothing. The render translator supports positive `power` per generated primitive
+within the [rendering profile](pbrt-rendering.md); structural success alone is not
+rendering compatibility.
 
 The reader preserves authored spectral numbers and source provenance. It does
 not map spectra to the renderer's eight knots or impose demo reflectance limits.

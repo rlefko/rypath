@@ -160,3 +160,9 @@ they are never treated as resumable input automatically.
 
 See [checkpoint validation](checkpoint-validation.md) for measured coverage and
 remaining device-validation limits.
+
+Positive diffuse area power advances renderer to 11 and identity to 9; sampling
+remains 2, and accumulation/file-format remain 1. Canonical emission includes
+binary64 power, with finite nonpositive authored values represented as zero.
+Factors derive from final world geometry and image content already covered by
+identity. Older renderer/identity checkpoints are rejected for every scene.
