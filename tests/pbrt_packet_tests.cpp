@@ -92,6 +92,7 @@ void run() {
         "PixelFilter \"gaussian\"\nCamera \"perspective\" \"float lensradius\" [.05] \"float "
         "focaldistance\" [2]\n"
         "Sampler \"halton\" \"integer pixelsamples\" [16]\n";
+    const std::string surface = "Shape \"trianglemesh\" \"point3 P\" [0 0 1 1 0 1 0 1 1]\n";
     result = fixture.translate(lens_prefix + "Integrator \"bdpt\"\nWorldBegin\n" + world);
     require(
         success(result).perspective_lens.has_value() &&
@@ -99,13 +100,12 @@ void run() {
             provenance(result).find("lens-v1 sampling") == std::string::npos &&
             provenance(result).find("table-integral camera sample weight") != std::string::npos,
         "Packet lens and Gaussian provenance must not claim legacy lens-v1 or unit filter weights");
-    result = fixture.translate(lens_prefix + "Integrator \"path\"\nWorldBegin\n" + world);
+    result = fixture.translate(lens_prefix + "Integrator \"path\"\nWorldBegin\n" + world + surface);
     require(success(result).spectral_transport == SpectralTransport::scalar &&
                 provenance(result).find("lens-v1 sampling") != std::string::npos &&
                 provenance(result).find("fixed packet header block 1") == std::string::npos,
             "Scalar lens provenance must retain legacy lens-v1 sampling");
-    const std::string lights = world + "LightSource \"point\"\nLightSource \"distant\"\n"
-                                       "Shape \"trianglemesh\" \"point3 P\" [0 0 1 1 0 1 0 1 1]\n";
+    const std::string lights = world + "LightSource \"point\"\nLightSource \"distant\"\n" + surface;
     result = fixture.translate(options("", "Integrator \"bdpt\"") + lights);
     require(success(result).point_lights.size() == 1 &&
                 success(result).distant_lights.size() == 1 &&

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Owned constant visible emitter. Depth zero excludes all connection strategies;
+# finite-clamp expectation therefore has matched camera/wavelength proposals.
+Camera "perspective" "float fov" [28] "float lensradius" [.05] "float focaldistance" [4]
+Film "rgb" "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+ "float maxcomponentvalue" [.002]
+PixelFilter "gaussian" "float xradius" [1.5] "float yradius" [1.5] "float sigma" [.5]
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+Integrator "path" "integer maxdepth" [0]
+WorldBegin
+Material "diffuse" "rgb reflectance" [0 0 0]
+AreaLightSource "diffuse" "spectrum L" [360 1 830 1] "float scale" [10000] "bool twosided" [true]
+Shape "trianglemesh" "point3 P" [-20 -20 5 20 -20 5 20 20 5 -20 20 5]
+ "integer indices" [0 1 2 0 2 3]
