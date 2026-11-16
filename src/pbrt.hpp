@@ -139,6 +139,9 @@ struct Descriptor {
     Transform texture_from_world{};
     std::array<float, 3> texture_direction{0, 1, 0};
 
+    // Captured endpoint medium for point lights; NEE uses the shading path medium.
+    std::string outside_medium{};
+
     struct EffectiveParameter {
         const Parameter *parameter = nullptr;
         std::string_view color_space;

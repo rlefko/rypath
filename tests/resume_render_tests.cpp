@@ -284,7 +284,37 @@ int native() {
     }
 #endif
     require(probe.status == GeometryStatus::success, probe.diagnostic);
-    for (const auto fixture : {"image-secondary.pbrt", "media-reference/isotropic.pbrt"}) {
+    const auto check_resume = [](const RenderScene &scene) {
+        for (const auto sampler : {SamplerKind::independent, SamplerKind::sobol}) {
+            RenderSettings settings{8, 8, 17, 6, 37};
+            settings.sampler.kind = sampler;
+            auto whole = render_progressive(scene, settings);
+            require(whole.completion == RenderCompletion::complete, whole.diagnostic);
+            if (!scene.point_lights.empty()) {
+                bool positive = false;
+                for (const auto &pixel : whole.film.pixels)
+                    positive = positive || pixel.sum[1] + pixel.correction[1] > 0;
+                require(positive, "point resume fixture has no positive signal");
+            }
+            std::uint64_t count = 0;
+            RenderControl control;
+            control.progress = [&](auto n) { count = n; };
+            control.cancelled = [&] { return count >= 6; };
+            auto partial = render_progressive(scene, settings, control);
+            require(partial.completion == RenderCompletion::cancelled, partial.diagnostic);
+            require(count == 6 && partial.film.pixels.front().count == 6,
+                    "native cancellation did not commit the expected point in the sequence");
+            control = {};
+            control.initial_film = &partial.film;
+            settings.batch_size = 4;
+            auto resumed = render_progressive(scene, settings, control);
+            require(resumed.completion == RenderCompletion::complete &&
+                        exact(whole.film, resumed.film),
+                    "native uninterrupted/resumed Film bits differ");
+        }
+    };
+    for (const auto fixture : {"image-secondary.pbrt", "media-reference/isotropic.pbrt",
+                               "point-lights/mixed.pbrt", "point-lights/volume.pbrt"}) {
         auto path =
             std::filesystem::path(RYPATH_SOURCE_DIR) / "tests/fixtures/pbrt-render" / fixture;
         auto checked = pbrt::check(path);
@@ -292,27 +322,30 @@ int native() {
         auto translated = pbrt::translate(checked, pbrt::Location{path.string()});
         if (!translated.scene)
             throw std::runtime_error("native fixture translation failed");
-        for (const auto sampler : {SamplerKind::independent, SamplerKind::sobol}) {
-            RenderSettings settings{8, 8, 17, 6, 37};
-            settings.sampler.kind = sampler;
-            auto whole = render_progressive(*translated.scene, settings);
-            require(whole.completion == RenderCompletion::complete, whole.diagnostic);
-            std::uint64_t count = 0;
-            RenderControl control;
-            control.progress = [&](auto n) { count = n; };
-            control.cancelled = [&] { return count >= 6; };
-            auto partial = render_progressive(*translated.scene, settings, control);
-            require(partial.completion == RenderCompletion::cancelled, partial.diagnostic);
-            control = {};
-            control.initial_film = &partial.film;
-            settings.batch_size = 4;
-            auto resumed = render_progressive(*translated.scene, settings, control);
-            require(resumed.completion == RenderCompletion::complete &&
-                        exact(whole.film, resumed.film),
-                    "native uninterrupted/resumed Film bits differ");
-        }
+        if (std::string_view(fixture).starts_with("point-lights/"))
+            require(!translated.scene->point_lights.empty(), "point fixture lost its light");
+        check_resume(*translated.scene);
     }
-    std::cout << "Native resume: independent/Sobol textured/volume raw Film bits match\n";
+    // Empty geometry takes a distinct kernel. A scattering camera medium must
+    // retain point contributions through cancellation and a changed batch size.
+    RenderScene empty;
+    empty.model = RenderModel::pbrt;
+    empty.raster_camera = RasterCamera{{}, {-.1f, -.1f, 1}, {.2f, 0, 0}, {0, .2f, 0}};
+    empty.volume_transport = true;
+    empty.camera_medium = 0;
+    empty.max_depth = 3;
+    HomogeneousMedium fog;
+    fog.sigma_a.fill(.3f);
+    fog.sigma_s.fill(.7f);
+    fog.g = .65f;
+    empty.media.push_back(fog);
+    PointLight light;
+    light.position = {1, 0, 0};
+    light.intensity.fill(1);
+    empty.point_lights.push_back(light);
+    check_resume(empty);
+    std::cout
+        << "Native resume: independent/Sobol textured, volume and point raw Film bits match\n";
     return 0;
 }
 } // namespace

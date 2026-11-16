@@ -1148,6 +1148,16 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
 }
 
 std::string validate_render_scene(const RenderScene &scene) {
+    if (scene.point_lights.size() > max_point_lights)
+        return "Point lights exceed the limit of 64";
+    if (!scene.point_lights.empty() && scene.model != RenderModel::pbrt)
+        return "Point lights require the PBRT render model";
+    for (const auto &point : scene.point_lights) {
+        if (!finite(point.position) || !std::ranges::all_of(point.intensity, [](float value) {
+                return std::isfinite(value) && value >= 0;
+            }))
+            return "Point positions and intensities must be finite, with nonnegative intensity";
+    }
     const auto valid_medium = [&](std::uint32_t id) {
         return id == no_medium || id < scene.media.size();
     };

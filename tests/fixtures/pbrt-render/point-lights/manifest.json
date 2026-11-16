@@ -1,0 +1,34 @@
+{
+  "diffuse": {
+    "bytes": 651,
+    "sha256": "28d0d3e7a4c8416a659ad207e6e92f041e1f241ab327ce624db67904b50daf14"
+  },
+  "additive": {
+    "bytes": 723,
+    "sha256": "f4b795e59f63580cbcd4dbd4f19c3d7a28cee87ff95a765bf0b4df2b76ab86ce"
+  },
+  "spectral": {
+    "bytes": 671,
+    "sha256": "1de1785f64e7e7442adce66216da76b3d15989afe2ed7a6de7bc36af948bb00f"
+  },
+  "mixed": {
+    "bytes": 963,
+    "sha256": "03b9b1c1a93b9cb1dc77757973f41dceb28a6bb0170d2ac313cef1470e33893a"
+  },
+  "rough-reflection": {
+    "bytes": 686,
+    "sha256": "0cc5e3b73296eaecb6d1e5271248b8e121896ab0725967dce595d9f16eedd5b0"
+  },
+  "rough-transmission": {
+    "bytes": 687,
+    "sha256": "99a9668c44aee9d41a55242da209388169f96d10a7c66c0c98cdde67e4289c3c"
+  },
+  "volume": {
+    "bytes": 1428,
+    "sha256": "cfc37e55cc8f1ff16e95e3a61874d4cf12f54835a68efd9b01ace3363e0b6f66"
+  },
+  "external-quad": {
+    "bytes": 690,
+    "sha256": "6d4a1b0c3c5996cb60baf7c6d8fc70748fef180230e2f482605aabdc94120ba9"
+  }
+}

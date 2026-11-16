@@ -197,6 +197,10 @@ class Canonical {
         FIELD(placement);
         FIELD(authored_reverse);
     }
+    void value(const PointLight &x) {
+        FIELD(position);
+        FIELD(intensity);
+    }
     void value(const HomogeneousMedium &x) {
         FIELD(sigma_a);
         FIELD(sigma_s);
@@ -267,6 +271,7 @@ class Canonical {
         FIELD(knots);
     }
     void value(const RenderScene &x) {
+        FIELD(point_lights);
         FIELD(geometry);
         FIELD(materials);
         FIELD(instance_materials);

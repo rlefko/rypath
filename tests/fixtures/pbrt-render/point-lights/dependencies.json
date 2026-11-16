@@ -1,0 +1,16 @@
+{
+  "diffuse": [],
+  "additive": [],
+  "spectral": [],
+  "mixed": [],
+  "rough-reflection": [],
+  "rough-transmission": [],
+  "volume": [],
+  "external-quad": [
+    {
+      "path": "assets/sportscar-quad.ply",
+      "bytes": 412,
+      "sha256": "91fa58d0b64fb8f5d2a49844cd5a1e64e7f71d52f904dd3e20aa76c866b5ba62"
+    }
+  ]
+}

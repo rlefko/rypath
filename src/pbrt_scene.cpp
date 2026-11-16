@@ -419,6 +419,13 @@ constexpr std::array light_fields{
     Field{"filename", "string"},
 };
 
+constexpr std::array point_light_fields{
+    Field{.name = "I", .type = "spectral", .rule = Rule::emission, .allow_spectrum_file = true},
+    light_fields[1],
+    Field{"power", "float"},
+    Field{"from", "point3", 3},
+};
+
 constexpr std::array area_light_fields{
     light_fields[0],
     light_fields[1],
@@ -951,6 +958,10 @@ void Interpreter::scan_after_include(const Directive &directive) {
             return;
         }
         dependencies(directive, "light", argument);
+        if (name == "LightSource" && argument == "point") {
+            scan_parameter(point_light_fields.front());
+            return;
+        }
         if ((name == "LightSource" && argument == "infinite") ||
             (name == "AreaLightSource" && argument == "diffuse")) {
             scan_parameter(light_fields.front());
@@ -1572,6 +1583,21 @@ void Interpreter::light(const Directive &directive) {
         }
         state_.area_light = std::make_shared<const Descriptor>(std::move(descriptor));
         scene_.area_lights.push_back(state_.area_light);
+        return;
+    }
+    if (!area && type == "point") {
+        Descriptor descriptor = describe(directive);
+        descriptor.outside_medium = state_.media.outside;
+        validate(descriptor, directive, "light", point_light_fields);
+        const auto count = std::ranges::count_if(scene_.lights, [](const Descriptor &light) {
+            return light.authored.arguments.front().text == "point";
+        });
+        if (count >= 64) {
+            error("limit-exceeded", directive.location,
+                  "Point light count exceeds the limit of 64");
+            return;
+        }
+        scene_.lights.push_back(std::move(descriptor));
         return;
     }
     if (area || type != "infinite") {
