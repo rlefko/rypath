@@ -183,8 +183,10 @@ void direction_maps() {
     for (unsigned y = 0; y < 3; ++y) {
         auto row = 4 + y * 3;
         for (unsigned x = 0; x < 2; ++x) {
-            double p = (table->cdf[y + 1] - table->cdf[y]) *
-                       (table->cdf[row + x + 1] - table->cdf[row + x]);
+            const double marginal = static_cast<double>(table->cdf[y + 1]) - table->cdf[y];
+            const double conditional =
+                static_cast<double>(table->cdf[row + x + 1]) - table->cdf[row + x];
+            const double p = marginal * conditional;
             require(std::abs(p - values[y * 2 + x] / 31.) < 1e-7, "Native map mass");
             mass += p;
         }
@@ -203,8 +205,11 @@ void direction_maps() {
     for (unsigned y = 0; y < 3; ++y)
         for (unsigned x = 0; x < 2; ++x) {
             auto row = 4 + y * 3;
-            double p = (projection->cdf[y + 1] - projection->cdf[y]) *
-                       (projection->cdf[row + x + 1] - projection->cdf[row + x]);
+            const double marginal =
+                static_cast<double>(projection->cdf[y + 1]) - projection->cdf[y];
+            const double conditional =
+                static_cast<double>(projection->cdf[row + x + 1]) - projection->cdf[row + x];
+            const double p = marginal * conditional;
             require(std::abs(p - expected[y * 2 + x] / total) < 1e-7,
                     "Projection solid-angle weighting");
         }

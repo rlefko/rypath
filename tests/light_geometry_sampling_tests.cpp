@@ -87,7 +87,8 @@ void triangles() {
                     {(static_cast<float>(x) + .5f) / qn, (static_cast<float>(y) + .5f) / qn});
                 const V3 delta = interpolate(a, b, c, uv) - reference;
                 const double distance2 = lg::dot(delta, delta);
-                const double density = area * std::abs(lg::dot(normal, delta)) /
+                const double density = static_cast<double>(area) *
+                                       std::abs(lg::dot(normal, delta)) /
                                        (distance2 * std::sqrt(distance2) * qn * qn);
                 quadrature += density;
                 quadrature_z += density * delta.z / std::sqrt(distance2);
