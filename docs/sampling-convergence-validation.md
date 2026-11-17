@@ -38,9 +38,10 @@ include the full and compensated native tables.
 The inherited packet camera-path estimator still uses power MIS without outer
 roulette for both `path` and vacuum `volpath`. Pinned PBRT uses power MIS for
 `path`, balance MIS for vacuum `volpath`, and compensated outer roulette for
-both. These proposal differences preserve the ideal raw finite-depth expectation
-but can change moments and means after nonlinear Film clamping. They are not a
-demonstrated explanation for a particular Pavilion outlier. Both BDPT
+both. For a consistent exact BSDF, both approaches preserve the raw finite-depth
+expectation, but can change moments and means after nonlinear Film clamping.
+The finite coating approximation remains a separate limitation. These differences
+are not a demonstrated explanation for a particular Pavilion outlier. Both BDPT
 implementations omit outer roulette. The frozen quality gates remain unchanged.
 
 Incident geometry and emitted-ray measures remain separate:
@@ -96,8 +97,7 @@ Contracts are format/identity/renderer/sampling/accumulation **3/12/14/6/2**.
 Format 3 is required because checkpoint metadata now stores the separate signed
 material seed. The identity includes that seed and light policy. Sampling
 contract 6 rejects the intermediate contract-5 coating stream before continuation.
-Older
-checkpoints are rejected before payload decoding; same-build batch and resume
+Older checkpoints are rejected before payload decoding; same-build batch and resume
 checks remain exact. Cross-revision pixel identity is not expected after these
 proposal changes. Large assets and retained render artifacts stay outside Git.
 
@@ -159,8 +159,8 @@ The corrected candidate completes the following checks:
   sentinel; resumed batches preserve all 216 bytes of per-pixel state exactly.
   Four completed-checkpoint exports also pass without an adjacent metallib.
   A genuine contract-5 checkpoint is rejected without changing its output sentinel.
-- The unchanged 45 coating gates pass. The broader 150-gate packet comparison
-  is being repeated on this candidate; its preceding run passed all 150 gates.
+- All unchanged 45 coating and 150 broader packet comparison gates pass, with
+  every prescribed replicate retained.
 - The 32×24, 128-spp legacy demo retains exact PNG bytes and raw pixel state
   against the merged baseline.
 
@@ -176,20 +176,24 @@ The corrected candidate completes the following checks:
   1,572,864 samples across 12 diffuse/conductor, transport-mode, depth and angle
   cases; 60 corresponding-route gates pass their preselected tolerance.
 
-The preceding three diagnostic coating configurations also pass all 135 unchanged
-gates (three configurations × three cases × 15 gates), retaining all 144 images.
+The corrected candidate's three diagnostic coating configurations also pass all
+135 unchanged gates (three configurations × three cases × 15 gates), retaining
+all 144 images.
 Restoring the old fixed-PDF/event-value policies does not reproduce the larger
 historical deficit while the new joint walk and light selection are held fixed.
 Both isolated switches change all 16 coated-BDPT images; their conditional mean
-effects stay below 0.1%. All 48 diagnostic path-control images are byte-identical
-to production: that constant-environment control exercises the common sampled
+effects stay below 0.05% of the PBRT mean. All 48 diagnostic path-control images
+are byte-identical to production: that constant-environment control exercises the common sampled
 walk, not directional value/PDF evaluation. These controls do not identify a
 single cause for the historical deficit, and they do not remove PBRT's finite
 approximation or its previously measured difference between estimator routes.
 
 The corrected native probes pass 10 scalar and 28 packet fixed-input fixtures,
 including signed material seeds, rejected entrances, deep roulette, diffuse-map
-boundaries and an exact horizontal phase proposal. The existing scalar
+boundaries and an exact horizontal phase proposal. The standalone
+[PBRT oracle and reproduction instructions](../scripts/README-layered-schedule.md)
+reproduce all 28 expected rows exactly against the pinned unmodified build.
+The existing scalar
 11×8,192-sample comparisons and all 60 packet moment gates also pass unchanged.
 Retained negative controls expose each individual correction. A later test-only
 probe update leaves the executable and all 34 other complete linked Metal
