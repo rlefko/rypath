@@ -17,7 +17,7 @@ using Bytes = std::vector<std::uint8_t>;
 constexpr std::array<std::uint8_t, 8> magic{'R', 'Y', 'P', 'C', 'H', 'K', '\r', '\n'};
 constexpr std::uint64_t max_payload = std::uint64_t{4} * 1024 * 1024 * 1024;
 constexpr std::uint64_t max_metadata = std::uint64_t{1024} * 1024;
-constexpr std::size_t header_size = 44, pixel_size = 56;
+constexpr std::size_t header_size = 44, pixel_size = 216;
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
 #ifdef RYPATH_CHECKPOINT_TESTING
 std::string injected_failure;
@@ -81,6 +81,12 @@ Bytes metadata(const RenderCheckpoint &c) {
     put(b, static_cast<std::uint32_t>(c.settings.sampler.randomization), 4);
     put(b, static_cast<std::uint32_t>(c.film.model), 4);
     real(b, c.film.exposure);
+    put(b, c.film.packet, 1);
+    put(b, c.film.compatibility_output, 1);
+    real(b, c.film.max_component_value);
+    put(b, static_cast<std::uint32_t>(c.film.filter.kind), 4);
+    for (float value : {c.film.filter.x_radius, c.film.filter.y_radius, c.film.filter.sigma})
+        put(b, std::bit_cast<std::uint32_t>(value), 4);
     b.insert(b.end(), c.identity.begin(), c.identity.end());
     put(b, c.segments.size(), 4);
     for (const auto &s : c.segments) {
@@ -99,6 +105,13 @@ void append_pixel(Bytes &b, const FilmPixel &p) {
     for (auto x : p.correction)
         real(b, x);
     put(b, p.count, 8);
+    for (const auto *values :
+         {&p.splat_sum, &p.splat_correction, &p.compatibility_sum, &p.compatibility_correction,
+          &p.compatibility_splat_sum, &p.compatibility_splat_correction})
+        for (double value : *values)
+            real(b, value);
+    real(b, p.weight_sum);
+    real(b, p.weight_correction);
 }
 Bytes header(std::uint64_t meta, std::uint64_t payload) {
     Bytes b(magic.begin(), magic.end());
@@ -215,7 +228,15 @@ std::string validate_checkpoint(const RenderCheckpoint &c) {
         return "invalid checkpoint film model or exposure";
     if (c.segments.size() > 1024)
         return "checkpoint exceeds 1024 provenance segments";
-    std::uint64_t meta = 88;
+    if (auto error = validate_film_accumulation(c.film); !error.empty())
+        return error;
+    if (!(c.film.max_component_value > 0) || static_cast<std::uint32_t>(c.film.filter.kind) > 2 ||
+        !(c.film.filter.x_radius > 0 && c.film.filter.y_radius > 0) ||
+        !std::isfinite(c.film.filter.x_radius) || !std::isfinite(c.film.filter.y_radius) ||
+        !std::isfinite(c.film.filter.sigma) ||
+        (c.film.filter.kind == PixelFilterKind::gaussian && !(c.film.filter.sigma > 0)))
+        return "invalid checkpoint film filter or clamp";
+    std::uint64_t meta = 114;
     const auto count = c.film.pixels.front().count;
     for (const auto &p : c.film.pixels) {
         if (p.count != count || p.count > c.settings.samples)
@@ -329,9 +350,10 @@ CheckpointReadResult read_checkpoint(const std::filesystem::path &path) {
         if (!read_at(input.fd, 0, head) || !std::equal(magic.begin(), magic.end(), head.begin()))
             throw std::runtime_error("invalid checkpoint header");
         Cursor h{std::span(head).subspan(8)};
-        for (auto version : {checkpoint_contract::format, checkpoint_contract::identity,
-                             checkpoint_contract::renderer, checkpoint_contract::sampling,
-                             checkpoint_contract::accumulation})
+        if (h.get(4) != checkpoint_contract::format)
+            throw std::runtime_error("unsupported checkpoint format version (expected format 2)");
+        for (auto version : {checkpoint_contract::identity, checkpoint_contract::renderer,
+                             checkpoint_contract::sampling, checkpoint_contract::accumulation})
             if (h.get(4) != version)
                 throw std::runtime_error("unsupported checkpoint contract version");
         const auto meta_size = h.get(8), payload = h.get(8);
@@ -357,6 +379,16 @@ CheckpointReadResult read_checkpoint(const std::filesystem::path &path) {
         c.settings.sampler.randomization = static_cast<SobolRandomization>(m.get(4));
         c.film.model = static_cast<RenderModel>(m.get(4));
         c.film.exposure = m.real();
+        const auto packet = m.get(1), compatibility = m.get(1);
+        if (packet > 1 || compatibility > 1)
+            throw std::runtime_error("invalid checkpoint film flags");
+        c.film.packet = packet != 0;
+        c.film.compatibility_output = compatibility != 0;
+        c.film.max_component_value = m.real();
+        c.film.filter.kind = static_cast<PixelFilterKind>(m.get(4));
+        c.film.filter.x_radius = std::bit_cast<float>(static_cast<std::uint32_t>(m.get(4)));
+        c.film.filter.y_radius = std::bit_cast<float>(static_cast<std::uint32_t>(m.get(4)));
+        c.film.filter.sigma = std::bit_cast<float>(static_cast<std::uint32_t>(m.get(4)));
         for (auto &b : c.identity)
             b = static_cast<std::uint8_t>(m.get(1));
         const auto segments = m.get(4);
@@ -401,6 +433,13 @@ CheckpointReadResult read_checkpoint(const std::filesystem::path &path) {
                 for (auto &x : p.correction)
                     x = r.real();
                 p.count = r.get(8);
+                for (auto *values : {&p.splat_sum, &p.splat_correction, &p.compatibility_sum,
+                                     &p.compatibility_correction, &p.compatibility_splat_sum,
+                                     &p.compatibility_splat_correction})
+                    for (auto &value : *values)
+                        value = r.real();
+                p.weight_sum = r.real();
+                p.weight_correction = r.real();
             }
             at += chunk.size();
             first += n;

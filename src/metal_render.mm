@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "metal_render.hpp"
+#include "analytic.hpp"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
 
 #include "gaussian_filter.hpp"
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
+#include "packet_wire.h"
 #include "render_wire.h"
 #include "rgb_spectrum.hpp"
 #include "sobol_shared.h"
@@ -16,6 +18,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cfloat>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -108,6 +111,10 @@ GeometryPoint unpack(wire::Point point) { return {point.x, point.y, point.z}; }
 
 wire::Parameters camera_parameters(const RenderScene &scene) {
     wire::Parameters result{};
+    result.packet_transport = scene.spectral_transport == SpectralTransport::packet;
+    result.bidirectional = scene.integrator == IntegratorKind::bdpt;
+    result.packet_lane_bytes = packet_wire::lane_bytes(scene.max_depth);
+    result.packet_filter_weight = 1;
     result.filter_kind = static_cast<wire::Word>(scene.filter.kind);
     result.filter_sigma = scene.filter.sigma;
     result.filter_x_radius = scene.filter.x_radius;
@@ -128,6 +135,23 @@ wire::Parameters camera_parameters(const RenderScene &scene) {
         result.up = pack(camera.dy);
         result.model = wire::pbrt_model;
         result.max_depth = scene.max_depth;
+        const Vec dx{camera.dx.x, camera.dx.y, camera.dx.z};
+        const Vec dy{camera.dy.x, camera.dy.y, camera.dy.z};
+        const Vec corner{camera.corner.x, camera.corner.y, camera.corner.z};
+        const auto area_vector = cross(dx, dy);
+        auto normal = normalize(area_vector);
+        double depth = 0;
+        for (unsigned axis = 0; axis < 3; ++axis)
+            depth += normal[axis] * corner[axis];
+        if (depth < 0) {
+            for (auto &value : normal)
+                value = -value;
+            depth = -depth;
+        }
+        result.camera_normal = pack(normal);
+        result.camera_plane_depth = static_cast<float>(depth);
+        result.camera_image_area = static_cast<float>(
+            std::hypot(area_vector[0], area_vector[1], area_vector[2]) / (depth * depth));
         return result;
     }
     const auto &camera = scene.camera;
@@ -150,13 +174,82 @@ bool finite(wire::Point p) {
     return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
 }
 
+// Bound unique geometry once, then transform eight corners per placement.
+// The environment emission disk only needs a conservative scene enclosure.
+std::string prepare_packet_scene_sphere(const RenderScene &scene, wire::Parameters &parameters) {
+    using Bounds = std::array<Vec, 2>;
+    const double infinity = std::numeric_limits<double>::infinity();
+    const Bounds empty{{{infinity, infinity, infinity}, {-infinity, -infinity, -infinity}}};
+    std::vector<Bounds> bounds(scene.geometry.meshes.size(), empty);
+    const auto include = [](Bounds &box, Vec point) {
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            box[0][axis] = std::min(box[0][axis], point[axis]);
+            box[1][axis] = std::max(box[1][axis], point[axis]);
+        }
+    };
+    for (std::size_t i = 0; i < bounds.size(); ++i) {
+        const auto &mesh = scene.geometry.meshes[i];
+        for (const auto &p : mesh.positions)
+            include(bounds[i], {p.x, p.y, p.z});
+        for (const auto &shape : mesh.analytics) {
+            const double low = shape.kind == AnalyticKind::disk ? shape.height : shape.z_min;
+            const double high = shape.kind == AnalyticKind::disk ? shape.height : shape.z_max;
+            include(bounds[i], {-shape.radius, -shape.radius, low});
+            include(bounds[i], {shape.radius, shape.radius, high});
+        }
+    }
+    Bounds world = empty;
+    for (const auto &instance : scene.geometry.instances) {
+        const auto &box = bounds[instance.mesh_index];
+        if (box[0][0] > box[1][0])
+            continue;
+        const auto &m = instance.transform.values;
+        for (unsigned corner = 0; corner < 8; ++corner) {
+            const Vec p{box[corner & 1][0], box[(corner >> 1) & 1][1], box[(corner >> 2) & 1][2]};
+            Vec q{};
+            for (unsigned row = 0; row < 3; ++row) {
+                q[row] = double(m[4 * row]) * p[0] + double(m[4 * row + 1]) * p[1] +
+                         double(m[4 * row + 2]) * p[2] + m[4 * row + 3];
+                if (!std::isfinite(q[row]) || std::abs(q[row]) > FLT_MAX)
+                    return "Packet scene bounds exceed binary32 range";
+            }
+            include(world, q);
+        }
+    }
+    if (world[0][0] > world[1][0]) {
+        parameters.scene_center = {};
+        parameters.scene_radius = 1;
+        return {};
+    }
+    Vec center{}, extent{};
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        center[axis] = static_cast<float>(world[0][axis] / 2 + world[1][axis] / 2);
+        extent[axis] = std::max(std::abs(world[0][axis] - center[axis]),
+                                std::abs(world[1][axis] - center[axis]));
+        // Cover binary32 transformed-vertex and connection arithmetic as well.
+        extent[axis] +=
+            32 * FLT_EPSILON * std::max(std::abs(world[0][axis]), std::abs(world[1][axis]));
+    }
+    const double radius = std::hypot(extent[0], extent[1], extent[2]);
+    if (!(radius > 0) || !std::isfinite(radius) || radius >= FLT_MAX)
+        return "Packet scene sphere must have positive finite binary32 radius";
+    parameters.scene_center = pack(center);
+    parameters.scene_radius = std::nextafter(static_cast<float>(radius), INFINITY);
+    if (!std::isfinite(parameters.scene_radius))
+        return "Packet scene sphere radius overflows binary32";
+    return {};
+}
+
 bool requires_world_space_emitter(const RenderScene &scene, std::size_t source) {
     const auto &instance = scene.geometry.instances[source];
-    return !scene.instance_emissions.empty() &&
-           scene.instance_emissions[source] != no_area_emission &&
-           instance.transform.values != GeometryTransform{}.values &&
-           (!scene.geometry.meshes[instance.mesh_index].triangles.empty() ||
-            !scene.geometry.meshes[instance.mesh_index].patches.empty());
+    const auto &mesh = scene.geometry.meshes[instance.mesh_index];
+    if (scene.instance_emissions.empty() || scene.instance_emissions[source] == no_area_emission ||
+        instance.transform.values == GeometryTransform{}.values || !mesh.analytics.empty())
+        return false;
+    const bool retained_zero = std::ranges::any_of(mesh.triangles, [&](const auto &t) {
+        return !triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]], mesh.positions[t[2]]);
+    });
+    return !retained_zero && (!mesh.triangles.empty() || !mesh.patches.empty());
 }
 
 std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData &prepared) {
@@ -206,6 +299,7 @@ std::string prepare_world_space_emitters(const RenderScene &scene, GeometryData 
         copy.positions = mesh.positions;
         copy.triangles = mesh.triangles;
         copy.patches = mesh.patches;
+        copy.analytics = mesh.analytics;
         prepared.meshes.push_back(std::move(copy));
     };
     for (const auto &mesh : scene.geometry.meshes) {
@@ -286,10 +380,56 @@ std::string sample_error(wire::Word status) {
     }
 }
 
+// A packet sky dispatch retains the native IAS argument even though its
+// instance-count guard skips traversal. Bind a built empty IAS rather than nil.
+id<MTLAccelerationStructure> build_empty_packet_structure(id<MTLDevice> device,
+                                                          id<MTLCommandQueue> queue,
+                                                          std::string &diagnostic) {
+    auto descriptor = [MTLInstanceAccelerationStructureDescriptor descriptor];
+    descriptor.instanceCount = 0;
+    descriptor.instancedAccelerationStructures = @[];
+    descriptor.instanceDescriptorStride = sizeof(MTLAccelerationStructureInstanceDescriptor);
+    descriptor.instanceDescriptorBuffer =
+        [device newBufferWithLength:sizeof(MTLAccelerationStructureInstanceDescriptor)
+                            options:MTLResourceStorageModeShared];
+    if (descriptor.instanceDescriptorBuffer == nil) {
+        diagnostic = "Metal empty packet instance descriptor allocation failed";
+        return nil;
+    }
+    const auto sizes = [device accelerationStructureSizesWithDescriptor:descriptor];
+    if (sizes.accelerationStructureSize == 0 ||
+        sizes.buildScratchBufferSize > device.maxBufferLength) {
+        diagnostic = "Metal empty packet acceleration structure sizing failed";
+        return nil;
+    }
+    auto structure = [device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+    auto scratch = [device newBufferWithLength:std::max(NSUInteger{1}, sizes.buildScratchBufferSize)
+                                       options:MTLResourceStorageModePrivate];
+    if (structure == nil || scratch == nil) {
+        diagnostic = "Metal empty packet acceleration structure allocation failed";
+        return nil;
+    }
+    auto command = [queue commandBuffer];
+    auto encoder = [command accelerationStructureCommandEncoder];
+    if (command == nil || encoder == nil) {
+        diagnostic = "Metal empty packet acceleration structure command allocation failed";
+        return nil;
+    }
+    structure.label = @"rypath empty packet instances";
+    [encoder buildAccelerationStructure:structure
+                             descriptor:descriptor
+                          scratchBuffer:scratch
+                    scratchBufferOffset:0];
+    [encoder endEncoding];
+    diagnostic = metal::complete(command, "Metal empty packet acceleration structure build");
+    return diagnostic.empty() ? structure : nil;
+}
+
 } // namespace
 
 struct MetalRenderScene::Impl {
     std::unique_ptr<MetalGeometryScene> geometry;
+    id<MTLAccelerationStructure> empty_packet_structure = nil;
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> pipeline = nil;
@@ -842,7 +982,8 @@ struct MetalRenderScene::Impl {
         std::size_t emitter_count = 0;
         for (const auto &instance : packed_instances) {
             if (instance.emission != wire::no_emission) {
-                const auto count = std::size_t{instance.triangle_count} + instance.patch_count;
+                const auto count = std::size_t{instance.triangle_count} + instance.patch_count +
+                                   instance.analytic_count;
                 if (count > emitter_limit - emitter_count) {
                     return "Metal area emitter buffer exceeds device size limit";
                 }
@@ -874,6 +1015,9 @@ struct MetalRenderScene::Impl {
             for (wire::Word primitive = 0; primitive < instance.patch_count; ++primitive) {
                 packed_emitters.push_back({ordinal, primitive, wire::patch_primitive});
             }
+            for (wire::Word primitive = 0; primitive < instance.analytic_count; ++primitive) {
+                packed_emitters.push_back({ordinal, primitive, wire::analytic_primitive});
+            }
         }
         if (packed_emitters.empty()) {
             packed_emitters.emplace_back();
@@ -902,7 +1046,7 @@ struct MetalRenderScene::Impl {
             std::min<std::size_t>(max_index, device.maxBufferLength / sizeof(wire::Patch));
         for (std::size_t index = 0; index < meshes.size(); ++index) {
             const auto &mesh = meshes[index];
-            if (mesh.triangles.empty() && mesh.patches.empty()) {
+            if (mesh.triangles.empty() && mesh.patches.empty() && mesh.analytics.empty()) {
                 continue;
             }
             if (mesh.positions.size() > vertex_limit - vertex_count ||
@@ -945,19 +1089,28 @@ struct MetalRenderScene::Impl {
         std::vector<wire::Patch> packed_patches;
         packed_patches.reserve(patch_count);
         for (const auto &mesh : meshes) {
-            if (mesh.triangles.empty() && mesh.patches.empty()) {
+            if (mesh.triangles.empty() && mesh.patches.empty() && mesh.analytics.empty()) {
                 continue;
             }
             for (const auto point : mesh.positions) {
                 packed_positions.push_back({point.x, point.y, point.z});
             }
             for (const auto &triangle : mesh.triangles) {
-                packed_triangles.push_back({{triangle[0], triangle[1], triangle[2]}});
+                // Match the native BLAS null slot. A rounded float cross product
+                // can assign positive area to an exactly collinear canonical face.
+                // Keep source geometry/identity and every primitive ordinal intact.
+                if (!triangle_has_area(mesh.positions[triangle[0]], mesh.positions[triangle[1]],
+                                       mesh.positions[triangle[2]]))
+                    packed_triangles.push_back({{triangle[0], triangle[0], triangle[0]}});
+                else
+                    packed_triangles.push_back({{triangle[0], triangle[1], triangle[2]}});
             }
             for (const auto &patch : mesh.patches) {
                 packed_patches.push_back({{patch[0], patch[1], patch[2], patch[3]}});
             }
         }
+        if (packed_positions.empty())
+            packed_positions.emplace_back();
         if (packed_triangles.empty()) {
             packed_triangles.emplace_back();
         }
@@ -983,9 +1136,22 @@ struct MetalRenderScene::Impl {
             packed.patch_count = kind == PrimitiveKind::bilinear_patch
                                      ? static_cast<wire::Word>(meshes[mesh].patches.size())
                                      : 0;
+            packed.analytic_count = kind == PrimitiveKind::analytic
+                                        ? static_cast<wire::Word>(meshes[mesh].analytics.size())
+                                        : 0;
             packed.material = scene.instance_materials[source];
             if (!scene.instance_reverse_orientation.empty()) {
                 packed.reverse_orientation = scene.instance_reverse_orientation[source];
+            } else if (kind == PrimitiveKind::analytic) {
+                // Direct API callers with no override get outward analytic
+                // normals, including reflected placements. PBRT translation
+                // supplies the combined authored/handedness flag explicitly.
+                const auto &m = instance.transform.values;
+                const double determinant =
+                    double(m[0]) * (double(m[5]) * m[10] - double(m[6]) * m[9]) -
+                    double(m[1]) * (double(m[4]) * m[10] - double(m[6]) * m[8]) +
+                    double(m[2]) * (double(m[4]) * m[9] - double(m[5]) * m[8]);
+                packed.reverse_orientation = determinant < 0;
             }
             packed.emission = scene.instance_emissions.empty() ? wire::no_emission
                                                                : scene.instance_emissions[source];
@@ -1147,6 +1313,29 @@ struct MetalRenderScene::Impl {
 
         // Geometry backends split triangle/patch instances; factors retain the
         // source placement and select the matching primitive range.
+        std::map<std::uint32_t, wire::Word> analytic_offsets;
+        constexpr std::size_t analytic_words = sizeof(geometry_wire::Analytic) / sizeof(wire::Word);
+        for (std::size_t ordinal = 0; ordinal < packed_instances.size(); ++ordinal) {
+            auto &packed = packed_instances[ordinal];
+            if (packed.analytic_count == 0)
+                continue;
+            const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
+            const auto mesh_index = geometry_data.instances[source].mesh_index;
+            const auto [entry, fresh] = analytic_offsets.try_emplace(
+                mesh_index, static_cast<wire::Word>(packed_data.size()));
+            packed.analytic_begin = entry->second;
+            if (fresh) {
+                if (packed_data.size() > data_limit ||
+                    meshes[mesh_index].analytics.size() >
+                        (data_limit - packed_data.size()) / analytic_words)
+                    return "Analytic shading records exceed the shared GPU data budget";
+                for (const auto &shape : meshes[mesh_index].analytics) {
+                    const auto words =
+                        std::bit_cast<std::array<wire::Word, analytic_words>>(pack_analytic(shape));
+                    packed_data.insert(packed_data.end(), words.begin(), words.end());
+                }
+            }
+        }
         std::vector<std::vector<float>> source_power_factors;
         std::size_t failed_power_instance;
         if (auto error = prepare_area_power(scene, source_power_factors, failed_power_instance);
@@ -1163,11 +1352,13 @@ struct MetalRenderScene::Impl {
                 continue;
             auto &packed = packed_instances[ordinal];
             const auto &mesh = meshes[geometry_data.instances[source].mesh_index];
-            const auto begin =
-                MetalGeometryAccess::primitive_kind(*geometry, ordinal) == PrimitiveKind::triangle
-                    ? 0
-                    : mesh.triangles.size();
-            const auto count = std::size_t{packed.triangle_count} + packed.patch_count;
+            const auto family = MetalGeometryAccess::primitive_kind(*geometry, ordinal);
+            const auto begin = family == PrimitiveKind::triangle ? 0
+                               : family == PrimitiveKind::bilinear_patch
+                                   ? mesh.triangles.size()
+                                   : mesh.triangles.size() + mesh.patches.size();
+            const auto count =
+                std::size_t{packed.triangle_count} + packed.patch_count + packed.analytic_count;
             if (packed_data.size() > power_limit || count > power_limit - packed_data.size())
                 return "Area power factors exceed the shared GPU data budget";
             packed.area_power_begin = static_cast<wire::Word>(packed_data.size());
@@ -1195,6 +1386,10 @@ struct MetalRenderScene::Impl {
         RenderSamplesResult result;
         result.diagnostic = validate_request(request);
         if (!result.diagnostic.empty()) {
+            return result;
+        }
+        if (parameters.packet_transport && request.sample_count != 1) {
+            result.diagnostic = "Packet requests require one absolute sample per dispatch";
             return result;
         }
         const auto depth_limit = sampler_max_depth(request.sampler, dielectrics);
@@ -1286,8 +1481,15 @@ struct MetalRenderScene::Impl {
                                      : 0;
 
         const auto group_count = (p.lane_count + group_width - 1) / group_width;
-        const auto slots = group_count * group_width + 1;
-        const auto bytes = slots * sizeof(wire::Sample);
+        const std::size_t stride = p.packet_transport ? p.packet_lane_bytes : sizeof(wire::Sample);
+        const std::size_t slots = p.packet_transport ? p.lane_count : group_count * group_width + 1;
+        const std::size_t guard_bytes = p.packet_transport ? 64 : 0;
+        if (p.packet_transport &&
+            (stride == 0 || p.lane_count > packet_wire::workspace_bytes / stride)) {
+            result.diagnostic = "Packet dispatch exceeds the 256 MiB workspace capacity";
+            return result;
+        }
+        const auto bytes = slots * stride + guard_bytes;
         if (bytes > device.maxBufferLength) {
             result.diagnostic = "Metal render output exceeds device buffer limit";
             return result;
@@ -1315,8 +1517,11 @@ struct MetalRenderScene::Impl {
         [encoder setComputePipelineState:pipeline];
         [encoder setBytes:&p length:sizeof(p) atIndex:0];
         [encoder setBuffer:output offset:0 atIndex:1];
-        if (p.instance_count != 0) {
-            MetalGeometryAccess::bind(*geometry, encoder, 2);
+        if (p.instance_count != 0 || p.packet_transport) {
+            if (empty_packet_structure != nil)
+                [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:2];
+            else
+                MetalGeometryAccess::bind(*geometry, encoder, 2);
             [encoder setBuffer:instances offset:0 atIndex:3];
             [encoder setBuffer:positions offset:0 atIndex:4];
             [encoder setBuffer:triangles offset:0 atIndex:5];
@@ -1369,9 +1574,91 @@ struct MetalRenderScene::Impl {
         }
 
         const std::span output_data{output_bytes, bytes};
-        if (!std::ranges::all_of(output_data.subspan(p.lane_count * sizeof(wire::Sample)),
+        if (!std::ranges::all_of(output_data.subspan(p.lane_count * stride),
                                  [](unsigned char byte) { return byte == 0xff; })) {
             result.diagnostic = "Metal render output guard mismatch";
+            return result;
+        }
+        if (p.packet_transport) {
+            std::vector<PacketSample> samples;
+            std::vector<PacketSplat> splats;
+            samples.reserve(p.lane_count);
+            for (std::size_t lane = 0; lane < p.lane_count; ++lane) {
+                packet_wire::Result value{};
+                const auto *record = output_bytes + lane * stride;
+                std::memcpy(&value, record, sizeof(value));
+                if (value.status != wire::success) {
+                    result.diagnostic = sample_error(value.status) + " at pixel " +
+                                        std::to_string(request.pixel_begin + lane) + " sample " +
+                                        std::to_string(request.sample_begin) + " (packet lane " +
+                                        std::to_string(lane) + ")";
+                    return result;
+                }
+                const std::uint64_t sample =
+                    (std::uint64_t{value.sample_high} << 32) | value.sample_low;
+                if (value.pixel != request.pixel_begin + lane || sample != request.sample_begin ||
+                    value.splat_count > p.max_depth || !(value.filter_weight > 0) ||
+                    !std::isfinite(value.filter_weight)) {
+                    result.diagnostic =
+                        "Invalid packet sample identity, splat count or filter weight";
+                    return result;
+                }
+                PacketSample sample_value{};
+                sample_value.pixel = value.pixel;
+                sample_value.sample = sample;
+                sample_value.filter_weight = value.filter_weight;
+                sample_value.splat_begin = static_cast<std::uint32_t>(splats.size());
+                sample_value.splat_count = value.splat_count;
+                for (unsigned i = 0; i < 4; ++i) {
+                    if (!(value.wavelengths[i] >= 360 && value.wavelengths[i] <= 830) ||
+                        !std::isfinite(value.wavelength_pdfs[i]) || value.wavelength_pdfs[i] < 0 ||
+                        (i == 0 && value.wavelength_pdfs[i] == 0) ||
+                        !std::isfinite(value.radiance[i]) || value.radiance[i] < 0) {
+                        result.diagnostic =
+                            "Packet spectral result is outside the finite domain at pixel " +
+                            std::to_string(value.pixel) + " sample " + std::to_string(sample) +
+                            " packet lane " + std::to_string(lane) + " spectral lane " +
+                            std::to_string(i) + " wavelength " +
+                            std::to_string(value.wavelengths[i]) + " (bits " +
+                            std::to_string(std::bit_cast<std::uint32_t>(value.wavelengths[i])) +
+                            ") pdf " + std::to_string(value.wavelength_pdfs[i]) + " radiance " +
+                            std::to_string(value.radiance[i]);
+                        return result;
+                    }
+                    sample_value.wavelengths[i] = value.wavelengths[i];
+                    sample_value.wavelength_pdfs[i] = value.wavelength_pdfs[i];
+                    sample_value.radiance[i] = value.radiance[i];
+                }
+                for (unsigned i = 0; i < value.splat_count; ++i) {
+                    packet_wire::Splat value_splat{};
+                    std::memcpy(&value_splat, record + sizeof(value) + i * sizeof(value_splat),
+                                sizeof(value_splat));
+                    PacketSplat splat{};
+                    for (unsigned axis = 0; axis < 2; ++axis) {
+                        if (!std::isfinite(value_splat.raster[axis])) {
+                            result.diagnostic = "Packet splat raster position is nonfinite";
+                            return result;
+                        }
+                        splat.raster[axis] = value_splat.raster[axis];
+                    }
+                    for (unsigned component = 0; component < 4; ++component) {
+                        if (!std::isfinite(value_splat.radiance[component]) ||
+                            value_splat.radiance[component] < 0) {
+                            result.diagnostic =
+                                "Packet splat radiance is outside the finite domain";
+                            return result;
+                        }
+                        splat.radiance[component] = value_splat.radiance[component];
+                    }
+                    splat.strategy = value_splat.strategy;
+                    splats.push_back(splat);
+                }
+                samples.push_back(sample_value);
+            }
+            result.packet_samples = std::move(samples);
+            result.packet_splats = std::move(splats);
+            result.guard_count = 1;
+            result.status = GeometryStatus::success;
             return result;
         }
         std::vector<RenderSample> samples;
@@ -1440,12 +1727,41 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (!result.diagnostic.empty()) {
             return result;
         }
-        const auto parameters = camera_parameters(scene);
+        auto parameters = camera_parameters(scene);
+        if (parameters.packet_transport) {
+            if (scene.max_depth > packet_wire::max_depth || !(parameters.camera_image_area > 0) ||
+                !std::isfinite(parameters.camera_image_area) || !finite(parameters.camera_normal) ||
+                !(parameters.camera_plane_depth > 0) ||
+                !std::isfinite(parameters.camera_plane_depth) ||
+                !(parameters.packet_filter_weight > 0) ||
+                !std::isfinite(parameters.packet_filter_weight)) {
+                result.diagnostic =
+                    "Packet camera, filter or depth exceeds supported numerical range";
+                return result;
+            }
+            result.diagnostic = prepare_packet_scene_sphere(scene, parameters);
+            if (!result.diagnostic.empty())
+                return result;
+        }
         if (scene.model == RenderModel::demo &&
             (!(parameters.film_scale > 0.0f) || !std::isfinite(parameters.film_scale) ||
              !finite(parameters.forward) || !finite(parameters.right) || !finite(parameters.up))) {
             result.diagnostic = "Metal render camera basis or field of view is not representable";
             return result;
+        }
+
+        if (scene.preparation_byte_limit != std::numeric_limits<std::size_t>::max()) {
+            std::size_t estimate = 0;
+            result.diagnostic = validate_render_preparation_budget(scene, &estimate);
+            if (!result.diagnostic.empty())
+                return result;
+            id<MTLDevice> budget_device = MTLCreateSystemDefaultDevice();
+            if (budget_device != nil && budget_device.recommendedMaxWorkingSetSize > 0 &&
+                estimate > budget_device.recommendedMaxWorkingSetSize) {
+                result.diagnostic = "Estimated shading preparation exceeds the device recommended "
+                                    "working-set budget";
+                return result;
+            }
         }
 
         // A transformed emitter's native intersection can be ill-conditioned
@@ -1510,10 +1826,12 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (!verify_shader_contract(impl->device, impl->queue, library, result.diagnostic)) {
             return result;
         }
-        NSString *entry =
-            impl->parameters.instance_count == 0 ? @"rypath_render_sky" : @"rypath_render_paths";
+        NSString *entry = impl->parameters.packet_transport
+                              ? @"rypath_render_packets"
+                              : (impl->parameters.instance_count == 0 ? @"rypath_render_sky"
+                                                                      : @"rypath_render_paths");
         id<MTLFunction> intersection = nil;
-        if (impl->parameters.instance_count != 0) {
+        if (impl->parameters.instance_count != 0 || impl->parameters.packet_transport) {
             intersection = metal::load_patch_intersection(library, result.diagnostic);
             if (intersection == nil) {
                 return result;
@@ -1554,6 +1872,22 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];
+        if (impl->parameters.packet_transport) {
+            // Scan every material, including children reached through mix nodes.
+            const ScatteringKind families[] = {ScatteringKind::thin_dielectric,
+                                               ScatteringKind::diffuse_transmission,
+                                               ScatteringKind::measured, ScatteringKind::fourier};
+            for (NSUInteger i = 0; i < std::size(families); ++i) {
+                const bool enabled = std::ranges::any_of(
+                    scene.materials, [&](const auto &m) { return m.scattering == families[i]; });
+                [constants setConstantValue:&enabled type:MTLDataTypeBool atIndex:13 + i];
+            }
+            const bool coated = std::ranges::any_of(scene.materials, [](const auto &m) {
+                return m.scattering == ScatteringKind::coated_diffuse ||
+                       m.scattering == ScatteringKind::coated_conductor;
+            });
+            [constants setConstantValue:&coated type:MTLDataTypeBool atIndex:17];
+        }
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,
                                               intersection, constants);
         if (impl->pipeline == nil) {
@@ -1583,6 +1917,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             const auto &distribution = compiled.distribution;
             impl->parameters.gaussian_width = distribution.width;
             impl->parameters.gaussian_height = distribution.height;
+            if (impl->parameters.packet_transport)
+                impl->parameters.packet_filter_weight = distribution.integral;
             for (const auto value : distribution.conditional_cdf)
                 sampling_words.push_back(std::bit_cast<wire::Word>(value));
             for (const auto value : distribution.marginal_cdf)
@@ -1603,7 +1939,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             if (!result.diagnostic.empty())
                 return result;
         }
-        if (impl->parameters.instance_count != 0 || !scene.image_textures.empty()) {
+        if (impl->parameters.instance_count != 0 || !scene.image_textures.empty() ||
+            impl->parameters.packet_transport) {
             try {
                 if (impl->parameters.instance_count != 0)
                     result.diagnostic = impl->upload_shading(scene, geometry_data);
@@ -1621,6 +1958,34 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             }
         }
 
+        if (impl->parameters.packet_transport && impl->parameters.instance_count == 0) {
+            impl->empty_packet_structure =
+                build_empty_packet_structure(impl->device, impl->queue, result.diagnostic);
+            if (impl->empty_packet_structure == nil)
+                return result;
+            // The generic packet kernel retains the full binding layout even
+            // when its empty-scene branch never traverses geometry. Supply valid
+            // read-only storage for every buffer argument; no scene data is invented.
+            const auto sentinel = [impl->device newBufferWithLength:2048
+                                                            options:MTLResourceStorageModeShared];
+            if (sentinel == nil) {
+                result.diagnostic = "Packet empty-scene sentinel allocation failed";
+                return result;
+            }
+            std::memset(sentinel.contents, 0, sentinel.length);
+            for (auto *buffer :
+                 {&impl->instances,        &impl->positions,          &impl->triangles,
+                  &impl->patches,          &impl->materials,          &impl->knots,
+                  &impl->area_emissions,   &impl->emitters,           &impl->normals,
+                  &impl->texture_uvs,      &impl->texture_frames,     &impl->image_textures,
+                  &impl->image_levels,     &impl->image_texels,       &impl->image_transfer,
+                  &impl->image_spectra,    &impl->graph_nodes,        &impl->graph_knots,
+                  &impl->surface_vertices, &impl->surface_transforms, &impl->environment_cdf,
+                  &impl->illuminant,       &impl->material_data}) {
+                if (*buffer == nil)
+                    *buffer = sentinel;
+            }
+        }
         result.scene.reset(new MetalRenderScene(std::move(impl)));
         result.status = GeometryStatus::success;
         return result;

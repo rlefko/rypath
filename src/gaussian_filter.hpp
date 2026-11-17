@@ -20,6 +20,7 @@ struct GaussianFilterDistribution {
     float y_radius = 0;
     std::vector<float> conditional_cdf;
     std::vector<float> marginal_cdf;
+    float integral = 0;
 };
 
 struct GaussianFilterCompilation {

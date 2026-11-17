@@ -29,6 +29,8 @@ struct RenderSamplesResult {
     std::string diagnostic;
     std::vector<RenderSample> samples;
     std::size_t guard_count = 0;
+    std::vector<PacketSample> packet_samples;
+    std::vector<PacketSplat> packet_splats;
 };
 struct RenderBuildResult;
 // Synchronous operations require external serialization, including sample().

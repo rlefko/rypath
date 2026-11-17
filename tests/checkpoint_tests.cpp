@@ -99,17 +99,40 @@ void exact(const RenderCheckpoint &a, const RenderCheckpoint &b) {
             a.settings.sampler.randomization == b.settings.sampler.randomization,
         "exact settings and identity");
     require(a.film.model == b.film.model && a.film.exposure == b.film.exposure &&
-                a.film.pixels.size() == b.film.pixels.size(),
+                a.film.pixels.size() == b.film.pixels.size() && a.film.packet == b.film.packet &&
+                a.film.compatibility_output == b.film.compatibility_output &&
+                a.film.max_component_value == b.film.max_component_value &&
+                a.film.filter == b.film.filter,
             "film metadata");
     for (std::size_t i = 0; i < a.film.pixels.size(); ++i) {
         const auto &x = a.film.pixels[i], &y = b.film.pixels[i];
         require(x.count == y.count, "exact high count");
-        for (std::size_t j = 0; j < 3; ++j)
-            require(std::bit_cast<std::uint64_t>(x.sum[j]) ==
-                            std::bit_cast<std::uint64_t>(y.sum[j]) &&
-                        std::bit_cast<std::uint64_t>(x.correction[j]) ==
-                            std::bit_cast<std::uint64_t>(y.correction[j]),
-                    "bit exact accumulation");
+        const std::array<const std::array<double, 3> *, 8> xp{&x.sum,
+                                                              &x.correction,
+                                                              &x.splat_sum,
+                                                              &x.splat_correction,
+                                                              &x.compatibility_sum,
+                                                              &x.compatibility_correction,
+                                                              &x.compatibility_splat_sum,
+                                                              &x.compatibility_splat_correction};
+        const std::array<const std::array<double, 3> *, 8> yp{&y.sum,
+                                                              &y.correction,
+                                                              &y.splat_sum,
+                                                              &y.splat_correction,
+                                                              &y.compatibility_sum,
+                                                              &y.compatibility_correction,
+                                                              &y.compatibility_splat_sum,
+                                                              &y.compatibility_splat_correction};
+        for (std::size_t plane = 0; plane < xp.size(); ++plane)
+            for (std::size_t j = 0; j < 3; ++j)
+                require(std::bit_cast<std::uint64_t>((*xp[plane])[j]) ==
+                            std::bit_cast<std::uint64_t>((*yp[plane])[j]),
+                        "bit exact accumulation plane");
+        require(std::bit_cast<std::uint64_t>(x.weight_sum) ==
+                        std::bit_cast<std::uint64_t>(y.weight_sum) &&
+                    std::bit_cast<std::uint64_t>(x.weight_correction) ==
+                        std::bit_cast<std::uint64_t>(y.weight_correction),
+                "bit exact reconstruction weights");
     }
     require(a.segments.size() == b.segments.size(), "segments count");
     for (std::size_t i = 0; i < a.segments.size(); ++i) {
@@ -132,7 +155,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "0e1a860be7019eb406215cb7030a407c76bec630511e32f075b106ed480e890d",
+                "545b38de70f50c02a2d61a77866930331e530d36ea53b7cd13f437c3c2a08082",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
@@ -150,26 +173,33 @@ void codec(const std::filesystem::path &dir) {
         require(write_checkpoint(qmc, dir / "qmc.bin").empty(), "QMC checkpoint publication");
         exact(qmc, checked(read_checkpoint(dir / "qmc.bin")));
     }
+    auto packet = c;
+    packet.film.packet = true;
+    packet.film.compatibility_output = true;
+    packet.film.max_component_value = 50;
+    packet.film.filter = {PixelFilterKind::gaussian, 1.5f, 2.f, .5f};
+    for (auto &pixel : packet.film.pixels) {
+        pixel.splat_sum = {1, 2, 3};
+        pixel.splat_correction = {1e-20, -1e-20, -0.};
+        pixel.compatibility_sum = {4, 5, 6};
+        pixel.compatibility_correction = {-1e-30, 1e-30, 0};
+        pixel.compatibility_splat_sum = {7, 8, 9};
+        pixel.compatibility_splat_correction = {1e-15, 0, -1e-15};
+        pixel.weight_sum = 7;
+        pixel.weight_correction = 1e-15;
+    }
+    require(write_checkpoint(packet, dir / "packet.bin").empty(), "packet checkpoint publication");
+    exact(packet, checked(read_checkpoint(dir / "packet.bin")));
+    packet.film.pixels.front().compatibility_splat_correction[0] =
+        std::numeric_limits<double>::infinity();
+    require(!write_checkpoint(packet, path).empty(),
+            "invalid packet plane rejected transactionally");
+    require(read(path) == original, "invalid packet plane preserves prior checkpoint");
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
-    for (const auto [offset, version] :
-         std::array<std::pair<std::size_t, std::uint32_t>, 18>{{{12, 3},
-                                                                {12, 4},
-                                                                {12, 5},
-                                                                {12, 6},
-                                                                {12, 7},
-                                                                {12, 8},
-                                                                {12, 9},
-                                                                {16, 3},
-                                                                {16, 4},
-                                                                {16, 5},
-                                                                {16, 6},
-                                                                {16, 7},
-                                                                {16, 8},
-                                                                {16, 9},
-                                                                {16, 10},
-                                                                {16, 11},
-                                                                {20, 1},
-                                                                {20, 2}}}) {
+    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 23>{
+             {{8, 1},  {12, 10}, {16, 12}, {20, 3},  {24, 1},  {12, 3}, {12, 4}, {12, 5},
+              {12, 6}, {12, 7},  {12, 8},  {12, 9},  {16, 3},  {16, 4}, {16, 5}, {16, 6},
+              {16, 7}, {16, 8},  {16, 9},  {16, 10}, {16, 11}, {20, 1}, {20, 2}}}) {
         auto legacy = original;
         put(legacy, offset, version, 4);
         rehash(legacy);
@@ -202,7 +232,7 @@ void codec(const std::filesystem::path &dir) {
               {44 + 32, 9, 4},
               {44 + 36, 9, 4},
               {44 + 40, 9, 4},
-              {44 + 84, 1025, 4}}}) {
+              {44 + 110, 1025, 4}}}) {
         bad = original;
         put(bad, offset, value, n);
         rehash(bad);
@@ -212,9 +242,9 @@ void codec(const std::filesystem::path &dir) {
     // Authenticated malformed string length, count and nonfinite component.
     for (auto [offset, value, n] :
          std::array<std::tuple<std::size_t, std::uint64_t, std::size_t>, 3>{
-             {{44 + 88 + 16, 4097, 4},
-              {original.size() - 32 - 8, UINT64_MAX, 8},
-              {original.size() - 32 - 112, 0x7ff0000000000000ULL, 8}}}) {
+             {{44 + 114 + 16, 4097, 4},
+              {original.size() - 32 - 432 + 48, UINT64_MAX, 8},
+              {original.size() - 32 - 432, 0x7ff0000000000000ULL, 8}}}) {
         bad = original;
         put(bad, offset, value, n);
         rehash(bad);

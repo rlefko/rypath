@@ -68,7 +68,7 @@ static bool valid_level(const device wire::TextureLevel &level, uint texel_word_
     const uint words_per_texel = texel_format == wire::linear_float_texel_format  ? 4u
                                  : texel_format == wire::linear_half_texel_format ? 2u
                                                                                   : 1u;
-    return level.width > 0 && level.height > 0 && level.width <= 4096 && level.height <= 4096 &&
+    return level.width > 0 && level.height > 0 && level.width <= 8192 && level.height <= 8192 &&
            level.offset <= texel_word_count &&
            level.width * level.height * words_per_texel <= texel_word_count - level.offset;
 }
@@ -261,7 +261,7 @@ static float3 ewa(const device wire::ImageTexture &texture, const device wire::T
 #pragma clang fp contract(off)
     const float cap = texture.max_anisotropy;
     const float2 axis_scale(texture.uscale, texture.vscale), offset(texture.udelta, texture.vdelta);
-    if (texture.level_count > 13u || !(cap >= 1.0f && cap <= 16.0f) || !all(isfinite(axis_scale)) ||
+    if (texture.level_count > 14u || !(cap >= 1.0f && cap <= 16.0f) || !all(isfinite(axis_scale)) ||
         !all(isfinite(offset)))
         return float3(NAN);
     if (!already_mapped) {
@@ -590,7 +590,7 @@ static float4 gltf_level(const device wire::ImageTexture &texture,
                                             float2 uv, float2 dx, float2 dy) {
 #pragma clang fp contract(off)
     if (texture.gltf != 1u || texture.texel_format != wire::linear_float_texel_format ||
-        texture.level_count == 0u || texture.level_count > 13u || !gltf_wrap_valid(texture.wrap) ||
+        texture.level_count == 0u || texture.level_count > 14u || !gltf_wrap_valid(texture.wrap) ||
         !gltf_wrap_valid(texture.wrap_t) ||
         (texture.mag_filter != 9728u && texture.mag_filter != 9729u) ||
         (texture.min_filter != 9728u && texture.min_filter != 9729u &&

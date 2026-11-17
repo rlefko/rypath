@@ -2,6 +2,7 @@
 
 #include "metal_geometry.hpp"
 
+#include "analytic.hpp"
 #include "geometry_wire.h"
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
@@ -21,6 +22,7 @@ namespace {
 
 using geometry_wire::Closest;
 using geometry_wire::Patch;
+using geometry_wire::ProceduralRecord;
 using geometry_wire::Ray;
 using geometry_wire::Word;
 constexpr auto max_wire_index = std::numeric_limits<Word>::max();
@@ -97,7 +99,24 @@ triangle_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string 
         return nil;
     }
     id<MTLBuffer> vertices = upload(device, std::span{mesh.positions});
-    id<MTLBuffer> indices = upload(device, std::span{mesh.triangles});
+    // Keep every native primitive slot. A provably zero-measure canonical face
+    // is represented by one repeated point, rather than relying on cancellation
+    // in Metal's collinear triangle solve. Original indices remain in GeometryData.
+    const bool has_zero = std::ranges::any_of(mesh.triangles, [&](const auto &t) {
+        return !triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]], mesh.positions[t[2]]);
+    });
+    id<MTLBuffer> indices = nil;
+    if (has_zero) {
+        auto native_indices = mesh.triangles;
+        for (auto &t : native_indices) {
+            if (!triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]],
+                                   mesh.positions[t[2]]))
+                t = {t[0], t[0], t[0]};
+        }
+        indices = upload(device, std::span<const std::array<Word, 3>>{native_indices});
+    } else {
+        indices = upload(device, std::span{mesh.triangles});
+    }
     if (vertices == nil || indices == nil) {
         diagnostic = "Metal vertex or index buffer allocation failed";
         return nil;
@@ -117,12 +136,12 @@ triangle_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string 
 MTLAccelerationStructureBoundingBoxGeometryDescriptor *
 patch_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &diagnostic) {
     if (!fits_buffer<MTLAxisAlignedBoundingBox>(device, mesh.patches.size()) ||
-        !fits_buffer<Patch>(device, mesh.patches.size())) {
+        !fits_buffer<ProceduralRecord>(device, mesh.patches.size())) {
         diagnostic = "Metal patch bounds or corner buffer exceeds device size limit";
         return nil;
     }
     std::vector<MTLAxisAlignedBoundingBox> bounds;
-    std::vector<Patch> corners;
+    std::vector<ProceduralRecord> corners;
     bounds.reserve(mesh.patches.size());
     corners.reserve(mesh.patches.size());
     for (const auto &indices : mesh.patches) {
@@ -133,7 +152,10 @@ patch_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &di
             patch.corners[i][1] = p.y;
             patch.corners[i][2] = p.z;
         }
-        corners.push_back(patch);
+        ProceduralRecord record{};
+        record.kind = geometry_wire::bilinear_patch;
+        record.patch = patch;
+        corners.push_back(record);
 
         // A bilinear patch lies in the convex hull of its four corners.
         // Expand planar bounds too, using normal floats if an axis lies at zero.
@@ -156,7 +178,7 @@ patch_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &di
     }
     id<MTLBuffer> bounds_buffer =
         upload(device, std::span<const MTLAxisAlignedBoundingBox>{bounds});
-    id<MTLBuffer> corner_buffer = upload(device, std::span<const Patch>{corners});
+    id<MTLBuffer> corner_buffer = upload(device, std::span<const ProceduralRecord>{corners});
     if (bounds_buffer == nil || corner_buffer == nil) {
         diagnostic = "Metal patch bounds or corner buffer allocation failed";
         return nil;
@@ -167,18 +189,68 @@ patch_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &di
     box.boundingBoxStride = sizeof(MTLAxisAlignedBoundingBox);
     box.boundingBoxCount = mesh.patches.size();
     box.primitiveDataBuffer = corner_buffer;
-    box.primitiveDataStride = sizeof(Patch);
-    box.primitiveDataElementSize = sizeof(Patch);
+    box.primitiveDataStride = sizeof(ProceduralRecord);
+    box.primitiveDataElementSize = sizeof(ProceduralRecord);
     box.opaque = NO;
     return box;
 }
 
-constexpr std::array primitive_kinds{PrimitiveKind::triangle, PrimitiveKind::bilinear_patch};
+MTLAccelerationStructureBoundingBoxGeometryDescriptor *
+analytic_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &diagnostic) {
+    if (!fits_buffer<MTLAxisAlignedBoundingBox>(device, mesh.analytics.size()) ||
+        !fits_buffer<ProceduralRecord>(device, mesh.analytics.size())) {
+        diagnostic = "Metal analytic bounds or primitive buffer exceeds device size limit";
+        return nil;
+    }
+    std::vector<MTLAxisAlignedBoundingBox> bounds;
+    std::vector<ProceduralRecord> records;
+    for (const auto &shape : mesh.analytics) {
+        const auto b = analytic_bounds(shape);
+        MTLPackedFloat3 lo{}, hi{};
+        const std::array<float, 3> lower{b[0].x, b[0].y, b[0].z}, upper{b[1].x, b[1].y, b[1].z};
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            lo[axis] = std::nextafter(lower[axis], -std::numeric_limits<float>::max());
+            hi[axis] = std::nextafter(upper[axis], std::numeric_limits<float>::max());
+            if (std::abs(lo[axis]) < std::numeric_limits<float>::min())
+                lo[axis] = -std::numeric_limits<float>::min();
+            if (std::abs(hi[axis]) < std::numeric_limits<float>::min())
+                hi[axis] = std::numeric_limits<float>::min();
+        }
+        bounds.emplace_back(lo, hi);
+        ProceduralRecord record{};
+        record.kind = geometry_wire::analytic;
+        record.analytic = pack_analytic(shape);
+        records.push_back(record);
+    }
+    id<MTLBuffer> bounds_buffer =
+        upload(device, std::span<const MTLAxisAlignedBoundingBox>{bounds});
+    id<MTLBuffer> record_buffer = upload(device, std::span<const ProceduralRecord>{records});
+    if (bounds_buffer == nil || record_buffer == nil) {
+        diagnostic = "Metal analytic bounds or primitive buffer allocation failed";
+        return nil;
+    }
+    auto *box = [MTLAccelerationStructureBoundingBoxGeometryDescriptor descriptor];
+    box.boundingBoxBuffer = bounds_buffer;
+    box.boundingBoxStride = sizeof(MTLAxisAlignedBoundingBox);
+    box.boundingBoxCount = mesh.analytics.size();
+    box.primitiveDataBuffer = record_buffer;
+    box.primitiveDataStride = sizeof(ProceduralRecord);
+    box.primitiveDataElementSize = sizeof(ProceduralRecord);
+    box.opaque = NO;
+    return box;
+}
 
-std::size_t kind_index(PrimitiveKind kind) { return kind == PrimitiveKind::triangle ? 0 : 1; }
+constexpr std::array primitive_kinds{PrimitiveKind::triangle, PrimitiveKind::bilinear_patch,
+                                     PrimitiveKind::analytic};
+
+std::size_t kind_index(PrimitiveKind kind) {
+    return kind == PrimitiveKind::triangle ? 0 : kind == PrimitiveKind::bilinear_patch ? 1 : 2;
+}
 
 std::size_t primitive_count(const GeometryMesh &mesh, PrimitiveKind kind) {
-    return kind == PrimitiveKind::triangle ? mesh.triangles.size() : mesh.patches.size();
+    return kind == PrimitiveKind::triangle         ? mesh.triangles.size()
+           : kind == PrimitiveKind::bilinear_patch ? mesh.patches.size()
+                                                   : mesh.analytics.size();
 }
 
 // Metal requires all geometry descriptors in a BLAS to have the same type.
@@ -187,8 +259,9 @@ id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue
                                         std::string &diagnostic) {
     const bool triangle = kind == PrimitiveKind::triangle;
     MTLAccelerationStructureGeometryDescriptor *geometry =
-        triangle ? triangle_descriptor(device, mesh, diagnostic)
-                 : patch_descriptor(device, mesh, diagnostic);
+        triangle                                ? triangle_descriptor(device, mesh, diagnostic)
+        : kind == PrimitiveKind::bilinear_patch ? patch_descriptor(device, mesh, diagnostic)
+                                                : analytic_descriptor(device, mesh, diagnostic);
     if (geometry == nil) {
         return nil;
     }
@@ -196,7 +269,10 @@ id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue
         [MTLPrimitiveAccelerationStructureDescriptor descriptor];
     descriptor.geometryDescriptors = @[ geometry ];
     return build_structure(device, queue, descriptor,
-                           triangle ? @"rypath triangles" : @"rypath bilinear patches", diagnostic);
+                           triangle                                ? @"rypath triangles"
+                           : kind == PrimitiveKind::bilinear_patch ? @"rypath bilinear patches"
+                                                                   : @"rypath analytic shapes",
+                           diagnostic);
 }
 
 struct InstanceIndices {
@@ -370,10 +446,12 @@ GeometryClosestResult MetalGeometryScene::closest_hits(std::span<const GeometryR
             }
             const bool triangle = hit.kind == geometry_wire::triangle;
             const bool patch = hit.kind == geometry_wire::bilinear_patch;
+            const bool analytic = hit.kind == geometry_wire::analytic;
             const auto &ray = rays[index];
-            if ((!triangle && !patch) || hit.instance >= impl_->instance_indices.size() ||
-                !std::isfinite(hit.t) || hit.t < ray.t_min || hit.t > ray.t_max ||
-                !std::isfinite(hit.u) || !std::isfinite(hit.v)) {
+            if ((!triangle && !patch && !analytic) ||
+                hit.instance >= impl_->instance_indices.size() || !std::isfinite(hit.t) ||
+                hit.t < ray.t_min || hit.t > ray.t_max || !std::isfinite(hit.u) ||
+                !std::isfinite(hit.v)) {
                 result.diagnostic =
                     "Metal closest-hit output is invalid at ray " + std::to_string(index);
                 return result;
@@ -401,8 +479,11 @@ GeometryClosestResult MetalGeometryScene::closest_hits(std::span<const GeometryR
                                         std::to_string(index);
                     return result;
                 }
-                decoded.kind = PrimitiveKind::bilinear_patch;
-                decoded.patch_uv = {hit.u, hit.v};
+                decoded.kind = instance.kind;
+                if (patch)
+                    decoded.patch_uv = {hit.u, hit.v};
+                else
+                    decoded.analytic_uv = {hit.u, hit.v};
             }
             hits.push_back(decoded);
         }
@@ -482,6 +563,7 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
             const auto &mesh = geometry.meshes[instance.mesh_index];
             active_instances += !mesh.triangles.empty();
             active_instances += !mesh.patches.empty();
+            active_instances += !mesh.analytics.empty();
         }
         if (!metal::fits_instance_limit(active_instances)) {
             result.diagnostic =
@@ -496,7 +578,8 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
             for (std::size_t index = 0; index < geometry.meshes.size(); ++index) {
                 const auto &mesh = geometry.meshes[index];
                 if (!metal::fits_primitive_limit(mesh.triangles.size()) ||
-                    !metal::fits_primitive_limit(mesh.patches.size())) {
+                    !metal::fits_primitive_limit(mesh.patches.size()) ||
+                    !metal::fits_primitive_limit(mesh.analytics.size())) {
                     result.diagnostic = "Metal primitive count exceeds the standard acceleration "
                                         "structure limit (mesh " +
                                         std::to_string(index) + ")";

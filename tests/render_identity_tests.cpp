@@ -20,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3629-byte empty-scene fixture includes field tags and all defaults.
+    // the 3716-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "0cfc3f6f3cd4b2a3bf3d2dd6e070d18f6defa213ecd3caf5a875d91424f58535",
+                "73af24dbc8041e7891bd985d54519bda61e8f5059e8b8d155ad324339eb38fc6",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -33,6 +33,22 @@ void identity_checks() {
         mutate(copy);
         require(render_identity(copy, settings) != baseline, name);
     };
+    changed([](auto &s) { s.integrator = IntegratorKind::bdpt; }, "integrator identity");
+    changed([](auto &s) { s.spectral_transport = SpectralTransport::packet; },
+            "spectral transport identity");
+    changed([](auto &s) { s.max_component_value = 50; }, "film clamp identity");
+    auto clamped = scene;
+    clamped.spectral_transport = SpectralTransport::packet;
+    clamped.max_component_value = 50;
+    const auto clamped_identity = render_identity(clamped, settings);
+    clamped.exposure *= 2;
+    require(render_identity(clamped, settings) != clamped_identity,
+            "clamped sensor exposure identity");
+    auto resource = scene;
+    resource.image_limits.max_dimension = 8192;
+    resource.triangle_frame_limit = 128'000'000;
+    resource.preparation_byte_limit = 1024;
+    require(render_identity(resource, settings) == baseline, "resource acceptance policy excluded");
     changed([](auto &s) { s.geometry.meshes.push_back({}); }, "geometry mesh count");
     changed([](auto &s) { s.geometry.instances.push_back({}); }, "geometry instance count");
     changed([](auto &s) { s.materials.push_back({}); }, "materials");
@@ -245,6 +261,42 @@ void identity_checks() {
         mutate(copy);
         require(render_identity(copy, settings) != populated, name);
     };
+    deep([](auto &s) { s.geometry.meshes.front().analytics.push_back({}); },
+         "analytic geometry identity");
+    auto analytic = scene;
+    analytic.geometry.meshes.front().analytics.push_back({});
+    const auto analytic_identity = render_identity(analytic, settings);
+    for (unsigned field = 0; field < 7; ++field) {
+        auto copy = analytic;
+        auto &shape = copy.geometry.meshes.front().analytics.front();
+        switch (field) {
+        case 0:
+            shape.kind = AnalyticKind::disk;
+            break;
+        case 1:
+            shape.radius = 2;
+            break;
+        case 2:
+            shape.z_min = -.5f;
+            break;
+        case 3:
+            shape.z_max = .5f;
+            break;
+        case 4:
+            shape.phi_max = 3;
+            break;
+        case 5:
+            shape.inner_radius = .25f;
+            break;
+        case 6:
+            shape.height = 1;
+            break;
+        default:
+            throw std::logic_error("invalid analytic identity test field");
+        }
+        require(render_identity(copy, settings) != analytic_identity,
+                "analytic shape parameter identity");
+    }
     // Every point and wavelength contributes to identity, including dark bins.
     for (std::size_t light = 0; light < scene.point_lights.size(); ++light) {
         for (auto coordinate : {&GeometryPoint::x, &GeometryPoint::y, &GeometryPoint::z})

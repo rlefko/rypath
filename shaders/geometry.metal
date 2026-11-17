@@ -22,15 +22,21 @@ struct PatchAcceptance {
 PatchAcceptance
 rypath_patch_intersection(float3 origin [[origin]], float3 direction [[direction]],
                           float t_min [[min_distance]], float t_max [[max_distance]],
-                          const device Patch *patch [[primitive_data]],
+                          const device wire::ProceduralRecord *record [[primitive_data]],
                           uint instance [[instance_id]], uint primitive [[primitive_id]],
                           ray_data PatchPayload &payload [[payload]]) {
-    const auto hit = intersect_patch(*patch, origin, direction, t_min, t_max);
+    AnalyticIntersection hit{false, INFINITY, {0, 0}};
+    if (record->kind == wire::bilinear_patch) {
+        const auto patch = intersect_patch(record->patch, origin, direction, t_min, t_max);
+        hit = {patch.hit, patch.t, patch.uv};
+    } else if (record->kind == wire::analytic) {
+        hit = intersect_analytic(record->analytic, origin, direction, t_min, t_max);
+    }
     if (hit.hit && (hit.t < payload.t ||
                     (hit.t == payload.t &&
                      (instance < payload.instance ||
                       (instance == payload.instance && primitive < payload.primitive))))) {
-        payload = {hit.t, instance, primitive, hit.uv};
+        payload = {hit.t, instance, primitive, hit.uv, record->kind};
     }
     return {hit.hit, hit.t};
 }
@@ -60,7 +66,7 @@ kernel void rypath_closest_hits(const device Ray *rays [[buffer(0)]],
             Closest{wire::triangle, hit.instance_id,   hit.geometry_id,  hit.primitive_id,
                     hit.distance,   hit.coordinates.x, hit.coordinates.y};
     } else if (hit.type == intersection_type::bounding_box) {
-        output[index] = Closest{hit.valid ? wire::bilinear_patch : wire::invalid_hit,
+        output[index] = Closest{hit.valid ? hit.primitive_kind : wire::invalid_hit,
                                 hit.instance_id,
                                 hit.geometry_id,
                                 hit.primitive_id,

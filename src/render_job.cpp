@@ -2,6 +2,7 @@
 #include "render_job.hpp"
 
 #include "render_identity.hpp"
+#include <cmath>
 
 #include <atomic>
 #include <cerrno>
@@ -120,14 +121,23 @@ RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &s
                  ? sobol_signed_seed(loaded.value->settings.seed) !=
                        sobol_signed_seed(settings.seed)
                  : loaded.value->settings.seed != settings.seed) ||
-            loaded.value->film.model != scene.model) {
+            loaded.value->film.model != scene.model ||
+            loaded.value->film.packet != (scene.spectral_transport == SpectralTransport::packet) ||
+            (loaded.value->film.packet &&
+             (loaded.value->film.filter != scene.filter ||
+              loaded.value->film.max_component_value != scene.max_component_value ||
+              (std::isfinite(scene.max_component_value) &&
+               loaded.value->film.exposure != scene.exposure)))) {
             job.render.diagnostic =
                 "checkpoint does not match the scene, sampler, or fixed sample target";
             return job;
         }
         checkpoint = std::move(*loaded.value);
         checkpoint.settings = settings;
-        checkpoint.film.exposure = scene.exposure;
+        // Finite-clamp packet films contain sensor-exposed compatibility planes.
+        // Their exposure is part of identity and must not change on continuation.
+        if (!checkpoint.film.packet || !std::isfinite(checkpoint.film.max_component_value))
+            checkpoint.film.exposure = scene.exposure;
         std::cout << "Resuming samples per pixel: " << checkpoint.film.pixels.front().count << '/'
                   << settings.samples << '\n';
     }

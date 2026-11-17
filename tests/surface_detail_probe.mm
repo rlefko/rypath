@@ -6,8 +6,11 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <ranges>
 #include <stdexcept>
 #include <string_view>
@@ -174,6 +177,116 @@ std::array<wire::SurfaceTransform, 8> transforms() {
     return xfs;
 }
 
+void verify_scattering_frames(id<MTLDevice> device, id<MTLLibrary> library) {
+    using Float4 = std::array<float, 4>;
+    struct Case {
+        Float4 normal, tangent;
+        bool valid;
+    };
+    const auto bits = [](std::array<std::uint32_t, 3> words) {
+        return Float4{std::bit_cast<float>(words[0]), std::bit_cast<float>(words[1]),
+                      std::bit_cast<float>(words[2]), 0};
+    };
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::array cases{
+        Case{{0, 0, 2, 0}, {3, 0, 0, 0}, true},
+        Case{{0, 1, 0, 0}, {0, 0, -2, 0}, true},
+        Case{{0, 0, 1, 0}, {1, 0, .125f, 0}, true},
+        Case{{1, 2, 3, 0}, {2, -1, .1f, 0}, true},
+        Case{{0, 0, 1e-30f, 0}, {1e30f, 0, 0, 0}, true},
+        // Exact binary32 inputs from the authored Pavilion day/night failures.
+        Case{bits({0x3f18c4c0, 0xbbb32205, 0x3f4d6a8c}), bits({0xbb22f179, 0x3ad1ebe7, 0x3af3cc6f}),
+             true},
+        Case{bits({0xbef3db65, 0xbe9970b5, 0x3f539efb}), bits({0xc351dbfd, 0x426fac99, 0xc2c662e4}),
+             true},
+        Case{{0, 0, 0, 0}, {1, 0, 0, 0}, false},
+        Case{{0, 0, 1, 0}, {0, 0, 0, 0}, false},
+        Case{{inf, 0, 1, 0}, {1, 0, 0, 0}, false},
+        Case{{0, 0, 1, 0}, {1, inf, 0, 0}, false},
+        Case{{nan, 0, 1, 0}, {1, 0, 0, 0}, false},
+        Case{{0, 0, 1, 0}, {nan, 0, 0, 0}, false},
+        Case{{0, 0, 1, 0}, {0, 0, 2, 0}, false},
+        Case{{0, 0, 1, 0}, {0, 0, -2, 0}, false},
+        Case{{1, 2, 3, 0}, {2, 4, 6, 0}, false},
+        Case{{1, 2, 3, 0}, {-2, -4, -6, 0}, false},
+        Case{{1, 2, 3, 0}, {1, 2, std::nextafter(3.0f, 4.0f), 0}, false},
+    };
+    std::array<Float4, 2 * cases.size()> inputs{};
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        inputs[2 * i] = cases[i].normal;
+        inputs[2 * i + 1] = cases[i].tangent;
+    }
+    NSError *error = nil;
+    const auto kernel = [library newFunctionWithName:@"rypath_scattering_frame_probe"];
+    require(kernel != nil, "Missing scattering frame kernel");
+    const auto pipeline = [device newComputePipelineStateWithFunction:kernel error:&error];
+    require(pipeline != nil,
+            error ? error.localizedDescription.UTF8String : "Could not load frame pipeline");
+    const auto input = [device newBufferWithBytes:inputs.data()
+                                           length:sizeof(inputs)
+                                          options:MTLResourceStorageModeShared];
+    [[clang::objc_precise_lifetime]] id<MTLBuffer> output =
+        [device newBufferWithLength:(3 * cases.size() + 1) * sizeof(Float4)
+                            options:MTLResourceStorageModeShared];
+    const auto queue = [device newCommandQueue];
+    const auto command = [queue commandBuffer];
+    const auto encoder = [command computeCommandEncoder];
+    require(input != nil && output != nil && encoder != nil,
+            "Could not allocate scattering frame resources");
+    auto *values = static_cast<Float4 *>(output.contents);
+    const Float4 sentinel{12345, 12345, 12345, 12345};
+    values[3 * cases.size()] = sentinel;
+    const auto count = static_cast<std::uint32_t>(cases.size());
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(cases.size() + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    require(command.status == MTLCommandBufferStatusCompleted, "Scattering frame probe failed");
+    require(values[3 * cases.size()] == sentinel, "Scattering frame output guard changed");
+    const auto vector = [](Float4 value) { return Vec{value[0], value[1], value[2]}; };
+    const auto close = [](Vec actual, Vec expected) {
+        for (unsigned component = 0; component < 3; ++component)
+            require(std::isfinite(actual[component]) &&
+                        std::abs(actual[component] - expected[component]) < 4e-6,
+                    "Scattering frame direction differs from independent oracle");
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        for (unsigned axis = 0; axis < 3; ++axis)
+            require(values[3 * i + axis][3] == (cases[i].valid ? 1.0f : 0.0f),
+                    "Scattering frame accepted or rejected the wrong input");
+        if (!cases[i].valid)
+            continue;
+        const Vec x = vector(values[3 * i]), y = vector(values[3 * i + 1]),
+                  z = vector(values[3 * i + 2]);
+        const Vec n = unit(vector(cases[i].normal));
+        // Double cross products give an independent tangent-plane oracle.
+        const Vec expected_y = unit(cross(n, vector(cases[i].tangent)));
+        close(z, n);
+        close(y, expected_y);
+        close(x, cross(expected_y, n));
+        for (const auto &axis : {x, y, z})
+            require(std::abs(dot(axis, axis) - 1) < 4e-6, "Scattering frame axis is not unit");
+        require(std::abs(dot(x, y)) < 4e-6 && std::abs(dot(x, z)) < 4e-6 &&
+                    std::abs(dot(y, z)) < 4e-6,
+                "Scattering frame axes are not orthogonal");
+        close(cross(x, y), z);
+        for (const Vec direction : {Vec{.2, -.7, .6}, Vec{4, -3, 2}}) {
+            const Vec local{dot(x, direction), dot(y, direction), dot(z, direction)};
+            close(local[0] * x + local[1] * y + local[2] * z, direction);
+            const Vec world = direction[0] * x + direction[1] * y + direction[2] * z;
+            close({dot(x, world), dot(y, world), dot(z, world)}, direction);
+        }
+    }
+    std::cout << "Scattering frames: " << cases.size()
+              << " axis, skew, Pavilion and invalid cases; direction/round-trip checks\n";
+}
+
 void run(id<MTLDevice> device, const char *path) {
     NSError *error = nil;
     const auto url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
@@ -222,6 +335,7 @@ void run(id<MTLDevice> device, const char *path) {
     [command waitUntilCompleted];
     require(command.status == MTLCommandBufferStatusCompleted, "Metal surface probe failed");
     verify(static_cast<const wire::Point *>(output.contents));
+    verify_scattering_frames(device, library);
 }
 } // namespace
 

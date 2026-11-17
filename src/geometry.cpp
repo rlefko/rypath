@@ -2,6 +2,7 @@
 
 #include "geometry.hpp"
 
+#include "analytic.hpp"
 #include "bilinear.hpp"
 
 #include <algorithm>
@@ -91,6 +92,10 @@ bool zero_area(GeometryPoint a, GeometryPoint b, GeometryPoint c) {
 
 } // namespace
 
+bool triangle_has_area(GeometryPoint a, GeometryPoint b, GeometryPoint c) {
+    return !zero_area(a, b, c);
+}
+
 bool singular_linear_transform(const std::array<float, 9> &matrix) {
     return determinant_is_zero(matrix);
 }
@@ -105,7 +110,8 @@ std::string validate_geometry(const GeometryData &geometry) {
         const std::string mesh_name = "Mesh " + std::to_string(mesh_index);
         if (!size_fits<GeometryPoint>(mesh.positions.size()) ||
             !size_fits<std::array<std::uint32_t, 3>>(mesh.triangles.size()) ||
-            !size_fits<std::array<std::uint32_t, 4>>(mesh.patches.size())) {
+            !size_fits<std::array<std::uint32_t, 4>>(mesh.patches.size()) ||
+            !size_fits<GeometryAnalytic>(mesh.analytics.size())) {
             return mesh_name + " exceeds supported vertex or primitive count";
         }
         if (!mesh.normals.empty() && mesh.normals.size() != mesh.positions.size()) {
@@ -154,9 +160,6 @@ std::string validate_geometry(const GeometryData &geometry) {
             if (!mesh.tangent_signs.empty() && (mesh.tangent_signs[a] != mesh.tangent_signs[b] ||
                                                 mesh.tangent_signs[a] != mesh.tangent_signs[c]))
                 return mesh_name + " triangle has inconsistent tangent signs";
-            if (zero_area(mesh.positions[a], mesh.positions[b], mesh.positions[c])) {
-                return mesh_name + " triangle " + std::to_string(primitive) + " has zero area";
-            }
         }
         for (std::size_t primitive = 0; primitive < mesh.patches.size(); ++primitive) {
             const auto [a, b, c, d] = mesh.patches[primitive];
@@ -169,6 +172,10 @@ std::string validate_geometry(const GeometryData &geometry) {
                     {mesh.positions[a], mesh.positions[b], mesh.positions[c], mesh.positions[d]})) {
                 return name + " has a singular or numerically indeterminate Jacobian";
             }
+        }
+        for (std::size_t primitive = 0; primitive < mesh.analytics.size(); ++primitive) {
+            if (const auto error = validate_analytic(mesh.analytics[primitive]); !error.empty())
+                return mesh_name + " analytic " + std::to_string(primitive) + ": " + error;
         }
     }
     for (std::size_t index = 0; index < geometry.instances.size(); ++index) {
@@ -184,6 +191,10 @@ std::string validate_geometry(const GeometryData &geometry) {
         if (determinant_is_zero({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]})) {
             return name + " has a singular transform";
         }
+        if (const auto error = validate_analytic_geometry(geometry.meshes[instance.mesh_index],
+                                                          instance.transform);
+            !error.empty())
+            return name + ": " + error;
     }
     return {};
 }

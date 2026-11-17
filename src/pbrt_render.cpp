@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "pbrt_render.hpp"
+#include "analytic.hpp"
 #include "gaussian_filter.hpp"
 
 #include "mesh_displacement.hpp"
@@ -345,6 +346,10 @@ class Translator {
     Translator(const Scene &input, const Location &entry, const Limits &limits)
         : input_(input), entry_(entry), limits_(limits) {
         scene_.model = RenderModel::pbrt;
+        scene_.image_limits = limits.image;
+        scene_.triangle_frame_limit =
+            std::max(render_patch_corner_limit, limits.triangle_frame_entries);
+        scene_.preparation_byte_limit = limits.preparation_bytes;
     }
 
     RenderTranslation run();
@@ -499,8 +504,11 @@ void Translator::film(const Descriptor &descriptor) {
             unsupported(bounds->location, "Only full-frame film pixelbounds is supported");
         }
     }
-    if (const auto *limit = parameter(descriptor, "maxcomponentvalue")) {
-        unsupported(limit->location, "Film sample clamping is unsupported");
+    if (parameter(descriptor, "maxcomponentvalue")) {
+        if (const auto maximum = narrow(descriptor, "maxcomponentvalue", 0)) {
+            scene_.max_component_value = *maximum;
+            scene_.spectral_transport = SpectralTransport::packet;
+        }
     }
     result_.save_fp16 = boolean(descriptor, "savefp16", true);
 }
@@ -719,11 +727,18 @@ void Translator::sampler(const Descriptor &descriptor) {
 }
 
 void Translator::integrator(const Descriptor &descriptor) {
-    scene_.volume_transport = descriptor.authored.arguments.front().text == "volpath";
+    const auto &name = descriptor.authored.arguments.front().text;
+    scene_.integrator = name == "bdpt"      ? IntegratorKind::bdpt
+                        : name == "volpath" ? IntegratorKind::volpath
+                                            : IntegratorKind::path;
+    scene_.volume_transport = name == "volpath";
+    if (scene_.integrator == IntegratorKind::bdpt)
+        scene_.spectral_transport = SpectralTransport::packet;
     const auto depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 5));
     const bool qmc = result_.settings.sampler.kind != SamplerKind::independent;
-    const auto limit =
-        qmc ? sampler_max_depth(result_.settings.sampler, false) : render_emergency_limit;
+    const auto limit = scene_.spectral_transport == SpectralTransport::packet ? 64u
+                       : qmc ? sampler_max_depth(result_.settings.sampler, false)
+                             : render_emergency_limit;
     if (depth > limit) {
         unsupported(
             location(descriptor, "maxdepth"),
@@ -1019,7 +1034,8 @@ std::uint32_t Translator::native_image(const Descriptor &descriptor) {
 }
 
 std::optional<float> Translator::image_emission(const Descriptor &descriptor, float illuminance) {
-    if (const auto error = validate_image_light(*descriptor.native_image); !error.empty()) {
+    if (const auto error = validate_image_light(*descriptor.native_image, limits_.image);
+        !error.empty()) {
         invalid(location(descriptor, "filename"), error);
         return std::nullopt;
     }
@@ -1121,6 +1137,14 @@ void Translator::distant_bounds(const Descriptor &descriptor) {
         for (const auto &patch : mesh.patches)
             for (const auto index : patch)
                 add(index);
+        for (const auto &analytic : mesh.analytics) {
+            const auto bounds = analytic_bounds(analytic);
+            for (unsigned corner = 0; corner < 8; ++corner) {
+                const std::array<float, 3> point{bounds[corner & 1].x, bounds[(corner >> 1) & 1].y,
+                                                 bounds[(corner >> 2) & 1].z};
+                result.add(transformed(point, shape.descriptor.transform));
+            }
+        }
         return result;
     };
     const auto unite = [](Bounds &target, const Bounds &source) {
@@ -1222,7 +1246,7 @@ void Translator::light(const Descriptor &descriptor) {
                     "Projection light requires a checked RGB image");
             return;
         }
-        if (const auto error = validate_projection_image(*descriptor.native_image);
+        if (const auto error = validate_projection_image(*descriptor.native_image, limits_.image);
             !error.empty()) {
             invalid(location(descriptor, "filename"), error);
             return;
@@ -1331,7 +1355,7 @@ void Translator::light(const Descriptor &descriptor) {
             invalid(location(descriptor, "filename"), "Goniometric light requires a checked image");
             return;
         }
-        if (const auto error = validate_goniometric_image(*descriptor.native_image);
+        if (const auto error = validate_goniometric_image(*descriptor.native_image, limits_.image);
             !error.empty()) {
             invalid(location(descriptor, "filename"), error);
             return;
@@ -2253,7 +2277,8 @@ void Translator::texture_frames() {
         issue(Severity::error, "limit-exceeded", entry_, "Cannot allocate instance texture frames");
         return;
     }
-    std::size_t remaining = limits_.total_values;
+    const bool legacy_frames = limits_.triangle_frame_entries == Limits{}.triangle_frame_entries;
+    std::size_t remaining = legacy_frames ? limits_.total_values : limits_.triangle_frame_entries;
     std::size_t instance = 0;
     const auto prepare = [&](const Shape &shape, const Transform &placement,
                              const Location &source) {
@@ -2265,7 +2290,7 @@ void Translator::texture_frames() {
         scene_.instance_surface_transforms[index] = {shape.descriptor.transform.values,
                                                      placement.values, shape.reverse_orientation};
         const auto &mesh = scene_.geometry.meshes[shape.mesh_index];
-        constexpr std::size_t coordinates_per_frame = 6;
+        const std::size_t coordinates_per_frame = legacy_frames ? 6 : 1;
         if (mesh.triangles.size() > remaining / coordinates_per_frame) {
             issue(Severity::error, "limit-exceeded", source,
                   "Expanded triangle texture frame value limit exceeded");
@@ -2663,7 +2688,7 @@ void Translator::geometry() {
              {std::pair{mesh.positions.size(), 3U}, std::pair{mesh.triangles.size(), 3U},
               std::pair{mesh.normals.size(), 3U}, std::pair{mesh.uvs.size(), 2U},
               std::pair{mesh.patches.size(), 4U}, std::pair{mesh.tangents.size(), 3U},
-              std::pair{mesh.tangent_signs.size(), 1U}}) {
+              std::pair{mesh.tangent_signs.size(), 1U}, std::pair{mesh.analytics.size(), 7U}}) {
             if (count > remaining / width) {
                 issue(Severity::error, "limit-exceeded", entry_,
                       "Translated geometry value limit exceeded");
@@ -2672,14 +2697,12 @@ void Translator::geometry() {
             remaining -= count * width;
         }
     }
-    if (!scene_.volume_transport &&
+    if (!scene_.volume_transport && scene_.spectral_transport != SpectralTransport::packet &&
         std::ranges::none_of(geometry.instances, [&](const GeometryInstance &instance) {
             const auto &mesh = geometry.meshes[instance.mesh_index];
-            return !mesh.triangles.empty() || !mesh.patches.empty();
+            return !mesh.triangles.empty() || !mesh.patches.empty() || !mesh.analytics.empty();
         })) {
-        unsupported(
-            entry_,
-            "The spectral render profile requires at least one placed triangle or bilinear patch");
+        unsupported(entry_, "The spectral render profile requires at least one placed surface");
     }
 
     SpectralMaterial default_material;
@@ -2743,7 +2766,7 @@ void Translator::geometry() {
                         "glTF material cannot mix with shape alpha or AreaLightSource");
             const auto &g = material.gltf;
             const auto &geometry_mesh = geometry.meshes[shape.mesh_index];
-            if (!geometry_mesh.patches.empty())
+            if (!geometry_mesh.patches.empty() || !geometry_mesh.analytics.empty())
                 unsupported(shape.descriptor.authored.location,
                             "glTF materials require triangle geometry");
             if ((g.base_color_texture != graph::no_texture ||
@@ -2847,7 +2870,7 @@ void Translator::geometry() {
             const auto *image = scene_.image_textures[area.image_texture].image.get();
             auto [mean, inserted] = area_power_means.try_emplace(image);
             if (inserted)
-                mean->second = area_image_mean(*image);
+                mean->second = area_image_mean(*image, limits_.image);
             if (!mean->second) {
                 invalid(location(*descriptor, "power"),
                         "Positive area power requires a positive finite image mean");
@@ -2889,7 +2912,10 @@ void Translator::geometry() {
         scene_.instance_emissions.reserve(geometry.instances.size());
     }
     // Every placement prepares normals here and during portable scene validation.
-    std::size_t normal_coordinates_remaining = limits_.total_values;
+    const bool legacy_normals = limits_.shading_normal_entries == Limits{}.shading_normal_entries;
+    const std::size_t normal_width = legacy_normals ? 3 : 1;
+    std::size_t normal_coordinates_remaining =
+        legacy_normals ? limits_.total_values : limits_.shading_normal_entries;
     std::size_t patch_corners_remaining = std::min(limits_.total_values, render_patch_corner_limit);
     for (const auto &instance : geometry.instances) {
         const auto &mesh = scene_.geometry.meshes[instance.mesh_index];
@@ -2913,6 +2939,10 @@ void Translator::geometry() {
             !message.empty()) {
             invalid(shape.descriptor.authored.location, message);
         }
+        if (const auto message = validate_analytic_geometry(mesh, instance.transform);
+            !message.empty()) {
+            invalid(shape.descriptor.authored.location, message);
+        }
         scene_.instance_materials.push_back(binding.material);
         scene_.instance_media.push_back(
             {medium_id(shape.media.inside), medium_id(shape.media.outside)});
@@ -2928,12 +2958,12 @@ void Translator::geometry() {
         const bool reverse_winding = shape.reverse_orientation != mirrored;
         scene_.instance_reverse_orientation.push_back(reverse_winding);
 
-        if (mesh.normals.size() > normal_coordinates_remaining / 3) {
+        if (mesh.normals.size() > normal_coordinates_remaining / normal_width) {
             issue(Severity::error, "limit-exceeded", shape.descriptor.authored.location,
                   "Expanded shading normal value limit exceeded");
             return;
         }
-        normal_coordinates_remaining -= mesh.normals.size() * 3;
+        normal_coordinates_remaining -= mesh.normals.size() * normal_width;
         const auto normal_error =
             prepare_shading_normals(mesh, instance.transform, reverse_winding, shading_normals);
         if (!normal_error.empty()) {
@@ -3000,7 +3030,7 @@ image_filter_provenance(const RenderScene &scene,
         const auto &material = scene.materials[scene.instance_materials[i]];
         const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];
         if (material.kind == SpectralMaterialKind::image &&
-            (!mesh.triangles.empty() || !mesh.patches.empty())) {
+            (!mesh.triangles.empty() || !mesh.patches.empty() || !mesh.analytics.empty())) {
             const auto &texture = scene.image_textures[material.image_texture];
             const auto format = formats.find(texture.image.get());
             used_formats.insert(format == formats.end() ? ImageFileFormat::png : format->second);
@@ -3354,6 +3384,32 @@ RenderTranslation Translator::run() {
         if (distant != input_.lights.end())
             distant_bounds(*distant);
     }
+    if (scene_.spectral_transport == SpectralTransport::packet) {
+        const auto vacuum = [&](std::uint32_t id) {
+            if (id == no_medium)
+                return true;
+            const auto &medium = scene_.media[id];
+            const auto zero = [](float value) { return value == 0; };
+            return std::ranges::all_of(medium.sigma_a, zero) &&
+                   std::ranges::all_of(medium.sigma_s, zero) &&
+                   std::ranges::all_of(medium.emission, zero);
+        };
+        if (!vacuum(scene_.camera_medium))
+            unsupported(entry_, "Packet transport currently requires a vacuum camera medium");
+        else
+            scene_.camera_medium = no_medium;
+        for (auto &interface : scene_.instance_media) {
+            if (!vacuum(interface.inside) || !vacuum(interface.outside))
+                unsupported(entry_,
+                            "Packet transport currently requires vacuum placed medium interfaces");
+            else
+                interface = {};
+        }
+        for (const auto &descriptor : input_.lights)
+            if (!vacuum(medium_id(descriptor.outside_medium)))
+                unsupported(descriptor.authored.location,
+                            "Packet transport currently requires vacuum light endpoint media");
+    }
     if (std::ranges::all_of(scene_.instance_media,
                             [](const MediumInterface &m) { return m.inside == m.outside; }))
         scene_.instance_media.clear();
@@ -3367,8 +3423,8 @@ RenderTranslation Translator::run() {
         texture_frames();
     }
     const auto &settings = result_.settings;
-    if (integrator_descriptor && settings.sampler.kind != SamplerKind::independent &&
-        scene_has_dielectrics(scene_) &&
+    if (integrator_descriptor && scene_.spectral_transport == SpectralTransport::scalar &&
+        settings.sampler.kind != SamplerKind::independent && scene_has_dielectrics(scene_) &&
         scene_.max_depth > sampler_max_depth(settings.sampler, true)) {
         unsupported(location(*integrator_descriptor, "maxdepth"),
                     "QMC dielectric path maxdepth exceeds the limit of " +
@@ -3429,7 +3485,10 @@ RenderTranslation Translator::run() {
                           << scene_.filter.y_radius << ')';
         if (scene_.filter.kind == PixelFilterKind::gaussian)
             filter_provenance << " (sigma " << scene_.filter.sigma
-                              << "; normalized PBRT midpoint table; unit sample weight)";
+                              << "; normalized PBRT midpoint table; "
+                              << (scene_.spectral_transport == SpectralTransport::packet
+                                      ? "table-integral camera sample weight)"
+                                      : "unit sample weight)");
         result_.provenance.push_back(filter_provenance.str());
         if (scene_.perspective_lens) {
             std::ostringstream lens;
@@ -3437,13 +3496,21 @@ RenderTranslation Translator::run() {
             lens << std::setprecision(std::numeric_limits<float>::max_digits10)
                  << "Perspective lens: radius " << scene_.perspective_lens->radius
                  << ", focal distance " << scene_.perspective_lens->focal_distance
-                 << " (normalized aperture; unit ray weight; lens-v1 sampling)";
+                 << " (normalized aperture; unit ray weight; "
+                 << (scene_.spectral_transport == SpectralTransport::packet
+                         ? "fixed packet header block 1)"
+                         : "lens-v1 sampling)");
             result_.provenance.push_back(lens.str());
         }
+        if (scene_.spectral_transport == SpectralTransport::packet)
+            result_.provenance.emplace_back("Packet sampling: fixed dimension allocation [0,920); "
+                                            "keyed material-local Philox streams");
         if (!scene_.point_lights.empty()) {
             result_.provenance.push_back(
                 "Point lights: " + std::to_string(scene_.point_lights.size()) +
-                " (all-point direct evaluation; delta-position weights)");
+                (scene_.spectral_transport == SpectralTransport::packet
+                     ? " (uniform combined light selection; delta-position endpoint PDFs)"
+                     : " (all-point direct evaluation; delta-position weights)"));
         }
         if (!scene_.spot_lights.empty()) {
             result_.provenance.push_back(
@@ -3464,8 +3531,11 @@ RenderTranslation Translator::run() {
         if (!scene_.distant_lights.empty()) {
             result_.provenance.push_back(
                 "Distant lights: " + std::to_string(scene_.distant_lights.size()) +
-                " (all-distant direct evaluation; delta-direction weights; finite 2 * scene radius "
-                "visibility)");
+                (scene_.spectral_transport == SpectralTransport::packet
+                     ? " (uniform combined light selection; delta-direction endpoint PDFs; finite "
+                       "2 * scene radius visibility)"
+                     : " (all-distant direct evaluation; delta-direction weights; finite 2 * scene "
+                       "radius visibility)"));
         }
         if (auto images = image_filter_provenance(scene_, image_formats_); !images.empty()) {
             result_.provenance.push_back(std::move(images));

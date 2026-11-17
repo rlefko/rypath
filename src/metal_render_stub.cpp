@@ -16,6 +16,9 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &) {
         .status = GeometryStatus::not_built,
         .diagnostic = "Metal backend was not built",
         .samples = {},
+        .guard_count = 0,
+        .packet_samples = {},
+        .packet_splats = {},
     };
 }
 

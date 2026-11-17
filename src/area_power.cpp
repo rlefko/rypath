@@ -2,6 +2,7 @@
 // Bilinear area/rectangle adaptation: pbrt-v4 b0bdf461, shapes.{cpp,h}.
 // Copyright (c) 1998-2020, Matt Pharr, Wenzel Jakob, and Greg Humphreys.
 // Licensed under Apache-2.0; see third_party/pbrt/LICENSE.txt and README.md.
+#include "analytic.hpp"
 #include "render.hpp"
 
 #include <algorithm>
@@ -11,8 +12,8 @@
 #include <set>
 
 namespace rypath {
-std::optional<double> area_image_mean(const ImagePyramid &image) {
-    if (!validate_image_light(image).empty())
+std::optional<double> area_image_mean(const ImagePyramid &image, const ImageLimits &limits) {
+    if (!validate_image_light(image, limits).empty())
         return {};
     const auto &base = image.levels.front();
     double sum = 0;
@@ -105,6 +106,11 @@ std::string prepare_instance_power(const RenderScene &scene, std::size_t index,
         return {};
     };
     for (const auto &t : mesh.triangles) {
+        if (t[0] >= mesh.positions.size() || t[1] >= mesh.positions.size() ||
+            t[2] >= mesh.positions.size())
+            return "Invalid area power vertex index";
+        if (!triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]], mesh.positions[t[2]]))
+            return "Positive area power cannot normalize a retained zero-area triangle";
         std::array<V, 3> p;
         for (unsigned k = 0; k < 3; ++k)
             if (!world(t[k], p[k]))
@@ -119,6 +125,13 @@ std::string prepare_instance_power(const RenderScene &scene, std::size_t index,
             if (!world(patch[k], p[k]))
                 return "Invalid area power world vertex";
         if (auto error = append(patch_area(p)); !error.empty())
+            return error;
+    }
+    for (const auto &shape : mesh.analytics) {
+        const auto area = analytic_world_area(shape, instance.transform);
+        if (!area)
+            return "Positive power on curved analytic emitters requires a similarity transform";
+        if (auto error = append(*area); !error.empty())
             return error;
     }
     return {};
@@ -151,9 +164,11 @@ std::string prepare_area_power(const RenderScene &scene, std::vector<std::vector
             return "Area power mesh index is out of range";
         const auto &mesh = scene.geometry.meshes[mesh_index];
         if (mesh.triangles.size() > max_factors - count ||
-            mesh.patches.size() > max_factors - count - mesh.triangles.size())
+            mesh.patches.size() > max_factors - count - mesh.triangles.size() ||
+            mesh.analytics.size() >
+                max_factors - count - mesh.triangles.size() - mesh.patches.size())
             return "Area power factor budget exceeded";
-        count += mesh.triangles.size() + mesh.patches.size();
+        count += mesh.triangles.size() + mesh.patches.size() + mesh.analytics.size();
     }
     failed_instance = SIZE_MAX;
     // A shared immutable image may serve many declarations and placements.
@@ -177,7 +192,7 @@ std::string prepare_area_power(const RenderScene &scene, std::vector<std::vector
         const auto *image = scene.image_textures[emission.image_texture].image.get();
         auto found = image_means.find(image);
         if (found == image_means.end()) {
-            const auto mean = area_image_mean(*image);
+            const auto mean = area_image_mean(*image, scene.image_limits);
             if (!mean)
                 return "Positive area power requires a positive finite image mean";
             found = image_means.emplace(image, *mean).first;

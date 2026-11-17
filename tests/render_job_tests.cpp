@@ -95,6 +95,38 @@ int main() {
         const auto unchanged = rypath::read_checkpoint(options.output);
         require(unchanged.value && unchanged.value->film == job.render.film,
                 "mismatch overwrote checkpoint");
+        settings.samples = 3;
+        scene.spectral_transport = rypath::SpectralTransport::packet;
+        scene.max_component_value = 50;
+        checkpoint.settings = settings;
+        checkpoint.identity = rypath::render_identity(scene, settings);
+        checkpoint.film = rypath::make_packet_film(scene, settings);
+        auto &pixel = checkpoint.film.pixels.front();
+        pixel.count = 3;
+        pixel.sum = {1, 2, 3};
+        pixel.correction = {1e-20, -1e-20, 0};
+        pixel.splat_sum = {4, 5, 6};
+        pixel.compatibility_sum = {7, 8, 9};
+        pixel.compatibility_splat_sum = {10, 11, 12};
+        pixel.weight_sum = 3;
+        pixel.weight_correction = 1e-20;
+        require(rypath::write_checkpoint(checkpoint, options.resume).empty(),
+                "write packet checkpoint");
+        const auto packet_job =
+            rypath::run_render_job(scene, settings, options, image, {}, "unused");
+        require(packet_job.render.status == rypath::GeometryStatus::success &&
+                    packet_job.render.device.name.empty() &&
+                    packet_job.render.film == checkpoint.film,
+                "completed packet resume preserves every accumulation plane without GPU");
+        scene.exposure = 3;
+        const auto exposed = rypath::run_render_job(scene, settings, options, image, {}, "unused");
+        require(exposed.render.status == rypath::GeometryStatus::failure &&
+                    exposed.render.diagnostic.find("does not match") != std::string::npos &&
+                    exposed.render.device.name.empty(),
+                "clamped packet exposure change rejected before GPU");
+        const auto protected_output = rypath::read_checkpoint(options.output);
+        require(protected_output.value && protected_output.value->film == checkpoint.film,
+                "clamped exposure mismatch preserves published checkpoint");
         std::cout << "Checkpoint job and path checks passed\n";
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

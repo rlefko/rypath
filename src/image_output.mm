@@ -134,7 +134,7 @@ std::string write_png(const Film &film, const std::filesystem::path &path) {
             if (count == 0 || pixel.count != count) {
                 return "cannot write a film with incomplete sample counts";
             }
-            const auto mean = film_mean(pixel);
+            const auto mean = film_mean(film, pixel);
             if (!std::ranges::all_of(mean, [](double value) { return std::isfinite(value); })) {
                 return "cannot write a film with nonfinite XYZ values";
             }

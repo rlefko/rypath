@@ -177,10 +177,13 @@ void check_geometry_validation(const GeometryData &geometry) {
         "Mesh 1 UV 1 is nonfinite");
     check([](GeometryData &data) { data.meshes[1].triangles[0][1] = 42; },
           "triangle 0 has an out-of-range vertex index");
-    check([](GeometryData &data) { data.meshes[1].triangles[0][1] = 1; },
-          "triangle 0 has zero area");
-    check([](GeometryData &data) { data.meshes[1].positions[3] = {1, 0, 0}; },
-          "triangle 0 has zero area");
+    auto zero_measure = geometry;
+    zero_measure.meshes[1].triangles[0][1] = 1;
+    require(validate_geometry(zero_measure).empty(),
+            "Repeated-vertex zero-measure faces are retained");
+    zero_measure = geometry;
+    zero_measure.meshes[1].positions[3] = {1, 0, 0};
+    require(validate_geometry(zero_measure).empty(), "Collinear zero-measure faces are retained");
     check([](GeometryData &data) { data.instances[1].mesh_index = 42; },
           "Instance 1 has an out-of-range mesh index");
     check([](GeometryData &data) { data.instances[1].transform.values[3] = nan; },
@@ -196,7 +199,11 @@ void check_geometry_validation(const GeometryData &geometry) {
     require(validate_geometry(difficult).empty(), "nonzero area after large subtraction must pass");
     difficult.meshes[1].positions[2] = {1, 1, 0};
     difficult.meshes[1].positions[3] = {2, 2, 0};
-    require_diagnostic(validate_geometry(difficult), "triangle 0 has zero area");
+    require(validate_geometry(difficult).empty(),
+            "Zero-measure face after cancellation is retained");
+    require(!triangle_has_area(difficult.meshes[1].positions[1], difficult.meshes[1].positions[2],
+                               difficult.meshes[1].positions[3]),
+            "Exact zero-measure classification after cancellation");
 
     const float tiny = std::ldexp(1.0f, -100);
     difficult = geometry;

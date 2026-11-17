@@ -3,6 +3,7 @@
 // Mipmap filtering and color encoding adapted for rypath. See third_party/pbrt/README.md.
 
 #include "image_texture.hpp"
+#include "png_allocator.hpp"
 
 #include "ewa_weights.h"
 
@@ -24,9 +25,7 @@
 namespace rypath {
 namespace {
 
-constexpr std::uint32_t max_image_dimension = 4096;
-constexpr auto max_image_file_bytes = std::size_t{16} * 1024 * 1024;
-constexpr auto max_image_bytes = std::size_t{256} * 1024 * 1024;
+constexpr std::uint32_t max_image_dimension = image_dimension_ceiling;
 
 using Rgb = std::array<float, 3>;
 using Rgba = std::array<float, 4>;
@@ -44,8 +43,8 @@ template <typename T> ImageResult<T> budget_error(std::string diagnostic) {
 }
 
 bool dimensions_fit(std::uint32_t width, std::uint32_t height, const ImageLimits &limits) {
-    const auto max_dimension = std::min(limits.max_dimension, max_image_dimension);
-    return width <= max_dimension && height <= max_dimension;
+    return valid_image_limits(limits) && width > 0 && height > 0 && width <= limits.max_dimension &&
+           height <= limits.max_dimension;
 }
 
 bool valid_profile(ImageEncoding encoding, ImageWrap wrap) {
@@ -830,9 +829,11 @@ std::optional<Rgb> ewa_rgb(const ImagePyramid &image, TexturePoint st, TexturePo
 
 ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes, const ImageLimits &limits,
                                      bool preserve_all_alpha) {
-    if (bytes.size() > max_image_file_bytes) {
-        return budget_error<DecodedImage>("PNG exceeds the 16 MiB input limit");
+    if (!valid_image_limits(limits) || bytes.size() > limits.file_bytes) {
+        return budget_error<DecodedImage>("PNG exceeds the configured input limit");
     }
+    PngAllocationScope allocation_scope(
+        std::min(limits.png_allocation_bytes, limits.scratch_bytes));
     PngState png;
     unsigned width = 0;
     unsigned height = 0;
@@ -863,7 +864,7 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes, const 
     const std::size_t retained = rgb_bytes + alpha_bytes;
     const std::size_t raw_bytes = (pixels * source_bpp + 7) / 8;
     const std::size_t scanline_bytes = png_scanline_bytes(width, height, png.state.info_png);
-    if (retained > std::min(limits.retained_bytes, max_image_bytes)) {
+    if (retained > limits.retained_bytes) {
         return budget_error<DecodedImage>("PNG exceeds the decoded image byte budget");
     }
     // Include both old/new inflate buffers if realloc moves the allocation, plus IDAT
@@ -875,7 +876,7 @@ ImageResult<DecodedImage> decode_png(std::span<const std::uint8_t> bytes, const 
     const auto scratch = std::max({inflate_scratch, scanline_bytes + raw_bytes,
                                    raw_bytes + retained, indexed ? 0 : 2 * retained}) +
                          (has_palette ? std::size_t{2} * 256 * 4 : 0);
-    if (scratch > std::min(limits.scratch_bytes, max_image_bytes)) {
+    if (scratch > limits.scratch_bytes) {
         return budget_error<DecodedImage>("PNG exceeds the decoder scratch byte budget");
     }
     png.state.decoder.zlibsettings.max_output_size = scanline_bytes;
@@ -950,13 +951,12 @@ ImageEncoding image_effective_encoding(const DecodedImage &image, ImageEncoding 
 
 ImageResult<DecodedImage> decode_jpeg(std::span<const std::uint8_t> bytes,
                                       const ImageLimits &limits) {
-    if (bytes.size() > max_image_file_bytes)
-        return budget_error<DecodedImage>("JPEG exceeds the 16 MiB input limit");
+    if (!valid_image_limits(limits) || bytes.size() > limits.file_bytes)
+        return budget_error<DecodedImage>("JPEG exceeds the configured input limit");
 
-    auto decoded =
-        jpeg::decode(bytes, {.max_dimension = std::min(limits.max_dimension, max_image_dimension),
-                             .retained_bytes = std::min(limits.retained_bytes, max_image_bytes),
-                             .scratch_bytes = std::min(limits.scratch_bytes, max_image_bytes)});
+    auto decoded = jpeg::decode(bytes, {.max_dimension = limits.max_dimension,
+                                        .retained_bytes = limits.retained_bytes,
+                                        .scratch_bytes = limits.scratch_bytes});
     switch (decoded.error) {
     case jpeg::Error::none:
         return {.value = DecodedImage{.width = decoded.width,
@@ -1111,7 +1111,7 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
     const std::size_t retained = total_words * sizeof(std::uint32_t) +
                                  level_count * sizeof(ImageMipLevel) +
                                  (custom ? sizeof(std::array<float, 256>) : 0);
-    if (retained > std::min(limits.retained_bytes, max_image_bytes)) {
+    if (retained > limits.retained_bytes) {
         return budget_error<ImagePyramid>("Image exceeds the mip pyramid byte budget");
     }
 
@@ -1131,7 +1131,7 @@ ImageResult<ImagePyramid> build_image(const DecodedImage &image, ImageEncoding a
                                     ? base_bytes + (width + height) * sizeof(ResampleWeight) +
                                           pixel_count(width, 4) * pixel_size
                                     : 0;
-    if (std::max(mip_scratch, resize_scratch) > std::min(limits.scratch_bytes, max_image_bytes)) {
+    if (std::max(mip_scratch, resize_scratch) > limits.scratch_bytes) {
         return budget_error<ImagePyramid>("Image exceeds the mip generation scratch byte budget");
     }
 
@@ -1355,13 +1355,13 @@ ImageResult<ImagePyramid> build_gltf_image_pyramid(const DecodedImage &image,
             break;
     }
     const auto retained = total * sizeof(Rgba) + count * sizeof(ImageMipLevel);
-    if (retained > std::min(limits.retained_bytes, max_image_bytes))
+    if (retained > limits.retained_bytes)
         return budget_error<ImagePyramid>("glTF image exceeds the mip pyramid byte budget");
     const auto scratch = (pixels + (count > 1 ? pixel_count(std::max(1u, image.width / 2),
                                                             std::max(1u, image.height / 2))
                                               : 0)) *
                          sizeof(Rgba);
-    if (scratch > std::min(limits.scratch_bytes, max_image_bytes))
+    if (scratch > limits.scratch_bytes)
         return budget_error<ImagePyramid>("glTF image exceeds the mip scratch byte budget");
     ImagePyramid pyramid{.encoding = encoding,
                          .wrap = ImageWrap::repeat,
@@ -1505,8 +1505,8 @@ std::optional<Rgba> gltf_image_rgba(const ImageTexture &texture, float s, float 
                                     float dtdx, float dsdy, float dtdy) {
     if (!texture.image || !texture.gltf_sampler || !texture.image->gltf ||
         texture.image->storage != ImageStorage::linear_float || texture.image->levels.empty() ||
-        texture.image->levels.size() > 13 || !std::isfinite(s) || !std::isfinite(t) ||
-        !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
+        texture.image->levels.size() > std::bit_width(max_image_dimension) || !std::isfinite(s) ||
+        !std::isfinite(t) || !std::isfinite(dsdx) || !std::isfinite(dtdx) || !std::isfinite(dsdy) ||
         !std::isfinite(dtdy))
         return std::nullopt;
     const auto &image = *texture.image;

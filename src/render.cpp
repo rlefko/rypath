@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "render.hpp"
+#include "analytic.hpp"
 #include "bilinear.hpp"
 #include "bsdf_table.hpp"
 #include "gaussian_filter.hpp"
+#include "geometry_wire.h"
+#include "packet_wire.h"
+#include "render_wire.h"
 #include "triangle_attributes.hpp"
 
 #include "cie_xyz_data.hpp"
@@ -15,6 +19,7 @@
 #include <limits>
 #include <numeric>
 #include <set>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -405,6 +410,8 @@ std::string validate_pbrt_material(const SpectralMaterial &material) {
 
 std::string validate_image_textures(const RenderScene &scene) {
     namespace graph = texture_graph_wire;
+    if (!valid_image_limits(scene.image_limits))
+        return "Invalid image resource limits";
     if (const auto error = validate_texture_graph(scene.texture_graph, scene.image_textures.size());
         !error.empty()) {
         return error;
@@ -536,7 +543,7 @@ std::string validate_image_textures(const RenderScene &scene) {
         }
         const auto &level = scene.image_textures[scene.environment_image].image->levels.front();
         if (level.width != level.height || level.width == 0 ||
-            level.width > ImageLimits{}.max_dimension) {
+            level.width > scene.image_limits.max_dimension) {
             return "Environment image must use a bounded square equal-area map";
         }
         const auto &m = scene.environment_texture_from_world.values;
@@ -594,7 +601,7 @@ std::string validate_image_textures(const RenderScene &scene) {
         }
     }
     std::set<const ImagePyramid *> checked;
-    std::size_t remaining = ImageLimits{}.retained_bytes;
+    std::size_t remaining = scene.image_limits.retained_bytes;
     if (scene.environment_image != UINT32_MAX) {
         const auto width = std::min<std::size_t>(
             render_wire::environment_grid_limit,
@@ -657,7 +664,9 @@ std::string validate_image_textures(const RenderScene &scene) {
              image.storage != ImageStorage::linear_float) ||
             (image.wrap != ImageWrap::repeat && image.wrap != ImageWrap::clamp &&
              image.wrap != ImageWrap::black) ||
-            image.levels.empty() || image.levels.size() > 13) {
+            image.levels.empty() ||
+            image.levels.size() >
+                static_cast<std::size_t>(std::bit_width(scene.image_limits.max_dimension))) {
             return "Invalid image texture encoding, storage, wrap or mip count";
         }
         if (image.texels.size() > remaining / sizeof(std::uint32_t)) {
@@ -675,7 +684,7 @@ std::string validate_image_textures(const RenderScene &scene) {
         if (width == 0 || height == 0 ||
             (!image.native_base && !image.gltf &&
              (!std::has_single_bit(width) || !std::has_single_bit(height))) ||
-            width > ImageLimits{}.max_dimension || height > ImageLimits{}.max_dimension) {
+            width > scene.image_limits.max_dimension || height > scene.image_limits.max_dimension) {
             return "Image mip dimensions must be bounded positive powers of two";
         }
         for (const auto &level : image.levels) {
@@ -722,7 +731,9 @@ std::string validate_image_textures(const RenderScene &scene) {
     std::set<const ImagePyramid *> checked_emission;
     const auto check_emission = [&](std::uint32_t index) {
         const auto &image = *scene.image_textures[index].image;
-        return checked_emission.insert(&image).second ? validate_image_light(image) : std::string{};
+        return checked_emission.insert(&image).second
+                   ? validate_image_light(image, scene.image_limits)
+                   : std::string{};
     };
     for (const auto &emission : scene.area_emissions) {
         if (emission.image_texture != UINT32_MAX) {
@@ -734,7 +745,7 @@ std::string validate_image_textures(const RenderScene &scene) {
         if (auto error = check_emission(scene.environment_image); !error.empty())
             return error;
     }
-    std::size_t remaining_frames = render_patch_corner_limit;
+    std::size_t remaining_frames = scene.triangle_frame_limit;
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
         const auto &frames = scene.instance_texture_frames[i];
         const auto &mesh = scene.geometry.meshes[scene.geometry.instances[i].mesh_index];
@@ -884,12 +895,14 @@ bool scene_has_dielectrics(const RenderScene &scene) {
     });
 }
 
-std::string validate_image_light(const ImagePyramid &image) {
+std::string validate_image_light(const ImagePyramid &image, const ImageLimits &limits) {
+    if (!valid_image_limits(limits))
+        return "Invalid image resource limits";
     if (!image.native_base || image.levels.size() != 1 || image.source_channels != 3)
         return "Image lights require a native RGB image";
     const auto &level = image.levels.front();
-    if (level.width == 0 || level.height == 0 || level.width > ImageLimits{}.max_dimension ||
-        level.height > ImageLimits{}.max_dimension)
+    if (level.width == 0 || level.height == 0 || level.width > limits.max_dimension ||
+        level.height > limits.max_dimension)
         return "Image light dimensions exceed the supported range";
     for (std::uint32_t y = 0; y < level.height; ++y) {
         for (std::uint32_t x = 0; x < level.width; ++x) {
@@ -905,10 +918,12 @@ std::string validate_image_light(const ImagePyramid &image) {
     return {};
 }
 
-std::string validate_projection_image(const ImagePyramid &image) {
+std::string validate_projection_image(const ImagePyramid &image, const ImageLimits &limits) {
+    if (!valid_image_limits(limits))
+        return "Invalid image resource limits";
     if (image.gltf || image.wrap != ImageWrap::clamp)
         return "Projection lights require a native RGB image with clamp boundaries";
-    if (const auto error = validate_image_light(image); !error.empty())
+    if (const auto error = validate_image_light(image, limits); !error.empty())
         return error;
     const auto &level = image.levels.front();
     for (std::uint32_t y = 0; y < level.height; ++y)
@@ -922,13 +937,14 @@ std::string validate_projection_image(const ImagePyramid &image) {
     return {};
 }
 
-std::string validate_goniometric_image(const ImagePyramid &image) {
+std::string validate_goniometric_image(const ImagePyramid &image, const ImageLimits &limits) {
+    if (!valid_image_limits(limits))
+        return "Invalid image resource limits";
     if (!image.native_base || image.levels.size() != 1 || image.source_channels != 1 ||
         image.wrap != ImageWrap::clamp || image.gltf)
         return "Goniometric lights require a native scalar image with clamp boundaries";
     const auto &level = image.levels.front();
-    if (level.width == 0 || level.width != level.height ||
-        level.width > ImageLimits{}.max_dimension)
+    if (level.width == 0 || level.width != level.height || level.width > limits.max_dimension)
         return "Goniometric image must be square and within the dimension limit";
     for (std::uint32_t y = 0; y < level.height; ++y) {
         for (std::uint32_t x = 0; x < level.width; ++x) {
@@ -1222,6 +1238,9 @@ std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTrans
     if (auto message = validate_patch_geometry(mesh, transform); !message.empty()) {
         return message;
     }
+    if (auto message = validate_analytic_geometry(mesh, transform); !message.empty()) {
+        return message;
+    }
     constexpr double normal_min = std::numeric_limits<float>::min();
     constexpr double finite_max = std::numeric_limits<float>::max();
     const bool transformed = transform.values != GeometryTransform{}.values;
@@ -1238,6 +1257,8 @@ std::string validate_area_geometry(const GeometryMesh &mesh, const GeometryTrans
         if (std::max({a, b, c}) >= mesh.positions.size()) {
             return "Area light triangle " + std::to_string(i) + " has an out-of-range vertex index";
         }
+        if (!triangle_has_area(mesh.positions[a], mesh.positions[b], mesh.positions[c]))
+            continue;
         const auto p0 = to_vector(mesh.positions[a]);
         const auto p1 = to_vector(mesh.positions[b]);
         const auto p2 = to_vector(mesh.positions[c]);
@@ -1294,7 +1315,130 @@ bool instance_uses_texture_context(const RenderScene &scene, std::size_t index) 
            emission;
 }
 
+std::string validate_render_preparation_budget(const RenderScene &scene,
+                                               std::size_t *estimated_bytes) {
+    const auto limit = scene.preparation_byte_limit;
+    if (limit == std::numeric_limits<std::size_t>::max() && estimated_bytes == nullptr)
+        return {};
+    std::size_t used = 0;
+    const auto charge = [&](std::size_t count, std::size_t stride) {
+        // Three copies account for owned source, packed staging and GPU upload.
+        // Do the bound check before either multiplication.
+        if (stride > std::numeric_limits<std::size_t>::max() / 3)
+            return false;
+        stride *= 3;
+        if (count > (limit - used) / stride)
+            return false;
+        used += count * stride;
+        return true;
+    };
+    const auto exceeded = [] {
+        return std::string(
+            "Estimated shading preparation exceeds the configured byte budget "
+            "(native acceleration structures, driver scratch and pipelines excluded)");
+    };
+    // Bound fixed observer/reconstruction/sampling tables, empty-buffer sentinels,
+    // and the largest supported Gaussian CDF without allocating them here.
+    if (!charge(std::size_t{32} * 1024 * 1024, 1) ||
+        (scene.spectral_transport == SpectralTransport::packet &&
+         !charge(packet_wire::workspace_bytes + 64, 1)))
+        return exceeded();
+    const auto mesh = [&](const GeometryMesh &m) {
+        return charge(m.positions.size(),
+                      2 * sizeof(render_wire::Point) + sizeof(render_wire::SurfaceVertex)) &&
+               charge(m.triangles.size(), 2 * sizeof(render_wire::Triangle)) &&
+               charge(m.patches.size(),
+                      sizeof(render_wire::Patch) + sizeof(geometry_wire::Patch)) &&
+               charge(m.analytics.size(), sizeof(geometry_wire::Analytic)) &&
+               charge(m.uvs.size(), sizeof(render_wire::Point2));
+    };
+    if (!charge(scene.geometry.meshes.size(), sizeof(std::size_t)) ||
+        !charge(scene.geometry.instances.size(), sizeof(std::size_t) + 64))
+        return exceeded();
+    for (const auto &m : scene.geometry.meshes)
+        if (!mesh(m))
+            return exceeded();
+    for (const auto &frames : scene.instance_texture_frames)
+        if (!charge(frames.size(), sizeof(render_wire::TextureFrame)))
+            return exceeded();
+    using NormalKey = std::tuple<std::uint32_t, std::array<float, 9>, bool>;
+    std::set<NormalKey> normals;
+    std::vector<std::size_t> references(scene.geometry.meshes.size());
+    for (const auto &instance : scene.geometry.instances) {
+        if (instance.mesh_index >= references.size())
+            return "Preparation budget requires valid instance mesh indices";
+        ++references[instance.mesh_index];
+    }
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        const auto &instance = scene.geometry.instances[i];
+        const auto &m = scene.geometry.meshes[instance.mesh_index];
+        const auto &t = instance.transform.values;
+        if (!std::ranges::all_of(t, [](float value) { return std::isfinite(value); }))
+            return "Preparation budget requires finite instance transforms";
+        const bool reverse = !scene.instance_reverse_orientation.empty() &&
+                             i < scene.instance_reverse_orientation.size() &&
+                             scene.instance_reverse_orientation[i] != 0;
+        const NormalKey key{
+            instance.mesh_index, {t[0], t[1], t[2], t[4], t[5], t[6], t[8], t[9], t[10]}, reverse};
+        if (normals.insert(key).second && !charge(m.normals.size(), sizeof(render_wire::Point)))
+            return exceeded();
+        const std::size_t families =
+            std::size_t(!m.triangles.empty()) + !m.patches.empty() + !m.analytics.empty();
+        if (!charge(families,
+                    sizeof(render_wire::Instance) + sizeof(render_wire::SurfaceTransform) + 64))
+            return exceeded();
+        const bool emitting =
+            i < scene.instance_emissions.size() && scene.instance_emissions[i] != no_area_emission;
+        if (emitting) {
+            if (!charge(m.triangles.size(), sizeof(render_wire::Emitter) + sizeof(float)) ||
+                !charge(m.patches.size(), sizeof(render_wire::Emitter) + sizeof(float)) ||
+                !charge(m.analytics.size(), sizeof(render_wire::Emitter) + sizeof(float)))
+                return exceeded();
+            if (references[instance.mesh_index] > 1 &&
+                instance.transform.values != GeometryTransform{}.values && !mesh(m))
+                return exceeded();
+        }
+    }
+    std::set<const ImagePyramid *> images;
+    for (const auto &texture : scene.image_textures) {
+        if (!charge(1, sizeof(render_wire::ImageTexture)))
+            return exceeded();
+        if (texture.image && images.insert(texture.image.get()).second &&
+            (!charge(texture.image->texels.size(), sizeof(std::uint32_t)) ||
+             !charge(texture.image->levels.size(), sizeof(render_wire::TextureLevel)) ||
+             (texture.image->custom_transfer && !charge(256, sizeof(float)))))
+            return exceeded();
+    }
+    std::set<const BsdfTable *> tables;
+    for (const auto &material : scene.materials) {
+        if (!charge(1, sizeof(render_wire::Material) + sizeof(render_wire::MaterialAuxiliary)))
+            return exceeded();
+        for (const auto *knots : {&material.knots, &material.eta.knots, &material.k.knots,
+                                  &material.surface.interface_eta.knots})
+            if (!charge(knots->size(), sizeof(render_wire::SpectralKnot)))
+                return exceeded();
+        if (material.table && tables.insert(material.table.get()).second &&
+            !charge(material.table->words.size(), sizeof(std::uint32_t)))
+            return exceeded();
+    }
+    if (!charge(scene.texture_graph.nodes.size(), sizeof(texture_graph_wire::Node)) ||
+        !charge(scene.texture_graph.knots.size(), sizeof(render_wire::SpectralKnot)) ||
+        !charge(scene.area_emissions.size(), sizeof(render_wire::AreaEmission)) ||
+        !charge(scene.point_lights.size(), sizeof(render_wire::PositionalLight)) ||
+        !charge(scene.spot_lights.size(), sizeof(render_wire::PositionalLight)) ||
+        !charge(scene.goniometric_lights.size(), sizeof(render_wire::PositionalLight)) ||
+        !charge(scene.projection_lights.size(), sizeof(render_wire::PositionalLight)) ||
+        !charge(scene.distant_lights.size(), sizeof(render_wire::DistantLight)) ||
+        !charge(scene.media.size(), sizeof(render_wire::Medium)))
+        return exceeded();
+    if (estimated_bytes != nullptr)
+        *estimated_bytes = used;
+    return {};
+}
+
 std::string validate_render_scene(const RenderScene &scene) {
+    if (const auto error = validate_render_preparation_budget(scene); !error.empty())
+        return error;
     if (scene.point_lights.size() > max_positional_lights ||
         scene.spot_lights.size() > max_positional_lights - scene.point_lights.size() ||
         scene.goniometric_lights.size() >
@@ -1381,7 +1525,8 @@ std::string validate_render_scene(const RenderScene &scene) {
             return "Goniometric light requires a valid owned scalar image";
         const auto &image = *scene.image_textures[light.image_texture].image;
         if (checked_goniometric.insert(&image).second) {
-            if (const auto error = validate_goniometric_image(image); !error.empty())
+            if (const auto error = validate_goniometric_image(image, scene.image_limits);
+                !error.empty())
                 return error;
         }
     }
@@ -1405,7 +1550,8 @@ std::string validate_render_scene(const RenderScene &scene) {
             return "Projection light requires a valid owned RGB image";
         const auto &image = *scene.image_textures[light.image_texture].image;
         if (checked_projection.insert(&image).second)
-            if (const auto error = validate_projection_image(image); !error.empty())
+            if (const auto error = validate_projection_image(image, scene.image_limits);
+                !error.empty())
                 return error;
         const auto &level = image.levels.front();
         const float aspect = float(level.width) / float(level.height);
@@ -1425,7 +1571,7 @@ std::string validate_render_scene(const RenderScene &scene) {
                 if (instance.mesh_index >= scene.geometry.meshes.size())
                     return false;
                 const auto &mesh = scene.geometry.meshes[instance.mesh_index];
-                return !mesh.triangles.empty() || !mesh.patches.empty();
+                return !mesh.triangles.empty() || !mesh.patches.empty() || !mesh.analytics.empty();
             }))
             return "Distant lights require nonempty scene geometry";
         const double diameter = 2 * double(scene.distant_scene_radius);
@@ -1445,6 +1591,20 @@ std::string validate_render_scene(const RenderScene &scene) {
                 return "Distant radiance must be finite and nonnegative";
         }
     }
+    if (scene.integrator != IntegratorKind::path && scene.integrator != IntegratorKind::volpath &&
+        scene.integrator != IntegratorKind::bdpt)
+        return "Invalid transport integrator";
+    if (scene.spectral_transport != SpectralTransport::scalar &&
+        scene.spectral_transport != SpectralTransport::packet)
+        return "Invalid spectral transport mode";
+    if (!(scene.max_component_value > 0))
+        return "Film maximum component value must be positive";
+    if ((scene.integrator == IntegratorKind::bdpt || std::isfinite(scene.max_component_value)) &&
+        scene.spectral_transport != SpectralTransport::packet)
+        return "BDPT and finite film clamping require packet transport";
+    if (scene.spectral_transport == SpectralTransport::packet &&
+        (scene.model != RenderModel::pbrt || scene.max_depth > 64))
+        return "Packet transport requires PBRT with maxdepth from 0 to 64";
     const auto valid_medium = [&](std::uint32_t id) {
         return id == no_medium || id < scene.media.size();
     };
@@ -1454,6 +1614,8 @@ std::string validate_render_scene(const RenderScene &scene) {
                               std::ranges::any_of(scene.instance_media, [](const auto &m) {
                                   return m.inside != m.outside;
                               });
+    if (active_media && scene.spectral_transport == SpectralTransport::packet)
+        return "Packet transport currently requires vacuum camera and surface medium interfaces";
     if (active_media && (!scene.volume_transport || scene.model != RenderModel::pbrt))
         return "Participating media require PBRT volpath transport";
     if (scene.media.size() > (128ULL * 1024 * 1024) / (3 * 471 + 1))
@@ -1507,6 +1669,12 @@ std::string validate_render_scene(const RenderScene &scene) {
             return error;
         }
     }
+    for (const auto &instance : scene.geometry.instances) {
+        if (auto error = validate_analytic_geometry(scene.geometry.meshes[instance.mesh_index],
+                                                    instance.transform);
+            !error.empty())
+            return error;
+    }
     if (scene.instance_materials.size() != scene.geometry.instances.size()) {
         return "Each render instance requires a material index";
     }
@@ -1518,7 +1686,8 @@ std::string validate_render_scene(const RenderScene &scene) {
     for (std::size_t i = 0; i < scene.instance_materials.size(); ++i) {
         const auto &bound_material = scene.materials[scene.instance_materials[i]];
         if (bound_material.scattering == ScatteringKind::gltf &&
-            !scene.geometry.meshes[scene.geometry.instances[i].mesh_index].patches.empty())
+            (!scene.geometry.meshes[scene.geometry.instances[i].mesh_index].patches.empty() ||
+             !scene.geometry.meshes[scene.geometry.instances[i].mesh_index].analytics.empty()))
             return "glTF materials require triangle geometry";
         const bool null = scene.materials[scene.instance_materials[i]].scattering ==
                           ScatteringKind::null_interface;
@@ -1568,7 +1737,7 @@ std::string validate_render_scene(const RenderScene &scene) {
         }
         const auto &instance = scene.geometry.instances[i];
         const auto &mesh = scene.geometry.meshes[instance.mesh_index];
-        emitter_count += mesh.triangles.size() + mesh.patches.size();
+        emitter_count += mesh.triangles.size() + mesh.patches.size() + mesh.analytics.size();
         // Keep bit_ceil(emitter_count) representable as a 32-bit slot count.
         if (emitter_count > (std::uint64_t{1} << 31)) {
             return "Render area emitter count exceeds selection index capacity";
@@ -1937,17 +2106,21 @@ std::array<double, 3> linear_rgb(const std::array<double, 3> &xyz) {
 }
 
 std::array<double, 3> linear_rgb(const Film &film, const FilmPixel &pixel) {
-    const auto xyz = film_mean(pixel);
+    const auto xyz = film_mean(film, pixel);
     if (film.model == RenderModel::demo) {
         return linear_rgb(xyz);
     }
     const auto [x, y, z] = xyz;
+    const double exposure =
+        film.packet && film.compatibility_output && std::isfinite(film.max_component_value)
+            ? 1
+            : film.exposure;
     // Derived from the pinned PBRT v4 stdillum-D65 spectrum, CIE observer,
     // and sRGB primaries. The matrix maps unit relative white luminance to 1.
     return {
-        film.exposure * (3.240444291419 * x - 1.537133830545 * y - 0.498529890988 * z),
-        film.exposure * (-0.969266752560 * x + 1.876012242980 * y + 0.041556048487 * z),
-        film.exposure * (0.055643519672 * x - 0.204026238798 * y + 1.057226873771 * z),
+        exposure * (3.240444291419 * x - 1.537133830545 * y - 0.498529890988 * z),
+        exposure * (-0.969266752560 * x + 1.876012242980 * y + 0.041556048487 * z),
+        exposure * (0.055643519672 * x - 0.204026238798 * y + 1.057226873771 * z),
     };
 }
 

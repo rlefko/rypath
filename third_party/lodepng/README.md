@@ -30,7 +30,11 @@ bit count modulo eight.
 
 The build compiles the decoder from these sources with disk I/O, the C++ wrapper,
 encoding, and ancillary metadata decoding disabled. Allocations in LodePNG are
-individually limited to 128 MiB. rypath checks PNG header and chunk framing, limits
+individually limited by the thread-local adapter in `src/png_allocator.cpp`, using
+LodePNG's supported `LODEPNG_NO_COMPILE_ALLOCATORS` interface. The standard limit
+remains 128 MiB; the large profile permits up to 1 GiB, bounded by the configured
+decoder scratch budget. A scoped policy restores the previous value on exit and
+does not affect concurrent decoders. rypath checks PNG header and chunk framing, limits
 the exact decompressed scanline size and aggregate decode scratch. Static Adam7
 images include the filter byte and packed row padding in each nonempty pass.
 Decoding retains RGB and separates authored true RGBA alpha into its own buffer.

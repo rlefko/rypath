@@ -26,7 +26,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | --- | --- | --- | --- |
 | Current v4 directive forms and typed scalar/array parameters | Checked, with owned locations and numeric lexemes | Type/cardinality and supported descriptor schemas checked | Not attempted |
 | Static affine transforms, named coordinates, scopes, orientation | Retained | Column-major input, postmultiplication, world reset, scoped state | Not attempted |
-| Perspective camera, RGB film, box/triangle/Gaussian filter, independent/Sobol/Halton/ZSobol sampler, path/volpath integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
+| Perspective camera, RGB film, box/triangle/Gaussian filter, independent/Sobol/Halton/ZSobol sampler, path/volpath/bdpt integrator, BVH | Retained | Declared parameter schemas checked | See the separate [render profile](pbrt-rendering.md) |
 | Diffuse, conductor, dielectric and extended surface materials and named bindings | Retained | Last matching typed parameter wins; dielectric float eta precedes spectral eta; explicit values override inherited defaults | Not translated |
 | Named float and spectrum constant textures | Retained with authored and inherited values and color-space provenance | Separate global namespaces; typed diffuse reflectance references resolve after parsing | See [constant textures](pbrt-rendering.md#constant-textures) |
 | Typed texture graphs and PNG/JPEG/EXR/HDR imagemaps | Retained with effective parameters and declaration transforms | Typed forward references, cycle/work limits, entry-relative decode and mip validation, including unused definitions | See [core texturing](pbrt-rendering.md#core-texture-graphs-and-consumers) |
@@ -38,7 +38,7 @@ profile](pbrt-rendering.md) defines the narrower `--render-pbrt` contract.
 | Diffuse constant and image area-light declarations | Retained | Scoped shape binding, defaults, reset, and descriptor checks | No normalization or light sampling |
 | Color spaces, RGB, blackbody, sampled spectra, built-in spectrum names | Retained | Types and references checked | No resampling, clamping, or reconstruction |
 | File spectra on diffuse/conductor/dielectric materials, homogeneous media, spectrum constants, and supported lights | Retained with parameter provenance | Entry-relative bounded decode into shared binary32 knots | See the separate [render profile](pbrt-rendering.md) |
-| Inline trianglemesh/bilinearmesh, Loop subdivision, external triangular/quad PLY and single-level object instances | Retained | Converted to checked float/index triangle/bilinear geometry; bounded manifold Loop refinement | Not submitted to Metal |
+| Sphere/disk/open cylinder, inline trianglemesh/bilinearmesh, Loop subdivision, external triangular/quad PLY and single-level object instances | Retained | Checked analytic records or float/index triangle/bilinear geometry; bounded manifold Loop refinement | Not submitted to Metal |
 | Plain-text Include | Retained and expanded | Shared scene state, entry-directory resolution | Not applicable |
 | Import and gzip scenes | Recognized | Unvisited; dependency inventory incomplete | Unsupported |
 | Other external meshes, image formats and textures outside the core profile, other file-spectrum consumers | Recognized; discoverable paths reported | Content unchecked; missing inputs are errors | Unsupported |
@@ -90,6 +90,7 @@ from realistic lens systems are in the [render profile](pbrt-rendering.md) and
 | Independent sampler | `pixelsamples`, `seed` |
 | Sobol or ZSobol sampler | `pixelsamples`, `seed`, `randomization` (`none`, `permutedigits`, `fastowen`, or `owen`) |
 | Path or volumetric path integrator | `maxdepth`, `regularize`, `lightsampler` |
+| Bidirectional path integrator | `maxdepth`; shared `regularize`/`lightsampler` schema, with rendering limits in the packet profile |
 | BVH | `maxnodeprims`, `splitmethod` |
 | Diffuse material | `reflectance`, including a spectrum texture reference, scalar `displacement`, RGB image `normalmap`; named definitions require `string type` |
 | Conductor material | Named/numeric/file `spectrum eta` and `k`; scalar/float-texture `roughness`, `uroughness`, `vroughness`; `remaproughness`, `displacement`, `normalmap`; named definitions require `string type`. RGB/blackbody/texture optical constants and the mutually exclusive reflectance shortcut are supported |
@@ -105,6 +106,9 @@ from realistic lens systems are in the [render profile](pbrt-rendering.md) and
 | Goniometric light | Spectral `I`, nonnegative `scale`, finite `power`, and required nonempty square gray/RGB/RGBA PNG/JPEG/EXR/HDR `filename`; declaration origin supplies position |
 | Projection light | Required RGB/RGBA `filename`, nonnegative `scale`, finite `power`, and `fov` strictly between 0 and 180 degrees |
 | Diffuse area light | `L`, `scale`, `twosided`, `power`, PNG/JPEG/EXR/HDR `filename` mutually exclusive with `L` |
+| Sphere | `radius`, `zmin`, `zmax`, `phimax`, scalar/texture `alpha` |
+| Disk | `height`, `radius`, `innerradius`, `phimax`, scalar/texture `alpha` |
+| Cylinder (open) | `radius`, `zmin`, `zmax`, `phimax`, scalar/texture `alpha` |
 | Triangle mesh | `P`, `indices`, per-vertex `N`, `S`, and `uv`, scalar/texture `alpha`; exactly three vertices may omit indices |
 | Bilinear mesh | `P`, four-wide `indices`, per-vertex `N` and `uv`, scalar/texture `alpha`; exactly four vertices may omit indices |
 | Loop subdivision | Required `P` and triangle `indices`; integer `levels` (default 3), inert string `scheme`, scalar/texture `alpha` |
@@ -400,7 +404,7 @@ analysis. Malformed syntax or unknown directive arity stops parsing. Deferred
 state-changing constructs cannot be treated as absent from a complete result.
 The diagnostic limit also marks analysis incomplete.
 
-| Resource | Maximum |
+| Resource | Standard-profile maximum |
 | --- | --- |
 | Bytes per file | 16 MiB |
 | Bytes across repeated expansions | 64 MiB |
@@ -446,3 +450,14 @@ A matching upstream `--format` binary was unavailable for preflight PR #5.
 The subsequent [rendering validation](pbrt-render-validation.md) builds the pinned
 CPU reference for selected numerical comparisons; no large scene corpus is
 downloaded. See [status](status.md) for measured checks.
+
+## Large-scene profile
+
+`--check-pbrt SCENE --resource-profile large` and the equivalent render option
+raise explicit parser, image, expanded frame/normal and shading-preparation
+budgets. The default `standard` profile retains the previous limits. See the
+[budget table and pinned Pavilion closure](pavilion-validation.md#corpus-and-resource-profile).
+Ordinary triangle meshes retain zero-area source faces with warnings and zero
+intersection/sampling measure; subdivision control meshes retain their stricter
+nondegenerate topology requirements. Analytic radii and clipped domains must
+remain nonempty and representable, with source-located failures otherwise.

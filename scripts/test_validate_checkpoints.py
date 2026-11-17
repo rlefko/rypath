@@ -14,17 +14,24 @@ from validate_checkpoints import (HEADER, METADATA, PIXEL, TARGET, Segment, comm
                                   compare, decode, run, stage_fixture, verify_provenance)
 
 
-def wire(count=3, target=3, segments=None, sums=(2., 3., 4.), correction=(0., 0., 0.), exposure=1., model=1):
+def wire(count=3, target=3, segments=None, sums=(2., 3., 4.), correction=(0., 0., 0.),
+         exposure=1., model=1, packet=False, compatibility_output=False,
+         clamp=float('inf'), pixel_extra=None, filter_kind=0, xr=.5, yr=.5, sigma=.5):
     if segments is None:
         segments = [] if not count else [Segment(0, count, 'build', 'device', 'arch', 'os')]
-    metadata = METADATA.pack(1, 1, target, 1, 37, 0, 2, model, exposure, b'i' * 32, len(segments))
+    metadata = METADATA.pack(1, 1, target, 1, 37, 0, 2, model, exposure, packet,
+                             compatibility_output, clamp, filter_kind, xr, yr, sigma,
+                             b'i' * 32, len(segments))
     for segment in segments:
         metadata += struct.pack('<QQ', segment.begin, segment.end)
         for text in (segment.build, segment.device, segment.architecture, segment.os):
             raw = text.encode()
             metadata += struct.pack('<I', len(raw)) + raw
-    payload = PIXEL.pack(*sums, *correction, count)
-    data = HEADER.pack(b'RYPCHK\r\n', 1, 9, 11, 2, 1, len(metadata), len(payload)) + metadata + payload
+    if pixel_extra is None:
+        pixel_extra = [0.] * 20
+        pixel_extra[-2] = count if packet else 0.
+    payload = PIXEL.pack(*sums, *correction, count, *pixel_extra)
+    data = HEADER.pack(b'RYPCHK\r\n', 2, 11, 13, 4, 2, len(metadata), len(payload)) + metadata + payload
     return data + hashlib.sha256(data).digest()
 
 
@@ -51,8 +58,8 @@ class CheckpointValidatorTests(unittest.TestCase):
             with self.subTest(cut=cut), self.assertRaises(ValueError):
                 decode(raw[:cut])
         # Independently mutate all five authenticated contract words. In
-        # particular, pre-power renderer 10 / identity 8 fail.
-        for offset, version in ((8, 3), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (12, 8), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (16, 9), (16, 10), (20, 1), (20, 3), (24, 3)):
+        # particular, every prior format/identity/renderer/sampling/accumulation contract fails.
+        for offset, version in ((8, 1), (8, 3), (12, 10), (16, 12), (20, 3), (24, 1), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (12, 8), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (16, 9), (16, 10), (20, 1), (24, 3)):
             with self.subTest(contract_offset=offset, version=version):
                 bad = bytearray(raw)
                 struct.pack_into('<I', bad, offset, version)
@@ -83,6 +90,37 @@ class CheckpointValidatorTests(unittest.TestCase):
         empty = decode(wire(count=0, sums=(0., 0., 0.)))
         self.assertEqual(empty.count, 0)
         self.assertEqual(empty.segments, ())
+
+    def test_packet_planes_weights_and_metadata_are_validated(self):
+        self.assertEqual(METADATA.size, 114)
+        self.assertEqual(PIXEL.size, 216)
+        extra = [float(i + 1) / 100 for i in range(20)]
+        result = decode(wire(packet=True, compatibility_output=True, clamp=.002,
+                             filter_kind=2, xr=1.5, yr=1.5, pixel_extra=extra))
+        self.assertTrue(result.packet)
+        self.assertTrue(result.compatibility_output)
+        self.assertEqual(result.max_component_value, .002)
+        self.assertEqual(result.pixels[0][7:], tuple(extra))
+        for index in range(20):
+            broken = extra.copy()
+            broken[index] = float('nan')
+            with self.subTest(plane_component=index), self.assertRaisesRegex(ValueError, 'pixel'):
+                decode(wire(packet=True, pixel_extra=broken))
+        for metadata in ({'packet': 2}, {'compatibility_output': 2}, {'clamp': float('nan')},
+                         {'clamp': -1}, {'filter_kind': 3}, {'xr': 0}, {'sigma': float('nan')},
+                         {'packet': True, 'filter_kind': 2, 'sigma': 0}):
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                decode(wire(**metadata))
+        with self.assertRaisesRegex(ValueError, 'pixel'):
+            decode(wire(packet=True, pixel_extra=[0.] * 20))
+        # Every retained plane and the reconstruction weight participates in
+        # cross-build checks; same-build comparisons additionally require bits.
+        for index in (0, 6, 12, 18):
+            changed = extra.copy()
+            changed[index] += 1e-3
+            with self.subTest(changed_component=index), self.assertRaisesRegex(ValueError, 'raw XYZ'):
+                compare(result, decode(wire(packet=True, compatibility_output=True, clamp=.002,
+                        filter_kind=2, xr=1.5, yr=1.5, pixel_extra=changed)), exact=False)
 
     def test_exposure_tracks_current_codec_domain(self):
         self.assertEqual(decode(wire(exposure=0.)).exposure, 0.)

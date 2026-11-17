@@ -64,8 +64,8 @@ bool numbers(std::string_view text, std::span<const double> expected, double tol
 
 ImageResult<DecodedImage> decode_hdr(std::span<const std::uint8_t> bytes,
                                      const ImageLimits &limits) {
-    if (bytes.size() > std::size_t{16} * 1024 * 1024)
-        return error("input exceeds the 16 MiB limit", false, true);
+    if (!valid_image_limits(limits) || bytes.size() > limits.file_bytes)
+        return error("input exceeds the configured limit", false, true);
     Reader input{bytes};
     std::string_view line;
     if (!input.line(line) || (line != "#?RADIANCE" && line != "#?RGBE"))
@@ -116,14 +116,11 @@ ImageResult<DecodedImage> decode_hdr(std::span<const std::uint8_t> bytes,
     auto x = std::from_chars(y.ptr + 4, line.data() + line.size(), width);
     if (x.ec != std::errc{} || x.ptr != line.data() + line.size() || !width || !height)
         return error("invalid resolution");
-    if (width > std::min(4096u, limits.max_dimension) ||
-        height > std::min(4096u, limits.max_dimension))
+    if (width > limits.max_dimension || height > limits.max_dimension)
         return error("dimensions exceed the image limit", false, true);
     const auto pixels = static_cast<std::size_t>(width) * height;
-    if (pixels * 3 * sizeof(float) >
-            std::min(limits.retained_bytes, std::size_t{256} * 1024 * 1024) ||
-        static_cast<std::size_t>(width) * 4 >
-            std::min(limits.scratch_bytes, std::size_t{256} * 1024 * 1024))
+    if (pixels * 3 * sizeof(float) > limits.retained_bytes ||
+        static_cast<std::size_t>(width) * 4 > limits.scratch_bytes)
         return error("decoded image exceeds the byte budget", false, true);
     try {
         DecodedImage image{.width = width,

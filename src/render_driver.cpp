@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "render_driver.hpp"
+#include "packet_wire.h"
 
 #include <algorithm>
 #include <cmath>
@@ -49,6 +50,7 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
             result.diagnostic = "Invalid film model or exposure";
             return result;
         }
+        const bool packet = scene.spectral_transport == SpectralTransport::packet;
         if (control.initial_film) {
             const auto &film = *control.initial_film;
             if (film.width != settings.width || film.height != settings.height ||
@@ -56,6 +58,21 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 film.pixels.size() != std::size_t{settings.width} * settings.height) {
                 result.diagnostic = "Resume Film dimensions, model, or storage mismatch";
                 return result;
+            }
+            if (film.packet != packet) {
+                result.diagnostic = "Resume Film spectral transport mismatch";
+                return result;
+            }
+            if (packet) {
+                if (film.filter != scene.filter ||
+                    film.max_component_value != scene.max_component_value ||
+                    (std::isfinite(film.max_component_value) && film.exposure != scene.exposure)) {
+                    result.diagnostic = "Resume packet Film filter, clamp, or exposure mismatch";
+                    return result;
+                }
+                result.diagnostic = validate_film_accumulation(film);
+                if (!result.diagnostic.empty())
+                    return result;
             }
             const auto count = film.pixels.front().count;
             for (const auto &pixel : film.pixels) {
@@ -75,7 +92,9 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
             result.film = film;
             result.film.exposure = scene.exposure;
         } else {
-            result.film = make_film(settings.width, settings.height, scene.model, scene.exposure);
+            result.film =
+                packet ? make_packet_film(scene, settings)
+                       : make_film(settings.width, settings.height, scene.model, scene.exposure);
         }
         const auto pixel_total = static_cast<std::uint32_t>(result.film.pixels.size());
         auto completed = result.film.pixels.front().count;
@@ -121,42 +140,85 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 return result;
             }
             const auto batch_count = std::min(settings.batch_size, settings.samples - completed);
-            FilmBatch batch(result.film, batch_count);
-            // Pixel tiles may execute in any order. Within a pixel, absolute
-            // sample indices are always accumulated in increasing order.
-            for (std::uint32_t pixel_begin = 0; pixel_begin < pixel_total;) {
-                const auto pixel_count = std::min(std::uint32_t{4096}, pixel_total - pixel_begin);
-                const auto samples_per_dispatch = render_tile_capacity / pixel_count;
-                for (std::uint64_t sample_offset = 0; sample_offset < batch_count;) {
-                    const auto sample_count = static_cast<std::uint32_t>(
-                        std::min(static_cast<std::uint64_t>(samples_per_dispatch),
-                                 batch_count - sample_offset));
-                    RenderRequest request;
-                    request.width = settings.width;
-                    request.height = settings.height;
-                    request.seed = settings.seed;
-                    request.sampler = settings.sampler;
-                    request.pixel_begin = pixel_begin;
-                    request.pixel_count = pixel_count;
-                    request.sample_begin = completed + sample_offset;
-                    request.sample_count = sample_count;
-                    request.total_samples = settings.samples;
-                    auto tile = source.sample(request);
-                    if (tile.status != GeometryStatus::success) {
-                        result.diagnostic = "render batch: " + tile.diagnostic;
-                        return result;
+            if (packet) {
+                PacketFilmBatch batch(result.film, batch_count);
+                const auto packet_pixels =
+                    std::min(std::uint32_t{4096},
+                             static_cast<std::uint32_t>(packet_wire::workspace_bytes /
+                                                        packet_wire::lane_bytes(scene.max_depth)));
+                // Splat destinations overlap pixel tiles. Canonical owner order
+                // is absolute sample, then source pixel, independent of batches.
+                for (std::uint64_t sample_offset = 0; sample_offset < batch_count;
+                     ++sample_offset) {
+                    for (std::uint32_t pixel_begin = 0; pixel_begin < pixel_total;) {
+                        const auto pixel_count = std::min(packet_pixels, pixel_total - pixel_begin);
+                        RenderRequest request;
+                        request.width = settings.width;
+                        request.height = settings.height;
+                        request.seed = settings.seed;
+                        request.sampler = settings.sampler;
+                        request.pixel_begin = pixel_begin;
+                        request.pixel_count = pixel_count;
+                        request.sample_begin = completed + sample_offset;
+                        request.sample_count = 1;
+                        request.total_samples = settings.samples;
+                        auto tile = source.sample(request);
+                        if (tile.status != GeometryStatus::success) {
+                            result.diagnostic = "render packet batch: " + tile.diagnostic;
+                            return result;
+                        }
+                        if (!tile.samples.empty()) {
+                            result.diagnostic = "Packet renderer returned scalar samples";
+                            return result;
+                        }
+                        result.diagnostic = batch.add(tile.packet_samples, tile.packet_splats);
+                        if (!result.diagnostic.empty())
+                            return result;
+                        pixel_begin += pixel_count;
                     }
-                    result.diagnostic = batch.add(tile.samples);
-                    if (!result.diagnostic.empty()) {
-                        return result;
-                    }
-                    sample_offset += sample_count;
                 }
-                pixel_begin += pixel_count;
-            }
-            result.diagnostic = batch.commit(result.film);
-            if (!result.diagnostic.empty()) {
-                return result;
+                result.diagnostic = batch.commit(result.film);
+                if (!result.diagnostic.empty())
+                    return result;
+            } else {
+                FilmBatch batch(result.film, batch_count);
+                // Pixel tiles may execute in any order. Within a pixel, absolute
+                // sample indices are always accumulated in increasing order.
+                for (std::uint32_t pixel_begin = 0; pixel_begin < pixel_total;) {
+                    const auto pixel_count =
+                        std::min(std::uint32_t{4096}, pixel_total - pixel_begin);
+                    const auto samples_per_dispatch = render_tile_capacity / pixel_count;
+                    for (std::uint64_t sample_offset = 0; sample_offset < batch_count;) {
+                        const auto sample_count = static_cast<std::uint32_t>(
+                            std::min(static_cast<std::uint64_t>(samples_per_dispatch),
+                                     batch_count - sample_offset));
+                        RenderRequest request;
+                        request.width = settings.width;
+                        request.height = settings.height;
+                        request.seed = settings.seed;
+                        request.sampler = settings.sampler;
+                        request.pixel_begin = pixel_begin;
+                        request.pixel_count = pixel_count;
+                        request.sample_begin = completed + sample_offset;
+                        request.sample_count = sample_count;
+                        request.total_samples = settings.samples;
+                        auto tile = source.sample(request);
+                        if (tile.status != GeometryStatus::success) {
+                            result.diagnostic = "render batch: " + tile.diagnostic;
+                            return result;
+                        }
+                        result.diagnostic = batch.add(tile.samples);
+                        if (!result.diagnostic.empty()) {
+                            return result;
+                        }
+                        sample_offset += sample_count;
+                    }
+                    pixel_begin += pixel_count;
+                }
+                result.diagnostic = batch.commit(result.film);
+                if (!result.diagnostic.empty()) {
+                    return result;
+                }
             }
             completed += batch_count;
             if (!notify())

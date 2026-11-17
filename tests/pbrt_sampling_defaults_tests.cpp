@@ -106,7 +106,7 @@ void omissions(const Fixture &fixture) {
             "explicit camera snapshots its own transform");
     for (auto unsupported :
          {"Camera \"orthographic\"\n", "Film \"gbuffer\"\n", "PixelFilter \"mitchell\"\n",
-          "Sampler \"pmj02bn\"\n", "Integrator \"bdpt\"\n"}) {
+          "Sampler \"pmj02bn\"\n", "Integrator \"mlt\"\n"}) {
         require(fixture.checked(std::string(unsupported) + std::string(world)).exit_code() == 2,
                 "unsupported explicit descriptor must not select a default");
     }

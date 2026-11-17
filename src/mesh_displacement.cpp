@@ -71,6 +71,10 @@ DisplacementResult displace_mesh(const GeometryMesh &source,
     if (const auto error = validate_geometry({{source}, {}}); !error.empty()) {
         return failure(error);
     }
+    for (const auto &t : source.triangles)
+        if (!triangle_has_area(source.positions[t[0]], source.positions[t[1]],
+                               source.positions[t[2]]))
+            return failure("Displacement requires nonzero-area source triangles");
     if (limits.work_per_vertex == 0) {
         return failure("Displacement evaluator work bound must be positive");
     }
@@ -195,6 +199,13 @@ DisplacementResult displace_mesh(const GeometryMesh &source,
                 return failure("Displacement produced a nonfinite vertex", false, attempted_work);
             }
         }
+        // True displacement may not silently destroy a source surface, even
+        // though ordinary PBRT zero-measure faces can be retained as null slots.
+        for (const auto &t : output.triangles)
+            if (!triangle_has_area(output.positions[t[0]], output.positions[t[1]],
+                                   output.positions[t[2]]))
+                return failure("Displacement collapsed a triangle to zero area", false,
+                               attempted_work);
         compute_normals(output);
         if (const auto error = validate_geometry({{output}, {}}); !error.empty()) {
             return failure("Displaced " + error, false, attempted_work);

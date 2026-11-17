@@ -3,6 +3,7 @@
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
 #include <bit>
+#include <cmath>
 #include <string_view>
 #include <type_traits>
 
@@ -70,6 +71,15 @@ class Canonical {
         FIELD(z);
     }
     void value(const GeometryTransform &x) { FIELD(values); }
+    void value(const GeometryAnalytic &x) {
+        FIELD(kind);
+        FIELD(radius);
+        FIELD(z_min);
+        FIELD(z_max);
+        FIELD(phi_max);
+        FIELD(inner_radius);
+        FIELD(height);
+    }
     void value(const GeometryMesh &x) {
         FIELD(positions);
         FIELD(triangles);
@@ -78,6 +88,7 @@ class Canonical {
         FIELD(patches);
         FIELD(tangents);
         FIELD(tangent_signs);
+        FIELD(analytics);
     }
     void value(const GeometryInstance &x) {
         FIELD(mesh_index);
@@ -339,6 +350,11 @@ class Canonical {
         FIELD(media);
         FIELD(camera_medium);
         FIELD(instance_media);
+        FIELD(integrator);
+        FIELD(spectral_transport);
+        FIELD(max_component_value);
+        if (std::isfinite(x.max_component_value))
+            FIELD(exposure);
     }
     void value(const RenderSampler &x) {
         FIELD(kind);
