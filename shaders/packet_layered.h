@@ -130,8 +130,9 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
     bool exited = w.z > 0;
     for (uint depth = 0; !exited && depth < p.max_depth; ++depth) {
         if (depth > 3 && maximum(weight) < .25f) {
-            float survival = maximum(weight);
-            if (rng.next() >= survival)
+            float q = max(0.0f, 1 - maximum(weight));
+            float survival = 1 - q;
+            if (rng.next() < q)
                 return fail;
             weight /= survival;
         }
@@ -216,11 +217,15 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
     for (uint n = 0; n < p.samples; ++n) {
         float uc = rng.next();
         auto a = top_sample(p, wo, uc, rng.pair(), 2, importance);
+        if (!a.valid)
+            return {0, 0, false};
+        if (!a.accepted)
+            continue;
         uc = rng.next();
         auto b = top_sample(p, wi, uc, rng.pair(), 2, !importance);
-        if (!a.valid || !b.valid)
+        if (!b.valid)
             return {0, 0, false};
-        if (!a.accepted || !b.accepted)
+        if (!b.accepted)
             continue;
         float4 beta = a.weight * mask(packet);
         float z = thickness(p);
@@ -229,8 +234,9 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
         float4 light = b.weight / abs(b.wi.z);
         for (uint depth = 0; depth < p.max_depth; ++depth) {
             if (depth > 3 && maximum(beta) < .25f) {
-                float survival = maximum(beta);
-                if (rng.next() >= survival)
+                float q = max(0.0f, 1 - maximum(beta));
+                float survival = 1 - q;
+                if (rng.next() < q)
                     break;
                 beta /= survival;
             }
@@ -250,6 +256,9 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
                     total += beta * albedo(packet) * ph * wt * tr(zp - thickness(p), b.wi) * light;
                     float3 next = phase_sample(-w, p.g, rng.pair());
                     float phase_pdf = phase(-w, next, p.g);
+                    // PBRT rejects a tangent phase proposal before changing path state.
+                    if (next.z == 0 || phase_pdf == 0)
+                        continue;
                     beta *= albedo(packet);
                     w = next;
                     z = zp;
@@ -282,6 +291,8 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
                     float wt = top_specular_flags(p) ? 1 : power(b.pdf, e.pdf);
                     total += beta * e.f * abs(b.wi.z) * wt * tr(thickness(p), b.wi) * light;
                 }
+                // Keep the unused single-lobe choice in the PBRT RNG schedule.
+                (void)rng.next();
                 auto s = base_sample(packet, -w, rng.pair());
                 if (!s.valid)
                     return {0, 0, false};

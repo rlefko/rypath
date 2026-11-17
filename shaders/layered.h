@@ -173,8 +173,38 @@ inline Evaluation base_evaluate(const thread Parameters &p, float3 wo, float3 wi
     return {p.reflectance / M_PI_F, abs(wi.z) / M_PI_F, true};
 }
 inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
-    return p.conductor_base ? rypath_conductor::sample(p.conductor, wo, u)
-                            : rypath_transmission::diffuse_sample(p.reflectance, 0, wo, 0, u);
+#pragma clang fp contract(off)
+    if (p.conductor_base)
+        return rypath_conductor::sample(p.conductor, wo, u);
+    Sample fail{float3(0), 0, 0, false, false, true};
+    if (!isfinite(p.reflectance) || p.reflectance < 0 || !all(isfinite(wo)) ||
+        !rypath_transmission::randoms(0, u)) {
+        fail.valid = false;
+        return fail;
+    }
+    if (p.reflectance == 0 || wo.z == 0)
+        return fail;
+    // PBRT DiffuseBxDF uses SampleCosineHemisphere's concentric disk map.
+    // Retain that map here: equal distributions alone do not preserve the
+    // direction-seeded finite f/PDF estimates or the sampled hidden path.
+    float2 offset = 2 * u - 1;
+    float2 disk(0);
+    if (offset.x != 0 || offset.y != 0) {
+        float radius, theta;
+        if (abs(offset.x) > abs(offset.y)) {
+            radius = offset.x;
+            theta = (M_PI_F / 4) * (offset.y / offset.x);
+        } else {
+            radius = offset.y;
+            theta = (M_PI_F / 2) - (M_PI_F / 4) * (offset.x / offset.y);
+        }
+        disk = radius * float2(cos(theta), sin(theta));
+    }
+    float3 wi(disk, sqrt(max(0.0f, 1 - disk.x * disk.x - disk.y * disk.y)));
+    if (wo.z < 0)
+        wi.z = -wi.z;
+    float pdf = abs(wi.z) / M_PI_F;
+    return {wi, p.reflectance, pdf, false, p.reflectance > 0 && pdf > 0, true};
 }
 inline bool base_delta(const thread Parameters &p) {
     return p.conductor_base && p.conductor.smooth;
@@ -220,6 +250,8 @@ inline Evaluation directional_pdf(const thread Parameters &p, float3 wo, float3 
                     return {0, 0, false};
                 sum += e.pdf;
             } else {
+                // PBRT consumes the interface choice even for a single-lobe base.
+                (void)rng.next();
                 auto c = base_sample(p, -a.wi, rng.pair());
                 if (!c.valid)
                     return {0, 0, false};
@@ -264,8 +296,9 @@ inline Sample sample(const thread Parameters &p, float3 wo, float uc, float2 u, 
     bool exited = w.z > 0;
     for (uint depth = 0; !exited && depth < p.max_depth; ++depth) {
         if (depth > 3 && weight < .25f) {
-            float survival = weight;
-            if (rng.next() >= survival)
+            float q = max(0.0f, 1 - weight);
+            float survival = 1 - q;
+            if (rng.next() < q)
                 return fail;
             weight /= survival;
         }
@@ -347,11 +380,15 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
     for (uint n = 0; n < p.samples; ++n) {
         float uc = rng.next();
         auto a = top_sample(p, wo, uc, rng.pair(), 2);
+        if (!a.valid)
+            return {0, 0, false};
+        if (!a.accepted)
+            continue;
         uc = rng.next();
         auto b = top_sample(p, wi, uc, rng.pair(), 2, true);
-        if (!a.valid || !b.valid)
+        if (!b.valid)
             return {0, 0, false};
-        if (!a.accepted || !b.accepted)
+        if (!b.accepted)
             continue;
         float beta = a.weight, z = thickness(p);
         float3 w = a.wi;
@@ -359,8 +396,9 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
         float light = b.weight / abs(b.wi.z);
         for (uint depth = 0; depth < p.max_depth; ++depth) {
             if (depth > 3 && beta < .25f) {
-                float survival = beta;
-                if (rng.next() >= survival)
+                float q = max(0.0f, 1 - beta);
+                float survival = 1 - q;
+                if (rng.next() < q)
                     break;
                 beta /= survival;
             }
@@ -380,6 +418,9 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
                     total += beta * p.albedo * ph * wt * tr(zp - thickness(p), b.wi) * light;
                     float3 next = phase_sample(-w, p.g, rng.pair());
                     float phase_pdf = phase(-w, next, p.g);
+                    // PBRT rejects a tangent phase proposal before changing path state.
+                    if (next.z == 0 || phase_pdf == 0)
+                        continue;
                     beta *= p.albedo;
                     w = next;
                     z = zp;
@@ -412,6 +453,8 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
                     float wt = top_specular_flags(p) ? 1 : power(b.pdf, e.pdf);
                     total += beta * e.f * abs(b.wi.z) * wt * tr(thickness(p), b.wi) * light;
                 }
+                // Keep the unused single-lobe choice in the PBRT RNG schedule.
+                (void)rng.next();
                 auto s = base_sample(p, -w, rng.pair());
                 if (!s.valid)
                     return {0, 0, false};

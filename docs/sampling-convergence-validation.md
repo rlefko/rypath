@@ -35,6 +35,14 @@ non-image environments use continuation alone in unidirectional transport,
 matching PBRT's incomplete-PDF policy. Retained-image and preparation budgets
 include the full and compensated native tables.
 
+The inherited packet camera-path estimator still uses power MIS without outer
+roulette for both `path` and vacuum `volpath`. Pinned PBRT uses power MIS for
+`path`, balance MIS for vacuum `volpath`, and compensated outer roulette for
+both. These proposal differences preserve the ideal raw finite-depth expectation
+but can change moments and means after nonlinear Film clamping. They are not a
+demonstrated explanation for a particular Pavilion outlier. Both BDPT
+implementations omit outer roulette. The frozen quality gates remain unchanged.
+
 Incident geometry and emitted-ray measures remain separate:
 
 - Triangles use spherical sampling with the receiver cosine warp between the
@@ -67,6 +75,15 @@ BDPT retains exact ordered local directions for previously sampled edges; new
 connections use their own directions. No angular quantization joins distinct
 PDF queries.
 
+The coating routines retain PBRT's otherwise unused interface-choice draws,
+entrance-rejection short circuit, roulette interval and binary32 survival
+arithmetic. Diffuse bases use its concentric cosine map; tangent phase proposals
+leave the value estimator's path state unchanged. Fixed raw-local-input fixtures
+check these routes directly against unmodified PBRT. CPU/Metal arithmetic can
+still change grazing-corner acceptance, and the nonaxial HG frame maps a given
+random pair differently while preserving the ideal azimuthal distribution.
+These checks do not promise universal per-seed BSDF or pixel identity.
+
 Diagnostic builds retain the planned PDF fixed/hash × value event/hash matrix.
 The production configuration uses the pinned hash domains for both. The original
 45 coated image gates remain the acceptance criteria. Independent moment checks
@@ -75,9 +92,11 @@ force the finite joint-walk and directional estimators to agree with one another
 
 ## Persistence and resource boundaries
 
-Contracts are format/identity/renderer/sampling/accumulation **3/12/14/5/2**.
+Contracts are format/identity/renderer/sampling/accumulation **3/12/14/6/2**.
 Format 3 is required because checkpoint metadata now stores the separate signed
-material seed. The identity includes that seed and light policy. Older
+material seed. The identity includes that seed and light policy. Sampling
+contract 6 rejects the intermediate contract-5 coating stream before continuation.
+Older
 checkpoints are rejected before payload decoding; same-build batch and resume
 checks remain exact. Cross-revision pixel identity is not expected after these
 proposal changes. Large assets and retained render artifacts stay outside Git.
@@ -114,32 +133,34 @@ replicates are not discarded and seed counts are not extended adaptively.
 Full images use the authored 1600×850 resolution, day 256 spp, night 512 spp,
 and sampler/material seed zero. Timing runs use three serial repetitions at
 matched budgets and 16 PBRT threads. Concurrent validation timings are not
-performance evidence. Unsupported phase telemetry is reported as unavailable.
+performance evidence. CLI preparation measures renderer-resource construction,
+separately from pipeline creation. Parsing/translation, identity hashing and
+image export remain included in end-to-end wall time, not those two phases.
+Unsupported phase telemetry is reported as unavailable.
 
 ## Validation evidence
 
-The complete Pavilion ensembles, simultaneous quality bounds and serial timing
-acceptance are still in progress. Local validation uses an Apple M4 Max with
+The corrected candidate's Pavilion ensembles, simultaneous quality bounds and
+serial timings are still in progress. Local validation uses an Apple M4 Max with
 128 GiB unified memory, macOS 26.6 (25G5065a), Xcode 26.6 (17F113), Apple Clang
 21.0.0, CMake 4.0.3 and Ninja 1.13.2. The frozen candidate's production-source
-digest is `24802f02323be041d047d63476cdc024ad44c3eb41647ca577e85f85f7548b08`;
+digest is `dc2b7b3b30c89150a9fc4af3f470544c06c71b1d5b84b65bd1838d5e77739a63`;
 its Release executable SHA-256 is
-`5344d8293d184effb48abb5a47ae0d66c8182b98fa5aae18d8afc1b468fa98f6`.
-The completed checks are:
+`d14df941174cb5f3e92cdd91adb330ac96bddff1619fc8bc15ef0f017f249e49`.
+The corrected candidate completes the following checks:
 
 - Debug, Release and ASan/UBSan: 211 tests each, no failures. A separate
   Metal-disabled build passes all 153 portable tests with no skips.
+- Metal API validation passes all 60 native tests on the M4 Max.
 - All 225 Python policy/harness tests pass. Changed C++ units pass LLVM 18
   Clang-Tidy; the Metal host adapter passes Apple Clang Static Analyzer.
 - Eight real SIGINT/SIGTERM checks cover packet path/BDPT, independent/Sobol
   sampling and material seed `INT_MIN`. Cancellation preserves the final-image
   sentinel; resumed batches preserve all 216 bytes of per-pixel state exactly.
   Four completed-checkpoint exports also pass without an adjacent metallib.
-- The unchanged 45 coating gates and 150 broader packet comparison gates pass.
-  These focused comparisons used the earlier frozen host candidate; its
-  production metallib is byte-identical to the final candidate. Subsequent
-  host changes preserve light-table arithmetic and correct only reflected-disk
-  bounds, covered by the separate native regression below.
+  A genuine contract-5 checkpoint is rejected without changing its output sentinel.
+- The unchanged 45 coating gates pass. The broader 150-gate packet comparison
+  is being repeated on this candidate; its preceding run passed all 150 gates.
 - The 32×24, 128-spp legacy demo retains exact PNG bytes and raw pixel state
   against the merged baseline.
 
@@ -155,6 +176,26 @@ The completed checks are:
   1,572,864 samples across 12 diffuse/conductor, transport-mode, depth and angle
   cases; 60 corresponding-route gates pass their preselected tolerance.
 
+The preceding three diagnostic coating configurations also pass all 135 unchanged
+gates (three configurations × three cases × 15 gates), retaining all 144 images.
+Restoring the old fixed-PDF/event-value policies does not reproduce the larger
+historical deficit while the new joint walk and light selection are held fixed.
+Both isolated switches change all 16 coated-BDPT images; their conditional mean
+effects stay below 0.1%. All 48 diagnostic path-control images are byte-identical
+to production: that constant-environment control exercises the common sampled
+walk, not directional value/PDF evaluation. These controls do not identify a
+single cause for the historical deficit, and they do not remove PBRT's finite
+approximation or its previously measured difference between estimator routes.
+
+The corrected native probes pass 10 scalar and 28 packet fixed-input fixtures,
+including signed material seeds, rejected entrances, deep roulette, diffuse-map
+boundaries and an exact horizontal phase proposal. The existing scalar
+11×8,192-sample comparisons and all 60 packet moment gates also pass unchanged.
+Retained negative controls expose each individual correction. A later test-only
+probe update leaves the executable and all 34 other complete linked Metal
+modules byte-identical, including their helpers and metadata; this establishes
+unchanged compiler inputs for the measured renderer, not cross-toolchain identity.
+
 The independent review caught a constant-environment escape weight that would
 have returned `1 - log(17)/16` instead of unity for an unoccluded Lambertian
 bounce; its queried PDF now matches the absent NEE strategy. It also caught
@@ -163,7 +204,7 @@ validation now charges native tables. A reflected-disk bound also applied an
 extra handedness flip. The new invisible-emitter regression returns zero on the
 retained faulty build where the independent irradiance is `1/37`; corrected
 bounds pass both orientations, both receiver sides and visible/invisible cases.
-Final Metal API, convergence, timing and image results must be recorded here
+Final convergence, timing and image results must be recorded here
 before claiming full acceptance.
 
 ## Primary references
@@ -173,7 +214,8 @@ The implementation is pinned to
 [light samplers](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/lightsamplers.cpp),
 [lights](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/lights.cpp),
 [shapes](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/shapes.cpp),
-and [layered BSDFs](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/bxdfs.h).
+[layered BSDFs](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/bxdfs.h),
+and [integrators](https://github.com/mmp/pbrt-v4/blob/b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f/src/pbrt/cpu/integrators.cpp).
 The transport weighting follows
 [Veach's multiple-importance framework](https://www.graphics.stanford.edu/papers/veach_thesis/).
 The baseline limitations and earlier coating controls remain in the

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "layered_probe_wire.h"
 #include "layered_reference.hpp"
+#include "layered_schedule_oracles.h"
 #include "metal_execution.hpp"
 #include <array>
 #include <filesystem>
@@ -76,6 +77,36 @@ std::vector<R> dispatch(id<MTLDevice> device, id<MTLComputePipelineState> pipeli
     return {data, data + queries.size()};
 }
 std::vector<std::array<double, 8>> oracle(const std::string &, const std::vector<Q> &);
+void schedule_contract(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
+    std::vector<Q> queries;
+    for (const auto &fixture : layered_schedule_oracles::fixtures)
+        if (fixture.query.operation == 0)
+            queries.push_back(fixture.query);
+    const auto results = dispatch(device, pipeline, queries);
+    std::size_t n = 0;
+    for (const auto &fixture : layered_schedule_oracles::fixtures) {
+        if (fixture.query.operation != 0)
+            continue;
+        const auto &r = results[n++];
+        const auto &e = fixture.expected;
+        const std::string label = std::string("PBRT schedule ") + fixture.label;
+        require(r.valid && r.evaluation_valid, label + " numeric validity");
+        // Identical hash inputs and draw schedules; residual arithmetic differs
+        // across CPU/Metal transcendental and GGX implementations. This bound
+        // is far below the missing-draw regression witnesses, without requiring
+        // bitwise equality of floating BSDF values.
+        close(r.f, e[0], 5e-5 * std::max(1.f, std::abs(e[0])), label + " f");
+        close(r.pdf, e[1], 5e-5 * std::max(1.f, std::abs(e[1])), label + " PDF");
+        require(bool(r.accepted) == (e[3] > 0), label + " walk acceptance");
+        if (r.accepted) {
+            close(r.weight, e[2], 5e-5, label + " joint weight");
+            close(r.ix, e[4], 5e-5, label + " wi.x");
+            close(r.iy, e[5], 5e-5, label + " wi.y");
+            close(r.iz, e[6], 5e-5, label + " wi.z");
+        }
+    }
+    std::cout << "PASS " << n << " fixed PBRT scalar schedule fixtures\n";
+}
 void points(id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
             const std::string &executable) {
     std::vector<Q> queries;
@@ -199,8 +230,8 @@ void points(id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
                  "PDFs, thin/diffuse, HG endpoints, two-sided and invalid inputs\n";
 }
 // Pinned executable consumes the same query scalar fields and emits upstream
-// f/PDF/weight/joint-PDF/direction/proportional-flag. Independent RNG implies
-// statistical comparisons, never per-seed equality for layered walks.
+// f/PDF/weight/joint-PDF/direction/proportional-flag. Ensemble comparisons
+// complement the fixed raw-local-input schedule fixtures above.
 std::vector<std::array<double, 8>> oracle(const std::string &executable,
                                           const std::vector<Q> &queries) {
     if (executable.empty())
@@ -230,11 +261,16 @@ std::vector<std::array<double, 8>> oracle(const std::string &executable,
     }
     std::ofstream(output).close();
     auto task = [[NSTask alloc] init];
-    task.executableURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:executable.c_str()]];
-    task.standardInput =
-        [NSFileHandle fileHandleForReadingAtPath:[NSString stringWithUTF8String:input.c_str()]];
-    task.standardOutput =
-        [NSFileHandle fileHandleForWritingAtPath:[NSString stringWithUTF8String:output.c_str()]];
+    auto executable_path = [NSString stringWithUTF8String:executable.c_str()];
+    if (executable_path == nil)
+        throw std::runtime_error("Oracle executable path is not UTF-8");
+    task.executableURL = [NSURL fileURLWithPath:executable_path];
+    auto input_path = [NSString stringWithUTF8String:input.c_str()];
+    auto output_path = [NSString stringWithUTF8String:output.c_str()];
+    if (input_path == nil || output_path == nil)
+        throw std::runtime_error("Oracle temporary path is not UTF-8");
+    task.standardInput = [NSFileHandle fileHandleForReadingAtPath:input_path];
+    task.standardOutput = [NSFileHandle fileHandleForWritingAtPath:output_path];
     NSError *error = nil;
     require([task launchAndReturnError:&error], "Oracle launch");
     [task waitUntilExit];
@@ -319,7 +355,7 @@ void mis_contract(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
     require(!evaluations.empty(), "MIS accepted samples");
     auto results = dispatch(device, pipeline, evaluations);
     bool varied_f = false, varied_pdf = false, rounded_pdf_changed = false;
-    for (unsigned n = 0; n < sample_pdfs.size(); ++n) {
+    for (std::size_t n = 0; n < sample_pdfs.size(); ++n) {
         auto a = results[5 * n], b = results[5 * n + 1], flipped = results[5 * n + 2],
              rounded = results[5 * n + 3], material = results[5 * n + 4];
         require(a.evaluation_valid && b.evaluation_valid && flipped.evaluation_valid &&
@@ -523,6 +559,7 @@ int main(int argc, char **argv) {
             auto pipeline =
                 rypath::metal::load_pipeline(device, library, @"rypath_layered_probe", diagnostic);
             require(pipeline != nil, diagnostic);
+            schedule_contract(device, pipeline);
             points(device, pipeline, upstream);
             mis_contract(device, pipeline);
             statistical(device, pipeline, extended ? 32768 : 8192, upstream);

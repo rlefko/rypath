@@ -225,3 +225,50 @@ kernel void coating_moments_probe(device float4 *out [[buffer(0)]],
     out[2 * tid] = float4(weight, weight * env_s, f, f * env_e);
     out[2 * tid + 1] = float4(e.pdf * (2 * M_PI_F), s.valid && e.valid, 0, 0);
 }
+
+// Raw local inputs bypass frame reconstruction so the hashed PBRT domains and
+// per-interface random-number schedule can be tested against fixed queries.
+#include "../src/layered_probe_wire.h"
+kernel void coating_schedule_probe(const device rypath::layered_probe::Query *queries [[buffer(0)]],
+                                   device rypath::layered_probe::Result *results [[buffer(1)]],
+                                   constant uint &count [[buffer(2)]],
+                                   uint id [[thread_position_in_grid]]) {
+    if (id >= count)
+        return;
+    const auto q = queries[id];
+    rypath_packet_layered::Parameters p{};
+    p.active_mask = 15;
+    for (uint lane = 0; lane < 4; ++lane) {
+        thread auto &l = p.lane[lane];
+        rypath_dielectric::prepare(q.eta, q.ax, q.ay, false, l.interface);
+        rypath_conductor::prepare(q.base_eta, q.base_k, q.base_ax, q.base_ay, false, l.conductor);
+        l.conductor_base = q.conductor_base;
+        l.reflectance = q.reflectance;
+        l.thickness = q.thickness;
+        l.albedo = q.albedo;
+        l.g = q.g;
+        l.max_depth = q.max_depth;
+        l.samples = q.samples;
+        l.material_seed = q.material_seed;
+    }
+    const float3 wo(q.ox, q.oy, q.oz), wi(q.ix, q.iy, q.iz);
+    const bool importance = q.operation == 3;
+    const auto e = q.operation == 4
+                       ? rypath_packet_layered::base_evaluate(p, wo, wi)
+                       : rypath_packet_layered::evaluate(p, wo, wi, q.seed, importance);
+    const auto s = q.operation == 4 ? rypath_packet_layered::base_sample(p, wo, float2(q.u, q.v))
+                                    : rypath_packet_layered::sample(p, wo, q.uc, float2(q.u, q.v),
+                                                                    q.seed, importance);
+    rypath::layered_probe::Result r{};
+    r.f = e.f.x;
+    r.pdf = e.pdf;
+    r.evaluation_valid = e.valid;
+    r.weight = s.weight.x;
+    r.sample_pdf = s.pdf;
+    r.ix = s.wi.x;
+    r.iy = s.wi.y;
+    r.iz = s.wi.z;
+    r.valid = s.valid;
+    r.accepted = s.accepted;
+    results[id] = r;
+}

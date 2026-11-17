@@ -10,7 +10,7 @@ night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport
 BDPT camera/light connections and splats, finite sensor-space film clamping,
 raw EXR export, and an explicit bounded large-scene profile. Checkpoint
 format/identity/renderer/sampling/accumulation contracts on this follow-up branch
-are 3/12/14/5/2.
+are 3/12/14/6/2.
 See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
 acceptance targets and historical validation. The follow-up adds native environment
 CDFs, combined light selection, directional shape/emission proposals and pinned

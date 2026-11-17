@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "layered_schedule_oracles.h"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <algorithm>
@@ -11,6 +12,95 @@ namespace {
 void metal_error(const char *operation, NSError *error) {
     std::cerr << operation << ": "
               << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
+}
+bool coating_schedule(id<MTLDevice> device, id<MTLLibrary> library) {
+    using namespace layered_schedule_oracles;
+    using Q = rypath::layered_probe::Query;
+    using R = rypath::layered_probe::Result;
+    std::array<Q, fixtures.size()> queries{};
+    for (std::size_t n = 0; n < queries.size(); ++n)
+        queries[n] = fixtures[n].query;
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"coating_schedule_probe"];
+    if (!function)
+        return false;
+    auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+    if (!pipeline) {
+        metal_error("Coating schedule pipeline", error);
+        return false;
+    }
+    auto input = [device newBufferWithBytes:queries.data()
+                                     length:sizeof(queries)
+                                    options:MTLResourceStorageModeShared];
+    auto output = [device newBufferWithLength:(queries.size() + 1) * sizeof(R)
+                                      options:MTLResourceStorageModeShared];
+    if (!input || !output || !output.contents)
+        return false;
+    auto data = static_cast<R *>(output.contents);
+    data[queries.size()].valid = 12345;
+    const unsigned count = static_cast<unsigned>(queries.size());
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!queue || !command || !encoder)
+        return false;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min(NSUInteger{32}, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted || data[queries.size()].valid != 12345)
+        return false;
+    for (std::size_t n = 0; n < queries.size(); ++n) {
+        const auto &r = data[n];
+        const auto &e = fixtures[n].expected;
+        auto close = [&](float actual, float expected, float tolerance, const char *field) {
+            if (!std::isfinite(actual) || std::abs(actual - expected) > tolerance) {
+                std::cerr << "PBRT schedule " << fixtures[n].label << ' ' << field << ": " << actual
+                          << " expected " << expected << '\n';
+                return false;
+            }
+            return true;
+        };
+        // The fixed inputs and RNG schedule match. Permit only CPU/Metal
+        // transcendental/GGX arithmetic differences, not independent streams.
+        if (!r.valid || !r.evaluation_valid ||
+            !close(r.f, e[0], 5e-5f * std::max(1.f, std::abs(e[0])), "f") ||
+            !close(r.pdf, e[1], 5e-5f * std::max(1.f, std::abs(e[1])), "PDF"))
+            return false;
+        if (queries[n].operation == 4) {
+            // At disk corners a single sin/cos ULP can round z to zero.
+            // Check the radicand (z squared), whose bound remains conditioned.
+            if (bool(r.accepted) != (std::abs(r.iz) > 0)) {
+                std::cerr << "PBRT base map " << fixtures[n].label << " sample acceptance\n";
+                return false;
+            }
+            if (!close(r.sample_pdf, std::abs(r.iz) / 3.14159265358979323846f, 2e-7f,
+                       "sampled base PDF") ||
+                !close(r.ix, e[4], 2e-7f, "disk x") || !close(r.iy, e[5], 2e-7f, "disk y") ||
+                !close(r.iz * r.iz, e[6] * e[6], 2e-7f, "disk z squared") ||
+                (r.accepted && !close(r.weight, e[2], 2e-7f, "base weight")))
+                return false;
+        } else {
+            if (bool(r.accepted) != (e[3] > 0)) {
+                std::cerr << "PBRT schedule " << fixtures[n].label << " walk acceptance\n";
+                return false;
+            }
+            if (r.accepted &&
+                (!close(r.weight, e[2], 5e-5f, "joint weight") ||
+                 !close(r.ix, e[4], 5e-5f, "wi.x") || !close(r.iy, e[5], 5e-5f, "wi.y") ||
+                 !close(r.iz, e[6], 5e-5f, "wi.z")))
+                return false;
+        }
+    }
+    std::cout << "PASS " << count << " fixed PBRT packet schedule/base-map fixtures\n";
+    return true;
 }
 bool coating_moments(id<MTLDevice> device, id<MTLLibrary> library) {
     constexpr unsigned count = 131072, routes = 12;
@@ -96,10 +186,10 @@ bool coating_moments(id<MTLDevice> device, id<MTLLibrary> library) {
             }
         }
         for (unsigned i = 0; i < 5; ++i) {
-            const double mean = sum[i] / count, target = expected[route][2 * i];
+            const double mean = sum[i] / count, target = expected[route][std::size_t{2} * i];
             const double variance = std::max(0., square[i] / count - mean * mean);
             const double reference_variance =
-                std::max(0., expected[route][2 * i + 1] - target * target);
+                std::max(0., expected[route][std::size_t{2} * i + 1] - target * target);
             // Selected before GPU results: six combined standard errors plus
             // 0.1% absolute/relative numerical allowance. Hash discontinuities
             // preclude pointwise equality after floating frame arithmetic.
@@ -258,7 +348,7 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-        if (!coating_moments(device, library))
+        if (!coating_schedule(device, library) || !coating_moments(device, library))
             return 1;
         std::cout << "1024 packet GPU cases passed, max errors " << worst[0] << ' ' << worst[1]
                   << ' ' << worst[2] << ' ' << worst[3] << ' ' << worst[4] << ' ' << worst[5] << ' '
