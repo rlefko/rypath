@@ -1845,6 +1845,9 @@ static bool area_radiance(const device wire::AreaEmission &emission,
            scale_area_power(instance, primitive, kind, resources, radiance);
 }
 
+#include "light_emission_sampling.h"
+#include "light_sampling.h"
+
 static float power_weight(float a, float b) {
     const float scale = max(a, b);
     if (!(scale > 0) || !isfinite(scale))
@@ -1854,22 +1857,7 @@ static float power_weight(float a, float b) {
     return a * a / (a * a + b * b);
 }
 
-static float2 patch_sample_uv(uint u, uint v) {
-    // Independent 23-bit midpoint coordinates stay strictly within the square.
-    return (float2(u >> 9, v >> 9) + 0.5f) * 0x1.0p-23f;
-}
-
-static float2 triangle_uv(uint u_word, uint v_word);
-static float2 sample_emitter_uv(const device wire::Instance &instance, uint primitive, uint kind,
-                                uint u, uint v, const device wire::Word *data) {
-    if (kind == wire::triangle_primitive)
-        return triangle_uv(u, v);
-    const float2 draw = patch_sample_uv(u, v);
-    if (kind == wire::patch_primitive)
-        return draw;
-    const auto record = analytic_record(instance, primitive, data);
-    return record ? sample_analytic_area(*record, draw).uv : float2(NAN);
-}
+#include "light_geometry_sampling.h"
 
 static float3 spawn_origin(ray incoming, float t, SurfacePoint point, float3 n) {
     float3 ray_position = fma(float3(t), incoming.direction, incoming.origin);
@@ -1934,46 +1922,6 @@ static bool spawn_boundary(ray incoming, float t, SurfacePoint point, float3 dir
     const float uncertainty = dot(abs(n), point.error) * (1 + gamma_bound(4));
     return isfinite(separation) && isfinite(rounding) && isfinite(uncertainty) &&
            separation - rounding > uncertainty;
-}
-
-// Reflect independent midpoint coordinates into the triangle. The unequal
-// grids make the seam unreachable and preserve three positive binary32 weights.
-static float2 triangle_uv(uint u_word, uint v_word) {
-    constexpr uint grid = 1u << 24;
-    uint u = 2u * (u_word >> 9) + 1u;
-    uint v = 4u * (v_word >> 10) + 2u;
-    if (u + v > grid) {
-        u = grid - u;
-        v = grid - v;
-    }
-    return float2(u, v) * 0x1.0p-24f;
-}
-
-struct AreaWeights {
-    float direct_factor;
-    float hit_weight;
-};
-
-static AreaWeights area_weights(float area, float light_cosine, float bsdf_pdf,
-                                float distance_squared, uint slots) {
-    // p_bsdf / p_light = (slots * area * |cos_light| * p_bsdf) / r^2.
-    // Work with the smaller ratio so neither a large PDF nor its square overflows.
-    const float a = (float(slots) * area) * light_cosine * bsdf_pdf;
-    const float b = distance_squared;
-    if (!(a >= FLT_MIN && b >= FLT_MIN) || !isfinite(a) || !isfinite(b)) {
-        return {NAN, NAN};
-    }
-    const float ratio = min(a, b) / max(a, b);
-    if (!(ratio >= FLT_MIN)) {
-        return {NAN, NAN};
-    }
-    const float square = ratio * ratio;
-    const float denominator = 1.0f + square;
-    // When a <= b, the square is the numerator of the hit contribution.
-    // When a > b, its underflow only rounds the denominator to one.
-    const float hit_weight =
-        a > b ? 1.0f / denominator : (square >= FLT_MIN ? square / denominator : NAN);
-    return {ratio / denominator, hit_weight};
 }
 
 // Conductor spectra share the immutable knot buffer, with source-specific tails.
@@ -2143,6 +2091,7 @@ static bool prepare_scattering(const device wire::Material &m,
     out.layered.g = clamp(out.layered.g, -1.0f, 1.0f);
     out.layered.max_depth = a->max_depth;
     out.layered.samples = a->samples;
+    out.layered.material_seed = p.material_seed;
     return rypath_layered::valid_parameters(out.layered);
 }
 
@@ -2178,14 +2127,6 @@ static float scattering_direct(float f_cos, float bsdf_pdf, float light_pdf, boo
     return (f_cos / light_pdf) * (invisible ? 1.0f : power_weight(light_pdf, bsdf_pdf));
 }
 
-static float area_light_pdf(float area, float light_cosine, float distance_squared, uint slots) {
-    const float inverse_pdf = (float(slots) * area) * light_cosine;
-    if (!(inverse_pdf > 0) || !isfinite(inverse_pdf) || !(distance_squared >= FLT_MIN) ||
-        !isfinite(distance_squared))
-        return NAN;
-    return distance_squared / inverse_pdf;
-}
-
 static float3 shadow_segment_direction(float3 origin, float3 delta, SurfacePoint target,
                                        float signed_cosine) {
     const float3 n = signed_cosine > 0.0f ? target.geometric_normal : -target.geometric_normal;
@@ -2199,127 +2140,31 @@ static float3 shadow_segment_direction(float3 origin, float3 delta, SurfacePoint
     return endpoint - origin;
 }
 
+#include "scalar_lighting.h"
+
 static ConnectionTransmission
-medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words, uint4 phase_words,
+medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words,
               instance_acceleration_structure scene, MixedIntersectionTable table,
               thread SurfaceAlpha &alpha, const device wire::Material *materials,
               const device uint *data, const device wire::AreaEmission *emissions,
               const device wire::Emitter *emitters, rypath_image_light::Images images,
-              const device float *environment_cdf, float environment) {
-    const constant auto &p = *alpha.parameters;
-    const constant auto &gp = *alpha.graph.parameters;
-    float3 direction;
-    float pdf = 1 / (4 * pi), Le = environment;
-    const float2 u(u01(light_words.x), u01(light_words.y));
-    if (environment_image_enabled) {
-        if (!rypath_image_light::sample_environment(gp, environment_cdf, u, direction, pdf))
-            return {0, wire::invalid_arithmetic};
-        Le = rypath_image_light::environment_radiance(images, gp, direction,
-                                                      alpha.sample->wavelength);
-    } else
-        direction = sphere(u.x, u.y);
-    if (!isfinite(Le) || Le < 0 || !(pdf > 0) || !isfinite(pdf))
+              const device float *environment_cdf) {
+    const auto light = rypath_scalar_light::sample(
+        alpha, emissions, emitters, images, environment_cdf, {point, float3(0)}, u01(light_words.x),
+        float2(u01(light_words.y), u01(light_words.z)));
+    if (!light.valid)
         return {0, wire::invalid_arithmetic};
-    float result = 0;
-    if (Le > 0) {
-        const auto tr =
-            medium_connection(ray(point, direction), scene, table, alpha, materials, data, medium);
-        if (tr.status != wire::success)
-            return tr;
-        const float phase = rypath_medium::phase(wo, direction, g);
-        result = (phase / pdf) * power_weight(pdf, phase) * Le * tr.value;
-    }
-    const uint selected =
-        p.emitter_slots == 0 ? 0xffffffffu : phase_words.w & (p.emitter_slots - 1);
-    if (selected < p.emitter_count) {
-        const auto emitter = emitters[selected];
-        if (emitter.instance >= p.instance_count)
-            return {0, wire::invalid_hit};
-        const device auto &instance = alpha.instances[emitter.instance];
-        if (instance.emission >= p.emission_count)
-            return {0, wire::invalid_hit};
-        const device auto &emission = emissions[instance.emission];
-        const float2 uv = sample_emitter_uv(instance, emitter.primitive, emitter.kind,
-                                            light_words.z, light_words.w, alpha.material_data);
-        SurfacePoint target;
-        if (!surface_point(uv, emitter.kind, instance, emitter.primitive, alpha.positions,
-                           alpha.triangles, alpha.patches, alpha.normals, p.normal_count,
-                           PointSource::area_sample, target, alpha.material_data) ||
-            !area_radiance(emission, instance, emitter.primitive, emitter.kind, uv, target, alpha,
-                           images, Le))
-            return {0, wire::invalid_arithmetic};
-        if (target.inverse_area_pdf > 0) {
-            const float3 delta = target.position - point;
-            const float distance_squared = dot(delta, delta);
-            if (!(distance_squared >= FLT_MIN) || !isfinite(distance_squared))
-                return {0, wire::invalid_arithmetic};
-            direction = delta / sqrt(distance_squared);
-            const float cosine = dot(target.geometric_normal, -direction);
-            if (Le > 0 && cosine != 0 && (emission.two_sided != 0 || cosine > 0)) {
-                pdf = area_light_pdf(target.inverse_area_pdf, abs(cosine), distance_squared,
-                                     p.emitter_slots);
-                const float phase = rypath_medium::phase(wo, direction, g);
-                const float3 segment = shadow_segment_direction(point, delta, target, cosine);
-                const auto tr = medium_connection(ray(point, segment, 0, 0x1.fffffep-1f), scene,
-                                                  table, alpha, materials, data, medium);
-                if (tr.status != wire::success)
-                    return tr;
-                result += (phase / pdf) *
-                          (instance.invisible_emitter != 0 ? 1 : power_weight(pdf, phase)) * Le *
-                          tr.value;
-            }
-        }
-    }
-    if (positional_lights_enabled) {
-        for (uint i = 0; i < p.positional_count; ++i) {
-            const auto light = positional_record(data, p, i);
-            if (light == nullptr)
-                return {0, wire::invalid_hit};
-            float intensity = light->intensity[dense_index(alpha.sample->wavelength)];
-            if (intensity == 0)
-                continue;
-            float distance_squared;
-            if (!point_direction(point, unpack(light->position), direction, distance_squared,
-                                 light->kind != wire::point_light))
-                return {0, wire::invalid_arithmetic};
-            if (!positional_intensity(*light, direction, images, alpha.sample->wavelength,
-                                      intensity))
-                return {0, wire::invalid_arithmetic};
-            if (intensity == 0)
-                continue;
-            const auto tr =
-                medium_connection(ray(point, unpack(light->position) - point, 0, 0x1.fffffep-1f),
-                                  scene, table, alpha, materials, data, medium);
-            if (tr.status != wire::success)
-                return tr;
-            if (tr.value > 0)
-                result += rypath_medium::phase(wo, direction, g) * (intensity / distance_squared) *
-                          tr.value;
-        }
-    }
-    if (distant_lights_enabled) {
-        for (uint i = 0; i < p.distant_count; ++i) {
-            const auto light = distant_record(data, p, i);
-            if (light == nullptr)
-                return {0, wire::invalid_hit};
-            const float radiance = light->radiance[dense_index(alpha.sample->wavelength)];
-            if (radiance == 0)
-                continue;
-            direction = unpack(light->direction);
-            // PBRT's delta-direction endpoint is based on the original vertex.
-            const float3 endpoint = point + direction * (2 * p.distant_scene_radius);
-            const float3 segment = endpoint - point;
-            if (!all(isfinite(endpoint)) || !all(isfinite(segment)) ||
-                !(dot(segment, direction) > 0))
-                return {0, wire::invalid_arithmetic};
-            const auto tr = medium_connection(ray(point, segment, 0, 1 - 0.0001f), scene, table,
-                                              alpha, materials, data, medium, true, endpoint);
-            if (tr.status != wire::success)
-                return tr;
-            if (tr.value > 0)
-                result += rypath_medium::phase(wo, direction, g) * radiance * tr.value;
-        }
-    }
+    if (!(light.pdf > 0) || light.radiance == 0)
+        return {0, wire::success};
+    const auto connection = rypath_scalar_light::connection(light, point);
+    const auto tr = medium_connection(connection, scene, table, alpha, materials, data, medium,
+                                      light.kind == rypath_scalar_light::distant, light.endpoint);
+    if (tr.status != wire::success)
+        return tr;
+    const float phase = rypath_medium::phase(wo, light.direction, g);
+    const float weight =
+        rypath_scalar_light::delta(light) || light.invisible ? 1.f : power_weight(light.pdf, phase);
+    const float result = (phase / light.pdf) * weight * light.radiance * tr.value;
     return {result, isfinite(result) && result >= 0 ? wire::success : wire::invalid_arithmetic};
 }
 
@@ -2387,39 +2232,55 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                     break;
                 }
                 throughput *= s / total;
-                if (positional_lights_enabled) {
-                    float direct = 0;
-                    for (uint i = 0; i < p.positional_count; ++i) {
-                        const auto light = positional_record(material_data, p, i);
-                        if (light == nullptr) {
+                const auto chosen = rypath_light_sampling::sample(
+                    p, material_data, {point, float3(0)}, u01(flight_words.y));
+                if (chosen.pmf > 0) {
+                    float3 direction(0);
+                    float radiance = 0, distance_to_light = 0;
+                    if (chosen.light >= p.emitter_count &&
+                        chosen.light < p.emitter_count + p.positional_count) {
+                        const auto light =
+                            positional_record(material_data, p, chosen.light - p.emitter_count);
+                        if (!light) {
                             sample.status = wire::invalid_hit;
                             break;
                         }
-                        float intensity = light->intensity[wavelength];
-                        if (intensity == 0)
-                            continue;
-                        float3 direction;
                         float distance_squared;
-                        if (!point_direction(point, unpack(light->position), direction,
-                                             distance_squared, light->kind != wire::point_light)) {
-                            sample.status = wire::invalid_arithmetic;
+                        float intensity = light->intensity[wavelength];
+                        if (intensity != 0) {
+                            if (!point_direction(point, unpack(light->position), direction,
+                                                 distance_squared,
+                                                 light->kind != wire::point_light) ||
+                                !positional_intensity(*light, direction, light_images,
+                                                      sample.wavelength, intensity)) {
+                                sample.status = wire::invalid_arithmetic;
+                                break;
+                            }
+                            radiance = intensity / distance_squared;
+                            distance_to_light = sqrt(distance_squared);
+                        }
+                    } else if (chosen.light >= p.emitter_count + p.positional_count &&
+                               chosen.light <
+                                   p.emitter_count + p.positional_count + p.distant_count) {
+                        const auto light = distant_record(
+                            material_data, p, chosen.light - p.emitter_count - p.positional_count);
+                        if (!light) {
+                            sample.status = wire::invalid_hit;
                             break;
                         }
-                        if (!positional_intensity(*light, direction, light_images,
-                                                  sample.wavelength, intensity)) {
-                            sample.status = wire::invalid_arithmetic;
-                            break;
-                        }
-                        if (intensity == 0)
-                            continue;
-                        const float tr = exp(-total * sqrt(distance_squared));
-                        if (tr > 0)
-                            direct += rypath_medium::phase(-incoming.direction, direction, m->g) *
-                                      (intensity / distance_squared) * tr;
+                        direction = unpack(light->direction);
+                        radiance = light->radiance[wavelength];
+                        distance_to_light = 2 * p.distant_scene_radius;
                     }
-                    if (sample.status != wire::success)
-                        break;
-                    sample.radiance += throughput * direct;
+                    // An infinite environment cannot cross a medium with
+                    // positive extinction; its selected sample contributes zero.
+                    if (radiance > 0) {
+                        const float tr = exp(-total * distance_to_light);
+                        sample.radiance +=
+                            throughput *
+                            rypath_medium::phase(-incoming.direction, direction, m->g) *
+                            (radiance / chosen.pmf) * tr;
+                    }
                     if (!isfinite(sample.radiance) || sample.radiance < 0) {
                         sample.status = wire::invalid_arithmetic;
                         break;
@@ -2521,8 +2382,7 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
     float escape_weight = 1.0f;
     float previous_bsdf_pdf = 0.0f;
     bool previous_delta = false;
-    bool previous_microfacet = false;
-    float3 previous_area_reference = incoming.origin;
+    rypath_light_sampling::Context previous_light_context{incoming.origin, float3(0)};
     const float E = sky_radiance(environment, p, sample.wavelength);
     uint current_medium = p.camera_medium;
     uint medium_draw = 0;
@@ -2587,10 +2447,10 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                     throughput *= s / total;
                     const auto light_words = medium_words(p, sample, medium_draw);
                     const auto phase_words = medium_words(p, sample, medium_draw);
-                    const auto direct = medium_direct(
-                        position, -direction, m->g, current_medium, light_words, phase_words, scene,
-                        intersection_table, alpha, materials, material_data, emissions, emitters,
-                        light_images, environment_cdf, E);
+                    const auto direct =
+                        medium_direct(position, -direction, m->g, current_medium, light_words,
+                                      scene, intersection_table, alpha, materials, material_data,
+                                      emissions, emitters, light_images, environment_cdf);
                     if (direct.status != wire::success) {
                         sample.status = direct.status;
                         break;
@@ -2611,9 +2471,8 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                         throughput /= .75f;
                     }
                     previous_delta = false;
-                    previous_microfacet = true;
-                    previous_area_reference = position;
-                    escape_weight = power_weight(previous_bsdf_pdf, 1 / (4 * pi));
+                    previous_light_context = {position, float3(0)};
+                    escape_weight = 1;
                     incoming = ray(position, wi);
                     boundary_crossings = 0;
                     continue;
@@ -2621,15 +2480,15 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             }
         }
         if (hit.type == intersection_type::none) {
-            float Le = E;
-            if (environment_image_enabled) {
-                Le = rypath_image_light::environment_radiance(
-                    light_images, graph_p, incoming.direction, sample.wavelength);
-                if (sample.scatterings != 0u && !previous_delta) {
-                    const float pdf = rypath_image_light::environment_pdf(graph_p, environment_cdf,
-                                                                          incoming.direction);
-                    escape_weight = power_weight(previous_bsdf_pdf, pdf);
-                }
+            const float Le = environment_image_enabled
+                                 ? rypath_image_light::environment_radiance(
+                                       light_images, graph_p, incoming.direction, sample.wavelength)
+                                 : E;
+            if (p.model == wire::pbrt_model && sample.scatterings != 0u && !previous_delta) {
+                const float pdf = rypath_scalar_light::environment_pdf(
+                    p, material_data, previous_light_context, graph_p, environment_cdf,
+                    incoming.direction);
+                escape_weight = power_weight(previous_bsdf_pdf, pdf);
             }
             sample.radiance += throughput * escape_weight * Le;
             break;
@@ -2700,27 +2559,23 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                               dot(point.geometric_normal, -incoming.direction) >= 0.0f)) {
                 float weight = 1.0f;
                 if (bounce != 0u && !previous_delta) {
-                    // Use the previous area proposal's reference point, which
-                    // can differ from the displaced traversal ray origin.
-                    const float3 delta = point.position - previous_area_reference;
-                    const float distance_squared = dot(delta, delta);
-                    if (!(distance_squared >= FLT_MIN) || !isfinite(distance_squared)) {
-                        sample.status = wire::invalid_arithmetic;
+                    const uint light_id =
+                        instance.emitter_begin +
+                        (kind == wire::triangle_primitive ? hit.primitive_id
+                         : kind == wire::patch_primitive
+                             ? instance.triangle_count + hit.primitive_id
+                             : instance.triangle_count + instance.patch_count + hit.primitive_id);
+                    if (light_id >= p.emitter_count) {
+                        sample.status = wire::invalid_hit;
                         break;
                     }
-                    const float light_cosine =
-                        abs(dot(point.geometric_normal, -delta / sqrt(distance_squared)));
-                    // Pinned PBRT reports zero light PDF at an exactly tangent
-                    // endpoint; the BSDF technique then receives full weight.
-                    weight =
-                        light_cosine == 0.0f ? 1.0f
-                        : previous_microfacet
-                            ? power_weight(previous_bsdf_pdf,
-                                           area_light_pdf(point.inverse_area_pdf, light_cosine,
-                                                          distance_squared, p.emitter_slots))
-                            : area_weights(point.inverse_area_pdf, light_cosine, previous_bsdf_pdf,
-                                           distance_squared, p.emitter_slots)
-                                  .hit_weight;
+                    const auto emitter = emitters[light_id];
+                    const float pdf =
+                        rypath_light_sampling::pmf(p, material_data, previous_light_context,
+                                                   light_id) *
+                        rypath_light_geometry::pdf(alpha, emitter, previous_light_context.position,
+                                                   previous_light_context.normal, hit_uv, point);
+                    weight = power_weight(previous_bsdf_pdf, pdf);
                 }
                 if (!isfinite(weight)) {
                     sample.status = wire::invalid_arithmetic;
@@ -2895,322 +2750,126 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
             break;
         }
         const uint4 light_words = draw_words(p, tables, sample, index, 2 + 2 * bounce);
-        float3 light_direction;
-        float light_pdf = 1.0f / (4.0f * pi);
-        float light_radiance = E;
-        const float2 light_u(sample_uniform(p, light_words.x), sample_uniform(p, light_words.y));
-        if (environment_image_enabled) {
-            if (!rypath_image_light::sample_environment(graph_p, environment_cdf, light_u,
-                                                        light_direction, light_pdf)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            light_radiance = rypath_image_light::environment_radiance(
-                light_images, graph_p, light_direction, sample.wavelength);
-        } else {
-            light_direction = sphere(light_u.x, light_u.y);
-        }
-        if (!isfinite(light_radiance) || light_radiance < 0) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        const float3 local_light = microfacet ? frame.local(light_direction) : float3(0);
-        const float light_cosine = both_hemispheres ? abs(local_light.z)
-                                   : microfacet     ? (wo.z > 0 ? local_light.z : -local_light.z)
-                                                    : dot(n, light_direction);
-        if (!delta && light_radiance > 0.0f && light_cosine > 0.0f) {
-            const float3 origin = directional_offset
-                                      ? spawn_toward(incoming, hit.distance, point, light_direction)
-                                      : area_reference;
-            if (!all(isfinite(origin))) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            const auto visibility = connection_transmission(
-                shadow, ray(origin, light_direction), scene, intersection_table, alpha, materials,
-                material_data,
-                outgoing_medium(instance, current_medium, point.geometric_normal, light_direction));
-            if (visibility.status != wire::success) {
-                sample.status = visibility.status;
-                break;
-            }
-            if (visibility.value > 0) {
-                float factor;
-                if (microfacet) {
-                    const auto evaluated =
-                        evaluate_scattering(scattering, wo, local_light, material_random.y);
-                    factor = evaluated.valid ? scattering_direct(evaluated.f * light_cosine,
-                                                                 evaluated.pdf, light_pdf, false)
-                                             : NAN;
-                } else {
-                    factor = environment_image_enabled
-                                 ? (light_cosine / pi) / light_pdf *
-                                       power_weight(light_pdf, light_cosine / pi)
-                                 : (4.0f * light_cosine) * light_weight(light_cosine);
-                }
-                if (!isfinite(factor)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                sample.radiance += throughput * (microfacet ? 1.0f : rho) * factor *
-                                   light_radiance * visibility.value;
-            }
-        }
-
         const uint4 bsdf_words = draw_words(p, tables, sample, index, 1 + 2 * bounce);
-        // A null slot intentionally contributes zero. This gives every emitter
-        // an exact dyadic PMF and avoids altering the BSDF and sky streams.
-        const uint selected = p.sampler_kind != wire::independent_sampler
-                                  ? (p.emitter_slots == 1 ? 0
-                                                          : decision_word(p, bsdf_words.w) >>
-                                                                (clz(p.emitter_slots) + 1))
-                                  : bsdf_words.w & (p.emitter_slots - 1u);
-        if (!delta && selected < p.emitter_count) {
-            const wire::Emitter emitter = emitters[selected];
-            if (emitter.instance >= p.instance_count) {
-                sample.status = wire::invalid_hit;
+        const rypath_light_sampling::Context light_context{
+            point.position, microfacet ? frame.z : point.shading_normal};
+        if (p.model == wire::demo_model) {
+            float3 light_direction;
+            float light_pdf = 1.0f / (4.0f * pi);
+            float light_radiance = E;
+            const float2 light_u(sample_uniform(p, light_words.x),
+                                 sample_uniform(p, light_words.y));
+            if (environment_image_enabled) {
+                if (!rypath_image_light::sample_environment(graph_p, environment_cdf, light_u,
+                                                            light_direction, light_pdf)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                light_radiance = rypath_image_light::environment_radiance(
+                    light_images, graph_p, light_direction, sample.wavelength);
+            } else {
+                light_direction = sphere(light_u.x, light_u.y);
+            }
+            if (!isfinite(light_radiance) || light_radiance < 0) {
+                sample.status = wire::invalid_arithmetic;
                 break;
             }
-            const device wire::Instance &light_instance = instances[emitter.instance];
-            const uint light_count = primitive_count(light_instance, emitter.kind);
-            if ((emitter.kind != wire::patch_primitive &&
-                 emitter.kind != wire::analytic_primitive &&
-                 emitter.kind != wire::triangle_primitive) ||
-                emitter.primitive >= light_count || light_instance.emission >= p.emission_count) {
-                sample.status = wire::invalid_hit;
-                break;
-            }
-            const device wire::AreaEmission &emission = emissions[light_instance.emission];
-            float Le = emission.radiance[dense_index(sample.wavelength)];
-            // A coplanar connection has zero geometric emitter cosine.
-            const bool same_triangle =
-                kind == wire::triangle_primitive && emitter.kind == wire::triangle_primitive &&
-                emitter.instance == hit.instance_id && emitter.primitive == hit.primitive_id;
-            if ((Le > 0.0f || (area_image_enabled && emission.image_texture != 0xffffffffu) ||
-                 (gltf_enabled && emission.gltf_material != 0xffffffffu)) &&
-                !same_triangle) {
-                SurfacePoint target;
-                const float2 light_uv =
-                    sample_emitter_uv(light_instance, emitter.primitive, emitter.kind,
-                                      decision_word(p, light_words.z),
-                                      decision_word(p, light_words.w), material_data);
-                if (!surface_point(light_uv, emitter.kind, light_instance, emitter.primitive,
-                                   positions, triangles, patches, normals, p.normal_count,
-                                   PointSource::area_sample, target, material_data)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                if (target.inverse_area_pdf > 0) {
-                    if (!area_radiance(emission, light_instance, emitter.primitive, emitter.kind,
-                                       light_uv, target, alpha, light_images, Le)) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    const float3 delta = target.position - area_reference;
-                    const float distance_squared = dot(delta, delta);
-                    const bool same_patch = procedural_hit && emitter.kind == kind &&
-                                            emitter.instance == hit.instance_id &&
-                                            emitter.primitive == hit.primitive_id;
-                    if (!isfinite(distance_squared) ||
-                        (!(distance_squared >= FLT_MIN) && !same_patch)) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    // Two samples of the same patch can round to one endpoint.
-                    // Its degenerate connection contributes zero; retain the BSDF
-                    // continuation and all noncoincident curved self-lighting.
-                    if (distance_squared >= FLT_MIN) {
-                        const float3 direction = delta / sqrt(distance_squared);
-                        const float3 local_receiver =
-                            microfacet ? frame.local(direction) : float3(0);
-                        const float receiver_cosine =
-                            both_hemispheres ? abs(local_receiver.z)
-                            : microfacet     ? (wo.z > 0 ? local_receiver.z : -local_receiver.z)
-                                             : dot(n, direction);
-                        const float emitter_cosine = dot(target.geometric_normal, -direction);
-                        if (Le > 0.0f && receiver_cosine > 0.0f && emitter_cosine != 0.0f &&
-                            (emission.two_sided != 0u || emitter_cosine > 0.0f)) {
-                            float factor;
-                            if (microfacet) {
-                                const auto evaluated = evaluate_scattering(
-                                    scattering, wo, local_receiver, material_random.z);
-                                factor = evaluated.valid
-                                             ? scattering_direct(
-                                                   evaluated.f * receiver_cosine, evaluated.pdf,
-                                                   area_light_pdf(
-                                                       target.inverse_area_pdf, abs(emitter_cosine),
-                                                       distance_squared, p.emitter_slots),
-                                                   light_instance.invisible_emitter != 0)
-                                             : NAN;
-                            } else {
-                                factor =
-                                    light_instance.invisible_emitter != 0u
-                                        ? (float(p.emitter_slots) * target.inverse_area_pdf) *
-                                              abs(emitter_cosine) * (receiver_cosine / pi) /
-                                              distance_squared
-                                        : area_weights(target.inverse_area_pdf, abs(emitter_cosine),
-                                                       receiver_cosine / pi, distance_squared,
-                                                       p.emitter_slots)
-                                              .direct_factor;
-                            }
-                            const float3 origin =
-                                directional_offset
-                                    ? spawn_toward(incoming, hit.distance, point, direction)
-                                    : area_reference;
-                            const float3 shadow_delta =
-                                directional_offset ? target.position - origin : delta;
-                            const float endpoint_cosine =
-                                directional_offset ? dot(target.geometric_normal, -shadow_delta)
-                                                   : emitter_cosine;
-                            const float3 segment = shadow_segment_direction(
-                                origin, shadow_delta, target, endpoint_cosine);
-                            const float progress = dot(segment, direction);
-                            if (!isfinite(factor) || !all(isfinite(segment)) ||
-                                !(progress > 0.0f) || !isfinite(progress)) {
-                                sample.status = wire::invalid_arithmetic;
-                                break;
-                            }
-                            const ray connection(origin, segment, 0.0f, 0x1.fffffep-1f);
-                            const auto visibility = connection_transmission(
-                                shadow, connection, scene, intersection_table, alpha, materials,
-                                material_data,
-                                outgoing_medium(instance, current_medium, point.geometric_normal,
-                                                direction));
-                            if (visibility.status != wire::success) {
-                                sample.status = visibility.status;
-                                break;
-                            }
-                            if (visibility.value > 0) {
-                                sample.radiance += (throughput * (microfacet ? 1.0f : rho)) *
-                                                   (factor * Le) * visibility.value;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Positional lights are delta-position sources. Enumerating the bounded list
-        // needs neither a selection probability nor continuous-light MIS.
-        if (positional_lights_enabled && !delta) {
-            for (uint i = 0; i < p.positional_count; ++i) {
-                const auto light = positional_record(material_data, p, i);
-                if (light == nullptr) {
-                    sample.status = wire::invalid_hit;
-                    break;
-                }
-                float intensity = light->intensity[dense_index(sample.wavelength)];
-                if (intensity == 0)
-                    continue;
-                float3 direction;
-                float distance_squared;
-                if (!point_direction(point.position, unpack(light->position), direction,
-                                     distance_squared, light->kind != wire::point_light)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                if (!positional_intensity(*light, direction, light_images, sample.wavelength,
-                                          intensity)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                if (intensity == 0)
-                    continue;
-                const float3 local = microfacet ? frame.local(direction) : float3(0);
-                const float cosine = both_hemispheres ? abs(local.z)
-                                     : microfacet     ? (wo.z > 0 ? local.z : -local.z)
-                                                      : dot(n, direction);
-                if (cosine <= 0)
-                    continue;
-                float factor = rho * (cosine / pi);
-                if (microfacet) {
-                    const auto evaluated =
-                        evaluate_scattering(scattering, wo, local, material_random.z);
-                    factor = evaluated.valid ? evaluated.f * cosine : NAN;
-                }
-                const float3 origin = directional_offset
-                                          ? spawn_toward(incoming, hit.distance, point, direction)
-                                          : area_reference;
-                const float3 segment = unpack(light->position) - origin;
-                const float progress = dot(segment, direction);
-                if (!isfinite(factor) || factor < 0 || !all(isfinite(origin)) ||
-                    !all(isfinite(segment)) || !(progress > 0) || !isfinite(progress)) {
+            const float3 local_light = microfacet ? frame.local(light_direction) : float3(0);
+            const float light_cosine = both_hemispheres ? abs(local_light.z)
+                                       : microfacet ? (wo.z > 0 ? local_light.z : -local_light.z)
+                                                    : dot(n, light_direction);
+            if (!delta && light_radiance > 0.0f && light_cosine > 0.0f) {
+                const float3 origin = directional_offset ? spawn_toward(incoming, hit.distance,
+                                                                        point, light_direction)
+                                                         : area_reference;
+                if (!all(isfinite(origin))) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
                 const auto visibility = connection_transmission(
-                    shadow, ray(origin, segment, 0, 0x1.fffffep-1f), scene, intersection_table,
-                    alpha, materials, material_data,
-                    outgoing_medium(instance, current_medium, point.geometric_normal, direction));
-                if (visibility.status != wire::success) {
-                    sample.status = visibility.status;
-                    break;
-                }
-                if (visibility.value > 0 && factor > 0)
-                    sample.radiance +=
-                        throughput * factor * (intensity / distance_squared) * visibility.value;
-                if (!isfinite(sample.radiance) || sample.radiance < 0) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-            }
-            if (sample.status != wire::success)
-                break;
-        }
-        // Delta-direction sources are enumerated with unit weight, without
-        // inverse-square attenuation, random draws, or continuous-light MIS.
-        if (distant_lights_enabled && !delta) {
-            for (uint i = 0; i < p.distant_count; ++i) {
-                const auto light = distant_record(material_data, p, i);
-                if (light == nullptr) {
-                    sample.status = wire::invalid_hit;
-                    break;
-                }
-                const float radiance = light->radiance[dense_index(sample.wavelength)];
-                if (radiance == 0)
-                    continue;
-                const float3 direction = unpack(light->direction);
-                const float3 local = microfacet ? frame.local(direction) : float3(0);
-                const float cosine = both_hemispheres ? abs(local.z)
-                                     : microfacet     ? (wo.z > 0 ? local.z : -local.z)
-                                                      : dot(n, direction);
-                if (cosine <= 0)
-                    continue;
-                float factor = rho * (cosine / pi);
-                if (microfacet) {
-                    const auto evaluated =
-                        evaluate_scattering(scattering, wo, local, material_random.z);
-                    factor = evaluated.valid ? evaluated.f * cosine : NAN;
-                }
-                const float3 endpoint = point.position + direction * (2 * p.distant_scene_radius);
-                const float3 origin = directional_offset
-                                          ? spawn_toward(incoming, hit.distance, point, direction)
-                                          : area_reference;
-                const float3 segment = endpoint - origin;
-                const float progress = dot(segment, direction);
-                if (!isfinite(factor) || factor < 0 || !all(isfinite(origin)) ||
-                    !all(isfinite(endpoint)) || !all(isfinite(segment)) || !(progress > 0) ||
-                    !isfinite(progress)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                const auto visibility = connection_transmission(
-                    shadow, ray(origin, segment, 0, 1 - 0.0001f), scene, intersection_table, alpha,
+                    shadow, ray(origin, light_direction), scene, intersection_table, alpha,
                     materials, material_data,
-                    outgoing_medium(instance, current_medium, point.geometric_normal, direction),
-                    true, endpoint);
+                    outgoing_medium(instance, current_medium, point.geometric_normal,
+                                    light_direction));
                 if (visibility.status != wire::success) {
                     sample.status = visibility.status;
                     break;
                 }
-                if (visibility.value > 0 && factor > 0)
-                    sample.radiance += throughput * factor * radiance * visibility.value;
-                if (!isfinite(sample.radiance) || sample.radiance < 0) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
+                if (visibility.value > 0) {
+                    float factor;
+                    if (microfacet) {
+                        const auto evaluated =
+                            evaluate_scattering(scattering, wo, local_light, material_random.y);
+                        factor = evaluated.valid
+                                     ? scattering_direct(evaluated.f * light_cosine, evaluated.pdf,
+                                                         light_pdf, false)
+                                     : NAN;
+                    } else {
+                        factor = environment_image_enabled
+                                     ? (light_cosine / pi) / light_pdf *
+                                           power_weight(light_pdf, light_cosine / pi)
+                                     : (4.0f * light_cosine) * light_weight(light_cosine);
+                    }
+                    if (!isfinite(factor)) {
+                        sample.status = wire::invalid_arithmetic;
+                        break;
+                    }
+                    sample.radiance += throughput * (microfacet ? 1.0f : rho) * factor *
+                                       light_radiance * visibility.value;
                 }
             }
-            if (sample.status != wire::success)
+        } else if (!delta) {
+            const auto light = rypath_scalar_light::sample(
+                alpha, emissions, emitters, light_images, environment_cdf, light_context,
+                sample_uniform(p, light_words.x),
+                float2(sample_uniform(p, light_words.y), sample_uniform(p, light_words.z)));
+            if (!light.valid) {
+                sample.status = wire::invalid_arithmetic;
                 break;
+            }
+            if (light.pdf > 0 && light.radiance > 0) {
+                const float3 local = microfacet ? frame.local(light.direction) : float3(0);
+                const float cosine = both_hemispheres ? abs(local.z)
+                                     : microfacet     ? (wo.z > 0 ? local.z : -local.z)
+                                                      : dot(n, light.direction);
+                if (cosine > 0) {
+                    float f_cos = rho * cosine / pi;
+                    float bsdf_pdf = cosine / pi;
+                    if (microfacet) {
+                        const auto evaluated =
+                            evaluate_scattering(scattering, wo, local, material_random.z);
+                        if (!evaluated.valid) {
+                            sample.status = wire::invalid_arithmetic;
+                            break;
+                        }
+                        f_cos = evaluated.f * cosine;
+                        bsdf_pdf = evaluated.pdf;
+                    }
+                    const float factor =
+                        scattering_direct(f_cos, bsdf_pdf, light.pdf,
+                                          rypath_scalar_light::delta(light) || light.invisible);
+                    const float3 origin = directional_offset ? spawn_toward(incoming, hit.distance,
+                                                                            point, light.direction)
+                                                             : area_reference;
+                    const auto connection = rypath_scalar_light::connection(light, origin);
+                    if (!isfinite(factor) || !all(isfinite(connection.direction)) ||
+                        !(dot(connection.direction, light.direction) > 0)) {
+                        sample.status = wire::invalid_arithmetic;
+                        break;
+                    }
+                    const auto visibility = connection_transmission(
+                        shadow, connection, scene, intersection_table, alpha, materials,
+                        material_data,
+                        outgoing_medium(instance, current_medium, point.geometric_normal,
+                                        light.direction),
+                        light.kind == rypath_scalar_light::distant, light.endpoint);
+                    if (visibility.status != wire::success) {
+                        sample.status = visibility.status;
+                        break;
+                    }
+                    sample.radiance += throughput * factor * light.radiance * visibility.value;
+                }
+            }
         }
         float3 wi;
         float continuation_pdf = 0;
@@ -3267,11 +2926,10 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
         }
         previous_bsdf_pdf = microfacet ? continuation_pdf : cosine / pi;
         previous_delta = delta;
-        previous_microfacet = microfacet;
+        previous_light_context = light_context;
         escape_weight = delta        ? 1.0f
                         : microfacet ? power_weight(previous_bsdf_pdf, 1.0f / (4.0f * pi))
                                      : bsdf_weight(cosine);
-        previous_area_reference = area_reference;
         const float3 origin =
             directional_offset ? spawn_toward(incoming, hit.distance, point, wi) : area_reference;
         if (!all(isfinite(origin))) {
@@ -3398,6 +3056,7 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
                                                                    sizeof(packet_storage::Result));
     bdpt::Vertex endpoint{};
     endpoint.type = bdpt::camera_vertex;
+    endpoint.path_id = 0;
     endpoint.point.position = incoming.origin;
     endpoint.point.geometric_normal = unpack(p.camera_normal);
     endpoint.point.shading_normal = unpack(p.camera_normal);

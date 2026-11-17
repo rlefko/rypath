@@ -4,6 +4,7 @@
 #include "packet_wire.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <exception>
 
@@ -120,7 +121,13 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 finish(RenderCompletion::cancelled);
             return result;
         }
+        const auto preparation_start = std::chrono::steady_clock::now();
         auto built = source.prepare();
+        result.pipeline_seconds = built.pipeline_seconds;
+        result.preparation_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - preparation_start)
+                .count() -
+            result.pipeline_seconds;
         result.device = built.device;
         result.status = built.status;
         result.diagnostic = built.diagnostic;
@@ -134,6 +141,7 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
         result.status = GeometryStatus::failure;
         if (!notify())
             return result;
+        const auto render_start = std::chrono::steady_clock::now();
         while (completed < settings.samples) {
             if (control.cancelled && control.cancelled()) {
                 finish(RenderCompletion::cancelled);
@@ -156,6 +164,7 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                         request.width = settings.width;
                         request.height = settings.height;
                         request.seed = settings.seed;
+                        request.material_seed = settings.material_seed;
                         request.sampler = settings.sampler;
                         request.pixel_begin = pixel_begin;
                         request.pixel_count = pixel_count;
@@ -196,6 +205,7 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                         request.width = settings.width;
                         request.height = settings.height;
                         request.seed = settings.seed;
+                        request.material_seed = settings.material_seed;
                         request.sampler = settings.sampler;
                         request.pixel_begin = pixel_begin;
                         request.pixel_count = pixel_count;
@@ -227,6 +237,8 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 control.progress(completed);
             }
         }
+        result.render_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - render_start).count();
         finish(RenderCompletion::complete);
     } catch (const std::exception &error) {
         result.status = GeometryStatus::failure;

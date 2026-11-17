@@ -335,6 +335,7 @@ void coincidence() {
     for (const auto &p : failed.film.pixels)
         require(p.count == 0, "failed point batch must not commit Film");
     s.point_lights[0].intensity.fill(0);
+    s.light_sampler = LightSamplerKind::uniform;
     constant(s, 0, "zero-intensity coincident point is skipped");
 }
 } // namespace

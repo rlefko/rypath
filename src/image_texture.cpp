@@ -581,7 +581,10 @@ struct MipSampler {
 
 std::optional<MipSampler> mip_sampler(const ImagePyramid &image, std::size_t index) {
     const auto &level = image.levels[index];
-    if (level.width == 0 || level.height == 0 || !dimensions_fit(level.width, level.height, {})) {
+    // Construction checks the selected profile. Lookup must accept every
+    // supported retained image, including the explicit large-scene profile.
+    if (level.width == 0 || level.height == 0 || level.width > image_dimension_ceiling ||
+        level.height > image_dimension_ceiling) {
         return std::nullopt;
     }
     const std::size_t word_stride = image_storage_words(image.storage);

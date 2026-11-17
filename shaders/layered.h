@@ -3,7 +3,14 @@
 // pbrt is Copyright(c) 1998-2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
 // See third_party/pbrt/LICENSE.txt. Scalar spectral lane; radiance transport.
 #pragma once
+#include "../src/layered_rng_shared.h"
 #include "transmission.h"
+#ifndef RYPATH_COATING_DIAGNOSTIC_PDF_FIXED
+#define RYPATH_COATING_DIAGNOSTIC_PDF_FIXED 0
+#endif
+#ifndef RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT
+#define RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT 0
+#endif
 namespace rypath_layered {
 using Evaluation = rypath_conductor::Evaluation;
 using Sample = rypath_conductor::Sample;
@@ -13,9 +20,25 @@ struct Parameters {
     bool conductor_base;
     float reflectance, thickness, albedo, g;
     uint max_depth, samples;
+    int material_seed;
 };
-// Local integer generator; the caller supplies the path/event key. No shared state.
+// No shared state: each PBRT operation hashes its exact ordered float inputs.
 struct RNG {
+    rypath_layered_rng::PCG pcg;
+    RNG(rypath_layered_rng::Wide sequence, rypath_layered_rng::Wide offset)
+        : pcg(sequence, offset) {}
+    float next() { return pcg.next(); }
+    float2 pair() {
+        float a = next();
+        float b = next();
+        return float2(a, b);
+    }
+};
+// Diagnostic builds can isolate the former fixed-PDF and event-local value
+// policies. Production defaults to PBRT domains; the sampled joint walk always
+// uses PBRT PCG, so the two-by-two experiment changes only f/PDF estimates.
+#if RYPATH_COATING_DIAGNOSTIC_PDF_FIXED || RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT
+struct DiagnosticLegacyRNG {
     uint state;
     float next() {
         state += 0x9e3779b9u;
@@ -26,11 +49,17 @@ struct RNG {
         return float(v >> 8) * 0x1p-24f;
     }
     float2 pair() {
-        float a = next();
-        float b = next();
+        float a = next(), b = next();
         return float2(a, b);
     }
 };
+#endif
+inline rypath_layered_rng::Wide direction_hash(float3 w) {
+    return rypath_layered_rng::direction(w.x, w.y, w.z);
+}
+inline rypath_layered_rng::Wide seeded_direction_hash(int seed, float3 w) {
+    return rypath_layered_rng::seeded_direction(seed, w.x, w.y, w.z);
+}
 inline bool valid_parameters(const thread Parameters &p) {
     return isfinite(p.reflectance) && p.reflectance >= 0 && p.reflectance <= 1 &&
            isfinite(p.thickness) && isfinite(p.albedo) && p.albedo >= 0 && p.albedo <= 1 &&
@@ -166,12 +195,11 @@ inline Evaluation directional_pdf(const thread Parameters &p, float3 wo, float3 
         wi = -wi;
     }
     float sum = 0;
-    // Deliberate PBRT adaptation: use one fixed density-only RNG domain.
-    // Event-local seeds break complementary MIS weights, while hashing the
-    // directions makes frame-rounding ULPs select unrelated density estimates.
-    // The density remains a deterministic function of wo/wi; f and sampled
-    // transport below retain their independent event-local random walks.
-    RNG rng{0xb5297a4du};
+#if RYPATH_COATING_DIAGNOSTIC_PDF_FIXED
+    DiagnosticLegacyRNG rng{0xb5297a4du};
+#else
+    RNG rng{seeded_direction_hash(p.material_seed, wi), direction_hash(wo)};
+#endif
     if (wo.z * wi.z > 0) {
         auto direct = top_evaluate(p, wo, wi, 1);
         if (!direct.valid)
@@ -231,7 +259,8 @@ inline Sample sample(const thread Parameters &p, float3 wo, float uc, float2 u, 
     float3 w = s.wi;
     float weight = s.weight, z = thickness(p);
     bool delta = s.delta;
-    RNG rng{seed ^ 0x68e31da4u};
+    (void)seed;
+    RNG rng{seeded_direction_hash(p.material_seed, wo), rypath_layered_rng::sample(uc, u.x, u.y)};
     bool exited = w.z > 0;
     for (uint depth = 0; !exited && depth < p.max_depth; ++depth) {
         if (depth > 3 && weight < .25f) {
@@ -309,7 +338,12 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
     if (!direct.valid)
         return {0, 0, false};
     float total = float(p.samples) * direct.f;
-    RNG rng{seed ^ 0x1b56c4e9u};
+    (void)seed;
+#if RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT
+    DiagnosticLegacyRNG rng{seed ^ 0x1b56c4e9u};
+#else
+    RNG rng{seeded_direction_hash(p.material_seed, wo), direction_hash(wi)};
+#endif
     for (uint n = 0; n < p.samples; ++n) {
         float uc = rng.next();
         auto a = top_sample(p, wo, uc, rng.pair(), 2);

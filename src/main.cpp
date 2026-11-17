@@ -197,7 +197,7 @@ int import_stl(int argc, char *argv[]) {
     return status;
 }
 
-template <typename Integer> bool parse_unsigned(std::string_view value, Integer &result) {
+template <typename Integer> bool parse_integer(std::string_view value, Integer &result) {
     const auto *end = value.data() + value.size();
     const auto parsed = std::from_chars(value.data(), end, result);
     return parsed.ec == std::errc{} && parsed.ptr == end;
@@ -268,7 +268,7 @@ bool checkpoint_option(std::string_view option, std::string_view value,
         (option == "--checkpoint" ? options.output : options.resume) = value;
     } else if (option == "--checkpoint-interval") {
         options.interval_supplied = true;
-        if (!parse_unsigned(value, options.interval_seconds) || options.interval_seconds == 0)
+        if (!parse_integer(value, options.interval_seconds) || options.interval_seconds == 0)
             diagnostic = "--checkpoint-interval must be a positive unsigned integer";
     } else {
         return false;
@@ -308,7 +308,8 @@ std::string render_sampler_description(const rypath::RenderSettings &settings,
                                                    !packet && scene.perspective_lens.has_value());
     if (packet)
         description +=
-            "; packet fixed dimension allocation [0,920); keyed material-local Philox streams";
+            "; packet fixed dimension allocation [0,920); keyed material-local Philox streams; "
+            "independent coating hash/PCG domains";
     return description;
 }
 
@@ -326,6 +327,12 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                       {"rypath.scene", std::move(scene)},
                       {"rypath.sampler", render_sampler_description(settings, render_scene)},
                       {"rypath.seed", seed},
+                      {"rypath.materialSeed", std::to_string(settings.material_seed)},
+                      {"rypath.lightSampler",
+                       render_scene.integrator == rypath::IntegratorKind::bdpt         ? "power"
+                       : render_scene.light_sampler == rypath::LightSamplerKind::bvh   ? "bvh"
+                       : render_scene.light_sampler == rypath::LightSamplerKind::power ? "power"
+                                                                                       : "uniform"},
                       {"rypath.samplesPerPixel", std::to_string(settings.samples)},
                       {"rypath.batchSize", std::to_string(settings.batch_size)},
                       {"rypath.exposure", exposure.str()},
@@ -417,15 +424,15 @@ int render_demo(int argc, char *argv[]) {
         } else if (option == "--output") {
             output = value;
         } else if (option == "--width") {
-            valid = parse_unsigned(value, settings.width);
+            valid = parse_integer(value, settings.width);
         } else if (option == "--height") {
-            valid = parse_unsigned(value, settings.height);
+            valid = parse_integer(value, settings.height);
         } else if (option == "--samples") {
-            valid = parse_unsigned(value, settings.samples);
+            valid = parse_integer(value, settings.samples);
         } else if (option == "--batch-size") {
-            valid = parse_unsigned(value, settings.batch_size);
+            valid = parse_integer(value, settings.batch_size);
         } else if (option == "--seed") {
-            valid = parse_unsigned(value, settings.seed);
+            valid = parse_integer(value, settings.seed);
         } else {
             return argument_error();
         }
@@ -473,6 +480,7 @@ int render_pbrt(int argc, char *argv[]) {
     rypath::CheckpointOptions checkpoints;
     std::filesystem::path output, raw_output;
     std::uint64_t batch_size = 8;
+    std::int32_t material_seed = 0;
     auto resource_profile = rypath::ResourceProfile::standard;
     std::set<std::string_view> seen;
     for (int index = 3; index < argc; index += 2) {
@@ -491,13 +499,16 @@ int render_pbrt(int argc, char *argv[]) {
             output = argv[index + 1];
         } else if (option == "--raw-output") {
             raw_output = argv[index + 1];
+        } else if (option == "--material-seed") {
+            if (!parse_integer(std::string_view{argv[index + 1]}, material_seed))
+                return render_error("--material-seed must be a signed 32-bit integer");
         } else if (option == "--resource-profile") {
             const auto parsed = rypath::parse_resource_profile(argv[index + 1]);
             if (!parsed)
                 return render_error("--resource-profile requires standard or large");
             resource_profile = *parsed;
         } else if (option == "--batch-size") {
-            if (!parse_unsigned(std::string_view{argv[index + 1]}, batch_size) || batch_size == 0) {
+            if (!parse_integer(std::string_view{argv[index + 1]}, batch_size) || batch_size == 0) {
                 return render_error("--batch-size must be a positive unsigned integer");
             }
         } else {
@@ -555,6 +566,7 @@ int render_pbrt(int argc, char *argv[]) {
             return render_error("raw output must not alias the primary output or scene inputs");
     }
     translated.settings.batch_size = batch_size;
+    translated.settings.material_seed = material_seed;
     const auto &settings = translated.settings;
     if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
         return render_error(diagnostic);
@@ -569,16 +581,19 @@ int render_pbrt(int argc, char *argv[]) {
               << "Render profile: pbrt-spectral-v1\n"
               << "Resource profile: " << rypath::resource_profile_name(resource_profile) << '\n'
               << "Sampler: " << render_sampler_description(settings, scene) << '\n'
-              << (scene.spectral_transport == rypath::SpectralTransport::packet
-                      ? "Light sampling: uniform emitter selection with reciprocal endpoint PDFs "
-                        "(differs from PBRT)\n"
-                      : "Light sampling: separate environment and uniform triangle area (differs "
-                        "from PBRT)\n")
+              << "Light sampling: "
+              << (scene.integrator == rypath::IntegratorKind::bdpt ||
+                          scene.light_sampler == rypath::LightSamplerKind::power
+                      ? "power"
+                  : scene.light_sampler == rypath::LightSamplerKind::bvh ? "bvh"
+                                                                         : "uniform")
+              << "; matched forward and reverse probabilities\n"
               << "Color: calibrated CIE 1931 XYZ / sRGB\n"
               << "Resolution: " << settings.width << 'x' << settings.height << '\n'
               << "Samples per pixel: " << settings.samples << '\n'
               << "Batch size: " << settings.batch_size << '\n'
               << "Seed: " << seed << '\n'
+              << "Material seed: " << settings.material_seed << '\n'
               << "Finite path maxdepth: " << scene.max_depth << '\n'
               << "Output override: " << output.string() << " (Film.filename overridden; "
               << output_description(output, precision)
@@ -613,6 +628,10 @@ int render_pbrt(int argc, char *argv[]) {
     }
     metadata.emplace_back("rypath.sceneTranslation", std::move(translation_provenance));
     const int status = finish_job(job, settings, output, precision, metadata);
+    if (status == 0)
+        std::cout << "Preparation seconds: " << job.render.preparation_seconds << '\n'
+                  << "Pipeline seconds: " << job.render.pipeline_seconds << '\n'
+                  << "Render and accumulation seconds: " << job.render.render_seconds << '\n';
     if (status != 0 || raw_output.empty())
         return status;
     auto raw = job.render.film;
@@ -653,6 +672,7 @@ int main(int argc, char *argv[]) {
                      "              [--stl-colors auto|viscam|magics]\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
                      "           [--resource-profile standard|large] [--raw-output PATH.exr]\n"
+                     "           [--material-seed 0]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n"
                      "       Render options: [--checkpoint PATH] [--resume PATH]\n"

@@ -10,6 +10,7 @@ struct RenderRequest {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint64_t seed = 1;
+    std::int32_t material_seed = 0;
     std::uint32_t pixel_begin = 0;
     std::uint32_t pixel_count = 0;
     std::uint64_t sample_begin = 0;
@@ -56,6 +57,7 @@ struct RenderBuildResult {
     MetalDeviceInfo device;
     std::string diagnostic;
     std::unique_ptr<MetalRenderScene> scene;
+    double pipeline_seconds = 0;
 };
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path = {});
@@ -76,6 +78,11 @@ struct RenderResult {
     MetalDeviceInfo device;
     std::string diagnostic;
     Film film;
+    // Wall time: preparation excludes the renderer pipeline build; rendering
+    // includes dispatch, readback, accumulation and commit/progress callbacks.
+    double preparation_seconds = 0;
+    double pipeline_seconds = 0;
+    double render_seconds = 0;
 };
 RenderResult render_progressive(const RenderScene &scene, const RenderSettings &settings,
                                 const std::function<void(std::uint64_t)> &progress = {});

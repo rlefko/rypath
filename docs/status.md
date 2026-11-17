@@ -2,16 +2,20 @@
 
 ## Current milestone
 
-Sampling and PBRT defaults merged in
-[PR #49](https://github.com/rlefko/rypath/pull/49) at `46b20f4`.
+Pavilion scene support merged in
+[PR #50](https://github.com/rlefko/rypath/pull/50) at `dd8682d5`.
 
 The current compatibility slice renders the pinned Barcelona Pavilion day and
 night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport,
 BDPT camera/light connections and splats, finite sensor-space film clamping,
 raw EXR export, and an explicit bounded large-scene profile. Checkpoint
-format/identity/renderer/sampling/accumulation contracts are 2/11/13/4/2.
+format/identity/renderer/sampling/accumulation contracts on this follow-up branch
+are 3/12/14/5/2.
 See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
-acceptance targets and current validation. Unsupported media and geometry receive
+acceptance targets and historical validation. The follow-up adds native environment
+CDFs, combined light selection, directional shape/emission proposals and pinned
+coating RNG domains; [sampling/convergence validation](sampling-convergence-validation.md)
+tracks its current evidence and pending acceptance. Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
 This remains selected-scene coverage. Curves, motion, heterogeneous media,
@@ -21,11 +25,11 @@ remain unestablished.
 
 ## Validation
 
-The Pavilion implementation completes both unchanged 1600×850 entry points:
+The merged Pavilion implementation completed both unchanged 1600×850 entry points:
 day at 256 spp and night at 512 spp, with verified PNG, raw FLOAT EXR and
-checkpoints. Local Debug, Release and ASan/UBSan pass 204 tests each; Metal API
-validation passes all 58 native tests. The packet comparison passes 150 gates,
-and 89 legacy reference images plus demo accumulation remain exact. See the
+checkpoints. At that revision, local Debug, Release and ASan/UBSan passed 204 tests each; Metal API
+validation passed all 58 native tests. The packet comparison passed 150 gates,
+and 89 legacy reference images plus demo accumulation were exact. See the
 [Pavilion record](pavilion-validation.md) for artifact hashes, compiler checks,
 checkpoint provenance and the remaining coated-BDPT comparison limitation.
 

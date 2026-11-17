@@ -410,8 +410,9 @@ their original Philox sequence. Active perspective lenses append `lens-v1`:
 Sobol/ZSobol dimensions 1022/1023, Halton dimensions 998/999, or a disjoint
 independent Philox counter block, without
 renumbering camera, wavelength, transport or dielectric draws. Inactive lenses
-consume no lens draws. Current sampling contract 4, renderer contract 13 and identity
-schema 11 reject earlier checkpoints globally. Packet modes use their separate
+consume no lens draws. Current sampling contract 5, renderer contract 14 and identity
+schema 12 reject earlier checkpoints globally. Checkpoint format 3 persists
+the separate signed material seed. Packet modes use their separate
 fixed 920-dimension allocation; the scalar lens extensions above remain unchanged. See
 [sampling/defaults validation](sampling-defaults-validation.md),
 [Sobol validation](pbrt-sobol-validation.md) and

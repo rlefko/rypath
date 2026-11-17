@@ -217,12 +217,15 @@ void randomized_furnace() {
     }
 }
 
-void emitter_slots_and_batches() {
+void emitter_selection_and_batches() {
     auto scene = receiver();
     scene.environment.fill(0);
-    for (std::uint32_t light = 0; light < 3; ++light) {
+    scene.light_sampler = LightSamplerKind::uniform;
+    // An authored black fourth source exercises zero contribution without padded slots.
+    for (std::uint32_t light = 0; light < 4; ++light) {
         const float y = 1.25F * static_cast<float>(light);
-        scene.area_emissions.emplace_back().radiance.fill(static_cast<float>(light + 1));
+        scene.area_emissions.emplace_back().radiance.fill(
+            light == 3 ? 0.f : static_cast<float>(light + 1));
         add_mesh(scene,
                  {.positions = {{0.25F, y - 0.5F, -1}, {1.5F, y - 0.5F, -1}, {0.25F, y + 0.5F, -1}},
                   .triangles = {{0, 1, 2}}},
@@ -234,18 +237,19 @@ void emitter_slots_and_batches() {
         const auto samples = sample(*native, request(mode, 32768));
         std::array<std::uint32_t, 4> away{};
         for (const auto &s : samples) {
-            const auto bits = sobol::word(tables, s.sample, 7, static_cast<std::uint32_t>(mode), 0);
+            const auto bits = sobol::word(tables, s.sample, 8, static_cast<std::uint32_t>(mode), 0);
             const auto slot = bits >> 30;
             const auto azimuth = sobol::uniform(
                 sobol::word(tables, s.sample, 5, static_cast<std::uint32_t>(mode), 0));
             if (azimuth < 0.2F || azimuth > 0.8F) {
                 require(slot == 3 ? s.radiance == 0 : s.radiance > 0,
-                        "Sobol emitter selection disagrees with dyadic high-bit PMF");
+                        "Sobol uniform selection disagrees with actual emitting/black source "
+                        "inventory");
                 ++away[slot];
             }
         }
         require(std::ranges::all_of(away, [](auto count) { return count > 100; }),
-                "Sobol failed to exercise every live and null emitter slot");
+                "Sobol failed to exercise every authored emitting and black source");
         RenderSettings settings{.width = 3,
                                 .height = 5,
                                 .samples = 33,
@@ -259,7 +263,7 @@ void emitter_slots_and_batches() {
                     one.film == many.film,
                 "Sobol raw film differs across batch partitions");
     }
-    // Exercise the one-slot shift guard with actual finite-light transport.
+    // A single finite source has selection PMF one, without any dyadic shift guard.
     scene.geometry.meshes.resize(2);
     scene.geometry.instances.resize(2);
     scene.instance_materials.resize(2);
@@ -331,7 +335,7 @@ int main() {
         identity_and_limits(*built.scene);
         spectral_quadrature(*built.scene);
         randomized_furnace();
-        emitter_slots_and_batches();
+        emitter_selection_and_batches();
         multibounce_roulette();
     } catch (const std::exception &error) {
         std::cerr << "Sobol render test: " << error.what() << '\n';

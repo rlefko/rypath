@@ -133,6 +133,25 @@ template <class E> void exact(const RenderScene &s, E expected, std::string_view
 void constant(const RenderScene &s, double e, std::string_view label) {
     exact(s, [=](const auto &) { return e; }, label);
 }
+// Combined-light NEE draws one source and divides by its selection PMF.
+// The analytic sum remains its expectation, rather than a per-path identity.
+// Freeze the independent-path budget and six-standard-error rule before dispatch.
+void selected_mean(const RenderScene &s, double expected, std::string_view label) {
+    const auto values = sample(s, 32768);
+    double sum = 0, square = 0;
+    for (const auto &value : values) {
+        const double residual = value.radiance - expected;
+        sum += residual;
+        square += residual * residual;
+    }
+    const double n = static_cast<double>(values.size()), residual_mean = sum / n;
+    const double variance = std::max(0., (square - sum * residual_mean) / (n - 1));
+    const double se = std::sqrt(variance / n);
+    const double limit = 6 * se + 1e-4 * std::abs(expected);
+    std::cout << label << " expected=" << expected << " residual=" << residual_mean
+              << " standard_error=" << se << " limit=" << limit << '\n';
+    near(residual_mean, 0, limit, label);
+}
 // Ordinary-case projection oracle uses double affine and perspective arithmetic.
 std::array<float, 3> color(unsigned x, unsigned y) {
     return {.125f + .0625f * float((3 * x + y) % 9), .125f + .0625f * float((x + 5 * y) % 9),
@@ -268,15 +287,15 @@ void surfaces() {
     const double diffuse = 2 * double(s.materials[0].constant) / (2 * std::sqrt(2.) * pi);
     constant(s, diffuse, "oblique diffuse cosine");
     light(s, {0, 0, -1}, 3);
-    constant(s, diffuse + 3 * double(s.materials[0].constant) / (4 * pi),
-             "sum every projection, no selection or MIS");
+    selected_mean(s, diffuse + 3 * double(s.materials[0].constant) / (4 * pi),
+                  "combined projection selection preserves additive expectation");
     PointLight point;
     point.position = {0, 0, -1};
     for (unsigned i = 0; i < 471; ++i)
         point.intensity[i] = 4 * pbrt_d65()[i];
     s.point_lights.push_back(point);
-    constant(s, diffuse + 7 * double(s.materials[0].constant) / (4 * pi),
-             "point and projection contributions add without selection or MIS");
+    selected_mean(s, diffuse + 7 * double(s.materials[0].constant) / (4 * pi),
+                  "point and projection selection preserves additive expectation");
     SpotLight spot;
     spot.position = point.position;
     spot.cos_falloff_start = spot.cos_falloff_end = 0;
@@ -299,8 +318,8 @@ void surfaces() {
     scalar_texture.image = std::make_shared<const ImagePyramid>(std::move(*scalar_image.value));
     s.image_textures.push_back(scalar_texture);
     s.goniometric_lights.push_back(gonio);
-    constant(s, diffuse + 18 * double(s.materials[0].constant) / (4 * pi),
-             "all four positional kinds share enumeration and unit delta MIS");
+    selected_mean(s, diffuse + 18 * double(s.materials[0].constant) / (4 * pi),
+                  "all four positional kinds share selection and unit delta MIS");
     s.spot_lights.clear();
     s.goniometric_lights.clear();
     s.point_lights.clear();
@@ -359,7 +378,8 @@ void bounded_and_inactive() {
             p.intensity[j] = 2 * pbrt_d65()[j];
         s.point_lights.push_back(p);
     }
-    constant(s, 64 * one, "all 64 combined point and projection lights contribute");
+    selected_mean(s, 64 * one,
+                  "all 64 combined point and projection lights contribute in expectation");
     light(s, {1, 0, 0});
     auto oversized = build_metal_renderer(prepared(s));
     require(oversized.status == GeometryStatus::failure && !oversized.scene,

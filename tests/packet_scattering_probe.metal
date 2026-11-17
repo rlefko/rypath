@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "../src/packet_spectrum_shared.h"
+#include "layered_rng_oracles.h"
 #include "packet_scattering.h"
 kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
                                     const device uint *table [[buffer(1)]],
@@ -26,14 +27,14 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
     error += abs(e.pdf - a.pdf) +
              abs(e.reverse_pdf -
                  rypath_packet::pdf(p, a.wi, wo, rypath_packet::TransportMode::Importance));
-    out[tid * 13] = float4(error, a.valid, a.accepted, 0);
+    out[tid * 14] = float4(error, a.valid, a.accepted, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 2;
         rypath_dielectric::prepare(1.5, .2, .3, false, p.lane[i].dielectric);
     }
     auto r = rypath_packet::sample(p, wo, .9f, u, tid);
     auto b = rypath_packet::sample(p, wo, .9f, u, tid, rypath_packet::TransportMode::Importance);
-    out[tid * 13 + 1] =
+    out[tid * 14 + 1] =
         float4(length(b.weight - r.weight * (r.transmission ? 2.25f : 1)), r.valid, b.valid, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 5;
@@ -49,31 +50,31 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
     }
     auto l = rypath_packet::sample(p, wo, .9f, u, tid);
     float4 analytic = float4(0, .2, .4, .6) * exp(-.1f * (1 / abs(wo.z) + 1 / abs(l.wi.z)));
-    out[tid * 13 + 2] =
+    out[tid * 14 + 2] =
         float4(length(l.weight - analytic), l.valid, l.accepted, l.pdf_is_proportional);
     p.active_mask = 2;
     auto m = rypath_packet::sample(p, wo, .9f, u, tid);
-    out[tid * 13 + 3] =
+    out[tid * 14 + 3] =
         float4(abs(m.weight.x) + abs(m.weight.z) + abs(m.weight.w), m.valid, m.accepted, 0);
     p.active_mask = 15;
     float3 wi = normalize(float3(-.3, .2, 1));
     auto eval = rypath_packet::evaluate(p, wo, wi, tid);
     float4 ef = float4(0, .2, .4, .6) / M_PI_F * exp(-.1f * (1 / wo.z + 1 / wi.z));
-    out[tid * 13 + 4] = float4(length(eval.f - ef), eval.valid, 1, 0);
+    out[tid * 14 + 4] = float4(length(eval.f - ef), eval.valid, 1, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 11;
         rypath_gltf::prepare(i == 0 ? 0 : .5f, i == 0 ? 1 : 0, 0, p.lane[i].gltf);
     }
     auto gltf = rypath_packet::sample(p, wo, .8f, u, tid);
     auto ge = rypath_packet::evaluate(p, wo, gltf.wi, tid);
-    out[tid * 13 + 5] = float4(length(gltf.weight - ge.f * (abs(gltf.wi.z) / gltf.pdf)), gltf.valid,
+    out[tid * 14 + 5] = float4(length(gltf.weight - ge.f * (abs(gltf.wi.z) / gltf.pdf)), gltf.valid,
                                gltf.accepted, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 3;
         p.lane[i].dielectric.eta = i == 0 ? 1 : 1.5f;
     }
     auto thin = rypath_packet::sample(p, wo, .01f, u, tid);
-    out[tid * 13 + 6] = float4(thin.weight.x, thin.valid, thin.accepted, 0);
+    out[tid * 14 + 6] = float4(thin.weight.x, thin.valid, thin.accepted, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 5;
         thread auto &l = p.lane[i].layered;
@@ -89,7 +90,7 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
     float walk_error = vector_walk.accepted == scalar_walk.accepted ? 0 : 1;
     if (vector_walk.accepted && scalar_walk.accepted)
         walk_error += length(vector_walk.weight - float4(scalar_walk.weight));
-    out[tid * 13 + 7] = float4(walk_error, vector_walk.valid, scalar_walk.valid, 0);
+    out[tid * 14 + 7] = float4(walk_error, vector_walk.valid, scalar_walk.valid, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 8;
         p.lane[i].table = table;
@@ -103,7 +104,7 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
     ferr += abs(fourier.pdf - 1 / (4 * M_PI_F)) + abs(fourier.reverse_pdf - 1 / (4 * M_PI_F));
     if (fourier.transmission)
         ferr += abs(fourier.eta - 1.5f);
-    out[tid * 13 + 8] = float4(ferr, fourier.valid, fourier.accepted, 0);
+    out[tid * 14 + 8] = float4(ferr, fourier.valid, fourier.accepted, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 1;
         rypath_conductor::prepare(i == 0 ? 1 : .3f, i == 0 ? 0 : 3, 0, 0, false,
@@ -114,7 +115,7 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
     rypath_conductor::fresnel(abs(wo.z), .3f, 3, F);
     float merr = abs(metal.weight.x) + abs(metal.weight.y - F) + abs(metal.weight.z - F) +
                  abs(metal.weight.w - F);
-    out[tid * 13 + 9] = float4(merr, metal.valid, metal.accepted, 0);
+    out[tid * 14 + 9] = float4(merr, metal.valid, metal.accepted, 0);
     for (uint i = 0; i < 4; ++i) {
         p.lane[i].kind = 5;
         thread auto &layer = p.lane[i].layered;
@@ -127,7 +128,7 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
     if (spectral_walk.accepted && bright_walk.accepted)
         spectral_error += abs(spectral_walk.weight.w - bright_walk.weight) +
                           length(spectral_walk.wi - bright_walk.wi);
-    out[tid * 13 + 10] = float4(spectral_error, spectral_walk.valid, bright_walk.valid, 0);
+    out[tid * 14 + 10] = float4(spectral_error, spectral_walk.valid, bright_walk.valid, 0);
     auto shuffled = p;
     for (uint i = 0; i < 4; ++i)
         shuffled.lane[i] = p.lane[3 - i];
@@ -137,7 +138,7 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
     const float old_gap =
         abs(rypath_layered::directional_pdf(p.lane[0].layered, wo, probe_wi).pdf -
             rypath_layered::directional_pdf(shuffled.lane[0].layered, wo, probe_wi).pdf);
-    out[tid * 13 + 11] = float4(abs(a_pdf - b_pdf), isfinite(a_pdf), isfinite(b_pdf), old_gap);
+    out[tid * 14 + 11] = float4(abs(a_pdf - b_pdf), isfinite(a_pdf), isfinite(b_pdf), old_gap);
     const float endpoints[12] = {0,
                                  .25f,
                                  .5f,
@@ -157,5 +158,70 @@ kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
                   isfinite(wavelengths.pdf[i]) && wavelengths.pdf[i] > 0;
     auto invalid = rypath_packet_spectrum::sample_visible(1.f);
     bool invalid_rejected = !isfinite(invalid.lambda[0]) && !isfinite(invalid.pdf[0]);
-    out[tid * 13 + 12] = float4(0, bounded, invalid_rejected, 0);
+    out[tid * 14 + 12] = float4(0, bounded, invalid_rejected, 0);
+    // Exact host/MSL agreement with independently obtained PBRT typed hashes.
+    const constant auto &oracle = layered_rng_oracles[tid % 4];
+    using namespace rypath_layered_rng;
+    Wide h[5] = {seeded_direction(oracle.seed, .25f, -.5f, .75f), direction(-.125f, .625f, -0.f),
+                 seeded_direction(oracle.seed, -.125f, .625f, -0.f), direction(.25f, -.5f, .75f),
+                 sample(.375f, .125f, .875f)};
+    bool rng_match = true;
+    for (uint i = 0; i < 5; ++i)
+        rng_match = rng_match && h[i] == oracle.hashes[i];
+    for (uint domain = 0; domain < 3; ++domain) {
+        PCG rng(domain == 1 ? h[2] : h[0], domain == 0 ? h[1] : domain == 1 ? h[3] : h[4]);
+        for (uint i = 0; i < 4; ++i)
+            rng_match = rng_match && bits(rng.next()) == oracle.draws[4 * domain + i];
+    }
+    out[tid * 14 + 13] = float4(rng_match ? 0 : 1, 1, 1, 0);
+}
+
+// Route-specific weighted moments: sampled joint weight, stochastic f, and
+// approximate directional PDF are each compared with their own PBRT oracle.
+kernel void coating_moments_probe(device float4 *out [[buffer(0)]],
+                                  uint tid [[thread_position_in_grid]]) {
+    constexpr uint count = 131072;
+    if (tid >= 12 * count)
+        return;
+    const uint route = tid / count, n = tid % count;
+    const uint configuration = route / 4;
+    const bool conductor = (route % 4) >= 2, importance = (route & 1) != 0;
+    rypath_packet::Prepared p{};
+    p.active_mask = 15;
+    for (uint i = 0; i < 4; ++i) {
+        p.lane[i].kind = conductor ? 6 : 5;
+        thread auto &l = p.lane[i].layered;
+        rypath_dielectric::prepare(1.5f, .2f, .3f, false, l.interface);
+        rypath_conductor::prepare(.3f, 3.f, .25f, .15f, false, l.conductor);
+        l.conductor_base = conductor;
+        l.reflectance = .7f;
+        l.thickness = .2f;
+        l.albedo = .6f;
+        l.g = .1f;
+        l.max_depth = configuration == 1 ? 4 : configuration == 2 ? 24 : 12;
+        l.samples = configuration == 1 ? 1 : configuration == 2 ? 16 : 4;
+        l.material_seed = 0;
+    }
+    rypath_layered_rng::PCG outer(17, 29);
+    outer.advance(5ul * n);
+    const float uc = outer.next(), x = outer.next(), y = outer.next();
+    const float z = outer.next(), phi = 2 * M_PI_F * outer.next();
+    float3 wo =
+        configuration == 2 ? normalize(float3(.8f, .3f, .05f)) : normalize(float3(.2f, .1f, 1.f));
+    if (configuration == 1)
+        wo = -wo;
+    const float st = sqrt(max(0.f, 1 - z * z));
+    float3 wi(st * cos(phi), st * sin(phi), z);
+    if (configuration == 1)
+        wi = -wi;
+    const auto mode = importance ? rypath_packet::TransportMode::Importance
+                                 : rypath_packet::TransportMode::Radiance;
+    const auto s = rypath_packet::sample(p, wo, uc, float2(x, y), n, mode);
+    const auto e = rypath_packet::evaluate(p, wo, wi, n, mode);
+    const float weight = s.accepted ? s.weight.x : 0;
+    const float f = e.f.x * abs(wi.z) * (2 * M_PI_F);
+    const float env_s = 1 + .25f * s.wi.x + .5f * s.wi.z * s.wi.z;
+    const float env_e = 1 + .25f * wi.x + .5f * wi.z * wi.z;
+    out[2 * tid] = float4(weight, weight * env_s, f, f * env_e);
+    out[2 * tid + 1] = float4(e.pdf * (2 * M_PI_F), s.valid && e.valid, 0, 0);
 }

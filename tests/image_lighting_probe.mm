@@ -88,14 +88,17 @@ std::size_t reference_radiance_pixel(wire::Point direction) {
     return static_cast<std::size_t>(size * y + x);
 }
 
-std::array<double, width * width> mixture_masses(const std::array<float, 16> &cdf) {
+std::array<double, width * width> mixture_masses(const std::array<float, 16> &cdf,
+                                                 bool compensated) {
     std::array<double, width * width> result{};
     for (unsigned y = 0; y < width; ++y) {
         const auto base = (y + 1) * (width + 1);
         const double marginal = static_cast<double>(cdf[y + 1]) - cdf[y];
         for (unsigned x = 0; x < width; ++x) {
             const double conditional = static_cast<double>(cdf[base + x + 1]) - cdf[base + x];
-            result[y * width + x] = 1.0 / (16 * width * width) + 15.0 / 16 * marginal * conditional;
+            result[y * width + x] =
+                compensated ? marginal * conditional
+                            : 1.0 / (16 * width * width) + 15.0 / 16 * marginal * conditional;
         }
     }
     return result;
@@ -145,8 +148,9 @@ template <typename Range> id<MTLBuffer> buffer(id<MTLDevice> device, const Range
 }
 
 void verify(std::span<const probe::Query> cases, std::span<const probe::Result> results,
-            const std::array<float, 16> &cdf, const ImagePyramid &base, const ImagePyramid &gamma) {
-    const auto masses = mixture_masses(cdf);
+            const std::array<float, 16> &cdf, const ImagePyramid &base, const ImagePyramid &gamma,
+            bool compensated) {
+    const auto masses = mixture_masses(cdf, compensated);
     std::array<std::size_t, width * width> hits{};
     constexpr double pdf_factor = width * width / (4 * pi);
     for (std::size_t i = 0; i < cases.size(); ++i) {
@@ -176,7 +180,9 @@ void verify(std::span<const probe::Query> cases, std::span<const probe::Result> 
     for (std::size_t i = 0; i < hits.size(); ++i) {
         const double expected = masses[i] * static_cast<double>(cases.size());
         const double standard_error = std::sqrt(expected * (1 - masses[i]));
-        require(std::abs(static_cast<double>(hits[i]) - expected) < 7 * standard_error,
+        require(expected == 0
+                    ? hits[i] == 0
+                    : std::abs(static_cast<double>(hits[i]) - expected) < 7 * standard_error,
                 "Environment direction frequency differs from the quantized mixture PDF");
     }
 
@@ -229,27 +235,36 @@ void stress_environment_cells(id<MTLDevice> device, id<MTLLibrary> library,
     struct Case {
         unsigned source_width, grid_width, x, y;
         float angle, stretch;
+        bool reflected = false;
     };
-    const std::array cases{Case{4096, 128, 115, 99, 0, 0}, Case{4096, 128, 2, 124, 0.713f, 0},
+    const std::array cases{Case{4096, 128, 115, 99, 0, 0},
+                           Case{4096, 128, 2, 124, 0.713f, 0},
                            Case{4093, 128, 70, 90, -1.247f, 0x1.ep-19f},
-                           Case{127, 127, 69, 89, 0.937f, -0x1.ep-19f}};
+                           Case{127, 127, 69, 89, 0.937f, -0x1.ep-19f},
+                           Case{2048, 2048, 0, 2047, 0.713f, 0, true},
+                           Case{4093, 4093, 4092, 0, -1.247f, 0x1.ep-19f},
+                           Case{8192, 8192, 8191, 8190, 0.937f, 0, true}};
     std::size_t total_corrections = 0;
-    for (const auto &[source, grid, column, row, angle, stretch] : cases) {
-        std::vector<float> cdf(std::size_t(grid + 1) * (grid + 1));
+    for (const auto &[source, grid, column, row, angle, stretch, reflected] : cases) {
+        const auto table_count = std::size_t(grid + 1) * (grid + 1);
+        std::vector<float> cdf(2 * table_count);
         for (unsigned y = row + 1; y <= grid; ++y)
             cdf[y] = 1;
         for (unsigned x = column + 1; x <= grid; ++x)
             cdf[std::size_t(row + 1) * (grid + 1) + x] = 1;
+        std::copy_n(cdf.begin(), table_count, cdf.begin() + table_count);
         const auto cdf_buffer = buffer(device, cdf);
         const float cosine = std::cos(angle), sine = std::sin(angle);
-        const float a = (1 + stretch) * cosine, b = (1 + stretch) * sine;
+        const float sign = reflected ? -1.f : 1.f;
+        const float a = sign * (1 + stretch) * cosine, b = sign * (1 + stretch) * sine;
         wire::TextureGraphParameters graph_parameters{
             .environment_image = 0,
             .environment_scale = 1,
             .environment_from_world = {a, 0, b, 0, 1, 0, -sine, 0, cosine},
             .world_from_environment = {a, 0, -sine, 0, 1, 0, b, 0, cosine},
             .environment_width = grid,
-            .environment_cdf_count = static_cast<wire::Word>(cdf.size())};
+            .environment_cdf_count = static_cast<wire::Word>(cdf.size()),
+            .environment_compensated_offset = static_cast<wire::Word>(table_count)};
         const std::array textures{wire::ImageTexture{0, 1, 1, wire::linear8_texel_format, 1, 1, 0,
                                                      0, 1, 0, wire::bilinear_texture_filter, 8,
                                                      256}};
@@ -272,55 +287,60 @@ void stress_environment_cells(id<MTLDevice> device, id<MTLLibrary> library,
         std::memset(texels.contents, 0, texels.length);
         static_cast<wire::Word *>(texels.contents)[std::size_t(bright_y) * source + bright_x] =
             0x00ffffff;
-        const auto command = [queue commandBuffer];
-        const auto encoder = [command computeCommandEncoder];
-        require(command != nil && encoder != nil,
-                "Environment cell probe encoder allocation failed");
-        [encoder setComputePipelineState:pipeline];
-        [encoder setBuffer:input offset:0 atIndex:0];
-        [encoder setBuffer:output offset:0 atIndex:1];
-        [encoder setBuffer:texture offset:0 atIndex:2];
-        [encoder setBuffer:level offset:0 atIndex:3];
-        [encoder setBuffer:texels offset:0 atIndex:4];
-        [encoder setBuffer:transfer offset:0 atIndex:5];
-        [encoder setBuffer:spectra offset:0 atIndex:6];
-        [encoder setBuffer:illuminant offset:0 atIndex:7];
-        [encoder setBytes:&image_parameters length:sizeof(image_parameters) atIndex:8];
-        [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:9];
-        [encoder setBuffer:cdf_buffer offset:0 atIndex:10];
-        [encoder setBytes:&count length:sizeof(count) atIndex:11];
-        [encoder setBytes:&bright_uv length:sizeof(bright_uv) atIndex:12];
-        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
-        [encoder endEncoding];
-        diagnostic = metal::complete(command, "Environment cell probe");
-        require(diagnostic.empty(), diagnostic);
+        for (const wire::Word compensated : {0u, 1u}) {
+            const auto command = [queue commandBuffer];
+            const auto encoder = [command computeCommandEncoder];
+            require(command != nil && encoder != nil,
+                    "Environment cell probe encoder allocation failed");
+            [encoder setComputePipelineState:pipeline];
+            [encoder setBuffer:input offset:0 atIndex:0];
+            [encoder setBuffer:output offset:0 atIndex:1];
+            [encoder setBuffer:texture offset:0 atIndex:2];
+            [encoder setBuffer:level offset:0 atIndex:3];
+            [encoder setBuffer:texels offset:0 atIndex:4];
+            [encoder setBuffer:transfer offset:0 atIndex:5];
+            [encoder setBuffer:spectra offset:0 atIndex:6];
+            [encoder setBuffer:illuminant offset:0 atIndex:7];
+            [encoder setBytes:&image_parameters length:sizeof(image_parameters) atIndex:8];
+            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:9];
+            [encoder setBuffer:cdf_buffer offset:0 atIndex:10];
+            [encoder setBytes:&count length:sizeof(count) atIndex:11];
+            [encoder setBytes:&bright_uv length:sizeof(bright_uv) atIndex:12];
+            [encoder setBytes:&compensated length:sizeof(compensated) atIndex:13];
+            [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
+            [encoder endEncoding];
+            diagnostic = metal::complete(command, "Environment cell probe");
+            require(diagnostic.empty(), diagnostic);
 
-        const double expected = (0.0625 + 0.9375 * grid * grid) / (4 * pi);
-        const auto results = static_cast<const probe::StressResult *>(output.contents);
-        std::size_t targeted_corrections = 0, random_corrections = 0;
-        float max_delta = 0;
-        for (unsigned i = 0; i < count; ++i) {
-            const auto &result = results[i];
-            require(result.valid == 1 && result.sampled_pdf == result.queried_pdf,
-                    "Environment edge draw has different sampled and queried PDFs");
-            near(result.sampled_pdf, expected, "Environment concentrated cell PDF");
-            near(result.bright_texel_radiance, pbrt_d65()[555 - 360],
-                 "Native-resolution environment radiance");
-            require(result.direction_delta >= 0 && result.direction_delta <= 1e-4f,
-                    "Environment cell correction moved the direction too far");
-            if (result.initial_cell_matches == 0) {
-                (i < targeted_count ? targeted_corrections : random_corrections)++;
-            } else {
-                require(result.direction_delta == 0, "Environment changed an in-cell draw");
+            const double expected =
+                (compensated ? double(grid) * grid : 0.0625 + 0.9375 * grid * grid) / (4 * pi);
+            const auto results = static_cast<const probe::StressResult *>(output.contents);
+            std::size_t targeted_corrections = 0, random_corrections = 0;
+            float max_delta = 0;
+            for (unsigned i = 0; i < count; ++i) {
+                const auto &result = results[i];
+                require(result.valid == 1 && result.sampled_pdf == result.queried_pdf,
+                        "Environment edge draw has different sampled and queried PDFs");
+                near(result.sampled_pdf, expected, "Environment concentrated cell PDF");
+                near(result.bright_texel_radiance, pbrt_d65()[555 - 360],
+                     "Native-resolution environment radiance");
+                require(result.direction_delta >= 0 && result.direction_delta <= 1e-4f,
+                        "Environment cell correction moved the direction too far");
+                if (result.initial_cell_matches == 0) {
+                    (i < targeted_count ? targeted_corrections : random_corrections)++;
+                } else {
+                    require(result.direction_delta == 0, "Environment changed an in-cell draw");
+                }
+                max_delta = std::max(max_delta, result.direction_delta);
             }
-            max_delta = std::max(max_delta, result.direction_delta);
+            total_corrections += targeted_corrections + random_corrections;
+            std::cout << "Environment " << source << " source / " << grid << " grid corrected "
+                      << targeted_corrections << '/' << targeted_count << " edge draws and "
+                      << random_corrections << '/' << count - targeted_count << " ordinary draws ("
+                      << (compensated ? "compensated" : "full") << "), max direction displacement "
+                      << max_delta << '\n';
         }
-        total_corrections += targeted_corrections + random_corrections;
-        std::cout << "Environment " << source << " source / " << grid << " grid corrected "
-                  << targeted_corrections << '/' << targeted_count << " edge draws and "
-                  << random_corrections << '/' << count - targeted_count
-                  << " ordinary draws, max direction displacement " << max_delta << '\n';
     }
     require(total_corrections != 0, "Environment edge cases did not exercise the correction");
 }
@@ -375,7 +395,8 @@ void run(id<MTLDevice> device, const std::filesystem::path &library_path) {
         .environment_from_world = {0, 0, 1, 0, 1, 0, -1, 0, 0},
         .world_from_environment = {0, 0, -1, 0, 1, 0, 1, 0, 0},
         .environment_width = width,
-        .environment_cdf_count = static_cast<wire::Word>(skewed_cdf.size())};
+        .environment_cdf_count = static_cast<wire::Word>(2 * skewed_cdf.size()),
+        .environment_compensated_offset = static_cast<wire::Word>(skewed_cdf.size())};
     const auto texture_buffer = buffer(device, textures);
     const auto level_buffer = buffer(device, levels);
     const auto texel_buffer = buffer(device, texels);
@@ -388,44 +409,49 @@ void run(id<MTLDevice> device, const std::filesystem::path &library_path) {
 
     std::uint32_t seed = 2482059;
     for (const auto &cdf : {skewed_cdf, uniform_cdf}) {
-        const auto inputs = queries(seed++);
-        const auto count = static_cast<wire::Word>(inputs.size());
-        const auto input_buffer = buffer(device, inputs);
-        const auto cdf_buffer = buffer(device, cdf);
-        [[clang::objc_precise_lifetime]] id<MTLBuffer> output =
-            [device newBufferWithLength:inputs.size() * sizeof(probe::Result)
-                                options:MTLResourceStorageModeShared];
-        const auto command = [queue commandBuffer];
-        const auto encoder = [command computeCommandEncoder];
-        const auto group = metal::group_width(device, pipeline);
-        require(input_buffer != nil && cdf_buffer != nil && output != nil && command != nil &&
-                    encoder != nil && group != 0,
-                "Metal light image probe allocation failed");
-        [encoder setComputePipelineState:pipeline];
-        [encoder setBuffer:input_buffer offset:0 atIndex:0];
-        [encoder setBuffer:output offset:0 atIndex:1];
-        [encoder setBuffer:texture_buffer offset:0 atIndex:2];
-        [encoder setBuffer:level_buffer offset:0 atIndex:3];
-        [encoder setBuffer:texel_buffer offset:0 atIndex:4];
-        [encoder setBuffer:transfer_buffer offset:0 atIndex:5];
-        [encoder setBuffer:spectra_buffer offset:0 atIndex:6];
-        [encoder setBuffer:illuminant_buffer offset:0 atIndex:7];
-        [encoder setBytes:&image_parameters length:sizeof(image_parameters) atIndex:8];
-        [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:9];
-        [encoder setBuffer:cdf_buffer offset:0 atIndex:10];
-        [encoder setBytes:&count length:sizeof(count) atIndex:11];
-        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
-        [encoder endEncoding];
-        diagnostic = metal::complete(command, "Image lighting probe");
-        require(diagnostic.empty(), diagnostic);
-        verify(inputs, {static_cast<probe::Result *>(output.contents), inputs.size()}, cdf, base,
-               gamma);
+        for (const wire::Word compensated : {0u, 1u}) {
+            const auto inputs = queries(seed++);
+            const auto count = static_cast<wire::Word>(inputs.size());
+            const auto input_buffer = buffer(device, inputs);
+            std::vector<float> tables(cdf.begin(), cdf.end());
+            tables.insert(tables.end(), cdf.begin(), cdf.end());
+            const auto cdf_buffer = buffer(device, tables);
+            [[clang::objc_precise_lifetime]] id<MTLBuffer> output =
+                [device newBufferWithLength:inputs.size() * sizeof(probe::Result)
+                                    options:MTLResourceStorageModeShared];
+            const auto command = [queue commandBuffer];
+            const auto encoder = [command computeCommandEncoder];
+            const auto group = metal::group_width(device, pipeline);
+            require(input_buffer != nil && cdf_buffer != nil && output != nil && command != nil &&
+                        encoder != nil && group != 0,
+                    "Metal light image probe allocation failed");
+            [encoder setComputePipelineState:pipeline];
+            [encoder setBuffer:input_buffer offset:0 atIndex:0];
+            [encoder setBuffer:output offset:0 atIndex:1];
+            [encoder setBuffer:texture_buffer offset:0 atIndex:2];
+            [encoder setBuffer:level_buffer offset:0 atIndex:3];
+            [encoder setBuffer:texel_buffer offset:0 atIndex:4];
+            [encoder setBuffer:transfer_buffer offset:0 atIndex:5];
+            [encoder setBuffer:spectra_buffer offset:0 atIndex:6];
+            [encoder setBuffer:illuminant_buffer offset:0 atIndex:7];
+            [encoder setBytes:&image_parameters length:sizeof(image_parameters) atIndex:8];
+            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:9];
+            [encoder setBuffer:cdf_buffer offset:0 atIndex:10];
+            [encoder setBytes:&count length:sizeof(count) atIndex:11];
+            [encoder setBytes:&compensated length:sizeof(compensated) atIndex:12];
+            [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(group, 1, 1)];
+            [encoder endEncoding];
+            diagnostic = metal::complete(command, "Image lighting probe");
+            require(diagnostic.empty(), diagnostic);
+            verify(inputs, {static_cast<probe::Result *>(output.contents), inputs.size()}, cdf,
+                   base, gamma, compensated != 0);
+        }
     }
     stress_environment_cells(device, library, queue, transfer_buffer, spectra_buffer,
                              illuminant_buffer);
-    std::cout << "Image lighting checked 32768 environment samples, 18 cell frequency gates and "
-                 "32,768 transformed radiance and PDF queries\n";
+    std::cout << "Image lighting checked 65536 full/compensated environment samples, "
+                 "36 cell frequency gates and 65,536 transformed radiance and PDF queries\n";
 }
 
 } // namespace

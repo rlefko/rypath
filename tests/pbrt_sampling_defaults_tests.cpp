@@ -60,6 +60,8 @@ void omissions(const Fixture &fixture) {
                 implicit.settings.sampler.kind == SamplerKind::zsobol &&
                 implicit.settings.sampler.randomization == SobolRandomization::fastowen &&
                 implicit.scene.volume_transport && implicit.scene.max_depth == 5 &&
+                implicit.scene.light_sampler == LightSamplerKind::bvh &&
+                implicit.settings.material_seed == 0 &&
                 implicit.scene.filter.kind == PixelFilterKind::gaussian &&
                 implicit.scene.filter.x_radius == 1.5f && implicit.scene.filter.y_radius == 1.5f &&
                 implicit.scene.filter.sigma == .5f,
@@ -165,6 +167,47 @@ void samplers(const Fixture &fixture) {
     }
 }
 
+void light_samplers(const Fixture &fixture) {
+    for (auto integrator : {"path", "volpath"}) {
+        const std::string base = std::string("Integrator \"") + integrator + "\"";
+        const auto implicit = fixture.accepted(base + "\n" + std::string(world));
+        require(implicit.scene.light_sampler == LightSamplerKind::bvh,
+                "Path/volpath default light BVH");
+        for (const auto &[name, kind] :
+             std::array{std::pair{"bvh", LightSamplerKind::bvh},
+                        std::pair{"power", LightSamplerKind::power},
+                        std::pair{"uniform", LightSamplerKind::uniform}}) {
+            const auto explicit_policy = fixture.accepted(base + " \"string lightsampler\" \"" +
+                                                          name + "\"\n" + std::string(world));
+            require(explicit_policy.scene.light_sampler == kind,
+                    "Explicit light sampler translation");
+            if (kind == LightSamplerKind::bvh)
+                require(render_identity(implicit.scene, implicit.settings) ==
+                            render_identity(explicit_policy.scene, explicit_policy.settings),
+                        "Implicit and explicit BVH identity");
+        }
+        require(fixture.translated(base + " \"string lightsampler\" \"exhaustive\"\n" +
+                                   std::string(world))
+                        .exit_code() == 2,
+                "Unsupported exhaustive sampler diagnosed");
+    }
+    const auto bdpt = fixture.accepted("Integrator \"bdpt\"\n" + std::string(world));
+    require(bdpt.scene.light_sampler == LightSamplerKind::power, "BDPT default power sampler");
+    for (auto name : {"bvh", "power", "uniform"}) {
+        const auto unsupported =
+            fixture.translated(std::string("Integrator \"bdpt\" \"string lightsampler\" \"") +
+                               name + "\"\n" + std::string(world));
+        require(unsupported.exit_code() == 2, "BDPT explicit lightsampler must be diagnosed");
+        require(std::ranges::any_of(unsupported.diagnostics,
+                                    [](const auto &d) {
+                                        return d.message.find("fixed power light sampler") !=
+                                                   std::string::npos &&
+                                               d.location.line == 1;
+                                    }),
+                "BDPT light sampler diagnostic provenance");
+    }
+}
+
 void gaussian(const Fixture &fixture) {
     for (auto values : {"\"float xradius\" .02", "\"float sigma\" 1e-40",
                         "\"float xradius\" .0625 \"float yradius\" .0625 \"float sigma\" .001",
@@ -193,6 +236,7 @@ int main(int argc, char **argv) {
         Fixture fixture{std::filesystem::path(argv[1]) / "defaults.pbrt"};
         omissions(fixture);
         samplers(fixture);
+        light_samplers(fixture);
         gaussian(fixture);
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

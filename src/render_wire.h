@@ -11,8 +11,10 @@ namespace render_wire {
 
 #if defined(__METAL_VERSION__)
 using Word = uint;
+using SignedWord = int;
 #else
 using Word = std::uint32_t;
+using SignedWord = std::int32_t;
 #endif
 
 enum : Word {
@@ -47,7 +49,6 @@ enum : Word {
 };
 enum : Word { no_emission = 0xffffffffu };
 enum : Word { no_normals = 0xffffffffu };
-enum : Word { environment_grid_limit = 128 };
 enum : Word { triangle_primitive = 1, patch_primitive = 2, analytic_primitive = 4 };
 
 struct Point {
@@ -185,6 +186,7 @@ struct Instance {
     Word area_power_begin = 0xffffffffu; // Per-primitive float words in material data.
     Word analytic_begin = 0xffffffffu;   // geometry_wire::Analytic records in material data.
     Word analytic_count = 0;
+    Word emitter_begin = 0xffffffffu;
 };
 struct Medium {
     float sigma_a[471];
@@ -209,6 +211,9 @@ struct PositionalLight {
     float inv_tan_half_fov;
     float screen_half_width;
     float screen_half_height;
+    Word sampling_begin = 0xffffffffu;
+    Word sampling_width = 0;
+    Word sampling_height = 0;
 };
 struct AreaEmission {
     float radiance[471];
@@ -246,12 +251,25 @@ struct TextureGraphParameters {
     float world_from_environment[9];
     Word environment_width;
     Word environment_cdf_count;
+    Word environment_compensated_offset = 0;
     Word surface_vertex_count;
 };
 struct Emitter {
     Word instance;
     Word primitive;
     Word kind;
+};
+struct LightAlias {
+    float threshold, pmf;
+    Word alias, padding;
+};
+struct LightBounds {
+    Point low, high, direction;
+    float power, cos_outer, cos_emission;
+    Word child, parent, light, flags;
+};
+struct LightRecord {
+    Word leaf, flags, padding0, padding1;
 };
 struct Parameters {
     Point origin;
@@ -277,7 +295,7 @@ struct Parameters {
     Word knot_count;
     Word emission_count;
     Word emitter_count;
-    Word emitter_slots;
+    Word emitter_slots; // Reserved legacy padding; combined selection uses light_count.
     Word filter_kind;
     float filter_x_radius;
     float filter_y_radius;
@@ -312,6 +330,16 @@ struct Parameters {
     Point camera_normal;
     float camera_image_area = 1;
     float camera_plane_depth = 1;
+    SignedWord material_seed = 0;
+    Word light_sampler = 0;
+    Word light_count = 0;
+    Word light_alias_begin = 0;
+    Word light_records_begin = 0;
+    Word light_nodes_begin = 0;
+    Word light_node_count = 0;
+    Word infinite_lights_begin = 0;
+    Word infinite_light_count = 0;
+    Word environment_light = 0xffffffffu;
 };
 struct Sample {
     Word status;
@@ -361,7 +389,7 @@ static_assert(sizeof(GltfMaterial) == 68 && sizeof(MaterialAuxiliary) == 180 &&
 static_assert(sizeof(SpectralKnot) == 8 && alignof(SpectralKnot) == 4 &&
                   __builtin_offsetof(SpectralKnot, value) == 4,
               "render spectral knot layout");
-static_assert(sizeof(Instance) == 120 && alignof(Instance) == 4 &&
+static_assert(sizeof(Instance) == 124 && alignof(Instance) == 4 &&
                   __builtin_offsetof(Instance, material) == 60 &&
                   __builtin_offsetof(Instance, reverse_orientation) == 64 &&
                   __builtin_offsetof(Instance, emission) == 68 &&
@@ -377,7 +405,7 @@ static_assert(sizeof(Instance) == 120 && alignof(Instance) == 4 &&
 static_assert(sizeof(Medium) == 5656 && alignof(Medium) == 4 &&
                   __builtin_offsetof(Medium, g) == 5652,
               "homogeneous medium layout");
-static_assert(sizeof(PositionalLight) == 1964 && alignof(PositionalLight) == 4 &&
+static_assert(sizeof(PositionalLight) == 1976 && alignof(PositionalLight) == 4 &&
                   __builtin_offsetof(PositionalLight, intensity) == 12 &&
                   __builtin_offsetof(PositionalLight, kind) == 1896 &&
                   __builtin_offsetof(PositionalLight, light_from_world) == 1900 &&
@@ -395,13 +423,13 @@ static_assert(sizeof(AreaEmission) == 1900 && alignof(AreaEmission) == 4 &&
                   __builtin_offsetof(AreaEmission, two_sided) == 1884,
               "render area emission layout");
 static_assert(sizeof(SurfaceVertex) == 40 && sizeof(SurfaceTransform) == 180 &&
-                  sizeof(TextureGraphParameters) == 104,
+                  sizeof(TextureGraphParameters) == 108,
               "texture graph and surface layout");
 static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 324 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 364 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, zsobol_log_spp) == 256 &&
                   __builtin_offsetof(Parameters, gaussian_width) == 260 &&
                   __builtin_offsetof(Parameters, gaussian_height) == 264 &&
@@ -431,6 +459,8 @@ static_assert(sizeof(Parameters) == 324 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, randomization) == 176 &&
                   __builtin_offsetof(Parameters, sobol_scale_exponent) == 180,
               "render parameter layout");
+static_assert(sizeof(LightAlias) == 16 && sizeof(LightBounds) == 64 && sizeof(LightRecord) == 16,
+              "light sampling layout");
 static_assert(sizeof(Sample) == 60 && alignof(Sample) == 4 &&
                   __builtin_offsetof(Sample, filter_offsets) == 52 &&
                   __builtin_offsetof(Sample, lens_words) == 44 &&

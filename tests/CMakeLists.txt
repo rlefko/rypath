@@ -1,9 +1,56 @@
+add_executable(rypath_environment_sampling_tests environment_sampling_tests.cpp)
+target_link_libraries(rypath_environment_sampling_tests PRIVATE rypath_image)
+rypath_configure_host_target(rypath_environment_sampling_tests)
+add_test(NAME pbrt.environment_sampling COMMAND rypath_environment_sampling_tests)
+
+add_executable(rypath_layered_rng_tests layered_rng_tests.cpp)
+target_include_directories(rypath_layered_rng_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_layered_rng_tests)
+add_test(NAME sampling.layered_rng COMMAND rypath_layered_rng_tests)
+
+add_executable(rypath_light_sampling_tests light_sampling_tests.cpp)
+target_link_libraries(rypath_light_sampling_tests PRIVATE rypath_render)
+rypath_configure_host_target(rypath_light_sampling_tests)
+add_test(NAME sampling.lights COMMAND rypath_light_sampling_tests)
+
+add_executable(rypath_light_geometry_sampling_tests light_geometry_sampling_tests.cpp)
+target_include_directories(rypath_light_geometry_sampling_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_light_geometry_sampling_tests)
+add_test(NAME sampling.light_geometry COMMAND rypath_light_geometry_sampling_tests)
+
+find_package(Threads REQUIRED)
+add_executable(rypath_pavilion_quality_metrics pavilion_quality_metrics.cpp)
+target_link_libraries(rypath_pavilion_quality_metrics PRIVATE rypath_image Threads::Threads)
+set_target_properties(rypath_pavilion_quality_metrics PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+rypath_configure_host_target(rypath_pavilion_quality_metrics)
+add_executable(rypath_pavilion_quality_metrics_tests pavilion_quality_metrics_tests.cpp)
+rypath_configure_host_target(rypath_pavilion_quality_metrics_tests)
+add_test(NAME pbrt.pavilion_quality_metrics COMMAND rypath_pavilion_quality_metrics_tests)
+
 add_executable(rypath_pbrt_packet_tests pbrt_packet_tests.cpp)
 target_link_libraries(rypath_pbrt_packet_tests PRIVATE rypath_pbrt_render)
 rypath_configure_host_target(rypath_pbrt_packet_tests)
 add_test(NAME pbrt.packet COMMAND rypath_pbrt_packet_tests)
 
 if(RYPATH_ENABLE_METAL)
+    foreach(suite IN ITEMS light_geometry_sampling light_sampling)
+        add_executable(rypath_${suite}_probe ${suite}_probe.mm)
+        target_link_libraries(rypath_${suite}_probe PRIVATE rypath_metal_backend rypath_render "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+        set_target_properties(rypath_${suite}_probe PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+        target_compile_options(rypath_${suite}_probe PRIVATE -fobjc-arc)
+        rypath_configure_host_target(rypath_${suite}_probe)
+        if(suite STREQUAL "light_geometry_sampling")
+            add_dependencies(rypath_${suite}_probe rypath_light_geometry_shader)
+            add_test(NAME metal.${suite} COMMAND rypath_${suite}_probe "${rypath_light_geometry_library}")
+        else()
+            add_test(NAME metal.${suite} COMMAND rypath_${suite}_probe "${rypath_metal_library}")
+        endif()
+        set_tests_properties(metal.${suite} PROPERTIES TIMEOUT 120)
+        if(RYPATH_ALLOW_NO_METAL_DEVICE)
+            target_compile_definitions(rypath_${suite}_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+            set_tests_properties(metal.${suite} PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
     add_executable(rypath_packet_render_tests packet_render_tests.cpp)
     target_link_libraries(rypath_packet_render_tests PRIVATE rypath_metal_backend)
     set_target_properties(rypath_packet_render_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
@@ -286,6 +333,7 @@ string(CONCAT help_text
     "              [--stl-colors auto|viscam|magics]\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
     "           [--resource-profile standard|large] [--raw-output PATH.exr]\n"
+    "           [--material-seed 0]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n"
     "       Render options: [--checkpoint PATH] [--resume PATH]\n"
@@ -501,7 +549,7 @@ if(RYPATH_ENABLE_METAL)
         OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
     target_compile_options(rypath_image_lighting_probe PRIVATE -fobjc-arc)
     add_test(NAME metal.image_lighting COMMAND rypath_image_lighting_probe)
-    set_tests_properties(metal.image_lighting PROPERTIES TIMEOUT 30)
+    set_tests_properties(metal.image_lighting PROPERTIES TIMEOUT 120)
     if(RYPATH_ALLOW_NO_METAL_DEVICE)
         target_compile_definitions(rypath_image_lighting_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
         set_tests_properties(metal.image_lighting PROPERTIES SKIP_RETURN_CODE 77)

@@ -125,7 +125,8 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
     float4 weight = s.weight * mask(packet);
     float z = thickness(p);
     bool delta = s.delta;
-    RNG rng{seed ^ 0x68e31da4u};
+    (void)seed;
+    RNG rng{seeded_direction_hash(p.material_seed, wo), rypath_layered_rng::sample(uc, u.x, u.y)};
     bool exited = w.z > 0;
     for (uint depth = 0; !exited && depth < p.max_depth; ++depth) {
         if (depth > 3 && maximum(weight) < .25f) {
@@ -206,7 +207,12 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
     if (!direct.valid)
         return {0, 0, false};
     float4 total = float(p.samples) * direct.f * mask(packet);
-    RNG rng{seed ^ 0x1b56c4e9u};
+    (void)seed;
+#if RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT
+    DiagnosticLegacyRNG rng{seed ^ 0x1b56c4e9u};
+#else
+    RNG rng{seeded_direction_hash(p.material_seed, wo), direction_hash(wi)};
+#endif
     for (uint n = 0; n < p.samples; ++n) {
         float uc = rng.next();
         auto a = top_sample(p, wo, uc, rng.pair(), 2, importance);

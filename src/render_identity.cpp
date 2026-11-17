@@ -351,6 +351,7 @@ class Canonical {
         FIELD(camera_medium);
         FIELD(instance_media);
         FIELD(integrator);
+        FIELD(light_sampler);
         FIELD(spectral_transport);
         FIELD(max_component_value);
         if (std::isfinite(x.max_component_value))
@@ -381,6 +382,7 @@ Sha256Digest render_identity(const RenderScene &scene, const RenderSettings &set
     else
         out.field("seed", settings.seed);
     out.field("sampler", settings.sampler);
+    out.field("material_seed", settings.material_seed);
     return out.finish();
 }
 } // namespace rypath

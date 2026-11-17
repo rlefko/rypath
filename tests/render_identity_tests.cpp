@@ -20,9 +20,9 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3716-byte empty-scene fixture includes field tags and all defaults.
+    // the 3766-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "73af24dbc8041e7891bd985d54519bda61e8f5059e8b8d155ad324339eb38fc6",
+                "9abbd52b4a03495b370e5bd02e02009f9ba5552244b0abacf562ef013f77045c",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -34,6 +34,10 @@ void identity_checks() {
         require(render_identity(copy, settings) != baseline, name);
     };
     changed([](auto &s) { s.integrator = IntegratorKind::bdpt; }, "integrator identity");
+    changed([](auto &s) { s.light_sampler = LightSamplerKind::power; },
+            "power light selection identity");
+    changed([](auto &s) { s.light_sampler = LightSamplerKind::uniform; },
+            "uniform light selection identity");
     changed([](auto &s) { s.spectral_transport = SpectralTransport::packet; },
             "spectral transport identity");
     changed([](auto &s) { s.max_component_value = 50; }, "film clamp identity");
@@ -110,6 +114,10 @@ void identity_checks() {
     setting_changed([](auto &s) { ++s.height; }, "film height");
     setting_changed([](auto &s) { ++s.samples; }, "fixed target spp");
     setting_changed([](auto &s) { ++s.seed; }, "sampling seed");
+    setting_changed([](auto &s) { s.material_seed = INT32_MIN; },
+                    "negative stochastic material seed");
+    setting_changed([](auto &s) { s.material_seed = INT32_MAX; },
+                    "positive stochastic material seed");
     setting_changed([](auto &s) { s.sampler.kind = SamplerKind::sobol; }, "sampler");
     setting_changed([](auto &s) { s.sampler.randomization = SobolRandomization::none; },
                     "randomizer");

@@ -33,6 +33,13 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
+The sampling/convergence revision uses file format 3, identity 12, renderer 14,
+sampling 5 and accumulation 2. Format 3 adds the signed 32-bit material seed after
+the sampler randomization in metadata. Earlier formats and contracts are rejected
+before decoding their payload. Light-selection policy and material seed both
+participate in identity; changing either rejects resume. The new proposals do not
+promise image identity with earlier rendering revisions.
+
 ## Identity and compatible continuation
 
 Resume restores every raw binary64 XYZ sum, Neumaier compensation term and
@@ -130,10 +137,11 @@ precision policy, including existing shader `-fno-fast-math` settings.
 
 ## Format, limits and publication
 
-Version 2 uses explicit little-endian integers and IEEE binary64 bit patterns.
+Version 3 uses explicit little-endian integers and IEEE binary64 bit patterns.
 The 44-byte header contains the eight-byte `RYPCHK\r\n` magic, five uint32
 contract versions, and uint64 metadata/pixel-payload lengths. Metadata stores
-render settings, Film model/exposure, packet/output flags, clamp, filter, 32-byte
+render settings including the signed material seed, Film model/exposure,
+packet/output flags, clamp, filter, 32-byte
 identity and bounded provenance. Each pixel occupies 216 bytes: raw camera XYZ
 sums/corrections and uint64 count; raw splat, clamped camera and clamped splat
 XYZ sums/corrections; then reconstruction weight sum/correction. A trailing 32-byte SHA-256 covers all preceding bytes. The
@@ -177,8 +185,8 @@ filter identity; effective ZSobol sample count is the fixed target already
 included in identity. New QMC seeds use canonical signed 32-bit encoding.
 Earlier contracts are rejected explicitly; no automatic migration is attempted.
 
-Packet transport advances format/identity/renderer/sampling/accumulation to
-2/11/13/4/2. Every accumulation plane persists without output conversion;
+The original packet transport revision advanced
+format/identity/renderer/sampling/accumulation to 2/11/13/4/2. Every accumulation plane persists without output conversion;
 splats never increment destination counts. Canonical identity includes analytic
 geometry, integrator, spectral transport, film clamp and finite-clamp exposure.
 Resource profiles are execution limits and do not change effective scene identity.

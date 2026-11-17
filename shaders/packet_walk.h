@@ -139,6 +139,8 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
             if (mode == Mode::Radiance) {
                 Vertex v{};
                 v.type = environment_vertex;
+                v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
+                v.light = p.environment_light;
                 v.point.position = incoming.origin + incoming.direction;
                 v.point.geometric_normal = -incoming.direction;
                 v.point.shading_normal = -incoming.direction;
@@ -166,11 +168,19 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         Vertex v{};
         v.type = surface_vertex;
+        v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
         v.instance = hit.instance_id;
         v.primitive = hit.primitive_id;
         v.kind = kind;
         v.uv = hit.coordinates;
-        v.light = instance.emission;
+        v.light =
+            instance.emission == wire::no_emission
+                ? 0xffffffffu
+                : instance.emitter_begin +
+                      (kind == wire::triangle_primitive ? hit.primitive_id
+                       : kind == wire::patch_primitive
+                           ? instance.triangle_count + hit.primitive_id
+                           : instance.triangle_count + instance.patch_count + hit.primitive_id);
         v.wo = -incoming.direction;
         if (!surface_point(hit.coordinates, kind, instance, hit.primitive_id, r.alpha.positions,
                            r.alpha.triangles, r.alpha.patches, r.alpha.normals, p.normal_count,
@@ -312,8 +322,9 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         const auto draws =
             random(r, sample, index, (mode == Mode::Radiance ? 4u : 69u) + count - 2);
+        const float3 sampled_wo_local = v.frame.local(v.wo);
         const auto continuation =
-            rypath_packet::sample(v.bsdf, v.frame.local(v.wo), sample_uniform(p, draws.x),
+            rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
                                   uniform2(p, draws.yz), v.seed, mode);
         if (!continuation.valid) {
             sample.status = wire::invalid_arithmetic;
@@ -321,6 +332,15 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         if (!continuation.accepted)
             break;
+        // Retain the exact ordered local floats used by the directional PDF.
+        // Reconstructing a world-space edge and returning to the frame can
+        // change one ULP and therefore select an unrelated PBRT hash stream.
+        device auto &stored = path_vertex(path, count - 1);
+        stored.sampled_wo_local = sampled_wo_local;
+        stored.sampled_wi_local = continuation.wi;
+        stored.sampled_prev_id = prev.path_id;
+        stored.sampled_next_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
+        stored.pair_valid = true;
         float3 wi = v.frame.world(continuation.wi);
         if (!rypath_surface_detail::unit_vector(wi, wi)) {
             sample.status = wire::invalid_arithmetic;

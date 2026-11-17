@@ -41,7 +41,8 @@ Prepared prepare(SceneFile &f, const std::string &camera, const std::string &bod
     std::string why;
     for (const auto &d : translated.diagnostics)
         why += d.message + "\n";
-    require(translated.exit_code() == 0 && translated.scene.has_value(), why);
+    if (translated.exit_code() != 0 || !translated.scene)
+        throw std::runtime_error(why);
     const auto &source = translated.scene->area_emissions.empty()
                              ? translated.scene->environment
                              : translated.scene->area_emissions[0].radiance;
@@ -55,6 +56,8 @@ Prepared prepare(SceneFile &f, const std::string &camera, const std::string &bod
     require(built.status == GeometryStatus::success, built.diagnostic);
     return {std::move(built.scene), reference};
 }
+// This fixture API intentionally takes the sample count followed by its fixed RNG seed.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 double mean(Prepared &scene, unsigned count, unsigned seed) {
     RenderRequest request;
     request.width = 1;
@@ -151,6 +154,38 @@ int run() {
             require(std::abs(value - c.expected) < .003, "analytic area sampling/MIS irradiance");
         }
     }
+    // Reflection handedness is already present in the analytic cofactor normal.
+    // Check both authored orientations from both sides; alpha-zero emitters
+    // isolate direct sampling so BSDF continuation cannot rescue a wrong BVH cone.
+    for (bool reverse : {false, true})
+        for (bool above : {false, true})
+            for (bool invisible : {false, true}) {
+                const std::string oriented_receiver =
+                    "AttributeBegin\nMaterial \"diffuse\" \"spectrum reflectance\" [360 1 830 "
+                    "1]\n" +
+                    std::string(above ? "Translate 0 0 6\nReverseOrientation\n" : "") +
+                    "Shape \"disk\" \"float radius\" [10]\nAttributeEnd\n";
+                const std::string reflected_source =
+                    std::string("AttributeBegin\nMaterial \"diffuse\" \"spectrum reflectance\" "
+                                "[360 0 830 0]\n") +
+                    emission + "Translate 0 0 3\nScale -1 1 1\n" +
+                    (reverse ? "ReverseOrientation\n" : "") +
+                    "Shape \"disk\" \"float radius\" [.5]" +
+                    (invisible ? " \"float alpha\" [0]" : "") + "\nAttributeEnd\n";
+                const auto camera_side = above ? "LookAt 0 0 5  0 0 6  0 1 0\n" : camera;
+                auto scene = prepare(f, camera_side, oriented_receiver + reflected_source, 1);
+                const bool emitting_side = above != reverse;
+                const double expected = emitting_side ? 1. / 37 : 0;
+                for (unsigned seed : {7, 19, 41}) {
+                    const auto value = mean(scene, 16384, seed);
+                    std::cout << "reflected disk reverse=" << reverse << " above=" << above
+                              << " invisible=" << invisible << " irradiance=" << value
+                              << " expected=" << expected << '\n';
+                    require(
+                        emitting_side ? std::abs(value - expected) < .003 : value == 0,
+                        "Reflected disk light bounds disagree with analytic emission orientation");
+                }
+            }
     // Independent midpoint integration of a planar triangle's geometric
     // Lambertian term; retained zero faces must act as null proposal slots.
     double triangle_reference = 0;

@@ -79,6 +79,7 @@ Bytes metadata(const RenderCheckpoint &c) {
     put(b, c.settings.seed, 8);
     put(b, static_cast<std::uint32_t>(c.settings.sampler.kind), 4);
     put(b, static_cast<std::uint32_t>(c.settings.sampler.randomization), 4);
+    put(b, std::bit_cast<std::uint32_t>(c.settings.material_seed), 4);
     put(b, static_cast<std::uint32_t>(c.film.model), 4);
     real(b, c.film.exposure);
     put(b, c.film.packet, 1);
@@ -236,7 +237,7 @@ std::string validate_checkpoint(const RenderCheckpoint &c) {
         !std::isfinite(c.film.filter.sigma) ||
         (c.film.filter.kind == PixelFilterKind::gaussian && !(c.film.filter.sigma > 0)))
         return "invalid checkpoint film filter or clamp";
-    std::uint64_t meta = 114;
+    std::uint64_t meta = 118;
     const auto count = c.film.pixels.front().count;
     for (const auto &p : c.film.pixels) {
         if (p.count != count || p.count > c.settings.samples)
@@ -351,7 +352,7 @@ CheckpointReadResult read_checkpoint(const std::filesystem::path &path) {
             throw std::runtime_error("invalid checkpoint header");
         Cursor h{std::span(head).subspan(8)};
         if (h.get(4) != checkpoint_contract::format)
-            throw std::runtime_error("unsupported checkpoint format version (expected format 2)");
+            throw std::runtime_error("unsupported checkpoint format version (expected format 3)");
         for (auto version : {checkpoint_contract::identity, checkpoint_contract::renderer,
                              checkpoint_contract::sampling, checkpoint_contract::accumulation})
             if (h.get(4) != version)
@@ -377,6 +378,8 @@ CheckpointReadResult read_checkpoint(const std::filesystem::path &path) {
         c.settings.seed = m.get(8);
         c.settings.sampler.kind = static_cast<SamplerKind>(m.get(4));
         c.settings.sampler.randomization = static_cast<SobolRandomization>(m.get(4));
+        c.settings.material_seed =
+            std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(m.get(4)));
         c.film.model = static_cast<RenderModel>(m.get(4));
         c.film.exposure = m.real();
         const auto packet = m.get(1), compatibility = m.get(1);

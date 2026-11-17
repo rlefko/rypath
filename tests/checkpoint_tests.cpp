@@ -75,6 +75,7 @@ RenderCheckpoint fixture() {
     c.settings.samples = (std::uint64_t{1} << 53) + 37;
     c.settings.batch_size = 19;
     c.settings.seed = UINT64_MAX;
+    c.settings.material_seed = INT32_MIN;
     c.film.width = 2;
     c.film.height = 1;
     c.film.model = RenderModel::pbrt;
@@ -95,6 +96,7 @@ void exact(const RenderCheckpoint &a, const RenderCheckpoint &b) {
         a.identity == b.identity && a.settings.width == b.settings.width &&
             a.settings.height == b.settings.height && a.settings.samples == b.settings.samples &&
             a.settings.batch_size == b.settings.batch_size && a.settings.seed == b.settings.seed &&
+            a.settings.material_seed == b.settings.material_seed &&
             a.settings.sampler.kind == b.settings.sampler.kind &&
             a.settings.sampler.randomization == b.settings.sampler.randomization,
         "exact settings and identity");
@@ -155,7 +157,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "545b38de70f50c02a2d61a77866930331e530d36ea53b7cd13f437c3c2a08082",
+                "e3104948bc0e4da8acfd3e2b57fcc4bb193d4bc160b698a674d6b9c064a8fdd7",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
@@ -196,10 +198,11 @@ void codec(const std::filesystem::path &dir) {
             "invalid packet plane rejected transactionally");
     require(read(path) == original, "invalid packet plane preserves prior checkpoint");
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
-    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 23>{
-             {{8, 1},  {12, 10}, {16, 12}, {20, 3},  {24, 1},  {12, 3}, {12, 4}, {12, 5},
-              {12, 6}, {12, 7},  {12, 8},  {12, 9},  {16, 3},  {16, 4}, {16, 5}, {16, 6},
-              {16, 7}, {16, 8},  {16, 9},  {16, 10}, {16, 11}, {20, 1}, {20, 2}}}) {
+    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 27>{
+             {{8, 2},  {12, 11}, {16, 13}, {20, 4},  {8, 1},  {12, 10}, {16, 12},
+              {20, 3}, {24, 1},  {12, 3},  {12, 4},  {12, 5}, {12, 6},  {12, 7},
+              {12, 8}, {12, 9},  {16, 3},  {16, 4},  {16, 5}, {16, 6},  {16, 7},
+              {16, 8}, {16, 9},  {16, 10}, {16, 11}, {20, 1}, {20, 2}}}) {
         auto legacy = original;
         put(legacy, offset, version, 4);
         rehash(legacy);
@@ -231,8 +234,8 @@ void codec(const std::filesystem::path &dir) {
               {44, UINT32_MAX, 4},
               {44 + 32, 9, 4},
               {44 + 36, 9, 4},
-              {44 + 40, 9, 4},
-              {44 + 110, 1025, 4}}}) {
+              {44 + 44, 9, 4},
+              {44 + 114, 1025, 4}}}) {
         bad = original;
         put(bad, offset, value, n);
         rehash(bad);
@@ -242,7 +245,7 @@ void codec(const std::filesystem::path &dir) {
     // Authenticated malformed string length, count and nonfinite component.
     for (auto [offset, value, n] :
          std::array<std::tuple<std::size_t, std::uint64_t, std::size_t>, 3>{
-             {{44 + 114 + 16, 4097, 4},
+             {{44 + 118 + 16, 4097, 4},
               {original.size() - 32 - 432 + 48, UINT64_MAX, 8},
               {original.size() - 32 - 432, 0x7ff0000000000000ULL, 8}}}) {
         bad = original;

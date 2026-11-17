@@ -645,7 +645,7 @@ constexpr std::uint64_t blackbody_seed = 0x6a243a822dc4e571ULL;
 struct BlackbodyControl {
     double temperature;
     double relative_wavelength_floor;
-    double relative_white_floor;
+    double white_radiance;
 };
 
 void blackbody_reflectance_paths(const RenderScene &plane, const RenderSamplesResult &white,
@@ -664,17 +664,19 @@ void blackbody_reflectance_paths(const RenderScene &plane, const RenderSamplesRe
         require(reference.wavelength == sample.wavelength && reference.radiance > 0 &&
                     reference.scatterings == 1,
                 "Blackbody white-plane control must scatter once at the same wavelength");
+        require(std::abs(reference.radiance - control.white_radiance) <=
+                    2e-6 * control.white_radiance,
+                "Constant-environment white furnace must equal its authored radiance");
         const double rho = std::min(1., spectrum.radiance(sample.wavelength) / peak);
         const double expected = reference.radiance * rho;
         const double error = std::abs(sample.radiance - expected);
         require(sample.scatterings <= 1 && error <= 1e-7 + 2e-5 * reference.radiance,
                 "Blackbody path disagrees with independent Planck reflectance");
         maximum_absolute = std::max(maximum_absolute, error);
-        // On this plane, each MIS arm contributes at most one white-sky radiance.
-        // Above 1.1 times that radiance, both arms have weights greater than 0.1,
-        // keeping their products comfortably normal in the selected tail.
-        if (sample.wavelength >= control.relative_wavelength_floor &&
-            reference.radiance > control.relative_white_floor) {
+        // Constant environments use BSDF continuation alone under compensation.
+        // The white control is deterministic; select the physical wavelength
+        // tail directly instead of requiring two unusually bright MIS arms.
+        if (sample.wavelength >= control.relative_wavelength_floor) {
             require(sample.scatterings == 1 && sample.radiance > 0 && error <= 1e-4 * expected,
                     "Blackbody path lost relative accuracy or vanished");
             maximum_relative = std::max(maximum_relative, error / expected);
@@ -704,15 +706,13 @@ void blackbody_materials(const std::filesystem::path &directory) {
 
     auto white_plane = with_material(direct, white_material);
     const auto white = trace(*build(white_plane), analytic_paths, blackbody_seed);
-    const double relative_white_floor = 1.1 * white_plane.environment.front();
-    blackbody_reflectance_paths(direct, white,
-                                {.temperature = 3000,
-                                 .relative_wavelength_floor = 360,
-                                 .relative_white_floor = relative_white_floor});
-    blackbody_reflectance_paths(with_material(direct, texture_material), white,
-                                {.temperature = 6500,
-                                 .relative_wavelength_floor = 360,
-                                 .relative_white_floor = relative_white_floor});
+    const double white_radiance = white_plane.environment.front();
+    blackbody_reflectance_paths(
+        direct, white,
+        {.temperature = 3000, .relative_wavelength_floor = 360, .white_radiance = white_radiance});
+    blackbody_reflectance_paths(
+        with_material(direct, texture_material), white,
+        {.temperature = 6500, .relative_wavelength_floor = 360, .white_radiance = white_radiance});
     spectral_batches(direct, "Direct blackbody reflectance");
     spectral_batches(ply, "Blackbody constant texture on PLY");
 
@@ -730,7 +730,7 @@ void blackbody_materials(const std::filesystem::path &directory) {
             scene, white_hdr,
             {.temperature = temperature,
              .relative_wavelength_floor = temperature == 175.0f ? 820. : 360.,
-             .relative_white_floor = 1.1 * hdr});
+             .white_radiance = hdr});
     }
 }
 
@@ -817,7 +817,18 @@ void rgb_materials(const RenderScene &plane) {
                 "Invalid material payload acquired a native renderer");
     }
     auto extreme = with_material(plane, white);
-    extreme.environment.fill(largest);
+    // A white constant-environment furnace is now BSDF-only: FLT_MAX is
+    // legitimately finite. Instead force a guaranteed inverse-square overflow
+    // from an otherwise finite point light one eighth unit from the receiver.
+    extreme.environment.fill(0);
+    extreme.light_sampler = LightSamplerKind::uniform;
+    extreme.raster_camera = RasterCamera{{}, {-1e-25f, -1e-25f, 2}, {2e-25f, 0, 0}, {0, 2e-25f, 0}};
+    PointLight overflow_light;
+    overflow_light.position = {0, 0, 1.875f};
+    overflow_light.intensity.fill(largest / 16);
+    extreme.point_lights = {overflow_light};
+    require(double(overflow_light.intensity.front()) / (.125 * .125) > largest,
+            "Overflow fixture must exceed binary32 range before BSDF weighting");
     const auto overflow = build(extreme)->sample({.width = 1,
                                                   .height = 1,
                                                   .seed = seed,

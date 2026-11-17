@@ -126,7 +126,10 @@ clarifies the work; completion is recorded in [status](status.md).
     disk and open cylinder, four-wavelength vacuum BDPT, finite film clamping and
     an explicit large-scene profile render the pinned Pavilion day/night scenes
     at their authored resolution and sample counts;
-    see [Pavilion validation](pavilion-validation.md). Curves and motion remain.
+    see [Pavilion validation](pavilion-validation.md). Native light importance,
+    directional proposals and pinned coating randomness are the current
+    [sampling/convergence follow-up](sampling-convergence-validation.md); its
+    quality gates remain acceptance work. Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).
     Wider color spaces, additional cameras, filters/samplers and faithfully

@@ -12,6 +12,107 @@ void metal_error(const char *operation, NSError *error) {
     std::cerr << operation << ": "
               << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
 }
+bool coating_moments(id<MTLDevice> device, id<MTLLibrary> library) {
+    constexpr unsigned count = 131072, routes = 12;
+    // Unmodified PBRT b0bdf461; scripts/pbrt_layered_moments_probe.cpp.
+    // Mean and raw second moment for joint weight, weighted joint weight,
+    // f*cos, weighted f*cos, and directional PDF (the last three integrate
+    // a uniform upper hemisphere). These finite approximations are distinct.
+    constexpr double expected[routes][10] = {
+        {0.321860736847, 0.244908528094, 0.407147824532, 0.405096276358, 0.339688353474,
+         0.180703156293, 0.428478575201, 0.317866662493, 2.20646792897, 7.12102924611},
+        {0.321446524062, 0.205473994699, 0.406551870989, 0.340634568985, 0.339946787529,
+         0.176210689743, 0.428774575628, 0.309883691345, 2.20646792897, 7.12102924611},
+        {0.484329702855, 0.433300984926, 0.630784069651, 0.752638483952, 0.526305108973,
+         0.775263768384, 0.683502625717, 1.44243565497, 2.4452658914, 14.9651038158},
+        {0.484686496905, 0.392422026037, 0.631253374529, 0.687755132873, 0.526136322883,
+         0.761395936453, 0.683250774295, 1.4206008256, 2.4452658914, 14.9651038158},
+        {0.283016152033, 0.182684051477, 0.361501551437, 0.311699208666, 0.31379205241,
+         0.162377600658, 0.398709080534, 0.29306899641, 2.20513397933, 7.21007559881},
+        {0.283016170377, 0.182684073326, 0.36150157458, 0.31169924462, 0.31379205503,
+         0.162377603812, 0.398709083748, 0.293069001745, 2.20513397933, 7.21007559881},
+        {0.448214977921, 0.373131053162, 0.60805408148, 0.706060468516, 0.500299494262,
+         0.977801118853, 0.676023263916, 2.00548147056, 2.43945688566, 16.706759065},
+        {0.448215008686, 0.373131103545, 0.60805412313, 0.706060563467, 0.500299500534,
+         0.977801153008, 0.676023272381, 2.00548153914, 2.43945688566, 16.706759065},
+        {0.412836457244, 0.339137574552, 0.433530314036, 0.383802289774, 0.424739667323,
+         1.88231959353, 0.44827907587, 1.27994472551, 2.24634533419, 13.9130076048},
+        {0.412369845167, 0.308171673618, 0.432956066904, 0.333745456252, 0.424972588386,
+         1.88171936264, 0.448567177241, 1.27886191086, 2.24634533419, 13.9130076048},
+        {0.4168974057, 0.372479815178, 0.424195581935, 0.41069608421, 0.439766635308, 2.06624749523,
+         0.448806602329, 1.41200877468, 1.80558776196, 17.6628605023},
+        {0.417007112376, 0.326810833692, 0.42453415955, 0.339569070885, 0.44011923766,
+         2.06200440965, 0.449304872711, 1.40640108745, 1.80558776196, 17.6628605023},
+    };
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"coating_moments_probe"];
+    if (!function) {
+        std::cerr << "Missing coating_moments_probe\n";
+        return false;
+    }
+    auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+    if (!pipeline) {
+        metal_error("Coating moment pipeline", error);
+        return false;
+    }
+    const std::size_t values = std::size_t{count} * routes * 8;
+    auto output = [device newBufferWithLength:(values + 4) * sizeof(float)
+                                      options:MTLResourceStorageModeShared];
+    if (!output || !output.contents) {
+        std::cerr << "Coating moment output allocation failed\n";
+        return false;
+    }
+    auto data = static_cast<float *>(output.contents);
+    data[values] = 12345;
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!queue || !command || !encoder)
+        return false;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:output offset:0 atIndex:0];
+    [encoder dispatchThreads:MTLSizeMake(count * routes + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min(NSUInteger{32}, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted || data[values] != 12345) {
+        metal_error("Coating moment dispatch", command.error);
+        return false;
+    }
+    for (unsigned route = 0; route < routes; ++route) {
+        double sum[5] = {}, square[5] = {};
+        for (unsigned n = 0; n < count; ++n) {
+            const auto q = data + (std::size_t{route} * count + n) * 8;
+            if (q[5] != 1)
+                return false;
+            for (unsigned i = 0; i < 5; ++i) {
+                if (!std::isfinite(q[i]))
+                    return false;
+                sum[i] += q[i];
+                square[i] += double(q[i]) * q[i];
+            }
+        }
+        for (unsigned i = 0; i < 5; ++i) {
+            const double mean = sum[i] / count, target = expected[route][2 * i];
+            const double variance = std::max(0., square[i] / count - mean * mean);
+            const double reference_variance =
+                std::max(0., expected[route][2 * i + 1] - target * target);
+            // Selected before GPU results: six combined standard errors plus
+            // 0.1% absolute/relative numerical allowance. Hash discontinuities
+            // preclude pointwise equality after floating frame arithmetic.
+            const double tolerance = 6 * std::sqrt((variance + reference_variance) / count) +
+                                     .001 * std::max(1., std::abs(target));
+            std::cout << "Coating route " << route << " moment " << i << ": " << mean << " PBRT "
+                      << target << " tolerance " << tolerance << '\n';
+            if (std::abs(mean - target) > tolerance)
+                return false;
+        }
+    }
+    return true;
+}
 } // namespace
 int main(int argc, char **argv) {
     @autoreleasepool {
@@ -64,7 +165,7 @@ int main(int argc, char **argv) {
             std::cerr << "Packet scattering pipeline reports zero maximum threads\n";
             return 3;
         }
-        constexpr std::size_t output_values = std::size_t{1024} * 13 * 4;
+        constexpr std::size_t output_values = std::size_t{1024} * 14 * 4;
         auto output = [device newBufferWithLength:(output_values + 4) * sizeof(float)
                                           options:MTLResourceStorageModeShared];
         if (!output) {
@@ -141,10 +242,10 @@ int main(int argc, char **argv) {
             std::cerr << "Packet scattering output has no CPU mapping after GPU completion\n";
             return 3;
         }
-        float worst[13] = {};
+        float worst[14] = {};
         for (unsigned n = 0; n < 1024; ++n)
-            for (unsigned c = 0; c < 13; ++c) {
-                auto q = p + (std::size_t{n} * 13 + c) * 4;
+            for (unsigned c = 0; c < 14; ++c) {
+                auto q = p + (std::size_t{n} * 14 + c) * 4;
                 worst[c] = std::max(worst[c], q[0]);
                 if (c == 11 && !(q[3] > 1e-7f)) {
                     std::cerr
@@ -157,9 +258,11 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
+        if (!coating_moments(device, library))
+            return 1;
         std::cout << "1024 packet GPU cases passed, max errors " << worst[0] << ' ' << worst[1]
                   << ' ' << worst[2] << ' ' << worst[3] << ' ' << worst[4] << ' ' << worst[5] << ' '
                   << worst[6] << ' ' << worst[7] << ' ' << worst[8] << ' ' << worst[9] << ' '
-                  << worst[10] << ' ' << worst[11] << ' ' << worst[12] << '\n';
+                  << worst[10] << ' ' << worst[11] << ' ' << worst[12] << ' ' << worst[13] << '\n';
     }
 }

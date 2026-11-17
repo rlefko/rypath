@@ -22,7 +22,7 @@ struct Images {
 constant constexpr float pi = 3.14159265358979323846f;
 constant constexpr float sphere_density = 0.25f / pi;
 constant constexpr float uniform_probability = 0.0625f;
-constant constexpr uint max_importance_width = 128;
+constant constexpr uint max_importance_width = 8192;
 constant constexpr float less_than_one = 0x1.fffffep-1f;
 
 static inline float illuminant_spectrum(Images images, float3 rgb, float wavelength) {
@@ -209,10 +209,14 @@ static inline float environment_radiance(Images images, constant wire::TextureGr
     return p.environment_scale * illuminant_spectrum(images, rgb, wavelength);
 }
 
-static inline bool valid_cdf(constant wire::TextureGraphParameters &p) {
+static inline bool valid_cdf(constant wire::TextureGraphParameters &p, bool compensated = false) {
     const uint width = p.environment_width;
-    return width != 0 && width <= max_importance_width &&
-           p.environment_cdf_count == (width + 1u) * (width + 1u);
+    if (width == 0 || width > max_importance_width)
+        return false;
+    const uint count = (width + 1u) * (width + 1u);
+    const uint offset = compensated ? p.environment_compensated_offset : 0u;
+    return (!compensated || offset >= count) && offset <= p.environment_cdf_count &&
+           count <= p.environment_cdf_count - offset;
 }
 
 static inline bool environment_cell(constant wire::TextureGraphParameters &p,
@@ -228,7 +232,9 @@ static inline bool environment_cell(constant wire::TextureGraphParameters &p,
 }
 
 static inline float environment_density(constant wire::TextureGraphParameters &p,
-                                        const device float *cdf, uint2 cell) {
+                                        const device float *cdf, uint2 cell,
+                                        bool compensated = false) {
+    cdf += compensated ? p.environment_compensated_offset : 0u;
     const uint width = p.environment_width;
     const device float *row = cdf + (cell.y + 1u) * (width + 1u);
     const float marginal = cdf[cell.y + 1u] - cdf[cell.y];
@@ -236,15 +242,17 @@ static inline float environment_density(constant wire::TextureGraphParameters &p
     if (!(marginal >= 0.0f && marginal <= 1.0f && conditional >= 0.0f && conditional <= 1.0f))
         return NAN;
     const float density = (float(width) * marginal) * (float(width) * conditional);
-    return sphere_density * (uniform_probability + (1.0f - uniform_probability) * density);
+    return sphere_density *
+           (compensated ? density : uniform_probability + (1.0f - uniform_probability) * density);
 }
 
 static inline float environment_pdf(constant wire::TextureGraphParameters &p,
-                                    const device float *cdf, float3 world_direction) {
+                                    const device float *cdf, float3 world_direction,
+                                    bool compensated = false) {
     uint2 cell;
-    if (!valid_cdf(p) || !environment_cell(p, world_direction, cell))
+    if (!valid_cdf(p, compensated) || !environment_cell(p, world_direction, cell))
         return NAN;
-    return environment_density(p, cdf, cell);
+    return environment_density(p, cdf, cell, compensated);
 }
 
 static inline float sample_cdf(const device float *cdf, uint width, float u, thread uint &cell) {
@@ -266,20 +274,24 @@ static inline float sample_cdf(const device float *cdf, uint width, float u, thr
 
 static inline bool sample_environment(constant wire::TextureGraphParameters &p,
                                       const device float *cdf, float2 u,
-                                      thread float3 &world_direction, thread float &pdf) {
-    if (!valid_cdf(p) || !all(isfinite(u)) || any(u < 0.0f) || any(u > 1.0f))
+                                      thread float3 &world_direction, thread float &pdf,
+                                      bool compensated = false) {
+    if (!valid_cdf(p, compensated) || !all(isfinite(u)) || any(u < 0.0f) || any(u > 1.0f))
         return false;
+    const device float *selected_cdf = cdf + (compensated ? p.environment_compensated_offset : 0u);
     float2 uv;
     uint row = 0, column = 0;
-    const bool importance = u.x >= uniform_probability;
+    const bool importance = compensated || u.x >= uniform_probability;
     const uint width = p.environment_width;
     if (!importance) {
         uv = float2(u.x / uniform_probability, u.y);
     } else {
-        uv.y = sample_cdf(cdf, width, min(u.y, less_than_one), row);
+        uv.y = sample_cdf(selected_cdf, width, min(u.y, less_than_one), row);
         uv.x = sample_cdf(
-            cdf + (row + 1u) * (width + 1u), width,
-            min((u.x - uniform_probability) / (1.0f - uniform_probability), less_than_one), column);
+            selected_cdf + (row + 1u) * (width + 1u), width,
+            min(compensated ? u.x : (u.x - uniform_probability) / (1.0f - uniform_probability),
+                less_than_one),
+            column);
     }
     if (!all(isfinite(uv)))
         return false;
@@ -293,8 +305,8 @@ static inline bool sample_environment(constant wire::TextureGraphParameters &p,
         // Rounding can send a near-edge sample into a neighboring cell on
         // the inverse map. Its PDF could then lose nearly all proposal mass.
         // Move toward the selected cell's center in bounded increments.
-        // This keeps the correction local while the center (at least 1/256
-        // from any boundary) is a stable fallback.
+        // This keeps the correction local while the native texel center is a
+        // stable fallback, including the largest supported 8192-square maps.
         const float2 center = (float2(selected) + 0.5f) / float(width);
         for (float weight = 0x1p-16f; weight <= 1.0f; weight *= 2.0f) {
             const float2 inward = mix(uv, center, weight);
@@ -308,7 +320,7 @@ static inline bool sample_environment(constant wire::TextureGraphParameters &p,
         if (any(cell != selected))
             return false;
     }
-    pdf = environment_density(p, cdf, cell);
+    pdf = environment_density(p, cdf, cell, compensated);
     return isfinite(pdf) && pdf > 0;
 }
 

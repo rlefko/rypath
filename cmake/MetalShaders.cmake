@@ -21,7 +21,7 @@ set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cach
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
 set(rypath_metal_air_files)
-foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe render gltf_texture_probe texture_probe hdr_texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe conductor_probe gltf_probe dielectric_probe layered_probe table_bsdf_probe medium_probe)
+foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe render gltf_texture_probe texture_probe hdr_texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe light_sampling_probe conductor_probe gltf_probe dielectric_probe layered_probe table_bsdf_probe medium_probe)
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
     if(shader STREQUAL "packet_scattering_probe")
         set(source "${CMAKE_CURRENT_SOURCE_DIR}/tests/packet_scattering_probe.metal")
@@ -67,6 +67,12 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
         list(APPEND shader_options -Os)
     endif()
     if(shader STREQUAL "render")
+        list(APPEND shader_dependencies
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_sampling.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_emission_sampling.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_geometry_sampling.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scalar_lighting.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_transport.h"
@@ -98,6 +104,7 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_scattering.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_layered.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_spectrum_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/layered_rng_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gltf_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/layered.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/transmission.h"
@@ -106,6 +113,9 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/table_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/bsdf_table_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/layered_probe_wire.h")
+    endif()
+    if(shader STREQUAL "packet_scattering_probe")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/tests/layered_rng_oracles.h")
     endif()
     if(shader STREQUAL "dielectric_probe")
         list(APPEND shader_options -fno-fast-math)
@@ -146,6 +156,17 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
     endif()
+    if(shader STREQUAL "light_sampling_probe")
+        list(APPEND shader_options -fno-fast-math)
+        list(APPEND shader_dependencies
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_sampling.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_emission_sampling.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_lighting.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_texture.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/light_sampling_probe_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/ewa_weights.h")
+    endif()
     if(shader STREQUAL "masked_probe" OR shader STREQUAL "analytic_probe")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/masked_probe_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/masked_intersection.h"
@@ -160,6 +181,9 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
         VERBATIM
     )
     list(APPEND rypath_metal_air_files "${air}")
+    if(shader STREQUAL "render")
+        set(rypath_render_shader_dependencies ${shader_dependencies})
+    endif()
 endforeach()
 add_custom_command(
     OUTPUT "${rypath_metal_library}"
@@ -170,3 +194,23 @@ add_custom_command(
 )
 add_custom_target(rypath_metal_shaders DEPENDS "${rypath_metal_library}")
 add_dependencies(rypath_metal_backend rypath_metal_shaders)
+
+# This probe includes the actual renderer adapter; keep its duplicate renderer
+# entry points in a separate library instead of relinking them into production.
+set(rypath_light_geometry_library "${rypath_runtime_directory}/rypath-light-geometry-probe.metallib")
+set(rypath_light_geometry_air "${rypath_runtime_directory}/CMakeFiles/rypath-light-geometry-probe.air")
+add_custom_command(
+    OUTPUT "${rypath_light_geometry_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+        -fno-fast-math -Os -c "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
+        -o "${rypath_light_geometry_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal "${rypath_metal_min_version}"
+        -o "${rypath_light_geometry_library}" "${rypath_light_geometry_air}"
+    DEPENDS ${rypath_render_shader_dependencies}
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/light_geometry_sampling_probe_wire.h"
+    VERBATIM
+)
+add_custom_target(rypath_light_geometry_shader DEPENDS "${rypath_light_geometry_library}")

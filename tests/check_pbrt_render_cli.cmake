@@ -78,7 +78,7 @@ function(check_render input sampler seed warning_pattern result)
     string(FIND "${stdout}" "Sampler: ${sampler}\n" sampler_position)
     if(sampler_position EQUAL -1 OR NOT stdout MATCHES "Render profile: pbrt-spectral-v1\n" OR
        NOT stdout MATCHES "Pixel filter: triangle \\(x radius 1, y radius 1.5\\)" OR
-       NOT stdout MATCHES "Light sampling: separate environment and uniform triangle area" OR
+       NOT stdout MATCHES "Light sampling: bvh; matched forward and reverse probabilities" OR
        NOT stdout MATCHES "Resolution: 8x6\nSamples per pixel: 3\nBatch size: 2\nSeed: ${seed}\n" OR
        NOT stdout MATCHES "Finite path maxdepth: 1\n")
         message(FATAL_ERROR "Unexpected PBRT settings for ${input}: ${stdout}${stderr}")
@@ -120,6 +120,51 @@ if(NOT exit STREQUAL "2" OR NOT stderr MATCHES "sobol-depth\\.pbrt:6:[0-9]+: uns
    NOT stdout MATCHES "Rendering was not attempted" OR stdout MATCHES "Device:|Committed samples|Wrote PNG")
     message(FATAL_ERROR "Unexpected Sobol depth result ${exit}: ${stdout}${stderr}")
 endif()
+
+# A material seed is separate from Sampler.seed, accepts the full signed32 domain,
+# and is retained as an EXR string attribute.
+foreach(material_seed IN ITEMS -2147483649 2147483648 1.5 invalid)
+    file(WRITE "${output}" "${sentinel}")
+    execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/valid.pbrt"
+        --output "${output}" --material-seed "${material_seed}"
+        RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+    if(NOT exit STREQUAL "1" OR NOT stderr MATCHES "--material-seed must be a signed 32-bit integer" OR
+       stdout MATCHES "Device:|Committed samples|Wrote PNG")
+        message(FATAL_ERROR "Unexpected material seed rejection ${exit}: ${stdout}${stderr}")
+    endif()
+    expect_existing_output()
+endforeach()
+foreach(material_seed IN ITEMS -2147483648 0 2147483647)
+    set(seed_output "${test_directory}/material-seed-${material_seed}.exr")
+    execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/valid.pbrt"
+        --output "${seed_output}" --batch-size 2 --material-seed "${material_seed}"
+        RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
+    if(NOT stdout MATCHES "Material seed: ${material_seed}\n")
+        message(FATAL_ERROR "Material seed missing from render settings: ${stdout}${stderr}")
+    endif()
+    if(exit STREQUAL "0")
+        file(READ "${seed_output}" seed_exr HEX)
+        string(HEX "${material_seed}" seed_hex)
+        if(material_seed STREQUAL "-2147483648")
+            set(seed_size "0b000000")
+        elseif(material_seed STREQUAL "2147483647")
+            set(seed_size "0a000000")
+        else()
+            set(seed_size "01000000")
+        endif()
+        string(FIND "${seed_exr}" "7279706174682e6d6174657269616c5365656400737472696e6700${seed_size}${seed_hex}" seed_attribute)
+        if(seed_attribute EQUAL -1)
+            message(FATAL_ERROR "Material seed EXR attribute has incorrect value/type")
+        endif()
+    elseif(exit STREQUAL "2")
+        get_render_availability(availability "${stdout}" "${stderr}" "")
+        if(availability STREQUAL "")
+            message(FATAL_ERROR "Unexpected unavailable material seed render: ${stdout}${stderr}")
+        endif()
+    else()
+        message(FATAL_ERROR "Material seed render failed ${exit}: ${stdout}${stderr}")
+    endif()
+endforeach()
 expect_existing_output()
 
 check_render("sobol.pbrt" "sobol-v1 / owen (PBRT camera variates; rypath transport dimensions)" -17
