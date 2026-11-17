@@ -22,6 +22,7 @@ ImagePyramid image(std::uint32_t width, const std::vector<float> &weights) {
     ImagePyramid result{.encoding = ImageEncoding::linear,
                         .wrap = ImageWrap::clamp,
                         .levels = {{width, width, 0}},
+                        .texels = {},
                         .storage = ImageStorage::linear_float,
                         .native_base = true};
     for (float weight : weights)

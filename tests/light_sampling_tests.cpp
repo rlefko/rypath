@@ -166,6 +166,7 @@ void direction_maps() {
     ImagePyramid image{.encoding = ImageEncoding::linear,
                        .wrap = ImageWrap::clamp,
                        .levels = {{2, 3, 0}},
+                       .texels = {},
                        .storage = ImageStorage::linear_float,
                        .native_base = true};
     const std::array<float, 6> values{1, 2, 0, 4, 8, 16};
@@ -214,6 +215,7 @@ void gltf_power() {
     ImagePyramid image{.encoding = ImageEncoding::srgb,
                        .wrap = ImageWrap::repeat,
                        .levels = {{2, 1, 0}, {1, 1, 8}},
+                       .texels = {},
                        .storage = ImageStorage::linear_float,
                        .source_channels = 4,
                        .gltf = true};
