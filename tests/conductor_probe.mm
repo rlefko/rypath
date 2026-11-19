@@ -266,6 +266,66 @@ void point_checks(id<MTLDevice> d, id<MTLComputePipelineState> p, const std::str
     std::cout << "Conductor " << cases.size()
               << " independent point/sample cases; 128 reciprocity/axis pairs\n";
 }
+
+void continuation_checks(id<MTLDevice> device, id<MTLLibrary> library) {
+    using Quad = std::array<float, 4>;
+    using Input = std::array<Quad, 5>;
+    // Fixed inputs retained from the original grazing frame regression. The
+    // positive local cosine changes sign after the actual float frame conversion.
+    // These inputs exercise the renderer's continuation helper independently of
+    // subsequent intersection/barycentric changes to the source scene.
+    const Input positive{{{.14073942601680756f, -.0074861738830804825f, -.990018367767334f, 0},
+                          {.31261566281318665f, -.9484764337539673f, .051612988114356995f, 0},
+                          {-.9393954873085022f, -.31675922870635986f, -.13114774227142334f, 0},
+                          {-.9398759603500366f, .34151583909988403f, 1.1920260334363775e-9f, .25f},
+                          {.5f, 0, 1, 1}}};
+    auto null = positive;
+    null[3][2] = -positive[3][2];
+    null[3][3] = null[4][0] = null[4][2] = 0;
+    auto invalid = positive;
+    invalid[4][3] = 0;
+    auto invalid_frame = positive;
+    invalid_frame[0] = invalid_frame[1] = invalid_frame[2] = {};
+    const std::array inputs{positive, null, invalid, invalid_frame};
+    const auto count = static_cast<std::uint32_t>(inputs.size());
+    std::string diagnostic;
+    const auto pipeline =
+        metal::load_pipeline(device, library, @"rypath_scattering_continuation_probe", diagnostic);
+    require(pipeline != nil, diagnostic);
+    const auto input = [device newBufferWithBytes:inputs.data()
+                                           length:sizeof(inputs)
+                                          options:MTLResourceStorageModeShared];
+    [[clang::objc_precise_lifetime]] id<MTLBuffer> output =
+        [device newBufferWithLength:(inputs.size() + 1) * 3 * sizeof(Quad)
+                            options:MTLResourceStorageModeShared];
+    require(input != nil && output != nil, "Continuation probe allocation");
+    auto *data = static_cast<Quad *>(output.contents);
+    const Quad guard{17, 19, 23, 29};
+    std::fill_n(data, (inputs.size() + 1) * 3, guard);
+    const auto queue = [device newCommandQueue];
+    const auto command = [queue commandBuffer];
+    const auto encoder = [command computeCommandEncoder];
+    require(queue != nil && command != nil && encoder != nil, "Continuation probe command");
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(metal::group_width(device, pipeline), 1, 1)];
+    [encoder endEncoding];
+    require(metal::complete(command, "Continuation probe").empty(), "Continuation probe execution");
+    for (std::size_t i = inputs.size() * 3; i < (inputs.size() + 1) * 3; ++i)
+        require(data[i] == guard, "Continuation probe guard overwritten");
+    require(data[0][3] == positive[3][2] && data[0][3] > 0 && data[1][2] <= 0,
+            "Fixed grazing witness must invert local/world cosine signs");
+    require(data[1][0] == .25f && data[1][1] == .5f && data[2] == Quad{0, 1, 1, 1},
+            "World rounding changed accepted local weight, PDF or support");
+    require(data[3][3] == 0 && data[4][0] == 0 && data[4][1] == 0 && data[5] == Quad{0, 0, 1, 1},
+            "Valid local null must stay null");
+    require(data[8][2] == 0 && data[11] == Quad{0, 0, 0, 1},
+            "Invalid local sample or world frame must fail visibly");
+    std::cout << "Conductor fixed local/world support witness and three controls\n";
+}
 void energy_checks(id<MTLDevice> d, id<MTLComputePipelineState> p) {
     constexpr unsigned count = 131072;
     std::mt19937 random(170424);
@@ -397,6 +457,7 @@ int main(int argc, char **argv) {
             point_checks(device, pipeline, oracle);
             invalid_checks(device, pipeline);
             energy_checks(device, pipeline);
+            continuation_checks(device, library);
         } catch (const std::exception &e) {
             std::cerr << "Conductor probe: " << e.what() << '\n';
             return 1;

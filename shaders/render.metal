@@ -1944,6 +1944,47 @@ struct ScatteringFrame {
     float3 world(float3 v) const { return v.x * x + v.y * y + v.z * z; }
 };
 
+struct ScatteringContinuation {
+    rypath_scattering::Sample sample;
+    float cosine;
+};
+
+// Support, weight and density were evaluated in the BSDF's local frame.
+// A rounded world direction can cross the tangent plane at grazing incidence;
+// it must not redefine that support or the cosine used by continuation MIS.
+static ScatteringContinuation resolve_scattering_continuation(rypath_scattering::Sample local,
+                                                              const thread ScatteringFrame &frame) {
+    ScatteringContinuation result{local, 0};
+    if (!local.valid || !local.accepted)
+        return result;
+    result.sample.wi = frame.world(local.wi);
+    if (!rypath_surface_detail::unit_vector(result.sample.wi, result.sample.wi)) {
+        result.sample.valid = false;
+        result.sample.accepted = false;
+        return result;
+    }
+    result.cosine = abs(local.wi.z);
+    return result;
+}
+
+kernel void rypath_scattering_continuation_probe(const device float4 *input [[buffer(0)]],
+                                                 device float4 *output [[buffer(1)]],
+                                                 constant uint &count [[buffer(2)]],
+                                                 uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const auto values = input + 5 * index;
+    const ScatteringFrame frame{values[0].xyz, values[1].xyz, values[2].xyz};
+    const rypath_scattering::Sample local{values[3].xyz,     values[3].w,       values[4].x,
+                                          bool(values[4].y), bool(values[4].z), bool(values[4].w)};
+    const auto resolved = resolve_scattering_continuation(local, frame);
+    output[3 * index] = float4(resolved.sample.wi, resolved.cosine);
+    output[3 * index + 1] = float4(resolved.sample.weight, resolved.sample.pdf,
+                                   dot(frame.z, resolved.sample.wi), abs(local.wi.z));
+    output[3 * index + 2] =
+        float4(resolved.sample.delta, resolved.sample.accepted, resolved.sample.valid, 1);
+}
+
 static bool scattering_frame(rypath_surface_detail::Frame frame, thread ScatteringFrame &result) {
     if (!rypath_surface_detail::unit_vector(frame.n, result.z) ||
         !rypath_surface_detail::unit_vector(frame.dpdu, result.x))
@@ -2878,24 +2919,22 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                 (dielectric || material.scattering == 11)
                     ? sample_uniform(p, dielectric_lobe_word(p, tables, sample, index, bounce))
                     : u01(material_random.x);
-            const auto continuation = sample_scattering(
+            const auto local_continuation = sample_scattering(
                 scattering, wo, lobe,
                 float2(sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y)),
                 material_random.w);
+            const auto resolved = resolve_scattering_continuation(local_continuation, frame);
+            const auto continuation = resolved.sample;
             if (!continuation.valid) {
                 sample.status = wire::invalid_arithmetic;
                 break;
             }
             if (!continuation.accepted)
                 break;
-            wi = frame.world(continuation.wi);
-            if (!rypath_surface_detail::unit_vector(wi, wi)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
+            wi = continuation.wi;
             throughput *= continuation.weight;
             continuation_pdf = continuation.pdf;
-            continuation_cosine = abs(continuation.wi.z);
+            continuation_cosine = resolved.cosine;
             delta = continuation.delta;
         } else {
             wi = hemisphere(n, sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y));
