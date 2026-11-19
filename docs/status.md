@@ -33,6 +33,17 @@ remain unestablished.
 
 ## Validation
 
+The contract-7 light-index correction passes all 211 Debug, Release and sanitizer
+checks, 225 Python checks and five affected Metal API validation checks. Its
+32-seed night-512 re-evaluation reduces authored-clamped variance by 34.0%
+overall, 70.3% on the wall and 71.7% on the floor versus the original candidate.
+All 18 raw mean safeguards pass, but none of the 24 simultaneous quality bounds
+passes. Raw floor variance rises 9.09×; raw heavy tails and convergence parity
+remain unresolved. This separate night-only result does not replace the original
+48-endpoint study. Fresh 1600×850 day-256/night-512 outputs reconstruct exactly
+from their checkpoints. A documented four-pixel day difference prevents an exact
+historical day-identity claim.
+
 The earlier contract-6 candidate passed Debug, Release and ASan/UBSan (211 tests each),
 60 Metal API validation tests, 153 portable tests, 225 Python checks and all 195
 unchanged coating/packet image gates. Both full-resolution day/night renders are

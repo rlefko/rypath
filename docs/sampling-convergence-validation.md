@@ -357,8 +357,15 @@ renderers use subpixel Halton samples and the default Gaussian reconstruction
 filter, with radius 1.5 pixels and sigma 0.5. The statistical comparison reads
 FLOAT EXRs directly, without denoising, sharpening or downsampling. PBRT's
 8-bit PNG writer adds blue-noise quantization dither; this cannot account for
-the measured FLOAT variance. The full PNG conversion commands were not retained,
-so this conclusion rests on authenticated EXRs rather than preview provenance.
+the measured FLOAT variance. A separate CPU audit also reconstructs every
+channel of both actual full-resolution reference PNGs exactly from their FLOAT
+EXRs using pinned PBRT sRGB encoding, blue-noise dither and endpoint clipping:
+4,080,000 matching bytes per image. The PNGs contain only IHDR/IDAT/IEND chunks,
+without color-profile or gamma metadata. This establishes pixel consistency;
+the historical conversion commands remain unknown, and viewer interpretation
+is separate. The audit is retained under
+`.cache/pavilion-convergence/final-v5/reference-png-audit/`, with result SHA-256
+`7a84aaef9738119e26d3b3971450af6181248bc47dd60da08667f08044ee6029`.
 
 Source review finds the same Film grouping and normalization: clamp the exposed
 aggregate camera contribution once, clamp each light-path splat separately,
@@ -432,6 +439,9 @@ executable SHA-256
 `09b5baae1a23702854c29ad6d9e4f9ab1dbe5ae550b538043608d5ccf8903621`
 and metallib SHA-256
 `c07cccd790cc4da98842af5d0f58c09020e3093fdc2979395fe972d58a8bf75e`.
+It was frozen before commit `c6efc88`; the embedded revision still names
+`b3269aa`, while every archived production-source hash matches the committed
+correction. Source hashes and the immutable binary manifest bind these renders.
 Current validation on the same M4 Max covers all 211 Debug, Release and
 ASan/UBSan checks, 225 Python tests, five affected Metal API validation tests,
 formatting, focused Clang-Tidy and the native adapter's static analysis.
@@ -441,6 +451,149 @@ expectations, after which both failed tests passed. No renderer changes were
 needed. New native regressions cover positive splat diversity, partition and
 threadgroup invariance, 32-bit sample carry, early capacity rejection and exact
 serialized resume across a tile boundary, including every raw/clamped Film plane.
+
+The fixed eight-seed correction pilot completes all six preflight renders and
+eight exact FLOAT-plane comparisons: unchanged control versus the archived
+candidate, independent-sampler and 96×51 Halton negative controls, and the
+production candidate versus the isolated corrected shader. Seed 128 is the
+predeclared first ensemble member and is reused from the production-equivalence
+check. All eight prescribed images complete, and all 18 paired raw RGB mean
+safeguards pass; independent recomputation reproduces every variance statistic exactly.
+
+| Clamped ROI | Corrected / original variance | Corrected / PBRT variance |
+| --- | ---: | ---: |
+| full | 0.725609 | 0.946364 |
+| wall | 0.289698 | 0.515662 |
+| soffit | 0.874896 | 0.976082 |
+| floor | 0.316908 | 0.711937 |
+| pool | 1.030400 | 1.047736 |
+| glass | 0.882755 | 0.979329 |
+
+The wall/floor reductions demonstrate a material effect of removing the repeated
+light samples. Pool variance increases by 3.0% in this pilot. Raw full-image
+variance is almost unchanged (corrected/original 0.998422); the large camera-path
+contributions remain. Eight replicas at 64 spp supply descriptive localization,
+not simultaneous confidence bounds, tail acceptance, performance evidence or a
+parity claim. The result is retained at
+`.cache/pavilion-convergence/variance-gap-investigation/light-index-diagnostic/pilot-analysis.json`,
+SHA-256 `d0b4c3f939e701552a2d338b309678c4948af02d6ce82424eb4c9df1f9d46bd8`.
+The final pilot receipt is SHA-256
+`a7b74f602a533818743a0291b396e825bbfcb1a7dbc63377182594d52843155a`.
+
+## Contract-7 night re-evaluation
+
+The frozen corrected candidate completes the prescribed 32 night replicas at
+320×170 and 512 spp: candidate seeds 0–31, retained PBRT seeds 32–63 and retained
+baseline seeds 64–95, with matching material seeds where supported. All 96
+receipts and 192 FLOAT EXRs are authenticated. The original protocol, regions,
+scaling, tail definition, 20,000 whole-image bootstrap draws and 1.25 limit
+remain unchanged. Calibration covers the 24 selected night variance/tail
+endpoints jointly; this is a separate night-only re-evaluation, not completion
+or acceptance of the original 48-endpoint day/night study.
+
+All **18/18 raw RGB mean safeguards pass**, but **0/24 simultaneous upper bounds
+pass**. The common log margin is 2.9049269533 (an upper-bound multiplier of
+18.2639). Eighteen of the 24 point ratios are at most 1.25; point estimates alone
+do not satisfy the confidence requirement. Independent recomputation verifies
+every point variance, positive leave-one-out tail, epsilon, mean guard and bound
+decision. Bootstrap source/binary/input provenance is checked; the independent
+reviewer does not regenerate the 20,000 bootstrap maxima.
+
+Authored-clamped output:
+
+| ROI | Variance / PBRT | Variance upper bound | Tail / PBRT | Tail upper bound |
+| --- | ---: | ---: | ---: | ---: |
+| full | 0.897602 | 16.393730 | 0.990737 | 18.094722 |
+| wall | 0.632463 | 11.551254 | 0.451561 | 8.247263 |
+| soffit | 1.188816 | 21.712422 | 1.495126 | 27.306844 |
+| floor | 0.611318 | 11.165063 | 0.516555 | 9.434309 |
+| pool | 1.080103 | 19.726897 | 1.152576 | 21.050553 |
+| glass | 0.970179 | 17.719265 | 1.088815 | 19.886024 |
+
+Unclamped, unexposed raw output:
+
+| ROI | Variance / PBRT | Variance upper bound | Tail / PBRT | Tail upper bound |
+| --- | ---: | ---: | ---: | ---: |
+| full | 0.697986 | 12.747948 | 0.691261 | 12.625123 |
+| wall | 0.535275 | 9.776223 | 0.256269 | 4.680468 |
+| soffit | 0.964201 | 17.610081 | 0.900495 | 16.446560 |
+| floor | 1.823148 | 33.297819 | 1.922765 | 35.117208 |
+| pool | 1.462357 | 26.708349 | 1.462349 | 26.708205 |
+| glass | 1.008947 | 18.427311 | 1.280730 | 23.391138 |
+
+Against the same-seed original candidate, clamped variance decreases by 34.0%
+overall, 70.3% on the wall and 71.7% on the floor. The corresponding raw results
+are mixed: full-image variance increases 9.0%, and floor variance and tail energy
+increase 9.09× and 34.59× respectively. Raw pool variance remains 1.462× PBRT,
+and the clamped soffit tail is 1.495× PBRT. The repeated-light correction improves
+the authored-clamped image but does not resolve raw heavy tails or establish
+convergence parity. No failed seed is replaced and no threshold is relaxed.
+
+The two GPU jobs ran concurrently for quality validation, so their durations
+are not performance measurements. The retained analysis is
+`.cache/pavilion-convergence/final-v5/quality-metrics.json`, SHA-256
+`3f530da211df2d6c7cb57d16b5a6eee2c71c71c6e7d8b787c29d5b1f50075763`.
+The scoped evaluation remains failed; the native report also retains
+`complete=false` and `accepted=false` because the original 48 endpoints are not
+present. The independent statistical audit is SHA-256
+`5977e24d3f031cdec25522363e10301805b47fa99570930d13d61002ce34c74e`.
+
+## Contract-7 full-resolution artifacts
+
+Fresh renders complete both authored 1600×850 scenes: day at 256 spp
+(348,160,000 camera samples) and night at 512 spp (696,320,000). Each current
+raw and authored-clamped FLOAT EXR matches independent checkpoint reconstruction
+at zero ULP across all 4,080,000 RGB components. Each native PNG also matches
+all 4,080,000 independently reconstructed channel bytes. Checks validate every
+checkpoint plane, compensation pair, sample count, checksum, contract, provenance
+segment, effective scene setting and the 159-asset closure. Neither image is
+denoised. These concurrent runs supply quality artifacts, not timing comparisons.
+
+Exact historical day identity does **not** pass: four of 1,360,000 pixel records
+differ from the contract-6 render, comprising 11 raw and 12 clamped RGB components;
+two PNG channels at one pixel differ by one byte level. The largest raw absolute
+difference is 0.000146933. Both day versions use identical effective `volpath`
+settings, seeds and batches, so the BDPT light-index branch is inactive. All splat planes
+and reconstruction weights are identical. The failed historical identity check
+is retained separately from the passing current-output reconstruction checks.
+
+A bounded native replay retains all 256 samples for the four differing owners
+and four fixed neighboring controls, with two fresh processes per frozen version.
+All 16 unchanged-control pixel records match their full checkpoints exactly.
+The two original-version runs match all 2,048 packet records; the two corrected
+runs differ in one radiance record, with wavelength/PDF/filter fields unchanged.
+One additional sample differs between versions. Overall, 27/32 retained pixel
+records and 54/64 FLOAT comparisons reproduce their respective full images.
+This demonstrates limited repeatability variation across fresh native scene
+builds; it does not isolate shader code generation versus native intersection
+behavior or explain every changed full-image owner. No measured run is replaced.
+The exact comparison is retained under
+`.cache/pavilion-convergence/final-v5/day-repro-probe/comparison.json`, SHA-256
+`b4d39726114e3c4d4a9339e2db68b51c0876bfb296afec9e24d4646e35f14447`.
+
+A source-text audit initially rejected equivalent bracket spacing introduced by
+scene staging. A bracket-aware lexer resolves that harness error while retaining
+semantic comparisons and explicit sample-budget/seed/FLOAT checks; the original
+failure is archived. Current artifacts and independent audits are retained under
+`.cache/pavilion-convergence/candidate-v5-full/` and
+`.cache/pavilion-convergence/final-v5/full-artifact-audit/`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `day.png` | `65c500ad1bf66253b639e436fcb11e6a0255cb21c499103987011626201dd9f5` |
+| `day-raw.exr` | `891f5ec1677fb322e1c38993129dfde7804ebe371eba701aef536b35212dbbe7` |
+| `day.rycp` | `db8e5caf5a983f6fd98abbbb611c83b32bdacbfb4d9aa2dc9bb727c942bf3c05` |
+| `day-clamped.exr` | `2456fa966d87100bc6ab73fc990d02350bf9bfa2bf4331ecb252a074f8d10328` |
+| `night.png` | `464e9b0ad6af86019d74c8982d60d6c3bbac3b55613e2bb3dca2c80e9f75cdd4` |
+| `night-raw.exr` | `f850b8e7b82d904539c9f1f76077ca48d3a54e183612c666d7e72bd937c6b5be` |
+| `night.rycp` | `cacd267480a697718d64e2af8015e5c8609faa701fe8a9b63433375dc3f87545` |
+| `night-clamped.exr` | `efab8c2bcd9df821b4696071add6d2ac4c57773ea0b255f3453f4324a22cb620` |
+
+Independent `night-audit.json` SHA-256:
+`a7282b6c85b8029b2548ad2e598b63f9ec3928b4c1039bc52e575c26b78cd892`.
+
+Independent `day-artifact-audit.json` SHA-256:
+`3bbcdfdf2e18247e2a9d7ca1e4e52acea95764df56307102c4fb630973dc786c`.
 
 ## Original serial timing and time to quality
 

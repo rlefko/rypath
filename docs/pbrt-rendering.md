@@ -781,19 +781,29 @@ renderers. See the [Sobol validation record](pbrt-sobol-validation.md), and
 
 `halton` defaults to 16 samples and `permutedigits`, supporting `none`,
 `permutedigits`, and `owen`; `fastowen` is invalid. Pixel samples use the pinned
-base-2/base-3 mapping with resolution capped at 128 per axis. Camera values
-ignore the seed; pinned Halton Owen also ignores it. Repeated seeds therefore
-cannot supply independent error bars for `none` or `owen`. Checked wide index
+base-2/base-3 mapping with resolution capped at 128 per axis. BDPT light emission,
+importance walks and splat-lens draws use a separate full-Film index to prevent
+repeating nonlocal light contributions across those tiles. This rypath adaptation
+interleaves absolute samples with a power-of-two tile-slot count, preserves the
+sampling densities and weights, and bounds the expanded signed index on the
+host. Images at most 128 pixels on both axes retain the original index. See the
+[sampling/convergence record](sampling-convergence-validation.md#halton-light-path-reuse-across-film-tiles).
+Camera values ignore the seed; pinned Halton Owen also ignores it. Repeated seeds
+therefore cannot supply independent error bars for `none` or `owen`. Checked wide index
 multiplication avoids the pinned CPU implementation's signed-int overflow at
 large indices; that extension is tested mathematically rather than against
 undefined upstream arithmetic.
 
-Halton retains floating variates directly. Dimensions 0/1 are camera, 2 is
-wavelength, and 3 is reserved. Eight transport dimensions begin at `4+8b`.
+Halton retains floating variates directly. In scalar transport, dimensions 0/1
+are camera, 2 is wavelength, and 3 is reserved. Eight transport dimensions begin
+at `4+8b`.
 The lens uses 998/999. Maximum depth is 124, or 110 with dielectric lobe
 choices at `884+b`; dimensions never wrap. Discrete emitter choices and
 roulette use scaled uniforms; light selection and conditional geometry proposals
 use their versioned sampler dimensions.
+Packet transport retains its separate fixed 920-dimension allocation described
+in [architecture](architecture.md); the full-Film BDPT light index does not
+renumber those dimensions.
 
 `zsobol` defaults to 16 samples and `fastowen`, supporting all four Sobol
 randomizations. Following pinned PBRT, a positive non-power-of-two authored

@@ -131,7 +131,8 @@ clarifies the work; completion is recorded in [status](status.md).
     [sampling/convergence follow-up](sampling-convergence-validation.md); its
     original frozen study does not meet its quality target. Subsequent night
     attribution identified repeated Halton light splats; a full-Film light index
-    corrects that reuse, with separate convergence validation. Curves and motion remain.
+    corrects that reuse and reduces authored-clamped variance. Separate validation
+    still fails the raw-tail and simultaneous quality targets. Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).
     Wider color spaces, additional cameras, filters/samplers and faithfully
