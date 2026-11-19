@@ -25,13 +25,14 @@ The follow-up gives those light paths distinct full-Film indices; its new
 variance measurements are separate from the original failed study.
 Further [regression diagnosis](transport-regression-validation.md) isolates a
 missing importance shading-normal adjoint in the night outlier and inconsistent
-near-edge native triangle hits in the day replay. Their corrections pass focused
-native checks and both scene pilots, but broader GPU validation exposes further
-arithmetic, candidate-coverage and boundary-stress regressions. Fixed replays identify
-correctly rounded zero rejection, a genuine subnormal retained error, a missing
-native triangle candidate and a changed grazing-test premise. Renderer 18 repairs
-coverage and range; combined native validation and performance measurements are
-pending. Final scene measurements remain held; historical results stay separate below.
+near-edge native triangle hits in the day replay. Broader validation exposed
+arithmetic, candidate-coverage and boundary-stress regressions; fixed replays
+identified their causes. Renderer 18 repairs coverage, range and traversal cost.
+The combined candidate passes all 220 checks in each supported preset, including
+native API validation. Four fresh Pavilion contexts reproduce the fixed 8,192
+packet records and owner reductions exactly. Fresh day and night pilots are complete;
+full-resolution and ensemble measurements remain pending.
+The earlier pilots and failed quality studies remain historical evidence.
 Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
@@ -41,6 +42,20 @@ additional camera/film models and broader material semantics remain on the
 remain unestablished.
 
 ## Validation
+
+Renderer-18 candidate `c3489bf` passes Debug, Release and ASan/UBSan validation
+(220 checks each) on the M4 Max running macOS 26.6. All 64 native tests pass with
+Metal API validation in both Debug and Release, including the original ten
+failures and the restored 4,097-plane boundary stress. Focused Clang-Tidy and
+Apple analyzer checks pass; the unchanged Python suite passes 225 checks. The
+extended eight-seed, 8,192-spp importance-continuation check also passes on an
+immutable renderer-18 snapshot preceding only the alpha probe changes. See the
+[regression record](transport-regression-validation.md) for revision boundaries,
+failure attribution and numerical limits. The fresh 320×170 day-256 and night-512
+pilots complete with finite raw and authored-clamped outputs in 301.00 and
+1,026.31 seconds. These incidental timings show increased cost relative to the
+historical pilots; the separate repeated comparison remains pending. Fresh
+full-resolution images and the 48-endpoint convergence study remain pending.
 
 The earlier renderer-14, sampling-7 light-index correction passed all 211 Debug, Release and sanitizer
 checks, 225 Python checks and five affected Metal API validation checks. Its

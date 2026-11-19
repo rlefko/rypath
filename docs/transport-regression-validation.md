@@ -303,6 +303,50 @@ alpha test-instrumentation changes above; its source and binaries remain
 unchanged during execution. These bounded checks do not establish Pavilion
 convergence parity.
 
+The completed candidate at `c3489bf` passes 220 checks per preset: 151 CPU,
+64 native and five GPU/CLI checks in Debug, Release and ASan/UBSan. Debug and
+Release run all native checks with Metal API validation; CLI checks run without
+its diagnostic banner. Native suite times are 278.10, 239.41 and 308.24 seconds
+respectively; these are validation timings, not renderer performance comparisons.
+All source and executable hashes remain unchanged within each run. The host is
+an M4 Max with 128 GiB memory, macOS 26.6 (`25G5065a`), Apple Clang 21.0.0,
+Metal compiler 32023.883, CMake 4.0.3 and Ninja 1.13.2.
+
+The frozen renderer-18 source manifest is
+`2e9a2a5240790496a8e9bf0f2711458f47493289cffa7a7d67efb7571773dcc3`;
+the executable is `4cc857f0450fe5335454a7d727e9ba216fb6a352cd67161abeae120fa2bac09d`
+and metallib is `3da3dbc1cc1b2bf43df33ed87f4ef9c9f8b15d234a64fcbd3a0508ff143d76ca`.
+These artifacts, their 183 source files and 13 host archives are retained together
+for the fresh Pavilion runs. Their combined fixed-seed quality result remains
+separate from the passing regression suites.
+
+The frozen candidate also passes the fixed day repeatability check: four fresh
+processes and acceleration structures render eight owners at all 256 absolute
+sample indices. All 8,192 packets validate; every 72-byte public packet record,
+216-byte owner reduction and decoded summary agrees exactly across the four
+contexts. The comparison authenticates each process's command and output files;
+eight independent negative receipt cases are rejected. This covers the fixed
+owners involved in the earlier instability, not universal full-image repeatability.
+
+Fresh 320×170 seed-zero pilots complete at day 256 spp and night 512 spp, with
+finite raw and authored-clamped FLOAT planes. Render subprocess times are
+300.995 and 1,026.314 seconds respectively; the historical renderer-17 pilots
+took 122.118 and 537.933 seconds. These are incidental observations across
+revisions. The separate warm-up and repeated timing comparison remains required.
+The day comparison changes 428 of 54,400 linear pixels relative to the same-seed
+renderer-17 pilot; only 77 pixels change after standard sRGB conversion. These
+combined-revision differences do not attribute individual paths or establish
+variance parity.
+
+The fresh full-image and 48-endpoint study uses the same frozen candidate and
+unchanged seeds, sample budgets, regions and thresholds. A separately bound
+operational supplement derives full-render deadlines from the completed pilots:
+`ceil(pilot_seconds * 25 * 2 + 600)`, with an 18,000-second minimum and an
+86,400-second ceiling. This retains the day deadline at 18,000 seconds and extends
+night to 51,916 seconds. Commands, estimator settings and the 300-second completed
+export deadline remain unchanged. Each invocation records its budget and deadline
+before execution; failures and interrupted attempts remain preserved.
+
 The integer rounding and error-free-transform design follows the numerical
 principles described by [Berkeley SoftFloat](https://www.jhauser.us/arithmetic/SoftFloat.html)
 and [Ogita, Rump and Oishi](https://www.tuhh.de/ti3/paper/rump/OgRuOi04a.pdf);
