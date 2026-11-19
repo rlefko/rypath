@@ -12,6 +12,7 @@ using geometry_wire::Ray;
 using geometry_wire::Word;
 
 enum : Word { accept, reject, reject_near, invalid };
+enum : Word { absent_primitive = 0xffffffffu, unexpected_triangle_primitive = 1u << 2 };
 
 struct Case {
     Ray ray;
@@ -19,12 +20,14 @@ struct Case {
     Word patch_rule;
     Word ignore_instance;
     Word any_hit;
+    Word expected_triangle_primitives[2];
 };
 
 struct Result {
     Closest hit;
     Word triangle_calls;
     Word patch_calls;
+    Word triangle_primitive_mask;
 };
 
 struct HashCase {
@@ -32,7 +35,7 @@ struct HashCase {
 };
 
 static_assert(sizeof(HashCase) == 28, "masked hash probe input layout");
-static_assert(sizeof(Case) == 48 && sizeof(Result) == 36, "masked probe layout");
+static_assert(sizeof(Case) == 56 && sizeof(Result) == 40, "masked probe layout");
 
 } // namespace masked_probe
 } // namespace rypath

@@ -280,6 +280,29 @@ performance comparison against the historical timeout. The full case is restored
 to normal regression coverage; broad final-revision validation and scene costs
 remain separate requirements.
 
+The first combined renderer-18 Release API-validation run at `fbe7a57` passes
+63/64 native tests in 292.96 seconds, including all ten original failures. Its
+remaining failure is a test assumption: restarting traversal can offer an accepted
+triangle to alpha more than once. Production alpha is deterministic for those
+unchanged inputs. The probe now records the primitive IDs seen by alpha, allowing
+repeat visits while explicitly rejecting false candidates 556/562 and any other
+unexpected ID. Rejected-hit, invalid-alpha and shadow-termination controls retain
+their distinct expected IDs and call counts; final hit identity and coordinates
+remain checked. This changes test instrumentation, not transport behavior. The
+original failed run is retained separately from validation of the revised probe.
+The revised masked and analytic probes pass 2/2 with API validation in 13.44
+seconds. Both affected hosts build in all three presets and pass focused
+Clang-Tidy and Apple analyzer checks.
+
+An immutable `fbe7a57` renderer-18 snapshot also passes the fixed 8,192-spp
+shading-normal spotlight check with API validation in 501.00 seconds. Its 32
+PT/BDPT renders span the unchanged eight seeds and flat/tilted fixtures; both
+paired-mean gates and the zero-direct control pass. The tilted paired difference
+is `-0.000134977` against tolerance `0.0020597`. This snapshot precedes only the
+alpha test-instrumentation changes above; its source and binaries remain
+unchanged during execution. These bounded checks do not establish Pavilion
+convergence parity.
+
 The integer rounding and error-free-transform design follows the numerical
 principles described by [Berkeley SoftFloat](https://www.jhauser.us/arithmetic/SoftFloat.html)
 and [Ogita, Rump and Oishi](https://www.tuhh.de/ti3/paper/rump/OgRuOi04a.pdf);

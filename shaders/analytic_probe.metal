@@ -34,5 +34,6 @@ kernel void rypath_analytic_masked_probe(instance_acceleration_structure scene [
     output[lane] = {{kind, hit.instance_id, hit.geometry_id, hit.primitive_id, hit.distance,
                      hit.coordinates.x, hit.coordinates.y},
                     0,
-                    mask.calls};
+                    mask.calls,
+                    0};
 }

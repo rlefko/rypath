@@ -89,7 +89,8 @@ probe::Case ray(unsigned lane, Word triangle_rule, Word patch_rule, float tmin =
             triangle_rule,
             patch_rule,
             absent,
-            any_hit};
+            any_hit,
+            {0, absent}};
 }
 
 void observe(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, bool reversed) {
@@ -164,25 +165,36 @@ void observe(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, bool re
     const auto error = metal::complete(command, "Masked intersection probe");
     require(error.empty(), error);
     const auto *results = static_cast<const probe::Result *>(output.contents);
+    require(results != nullptr, "masked intersection output contents");
     for (std::size_t i = 0; i < checks.size(); ++i) {
         const auto &expected = checks[i];
         const auto &actual = results[i];
         const auto &hit = actual.hit;
+        const auto callbacks = std::string(expected.name) + " triangle callbacks: mask=" +
+                               std::to_string(actual.triangle_primitive_mask) +
+                               ", count=" + std::to_string(actual.triangle_calls);
         const auto difference = [&](float x, float reference) {
             return std::abs(x - reference) <= 1e-6f;
         };
-        require(hit.kind == expected.kind, std::string(expected.name) + " type");
+        require(hit.kind == expected.kind, callbacks + " type");
         if (expected.source != absent) {
             require(hit.instance < MetalGeometryAccess::instance_count(scene) &&
                         source(hit.instance) == expected.source && hit.geometry == 0 &&
                         hit.primitive == 0,
-                    std::string(expected.name) + " committed identity");
+                    callbacks + " committed identity");
             require(difference(hit.t, expected.t) && difference(hit.u, expected.uv) &&
                         difference(hit.v, expected.uv),
-                    std::string(expected.name) + " committed coordinates");
+                    callbacks + " committed coordinates");
         }
+        require((actual.triangle_primitive_mask & probe::unexpected_triangle_primitive) == 0,
+                callbacks + " unexpected primitive");
         if (expected.manual) {
-            require(actual.triangle_calls == 1, std::string(expected.name) + " manual candidate");
+            // Accepted nearest hits reset traversal and may revisit this primitive.
+            // Rejection/invalid termination does not reset the query.
+            const bool count_ok = expected.kind == wire::triangle ? actual.triangle_calls >= 1
+                                                                  : actual.triangle_calls == 1;
+            require(count_ok && actual.triangle_primitive_mask == 1,
+                    callbacks + " expected primitive 0 only");
         }
     }
 }
@@ -206,6 +218,8 @@ void observe_regression(id<MTLDevice> device, id<MTLComputePipelineState> pipeli
                          r.t_max};
                 c.patch_rule = probe::invalid;
                 c.ignore_instance = absent;
+                c.expected_triangle_primitives[0] = 601;
+                c.expected_triangle_primitives[1] = 609;
             }
             cases[0].triangle_rule = probe::accept;
             cases[1].triangle_rule = probe::reject;
@@ -233,17 +247,32 @@ void observe_regression(id<MTLDevice> device, id<MTLComputePipelineState> pipeli
             require(metal::complete(command, "Triangle regression alpha probe").empty(),
                     "regression alpha completion");
             auto *results = static_cast<const probe::Result *>(output.contents);
+            require(results != nullptr, "regression alpha output contents");
+            const auto callbacks = [&](unsigned i) {
+                return "regression case " + std::to_string(i) + " triangle callbacks: mask=" +
+                       std::to_string(results[i].triangle_primitive_mask) +
+                       ", count=" + std::to_string(results[i].triangle_calls);
+            };
+            const auto accepted_mask = results[0].triangle_primitive_mask;
             require(results[0].hit.kind == wire::triangle && results[0].hit.primitive == 601 &&
-                        results[0].triangle_calls == 2,
-                    "refined UV/t alpha sees only both true hits");
-            require(results[1].hit.kind == wire::miss && results[1].triangle_calls == 2,
-                    "rejected true hits preserve miss after false positives");
-            require(results[2].hit.kind == wire::invalid_hit && results[2].triangle_calls == 1,
-                    "invalid true-hit alpha stays visible");
+                        (accepted_mask & 1u) != 0 && (accepted_mask & ~3u) == 0 &&
+                        results[0].triangle_calls >=
+                            static_cast<Word>(std::popcount(accepted_mask)),
+                    callbacks(0) + " nearest true hit and only expected primitive IDs");
+            require(results[1].hit.kind == wire::miss && results[1].triangle_calls == 2 &&
+                        results[1].triangle_primitive_mask == 3,
+                    callbacks(1) + " both distinct true hits rejected without reset");
+            const auto one_allowed = [](Word mask) { return mask == 1 || mask == 2; };
+            require(results[2].hit.kind == wire::invalid_hit && results[2].triangle_calls == 1 &&
+                        one_allowed(results[2].triangle_primitive_mask),
+                    callbacks(2) + " invalid true-hit alpha stays visible");
             require(results[3].hit.kind == wire::triangle &&
                         (results[3].hit.primitive == 601 || results[3].hit.primitive == 609) &&
-                        results[3].triangle_calls == 1,
-                    "shadow terminates at validated true hit");
+                        results[3].triangle_calls == 1 &&
+                        one_allowed(results[3].triangle_primitive_mask) &&
+                        results[3].triangle_primitive_mask ==
+                            (results[3].hit.primitive == 601 ? 1u : 2u),
+                    callbacks(3) + " shadow terminates at observed validated true hit");
         }
     }
 }
@@ -325,6 +354,7 @@ void compare_alpha_hash(id<MTLDevice> device, id<MTLLibrary> library) {
     const auto error = metal::complete(command, "Alpha hash probe");
     require(error.empty(), error);
     const auto *results = static_cast<const Word *>(output.contents);
+    require(results != nullptr, "alpha hash output contents");
     for (std::size_t i = 0; i < cases.size(); ++i) {
         require(results[i] == expected_alpha_hash(cases[i]),
                 "alpha hash case " + std::to_string(i));

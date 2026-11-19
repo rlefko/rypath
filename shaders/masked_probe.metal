@@ -13,13 +13,20 @@ struct ProbeMask {
     const device probe::Case &input;
     uint triangle_calls = 0;
     uint patch_calls = 0;
+    uint triangle_primitive_mask = 0;
 
-    MaskedAlphaResult operator()(uint instance, uint, uint, intersection_type kind, float2,
-                                 float t) {
+    MaskedAlphaResult operator()(uint instance, uint, uint primitive, intersection_type kind,
+                                 float2, float t) {
         const bool triangle = kind == intersection_type::triangle;
         const uint rule = triangle ? input.triangle_rule : input.patch_rule;
         if (triangle) {
             ++triangle_calls;
+            uint matched = 0;
+            for (uint i = 0; i < 2; ++i)
+                if (input.expected_triangle_primitives[i] != probe::absent_primitive &&
+                    primitive == input.expected_triangle_primitives[i])
+                    matched |= 1u << i;
+            triangle_primitive_mask |= matched ? matched : probe::unexpected_triangle_primitive;
         } else {
             ++patch_calls;
         }
@@ -56,7 +63,8 @@ kernel void rypath_masked_intersection_probe(instance_acceleration_structure sce
     result[lane] = {{kind, hit.instance_id, hit.geometry_id, hit.primitive_id, hit.distance,
                      hit.coordinates.x, hit.coordinates.y},
                     alpha.triangle_calls,
-                    alpha.patch_calls};
+                    alpha.patch_calls,
+                    alpha.triangle_primitive_mask};
 }
 
 kernel void rypath_alpha_hash_probe(const device probe::HashCase *cases [[buffer(0)]],

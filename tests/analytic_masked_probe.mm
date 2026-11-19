@@ -63,7 +63,9 @@ int run(const std::filesystem::path &path) {
         for (auto rule : {probe::accept, probe::reject_near, probe::reject, probe::invalid}) {
             for (unsigned any = 0; any < 2; ++any) {
                 probe::Case item{};
-                item.ray = {{-.5f, 4.f * kind, 0}, {1, 0, 0}, 0, 1};
+                item.expected_triangle_primitives[0] = 0;
+                item.expected_triangle_primitives[1] = probe::absent_primitive;
+                item.ray = {{-.5f, 4.f * static_cast<float>(kind), 0}, {1, 0, 0}, 0, 1};
                 if (kind == 1)
                     item.ray = {{.125f, 4.f, .25f}, {0, 0, -1}, 0, 1};
                 item.patch_rule = rule;
@@ -73,6 +75,8 @@ int run(const std::filesystem::path &path) {
         }
     }
     probe::Case blocked{};
+    blocked.expected_triangle_primitives[0] = 0;
+    blocked.expected_triangle_primitives[1] = probe::absent_primitive;
     blocked.ray = {{-.5f, 12, 0}, {1, 0, 0}, 0, 1};
     blocked.patch_rule = probe::reject_near;
     cases.push_back(blocked);
@@ -97,6 +101,7 @@ int run(const std::filesystem::path &path) {
     diagnostic = metal::complete(command, "Analytic alpha probe");
     require(diagnostic.empty(), diagnostic);
     const auto *results = static_cast<const probe::Result *>(output.contents);
+    require(results != nullptr, "analytic masked output contents");
     for (unsigned i = 0; i < 24; ++i) {
         const unsigned shape = i / 8, rule = (i % 8) / 2;
         const auto &result = results[i];
