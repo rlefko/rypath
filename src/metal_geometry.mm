@@ -24,6 +24,7 @@ using geometry_wire::Closest;
 using geometry_wire::Patch;
 using geometry_wire::ProceduralRecord;
 using geometry_wire::Ray;
+using geometry_wire::Triangle;
 using geometry_wire::Word;
 constexpr auto max_wire_index = std::numeric_limits<Word>::max();
 
@@ -94,7 +95,8 @@ id<MTLAccelerationStructure> build_structure(id<MTLDevice> device, id<MTLCommand
 MTLAccelerationStructureTriangleGeometryDescriptor *
 triangle_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &diagnostic) {
     if (!fits_buffer<GeometryPoint>(device, mesh.positions.size()) ||
-        !fits_buffer<std::array<Word, 3>>(device, mesh.triangles.size())) {
+        !fits_buffer<std::array<Word, 3>>(device, mesh.triangles.size()) ||
+        !fits_buffer<Triangle>(device, mesh.triangles.size())) {
         diagnostic = "Metal vertex or index buffer exceeds device size limit";
         return nil;
     }
@@ -117,7 +119,17 @@ triangle_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string 
     } else {
         indices = upload(device, std::span{mesh.triangles});
     }
-    if (vertices == nil || indices == nil) {
+    std::vector<Triangle> original_triangles(mesh.triangles.size());
+    for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+        for (std::size_t corner = 0; corner < 3; ++corner) {
+            const auto &p = mesh.positions[mesh.triangles[i][corner]];
+            original_triangles[i].corners[corner][0] = p.x;
+            original_triangles[i].corners[corner][1] = p.y;
+            original_triangles[i].corners[corner][2] = p.z;
+        }
+    }
+    id<MTLBuffer> primitive_data = upload(device, std::span<const Triangle>{original_triangles});
+    if (vertices == nil || indices == nil || primitive_data == nil) {
         diagnostic = "Metal vertex or index buffer allocation failed";
         return nil;
     }
@@ -129,6 +141,9 @@ triangle_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string 
     triangle.indexBuffer = indices;
     triangle.indexType = MTLIndexTypeUInt32;
     triangle.triangleCount = mesh.triangles.size();
+    triangle.primitiveDataBuffer = primitive_data;
+    triangle.primitiveDataStride = sizeof(Triangle);
+    triangle.primitiveDataElementSize = sizeof(Triangle);
     triangle.opaque = YES;
     return triangle;
 }

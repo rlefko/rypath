@@ -3,6 +3,7 @@
 #include "masked_probe_wire.h"
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
+#include "triangle_candidate_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -46,7 +47,7 @@ GeometryData geometry(bool reversed) {
             {
                 {.mesh_index = 0},                     // Two-root patch.
                 {.mesh_index = 1, .non_opaque = true}, // Manual triangle.
-                {.mesh_index = 1},                     // Automatic triangle.
+                {.mesh_index = 1},                     // Opaque triangle, still manually validated.
                 {.mesh_index = 0},                     // Patch ties an opaque triangle.
                 {.mesh_index = 1},
                 {.mesh_index = 1, .non_opaque = true}, // Triangle ties an opaque triangle.
@@ -119,12 +120,15 @@ void observe(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, bool re
         Check{"Manual triangle accepted", ray(1, A, E), wire::triangle, 1, .25f, .3125f, true},
         Check{"Manual triangle rejected", ray(1, R, E), wire::miss, absent, 0, 0, true},
         Check{"Invalid triangle callback", ray(1, E, E), wire::invalid_hit, absent, 0, 0, true},
-        Check{"Opaque triangle auto-commits", ray(2, E, E), wire::triangle, 2, .25f, .3125f},
-        Check{"Rejected patch root ties opaque triangle", ray(3, E, F), wire::triangle, 4, .25f,
+        // All triangles are manually validated; opaque instances also call alpha.
+        Check{"Opaque triangle accepted", ray(2, A, E), wire::triangle, 2, .25f, .3125f, true},
+        Check{"Opaque triangle rejected", ray(2, R, E), wire::miss, absent, 0, 0, true},
+        Check{"Invalid opaque triangle callback", ray(2, E, E), wire::invalid_hit, absent, 0, 0,
+              true},
+        Check{"Rejected patch root ties opaque triangle", ray(3, A, F), wire::triangle, 4, .25f,
               .3125f},
-        Check{"Rejected triangle ties opaque triangle", ray(4, R, E), wire::triangle, 6, .25f,
-              .3125f},
-        Check{"Opaque triangle between patch roots", ray(5, E, F), wire::triangle, 8, .625f,
+        Check{"Both coincident triangles rejected", ray(4, R, E), wire::miss},
+        Check{"Opaque triangle between patch roots", ray(5, A, F), wire::triangle, 8, .625f,
               .40625f},
         Check{"Accepted patch ties rejected patch", ray(6, E, A), wire::bilinear_patch,
               coincident_accepted_patch, .25f, .25f},
@@ -180,8 +184,66 @@ void observe(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, bool re
         if (expected.manual) {
             require(actual.triangle_calls == 1, std::string(expected.name) + " manual candidate");
         }
-        if (i == 11) {
-            require(actual.triangle_calls == 0, "opaque triangle bypasses the mask callback");
+    }
+}
+
+// Native false positives 556/562 must be rejected before alpha observes them;
+// the valid farther 601 must remain available after either candidate order.
+void observe_regression(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
+    for (bool non_opaque : {false, true}) {
+        for (unsigned fresh = 0; fresh < 4; ++fresh) {
+            auto geometry = test::triangle_fixture::regression();
+            geometry.instances[0].non_opaque = non_opaque;
+            auto built = build_metal_geometry(geometry);
+            require(built.status == GeometryStatus::success, built.diagnostic);
+            const auto &scene = *built.scene;
+            const auto &r = test::triangle_fixture::rays[1];
+            std::array<probe::Case, 4> cases{};
+            for (auto &c : cases) {
+                c.ray = {{r.origin.x, r.origin.y, r.origin.z},
+                         {r.direction.x, r.direction.y, r.direction.z},
+                         r.t_min,
+                         r.t_max};
+                c.patch_rule = probe::invalid;
+                c.ignore_instance = absent;
+            }
+            cases[0].triangle_rule = probe::accept;
+            cases[1].triangle_rule = probe::reject;
+            cases[2].triangle_rule = probe::invalid;
+            cases[3].triangle_rule = probe::accept;
+            cases[3].any_hit = 1;
+            auto input = [device newBufferWithBytes:cases.data()
+                                             length:sizeof(cases)
+                                            options:MTLResourceStorageModeShared];
+            auto output = [device newBufferWithLength:cases.size() * sizeof(probe::Result)
+                                              options:MTLResourceStorageModeShared];
+            require(input && output, "regression alpha buffers");
+            auto command = [MetalGeometryAccess::queue(scene) commandBuffer];
+            auto encoder = [command computeCommandEncoder];
+            require(command && encoder, "regression alpha command");
+            [encoder setComputePipelineState:pipeline];
+            MetalGeometryAccess::bind(scene, encoder, 0);
+            [encoder setBuffer:input offset:0 atIndex:1];
+            [encoder setBuffer:output offset:0 atIndex:2];
+            const Word count = cases.size();
+            [encoder setBytes:&count length:sizeof(count) atIndex:3];
+            [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(metal::group_width(device, pipeline), 1, 1)];
+            [encoder endEncoding];
+            require(metal::complete(command, "Triangle regression alpha probe").empty(),
+                    "regression alpha completion");
+            auto *results = static_cast<const probe::Result *>(output.contents);
+            require(results[0].hit.kind == wire::triangle && results[0].hit.primitive == 601 &&
+                        results[0].triangle_calls == 2,
+                    "refined UV/t alpha sees only both true hits");
+            require(results[1].hit.kind == wire::miss && results[1].triangle_calls == 2,
+                    "rejected true hits preserve miss after false positives");
+            require(results[2].hit.kind == wire::invalid_hit && results[2].triangle_calls == 1,
+                    "invalid true-hit alpha stays visible");
+            require(results[3].hit.kind == wire::triangle &&
+                        (results[3].hit.primitive == 601 || results[3].hit.primitive == 609) &&
+                        results[3].triangle_calls == 1,
+                    "shadow terminates at validated true hit");
         }
     }
 }
@@ -308,6 +370,7 @@ int main(int argc, char *argv[]) {
             require(pipeline != nil, error);
             observe(device, pipeline, false);
             observe(device, pipeline, true);
+            observe_regression(device, pipeline);
             compare_alpha_hash(device, library);
         } catch (const std::exception &error) {
             std::cerr << error.what() << '\n';

@@ -33,7 +33,7 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The sampling/convergence revision uses file format 3, identity 12, renderer 15,
+The sampling/convergence revision uses file format 3, identity 12, renderer 17,
 sampling 7 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
@@ -42,9 +42,11 @@ before decoding their payload. Light-selection policy and material seed both
 participate in identity; changing either rejects resume. The new proposals do not
 promise image identity with earlier rendering revisions.
 
-Renderer 15 adds the importance shading-normal adjoint and rejects earlier
-renderer contracts. The checkpoint layout and raw accumulation remain unchanged;
-see the [regression record](transport-regression-validation.md).
+Renderer 15 adds the importance shading-normal adjoint; renderer 16 also
+revalidates native triangle candidates before selecting hits. Renderer 17 repairs
+an overstrict arithmetic-range guard in that validation. All earlier renderer
+contracts are rejected. The checkpoint layout and raw accumulation
+remain unchanged; see the [regression record](transport-regression-validation.md).
 
 ## Identity and compatible continuation
 

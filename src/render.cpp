@@ -1382,7 +1382,8 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
     const auto mesh = [&](const GeometryMesh &m) {
         return charge(m.positions.size(),
                       2 * sizeof(render_wire::Point) + sizeof(render_wire::SurfaceVertex)) &&
-               charge(m.triangles.size(), 2 * sizeof(render_wire::Triangle)) &&
+               charge(m.triangles.size(),
+                      2 * sizeof(render_wire::Triangle) + sizeof(geometry_wire::Triangle)) &&
                charge(m.patches.size(),
                       sizeof(render_wire::Patch) + sizeof(geometry_wire::Patch)) &&
                charge(m.analytics.size(), sizeof(geometry_wire::Analytic)) &&

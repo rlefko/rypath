@@ -132,7 +132,11 @@ clarifies the work; completion is recorded in [status](status.md).
     original frozen study does not meet its quality target. Subsequent night
     attribution identified repeated Halton light splats; a full-Film light index
     corrects that reuse and reduces authored-clamped variance. Separate validation
-    still fails the raw-tail and simultaneous quality targets. Curves and motion remain.
+    still fails the raw-tail and simultaneous quality targets. The subsequent
+    [transport/intersection diagnosis](transport-regression-validation.md) adds
+    the importance shading-normal adjoint and compensated native triangle
+    candidate validation; these corrections require separate scene measurements.
+    Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).
     Wider color spaces, additional cameras, filters/samplers and faithfully

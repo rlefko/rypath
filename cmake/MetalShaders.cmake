@@ -36,6 +36,8 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/src/medium_probe_wire.h")
     endif()
     if(shader STREQUAL "geometry" OR shader STREQUAL "render" OR shader STREQUAL "masked_probe" OR shader STREQUAL "analytic_probe")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle_candidate.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/triangle_product_guard.h")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies
             "${CMAKE_CURRENT_SOURCE_DIR}/src/geometry_wire.h"

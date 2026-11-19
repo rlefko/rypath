@@ -1521,8 +1521,7 @@ static SurfaceHit visible_shadow(thread MixedIntersector &trace, ray incoming,
         alpha.incoming = incoming;
         return trace_masked_surface(incoming, scene, all_visible, alpha, true);
     }
-    const auto hit = trace_shadow(trace, incoming, scene, all_visible, table);
-    return {hit.type, 0, 0, 0, 0, {0, 0}, true};
+    return trace_shadow(trace, incoming, scene, all_visible, table);
 }
 
 struct ConnectionTransmission {

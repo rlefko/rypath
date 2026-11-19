@@ -1,9 +1,10 @@
-# Pavilion importance transport regression
+# Pavilion transport and triangle regressions
 
-This record follows the adverse raw night-floor results in the
+This record follows the adverse results in the
 [sampling/convergence study](sampling-convergence-validation.md). The original
-measurements remain unchanged. The correction below targets the existing
-camera-side radiance model; final scene-level quality remains a separate check.
+measurements remain unchanged: correcting repeated Halton light paths improved
+the authored-clamped night image but increased raw floor variance. A separate
+four-pixel day difference prevented an exact repeatability claim.
 
 ## Night contribution
 
@@ -53,6 +54,40 @@ Pinned PBRT v4 `b0bdf461` omits this factor in BDPT. The correction deliberately
 differs from that implementation to make light tracing agree with rypath's
 existing camera-side radiance model; it is not a claim of PBRT v4 BDPT identity.
 
+## Day intersection
+
+Same-AS repetitions were stable, but fresh native acceleration structures
+selected different near-edge primitives for identical input rays. Independent
+exact-rational tests of the supplied binary32 geometry established two cases:
+
+| Ray | Native alternatives | Independent geometric result |
+| --- | --- | --- |
+| Pixel (1251,68), sample 141, second walk hit | Primitives 773 and 777, equal returned float distance | 773 is nearer by 3.57738e−7 |
+| Pixel (1556,455), sample 74, first walk hit | Primitives 556 and 562 | Both miss; nearest is 601 |
+
+These are perpendicular faces meeting at duplicated-position edges, not duplicate
+coplanar triangles. Sorting native hit IDs at equal float distances would not fix
+the second case. A direct call to pinned PBRT's triangle routine also accepts the
+second ray's false edge candidates, so PBRT is not an exact geometric oracle here.
+
+A bounded native-query experiment retained all independently valid hits across
+38 fixed original/ULP-neighbor rays and four fresh structures. Candidate order
+changed while candidate sets remained stable. The production approach retains
+native acceleration structures, revalidates offered triangle candidates with
+compensated arithmetic, and selects the nearest compensated parameter. Computed
+ties use stable instance/geometry/primitive IDs. Forward affine products remain
+compensated before projection. Alpha receives the validated coordinates; shadow
+queries terminate only after a validated accepted blocker. Native rounded hit
+distances do not prune subsequent candidates.
+
+The arithmetic adapts ray-aligned projected edges described by
+[Woop, Benthin and Wald](https://jcgt.org/published/0002/01/05/) and PBRT, using
+rypath's existing float-pair representation. This is a finite numerical policy,
+not a proof of exact predicates or universal watertightness. Unsupported arithmetic
+returns a visible invalid-hit result. Candidate revalidation cannot recover a
+true intersection omitted by native traversal; the candidate-coverage evidence
+is bounded by the tested rays and transforms.
+
 ## Development checks
 
 On Apple M4 Max, the transport-only shader passes 249 native helper cases and
@@ -87,5 +122,57 @@ MTL_DEBUG_LAYER=1 ./build/release/rypath_packet_render_tests --shading-normal-sp
 ```
 
 The 256-spp `--shading-normal-spot` diagnostic does not substitute for this check.
-These branch-disabled controls use renderer 15. Pavilion scene-level
-measurements remain separately identified.
+These branch-disabled controls use renderer 15; final combined-candidate checks
+and Pavilion measurements remain separately identified.
+
+The first combined candidate, renderer 16, passes the full-frame day seed-0
+pilot and exact repeatability of all 8,192 packets from eight day pixels across
+four fresh renderer instances. Its night seed-0 pilot stops after 96/512 samples
+at pixel (252,69), absolute sample 97, with an invalid-hit diagnostic. That failed
+attempt is retained without a successful image or statistical record. The full
+48-endpoint re-evaluation has not started on this failed candidate.
+
+An instrumented replay identifies an overstrict arithmetic guard. Its original
+26,864-byte workspace is identical to the uninstrumented shader for both the
+passing sample 96 and failing sample 97. The captured operation multiplies a
+low component by a high component while validating native instance 52,
+primitive 36. The rounded product is a normal `-5.921830585e-30`; even its exact
+residual is normal, with leading exponent -123. The old guard instead rejects
+the exact product's lowest nonzero bit at exponent -139. That bit position does
+not determine whether a floating-point residual is subnormal. The captured
+triangle and ray also have an exact-rational intersection at `t=0`, inside all
+three edges. This establishes a validator regression rather than an unsupported
+input or evidence for silently discarding that candidate.
+
+Renderer 17 corrects this range policy: the compensated high-product operation
+checks the actual residual, and deliberately rounded cross products check their
+returned value. Genuine unsupported arithmetic still fails visibly. The failed
+renderer-16 pilot remains preserved; final repaired-candidate validation is
+recorded separately.
+
+The repaired native arithmetic passes 5,049 scalar/pair cases, including the
+captured operation and genuine unsupported residuals. The first direct triangle
+test incorrectly required an exact hit at the mathematical `t=0` endpoint.
+An unchanged-kernel dump instead returns a valid miss. Two independent
+exact-rounding reconstructions find all three edge signs positive and no invalid
+arithmetic, but finite-pair cancellation gives `t=-4.38515e-20`, outside the
+unchanged lower bound of zero. This is within the declared finite numerical
+policy, which does not guarantee exact endpoint inclusion. The failed test and
+dump are retained; the test characterizes this boundary and adds strict nearby
+inside/outside cases without changing production arithmetic or expanding bounds.
+
+Frozen renderer-17 candidate v7 (`22cdfe7175f2` source aggregate) completes the
+previously failing night sample 97 with valid guards; sample 96's public packet
+bytes remain identical to the retained control. The full-frame night seed-0
+pilot then completes 320×170 at 512 spp, with finite raw and authored-clamped
+FLOAT EXRs. Its 537.93-second wall time is a validation observation, not a
+controlled performance comparison. The four-instance day replay also matches
+all 8,192 packets and all eight owner-film reductions exactly.
+The day seed-0 pilot completes 320×170 at 256 spp in 122.12 seconds; both FLOAT
+planes are byte-identical to the successful renderer-16 day pilot. Neither pilot
+is a full-resolution output or an ensemble quality result.
+
+This candidate passes 148 CPU checks in each of Debug, Release and ASan/UBSan,
+225 Python checks, and all seven focused geometry suites with Metal API
+validation. These checks remain distinct from the complete GPU suite, the
+full-resolution images and the 48-endpoint statistical re-evaluation.

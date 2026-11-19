@@ -27,8 +27,17 @@ must be finite, directions nonzero, and bounds satisfy `0 <= t_min < t_max` with
 positive infinity allowed for `t_max`. Closest-hit queries return hit/miss,
 mesh/instance/primitive ordinals, `t`, and barycentric weights in original vertex
 order for triangles. Patch hits return a primitive-kind tag and `(u,v)` in the
-closed unit square. Occlusion issues a separate native any-hit query and returns
-a Boolean.
+closed unit square. Occlusion returns a Boolean after the first independently
+validated accepted native candidate.
+
+Triangle queries retain Metal acceleration structures but manually revalidate
+offered candidates from the original per-primitive vertices. Compensated forward
+affine products and projected edge functions resolve near-edge false positives
+and distances that collapse to the same native float. Closest-hit queries do not
+commit native distances that could prune another candidate. Alpha-tested rendering
+uses the same validated coordinates. See the
+[regression record](transport-regression-validation.md) for the numerical policy,
+measured coverage and limits.
 
 Input validity does not guarantee that the resulting bounds, inverse transforms,
 or hit parameters are representable in Metal's float32 arithmetic. For example,
@@ -37,8 +46,9 @@ Such extreme ranges are outside the validated numerical domain; accepting finite
 inputs is not a promise of exact or robust traversal for every such scene.
 
 Validation rejects nonfinite geometry, invalid indices, singular transforms,
-zero-area triangles, invalid rays, and sizes that exceed representation or device
-limits. Nonzero triangles have no arbitrary area cutoff. Empty scenes return
+invalid rays, and sizes that exceed representation or device limits. Zero-area
+triangles retain their primitive slots as empty native faces. Nonzero triangles
+have no arbitrary area cutoff. Empty scenes return
 misses; empty ray batches return empty results. An operation that fails exposes
 a diagnostic rather than partially valid query results.
 
@@ -51,7 +61,12 @@ Exact native interval endpoints and isolated outer triangle edges/vertices have
 no stronger inclusion promise than Metal supplies. Tests characterize those
 boundaries separately. Shared interior edges and vertices must not create holes:
 a ray may select either incident triangle, but it must hit the surface. Equal
-closest-depth ties may select either valid nearest primitive.
+computed compensated-depth ties select stable native instance/geometry/primitive
+IDs. The finite-pair predicate uses closed computed edges and bounds. Its own
+roundoff can also move an exact geometric endpoint across a computed bound; it
+cannot recover a candidate omitted by native traversal. Detected
+unsupported arithmetic, including subnormal interval endpoints, fails visibly;
+this is not a universal exact-intersection guarantee.
 
 ## Native execution
 
@@ -141,7 +156,8 @@ implements traversal internally.
 - [Woop, Benthin, and Wald: Watertight Ray/Triangle Intersection](https://jcgt.org/published/0002/01/05/paper.pdf)
 - [Shewchuk: Adaptive Precision Floating-Point Arithmetic and Fast Robust Predicates](https://people.eecs.berkeley.edu/~jrs/papers/robustr.pdf)
 
-These inform the contracts and tests. Metal owns triangle intersection and
-traversal. Bilinear boxes use a custom intersection function with embedded corner
-data; an accepted-hit payload preserves the matching primitive and UV tuple
-through traversal. The portable references are independent test oracles.
+These inform the contracts and tests. Metal owns acceleration-structure traversal
+and candidate generation. Manual queries revalidate triangles from embedded
+vertices and solve bilinear/analytic box candidates from embedded records, retaining
+the matching primitive and coordinates with the selected distance. The portable
+references are independent test oracles.

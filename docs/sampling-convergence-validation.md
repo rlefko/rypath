@@ -1,5 +1,9 @@
 # PBRT sampling and Pavilion convergence
 
+The subsequent [transport/intersection regression record](transport-regression-validation.md)
+diagnoses the raw night outlier and day repeatability difference retained below.
+It does not replace these historical failed quality measurements.
+
 This follow-up changes light proposals and the stochastic coated-material
 approximation. It preserves separate raw spectral accumulation and exposed,
 clamped Film planes. It does not add denoising, outlier rejection, or a new

@@ -19,6 +19,10 @@ using Word = std::uint32_t;
 enum : Word { all_visible = 0xffu };
 enum : Word { miss = 0u, triangle = 1u, bilinear_patch = 2u, invalid_hit = 3u, analytic = 4u };
 
+struct Triangle {
+    float corners[3][3];
+};
+
 // These corners are copied into the acceleration structure as per-primitive data.
 struct Patch {
     float corners[4][3];
@@ -63,6 +67,7 @@ struct Closest {
 };
 
 static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "geometry wire scalar width");
+static_assert(sizeof(Triangle) == 36 && alignof(Triangle) == 4, "geometry wire triangle layout");
 static_assert(sizeof(Patch) == 48 && alignof(Patch) == 4, "geometry wire patch size and alignment");
 static_assert(sizeof(ProceduralRecord) == 52 && alignof(ProceduralRecord) == 4 &&
                   __builtin_offsetof(ProceduralRecord, patch) == 4,

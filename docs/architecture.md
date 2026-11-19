@@ -416,7 +416,7 @@ power-of-two number of sample slots. Light emission, importance walks and splat
 lens draws use the full-Film index; camera walks, wavelengths and camera-side
 direct lighting retain the original index. The host bounds the expanded signed
 index before dispatch or progressive preparation. PDFs and Film normalization
-are unchanged. Current sampling contract 7, renderer contract 15 and identity
+are unchanged. Current sampling contract 7, renderer contract 17 and identity
 schema 12 reject earlier checkpoints globally. Checkpoint format 3 persists
 the separate signed material seed. Packet modes use their separate
 fixed 920-dimension allocation; the scalar lens extensions above remain unchanged. See
@@ -424,10 +424,13 @@ fixed 920-dimension allocation; the scalar lens extensions above remain unchange
 [Sobol validation](pbrt-sobol-validation.md) and
 [depth-of-field validation](depth-of-field-validation.md).
 
-Importance transport applies the shading-normal adjoint to accepted continuations
-and connection/splat endpoints, while preserving the camera-side radiance model.
-Renderer contract 15 distinguishes this transport change and rejects earlier
-checkpoints; see the [regression record](transport-regression-validation.md).
+Importance transport applies the shading-normal adjoint to continuations and
+connection/splat endpoints, while preserving the camera-side radiance model.
+Native triangle candidates are revalidated with compensated forward transforms
+and projected edges before closest-hit selection or alpha evaluation. Renderer
+contracts 15 and 16 distinguish these transport and intersection changes, and
+contract 17 repairs the triangle arithmetic-range guard. Earlier checkpoints
+are incompatible; see the [regression record](transport-regression-validation.md).
 
 Positive diffuse area power is prepared per final generated primitive after
 displacement. Portable preparation computes each shared image's native luminance
