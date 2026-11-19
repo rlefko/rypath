@@ -33,7 +33,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &, const std::filesyste
 
 ShadingNormalProbeResult probe_shading_normal(const std::vector<shading_normal_probe::Query> &,
                                               const std::filesystem::path &) {
-    return {.status = MetalStatus::not_built, .diagnostic = "Metal backend was not built"};
+    return {.status = MetalStatus::not_built,
+            .diagnostic = "Metal backend was not built",
+            .values = {},
+            .guard_count = 0};
 }
 
 } // namespace rypath
