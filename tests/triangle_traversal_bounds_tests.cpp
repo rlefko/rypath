@@ -90,9 +90,10 @@ int main() try {
             int direction = integer();
             input.direction[axis] = bits(static_cast<float>(direction ? direction : 1) / 64);
         }
-        double expected = INFINITY;
+        double expected = std::numeric_limits<double>::infinity();
         for (unsigned axis = 0; axis < 3; ++axis) {
-            double lower = INFINITY, upper = -INFINITY;
+            double lower = std::numeric_limits<double>::infinity();
+            double upper = -std::numeric_limits<double>::infinity();
             for (unsigned corner = 0; corner < 3; ++corner) {
                 double world = std::bit_cast<float>(input.transform[axis * 4 + 3]);
                 for (unsigned j = 0; j < 3; ++j)
