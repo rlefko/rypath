@@ -40,6 +40,25 @@ void qmc_gpu_probe() {
                                                unsigned(sample >> 32), dim, mode, seed, 3, log});
                         }
             }
+        for (const auto size :
+             {std::array{128u, 128u}, std::array{129u, 129u}, std::array{320u, 170u},
+              std::array{1600u, 850u}, std::array{2944u, 1u}}) {
+            const auto width = size[0], height = size[1];
+            const auto stride =
+                std::uint64_t{qmc::base_scale(width, 2)} * qmc::base_scale(height, 3);
+            const auto limit = (std::uint64_t{INT64_MAX} - (stride - 1)) / stride;
+            const auto last = (limit - (qmc::halton_light_tile_count(width, height) - 1)) /
+                              qmc::halton_light_tile_slots(width, height);
+            for (auto sample : {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{0xffffffff},
+                                std::uint64_t{0x100000000}, last})
+                for (auto x : {0u, 127u, width - 1})
+                    for (auto y : {0u, height - 1})
+                        for (auto mode : {0u, 1u, 3u})
+                            for (auto dim : {8u, 12u, 276u, 792u})
+                                queries.push_back({qmc_probe::halton_light, width, height, x, y,
+                                                   unsigned(sample), unsigned(sample >> 32), dim,
+                                                   mode, 0xffffffffu, 0, 0});
+        }
         const auto &tables = sobol_tables();
         const auto table = [device newBufferWithBytes:&tables
                                                length:sizeof(tables)
@@ -71,10 +90,13 @@ void qmc_gpu_probe() {
             const auto sample = (std::uint64_t(q.sample_high) << 32) | q.sample_low;
             std::uint64_t index;
             float expected[5];
-            if (q.kind == 2) {
-                index = qmc::halton_index(q.width, q.height, q.x, q.y, sample);
-                expected[0] = qmc::halton_camera(0, q.width, index);
-                expected[1] = qmc::halton_camera(1, q.height, index);
+            if (q.kind == 2 || q.kind == qmc_probe::halton_light) {
+                const auto camera_index = qmc::halton_index(q.width, q.height, q.x, q.y, sample);
+                index = q.kind == qmc_probe::halton_light
+                            ? qmc::halton_light_index(q.width, q.height, q.x, q.y, sample)
+                            : camera_index;
+                expected[0] = qmc::halton_camera(0, q.width, camera_index);
+                expected[1] = qmc::halton_camera(1, q.height, camera_index);
                 expected[2] = qmc::radical(q.dimension, index, q.mode, q.seed);
                 expected[3] = expected[2];
                 expected[4] = qmc::radical(q.dimension + 1, index, q.mode, q.seed);

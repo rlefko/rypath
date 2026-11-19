@@ -410,7 +410,13 @@ their original Philox sequence. Active perspective lenses append `lens-v1`:
 Sobol/ZSobol dimensions 1022/1023, Halton dimensions 998/999, or a disjoint
 independent Philox counter block, without
 renumbering camera, wavelength, transport or dielectric draws. Inactive lenses
-consume no lens draws. Current sampling contract 6, renderer contract 14 and identity
+consume no lens draws. Halton BDPT keeps the camera's periodic CRT index but
+interleaves its light indices across all 128-pixel Film tiles, reserving a
+power-of-two number of sample slots. Light emission, importance walks and splat
+lens draws use the full-Film index; camera walks, wavelengths and camera-side
+direct lighting retain the original index. The host bounds the expanded signed
+index before dispatch or progressive preparation. PDFs and Film normalization
+are unchanged. Current sampling contract 7, renderer contract 14 and identity
 schema 12 reject earlier checkpoints globally. Checkpoint format 3 persists
 the separate signed material seed. Packet modes use their separate
 fixed 920-dimension allocation; the scalar lens extensions above remain unchanged. See

@@ -129,7 +129,9 @@ clarifies the work; completion is recorded in [status](status.md).
     see [Pavilion validation](pavilion-validation.md). Native light importance,
     directional proposals and pinned coating randomness are the current
     [sampling/convergence follow-up](sampling-convergence-validation.md); its
-    frozen study does not yet meet its quality target. Curves and motion remain.
+    original frozen study does not meet its quality target. Subsequent night
+    attribution identified repeated Halton light splats; a full-Film light index
+    corrects that reuse, with separate convergence validation. Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).
     Wider color spaces, additional cameras, filters/samplers and faithfully

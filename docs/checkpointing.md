@@ -34,7 +34,9 @@ checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
 The sampling/convergence revision uses file format 3, identity 12, renderer 14,
-sampling 6 and accumulation 2. Format 3 adds the signed 32-bit material seed after
+sampling 7 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
+across the full Film instead of repeating them every 128 pixels. Format 3 adds
+the signed 32-bit material seed after
 the sampler randomization in metadata. Earlier formats and contracts are rejected
 before decoding their payload. Light-selection policy and material seed both
 participate in identity; changing either rejects resume. The new proposals do not

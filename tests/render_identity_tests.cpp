@@ -22,7 +22,7 @@ void identity_checks() {
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
     // the 3766-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "2abed923e30e852e35abe39a076828984cce141f94c18a5939190d1fce99a5bc",
+                "cebb2bc91aced5831401296c7262b7f69d11a8226f8077a22af084a5953aa6a2",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;

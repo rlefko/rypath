@@ -32,7 +32,7 @@ def wire(count=3, target=3, segments=None, sums=(2., 3., 4.), correction=(0., 0.
         pixel_extra = [0.] * 20
         pixel_extra[-2] = count if packet else 0.
     payload = PIXEL.pack(*sums, *correction, count, *pixel_extra)
-    data = HEADER.pack(b'RYPCHK\r\n', 3, 12, 14, 6, 2, len(metadata), len(payload)) + metadata + payload
+    data = HEADER.pack(b'RYPCHK\r\n', 3, 12, 14, 7, 2, len(metadata), len(payload)) + metadata + payload
     return data + hashlib.sha256(data).digest()
 
 
@@ -66,7 +66,7 @@ class CheckpointValidatorTests(unittest.TestCase):
                 decode(raw[:cut])
         # Independently mutate all five authenticated contract words. In
         # particular, every prior format/identity/renderer/sampling/accumulation contract fails.
-        for offset, version in ((8, 1), (8, 2), (8, 4), (12, 11), (16, 13), (20, 5), (20, 4), (12, 10), (16, 12), (20, 3), (24, 1), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (12, 8), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (16, 9), (16, 10), (20, 1), (24, 3)):
+        for offset, version in ((8, 1), (8, 2), (8, 4), (12, 11), (16, 13), (20, 6), (20, 5), (20, 4), (12, 10), (16, 12), (20, 3), (24, 1), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (12, 8), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (16, 9), (16, 10), (20, 1), (24, 3)):
             with self.subTest(contract_offset=offset, version=version):
                 bad = bytearray(raw)
                 struct.pack_into('<I', bad, offset, version)

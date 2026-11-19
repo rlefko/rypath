@@ -3,6 +3,7 @@
 #include "bsdf_table_fixture.hpp"
 #include "metal_render.hpp"
 #include "packet_wire.h"
+#include "render_driver.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -167,6 +168,136 @@ void scheduling() {
         for (const auto &p : packets.packet_samples)
             for (float r : p.radiance)
                 require(r == 2, "Authored depth zero dropped directly visible area emission");
+    }
+}
+RenderScene tiled_light_scene() {
+    auto scene = base();
+    scene.integrator = IntegratorKind::bdpt;
+    // Keep the emitter outside the camera frustum so receiver splats are visible.
+    mesh(scene, {{1.2f, -.7f, 1}, {2.6f, -.7f, 1}, {2.6f, .7f, 1}, {1.2f, .7f, 1}}, true);
+    scene.area_emissions.emplace_back().radiance.fill(3);
+    scene.instance_emissions = {no_area_emission, 0};
+    return scene;
+}
+bool same_splats(const RenderSamplesResult &a, const PacketSample &owner_a,
+                 const RenderSamplesResult &b, const PacketSample &owner_b) {
+    if (owner_a.splat_count != owner_b.splat_count)
+        return false;
+    for (unsigned i = 0; i < owner_a.splat_count; ++i) {
+        const auto &x = a.packet_splats[owner_a.splat_begin + i];
+        const auto &y = b.packet_splats[owner_b.splat_begin + i];
+        if (x.raster != y.raster || x.radiance != y.radiance || x.strategy != y.strategy)
+            return false;
+    }
+    return true;
+}
+void halton_light_tiles() {
+    const auto scene = tiled_light_scene();
+    auto renderer = build_metal_renderer(scene);
+    require(renderer.status == GeometryStatus::success && renderer.scene, renderer.diagnostic);
+    RenderRequest query{.width = 257,
+                        .height = 3,
+                        .seed = 17,
+                        .pixel_count = 771,
+                        .sample_count = 1,
+                        .threadgroup_width = 32,
+                        .sampler = {SamplerKind::halton, SobolRandomization::permutedigits}};
+    bool distinct_nonzero_splats = false;
+    for (std::uint64_t absolute : {0ull, 3ull, (1ull << 32) - 1, 1ull << 32}) {
+        query.sample_begin = absolute;
+        query.pixel_begin = 0;
+        query.pixel_count = 771;
+        query.threadgroup_width = 32;
+        const auto whole = dispatch(*renderer.scene, query);
+        for (unsigned y = 0; y < 3; ++y)
+            for (unsigned x = 0; x < 128; ++x) {
+                const auto &a = whole.packet_samples[y * 257 + x];
+                const auto &b = whole.packet_samples[y * 257 + x + 128];
+                // The old CRT light index gives these owners identical light
+                // paths and splats. Require actual positive strategy signal.
+                if (a.splat_count && b.splat_count && !same_splats(whole, a, whole, b))
+                    for (unsigned i = 0; i < a.splat_count; ++i)
+                        distinct_nonzero_splats |=
+                            std::ranges::any_of(whole.packet_splats[a.splat_begin + i].radiance,
+                                                [](float value) { return value > 0; });
+            }
+        for (const auto range :
+             {std::array{0u, 127u, 1u}, std::array{127u, 133u, 16u}, std::array{260u, 511u, 64u}}) {
+            query.pixel_begin = range[0];
+            query.pixel_count = range[1];
+            query.threadgroup_width = range[2];
+            const auto part = dispatch(*renderer.scene, query);
+            for (unsigned i = 0; i < query.pixel_count; ++i) {
+                const auto &a = part.packet_samples[i];
+                const auto &b = whole.packet_samples[query.pixel_begin + i];
+                require(same(a, b) && same_splats(part, a, whole, b),
+                        "Tiled Halton BDPT owners/splats changed with partition or threadgroup");
+            }
+        }
+    }
+    require(distinct_nonzero_splats,
+            "Halton BDPT light splats still repeat across 128-pixel tiles");
+
+    // This absolute index fits the camera CRT range but not the two-slot light
+    // range. Exercise scene-aware admission without requesting an enormous render.
+    constexpr auto stride = std::uint64_t{128};
+    constexpr auto camera_limit = (std::uint64_t{INT64_MAX} - (stride - 1)) / stride;
+    constexpr auto rejected_sample = (camera_limit - 1) / 2 + 1;
+    query.width = 129;
+    query.height = 1;
+    query.pixel_begin = 0;
+    query.pixel_count = 1;
+    query.sample_begin = rejected_sample;
+    const auto rejected = renderer.scene->sample(query);
+    require(rejected.status == GeometryStatus::failure && rejected.guard_count == 0 &&
+                rejected.packet_samples.empty() && rejected.packet_splats.empty() &&
+                rejected.diagnostic.find("Halton light") != std::string::npos,
+            "Halton BDPT light overflow reached dispatch or lost its diagnostic");
+    RenderSettings settings{.width = 129,
+                            .height = 1,
+                            .samples = rejected_sample + 1,
+                            .batch_size = 1,
+                            .seed = 17,
+                            .sampler = query.sampler};
+    bool prepared = false, sampled = false;
+    detail::RenderSampleSource source;
+    source.prepare = [&] {
+        prepared = true;
+        RenderBuildResult result;
+        result.diagnostic = "test preparation sentinel";
+        return result;
+    };
+    source.sample = [&](const RenderRequest &) {
+        sampled = true;
+        return RenderSamplesResult{};
+    };
+    const auto preflight = detail::drive_progressive(scene, settings, {}, source);
+    require(!prepared && !sampled && preflight.completion == RenderCompletion::failed &&
+                preflight.diagnostic.find("Halton light") != std::string::npos,
+            "Halton BDPT light range validation occurred after preparation");
+    const auto progressive = render_progressive(scene, settings);
+    require(progressive.completion == RenderCompletion::failed && progressive.device.name.empty() &&
+                progressive.diagnostic.find("Halton light") != std::string::npos,
+            "Progressive Halton BDPT overflow acquired a GPU or lost its diagnostic");
+    for (unsigned control = 0; control < 3; ++control) {
+        auto unaffected = scene;
+        auto request = query;
+        if (control == 0)
+            unaffected.max_depth = 0;
+        else if (control == 1)
+            unaffected.integrator = IntegratorKind::path;
+        else
+            request.sampler = {};
+        auto built = build_metal_renderer(unaffected);
+        require(built.status == GeometryStatus::success && built.scene, built.diagnostic);
+        dispatch(*built.scene, request);
+        auto unaffected_settings = settings;
+        unaffected_settings.sampler = request.sampler;
+        prepared = false;
+        const auto admitted =
+            detail::drive_progressive(unaffected, unaffected_settings, {}, source);
+        require(prepared && !sampled && admitted.diagnostic == "test preparation sentinel",
+                "Halton light bound affected path, depth zero or independent full targets");
     }
 }
 double mean_y(const Film &film) {
@@ -382,6 +513,8 @@ int main(int argc, char **argv) {
                 capability.diagnostic);
         std::cout << "Packet native: scheduling/samplers/lens/limits" << std::endl;
         scheduling();
+        std::cout << "Packet native: Halton BDPT light tiles/ranges" << std::endl;
+        halton_light_tiles();
         std::cout << "Packet native: point identity" << std::endl;
         point_identity();
         std::cout << "Packet native: area/black-environment expectation" << std::endl;

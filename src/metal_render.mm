@@ -1750,6 +1750,13 @@ struct MetalRenderScene::Impl {
         if (!result.diagnostic.empty()) {
             return result;
         }
+        if (parameters.packet_transport && parameters.bidirectional && parameters.max_depth > 0 &&
+            request.sampler.kind == SamplerKind::halton) {
+            result.diagnostic = validate_halton_light_range(
+                request.width, request.height, request.sample_begin, request.sample_count);
+            if (!result.diagnostic.empty())
+                return result;
+        }
         if (parameters.packet_transport && request.sample_count != 1) {
             result.diagnostic = "Packet requests require one absolute sample per dispatch";
             return result;

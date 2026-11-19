@@ -31,6 +31,10 @@ std::string validate_sampler_range(const RenderSampler &sampler, std::uint64_t s
                                    std::uint32_t width, std::uint32_t height,
                                    std::uint64_t sample_begin, std::uint64_t sample_count,
                                    std::uint64_t total_samples = 0);
+// Validate the separate Halton BDPT light stream; camera-only ranges use the
+// generic sampler validator above.
+std::string validate_halton_light_range(std::uint32_t width, std::uint32_t height,
+                                        std::uint64_t sample_begin, std::uint64_t sample_count);
 std::uint32_t sampler_max_depth(const RenderSampler &sampler, bool dielectrics);
 std::uint32_t sobol_scale_exponent(std::uint32_t width, std::uint32_t height);
 std::string sampler_description(const RenderSampler &sampler, bool dielectrics = false,

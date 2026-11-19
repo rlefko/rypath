@@ -19,6 +19,14 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
         if (!result.diagnostic.empty()) {
             return result;
         }
+        if (scene.spectral_transport == SpectralTransport::packet &&
+            scene.integrator == IntegratorKind::bdpt && scene.max_depth > 0 &&
+            settings.sampler.kind == SamplerKind::halton) {
+            result.diagnostic =
+                validate_halton_light_range(settings.width, settings.height, 0, settings.samples);
+            if (!result.diagnostic.empty())
+                return result;
+        }
         const auto depth_limit = sampler_max_depth(settings.sampler, scene_has_dielectrics(scene));
         if (settings.sampler.kind != SamplerKind::independent &&
             (scene.model != RenderModel::pbrt || scene.max_depth > depth_limit)) {

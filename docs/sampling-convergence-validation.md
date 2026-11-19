@@ -93,10 +93,11 @@ force the finite joint-walk and directional estimators to agree with one another
 
 ## Persistence and resource boundaries
 
-Contracts are format/identity/renderer/sampling/accumulation **3/12/14/6/2**.
+Contracts are format/identity/renderer/sampling/accumulation **3/12/14/7/2**.
 Format 3 is required because checkpoint metadata now stores the separate signed
 material seed. The identity includes that seed and light policy. Sampling
-contract 6 rejects the intermediate contract-5 coating stream before continuation.
+contract 7 rejects the earlier contract-6 tiled Halton light stream and
+intermediate contract-5 coating stream before continuation.
 Older checkpoints are rejected before payload decoding; same-build batch and resume
 checks remain exact. Cross-revision pixel identity is not expected after these
 proposal changes. Large assets and retained render artifacts stay outside Git.
@@ -138,7 +139,7 @@ separately from pipeline creation. Parsing/translation, identity hashing and
 image export remain included in end-to-end wall time, not those two phases.
 Unsupported phase telemetry is reported as unavailable.
 
-## Validation evidence
+## Original contract-6 validation evidence
 
 The completed study includes all 384 prescribed backend/budget/seed cases and the
 frozen quality analysis, but **does not meet the convergence acceptance target**.
@@ -149,7 +150,7 @@ uses an Apple M4 Max with
 digest is `dc2b7b3b30c89150a9fc4af3f470544c06c71b1d5b84b65bd1838d5e77739a63`;
 its Release executable SHA-256 is
 `d14df941174cb5f3e92cdd91adb330ac96bddff1619fc8bc15ef0f017f249e49`.
-The corrected candidate completes the following checks:
+That frozen candidate completed the following checks:
 
 - Debug, Release and ASan/UBSan: 211 tests each, no failures. A separate
   Metal-disabled build passes all 153 portable tests with no skips.
@@ -335,7 +336,8 @@ mean safeguards pass, but the variance estimates move in opposite directions
 and the bounds remain inconclusive. Full-image clamped variance/PBRT is 1.3169
 for control and 1.3313 for compact. This result neither establishes this layout
 as the cause of the night gap nor rules out other sampler effects. Production
-remains on the original measured layout and sampling contract 6.
+retained the original dimension layout. The separate full-Film light-index
+correction below advances the sampling contract to 7.
 
 All 48 main cases, four independent-sampler controls and one direct frozen
 reference are retained. An initial staging-path failure occurred before any
@@ -346,7 +348,101 @@ was replaced. The result, reviewed inputs and recovery are bound by
 `116efd0adb3e7c756c241a4bdd81ebbe526e5e444113fe2a6ea2eb9f09e13705`.
 This diagnostic is separate from the unchanged primary acceptance study.
 
-## Serial timing and time to quality
+## Reference Film and sampler audit
+
+The retained PBRT EXRs use the same authored resolution and camera sample
+budgets: 1600×850, day 256 spp and night 512 spp. All 256 controlled reference
+EXR headers also match the 128 case receipts and their 320×170 budgets. Both
+renderers use subpixel Halton samples and the default Gaussian reconstruction
+filter, with radius 1.5 pixels and sigma 0.5. The statistical comparison reads
+FLOAT EXRs directly, without denoising, sharpening or downsampling. PBRT's
+8-bit PNG writer adds blue-noise quantization dither; this cannot account for
+the measured FLOAT variance. The full PNG conversion commands were not retained,
+so this conclusion rests on authenticated EXRs rather than preview provenance.
+
+Source review finds the same Film grouping and normalization: clamp the exposed
+aggregate camera contribution once, clamp each light-path splat separately,
+normalize camera sums by reconstruction weight and splats by sample count times
+filter integral. Small Gaussian evaluation precision differences remain. These
+checks identify no substantial Film scaling or extra-supersampling explanation.
+
+The Halton core also uses the same global digit permutations, pixel/sample index,
+wavelength dimension and primary-lens dimensions. The assignment of later
+dimensions differs: rypath uses fixed role ranges, whereas PBRT advances a
+branch-dependent cursor. Generic diffuse scattering, area-light emission and
+environment launch also use polar disk maps in rypath and concentric maps in
+PBRT; their intended densities agree, but their interaction with Halton samples
+can differ. The coated diffuse base already uses the corrected concentric map.
+The disk-map difference remains an unmeasured hypothesis. The fixed light roles
+also expose the periodic-index duplication demonstrated below.
+
+PBRT additionally propagates texture differentials through specular camera
+events, while rypath switches to its camera approximation after the first hit.
+This documented approximation can affect textures seen through reflection or
+refraction. It does not affect first-hit texture filtering, and the traced day
+outlier starts with diffuse scattering, which also discards PBRT's differentials.
+
+## Halton light-path reuse across Film tiles
+
+An eight-replicate diagnostic at 320×170/night 64 spp separates camera sums,
+light splats and their covariance. It uses candidate seeds 128–135 and PBRT
+160–167, with matching material seeds, all six frozen ROIs and both output
+planes. Checkpoint decomposition reconstructs candidate totals; a post-render
+PBRT Film observer preserves canonical output bits. These are descriptive
+diagnostics, separate from the retained 32-replicate acceptance study.
+
+For the clamped plane, light-splat variance accounts for 92.4% of the full-image
+candidate-minus-PBRT variance, 115.4% in the wall ROI and 100.6% in the floor ROI.
+Shares above 100% reflect offsets from camera variance and covariance. Changing
+only the sampler to independent reduces total candidate/PBRT variance ratios
+from 1.304 to 0.920 overall, 1.780 to 0.943 on the wall, and 2.247 to 0.961 on
+the floor. This localizes a sampling interaction; it does not establish parity.
+
+The Halton camera index repeats its pixel offset every 128 pixels in each axis.
+That reuse is unsuitable for fixed-role BDPT light paths whose splats land
+throughout the Film. A frozen native probe traces six source pixels separated
+by 128 pixels, for each of 64 absolute samples. Three positive splat events
+repeat bit-for-bit across all six owners: 18 contributions and 45 positive
+pair-event matches. Camera contributions differ. The corrected probe has zero
+such matches, with all 384 wavelength/PDF arrays unchanged. This demonstrates
+removal of a concrete repeated-output pattern, not independence of every path.
+
+The correction keeps the camera index and fixed dimension roles. For Film tile
+count `T = ceil(width/128) * ceil(height/128)`, reserve `S = bit_ceil(T)` slots
+and evaluate the existing CRT index at absolute light sample `n*S + tileId`.
+Only light emission, the importance walk and splat-lens draws use that index.
+Camera walks, wavelengths and camera-side direct-light draws retain theirs.
+There is still one light path per source owner: PDFs, MIS, Film normalization,
+clamping and contribution weights are unchanged. Shared wavelengths and
+camera-inherited wavelength termination remain coupled.
+
+Power-of-two slots are deliberate. Multiplying by `T` itself would freeze a
+leading radical-inverse digit whenever `T` shares a light dimension's prime
+(for example, 23 tiles and dimension 8). Power-of-two slots are coprime to all
+light primes, which are at least 5. Both axes at most 128 retain the old index
+exactly. The sequence depends on full Film dimensions and absolute sample,
+independently of batches, dispatch partitioning or target sample count.
+Host admission bounds the expanded index before multiplication and before
+progressive GPU preparation. Sampling contract 7 prevents mixed-stream resume.
+
+The production contract-7 candidate is frozen separately under
+`.cache/pavilion-convergence/candidate-v5/`, with source digest
+`31fd7542c213a84b7ffe024966e78312f8b25842264ff1e5b62a84f8d4a93054`,
+executable SHA-256
+`09b5baae1a23702854c29ad6d9e4f9ab1dbe5ae550b538043608d5ccf8903621`
+and metallib SHA-256
+`c07cccd790cc4da98842af5d0f58c09020e3093fdc2979395fe972d58a8bf75e`.
+Current validation on the same M4 Max covers all 211 Debug, Release and
+ASan/UBSan checks, 225 Python tests, five affected Metal API validation tests,
+formatting, focused Clang-Tidy and the native adapter's static analysis.
+The first Debug/Release passes exposed two contract-6 golden digests; independent
+Python serializers reproduced the old values and generated the contract-7
+expectations, after which both failed tests passed. No renderer changes were
+needed. New native regressions cover positive splat diversity, partition and
+threadgroup invariance, 32-bit sample carry, early capacity rejection and exact
+serialized resume across a tile boundary, including every raw/clamped Film plane.
+
+## Original serial timing and time to quality
 
 All 12 backend/scene/budget cases complete one warmup and three measured runs,
 serially on the same M4 Max. The table reports end-to-end seconds, mean ± sample
@@ -385,7 +481,7 @@ The complete checked report is
 `.cache/pavilion-convergence/final-v4/final-evidence.json`; it binds the 48 quality
 bounds, 36 raw mean gates, all timing cases, backend identities and full images.
 
-## Full-resolution artifacts
+## Original contract-6 full-resolution artifacts
 
 Both authored 1600×850 images are complete: day at 256 spp (348,160,000 camera
 samples) and night at 512 spp (696,320,000). Independent checks validate PNG

@@ -2960,10 +2960,13 @@ kernel void rypath_qmc_probe(const device sobol::Tables &tables [[buffer(0)]],
     const ulong sample = (ulong(q.sample_high) << 32) | q.sample_low;
     ulong index;
     float cx, cy, scalar, px, py;
-    if (q.kind == wire::halton_sampler) {
-        index = qmc::halton_index(q.width, q.height, q.x, q.y, sample);
-        cx = qmc::halton_camera(0, q.width, index);
-        cy = qmc::halton_camera(1, q.height, index);
+    if (q.kind == wire::halton_sampler || q.kind == rypath::qmc_probe::halton_light) {
+        const ulong camera_index = qmc::halton_index(q.width, q.height, q.x, q.y, sample);
+        index = q.kind == rypath::qmc_probe::halton_light
+                    ? qmc::halton_light_index(q.width, q.height, q.x, q.y, sample)
+                    : camera_index;
+        cx = qmc::halton_camera(0, q.width, camera_index);
+        cy = qmc::halton_camera(1, q.height, camera_index);
         scalar = qmc::radical(q.dimension, index, q.mode, q.seed);
         px = scalar;
         py = qmc::radical(q.dimension + 1, index, q.mode, q.seed);
@@ -3028,6 +3031,15 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     namespace packet_storage = rypath::packet_wire;
     ulong index = 0;
     wire::Sample sample = begin_sample(p, tables, lane, index);
+    // Camera-local Halton offsets repeat every 128 pixels. Nonlocal BDPT
+    // light contributions need a separate full-film sequence to avoid
+    // tracing and splatting the same light sample from multiple owners.
+    ulong light_index = index;
+    if (p.sampler_kind == wire::halton_sampler && p.bidirectional && p.max_depth > 0) {
+        const ulong absolute_sample = (ulong(sample.sample_high) << 32) | sample.sample_low;
+        light_index = qmc::halton_light_index(p.width, p.height, sample.pixel % p.width,
+                                              sample.pixel / p.width, absolute_sample);
+    }
     const auto lens = draw_words(p, tables, sample, index, 1);
     sample.lens_words[0] = lens.x;
     sample.lens_words[1] = lens.y;
@@ -3069,7 +3081,7 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
         camera_count = bdpt::random_walk(resources, sample, lambda, incoming, float4(1), camera_pdf,
                                          camera, 1, p.max_depth + 2, bdpt::Mode::Radiance, index);
         if (p.bidirectional && sample.status == wire::success)
-            light_count = bdpt::light_path(resources, sample, lambda, index, light);
+            light_count = bdpt::light_path(resources, sample, lambda, light_index, light);
     } else {
         sample.status = wire::invalid_arithmetic;
     }
@@ -3084,7 +3096,7 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     if (p.bidirectional) {
         for (uint s = 2; s <= light_count && sample.status == wire::success; ++s) {
             packet_storage::Splat splat{};
-            if (bdpt::camera_splat(resources, sample, lambda, index, light, camera, s, splat))
+            if (bdpt::camera_splat(resources, sample, lambda, light_index, light, camera, s, splat))
                 splats[splat_count++] = splat;
         }
     }

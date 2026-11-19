@@ -10,7 +10,7 @@ night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport
 BDPT camera/light connections and splats, finite sensor-space film clamping,
 raw EXR export, and an explicit bounded large-scene profile. Checkpoint
 format/identity/renderer/sampling/accumulation contracts on this follow-up branch
-are 3/12/14/6/2.
+are 3/12/14/7/2.
 See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
 acceptance targets and historical validation. The follow-up adds native environment
 CDFs, combined light selection, directional shape/emission proposals and pinned
@@ -19,8 +19,11 @@ tracks its current evidence. The frozen Pavilion study is complete: all 36 raw
 RGB mean checks pass, but the 48 simultaneous variance/tail bounds do not meet
 the convergence target. Serial timing and bounded diagnostics are complete: a
 compact Halton layout did not meet its improvement rule, and an exact replay
-identified a refracted-environment caustic behind one day outlier. Night variance
-attribution remains the next bounded task. Unsupported media and geometry receive
+identified a refracted-environment caustic behind one day outlier. Night attribution
+then demonstrated repeated Halton BDPT light splats across 128-pixel tiles.
+The follow-up gives those light paths distinct full-Film indices; its new
+variance measurements are separate from the original failed study.
+Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
 This remains selected-scene coverage. Curves, motion, heterogeneous media,
@@ -30,7 +33,7 @@ remain unestablished.
 
 ## Validation
 
-The follow-up candidate passes Debug, Release and ASan/UBSan (211 tests each),
+The earlier contract-6 candidate passed Debug, Release and ASan/UBSan (211 tests each),
 60 Metal API validation tests, 153 portable tests, 225 Python checks and all 195
 unchanged coating/packet image gates. Both full-resolution day/night renders are
 complete and independently audited. These checks remain distinct from the failed
