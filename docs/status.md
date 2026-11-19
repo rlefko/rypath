@@ -15,7 +15,12 @@ See the [Pavilion record](pavilion-validation.md) for model limitations, acquisi
 acceptance targets and historical validation. The follow-up adds native environment
 CDFs, combined light selection, directional shape/emission proposals and pinned
 coating RNG domains; [sampling/convergence validation](sampling-convergence-validation.md)
-tracks its current evidence and pending acceptance. Unsupported media and geometry receive
+tracks its current evidence. The frozen Pavilion study is complete: all 36 raw
+RGB mean checks pass, but the 48 simultaneous variance/tail bounds do not meet
+the convergence target. Serial timing and bounded diagnostics are complete: a
+compact Halton layout did not meet its improvement rule, and an exact replay
+identified a refracted-environment caustic behind one day outlier. Night variance
+attribution remains the next bounded task. Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
 This remains selected-scene coverage. Curves, motion, heterogeneous media,
@@ -24,6 +29,12 @@ additional camera/film models and broader material semantics remain on the
 remain unestablished.
 
 ## Validation
+
+The follow-up candidate passes Debug, Release and ASan/UBSan (211 tests each),
+60 Metal API validation tests, 153 portable tests, 225 Python checks and all 195
+unchanged coating/packet image gates. Both full-resolution day/night renders are
+complete and independently audited. These checks remain distinct from the failed
+scene-level quality target; see the [sampling/convergence record](sampling-convergence-validation.md).
 
 The merged Pavilion implementation completed both unchanged 1600×850 entry points:
 day at 256 spp and night at 512 spp, with verified PNG, raw FLOAT EXR and
