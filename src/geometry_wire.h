@@ -28,7 +28,6 @@ struct Patch {
     float corners[4][3];
 };
 
-// The first word tags every procedural primitive's embedded record.
 struct Analytic {
     Word kind;
     Word subtype;
@@ -40,11 +39,14 @@ struct Analytic {
     float height;
 };
 
-// BLAS-only tag; the Patch shading ABI remains unchanged.
+// The first word tags each native bounding-box primitive. A miss tag preserves
+// the slot of a proven zero-area triangle without offering it to the predicate.
+// The existing Patch shading ABI and record size remain unchanged.
 struct ProceduralRecord {
     Word kind;
     union {
         Patch patch;
+        Triangle triangle;
         Analytic analytic;
     };
 };
@@ -70,7 +72,8 @@ static_assert(sizeof(Word) == 4 && sizeof(float) == 4, "geometry wire scalar wid
 static_assert(sizeof(Triangle) == 36 && alignof(Triangle) == 4, "geometry wire triangle layout");
 static_assert(sizeof(Patch) == 48 && alignof(Patch) == 4, "geometry wire patch size and alignment");
 static_assert(sizeof(ProceduralRecord) == 52 && alignof(ProceduralRecord) == 4 &&
-                  __builtin_offsetof(ProceduralRecord, patch) == 4,
+                  __builtin_offsetof(ProceduralRecord, patch) == 4 &&
+                  __builtin_offsetof(ProceduralRecord, triangle) == 4,
               "geometry wire procedural record");
 static_assert(sizeof(Analytic) == 32 && alignof(Analytic) == 4 &&
                   __builtin_offsetof(Analytic, radius) == 8,

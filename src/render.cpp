@@ -1379,11 +1379,13 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
         (scene.spectral_transport == SpectralTransport::packet &&
          !charge(packet_wire::workspace_bytes + 64, 1)))
         return exceeded();
+    // Native triangle boxes retain tagged corners plus six floating-point bounds.
     const auto mesh = [&](const GeometryMesh &m) {
         return charge(m.positions.size(),
                       2 * sizeof(render_wire::Point) + sizeof(render_wire::SurfaceVertex)) &&
-               charge(m.triangles.size(),
-                      2 * sizeof(render_wire::Triangle) + sizeof(geometry_wire::Triangle)) &&
+               charge(m.triangles.size(), 2 * sizeof(render_wire::Triangle) +
+                                              sizeof(geometry_wire::ProceduralRecord) +
+                                              6 * sizeof(float)) &&
                charge(m.patches.size(),
                       sizeof(render_wire::Patch) + sizeof(geometry_wire::Patch)) &&
                charge(m.analytics.size(), sizeof(geometry_wire::Analytic)) &&

@@ -9,6 +9,7 @@
 #include "analytic.h"
 #include "bilinear.h"
 #include "triangle_candidate.h"
+#include "triangle_traversal_bounds.h"
 
 using MixedIntersector =
     metal::raytracing::intersector<metal::raytracing::triangle_data, metal::raytracing::instancing,
@@ -95,9 +96,9 @@ inline bool earlier(uint instance, uint geometry, uint primitive, const thread S
 }
 } // namespace rypath_intersection_detail
 
-// Never commit: native rounded distances must not prune a mathematically nearer
-// candidate or a valid surface behind a native false positive. This validates
-// offered candidates; native traversal completeness is still a bounded premise.
+// Never commit native rounded hit distances. After accepting a triangle, a
+// conservative world-box exit cap may restart traversal while retaining the
+// precise closest hit. Candidate predicates always use the original ray bounds.
 template <typename Alpha>
 inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
                                           metal::raytracing::instance_acceleration_structure scene,
@@ -120,13 +121,17 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
     Query query(ray, scene, mask, parameters);
     SurfaceHit best{
         intersection_type::none, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0, {0, 0}, true};
-    BilinearNumber distance(INFINITY);
+    triangle_extended::Pair distance{};
+    float traversal_max = ray.max_distance;
     while (query.next()) {
         auto kind = query.get_candidate_intersection_type();
+        auto surface_kind = kind;
         uint instance = query.get_candidate_instance_id(),
              geometry = query.get_candidate_geometry_id(),
              primitive = query.get_candidate_primitive_id();
         BilinearNumber t(INFINITY);
+        triangle_extended::Pair candidate_distance{};
+        const device rypath::geometry_wire::Triangle *triangle_record = nullptr;
         float2 uv(0);
         uint primitive_kind = 0;
         bool found = false;
@@ -154,6 +159,8 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
             if (!accepted.accepted)
                 continue;
             t = hit.t;
+            candidate_distance = hit.distance;
+            triangle_record = record;
             uv = hit.uv;
             primitive_kind = rypath::geometry_wire::triangle;
             found = true;
@@ -164,56 +171,103 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
                 query.abort();
                 return invalid_hit();
             }
-            PatchPredicate<Alpha> accept{alpha, instance, geometry, primitive, true};
-            AnalyticIntersection hit{false, INFINITY, {0, 0}};
-            if (record->kind == rypath::geometry_wire::bilinear_patch) {
-                auto p = intersect_bilinear_if(
-                    patch_corner(record->patch, 0), patch_corner(record->patch, 1),
-                    patch_corner(record->patch, 2), patch_corner(record->patch, 3),
-                    query.get_candidate_ray_origin(), query.get_candidate_ray_direction(),
-                    ray.min_distance, ray.max_distance, accept);
-                hit = {p.hit, p.t, p.uv};
-            } else if (record->kind == rypath::geometry_wire::analytic) {
-                hit = intersect_analytic_if(record->analytic, query.get_candidate_ray_origin(),
-                                            query.get_candidate_ray_direction(), ray.min_distance,
-                                            ray.max_distance, accept);
-            } else {
-                query.abort();
-                return invalid_hit();
-            }
-            if (!accept.valid) {
-                query.abort();
-                return invalid_hit();
-            }
-            if (hit.hit) {
-                t = BilinearNumber(hit.t);
+            if (record->kind == rypath::geometry_wire::miss)
+                continue;
+            if (record->kind == rypath::geometry_wire::triangle) {
+                auto hit = precise_triangle_candidate(
+                    record->triangle, query.get_candidate_object_to_world_transform(), ray.origin,
+                    ray.direction, ray.min_distance, ray.max_distance);
+                if (!hit.valid) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                if (!hit.hit)
+                    continue;
+                auto accepted = alpha(instance, geometry, primitive, intersection_type::triangle,
+                                      hit.uv, hit.t.high);
+                if (!accepted.valid) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                if (!accepted.accepted)
+                    continue;
+                t = hit.t;
+                candidate_distance = hit.distance;
+                triangle_record = &record->triangle;
                 uv = hit.uv;
-                primitive_kind = record->kind;
+                primitive_kind = rypath::geometry_wire::triangle;
+                surface_kind = intersection_type::triangle;
                 found = true;
+            } else {
+                PatchPredicate<Alpha> accept{alpha, instance, geometry, primitive, true};
+                AnalyticIntersection hit{false, INFINITY, {0, 0}};
+                if (record->kind == rypath::geometry_wire::bilinear_patch) {
+                    auto p = intersect_bilinear_if(
+                        patch_corner(record->patch, 0), patch_corner(record->patch, 1),
+                        patch_corner(record->patch, 2), patch_corner(record->patch, 3),
+                        query.get_candidate_ray_origin(), query.get_candidate_ray_direction(),
+                        ray.min_distance, ray.max_distance, accept);
+                    hit = {p.hit, p.t, p.uv};
+                } else if (record->kind == rypath::geometry_wire::analytic) {
+                    hit = intersect_analytic_if(record->analytic, query.get_candidate_ray_origin(),
+                                                query.get_candidate_ray_direction(),
+                                                ray.min_distance, ray.max_distance, accept);
+                } else {
+                    query.abort();
+                    return invalid_hit();
+                }
+                if (!accept.valid) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                if (hit.hit) {
+                    t = BilinearNumber(hit.t);
+                    candidate_distance = triangle_extended::pair_from_bits(as_type<uint>(hit.t));
+                    uv = hit.uv;
+                    primitive_kind = record->kind;
+                    found = true;
+                }
             }
         } else {
             query.abort();
             return invalid_hit();
         }
         if (found) {
+            if (!triangle_extended::valid(candidate_distance)) {
+                query.abort();
+                return invalid_hit();
+            }
             if (any_hit) {
                 query.abort();
-                return {kind, instance, geometry, primitive, t.high, uv, true, primitive_kind};
+                return {surface_kind, instance, geometry, primitive,
+                        t.high,       uv,       true,     primitive_kind};
             }
             bool replace = best.type == intersection_type::none;
             if (!replace) {
-                bool valid = true;
-                auto difference = pc_sub(t, distance, valid);
-                if (!valid) {
+                const auto compared = triangle_extended::compare(candidate_distance, distance);
+                if (!compared.valid) {
                     query.abort();
                     return invalid_hit();
                 }
-                int sign = precise_triangle_sign(difference);
-                replace = sign < 0 || (sign == 0 && earlier(instance, geometry, primitive, best));
+                replace = compared.order < 0 ||
+                          (compared.order == 0 && earlier(instance, geometry, primitive, best));
             }
             if (replace) {
-                distance = t;
-                best = {kind, instance, geometry, primitive, t.high, uv, true, primitive_kind};
+                distance = candidate_distance;
+                best = {surface_kind, instance, geometry, primitive,
+                        t.high,       uv,       true,     primitive_kind};
+                if (triangle_record != nullptr) {
+                    const auto cap = triangle_pruning_cap(
+                        *triangle_record, query.get_candidate_object_to_world_transform(),
+                        ray.origin, ray.direction, distance, ray.min_distance, traversal_max);
+                    if (cap.finite) {
+                        traversal_max = as_type<float>(cap.bits);
+                        auto traversal_ray = ray;
+                        traversal_ray.max_distance = traversal_max;
+                        query.reset(traversal_ray, scene, mask, parameters);
+                        // No candidate getter is used again until next() succeeds.
+                    }
+                }
             }
         }
     }

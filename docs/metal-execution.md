@@ -114,6 +114,21 @@ writes a startup banner to stderr. CLI output-contract tests run without that
 environment flag. The deployment minimum is separate from the runtime OS
 versions actually exercised.
 
+The default medium test checks eight permitted native null crossings and failure
+on a ninth, including propagation through the progressive driver and untouched
+Film. The production request limit remains 4,096. Its original 4,097-plane
+exhaustion fixture is an explicit stress run:
+
+```sh
+MTL_DEBUG_LAYER=1 ./build/release/rypath_medium_render_tests --boundary-stress
+```
+
+Exhaustive triangle candidate validation makes that stacked-plane workload
+quadratic. Conservative query resets restore its completion within the existing
+timeout, so the normal medium suite retains this full case as well. The explicit
+command isolates it for diagnosis and timing. See the
+[regression record](transport-regression-validation.md).
+
 ## Primary references
 
 - [Apple shader precompilation](https://developer.apple.com/documentation/metal/building-a-shader-library-by-precompiling-source-files)

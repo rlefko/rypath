@@ -176,3 +176,111 @@ This candidate passes 148 CPU checks in each of Debug, Release and ASan/UBSan,
 225 Python checks, and all seven focused geometry suites with Metal API
 validation. These checks remain distinct from the complete GPU suite, the
 full-resolution images and the 48-endpoint statistical re-evaluation.
+
+The subsequent full Release GPU suite passes 58/68 checks. Seven failures involve
+invalid native hits in lighting fixtures with very narrow camera footprints;
+the Sobol and grazing-conductor fixtures return successful but unexpected paths,
+and the medium boundary stress times out. Long scene measurements are held while
+these regressions are investigated.
+
+A fixed point-light replay confirms another overstrict range check. Frozen and
+instrumented shaders retain identical original sample/guard bytes and uploaded
+parameters; an unmodified lens probe independently matches the captured ray.
+Inside the triangle's barycentric division, a rounded cross product multiplies
+`-1.5407439555e-33` by `4.5810366102e-27`. Its exact value is approximately
+`-7.0582044671e-60`, which correctly rounds to negative zero even without
+subnormal flushing. The guard incorrectly rejects that zero. Correctly rounded
+zero requires `abs(a*b) <= 2^-150` under binary32 round-to-nearest, ties-to-even;
+this is distinct from flushing a representable nonzero subnormal. The independent
+boundary/random oracle checks 112,960 pairs. This attribution directly covers
+the captured point fixture; the remaining failures require their own evidence.
+
+Host-only phase logging completes all eleven ordinary medium fixture groups
+before the final 4,097-plane boundary-exhaustion case stalls. Exhausting an
+uncommitted candidate query at each of 4,096 null crossings predicts quadratic
+work in this fixture. The phase trace does not separately measure AS preparation
+and GPU traversal. The historical 1.95-second full-suite result and current
+180-second timeout remain separate performance evidence.
+
+The default medium regression now checks an explicit request limit of eight:
+eight native crossings must succeed, and a ninth must produce the specific
+boundary-exhaustion diagnostic with no returned samples. That real native
+failure passes through the existing progressive transaction driver, which must
+leave the entire fresh Film unchanged. The production limit remains 4,096;
+`rypath_medium_render_tests --boundary-stress` retains the original full-limit
+case as an isolated command. After the traversal repair below, the normal suite
+also retains this original full-limit case.
+
+The bounded medium test passes with Metal API validation in 9.26 seconds. A
+separate fixed grazing-continuation witness and the conductor rendering/BSDF
+suites pass 2/2 in 21.00 seconds. These development checks precede the combined
+renderer-18 geometry changes and do not establish that revision's full acceptance.
+
+## Renderer-18 regression repairs
+
+A second admitted replay isolates the area-light failure. All 16 original samples,
+parameters and guards match; the independent lens probe matches the failing primary
+ray. A retained high-product range check rejects the exact residual `-2^-129`,
+half a primary ULP, at an exact interior intersection `t=4194304/275899`.
+This is a meaningful nonzero subnormal, unlike the correctly rounded zero above.
+The capture records the classifier failure, not an observed hardware FMA result.
+
+The Sobol replay retains the complete original sample prefix, parameters and
+lens controls. Its third query offers only the wrong top-plane triangle. Exact
+rational evaluation puts that candidate outside by barycentric `-7.6118863e-11`,
+while the unoffered adjacent triangle is inside by `+7.6118863e-11` at
+`t=33439726/11863283`. Revalidation correctly rejects the offered candidate; it
+cannot recover the omitted neighbor. This attribution is to the admitted query,
+not a claim about every unobserved internal event in the original shader.
+
+The conductor replay instead reaches the intended primary triangle and returns a
+valid local BSDF null: `wi.z=-5.8496212e-9`. More precise barycentrics changed its
+almost-tangent shading frame, invalidating the old test's positive-local premise.
+The original scene/sample remains as accounting coverage. A fixed extracted
+frame/direction now tests the renderer's shared continuation helper directly:
+positive local cosine must survive a nonpositive rounded world dot without
+changing weight, PDF or acceptance. The test explicitly verifies that sign
+inversion, so a world-dot support check would fail it; no new seed was selected.
+
+Renderer 18 uses Metal bounding-box primitives for triangle candidate generation,
+retaining native acceleration, instancing, original corners and primitive IDs.
+Proven zero-area slots are explicitly empty. Logical triangle tags still govern
+alpha and shading. Canonical sign-invariant pair multiplication removes an
+independent operand-order asymmetry; an alternate ordering preserves the union
+of the two formerly supported local arithmetic domains.
+
+Exceptional numeric range recomputes the complete triangle from its original
+inputs using pairs of integer binary24 values with independent exponents bounded
+to ±100,000. Scalar operations round to nearest, ties to even; high-product errors
+retain their exact 48-bit product residual. Full TwoSum renormalization retains
+gapped components without requiring a magnitude ordering. Raw invalid/subnormal
+inputs and unrepresentable public hit distances still fail visibly. A single
+53-bit fallback was rejected because it lost the captured axial triangle's tiny
+nonzero barycentric correction. The adopted pair remains finite precision; it
+is not an exact-predicate or universal watertightness claim.
+
+Closest-distance comparison sums the four signed dyadic components exactly,
+including widely separated low terms. Pruning uses a strict endpoint beyond a
+conservative forward-transformed world-box exit, rather than a native or rounded
+triangle hit distance. Query resets retain the selected hit and original primitive
+bounds; unsupported intervals disable pruning. This still relies on bounded native
+box coverage and finite-predicate acceptance, especially under ill-conditioned
+transforms.
+
+Development renderer-18 Release checks pass all ten previously failing suites
+with Metal API validation. The direct arithmetic probe passes 5,049 original
+retained-product cases, 916 rounded-zero cases, 12 multiplication symmetry cases,
+136 independently generated exact-rational rounding vectors and the captured
+triangle/range fixtures. Native box tests pass 26 rays, including six Area/axial
+cases under exact reflection, nonuniform scaling and axis permutation. The prior
+Pavilion/transformed-candidate suite also passes. The isolated original
+4,097-plane exhaustion case completes in 4.59 seconds with the required native
+failure and unchanged Film. This is a completion observation, not a matched
+performance comparison against the historical timeout. The full case is restored
+to normal regression coverage; broad final-revision validation and scene costs
+remain separate requirements.
+
+The integer rounding and error-free-transform design follows the numerical
+principles described by [Berkeley SoftFloat](https://www.jhauser.us/arithmetic/SoftFloat.html)
+and [Ogita, Rump and Oishi](https://www.tuhh.de/ti3/paper/rump/OgRuOi04a.pdf);
+the bounded exponent-pair implementation and traversal policy are rypath adaptations.

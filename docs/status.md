@@ -10,7 +10,7 @@ night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport
 BDPT camera/light connections and splats, finite sensor-space film clamping,
 raw EXR export, and an explicit bounded large-scene profile. Checkpoint
 format/identity/renderer/sampling/accumulation contracts on this follow-up branch
-are 3/12/17/7/2.
+are 3/12/18/7/2.
 See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
 acceptance targets and historical validation. The follow-up adds native environment
 CDFs, combined light selection, directional shape/emission proposals and pinned
@@ -25,9 +25,13 @@ The follow-up gives those light paths distinct full-Film indices; its new
 variance measurements are separate from the original failed study.
 Further [regression diagnosis](transport-regression-validation.md) isolates a
 missing importance shading-normal adjoint in the night outlier and inconsistent
-near-edge native triangle hits in the day replay. Their corrections have focused
-native validation; final scene-level measurements remain separate from the
-historical results below.
+near-edge native triangle hits in the day replay. Their corrections pass focused
+native checks and both scene pilots, but broader GPU validation exposes further
+arithmetic, candidate-coverage and boundary-stress regressions. Fixed replays identify
+correctly rounded zero rejection, a genuine subnormal retained error, a missing
+native triangle candidate and a changed grazing-test premise. Renderer 18 repairs
+coverage and range; combined native validation and performance measurements are
+pending. Final scene measurements remain held; historical results stay separate below.
 Unsupported media and geometry receive
 diagnostics rather than substitutions.
 

@@ -24,7 +24,6 @@ using geometry_wire::Closest;
 using geometry_wire::Patch;
 using geometry_wire::ProceduralRecord;
 using geometry_wire::Ray;
-using geometry_wire::Triangle;
 using geometry_wire::Word;
 constexpr auto max_wire_index = std::numeric_limits<Word>::max();
 
@@ -92,60 +91,68 @@ id<MTLAccelerationStructure> build_structure(id<MTLDevice> device, id<MTLCommand
     return diagnostic.empty() ? structure : nil;
 }
 
-MTLAccelerationStructureTriangleGeometryDescriptor *
+MTLAccelerationStructureBoundingBoxGeometryDescriptor *
 triangle_descriptor(id<MTLDevice> device, const GeometryMesh &mesh, std::string &diagnostic) {
-    if (!fits_buffer<GeometryPoint>(device, mesh.positions.size()) ||
-        !fits_buffer<std::array<Word, 3>>(device, mesh.triangles.size()) ||
-        !fits_buffer<Triangle>(device, mesh.triangles.size())) {
-        diagnostic = "Metal vertex or index buffer exceeds device size limit";
+    if (!fits_buffer<MTLAxisAlignedBoundingBox>(device, mesh.triangles.size()) ||
+        !fits_buffer<ProceduralRecord>(device, mesh.triangles.size())) {
+        diagnostic = "Metal triangle bounds or corner buffer exceeds device size limit";
         return nil;
     }
-    id<MTLBuffer> vertices = upload(device, std::span{mesh.positions});
-    // Keep every native primitive slot. A provably zero-measure canonical face
-    // is represented by one repeated point, rather than relying on cancellation
-    // in Metal's collinear triangle solve. Original indices remain in GeometryData.
-    const bool has_zero = std::ranges::any_of(mesh.triangles, [&](const auto &t) {
-        return !triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]], mesh.positions[t[2]]);
-    });
-    id<MTLBuffer> indices = nil;
-    if (has_zero) {
-        auto native_indices = mesh.triangles;
-        for (auto &t : native_indices) {
-            if (!triangle_has_area(mesh.positions[t[0]], mesh.positions[t[1]],
-                                   mesh.positions[t[2]]))
-                t = {t[0], t[0], t[0]};
-        }
-        indices = upload(device, std::span<const std::array<Word, 3>>{native_indices});
-    } else {
-        indices = upload(device, std::span{mesh.triangles});
-    }
-    std::vector<Triangle> original_triangles(mesh.triangles.size());
-    for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
+    std::vector<MTLAxisAlignedBoundingBox> bounds;
+    std::vector<ProceduralRecord> records;
+    bounds.reserve(mesh.triangles.size());
+    records.reserve(mesh.triangles.size());
+    for (const auto &indices : mesh.triangles) {
+        ProceduralRecord record{};
+        const bool has_area = triangle_has_area(
+            mesh.positions[indices[0]], mesh.positions[indices[1]], mesh.positions[indices[2]]);
+        // Keep every original primitive slot and its corners. Proven zero-area
+        // faces cannot acquire an approximate hit merely because their box is offered.
+        record.kind = has_area ? geometry_wire::triangle : geometry_wire::miss;
         for (std::size_t corner = 0; corner < 3; ++corner) {
-            const auto &p = mesh.positions[mesh.triangles[i][corner]];
-            original_triangles[i].corners[corner][0] = p.x;
-            original_triangles[i].corners[corner][1] = p.y;
-            original_triangles[i].corners[corner][2] = p.z;
+            const auto &point = mesh.positions[indices[corner]];
+            record.triangle.corners[corner][0] = point.x;
+            record.triangle.corners[corner][1] = point.y;
+            record.triangle.corners[corner][2] = point.z;
         }
+        records.push_back(record);
+        MTLPackedFloat3 lower{}, upper{};
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            const auto first = record.triangle.corners[0][axis];
+            const auto lo = has_area ? std::min({first, record.triangle.corners[1][axis],
+                                                 record.triangle.corners[2][axis]})
+                                     : first;
+            const auto hi = has_area ? std::max({first, record.triangle.corners[1][axis],
+                                                 record.triangle.corners[2][axis]})
+                                     : first;
+            const auto max_float = std::numeric_limits<float>::max();
+            const auto min_normal = std::numeric_limits<float>::min();
+            lower[axis] = std::nextafter(lo, -max_float);
+            upper[axis] = std::nextafter(hi, max_float);
+            if (std::abs(lower[axis]) < min_normal)
+                lower[axis] = -min_normal;
+            if (std::abs(upper[axis]) < min_normal)
+                upper[axis] = min_normal;
+        }
+        bounds.emplace_back(lower, upper);
     }
-    id<MTLBuffer> primitive_data = upload(device, std::span<const Triangle>{original_triangles});
-    if (vertices == nil || indices == nil || primitive_data == nil) {
-        diagnostic = "Metal vertex or index buffer allocation failed";
+    id<MTLBuffer> bounds_buffer =
+        upload(device, std::span<const MTLAxisAlignedBoundingBox>{bounds});
+    id<MTLBuffer> corner_buffer = upload(device, std::span<const ProceduralRecord>{records});
+    if (bounds_buffer == nil || corner_buffer == nil) {
+        diagnostic = "Metal triangle bounds or corner buffer allocation failed";
         return nil;
     }
-    MTLAccelerationStructureTriangleGeometryDescriptor *triangle =
-        [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-    triangle.vertexBuffer = vertices;
-    triangle.vertexFormat = MTLAttributeFormatFloat3;
-    triangle.vertexStride = sizeof(GeometryPoint);
-    triangle.indexBuffer = indices;
-    triangle.indexType = MTLIndexTypeUInt32;
-    triangle.triangleCount = mesh.triangles.size();
-    triangle.primitiveDataBuffer = primitive_data;
-    triangle.primitiveDataStride = sizeof(Triangle);
-    triangle.primitiveDataElementSize = sizeof(Triangle);
-    triangle.opaque = YES;
-    return triangle;
+    MTLAccelerationStructureBoundingBoxGeometryDescriptor *box =
+        [MTLAccelerationStructureBoundingBoxGeometryDescriptor descriptor];
+    box.boundingBoxBuffer = bounds_buffer;
+    box.boundingBoxStride = sizeof(MTLAxisAlignedBoundingBox);
+    box.boundingBoxCount = mesh.triangles.size();
+    box.primitiveDataBuffer = corner_buffer;
+    box.primitiveDataStride = sizeof(ProceduralRecord);
+    box.primitiveDataElementSize = sizeof(ProceduralRecord);
+    box.opaque = NO;
+    return box;
 }
 
 MTLAccelerationStructureBoundingBoxGeometryDescriptor *

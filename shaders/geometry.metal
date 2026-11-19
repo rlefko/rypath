@@ -146,3 +146,67 @@ kernel void rypath_triangle_witness_probe(const device wire::Triangle &triangle 
     output[5] = as_type<uint>(hit.uv.y);
     output[6] = 0xc001cafe;
 }
+
+kernel void rypath_triangle_rounded_product_probe(const device uint2 *inputs [[buffer(0)]],
+                                                  device uint4 *output [[buffer(1)]],
+                                                  constant uint &count [[buffer(2)]],
+                                                  uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const auto words = inputs[index];
+    bool valid = true;
+    const float product = pc_mul(as_type<float>(words.x), as_type<float>(words.y), valid);
+    output[index] = {as_type<uint>(product), uint(valid),
+                     uint(rypath::triangle_numeric::rounded_product_is_zero(words.x, words.y)),
+                     0xc001cafeu};
+}
+
+kernel void rypath_triangle_pair_symmetry_probe(const device uint4 *inputs [[buffer(0)]],
+                                                device uint *output [[buffer(1)]],
+                                                constant uint &count [[buffer(2)]],
+                                                uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const auto words = inputs[index];
+    const BilinearNumber a(as_type<float>(words.x), as_type<float>(words.y));
+    const BilinearNumber b(as_type<float>(words.z), as_type<float>(words.w));
+    bool old_ab = true, old_ba = true, ab = true, ba = true, negative = true, parent = false;
+    const auto p0 = pc_mul_ordered(a, b, old_ab), p1 = pc_mul_ordered(b, a, old_ba);
+    const auto p2 = pc_mul(a, b, ab), p3 = pc_mul(b, a, ba), p4 = pc_mul(-a, b, negative);
+    (void)pc_mul(a, b, parent);
+    auto result = output + 16 * index;
+    result[0] = old_ab;
+    result[1] = as_type<uint>(p0.high);
+    result[2] = as_type<uint>(p0.low);
+    result[3] = old_ba;
+    result[4] = as_type<uint>(p1.high);
+    result[5] = as_type<uint>(p1.low);
+    result[6] = ab;
+    result[7] = as_type<uint>(p2.high);
+    result[8] = as_type<uint>(p2.low);
+    result[9] = ba;
+    result[10] = as_type<uint>(p3.high);
+    result[11] = as_type<uint>(p3.low);
+    result[12] = negative;
+    result[13] = as_type<uint>(p4.high);
+    result[14] = as_type<uint>(p4.low);
+    result[15] = parent;
+}
+
+kernel void rypath_triangle_extended_probe(const device uint4 *inputs [[buffer(0)]],
+                                           device uint4 *output [[buffer(1)]],
+                                           constant uint &count [[buffer(2)]],
+                                           uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    using namespace triangle_extended;
+    const auto x = inputs[2 * index], y = inputs[2 * index + 1];
+    const Float a{ulong(x.x), as_type<int>(x.y), bool(x.z), bool(x.w)};
+    const Float b{ulong(y.x), as_type<int>(y.y), bool(y.z), bool(y.w)};
+    const Float values[]{add(a, b), sub(a, b), mul(a, b), div(a, b)};
+    for (uint i = 0; i < 4; ++i) {
+        const auto v = values[i];
+        output[4 * index + i] =
+            uint4(uint(v.mantissa), as_type<uint>(v.exponent), uint(v.negative), uint(v.valid));
+    }
+}

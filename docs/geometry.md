@@ -30,11 +30,20 @@ order for triangles. Patch hits return a primitive-kind tag and `(u,v)` in the
 closed unit square. Occlusion returns a Boolean after the first independently
 validated accepted native candidate.
 
-Triangle queries retain Metal acceleration structures but manually revalidate
-offered candidates from the original per-primitive vertices. Compensated forward
+Triangle queries use Metal bounding-box acceleration structures and intersect
+offered boxes against original per-primitive vertices. This avoids relying on
+hardware triangle tests that omitted a true neighbor in a captured shared-edge ray.
+Compensated forward
 affine products and projected edge functions resolve near-edge false positives
-and distances that collapse to the same native float. Closest-hit queries do not
-commit native distances that could prune another candidate. Alpha-tested rendering
+and distances that collapse to the same native float. Ordinary arithmetic uses
+guarded float pairs; exceptional intermediate range recomputes the full triangle
+with integer binary24 pairs carrying independent, bounded exponents. These are
+finite-precision predicates, not exact geometry. Comparisons of their represented
+distances use exact signed dyadic sums. Closest-hit queries do not commit native
+triangle distances. A conservative forward-transformed world-box exit may shorten
+the traversal range through a query reset; the original ray bounds still govern
+primitive classification. Unrepresentable bounds simply disable that pruning.
+Alpha-tested rendering
 uses the same validated coordinates. See the
 [regression record](transport-regression-validation.md) for the numerical policy,
 measured coverage and limits.
@@ -47,7 +56,7 @@ inputs is not a promise of exact or robust traversal for every such scene.
 
 Validation rejects nonfinite geometry, invalid indices, singular transforms,
 invalid rays, and sizes that exceed representation or device limits. Zero-area
-triangles retain their primitive slots as empty native faces. Nonzero triangles
+triangles retain their primitive slots as explicitly empty box records. Nonzero triangles
 have no arbitrary area cutoff. Empty scenes return
 misses; empty ray batches return empty results. An operation that fails exposes
 a diagnostic rather than partially valid query results.
@@ -76,8 +85,8 @@ automatic device substitution or CPU traversal fallback. An empty scene still
 requires an available ray-tracing backend.
 
 Each nonempty primitive kind in a mesh has its own native acceleration structure;
-Metal requires homogeneous triangle or bounding-box descriptors within each
-structure. A mixed mesh placement therefore expands to two native instances.
+The adapter retains separate box structures for triangles, patches and analytic
+shapes. A mixed mesh placement therefore expands to multiple native instances.
 The scene instance structure and readback mapping preserve source ordinals. Construction and query stages check command
 completion before consuming results. ARC retains the geometry, structures, and
 execution resources, and the compute encoder declares referenced child structures
@@ -157,7 +166,7 @@ implements traversal internally.
 - [Shewchuk: Adaptive Precision Floating-Point Arithmetic and Fast Robust Predicates](https://people.eecs.berkeley.edu/~jrs/papers/robustr.pdf)
 
 These inform the contracts and tests. Metal owns acceleration-structure traversal
-and candidate generation. Manual queries revalidate triangles from embedded
+and candidate generation. Manual queries intersect triangles from embedded
 vertices and solve bilinear/analytic box candidates from embedded records, retaining
 the matching primitive and coordinates with the selected distance. The portable
 references are independent test oracles.

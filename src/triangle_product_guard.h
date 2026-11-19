@@ -59,5 +59,26 @@ inline ProductResidual product_residual_range(Word a, Word b, Word p) {
     const int leading = ea + eb + int(highest_bit(difference));
     return leading >= -126 && leading <= 127 ? normal_residual : unsupported;
 }
+// Only normal-or-zero raw inputs are supported. The exact product of two
+// binary32 significands fits 48 bits. RN-even yields zero iff its magnitude
+// is at most half of the minimum subnormal (2^-150), including the zero tie.
+// This applies to deliberately rounded cross terms, not retained product errors.
+inline bool rounded_product_is_zero(Word a, Word b) {
+    if (!normal_or_zero(a) || !normal_or_zero(b))
+        return false;
+    const Word aa = a & 0x7fffffffu, bb = b & 0x7fffffffu;
+    if (aa == 0 || bb == 0)
+        return true;
+    const Word sum = (aa >> 23) + (bb >> 23);
+    if (sum <= 102)
+        return true;
+    if (sum >= 105)
+        return false;
+    const Word ma = (aa & 0x7fffffu) | 0x800000u;
+    const Word mb = (bb & 0x7fffffu) | 0x800000u;
+    if (sum == 104)
+        return ma == 0x800000u && mb == 0x800000u;
+    return Wide(ma) * Wide(mb) <= (Wide{1} << 47);
+}
 } // namespace triangle_numeric
 } // namespace rypath
