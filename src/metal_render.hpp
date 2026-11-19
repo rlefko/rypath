@@ -3,6 +3,7 @@
 
 #include "metal_geometry.hpp"
 #include "render.hpp"
+#include "shading_normal_probe_wire.h"
 
 namespace rypath {
 
@@ -61,6 +62,17 @@ struct RenderBuildResult {
 };
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path = {});
+
+// Fixed-input native numerical validation; no scene/AS or transport state changes.
+struct ShadingNormalProbeResult {
+    MetalStatus status = MetalStatus::failure;
+    std::string diagnostic;
+    std::vector<shading_normal_probe::Result> values;
+    std::size_t guard_count = 0;
+};
+ShadingNormalProbeResult
+probe_shading_normal(const std::vector<shading_normal_probe::Query> &queries,
+                     const std::filesystem::path &library_path = {});
 
 enum class RenderCompletion { complete, cancelled, failed };
 struct RenderControl {

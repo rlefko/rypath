@@ -348,7 +348,18 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         // Preserve the sampled joint coating-walk ratio. Its directional MIS
         // proxy is a separate density and must never replace this weight.
-        beta *= continuation.weight;
+        if (mode == Mode::Importance) {
+            // Use the exact local cosines used by sample(), not a world/local
+            // round trip that can erase a nonzero grazing sampled direction.
+            const auto correction = rypath_shading_normal::correction(
+                sampled_wo_local.z, continuation.wi.z, dot(v.wo, v.point.geometric_normal),
+                dot(wi, v.point.geometric_normal));
+            for (uint lane = 0; lane < 4; ++lane)
+                beta[lane] = rypath_shading_normal::multiply(beta[lane], continuation.weight[lane],
+                                                             correction);
+        } else {
+            beta *= continuation.weight;
+        }
         if (!finite_nonnegative(beta)) {
             sample.status = wire::invalid_arithmetic;
             break;

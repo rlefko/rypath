@@ -157,7 +157,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "0ada5de232b135deac3c53b25090340d84a3c2b0c619a7cac830842e2391ce65",
+                "15cb6f1bf96b1b267c1b790e086b5c87c7ba9b4f5ae814847fe4de18027d1522",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
@@ -198,11 +198,11 @@ void codec(const std::filesystem::path &dir) {
             "invalid packet plane rejected transactionally");
     require(read(path) == original, "invalid packet plane preserves prior checkpoint");
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
-    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 29>{
-             {{20, 6},  {8, 2},   {12, 11}, {16, 13}, {20, 5}, {20, 4}, {8, 1},  {12, 10},
-              {16, 12}, {20, 3},  {24, 1},  {12, 3},  {12, 4}, {12, 5}, {12, 6}, {12, 7},
-              {12, 8},  {12, 9},  {16, 3},  {16, 4},  {16, 5}, {16, 6}, {16, 7}, {16, 8},
-              {16, 9},  {16, 10}, {16, 11}, {20, 1},  {20, 2}}}) {
+    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 30>{
+             {{16, 14}, {20, 6},  {8, 2},   {12, 11}, {16, 13}, {20, 5}, {20, 4}, {8, 1},
+              {12, 10}, {16, 12}, {20, 3},  {24, 1},  {12, 3},  {12, 4}, {12, 5}, {12, 6},
+              {12, 7},  {12, 8},  {12, 9},  {16, 3},  {16, 4},  {16, 5}, {16, 6}, {16, 7},
+              {16, 8},  {16, 9},  {16, 10}, {16, 11}, {20, 1},  {20, 2}}}) {
         auto legacy = original;
         put(legacy, offset, version, 4);
         rehash(legacy);

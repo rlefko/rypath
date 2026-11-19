@@ -272,3 +272,27 @@ kernel void coating_schedule_probe(const device rypath::layered_probe::Query *qu
     r.accepted = s.accepted;
     results[id] = r;
 }
+
+// Fixed-input probe of the production helper, independent of BSDF sampling.
+#include "../src/shading_normal_probe_wire.h"
+#include "../src/shading_normal_shared.h"
+kernel void shading_normal_probe(const device rypath::shading_normal_probe::Query *queries
+                                 [[buffer(0)]],
+                                 device rypath::shading_normal_probe::Result *results [[buffer(1)]],
+                                 constant uint &count [[buffer(2)]],
+                                 uint tid [[thread_position_in_grid]]) {
+    if (tid >= count)
+        return;
+    const auto q = queries[tid];
+    const auto c = rypath_shading_normal::correction(q.wo_ns, q.wi_ns, q.wo_ng, q.wi_ng);
+    const auto endpoint =
+        rypath_shading_normal::cosine_correction(q.wo_ns, q.wi_ns, q.wo_ng, q.wi_ng);
+    results[tid] = {rypath_shading_normal::apply(q.a, c),
+                    rypath_shading_normal::multiply(q.a, q.b, c),
+                    c.scale,
+                    c.exponent,
+                    uint(c.valid),
+                    rypath_shading_normal::apply(q.a, endpoint),
+                    rypath_shading_normal::multiply(q.a, q.b, endpoint),
+                    0};
+}

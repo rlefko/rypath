@@ -5,6 +5,7 @@
 #pragma once
 #include "../src/packet_spectrum_shared.h"
 #include "../src/packet_wire.h"
+#include "../src/shading_normal_shared.h"
 #include "packet_scattering.h"
 
 namespace rypath_bdpt {
@@ -335,6 +336,24 @@ inline float4 f(const thread Vertex &v, float3 direction, Mode mode) {
         rypath_packet::evaluate(v.bsdf, v.pair_valid ? v.sampled_wo_local : v.frame.local(v.wo),
                                 v.frame.local(direction), v.seed, mode);
     return result.valid ? result.f : float4(NAN);
+}
+// Connections and splats include the endpoint's incident cosine. Evaluate that
+// product with the importance adjoint, canceling the removable shading-normal
+// denominator before it can overflow. The BSDF and its PDFs remain unchanged.
+inline float4 importance_f_cos(const thread Vertex &v, float3 direction) {
+    if (v.type != surface_vertex)
+        return 0;
+    const float3 wo = v.pair_valid ? v.sampled_wo_local : v.frame.local(v.wo);
+    const float3 wi = v.frame.local(direction);
+    const auto result = rypath_packet::evaluate(v.bsdf, wo, wi, v.seed, Mode::Importance);
+    if (!result.valid)
+        return float4(NAN);
+    const auto correction = rypath_shading_normal::cosine_correction(
+        wo.z, wi.z, dot(v.wo, v.point.geometric_normal), dot(direction, v.point.geometric_normal));
+    float4 value;
+    for (uint lane = 0; lane < 4; ++lane)
+        value[lane] = rypath_shading_normal::apply(result.f[lane], correction);
+    return value;
 }
 
 // Each shadow segment excludes just its sampled endpoints. A nearer root of the
@@ -758,9 +777,8 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
         if (!(d2 > 0))
             return 0;
         const float3 wi = delta * rsqrt(d2);
-        value =
-            pt.beta * f(pt, wi, Mode::Radiance) * qs.beta * f(qs, -wi, Mode::Importance) *
-            (abs(dot(pt.point.shading_normal, wi)) * abs(dot(qs.point.shading_normal, wi)) / d2);
+        value = pt.beta * f(pt, wi, Mode::Radiance) * qs.beta * importance_f_cos(qs, -wi) *
+                (abs(dot(pt.point.shading_normal, wi)) / d2);
         if (nonzero(value) && !visible(r, pt, qs, sample))
             return 0;
     }
@@ -796,8 +814,7 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
     float3 direction;
     if (!camera_sample(p, qs, uniform2(p, lens_words), sampled, raster, direction))
         return false;
-    float4 value = qs.beta * f(qs, direction, Mode::Importance) * sampled.beta *
-                   abs(dot(qs.point.shading_normal, direction));
+    float4 value = qs.beta * importance_f_cos(qs, direction) * sampled.beta;
     if (nonzero(value) && !visible(r, qs, sampled, sample))
         return false;
     if (!finite_nonnegative(value)) {

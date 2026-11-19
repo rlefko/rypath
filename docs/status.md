@@ -10,7 +10,7 @@ night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport
 BDPT camera/light connections and splats, finite sensor-space film clamping,
 raw EXR export, and an explicit bounded large-scene profile. Checkpoint
 format/identity/renderer/sampling/accumulation contracts on this follow-up branch
-are 3/12/14/7/2.
+are 3/12/15/7/2.
 See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
 acceptance targets and historical validation. The follow-up adds native environment
 CDFs, combined light selection, directional shape/emission proposals and pinned
@@ -23,6 +23,10 @@ identified a refracted-environment caustic behind one day outlier. Night attribu
 then demonstrated repeated Halton BDPT light splats across 128-pixel tiles.
 The follow-up gives those light paths distinct full-Film indices; its new
 variance measurements are separate from the original failed study.
+Further [regression diagnosis](transport-regression-validation.md) isolates a
+missing importance shading-normal adjoint in a night outlier. The correction has
+focused native validation; final scene-level measurements remain separate from
+the historical results below.
 Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
@@ -33,7 +37,7 @@ remain unestablished.
 
 ## Validation
 
-The contract-7 light-index correction passes all 211 Debug, Release and sanitizer
+The earlier renderer-14, sampling-7 light-index correction passed all 211 Debug, Release and sanitizer
 checks, 225 Python checks and five affected Metal API validation checks. Its
 32-seed night-512 re-evaluation reduces authored-clamped variance by 34.0%
 overall, 70.3% on the wall and 71.7% on the floor versus the original candidate.

@@ -2371,4 +2371,74 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
     }
 }
 
+ShadingNormalProbeResult
+probe_shading_normal(const std::vector<shading_normal_probe::Query> &queries,
+                     const std::filesystem::path &library_path) {
+    ShadingNormalProbeResult result;
+    if (queries.empty() || queries.size() > 65536) {
+        result.diagnostic = "Shading normal probe requires 1..65536 inputs";
+        return result;
+    }
+    @autoreleasepool {
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (device == nil) {
+            result.status = MetalStatus::no_device;
+            result.diagnostic = "No Metal device";
+            return result;
+        }
+        auto library = metal::load_library(device, library_path, result.diagnostic);
+        if (library == nil)
+            return result;
+        auto pipeline =
+            metal::load_pipeline(device, library, @"shading_normal_probe", result.diagnostic);
+        if (pipeline == nil)
+            return result;
+        auto queue = [device newCommandQueue];
+        constexpr std::size_t guard_bytes = 64;
+        const auto payload = queries.size() * sizeof(shading_normal_probe::Result);
+        auto input = [device newBufferWithBytes:queries.data()
+                                         length:queries.size() * sizeof(queries[0])
+                                        options:MTLResourceStorageModeShared];
+        auto output = [device newBufferWithLength:payload + 2 * guard_bytes
+                                          options:MTLResourceStorageModeShared];
+        if (queue == nil || input == nil || output == nil) {
+            result.diagnostic = "Shading normal probe resource allocation failed";
+            return result;
+        }
+        std::memset(output.contents, 0xa5, payload + 2 * guard_bytes);
+        const auto count = static_cast<std::uint32_t>(queries.size());
+        auto command = [queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        if (command == nil || encoder == nil) {
+            result.diagnostic = "Shading normal probe encoder creation failed";
+            return result;
+        }
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:input offset:0 atIndex:0];
+        [encoder setBuffer:output offset:guard_bytes atIndex:1];
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        // Include inactive lanes to exercise the kernel's bounds check.
+        const auto width = metal::group_width(device, pipeline);
+        const auto groups = (count + width - 1) / width;
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+        [encoder endEncoding];
+        result.diagnostic = metal::complete(command, "shading normal probe");
+        if (!result.diagnostic.empty())
+            return result;
+        const auto *bytes = static_cast<const unsigned char *>(output.contents);
+        for (std::size_t i = 0; i < guard_bytes; ++i) {
+            if (bytes[i] != 0xa5 || bytes[guard_bytes + payload + i] != 0xa5) {
+                result.diagnostic = "Shading normal probe output guard overwritten";
+                return result;
+            }
+        }
+        result.values.resize(count);
+        std::memcpy(result.values.data(), bytes + guard_bytes, payload);
+        result.guard_count = 2 * guard_bytes;
+        result.status = MetalStatus::success;
+        return result;
+    }
+}
+
 } // namespace rypath

@@ -114,6 +114,11 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/src/bsdf_table_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/layered_probe_wire.h")
     endif()
+    if(shader STREQUAL "render" OR shader STREQUAL "packet_scattering_probe")
+        list(APPEND shader_dependencies
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/shading_normal_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/shading_normal_probe_wire.h")
+    endif()
     if(shader STREQUAL "packet_scattering_probe")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/tests/layered_rng_oracles.h")
     endif()

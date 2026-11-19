@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "bsdf_table.hpp"
 #include "bsdf_table_fixture.hpp"
+#include "checkpoint.hpp"
 #include "metal_render.hpp"
 #include "packet_wire.h"
 #include "render_driver.hpp"
+#include "render_identity.hpp"
+#include "shading_normal_cases.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <numbers>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 namespace {
@@ -472,9 +479,243 @@ void point_identity() {
     require(std::abs(radiance.mean() - expected) <= tolerance,
             "Packet point-light analytic radiance identity");
 }
+// Required extended native check for Importance-continuation changes:
+//   rypath_packet_render_tests --shading-normal-spot-extended
+// Fixed 8 seeds (19317+k*7919), 16x16,8192 spp, flat/tilted spotlight corners.
+// Gate: abs(mean paired BDPT-PT) <= 6 paired SE + 2% PT mean, with a zero-direct
+// control. This explicit minutes-scale check is not a default CTest. The lower
+// 256-spp diagnostic did not detect the continuation-disabled mutation; retain
+// that limitation rather than substituting it for the extended check.
+void shading_normal_native(bool spotlight = false, bool extended = false) {
+    // Optional evidence output is fresh-only; ordinary CTest runs create no files.
+    std::filesystem::path evidence;
+    if (const auto *path = std::getenv("RYPATH_SHADING_NORMAL_EVIDENCE")) {
+        evidence = path;
+        require(!evidence.empty() && !std::filesystem::exists(evidence),
+                "Shading-normal evidence path must be fresh");
+        require(std::filesystem::create_directories(evidence),
+                "Cannot create shading-normal evidence directory");
+    }
+    auto save = [&](const RenderScene &scene, const RenderSettings &settings,
+                    const RenderResult &result, const std::string &name) {
+        if (evidence.empty())
+            return;
+        RenderCheckpoint checkpoint{
+            result.film,
+            settings,
+            render_identity(scene, settings),
+            {{0, settings.samples, "focused-test; external execution receipt binds build",
+              result.device.name, result.device.architecture, ""}}};
+        require(write_checkpoint(checkpoint, evidence / (name + ".rycp")).empty(),
+                "Cannot retain shading-normal raw checkpoint");
+    };
+    const auto queries = shading_normal_test::queries();
+    const auto result = probe_shading_normal(queries);
+    require(result.status == MetalStatus::success, result.diagnostic);
+    require(result.values.size() == queries.size() && result.guard_count == 128,
+            "Shading-normal probe accounting/guards");
+    if (!evidence.empty()) {
+        std::ofstream input(evidence / "probe-input.bin", std::ios::binary);
+        std::ofstream output(evidence / "probe-output.bin", std::ios::binary);
+        input.write(reinterpret_cast<const char *>(queries.data()),
+                    static_cast<std::streamsize>(queries.size() * sizeof(queries[0])));
+        output.write(reinterpret_cast<const char *>(result.values.data()),
+                     static_cast<std::streamsize>(result.values.size() * sizeof(result.values[0])));
+        require(bool(input) && bool(output), "Cannot retain native shading-normal probe records");
+    }
+    std::size_t flushed_subnormal_outputs = 0;
+    std::ostringstream ftz_report;
+    auto native_check = [&](float observed, long double exact, std::size_t row,
+                            const char *operation) {
+        // Metal does not promise binary32 subnormal results. Retain these cases
+        // and accept only the correct subnormal (normal oracle below) or zero.
+        // NORMAL-range checks retain the independent 8-epsilon gate.
+        if (exact > 0 && exact < std::numeric_limits<float>::min() && observed == 0) {
+            ++flushed_subnormal_outputs;
+            ftz_report << "row " << row << " " << operation << " exact " << std::setprecision(21)
+                       << exact << " observed zero\n";
+            return;
+        }
+        shading_normal_test::check(observed, exact);
+    };
+    for (std::size_t i = 0; i < queries.size(); ++i) {
+        const auto &v = result.values[i];
+        native_check(v.applied, shading_normal_test::oracle(queries[i], false), i, "apply");
+        native_check(v.multiplied, shading_normal_test::oracle(queries[i], true), i, "multiply");
+        shading_normal_test::check_identity(queries[i], v.applied, v.multiplied);
+        native_check(v.endpoint_applied, shading_normal_test::endpoint_oracle(queries[i], false), i,
+                     "endpoint_apply");
+        native_check(v.endpoint_multiplied, shading_normal_test::endpoint_oracle(queries[i], true),
+                     i, "endpoint_multiply");
+        require(v.reserved == 0, "Shading-normal probe ABI reserved field");
+    }
+    std::cout << "Native shading-normal FTZ outputs " << flushed_subnormal_outputs << '\n'
+              << ftz_report.str();
+    if (!evidence.empty()) {
+        std::ofstream report(evidence / "native-ftz.txt");
+        report << "subnormal-output policy: correct within oracle tolerance or zero; "
+                  "no normal-range tolerance change\n"
+               << "observed flushed outputs " << flushed_subnormal_outputs << '\n'
+               << ftz_report.str();
+        require(bool(report), "Cannot retain native FTZ evidence");
+    }
+    // Fixed before execution: 8 independent seeds, 16x16 raster; 64 spp for
+    // original fixtures; spotlight uses 256 spp, or the explicit 8192 spp
+    // extended mode for the final fixed-budget continuation-power check.
+    // No clamp/tone mapping. Flat and tilted twins share the geometric scene.
+    // The depth-two corner also exercises accepted importance continuation before
+    // an endpoint connection/splat; directional PDFs and MIS remain production.
+    std::array<std::array<double, 8>, 2> direct_path_means{};
+    for (bool corner : {false, true}) {
+        if (spotlight && !corner)
+            continue;
+        for (bool tilted : {false, true}) {
+            RenderScene scene;
+            scene.model = RenderModel::pbrt;
+            scene.spectral_transport = SpectralTransport::packet;
+            scene.max_depth = corner ? 2 : 1;
+            scene.raster_camera = RasterCamera{{2, 0, 2}, {-2.5f, -.5f, -2}, {1, 0, 0}, {0, 1, 0}};
+            SpectralMaterial matte;
+            matte.kind = SpectralMaterialKind::constant;
+            matte.constant = .6f;
+            scene.materials.push_back(matte);
+            mesh(scene, {{-.5f, -.5f, 0}, {.5f, -.5f, 0}, {.5f, .5f, 0}, {-.5f, .5f, 0}}, true);
+            scene.geometry.meshes[0].normals.assign(4, tilted ? GeometryPoint{.8f, 0, .6f}
+                                                              : GeometryPoint{0, 0, 1});
+            if (corner) {
+                // A low wall clears camera rays but redirects the side light.
+                // The tilted floor has zero direct-light BSDF support everywhere:
+                // .8*(-2-x)+.6*.5 < 0 for x in [-.5,.5]. All PT signal therefore
+                // requires the wall bounce. The tilted wall tests Importance
+                // continuation before the floor endpoint/splat.
+                mesh(scene, {{.75f, -.75f, .05f},
+                             {.75f, .75f, .05f},
+                             {.75f, .75f, .25f},
+                             {.75f, -.75f, .25f}});
+                scene.geometry.meshes[1].normals.assign(4, tilted ? GeometryPoint{-.8f, 0, .6f}
+                                                                  : GeometryPoint{-1, 0, 0});
+            }
+            PointLight point;
+            point.position = corner ? GeometryPoint{-2, 0, .5f} : GeometryPoint{-.25f, 0, 2};
+            point.intensity.fill(2);
+            if (spotlight) {
+                // NEW continuation-power fixture, fixed before measurement:
+                // axis points at (.75,0,.15); inner 2deg / outer 4deg cone. All
+                // inner-cone rays hit the finite wall; smoothstep falloff puts
+                // at least 40% of emitted flux there. PT retains a broad wall patch.
+                const double length = std::hypot(2.75, .35);
+                const float x = static_cast<float>(2.75 / length);
+                const float z = static_cast<float>(-.35 / length);
+                SpotLight light;
+                light.position = point.position;
+                light.intensity = point.intensity;
+                light.light_from_world = {0, 1, 0, -z, 0, x, x, 0, z};
+                light.cos_falloff_start = static_cast<float>(std::cos(2 * std::numbers::pi / 180));
+                light.cos_falloff_end = static_cast<float>(std::cos(4 * std::numbers::pi / 180));
+                scene.spot_lights.push_back(light);
+            } else {
+                scene.point_lights.push_back(point);
+            }
+            if (corner && tilted) {
+                scene.integrator = IntegratorKind::path;
+                scene.max_depth = 1;
+                const RenderSettings direct_settings{16, 16, 1, 1, 19317};
+                const auto direct = render_progressive(scene, direct_settings);
+                require(direct.completion == RenderCompletion::complete, direct.diagnostic);
+                save(scene, direct_settings, direct, "corner-tilted-direct-zero");
+                require(mean_y(direct.film) == 0,
+                        "Indirect fixture leaked direct illumination/camera-visible wall");
+                scene.max_depth = 2;
+            }
+            Moments difference, reference;
+            bool splat_signal = false;
+            for (unsigned seed = 0; seed < 8; ++seed) {
+                RenderSettings settings{16, 16, spotlight ? (extended ? 8192u : 256u) : 64u, 16,
+                                        19317u + seed * 7919u};
+                scene.integrator = IntegratorKind::path;
+                auto path = render_progressive(scene, settings);
+                require(path.completion == RenderCompletion::complete, path.diagnostic);
+                const auto name = std::string(corner ? "corner-" : "direct-") +
+                                  (tilted ? "tilted-" : "flat-") + std::to_string(settings.seed);
+                save(scene, settings, path, name + "-pt");
+                scene.integrator = IntegratorKind::bdpt;
+                auto bdpt = render_progressive(scene, settings);
+                require(bdpt.completion == RenderCompletion::complete, bdpt.diagnostic);
+                save(scene, settings, bdpt, name + "-bdpt");
+                require(validate_film_accumulation(path.film).empty() &&
+                            validate_film_accumulation(bdpt.film).empty(),
+                        "Shading-normal raw Film invalid");
+                const double a = mean_y(path.film), b = mean_y(bdpt.film);
+                require(a > 0 && b > 0, "Shading-normal fixture lost illumination");
+                difference.add(b - a);
+                reference.add(a);
+                if (!corner)
+                    direct_path_means[tilted][seed] = a;
+                splat_signal |= std::ranges::any_of(
+                    bdpt.film.pixels, [](const auto &p) { return p.splat_sum[1] > 0; });
+                std::cout << "Shading-normal seed " << settings.seed << " corner " << corner
+                          << " tilted " << tilted << " PT " << a << " BDPT " << b << '\n';
+            }
+            const double tolerance =
+                6 * std::sqrt(difference.variance_mean()) + .02 * reference.mean();
+            require(splat_signal, "Shading-normal fixture has no light-camera splats");
+            require(std::abs(difference.mean()) <= tolerance,
+                    "Shading-normal PT/BDPT mean regression");
+            std::cout << "Shading-normal corner " << corner << " tilted " << tilted
+                      << " paired difference " << difference.mean() << " tolerance " << tolerance
+                      << '\n';
+        }
+    }
+    if (spotlight)
+        return;
+    // Independent area quadrature of rho*I*cos(light,ns)/(pi*r^2).
+    // Uniform raster positions map affinely to the unit square. Sensor/spectrum
+    // factors cancel between the otherwise identical tilted and flat fixtures.
+    double flat = 0, tilt = 0;
+    constexpr unsigned divisions = 256;
+    for (unsigned y = 0; y < divisions; ++y)
+        for (unsigned x = 0; x < divisions; ++x) {
+            const double dx = -.25 - ((x + .5) / divisions - .5);
+            const double dy = -((y + .5) / divisions - .5);
+            const double r2 = dx * dx + dy * dy + 4;
+            const double denominator = r2 * std::sqrt(r2);
+            flat += 2 / denominator;
+            tilt += (.8 * dx + 1.2) / denominator;
+        }
+    const double ratio = tilt / flat;
+    Moments quadrature_difference, quadrature_reference;
+    for (unsigned seed = 0; seed < 8; ++seed) {
+        quadrature_difference.add(direct_path_means[1][seed] - ratio * direct_path_means[0][seed]);
+        quadrature_reference.add(direct_path_means[0][seed]);
+    }
+    const double tolerance =
+        6 * std::sqrt(quadrature_difference.variance_mean()) + .002 * quadrature_reference.mean();
+    require(std::abs(quadrature_difference.mean()) <= tolerance,
+            "Native PT tilted/flat means disagree with independent diffuse-plane integral");
+    std::cout << "Shading-normal analytic tilted/flat PT ratio " << ratio << " paired residual "
+              << quadrature_difference.mean() << " tolerance " << tolerance << '\n';
+}
 } // namespace
 int main(int argc, char **argv) {
     try {
+        if (argc == 2 && (std::string_view(argv[1]) == "--shading-normal" ||
+                          std::string_view(argv[1]) == "--shading-normal-spot" ||
+                          std::string_view(argv[1]) == "--shading-normal-spot-extended")) {
+            auto capability = query_metal_device();
+#if defined(RYPATH_ALLOW_NO_METAL_DEVICE)
+            if (capability.status == MetalStatus::no_device)
+                return 77;
+#endif
+            require(capability.status == MetalStatus::success, capability.diagnostic);
+#if defined(RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+            if (!capability.device.compute_ray_tracing)
+                return 77;
+#endif
+            shading_normal_native(std::string_view(argv[1]) != "--shading-normal",
+                                  std::string_view(argv[1]) == "--shading-normal-spot-extended");
+            std::cout << "PASS native shading-normal oracle and PT/BDPT means\n";
+            return 0;
+        }
         if (argc != 1) {
             require(argc == 3 && std::string_view(argv[1]) == "--surface-family",
                     "Expected --surface-family FAMILY");
