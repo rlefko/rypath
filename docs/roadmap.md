@@ -139,6 +139,10 @@ clarifies the work; completion is recorded in [status](status.md).
     simultaneous quality bounds and ten night RGB mean safeguards, with a
     substantial measured slowdown. Mean/outlier diagnosis and performance
     recovery remain required; passing regression suites do not close these gaps.
+    A subsequent fixed night PT comparison finds no regional rypath/PBRT mean
+    failure, but within-renderer BDPT/PT differences remain, including in PBRT.
+    Floor contribution attribution and repeated timing of the integrated
+    arithmetic/visibility optimizations are the next validation steps.
     Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).

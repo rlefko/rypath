@@ -37,6 +37,12 @@ fails: 0/48 simultaneous quality bounds and 26/36 raw mean safeguards pass
 diagnosis. Formal timing also records slower whole-process execution than the
 frozen renderer-14 v5 candidate: 2.261× by day and 2.961× by night.
 The earlier pilots and failed quality studies remain historical evidence.
+Subsequent fixed night PT comparisons pass all six regional rypath/PBRT mean
+checks, while BDPT differs from PT within both renderers. Rypath's remaining
+within-renderer failures are floor red and green. This narrows the diagnosis
+without establishing PT convergence or replacing the original quality verdict.
+Execution-only arithmetic and visibility optimizations are integrated separately;
+their combined repeated performance comparison remains pending.
 Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
@@ -46,6 +52,14 @@ additional camera/film models and broader material semantics remain on the
 remain unestablished.
 
 ## Validation
+
+The subsequent execution changes in `d1d205e` pass all 220 Release checks and
+all 220 ASan/UBSan checks, plus 158 portable Clang 18 checks. Debug initially
+passes 219/220; the new alpha test fixture lacked required texture-frame metadata.
+After correcting that fixture, its rerun passes and all 64 native Debug checks
+pass with Metal API validation. Focused Clang-Tidy and Apple analyzer checks pass.
+These results are distinct from the frozen renderer-18 evidence below and do not
+yet establish a combined speedup or improved Pavilion quality.
 
 Renderer-18 candidate `c3489bf` passes Debug, Release and ASan/UBSan validation
 (220 checks each) on the M4 Max running macOS 26.6. All 64 native tests pass with

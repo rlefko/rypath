@@ -453,6 +453,130 @@ versions use sampling contract 7. The comparator is the retained v5 candidate,
 not the merged-main baseline. This fixed workload establishes a measured
 slowdown; it is not a time-to-quality comparison or a primary-quality runtime.
 
+An audit of the same twelve measured logs isolates a larger regression inside
+the existing render-and-accumulation timer:
+
+| Scene | V5 render loop seconds | V8 render loop seconds | V8 / v5 |
+| --- | ---: | ---: | ---: |
+| Day | 7.072 ± 0.017 | 72.387 ± 0.175 | 10.236× |
+| Night | 13.074 ± 0.019 | 126.309 ± 0.490 | 9.661× |
+
+This is a host wall-clock interval, including GPU waits, packet validation and
+decoding, Film accumulation, progress and checkpoint callbacks. It is not a
+GPU-only measurement. Its increase accounts for more than 99% of the observed
+whole-process increase. Roughly 43 seconds outside the named phase timers
+dilutes the whole-process ratios; that residual is not identified as pure I/O.
+V8 also writes one additional intermediate checkpoint in each measured run.
+Performance recovery and quality at equal elapsed time remain delivery
+requirements.
+
+A subsequent day-64 diagnostic replaces only host timing code and retains the
+frozen metallib. Its unmodified-host control and instrumented host both reproduce
+the original scene identity, all 11,750,400 Film payload bytes and all raw/clamped
+FLOAT components exactly. All 896 completed command-buffer GPU timestamps are
+valid: their intervals total 71.197 seconds within a 72.965-second render loop
+(97.6%). Host setup/encoding takes 0.725 seconds, decoding 0.506 seconds, and
+Film add/commit 0.083 seconds. Three checkpoint writes total 0.126 seconds,
+including the initial pre-loop save. GPU intervals overlap host dispatch waits;
+these nested timers must not be added together. This diagnostic establishes
+GPU execution as the dominant current cost, not a separately measured v5/v8
+GPU-throughput ratio or attribution to one shader function.
+
+A cache-only certified-quotient shortcut preserves the same complete Film and
+image bytes but changes measured GPU time only from 71.197 to 71.105 seconds in
+one matched pair. That negligible difference is insufficient evidence for a
+performance fix, and the shortcut is not adopted. Its longer whole-process
+runtime also includes first-use pipeline compilation.
+
+A separate fixed eight-sample day prefix counts 1,873,243 closest-hit queries
+and 14,932,069 software triangle solves: 7.97 candidates per query. Of those
+solves, 70.44% return a fast-path miss, and none enter the extended-range triangle
+fallback. This does not exclude the extended arithmetic used for pruning caps.
+There are 2,043,662 cap attempts and 2,037,171 traversal resets; the current-best
+triangle is offered again 2,037,171 times, or 13.64% of all solves. Every paired
+original/instrumented workspace byte agrees after removing the counter payload,
+including all 435,200 returned packets. These are instrumented visitation counts,
+not proof of the uninstrumented candidate order or a whole-frame/night profile.
+
+The following isolated experiments each preserve the fixed day-64 Film payload,
+scene identity and every raw/clamped FLOAT component:
+
+| Change relative to original v8 | GPU seconds | Change from 71.197-second control |
+| --- | ---: | ---: |
+| Certified normal-domain FMA product-residual check | 67.840 | −4.71% |
+| Reuse the current-best triangle solve when offered again, retaining alpha calls | 69.839 | −1.91% |
+| Guarded binary32 construction of the identical extended world enclosure | 66.041 | −7.24% |
+| Exact normal-domain exponent scaling and extraction | 68.559 | −3.71% |
+| Existing any-hit visibility for scenes without pass-through surfaces | 53.324 | −25.10% |
+
+Each row is one exploratory observation against the earlier diagnostic control,
+not a repeated performance result. The changes are tested separately and their
+percentages must not be added. The enclosure experiment retains the original
+integer fallback and ray slab/cap operations; optimized and UBSan checks compare
+1,001,156 scalar cases and 100,102 boxes without a mismatch. Its run writes two
+checkpoints versus the control's three; GPU intervals exclude those writes.
+None of these results resolves the regression or establishes time to raw-image
+quality. These measurements exercise isolated copies of v8; combined integration
+needs separate validation. The normal-exponent shortcut also passes 39,948 native
+old/new helper comparisons with intact guards and input bytes. The visibility
+trial confirms that the prepared scene disables pass-through handling; it changes
+candidate visitation under the existing Boolean occlusion contract, without
+changing the sampled segment or alpha decision.
+
+A separate host-only 128-thread pipeline cap gives 67.298 GPU seconds with the
+same Film and image bits. This resource-policy experiment remains separate from
+the integration. It combines compilation and dispatch-width changes; neither its
+timing nor its reported pipeline limits establish register spills or occupancy.
+
+The five arithmetic/reuse/visibility changes are integrated in `d1d205e`; the
+quotient and 128-thread experiments remain separate. These changes preserve the
+existing estimator and numerical fallback policies. Release and ASan/UBSan each
+pass all 220 tests, and the portable Clang 18 build passes 158. Debug's first
+219/220 run exposes missing texture-frame metadata in the new alpha fixture;
+the corrected fixture passes its rerun, followed by all 64 native tests with
+Metal API validation. Focused Clang-Tidy and Apple analyzer checks pass. The
+combined repeated day/night image-identity and performance study remains pending.
+
+The follow-up fixed night seed-0, 512-spp control keeps the frozen host and all
+other shader code unchanged while disabling the two importance shading-normal
+correction applications. The rebuilt enabled control reproduces every raw and
+clamped FLOAT component exactly. Disabling the correction restores 99.42–99.94%
+of the raw floor RGB shift and 99.99–100.27% of the raw glass shift between v5
+and v8 in this seed. This localizes those changes to the combined correction;
+it does not establish which transport convention is physically correct or
+replace the failed 32-replicate study. Both control runs take about 17 minutes,
+so disabling the correction does not recover the earlier speed in this
+experiment. These two incidental runtimes are not formal performance repeats.
+
+The subsequent fixed PT diagnostic renders the preselected night glass and floor
+regions at 320×170 and 512 spp, with 16 rypath seeds (0–15) and 16 PBRT seeds
+(32–47). It retains original full-frame camera/sample coordinates. A same-AS
+control exactly matches selected packet and accumulator fields against full-frame
+execution; PBRT crop controls match the corresponding pixel bits. All planned
+runs complete. The analysis compares these new PT outputs with the same seeds
+from the retained BDPT study, using raw, exposure-normalized RGB:
+
+| Comparison | Glass RGB mean difference | Floor RGB mean difference | Inherited mean checks |
+| --- | --- | --- | ---: |
+| Rypath PT / PBRT PT − 1 | −2.68%, −2.09%, −1.75% | +9.67%, +6.50%, +4.06% | 6/6 |
+| Rypath BDPT / rypath PT − 1 | −0.61%, −0.69%, −1.08% | +38.22%, +31.94%, +14.46% | 4/6 |
+| PBRT BDPT / PBRT PT − 1 | +18.26%, +16.98%, +13.96% | +144.21%, +129.40%, +97.17% | 0/6 |
+
+The rule remains five combined standard errors plus
+`2e-5 * max(1, abs(reference_mean))`; all 18 raw checks are retained. Rypath's
+remaining within-renderer failures are floor red and green. Independent decoding
+reproduces every seed mean and gate. Authored-clamped images are descriptive only:
+their exposure is 2.5, whereas the raw comparison removes exposure. No clamped
+acceptance rule or additional seed selection is introduced.
+
+These finite, heavy-tailed samples do not establish PT equivalence or convergence,
+identify an estimator bias, or determine the correct shading-normal convention.
+They show that PBRT's brighter BDPT estimate also differs from its own PT estimate
+in these regions. Matching that brightness alone would therefore be insufficient
+justification for removing the correction. The remaining floor discrepancy needs
+contribution/strategy attribution; this diagnostic does not replace the failed
+32-replicate quality study.
+
 Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 
 | Receipt | SHA-256 |
@@ -460,6 +584,19 @@ Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 | `quality-metrics.json` | `a24b609a251382b9f87825125a536939b4fc131f9c034c407f2e20071c70a93a` |
 | `independent-final-review-001/audit-result.json` | `719b7aa52edc2e99feef24d9f9f40da888a6251f96db5a88edaf98514c36db3e` |
 | `report-plots-001/outputs/receipt.json` | `99938f18a0e9f40b5f3ccd3e7de701a0187f57f74786032efbbba473d19bda95` |
+| `performance-diagnosis-001/phases.json` | `bc050cd6d022b1abcd2d335a050d6e544242008abb35a830cc2ccaf75a1ef5c5` |
+| `performance-review-001/review.json` | `2e39897964b90cb0848da6de2551c022a40501a6e001996c0bcdb61237e997dc` |
+| `host-timing-proposal-001/diagnostic-execution.json` | `dd7792b34bb25395f48adb53694c9474fb660f3a3360ca143616b9fb535bdec1` |
+| `traversal-counters-001/seal.json` | `46824b424ff1b1296b56c57bea869cf406b60ece85b6507ae859358ef1ba0ade` |
+| `fma-guard-prototype-001/result-interpretation.json` | `8ea05a96e9f62c2dbb254428a431a02a6cc00ec07c307a4e0e2290707db75f8e` |
+| `best-triangle-cache-001/audit.json` | `a71f57e85d8e735875ebdcd806f39b198ebd43b7b644747920a91100024c0921` |
+| `float-bounds-prototype-001/result-interpretation002.json` | `5f6ec59e625597a79e106802075c1ecce5f328ceed108131765a04babb46291e` |
+| `visibility-anyhit-prototype-001/audit.json` | `a0b91ee48c2259e446d4b8143f741f98be2517c54fc021e130de268dc3add9d6` |
+| `normal-exponents-prototype-001/result-interpretation.json` | `ea32555658271ce4c0dad34af3587087d56fbd6bdc664fed2e7720184399efd2` |
+| `pipeline-width-prototype-001/root-execution.json` | `b38bf53eeffa46f21c6a0f9c7759061ffd81a9b905672e5aacc8af1bb9497baa` |
+| `adjoint-control-001/interpretation.json` | `f1a2f57b09b70b499b13b38c4c89e79a40587257b11188bad6e6c3f8020a7db2` |
+| `night-pt-roi-diagnostic-001/study-execution.json` | `f2a028ece2dfed74dac0913bdc90b1f0c25750025e1ffbbcc9d506e2e7c1be25` |
+| `night-pt-roi-diagnostic-001/analysis.json` | `96ec126ce6383455368063cd3887208003b02faae00332e78276c0f421235572` |
 
 The descriptive report's `report-plots-001/outputs/summary.json` retains all
 endpoints, mean safeguards and timing runs. The
