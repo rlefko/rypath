@@ -30,8 +30,12 @@ arithmetic, candidate-coverage and boundary-stress regressions; fixed replays
 identified their causes. Renderer 18 repairs coverage, range and traversal cost.
 The combined candidate passes all 220 checks in each supported preset, including
 native API validation. Four fresh Pavilion contexts reproduce the fixed 8,192
-packet records and owner reductions exactly. Fresh day and night pilots are complete;
-full-resolution and ensemble measurements remain pending.
+packet records and owner reductions exactly. Both fresh 1600×850 day-256 and
+night-512 images are complete and independently audited. The completed fixed study
+fails: 0/48 simultaneous quality bounds and 26/36 raw mean safeguards pass
+(day 18/18, night 8/18). PR #51 remains a draft for night mean-shift and outlier
+diagnosis. Formal timing also records slower whole-process execution than the
+frozen renderer-14 v5 candidate: 2.261× by day and 2.961× by night.
 The earlier pilots and failed quality studies remain historical evidence.
 Unsupported media and geometry receive
 diagnostics rather than substitutions.
@@ -54,8 +58,29 @@ immutable renderer-18 snapshot preceding only the alpha probe changes. See the
 failure attribution and numerical limits. The fresh 320×170 day-256 and night-512
 pilots complete with finite raw and authored-clamped outputs in 301.00 and
 1,026.31 seconds. These incidental timings show increased cost relative to the
-historical pilots; the separate repeated comparison remains pending. Fresh
-full-resolution images and the 48-endpoint convergence study remain pending.
+historical pilots. The separate repeated comparison is complete: at 320×170 and
+64 spp, renderer-18 v8 takes 117.714 seconds by day and 171.566 by night versus
+52.063 and 57.946 for renderer-14 v5. These are means of three measured runs
+after one warm-up per scene/version, not time-to-quality results. Both fresh
+1600×850 full images are complete at day 256 spp and night 512 spp. Every raw
+and authored-clamped FLOAT EXR component reconstructs exactly from the checkpoint
+(0 ULP), and all 4,080,000 PNG channels per image match checkpoint-derived sRGB.
+Counts are uniform and all checkpoint accumulation values are finite. These
+artifact checks remain separate from the failed quality verdict. The ten failed
+night mean safeguards cover full-frame RGB, soffit R, floor RGB and glass RGB.
+The largest point gaps versus PBRT remain day raw soffit variance/tail
+(218.0×/7,880.0×) and night raw floor (41.40×/44.50×). See the
+[regression record](transport-regression-validation.md) for mean shifts, timing
+spread and authenticated study evidence.
+
+Published `337c4fd` repairs only initialization in the disabled Metal probe stub;
+the native renders retain frozen `c3489bf` source and binaries. Its mandatory
+pre-push Debug check passes all 220 tests; a separate upstream Clang 18.1.8
+Metal-disabled build on macOS passes 158 tests. All six jobs in
+[CI run 44632608875](https://github.com/rlefko/rypath/actions/runs/44632608875)
+pass, including Linux, macOS, CodeQL and Clang-Tidy. The
+[regression record](transport-regression-validation.md) distinguishes these
+publication checks from the frozen rendering evidence.
 
 The earlier renderer-14, sampling-7 light-index correction passed all 211 Debug, Release and sanitizer
 checks, 225 Python checks and five affected Metal API validation checks. Its

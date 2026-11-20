@@ -1,8 +1,12 @@
 # PBRT sampling and Pavilion convergence
 
-The subsequent [transport/intersection regression record](transport-regression-validation.md)
+The [transport/intersection regression record](transport-regression-validation.md)
 diagnoses the raw night outlier and day repeatability difference retained below.
-It does not replace these historical failed quality measurements.
+Its renderer-18 candidate completes fresh day and night images, including exact
+checkpoint-to-FLOAT and checkpoint-to-PNG audits. The completed study fails all
+48 simultaneous quality bounds and 10 of 36 raw RGB mean safeguards. Repeated
+timing also measures a slowdown. Diagnosis continues; earlier failed studies
+remain unchanged historical evidence.
 
 This follow-up changes light proposals and the stochastic coated-material
 approximation. It preserves separate raw spectral accumulation and exposed,
@@ -95,9 +99,112 @@ The production configuration uses the pinned hash domains for both. The original
 compare each estimator route against the corresponding PBRT route; they do not
 force the finite joint-walk and directional estimators to agree with one another.
 
+## Completed renderer-18 scene study
+
+Frozen candidate v8 (`c3489bf`, contracts 3/12/18/7/2) completes the unchanged
+320×170 study: day at 256 spp and night at 512 spp, 32 replicas per backend and
+scene. All 64 fresh candidate records and the original 128 PBRT/baseline
+references are authenticated, including all 384 raw/clamped FLOAT EXRs. Candidate
+seeds are 0–31, PBRT 32–63 and merged-baseline 64–95; no seed is replaced. The
+same six regions, 48 variance/tail endpoints, 36 raw RGB mean safeguards,
+20,000 bootstrap draws and 1.25 acceptance limit remain fixed.
+
+**The completed study fails: 0/48 simultaneous quality bounds and 26/36 raw mean
+safeguards pass.** Day passes all 18 means; night passes 8/18. Fifteen of the 48
+point ratios exceed 1.25. The remaining point ratios do not establish acceptance:
+all simultaneous upper limits exceed the target.
+
+The unchanged empirical, percentile-style joint bootstrap adds the nonnegative
+95th percentile of the maximum centered bootstrap log-score deviation across
+all 48 endpoints to each point log score. Its log margin is 3.298993620567619
+(a multiplier of 27.0854). These are one-sided, nominal 95% simultaneous bootstrap
+upper limits, not studentized, basic-bootstrap or two-sided intervals. Thirty-two
+heavy-tailed replicas do not guarantee exact simultaneous coverage. There are no
+near-zero-reference absolute gates in this completed study.
+
+| Dataset | Region | Variance / PBRT | Variance upper | Tail / PBRT | Tail upper |
+| --- | --- | ---: | ---: | ---: | ---: |
+| day/raw | full | 0.454723 | 12.3163 | 0.451286 | 12.2232 |
+| day/raw | wall | 2.19893 | 59.5588 | 19.0908 | 517.081 |
+| day/raw | soffit | 217.999 | 5904.59 | 7879.96 | 213432 |
+| day/raw | floor | 1.44912 | 39.2499 | 6.4419 | 174.481 |
+| day/raw | pool | 0.208307 | 5.64208 | 0.207278 | 5.6142 |
+| day/raw | glass | 0.819098 | 22.1856 | 0.818697 | 22.1747 |
+| day/clamped | full | 1.09704 | 29.7139 | 1.43947 | 38.9885 |
+| day/clamped | wall | 1.1299 | 30.6037 | 1.00792 | 27.3 |
+| day/clamped | soffit | 0.642337 | 17.3979 | 1.30008 | 35.2131 |
+| day/clamped | floor | 1.03254 | 27.9667 | 1.15911 | 31.3949 |
+| day/clamped | pool | 1.34079 | 36.3159 | 3.72024 | 100.764 |
+| day/clamped | glass | 0.96386 | 26.1065 | 1.53771 | 41.6494 |
+| night/raw | full | 0.658602 | 17.8385 | 0.648732 | 17.5711 |
+| night/raw | wall | 0.556315 | 15.068 | 0.279442 | 7.56878 |
+| night/raw | soffit | 0.972773 | 26.3479 | 0.907676 | 24.5847 |
+| night/raw | floor | 41.3981 | 1121.28 | 44.4978 | 1205.24 |
+| night/raw | pool | 1.10958 | 30.0533 | 1.10927 | 30.0449 |
+| night/raw | glass | 0.874875 | 23.6963 | 0.931754 | 25.2369 |
+| night/clamped | full | 0.871827 | 23.6137 | 0.987111 | 26.7363 |
+| night/clamped | wall | 0.657199 | 17.8005 | 0.523157 | 14.1699 |
+| night/clamped | soffit | 1.21483 | 32.9042 | 1.50673 | 40.8104 |
+| night/clamped | floor | 0.283047 | 7.66644 | 0.373284 | 10.1105 |
+| night/clamped | pool | 1.28581 | 34.8266 | 1.19308 | 32.3151 |
+| night/clamped | glass | 0.942151 | 25.5185 | 1.08612 | 29.418 |
+
+The ten failed night mean safeguards are full-frame RGB, soffit R, floor RGB and
+glass RGB. Full-frame means are 5.44%, 8.63% and 6.34% below PBRT; floor means
+are 32.65%, 33.84% and 37.46% below; glass means are 17.08%, 15.81% and 13.06%
+below. Soffit R is 3.41% above PBRT and exceeds its fixed allowance by a factor
+of 1.00265. Its narrow failure is retained. The lower night clamped variance
+cannot be interpreted as equal-quality improvement while those means differ.
+
+The largest raw point gaps require further diagnosis: day soffit variance/tail
+are 218.0×/7,879.96× PBRT and 48.82×/363.93× the merged baseline; night floor
+variance/tail are 41.40×/44.50× PBRT and 3.78×/5.21× the merged baseline.
+These are measured finite-study differences, not an attribution of their cause.
+The regression and exact full-image export checks pass independently of these
+failed scene-level checks. PR readiness remains held for mean/outlier diagnosis.
+
+The independent audit recomputes all point variances, positive leave-one-out
+tails, epsilons, RGB means, guard thresholds and reported-bound arithmetic. It
+agrees with the native report within its fixed tolerances. It authenticates the
+unchanged bootstrap source, executable and input manifest; it does not regenerate
+the 20,000 bootstrap maxima. The original failed studies remain preserved.
+
+### Separate repeated timing
+
+The fixed 320×170 / 64-spp workload uses seed/material seed zero, one warmup and
+three measured runs per scene/version, serially on the M4 Max. All 16 runs
+complete. These whole-process wall times include both output planes and durable
+checkpoint export. Values are mean ± sample standard deviation, not confidence
+intervals. The comparator is frozen v5, renderer 14/sampling 7, not merged main.
+
+| Scene | v5 seconds | v8 seconds | v8 / v5 |
+| --- | ---: | ---: | ---: |
+| Day | 52.063 ± 0.131 | 117.714 ± 0.293 | 2.261× |
+| Night | 57.946 ± 0.104 | 171.566 ± 0.914 | 2.961× |
+
+This substantial slowdown is separate from the primary 256/512-spp quality
+budgets. These measurements do not establish a time-to-quality curve or predict
+full-resolution throughput. Both full-resolution images and their exact export
+audits are recorded in the [regression record](transport-regression-validation.md).
+
+Evidence is retained under `.cache/pavilion-convergence/final-v8/`:
+
+| Record | SHA-256 |
+| --- | --- |
+| `quality-metrics.json` | `a24b609a251382b9f87825125a536939b4fc131f9c034c407f2e20071c70a93a` |
+| `full48-evaluation.json` | `23e9b50993f3f1523bd4bc7e1661416dcb7a35610fbc45392c2966cf764e124d` |
+| `independent-final-review-001/audit-result.json` | `719b7aa52edc2e99feef24d9f9f40da888a6251f96db5a88edaf98514c36db3e` |
+| `report-plots-001/outputs/receipt.json` | `99938f18a0e9f40b5f3ccd3e7de701a0187f57f74786032efbbba473d19bda95` |
+
+The report receipt binds every timing record and all 48 plotted endpoints;
+failed endpoints are retained. Point estimates and one-sided upper limits are
+labelled separately. New diagnostic work must not replace this failed dataset,
+change its thresholds or relabel it as accepted.
+
 ## Persistence and resource boundaries
 
-Contracts are format/identity/renderer/sampling/accumulation **3/12/14/7/2**.
+Current format/identity/renderer/sampling/accumulation contracts are
+**3/12/18/7/2**. The earlier light-index measurements below use renderer 14.
 Format 3 is required because checkpoint metadata now stores the separate signed
 material seed. The identity includes that seed and light policy. Sampling
 contract 7 rejects the earlier contract-6 tiled Halton light stream and
@@ -542,10 +649,10 @@ The scoped evaluation remains failed; the native report also retains
 present. The independent statistical audit is SHA-256
 `5977e24d3f031cdec25522363e10301805b47fa99570930d13d61002ce34c74e`.
 
-## Contract-7 full-resolution artifacts
+## Earlier renderer-14 full-resolution artifacts
 
-Fresh renders complete both authored 1600×850 scenes: day at 256 spp
-(348,160,000 camera samples) and night at 512 spp (696,320,000). Each current
+The renderer-14 renders complete both authored 1600×850 scenes: day at 256 spp
+(348,160,000 camera samples) and night at 512 spp (696,320,000). Each renderer-14
 raw and authored-clamped FLOAT EXR matches independent checkpoint reconstruction
 at zero ULP across all 4,080,000 RGB components. Each native PNG also matches
 all 4,080,000 independently reconstructed channel bytes. Checks validate every
@@ -559,7 +666,7 @@ two PNG channels at one pixel differ by one byte level. The largest raw absolute
 difference is 0.000146933. Both day versions use identical effective `volpath`
 settings, seeds and batches, so the BDPT light-index branch is inactive. All splat planes
 and reconstruction weights are identical. The failed historical identity check
-is retained separately from the passing current-output reconstruction checks.
+is retained separately from the passing renderer-14 output reconstruction checks.
 
 A bounded native replay retains all 256 samples for the four differing owners
 and four fixed neighboring controls, with two fresh processes per frozen version.
@@ -578,7 +685,7 @@ The exact comparison is retained under
 A source-text audit initially rejected equivalent bracket spacing introduced by
 scene staging. A bracket-aware lexer resolves that harness error while retaining
 semantic comparisons and explicit sample-budget/seed/FLOAT checks; the original
-failure is archived. Current artifacts and independent audits are retained under
+failure is archived. Renderer-14 artifacts and independent audits are retained under
 `.cache/pavilion-convergence/candidate-v5-full/` and
 `.cache/pavilion-convergence/final-v5/full-artifact-audit/`.
 

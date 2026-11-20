@@ -135,7 +135,10 @@ clarifies the work; completion is recorded in [status](status.md).
     still fails the raw-tail and simultaneous quality targets. The subsequent
     [transport/intersection diagnosis](transport-regression-validation.md) adds
     the importance shading-normal adjoint and compensated native triangle
-    candidate validation; these corrections require separate scene measurements.
+    candidate validation. Its completed renderer-18 study still fails all 48
+    simultaneous quality bounds and ten night RGB mean safeguards, with a
+    substantial measured slowdown. Mean/outlier diagnosis and performance
+    recovery remain required; passing regression suites do not close these gaps.
     Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).

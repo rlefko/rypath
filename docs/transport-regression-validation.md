@@ -320,6 +320,21 @@ These artifacts, their 183 source files and 13 host archives are retained togeth
 for the fresh Pavilion runs. Their combined fixed-seed quality result remains
 separate from the passing regression suites.
 
+Published `337c4fd` subsequently adds explicit empty values and a zero guard count
+to the disabled Metal shading-normal probe stub. This fixes Linux Clang's
+missing-field-initializer error. The stub is excluded from the native macOS
+backend, and native transport code is unchanged.
+The frozen rendering snapshot remains `c3489bf`, including its historical stub;
+its source and binary hashes above are unchanged by the later publication commit.
+The mandatory pre-push Debug run passes all 220 tests, retained under
+`.cache/pavilion-convergence/final-v8/publication-gate-001/`. A separate isolated
+upstream Clang 18.1.8 Debug build with Metal disabled passes 158 tests, strict
+syntax checks on all four stubs, formatting and focused Clang-Tidy; receipts are
+under `final-v8/ci-portability-001/`. That local check runs on macOS, not Linux.
+All six jobs in [CI run 44632608875](https://github.com/rlefko/rypath/actions/runs/44632608875)
+pass for `337c4fd`, including Linux and macOS builds, repository policy,
+CodeQL, Clang-Tidy and the foundation gate.
+
 The frozen candidate also passes the fixed day repeatability check: four fresh
 processes and acceleration structures render eight owners at all 256 absolute
 sample indices. All 8,192 packets validate; every 72-byte public packet record,
@@ -332,7 +347,8 @@ Fresh 320×170 seed-zero pilots complete at day 256 spp and night 512 spp, with
 finite raw and authored-clamped FLOAT planes. Render subprocess times are
 300.995 and 1,026.314 seconds respectively; the historical renderer-17 pilots
 took 122.118 and 537.933 seconds. These are incidental observations across
-revisions. The separate warm-up and repeated timing comparison remains required.
+revisions. The completed separate warm-up and repeated timing comparison is
+reported below.
 The day comparison changes 428 of 54,400 linear pixels relative to the same-seed
 renderer-17 pilot; only 77 pixels change after standard sRGB conversion. These
 combined-revision differences do not attribute individual paths or establish
@@ -346,6 +362,109 @@ operational supplement derives full-render deadlines from the completed pilots:
 night to 51,916 seconds. Commands, estimator settings and the 300-second completed
 export deadline remain unchanged. Each invocation records its budget and deadline
 before execution; failures and interrupted attempts remain preserved.
+
+Both fresh 1600×850 images are now complete and independently audited against
+the frozen renderer-18 artifacts above, with sampler and material seed zero:
+
+| Scene | Samples per pixel | Total camera samples | Render subprocess seconds |
+| --- | ---: | ---: | ---: |
+| Day | 256 | 348,160,000 | 7,834.94 |
+| Night | 512 | 696,320,000 | 26,429.18 |
+
+Every pixel has the expected uniform count. All checkpoint accumulation planes
+and compensation pairs are finite. Each raw and authored-clamped RGB FLOAT EXR
+has 4,080,000 finite components and reconstructs exactly from compensated camera
+and splat sums: maximum error is 0 ULP in both planes for both images. All
+4,080,000 PNG channels per image also match independently reconstructed native
+sRGB bytes exactly. Raw output is unexposed; the clamped Film sums already carry
+authored ISO exposure (day 5, night 2.5). Completed checkpoint export preserves
+the durable checkpoint. The unchanged 159-asset closure and authored Film settings
+are authenticated by the audit.
+
+Render receipts and PNG/raw EXR/clamped EXR/checkpoints are retained under
+`.cache/pavilion-convergence/candidate-v8-full/`; independent results are in
+`final-v8/full-artifact-audit/day-audit.json` and `night-audit.json`.
+The SHA-256 values below agree between those completed audits and the day/night
+render receipts. They identify the frozen `c3489bf` renderer-18 full outputs,
+separately from earlier renderer-14/17 images and the later stub-only commit.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `day.png` | `1f4953c7cbe529b000b67c236d9142b855d21651dd3f54527a76926e0b28ccd3` |
+| `day-raw.exr` | `12652bb35c7f2fdf848436ed8dde0560d20ddd9d99408becf15f3f0854559605` |
+| `day-clamped.exr` | `beff36133c357dd1a8616a92d98405770a6f53e9306325758478cb80565f7389` |
+| `day.rycp` | `e219bdcb435e771de022ed22d35c2f878d612fcd91d83a524b1eca24d8fac9ae` |
+| `night.png` | `87dc26815af15e7ec35ba019bdfac668bd08a541b4f5a5ccde9391ce91789251` |
+| `night-raw.exr` | `bc5b19cef398393925533bdd7d2195a50cff32d96902e92793179e5e9f3719eb` |
+| `night-clamped.exr` | `8f9734ad3e880b46dfb00a0b8528bcb91b6a1104ee0020da352fb1f57471aba8` |
+| `night.rycp` | `edefa32ae891136b137cda4b9aa378eba055152c4c8e860c94c4509764b88f3a` |
+
+These render times are incidental completion observations, not repeated
+performance measurements. Artifact validity makes no historical pixel-identity
+or convergence claim.
+
+## Completed renderer-18 quality and timing study
+
+The full fixed study is complete and failed. All 192 primary records and 384
+FLOAT EXRs are present: 64 fresh v8 candidate records and the unchanged 128
+PBRT/baseline references. None of the 48 nominal simultaneous quality bounds
+passes the unchanged 1.25 ratio limit. Raw mean safeguards pass 26/36: day 18/18,
+night 8/18. PR #51 remains a draft for diagnosis of the new night mean failures
+and remaining outliers; passing native regressions and full-image audits do not
+satisfy this scene-level target. Historical failed studies remain unchanged.
+
+Largest remaining point ratios against PBRT are:
+
+| Dataset / region | Variance ratio | Tail ratio |
+| --- | ---: | ---: |
+| Day raw / soffit | 218.00 | 7,879.96 |
+| Night raw / floor | 41.40 | 44.50 |
+| Day raw / wall | 2.20 | 19.09 |
+
+These point estimates are distinct from the simultaneous upper bounds. The ten
+failed raw night mean safeguards have the following relative shifts from PBRT:
+
+| Region / failed channels | R shift | G shift | B shift |
+| --- | ---: | ---: | ---: |
+| Full / RGB | −5.44% | −8.63% | −6.34% |
+| Soffit / R | +3.41% | passes | passes |
+| Floor / RGB | −32.65% | −33.84% | −37.46% |
+| Glass / RGB | −17.08% | −15.81% | −13.06% |
+
+These are observed mean differences, not an attribution to a particular code
+change or proof of estimator bias. The unchanged finite 32-replicate bootstrap
+uses 20,000 joint draws across all 48 endpoints. Independent review authenticates
+the native inputs, recomputes point statistics and mean safeguards, and checks
+reported-bound arithmetic and bootstrap semantics; it does not regenerate the
+20,000 draw maxima. The nominal one-sided 95% simultaneous limits are not a
+coverage theorem for these heavy-tailed data, and the 36 mean safeguards are not
+36 simultaneous confidence intervals.
+
+Separate whole-process timing at 320×170, 64 spp and seed/material zero uses one
+warm-up followed by all three measured runs per scene/version:
+
+| Scene | Frozen v5 renderer 14 seconds | V8 renderer 18 seconds | V8 / v5 |
+| --- | ---: | ---: | ---: |
+| Day | 52.063 ± 0.131 | 117.714 ± 0.293 | 2.261× |
+| Night | 57.946 ± 0.104 | 171.566 ± 0.914 | 2.961× |
+
+The ± values are sample standard deviations, not confidence intervals. Both
+versions use sampling contract 7. The comparator is the retained v5 candidate,
+not the merged-main baseline. This fixed workload establishes a measured
+slowdown; it is not a time-to-quality comparison or a primary-quality runtime.
+
+Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
+
+| Receipt | SHA-256 |
+| --- | --- |
+| `quality-metrics.json` | `a24b609a251382b9f87825125a536939b4fc131f9c034c407f2e20071c70a93a` |
+| `independent-final-review-001/audit-result.json` | `719b7aa52edc2e99feef24d9f9f40da888a6251f96db5a88edaf98514c36db3e` |
+| `report-plots-001/outputs/receipt.json` | `99938f18a0e9f40b5f3ccd3e7de701a0187f57f74786032efbbba473d19bda95` |
+
+The descriptive report's `report-plots-001/outputs/summary.json` retains all
+endpoints, mean safeguards and timing runs. The
+[sampling/convergence record](sampling-convergence-validation.md) provides the
+complete study context; no seeds, thresholds or adverse endpoints were removed.
 
 The integer rounding and error-free-transform design follows the numerical
 principles described by [Berkeley SoftFloat](https://www.jhauser.us/arithmetic/SoftFloat.html)
