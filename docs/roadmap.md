@@ -141,8 +141,10 @@ clarifies the work; completion is recorded in [status](status.md).
     recovery remain required; passing regression suites do not close these gaps.
     A subsequent fixed night PT comparison finds no regional rypath/PBRT mean
     failure, but within-renderer BDPT/PT differences remain, including in PBRT.
-    Floor contribution attribution and repeated timing of the integrated
-    arithmetic/visibility optimizations are the next validation steps.
+    Repeated timing of the integrated arithmetic/visibility optimizations reduces
+    day/night GPU time by 37%/45% against renderer 18 with exact image controls.
+    Floor contribution attribution, current day-path replay and further measured
+    traversal improvements are the next validation steps.
     Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).

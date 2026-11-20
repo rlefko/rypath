@@ -534,8 +534,44 @@ existing estimator and numerical fallback policies. Release and ASan/UBSan each
 pass all 220 tests, and the portable Clang 18 build passes 158. Debug's first
 219/220 run exposes missing texture-frame metadata in the new alpha fixture;
 the corrected fixture passes its rerun, followed by all 64 native tests with
-Metal API validation. Focused Clang-Tidy and Apple analyzer checks pass. The
-combined repeated day/night image-identity and performance study remains pending.
+Metal API validation and the complete 220-test pre-push Debug suite. Focused
+Clang-Tidy and Apple analyzer checks pass. Publication revision `b0b7bbb` passes
+all six jobs in [CI run 44830941172](https://github.com/rlefko/rypath/actions/runs/44830941172).
+
+The combined comparison uses the same M4 Max, 320×170, 64 spp, seed/material
+zero and authored scene settings. Two production-CLI controls precede a warm-up
+pair and three measured pairs per scene, alternating version order. The baseline
+uses the frozen v8 shader and observed host; the current arm uses the integrated
+shader and matching observed host. All 18 runs reproduce the original scene
+identity, every 11,750,400-byte Film payload and all raw/clamped FLOAT components
+exactly. Each observed run has 896 valid GPU timestamps, no dispatch errors and
+the same request counts and hash. Metal API validation is disabled for timing;
+no other renderer, test, compiler or profiler runs concurrently.
+
+| Scene | Baseline GPU seconds | Current GPU seconds | Baseline whole seconds | Current whole seconds |
+| --- | ---: | ---: | ---: | ---: |
+| Day | 71.070 ± 0.030 | 44.788 ± 0.037 | 118.664 ± 0.012 | 92.212 ± 0.069 |
+| Night | 124.990 ± 0.005 | 68.651 ± 0.020 | 172.559 ± 0.102 | 116.186 ± 0.252 |
+
+Values are means and sample standard deviations over all three measured runs.
+GPU time decreases by 37.0% by day and 45.1% by night; whole-process time decreases
+by 22.3% and 32.7%. This recovers part of the regression without changing these
+images. It neither measures time to raw-image quality nor closes the earlier
+renderer-14 performance gap. Renderer-14 GPU timestamps were not captured, so
+its historical render-loop times must not be used as GPU-only comparators.
+The first attempt, `combined-performance-001`, failed before rendering because
+the copied CLI lacked executable permission. Its evidence is preserved; the
+completed `002` attempt fixes permissions without changing executable bytes,
+workloads or ordering. The current binary's embedded source revision predates
+the source commits; its source bindings match `d1d205e`, while `b0b7bbb` adds
+documentation only.
+
+A subsequent fixed two-run experiment applies only `[[clang::noinline]]` to
+the outer validated traversal routine. Both day/night Film and FLOAT controls
+remain exact. Its individual GPU times are 44.740 and 68.665 seconds, compared
+with the integrated three-run means of 44.788 and 68.651 above. This supplies
+no useful performance improvement and is not adopted. These single exploratory
+observations do not measure occupancy or register spilling.
 
 The follow-up fixed night seed-0, 512-spp control keeps the frozen host and all
 other shader code unchanged while disabling the two importance shading-normal
@@ -594,6 +630,9 @@ Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 | `visibility-anyhit-prototype-001/audit.json` | `a0b91ee48c2259e446d4b8143f741f98be2517c54fc021e130de268dc3add9d6` |
 | `normal-exponents-prototype-001/result-interpretation.json` | `ea32555658271ce4c0dad34af3587087d56fbd6bdc664fed2e7720184399efd2` |
 | `pipeline-width-prototype-001/root-execution.json` | `b38bf53eeffa46f21c6a0f9c7759061ffd81a9b905672e5aacc8af1bb9497baa` |
+| `combined-performance-002/execution.json` | `c8e9a0046ed8d3fff74dc21b5306e97dfda302a33fe611a395889ca9e233e6ec` |
+| `combined-performance-002/independent-review-001/receipt.json` | `b6842f8817b6876c5ad65ee782bfc959bfb748a6aff09225f8a6d98264b9020a` |
+| `traversal-noinline-001/execution.json` | `9c77863f81deaf658a123b5f6d0898731f9b1d85c82a60b54409ae5788e2528a` |
 | `adjoint-control-001/interpretation.json` | `f1a2f57b09b70b499b13b38c4c89e79a40587257b11188bad6e6c3f8020a7db2` |
 | `night-pt-roi-diagnostic-001/study-execution.json` | `f2a028ece2dfed74dac0913bdc90b1f0c25750025e1ffbbcc9d506e2e7c1be25` |
 | `night-pt-roi-diagnostic-001/analysis.json` | `96ec126ce6383455368063cd3887208003b02faae00332e78276c0f421235572` |

@@ -42,7 +42,9 @@ checks, while BDPT differs from PT within both renderers. Rypath's remaining
 within-renderer failures are floor red and green. This narrows the diagnosis
 without establishing PT convergence or replacing the original quality verdict.
 Execution-only arithmetic and visibility optimizations are integrated separately;
-their combined repeated performance comparison remains pending.
+their combined repeated comparison reduces GPU time by 37.0% by day and 45.1%
+by night against the frozen renderer-18 candidate, with exact image controls.
+The remaining performance regression and quality failures still block completion.
 Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
@@ -53,13 +55,21 @@ remain unestablished.
 
 ## Validation
 
-The subsequent execution changes in `d1d205e` pass all 220 Release checks and
-all 220 ASan/UBSan checks, plus 158 portable Clang 18 checks. Debug initially
+The subsequent execution changes in `d1d205e` pass all 220 checks in each of
+Debug, Release and ASan/UBSan, plus 158 portable Clang 18 checks. Debug initially
 passes 219/220; the new alpha test fixture lacked required texture-frame metadata.
-After correcting that fixture, its rerun passes and all 64 native Debug checks
-pass with Metal API validation. Focused Clang-Tidy and Apple analyzer checks pass.
+After correcting that fixture, the complete pre-push suite passes, as do all 64
+native Debug checks with Metal API validation. Focused Clang-Tidy and Apple
+analyzer checks pass. All six jobs in
+[CI run 44830941172](https://github.com/rlefko/rypath/actions/runs/44830941172)
+pass at publication revision `b0b7bbb`.
 These results are distinct from the frozen renderer-18 evidence below and do not
-yet establish a combined speedup or improved Pavilion quality.
+establish improved Pavilion quality. The separate 320×170, 64-spp timing study
+completes all 18 runs with exact Film, scene identity and raw/clamped FLOAT
+controls. Three measured runs after warm-up give day GPU time
+71.070 → 44.788 seconds and night GPU time 124.990 → 68.651 seconds;
+whole-process means fall from 118.664 → 92.212 and 172.559 → 116.186 seconds.
+These are matched-workload improvements, not time-to-quality results.
 
 Renderer-18 candidate `c3489bf` passes Debug, Release and ASan/UBSan validation
 (220 checks each) on the M4 Max running macOS 26.6. All 64 native tests pass with
