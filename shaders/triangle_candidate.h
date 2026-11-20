@@ -46,6 +46,13 @@ inline float pc_mul(float a, float b, thread bool &ok) {
 // not a general FMA validator. Normal float residuals may have very low bits.
 inline float pc_product_error(float a, float b, float primary, thread bool &ok) {
     using namespace rypath::triangle_numeric;
+    const auto domain =
+        normal_product_residual_domain(as_type<uint>(a), as_type<uint>(b), as_type<uint>(primary));
+    if (domain.supported) {
+        const float error = fma(a, b, -primary);
+        ok = ok && abs(error) <= as_type<float>(domain.half_ulp_bits);
+        return pc_check(error, ok);
+    }
     const auto range =
         product_residual_range(as_type<uint>(a), as_type<uint>(b), as_type<uint>(primary));
     if (range == unsupported)
@@ -61,9 +68,22 @@ inline float pc_div(float a, float b, thread bool &ok) {
         ok = false;
     return pc_check(q, ok);
 }
+// Compare the requested scale before adding it: e may be any signed int.
+inline bool pc_normal_scale_exponent(int exponent, int e) {
+    return exponent >= 1 && exponent <= 254 && e >= 1 - exponent && e <= 254 - exponent;
+}
+// All nonnormal inputs retain the original builtin's special-case semantics.
+inline int pc_ilogb_abs(float x) {
+    const uint exponent = (as_type<uint>(x) >> 23) & 255u;
+    return exponent > 0 && exponent < 255 ? int(exponent) - 127 : ilogb(abs(x));
+}
 inline float pc_scale(float x, int e, thread bool &ok) {
     if ((as_type<uint>(x) & 0x7fffffff) == 0)
         return x;
+    const uint bits = as_type<uint>(x);
+    const int exponent = int((bits >> 23) & 255u);
+    if (pc_normal_scale_exponent(exponent, e))
+        return as_type<float>((bits & 0x807fffffu) | (uint(exponent + e) << 23));
     float y = ldexp(x, e);
     if (!pc_normal(y) || as_type<uint>(ldexp(y, -e)) != as_type<uint>(x))
         ok = false;
@@ -159,7 +179,7 @@ inline BilinearNumber pc_transform_product(float coefficient, float coordinate, 
     if ((as_type<uint>(coefficient) & 0x7fffffff) == 0 ||
         (as_type<uint>(coordinate) & 0x7fffffff) == 0)
         return BilinearNumber(0);
-    int ce = ilogb(abs(coefficient)), pe = ilogb(abs(coordinate));
+    int ce = pc_ilogb_abs(coefficient), pe = pc_ilogb_abs(coordinate);
     auto product = pc_mul(BilinearNumber(pc_scale(coefficient, -ce, ok)),
                           BilinearNumber(pc_scale(coordinate, -pe, ok)), ok);
     return pc_scale(product, ce + pe - exponent, ok);
@@ -195,9 +215,9 @@ precise_triangle_candidate_fast(const device rypath::geometry_wire::Triangle &tr
     for (uint axis = 0; axis < 3; ++axis) {
         int exponent = -10000;
         if (origin[axis] != 0)
-            exponent = max(exponent, ilogb(abs(origin[axis])));
+            exponent = max(exponent, pc_ilogb_abs(origin[axis]));
         if (transform[3][axis] != 0)
-            exponent = max(exponent, ilogb(abs(transform[3][axis])));
+            exponent = max(exponent, pc_ilogb_abs(transform[3][axis]));
         for (uint corner = 0; corner < 3; ++corner)
             for (uint j = 0; j < 3; ++j) {
                 float p = triangle.corners[corner][j], m = transform[j][axis];
@@ -206,7 +226,7 @@ precise_triangle_candidate_fast(const device rypath::geometry_wire::Triangle &tr
                     return miss;
                 }
                 if (p != 0 && m != 0)
-                    exponent = max(exponent, ilogb(abs(p)) + ilogb(abs(m)) + 1);
+                    exponent = max(exponent, pc_ilogb_abs(p) + pc_ilogb_abs(m) + 1);
             }
         exponents[axis] = exponent == -10000 ? 0 : exponent + 2;
         o.value[axis] = BilinearNumber(pc_scale(origin[axis], -exponents[axis], ok));
@@ -220,7 +240,7 @@ precise_triangle_candidate_fast(const device rypath::geometry_wire::Triangle &tr
             points[corner].value[axis] = sum;
         }
         if (direction[axis] != 0)
-            de = max(de, ilogb(abs(direction[axis])) - exponents[axis]);
+            de = max(de, pc_ilogb_abs(direction[axis]) - exponents[axis]);
     }
     float3 d;
     for (uint axis = 0; axis < 3; ++axis)
@@ -236,7 +256,7 @@ precise_triangle_candidate_fast(const device rypath::geometry_wire::Triangle &tr
          c = pc_project(points[2], o, d, dominant, ok);
     float sx = max(pc_abs(a.x), max(pc_abs(b.x), pc_abs(c.x))),
           sy = max(pc_abs(a.y), max(pc_abs(b.y), pc_abs(c.y)));
-    int xe = sx > 0 ? -ilogb(sx) : 0, ye = sy > 0 ? -ilogb(sy) : 0;
+    int xe = sx > 0 ? -pc_ilogb_abs(sx) : 0, ye = sy > 0 ? -pc_ilogb_abs(sy) : 0;
     a.x = pc_scale(a.x, xe, ok);
     b.x = pc_scale(b.x, xe, ok);
     c.x = pc_scale(c.x, xe, ok);

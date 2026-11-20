@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "triangle_math_optimization_cases.hpp"
 #include "triangle_product_guard.h"
 #include <array>
 #include <bit>
@@ -135,6 +136,7 @@ inline void check_rounded_cpu() {
             throw std::runtime_error("Rounded-zero predicate differs from exact double oracle");
 }
 inline void check_cpu() {
+    triangle_math::check_residual_cpu();
     check_rounded_cpu();
     for (auto c : cases()) {
         float p = value(c.high_a) * value(c.high_b);

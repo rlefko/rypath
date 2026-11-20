@@ -28,6 +28,24 @@ inline unsigned highest_bit(Wide value) {
     return 63u - static_cast<unsigned>(std::countl_zero(value));
 #endif
 }
+// Cheap sufficient domain for replacing the integer residual classifier with
+// its unchanged FMA and a half-ULP magnitude check. Nonzero residuals here are
+// multiples of 2^(Ea+Eb-300), at least the minimum normal binary32 value.
+struct NormalProductResidualDomain {
+    Word half_ulp_bits;
+    bool supported;
+};
+inline NormalProductResidualDomain normal_product_residual_domain(Word a, Word b, Word p) {
+    const Word ea = (a >> 23) & 255u, eb = (b >> 23) & 255u, ep = (p >> 23) & 255u;
+    if (ea == 0 || ea == 255 || eb == 0 || eb == 255 || ep == 0 || ep == 255 ||
+        ((a ^ b ^ p) & 0x80000000u) != 0 || ea + eb < 174)
+        return {0, false};
+    const int shift = int(ep) + 150 - int(ea) - int(eb);
+    if (shift != 23 && shift != 24)
+        return {0, false};
+    // The guards imply ep >= 47, so this exact half ULP is always normal.
+    return {(ep - 24u) << 23, true};
+}
 // p must be the actual rounded binary32 product a*b. For normal inputs,
 // a=ma*2^ea,b=mb*2^eb,p=mp*2^ep. Their integer difference identifies the
 // actual FMA error a*b-p. Its leading bit determines normality: normal floats

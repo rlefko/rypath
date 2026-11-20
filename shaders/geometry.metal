@@ -130,6 +130,54 @@ kernel void rypath_triangle_product_guard_probe(const device uint4 *inputs [[buf
     output[index * 2 + 1] = {as_type<uint>(pair.high), as_type<uint>(pair.low), uint(cross0),
                              uint(cross1)};
 }
+// Compare optimized helpers with the original operation graphs in one dispatch.
+kernel void rypath_triangle_residual_fast_probe(const device uint4 *input [[buffer(0)]],
+                                                device uint4 *output [[buffer(1)]],
+                                                constant uint &count [[buffer(2)]],
+                                                uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    using namespace rypath::triangle_numeric;
+    const uint4 words = input[index];
+    const float a = as_type<float>(words.x), b = as_type<float>(words.y),
+                primary = as_type<float>(words.z);
+    bool valid = words.w != 0, reference_valid = valid;
+    const float actual = pc_product_error(a, b, primary, valid);
+    const auto range = product_residual_range(words.x, words.y, words.z);
+    if (range == unsupported)
+        reference_valid = false;
+    const float reference = fma(a, b, -primary);
+    if ((range == normal_residual && reference == 0) || (range == exact_product && reference != 0))
+        reference_valid = false;
+    (void)pc_check(reference, reference_valid);
+    const auto domain = normal_product_residual_domain(words.x, words.y, words.z);
+    output[index * 2] = {uint(range), uint(domain.supported), as_type<uint>(actual), uint(valid)};
+    output[index * 2 + 1] = {as_type<uint>(reference), uint(reference_valid), domain.half_ulp_bits,
+                             0x45525031u};
+}
+kernel void rypath_triangle_normal_exponent_probe(const device uint4 *input [[buffer(0)]],
+                                                  device uint4 *output [[buffer(1)]],
+                                                  constant uint &count [[buffer(2)]],
+                                                  uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const uint4 words = input[index];
+    const float x = as_type<float>(words.x);
+    const int e = as_type<int>(words.y);
+    bool valid = words.z != 0, reference_valid = valid;
+    const float actual = pc_scale(x, e, valid);
+    float reference = x;
+    if ((words.x & 0x7fffffffu) != 0) {
+        reference = ldexp(x, e);
+        if (!pc_normal(reference) || as_type<uint>(ldexp(reference, -e)) != words.x)
+            reference_valid = false;
+    }
+    output[index * 2] = {as_type<uint>(reference), as_type<uint>(actual), uint(reference_valid),
+                         uint(valid)};
+    output[index * 2 + 1] = {as_type<uint>(ilogb(abs(x))), as_type<uint>(pc_ilogb_abs(x)),
+                             uint(pc_normal_scale_exponent(int((words.x >> 23) & 255u), e)),
+                             0x45585031u};
+}
 kernel void rypath_triangle_witness_probe(const device wire::Triangle &triangle [[buffer(0)]],
                                           const device Ray &input [[buffer(1)]],
                                           device uint *output [[buffer(2)]]) {

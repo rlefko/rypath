@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cfenv>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -20,6 +21,58 @@ void require(bool condition, const char *message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+bool same_fields(Float a, Float b) {
+    return a.mantissa == b.mantissa && a.exponent == b.exponent && a.negative == b.negative &&
+           a.valid == b.valid;
+}
+void check_world_box(Input input) {
+    const auto fast = world_box_fp32(input), reference = world_box_e24(input);
+    if (!fast.valid)
+        return;
+    require(reference.valid, "Fast world box must have a supported original E24 box");
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        require(same_fields(fast.lower[axis], reference.lower[axis]),
+                "Fast lower world bound must preserve all E24 fields");
+        require(same_fields(fast.upper[axis], reference.upper[axis]),
+                "Fast upper world bound must preserve all E24 fields");
+    }
+}
+void float_boundaries() {
+    using namespace triangle_extended;
+    const W words[]{
+        0u,          0x80000000u,      1u,          0x007fffffu, 0x00800000u, 23u << 23,
+        24u << 23,   (24u << 23) | 1u, 0x3f800000u, 0xbf800000u, 0x3f800001u, 0xbf800001u,
+        0x7effffffu, 0xfeffffffu,      254u << 23,  0x7f7fffffu, 0x7f800000u, 0x7fc00000u};
+    for (W a : words) {
+        const auto x = box_float(a);
+        for (bool upward : {false, true}) {
+            const auto result = box_outward(x, upward);
+            if (result.valid)
+                require(same_fields(from_bits(bits(result.value)), outward(from_bits(a), upward)),
+                        "Float adjacent encoding must match E24 outward rounding");
+        }
+        for (W b : words) {
+            const auto y = box_float(b), product = box_mul(x, y), sum = box_add(x, y);
+            if (product.valid)
+                require(
+                    same_fields(from_bits(bits(product.value)), mul(from_bits(a), from_bits(b))),
+                    "Accepted float multiplication must preserve all E24 fields");
+            if (sum.valid)
+                require(same_fields(from_bits(bits(sum.value)), add(from_bits(a), from_bits(b))),
+                        "Accepted float addition must preserve all E24 fields");
+        }
+    }
+    require(box_float(0x80000000u).valid && bits(box_float(0x80000000u).value) == 0,
+            "World-box signed zero must canonicalize exactly");
+    require(!box_mul(box_float(75u << 23), box_float(75u << 23)).valid &&
+                box_mul(box_float(75u << 23), box_float(76u << 23)).valid,
+            "Product exponent sums 150/151 must separate fallback and safe domains");
+    require(!box_add(box_float((24u << 23) | 1u), box_float(0x80000000u | (24u << 23))).valid,
+            "Minimum-normal cancellation must fall back outside the stored domain");
+    require(!box_outward(box_float(24u << 23), false).valid &&
+                !box_outward(box_float(0x7effffffu), true).valid,
+            "Outward steps crossing either stored-domain binade must fall back");
+}
 Input plane() {
     Input input{};
     const float corners[]{-8, -8, 1, 8, 8, 1, 8, -8, 1};
@@ -34,7 +87,24 @@ Input plane() {
 
 int main() try {
     using namespace triangle_extended;
+    require(std::fegetround() == FE_TONEAREST, "Float bounds require RN arithmetic");
+    float_boundaries();
     auto input = plane();
+    require(world_box_fp32(input).valid, "Ordinary plane must exercise the float graph");
+    check_world_box(input);
+    for (W word : {1u, 23u << 23, 254u << 23, 0x7fc00000u}) {
+        auto fallback = input;
+        fallback.transform[0] = word;
+        require(!world_box_fp32(fallback).valid, "Unsafe source must abandon the float graph");
+    }
+    for (W word : {0u, 0x80000000u, 24u << 23, (24u << 23) | 1u, 0x3f800001u, 0xbf800001u,
+                   0x7effffffu, 0xfeffffffu}) {
+        auto boundary = input;
+        boundary.transform[3] = word;
+        check_world_box(boundary);
+        boundary.corners[0] = word;
+        check_world_box(boundary);
+    }
     auto bound = exit_upper(input);
     require(bound.valid && value(bound.value) >= 1 && value(bound.value) < 1.00001,
             "Planar world-box exit must enclose the true plane tightly");
@@ -106,6 +176,7 @@ int main() try {
             const double o = std::bit_cast<float>(input.origin[axis]);
             expected = std::min(expected, ((d < 0 ? lower : upper) - o) / d);
         }
+        check_world_box(input);
         bound = exit_upper(input);
         require(bound.valid && value(bound.value) >= expected,
                 "Directed world-box exit must enclose independent dyadic geometry oracle");

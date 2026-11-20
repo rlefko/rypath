@@ -14,6 +14,84 @@ void need(bool value, std::string_view reason) {
     if (!value)
         throw std::runtime_error(std::string(reason));
 }
+void check_math_helpers(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
+    using namespace test::triangle_math;
+    const auto dispatch = [&](NSString *name, const std::vector<Input> &cases) {
+        std::string error;
+        auto pipeline = metal::load_pipeline(device, library, name, error);
+        need(pipeline != nil, error);
+        const auto count = static_cast<std::uint32_t>(cases.size());
+        auto input = [device newBufferWithBytes:cases.data()
+                                         length:cases.size() * sizeof(Input)
+                                        options:MTLResourceStorageModeShared];
+        auto output = [device newBufferWithLength:cases.size() * 32 + 128
+                                          options:MTLResourceStorageModeShared];
+        need(input && output, "Math helper buffers");
+        std::memset(output.contents, 0xa5, output.length);
+        auto command = [queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        need(command && encoder, "Math helper command");
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:input offset:0 atIndex:0];
+        [encoder setBuffer:output offset:64 atIndex:1];
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        [encoder dispatchThreadgroups:MTLSizeMake((count + 63) / 64, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        [encoder endEncoding];
+        error = metal::complete(command, "Triangle math helper probe");
+        need(error.empty(), error);
+        need(std::memcmp(input.contents, cases.data(), input.length) == 0,
+             "Math helper input remains immutable");
+        const auto bytes = static_cast<const unsigned char *>(output.contents);
+        for (std::size_t i = 0; i < 64; ++i)
+            need(bytes[i] == 0xa5 && bytes[output.length - 64 + i] == 0xa5,
+                 "Math helper front/back guards");
+        const auto words = reinterpret_cast<const std::uint32_t *>(bytes + 64);
+        return std::vector<std::uint32_t>(words, words + cases.size() * 8);
+    };
+    check_residual_cpu();
+    const auto residual = residual_cases();
+    const auto rw = dispatch(@"rypath_triangle_residual_fast_probe", residual);
+    for (std::size_t i = 0; i < residual.size(); ++i) {
+        const auto c = residual[i];
+        const auto *w = rw.data() + i * 8;
+        const auto domain = triangle_numeric::normal_product_residual_domain(c[0], c[1], c[2]);
+        need(w[0] == triangle_numeric::product_residual_range(c[0], c[1], c[2]) &&
+                 bool(w[1]) == domain.supported && w[6] == domain.half_ulp_bits,
+             "Native residual domain agrees with CPU integer classifier");
+        need(w[2] == w[4] && w[3] == w[5] && w[7] == 0x45525031u,
+             "Optimized retained FMA preserves original bits and validity");
+        need(c[3] || !w[3], "Retained FMA cannot restore parent validity");
+        if (domain.supported) {
+            const double error = double(value(c[0])) * double(value(c[1])) - double(value(c[2]));
+            const bool accepted = std::abs(error) <= double(value(domain.half_ulp_bits));
+            need(bool(w[3]) == (bool(c[3]) && accepted),
+                 "Native fast FMA validity agrees with independent exact residual oracle");
+            if (accepted)
+                need(double(value(w[2])) == error, "Native fast FMA residual is exact");
+        }
+    }
+    const auto scales = exponent_cases();
+    const auto sw = dispatch(@"rypath_triangle_normal_exponent_probe", scales);
+    for (std::size_t i = 0; i < scales.size(); ++i) {
+        const auto c = scales[i];
+        const auto *w = sw.data() + i * 8;
+        const int exponent = int((c[0] >> 23) & 255u);
+        const auto sum = std::int64_t(exponent) + std::bit_cast<std::int32_t>(c[1]);
+        const bool domain = exponent >= 1 && exponent <= 254 && sum >= 1 && sum <= 254;
+        need(w[0] == w[1] && w[2] == w[3] && w[4] == w[5] && w[6] == domain && w[7] == 0x45585031u,
+             "Normal exponent helpers preserve original Metal bits/status/special cases");
+        need(c[2] || !w[3], "Power-of-two scaling cannot restore parent validity");
+        if (domain)
+            need(w[1] == ((c[0] & 0x807fffffu) | (Word(sum) << 23)) && w[3] == c[2],
+                 "Native normal scaling agrees with independent exponent-bit oracle");
+        if (exponent >= 1 && exponent <= 254)
+            need(std::bit_cast<std::int32_t>(w[5]) == exponent - 127,
+                 "Native normal ilogb agrees with independent raw exponent");
+    }
+    std::cout << residual.size() << " retained FMA controls and " << scales.size()
+              << " native normal exponent controls checked\n";
+}
 } // namespace
 int main(int argc, char **argv) {
     @autoreleasepool {
@@ -99,6 +177,7 @@ int main(int argc, char **argv) {
             for (std::size_t i = cases.size() * 32; i < output.length; ++i)
                 need(static_cast<const unsigned char *>(output.contents)[i] == 0xa5,
                      "Guard probe padded output");
+            check_math_helpers(device, library, queue);
             const auto rounded = test::product_guard::rounded_cases();
             const auto rounded_count = static_cast<std::uint32_t>(rounded.size());
             auto rounded_pipeline = metal::load_pipeline(
