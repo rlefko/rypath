@@ -479,6 +479,118 @@ void point_identity() {
     require(std::abs(radiance.mean() - expected) <= tolerance,
             "Packet point-light analytic radiance identity");
 }
+// A side wall intersects only the receiver-to-point-light segment. Fixed
+// packets make blocked/clear and null-boundary behavior exact observables,
+// independent of which native candidate the any-hit traversal visits first.
+void packet_visibility() {
+    auto clear = base();
+    clear.raster_camera = RasterCamera{{}, {-.001f, -.001f, 1}, {.002f, 0, 0}, {0, .002f, 0}};
+    PointLight point;
+    point.position = {2, 0, 1};
+    point.intensity.fill(2);
+    clear.point_lights.push_back(point);
+    RenderRequest query{.width = 4,
+                        .height = 4,
+                        .seed = 617,
+                        .pixel_count = 16,
+                        .sample_count = 1,
+                        .total_samples = 1,
+                        .boundary_limit = 1};
+    const auto sample = [&](const RenderScene &scene, std::string_view name) {
+        auto built = build_metal_renderer(scene);
+        require(built.status == GeometryStatus::success && built.scene,
+                std::string(name) + ": " + built.diagnostic);
+        return built.scene->sample(query);
+    };
+    const auto reference = sample(clear, "Packet visibility clear reference");
+    require(reference.status == GeometryStatus::success && reference.packet_samples.size() == 16,
+            "Packet visibility clear reference accounting");
+    for (const auto &p : reference.packet_samples)
+        for (float value : p.radiance)
+            require(value > 0, "Packet visibility fixture must illuminate every receiver");
+    const auto check = [&](const RenderScene &scene, bool blocked, std::string_view name) {
+        const auto result = sample(scene, name);
+        require(result.status == GeometryStatus::success && result.packet_samples.size() == 16 &&
+                    result.guard_count > 0,
+                std::string(name) + ": " + result.diagnostic);
+        for (unsigned i = 0; i < 16; ++i) {
+            if (blocked) {
+                for (float value : result.packet_samples[i].radiance)
+                    require(value == 0, name);
+            } else {
+                require(same(result.packet_samples[i], reference.packet_samples[i]), name);
+            }
+        }
+    };
+    const auto wall = [](RenderScene &scene, float x, unsigned material = 0) {
+        mesh(scene, {{x, -4, -2}, {x, 4, -2}, {x, 4, 4}, {x, -4, 4}}, false, material);
+    };
+    auto opaque = clear;
+    wall(opaque, 1);
+    check(opaque, true, "Packet opaque shadow blocker");
+    auto beyond = clear;
+    wall(beyond, 3);
+    check(beyond, false, "Packet blocker beyond the fixed light endpoint");
+    // volpath in vacuum must retain opaque visibility semantics.
+    opaque.volume_transport = true;
+    check(opaque, true, "Packet vacuum volpath opaque shadow blocker");
+    const auto frames = [](RenderScene &scene, std::string_view name) {
+        scene.instance_texture_frames.resize(scene.geometry.instances.size());
+        for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+            if (!instance_uses_texture_context(scene, i))
+                continue;
+            const auto &surface = scene.instance_surface_transforms[i];
+            const auto error = prepare_texture_triangle_frames(
+                scene.geometry.meshes[scene.geometry.instances[i].mesh_index], surface.shape,
+                surface.placement, scene.instance_texture_frames[i]);
+            require(error.empty(), std::string(name) + ": " + error);
+        }
+    };
+    auto alpha = clear;
+    SpectralMaterial coverage;
+    coverage.scattering = ScatteringKind::gltf;
+    coverage.gltf.alpha_mode = 2;
+    coverage.gltf.double_sided = true;
+    coverage.gltf.base_color[3] = 0;
+    alpha.materials.push_back(coverage);
+    wall(alpha, 1, 1);
+    frames(alpha, "Packet alpha shadow fixture frames");
+    check(alpha, false, "Packet rejected alpha shadow is clear");
+    alpha.materials[1].gltf.base_color[3] = 1;
+    check(alpha, true, "Packet accepted alpha shadow blocks");
+    auto boundary = clear;
+    SpectralMaterial null;
+    null.scattering = ScatteringKind::null_interface;
+    boundary.materials.push_back(null);
+    wall(boundary, 1, 1);
+    check(boundary, false, "Packet null shadow boundary passes through");
+    wall(boundary, 1.5f, 1);
+    const auto exhausted = sample(boundary, "Packet shadow null boundary exhaustion");
+    require(exhausted.status == GeometryStatus::failure && exhausted.packet_samples.empty() &&
+                exhausted.packet_splats.empty() &&
+                exhausted.diagnostic.find("medium boundary or random-stream budget exhausted") !=
+                    std::string::npos,
+            "Packet shadow null boundary exhaustion must fail the whole batch");
+    auto unused_null = clear;
+    unused_null.materials.push_back(null);
+    check(unused_null, false, "Unused null material preserves clear packet connections");
+    wall(unused_null, 1);
+    check(unused_null, true, "Unused null material preserves blocked packet connections");
+    // Invisible emitter flags are per source. A mixed triangle/patch mesh is
+    // expanded into multiple native placements, all of which must stay invisible.
+    // Zero emission leaves the point-light proposal and reference radiance fixed.
+    auto invisible = clear;
+    wall(invisible, 1);
+    invisible.geometry.meshes.back().patches = {{0, 1, 3, 2}};
+    invisible.area_emissions.emplace_back();
+    invisible.area_emissions.back().radiance.fill(0);
+    invisible.instance_emissions = {no_area_emission, 0};
+    invisible.texture_graph.nodes.emplace_back(); // Scalar constant zero.
+    invisible.instance_alpha_roots = {UINT32_MAX, 0};
+    invisible.instance_invisible_emitters = {0, 1};
+    frames(invisible, "Packet invisible emitter fixture frames");
+    check(invisible, false, "Packet generated invisible emitter placements pass through");
+}
 // Required extended native check for Importance-continuation changes:
 //   rypath_packet_render_tests --shading-normal-spot-extended
 // Fixed 8 seeds (19317+k*7919), 16x16,8192 spp, flat/tilted spotlight corners.
@@ -758,6 +870,8 @@ int main(int argc, char **argv) {
         halton_light_tiles();
         std::cout << "Packet native: point identity" << std::endl;
         point_identity();
+        std::cout << "Packet native: shadow visibility and pass-through limits" << std::endl;
+        packet_visibility();
         std::cout << "Packet native: area/black-environment expectation" << std::endl;
         area_black_environment();
         std::cout << "Packet native scheduling, limits, lens, point and BDPT identities passed\n";

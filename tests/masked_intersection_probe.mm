@@ -118,12 +118,21 @@ void observe(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, bool re
         Check{"Shadow rejects near root and terminates at ray maximum", ray(0, E, F, 0, .5f, 1),
               wire::miss},
         Check{"Invalid patch callback", ray(0, E, E), wire::invalid_hit},
+        Check{"Shadow invalid patch callback", ray(0, E, E, 0, 1, 1), wire::invalid_hit},
         Check{"Manual triangle accepted", ray(1, A, E), wire::triangle, 1, .25f, .3125f, true},
         Check{"Manual triangle rejected", ray(1, R, E), wire::miss, absent, 0, 0, true},
+        Check{"Shadow accepts triangle", ray(1, A, E, 0, 1, 1), wire::triangle, 1, .25f, .3125f,
+              true},
+        Check{"Shadow rejects triangle", ray(1, R, E, 0, 1, 1), wire::miss, absent, 0, 0, true},
+        Check{"Shadow invalid triangle callback", ray(1, E, E, 0, 1, 1), wire::invalid_hit, absent,
+              0, 0, true},
+        Check{"Shadow excludes triangle beyond endpoint", ray(1, A, E, 0, .125f, 1), wire::miss},
         Check{"Invalid triangle callback", ray(1, E, E), wire::invalid_hit, absent, 0, 0, true},
         // All triangles are manually validated; opaque instances also call alpha.
         Check{"Opaque triangle accepted", ray(2, A, E), wire::triangle, 2, .25f, .3125f, true},
         Check{"Opaque triangle rejected", ray(2, R, E), wire::miss, absent, 0, 0, true},
+        Check{"Shadow invalid opaque triangle callback", ray(2, E, E, 0, 1, 1), wire::invalid_hit,
+              absent, 0, 0, true},
         Check{"Invalid opaque triangle callback", ray(2, E, E), wire::invalid_hit, absent, 0, 0,
               true},
         Check{"Rejected patch root ties opaque triangle", ray(3, A, F), wire::triangle, 4, .25f,
@@ -195,6 +204,77 @@ void observe(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, bool re
                                                                   : actual.triangle_calls == 1;
             require(count_ok && actual.triangle_primitive_mask == 1,
                     callbacks + " expected primitive 0 only");
+        }
+    }
+}
+
+// One tiny, interior triangle and a loose finite ray maximum force an accepted
+// hit to tighten traversal and be offered again. Stateful alpha makes that
+// second observation externally visible: rejection retains the best, invalid
+// must abort, and any-hit must stop before the second callback.
+void observe_reoffer(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
+    for (bool non_opaque : {false, true}) {
+        GeometryMesh mesh;
+        mesh.positions = {
+            {-0x1p-10f, -0x1p-10f, .25f}, {0x1p-10f, -0x1p-10f, .25f}, {0, 0x1p-10f, .25f}};
+        mesh.triangles = {{0, 1, 2}};
+        GeometryData geometry{.meshes = {mesh},
+                              .instances = {{.mesh_index = 0, .non_opaque = non_opaque}}};
+        const auto built = build_metal_geometry(geometry);
+        require(built.status == GeometryStatus::success, built.diagnostic);
+        const auto &scene = *built.scene;
+        std::array<probe::Case, 4> cases{};
+        for (auto &c : cases) {
+            c.ray = {{0, 0, 0}, {0, 0, 1}, 0, 1};
+            c.patch_rule = probe::invalid;
+            c.ignore_instance = absent;
+            c.expected_triangle_primitives[0] = 0;
+            c.expected_triangle_primitives[1] = absent;
+        }
+        cases[0].triangle_rule = probe::accept_then_reject;
+        cases[1].triangle_rule = probe::accept_then_invalid;
+        cases[2].triangle_rule = probe::accept_then_reject;
+        cases[3].triangle_rule = probe::accept_then_invalid;
+        cases[2].any_hit = cases[3].any_hit = 1;
+        const auto input = [device newBufferWithBytes:cases.data()
+                                               length:sizeof(cases)
+                                              options:MTLResourceStorageModeShared];
+        const auto output = [device newBufferWithLength:cases.size() * sizeof(probe::Result)
+                                                options:MTLResourceStorageModeShared];
+        const auto command = [MetalGeometryAccess::queue(scene) commandBuffer];
+        const auto encoder = [command computeCommandEncoder];
+        require(input && output && command && encoder, "reoffer probe resources");
+        [encoder setComputePipelineState:pipeline];
+        MetalGeometryAccess::bind(scene, encoder, 0);
+        [encoder setBuffer:input offset:0 atIndex:1];
+        [encoder setBuffer:output offset:0 atIndex:2];
+        const Word count = cases.size();
+        [encoder setBytes:&count length:sizeof(count) atIndex:3];
+        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(metal::group_width(device, pipeline), 1, 1)];
+        [encoder endEncoding];
+        require(metal::complete(command, "Stateful triangle reoffer probe").empty(),
+                "reoffer probe completion");
+        const auto *results = static_cast<const probe::Result *>(output.contents);
+        require(results != nullptr, "reoffer probe output");
+        for (unsigned i = 0; i < cases.size(); ++i) {
+            const auto &r = results[i];
+            const auto name = "triangle reoffer case " + std::to_string(i) +
+                              " nonopaque=" + std::to_string(non_opaque) +
+                              " calls=" + std::to_string(r.triangle_calls);
+            require(r.triangle_primitive_mask == 1 && r.patch_calls == 0 &&
+                        r.repeated_triangle_values_changed == 0,
+                    name + " callback identity and exact public t/UV");
+            require(i < 2 ? r.triangle_calls >= 2 : r.triangle_calls == 1,
+                    name + " actual repeated offer / any-hit termination");
+            if (i == 1) {
+                require(r.hit.kind == wire::invalid_hit, name + " repeated invalid must abort");
+            } else {
+                require(r.hit.kind == wire::triangle && r.hit.instance == 0 &&
+                            r.hit.geometry == 0 && r.hit.primitive == 0 && r.hit.t == .25f &&
+                            r.hit.u == .25f && r.hit.v == .5f,
+                        name + " repeated rejection retains accepted hit");
+            }
         }
     }
 }
@@ -401,6 +481,7 @@ int main(int argc, char *argv[]) {
             observe(device, pipeline, false);
             observe(device, pipeline, true);
             observe_regression(device, pipeline);
+            observe_reoffer(device, pipeline);
             compare_alpha_hash(device, library);
         } catch (const std::exception &error) {
             std::cerr << error.what() << '\n';

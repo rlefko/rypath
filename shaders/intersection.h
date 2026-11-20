@@ -88,6 +88,33 @@ template <typename Alpha> struct PatchPredicate {
         return valid && result.accepted;
     }
 };
+struct CurrentTriangleReuse {
+    bool matched, valid;
+};
+// A reset changes only traversal_max. The original world ray/bounds, primitive
+// data and instance transform remain immutable throughout this trace call.
+// Reuse only the already accepted current-best triangle; alpha stays observable.
+template <typename Alpha>
+inline CurrentTriangleReuse reuse_current_triangle(const thread SurfaceHit &best,
+                                                   const thread triangle_extended::Pair &distance,
+                                                   uint instance, uint geometry, uint primitive,
+                                                   thread Alpha &alpha) {
+    if (best.type != intersection_type::triangle ||
+        best.primitive_kind != rypath::geometry_wire::triangle || instance != best.instance_id ||
+        geometry != best.geometry_id || primitive != best.primitive_id)
+        return {false, true};
+    const auto accepted = alpha(instance, geometry, primitive, intersection_type::triangle,
+                                best.coordinates, best.distance);
+    if (!accepted.valid)
+        return {true, false};
+    // Match the original ordering: rejected alpha does not reach the distance
+    // validity check. Accepted alpha must still validate the retained full pair.
+    if (accepted.accepted && !triangle_extended::valid(distance))
+        return {true, false};
+    // Rejection does not revoke a previously accepted best. Acceptance cannot
+    // replace the identical full distance and IDs, so neither case needs a cap.
+    return {true, true};
+}
 inline bool earlier(uint instance, uint geometry, uint primitive, const thread SurfaceHit &best) {
     return instance < best.instance_id ||
            (instance == best.instance_id &&
@@ -142,6 +169,15 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
                 query.abort();
                 return invalid_hit();
             }
+            const auto reused =
+                reuse_current_triangle(best, distance, instance, geometry, primitive, alpha);
+            if (reused.matched) {
+                if (!reused.valid) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                continue;
+            }
             auto hit = precise_triangle_candidate(
                 *record, query.get_candidate_object_to_world_transform(), ray.origin, ray.direction,
                 ray.min_distance, ray.max_distance);
@@ -174,6 +210,15 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
             if (record->kind == rypath::geometry_wire::miss)
                 continue;
             if (record->kind == rypath::geometry_wire::triangle) {
+                const auto reused =
+                    reuse_current_triangle(best, distance, instance, geometry, primitive, alpha);
+                if (reused.matched) {
+                    if (!reused.valid) {
+                        query.abort();
+                        return invalid_hit();
+                    }
+                    continue;
+                }
                 auto hit = precise_triangle_candidate(
                     record->triangle, query.get_candidate_object_to_world_transform(), ray.origin,
                     ray.direction, ray.min_distance, ray.max_distance);

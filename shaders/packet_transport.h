@@ -373,9 +373,14 @@ inline bool visible(thread Resources &r, const thread Vertex &a, const thread Ve
     for (uint crossings = 0; crossings <= r.alpha.parameters->boundary_limit; ++crossings) {
         r.alpha.incoming = segment;
         const auto hit =
-            alpha_enabled
-                ? trace_masked_surface(segment, r.scene, all_visible, r.alpha)
-                : trace_surface(closest, segment, r.scene, all_visible, r.intersection_table);
+            packet_visibility_passthrough
+                ? (alpha_enabled ? trace_masked_surface(segment, r.scene, all_visible, r.alpha)
+                                 : trace_surface(closest, segment, r.scene, all_visible,
+                                                 r.intersection_table))
+                : (alpha_enabled
+                       ? trace_masked_surface(segment, r.scene, all_visible, r.alpha, true)
+                       : trace_shadow(closest, segment, r.scene, all_visible,
+                                      r.intersection_table));
         if (!hit.valid) {
             sample.status = wire::invalid_hit;
             return false;

@@ -43,8 +43,18 @@ distances use exact signed dyadic sums. Closest-hit queries do not commit native
 triangle distances. A conservative forward-transformed world-box exit may shorten
 the traversal range through a query reset; the original ray bounds still govern
 primitive classification. Unrepresentable bounds simply disable that pruning.
-Alpha-tested rendering
-uses the same validated coordinates. See the
+Normal-domain exponent operations and FMA residual checks preserve the guarded
+pair arithmetic. World enclosures use binary32 only when each operation can
+produce the same extended bound; other inputs retain the integer construction.
+When a reset offers the current-best triangle again, its immutable solve is
+reused while alpha is called again with the same validated coordinates and
+distance. Rejection retains the previous best; invalid alpha still aborts.
+
+Packet connection visibility uses Boolean occlusion when every accepted surface
+blocks the segment. Scenes with any null-interface material or invisible-emitter
+placement retain closest-hit boundary traversal. Both routes preserve endpoint
+bounds and alpha validation; early termination need not visit the same candidates.
+See the
 [regression record](transport-regression-validation.md) for the numerical policy,
 measured coverage and limits.
 

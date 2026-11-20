@@ -60,6 +60,8 @@ constant bool packet_diffuse_transmission_enabled [[function_constant(14)]];
 constant bool packet_measured_enabled [[function_constant(15)]];
 constant bool packet_fourier_enabled [[function_constant(16)]];
 constant bool packet_coated_enabled [[function_constant(17)]];
+// Packet visibility needs closest traversal only when accepted surfaces can pass through.
+constant bool packet_visibility_passthrough [[function_constant(18)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],

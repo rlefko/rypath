@@ -2085,6 +2085,19 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request) {
     }
 }
 
+namespace {
+// Scan all materials, including unused entries and mix children. Prepared
+// native placements copy the validated per-source invisible-emitter flags.
+bool packet_visibility_requires_closest(const RenderScene &scene) {
+    return std::ranges::any_of(scene.materials,
+                               [](const auto &material) {
+                                   return material.scattering == ScatteringKind::null_interface;
+                               }) ||
+           std::ranges::any_of(scene.instance_invisible_emitters,
+                               [](std::uint32_t invisible) { return invisible != 0; });
+}
+} // namespace
+
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path) {
     @autoreleasepool {
@@ -2262,6 +2275,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                        m.scattering == ScatteringKind::coated_conductor;
             });
             [constants setConstantValue:&coated type:MTLDataTypeBool atIndex:17];
+            const bool passthrough = packet_visibility_requires_closest(scene);
+            [constants setConstantValue:&passthrough type:MTLDataTypeBool atIndex:18];
         }
         const auto pipeline_start = std::chrono::steady_clock::now();
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,
