@@ -18,10 +18,14 @@ and explicit overrides, and the [sampling record](sampling-convergence-validatio
 for the original study.
 
 Current checkpoint format/identity/renderer/sampling/accumulation contracts are
-**3/12/20/7/2**. Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
+**3/12/21/7/2**. Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
 validated native-triangle hints to eligible packet scenes, preserving procedural
 validation and stable closest-hit ordering. The new packet resource ABI and
-potentially recovered true intersections invalidate older checkpoints. See
+potentially recovered true intersections invalidate older checkpoints. Renderer
+21 corrects the internal proposal measure in layered directional-f MIS, with
+scalar and packet regression checks passing. Host hashing and opt-in timing
+changes are also under validation; see the [closure record](pavilion-closure-validation.md).
+Scene quality and final performance acceptance remain open. See
 [geometry](geometry.md) and [checkpointing](checkpointing.md).
 
 ## Findings and remaining gaps
@@ -79,7 +83,7 @@ The remaining slowdown, heavy tails and BDPT/PT floor discrepancy are open.
 
 ## Validation boundaries
 
-Current renderer 20 passes all 222 ASan/UBSan tests and 159 portable tests.
+Published renderer 20 passes all 222 ASan/UBSan tests and 159 portable tests.
 Release evidence combines 217 non-CLI checks with Metal API validation and five
 CLI checks under their default environment. The initial full API-enabled run
 fails those five CLI checks solely because its injected banner violates their

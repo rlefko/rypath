@@ -152,6 +152,11 @@ clarifies the work; completion is recorded in [status](status.md).
     controls passing; publication checks are recorded with the PR revision.
     The combined production comparison reduces fixed-workload whole-process time
     by 12.7%/17.5% and render-loop time by 26.3%/29.7%, with exact image controls.
+    Renderer 21 corrects a coating MIS proposal-measure error, with reduced
+    physical and scalar/packet regression evidence. Buffered accelerated hashing
+    reduces measured identity cost; opt-in timing separates host and GPU phases.
+    See the [closure record](pavilion-closure-validation.md). Whole-region sampling,
+    held-out scene quality and final performance comparisons remain required.
     Remaining process cost and time to a shared quality target are open.
     Modified-PBRT night comparisons isolate the importance correction as a major
     cause of the brightness difference; the floor BDPT/PT gap remains open.

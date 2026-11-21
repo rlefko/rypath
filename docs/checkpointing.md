@@ -33,7 +33,7 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The sampling/convergence revision uses file format 3, identity 12, renderer 20,
+The sampling/convergence revision uses file format 3, identity 12, renderer 21,
 sampling 7 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
@@ -55,7 +55,9 @@ to eligible packet traversal. A native offer may recover a valid hit absent from
 the procedural candidate stream, so this is a numerical coverage change even
 where measured images are identical. It also changes the packet acceleration
 resource binding; the loaded shader handshake rejects both directions of an
-older host/library mismatch. All earlier renderer contracts are rejected.
+older host/library mismatch. Renderer 21 corrects the internal solid-angle
+proposal measure in layered directional-f MIS, preserving the forward
+throughput and joint sampling. All earlier renderer contracts are rejected.
 The checkpoint layout and raw accumulation
 remain unchanged; see the [regression record](transport-regression-validation.md).
 
@@ -76,6 +78,10 @@ object padding. Files are not reopened to construct identity. Changing an asset
 must produce the same effective owned data to remain compatible; inactive fields
 are conservatively included. Bitwise changes in translated data can reject a job
 even when two scenes appear visually equivalent.
+
+Buffered serialization and optional ARM SHA-256 instructions preserve this byte
+stream and digest. The portable implementation remains available on other
+targets. Timing reports are execution metadata and do not participate in identity.
 
 Static glTF identity includes material factors and image bindings, sampler policy,
 native image data, signed tangent frames and material-derived emission bindings.
