@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "layered_probe_wire.h"
 #include "layered_reference.hpp"
+#include "layered_schedule_corrected_oracles.h"
 #include "layered_schedule_oracles.h"
 #include "metal_execution.hpp"
 #include <array>
@@ -88,8 +89,9 @@ void schedule_contract(id<MTLDevice> device, id<MTLComputePipelineState> pipelin
         if (fixture.query.operation != 0)
             continue;
         const auto &r = results[n++];
-        const auto &e = fixture.expected;
-        const std::string label = std::string("PBRT schedule ") + fixture.label;
+        const auto e = layered_schedule_corrected::expected(
+            static_cast<std::size_t>(&fixture - layered_schedule_oracles::fixtures.data()));
+        const std::string label = std::string("Modified PBRT schedule ") + fixture.label;
         require(r.valid && r.evaluation_valid, label + " numeric validity");
         // Identical hash inputs and draw schedules; residual arithmetic differs
         // across CPU/Metal transcendental and GGX implementations. This bound
@@ -105,7 +107,7 @@ void schedule_contract(id<MTLDevice> device, id<MTLComputePipelineState> pipelin
             close(r.iz, e[6], 5e-5, label + " wi.z");
         }
     }
-    std::cout << "PASS " << n << " fixed PBRT scalar schedule fixtures\n";
+    std::cout << "PASS " << n << " fixed modified-PBRT scalar schedule fixtures\n";
 }
 void points(id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
             const std::string &executable) {

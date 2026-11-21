@@ -264,9 +264,14 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
                     z = zp;
                     if (w.z > 0 && !top_specular_flags(p)) {
                         auto e = top_evaluate_mode(p, -w, wi, 2, importance);
-                        if (!e.valid)
+                        auto exit_proposal = top_evaluate_mode(p, wi, -w, 2, !importance);
+                        if (!e.valid || !exit_proposal.valid)
                             return {0, 0, false};
-                        total += beta * tr(z - thickness(p), w) * e.f * power(phase_pdf, e.pdf);
+                        // Both proposals sample the INTERNAL direction w. The
+                        // virtual-light proposal starts at the external wi;
+                        // the forward exit PDF instead measures external solid angle.
+                        total += beta * tr(z - thickness(p), w) * e.f *
+                                 power(phase_pdf, exit_proposal.pdf);
                     }
                     if (!all(isfinite(w)) || !all(isfinite(beta)) || !all(isfinite(total)))
                         return {0, 0, false};
@@ -304,7 +309,13 @@ inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
                     auto e = top_evaluate_mode(p, -w, wi, 2, importance);
                     if (!e.valid)
                         return {0, 0, false};
-                    float wt = base_delta(p) ? 1 : power(s.pdf, e.pdf);
+                    float wt = 1;
+                    if (!base_delta(p)) {
+                        auto exit_proposal = top_evaluate_mode(p, wi, -w, 2, !importance);
+                        if (!exit_proposal.valid)
+                            return {0, 0, false};
+                        wt = power(s.pdf, exit_proposal.pdf);
+                    }
                     total += beta * tr(thickness(p), w) * e.f * wt;
                 }
             }

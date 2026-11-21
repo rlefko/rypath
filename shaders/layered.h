@@ -426,9 +426,13 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
                     z = zp;
                     if (w.z > 0 && !top_specular_flags(p)) {
                         auto e = top_evaluate(p, -w, wi, 2);
-                        if (!e.valid)
+                        auto exit_proposal = top_evaluate(p, wi, -w, 2);
+                        if (!e.valid || !exit_proposal.valid)
                             return {0, 0, false};
-                        total += beta * tr(z - thickness(p), w) * e.f * power(phase_pdf, e.pdf);
+                        // The virtual-light proposal starts at wi and samples
+                        // -w, in the same internal solid angle as the phase proposal.
+                        total += beta * tr(z - thickness(p), w) * e.f *
+                                 power(phase_pdf, exit_proposal.pdf);
                     }
                     if (!all(isfinite(w)) || !isfinite(beta) || !isfinite(total))
                         return {0, 0, false};
@@ -466,7 +470,13 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
                     auto e = top_evaluate(p, -w, wi, 2);
                     if (!e.valid)
                         return {0, 0, false};
-                    float wt = base_delta(p) ? 1 : power(s.pdf, e.pdf);
+                    float wt = 1;
+                    if (!base_delta(p)) {
+                        auto exit_proposal = top_evaluate(p, wi, -w, 2);
+                        if (!exit_proposal.valid)
+                            return {0, 0, false};
+                        wt = power(s.pdf, exit_proposal.pdf);
+                    }
                     total += beta * tr(thickness(p), w) * e.f * wt;
                 }
             }
