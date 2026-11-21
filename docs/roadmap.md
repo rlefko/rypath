@@ -150,6 +150,9 @@ clarifies the work; completion is recorded in [status](status.md).
     Renderer 19 repairs full-sphere pole clipping; renderer 20 integrates validated
     opaque-triangle hints, with current-source sanitizer, portable and scene
     controls passing; publication checks are recorded with the PR revision.
+    The combined production comparison reduces fixed-workload whole-process time
+    by 12.7%/17.5% and render-loop time by 26.3%/29.7%, with exact image controls.
+    Remaining process cost and time to a shared quality target are open.
     Modified-PBRT night comparisons isolate the importance correction as a major
     cause of the brightness difference; the floor BDPT/PT gap remains open.
     The selected day owner's

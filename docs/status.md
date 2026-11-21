@@ -55,7 +55,7 @@ the detailed evidence and immutable artifact hashes:
   small-scene speedup. These are matched-workload results, not time to quality.
   A separate repeated arithmetic comparison reduces GPU time by 9.13%/8.86%
   and whole-process time by 4.66%/5.43%, with exact images. These component
-  measurements do not establish their combined renderer-20 speedup.
+  measurements are distinct from the combined production comparison below.
 
 The batched day diagnostic reproduces all 128 earlier cases exactly. Its
 4,096-spp extension is declined before extended outcomes: the measured forecast
@@ -65,8 +65,16 @@ execution evidence, not additional tail observations.
 Fresh renderer-20 day/night controls at 320×170 and 64 spp reproduce every
 raw and authored-clamped FLOAT component and full Film byte of renderer 19.
 Independent auditing also reproduces both standard-sRGB previews.
-The tested integration is the current review slice. Further work must measure
-the combined execution cost and isolate the remaining scene-level discrepancies.
+A direct 16-run production comparison now measures the combined changes. At
+320×170 and 64 spp, three measured pairs after warm-up reduce whole-process
+time by **12.7% day / 17.5% night** versus published renderer 19. Rendering and
+accumulation take **26.3% / 29.7%** less time; these are host phases, not GPU
+timestamps. All sixteen Film and raw/clamped FLOAT controls are exact. About
+43 seconds remains outside the named phases. This is a fixed-sample workload
+comparison, not time to a shared quality target.
+
+The tested integration is the current review slice. Further work must isolate
+the remaining process cost and scene-level discrepancies.
 The remaining slowdown, heavy tails and BDPT/PT floor discrepancy are open.
 
 ## Validation boundaries
@@ -83,8 +91,13 @@ are rejected; the Python checkpoint decoder passes 12 tests.
 Focused Clang-Tidy and static analysis of both changed production Metal adapters
 and the native probe pass. Clang-Tidy first catches implicit integer widening in
 a test's expected byte count; explicit operand types fix it, and the affected
-test passes again in all four builds. Subsequent full Debug publication checks
-and CI are reported with their publication revision in PR #51.
+test passes again in all four builds. CI then catches omitted transform
+initializers in the new budget fixture under LLVM 18. Explicit identity
+initializers preserve the fixture; matching LLVM 18 reproduces the error before
+the fix and passes afterward, and the affected test passes in all four builds.
+Publication `f87732b` passes all 222 Debug pre-push tests and all six jobs in
+[CI run 44864412913](https://github.com/rlefko/rypath/actions/runs/44864412913).
+Later publication checks are reported with their revision in PR #51.
 
 Published renderer-19 revision `89e04a6` passes the full 220-test Debug pre-push
 suite and all six jobs in

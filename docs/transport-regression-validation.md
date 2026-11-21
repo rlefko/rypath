@@ -759,8 +759,8 @@ of the floor difference. Matched outer depth and compensated path-tracing roulet
 do not identify a deterministic termination defect. This diagnostic does not
 replace the failed scene-level quality study.
 
-A bounded material diagnostic decodes a retained horizontal coated-floor vertex
-(sample 118, camera vertex 3), then evaluates its exact outgoing direction and
+A bounded material diagnostic decodes a retained horizontal coated surface in a
+floor-region path (sample 118, camera vertex 3), then evaluates its exact outgoing direction and
 four wavelength/material lanes through the pinned PBRT oracle. The interface is
 rough (`alpha = 0.102019608`), so this case has no omitted specular atom. It fixes
 32 replicates of 4,096 queries per lane: 524,288 total, with every zero return
@@ -788,6 +788,17 @@ forward/reverse directional densities used for MIS. Neither divides sampled
 throughput by this proxy. Conditional agreement of the two scattering routes and
 consistent strategy weights remain open questions; substituting the joint PDF
 for the directional proxy would mix different probability measures.
+
+A subsequent offline reduction fixes four equal-z bands and eight azimuth sectors
+before reading the retained query results. All 128 lane/sector rows, 32 replicate
+means and paired standard errors are retained; independent classification agrees
+for every sample, and sector sums reproduce all five moments within recorded
+rounding bounds. A grazing sector has 27.6–30.9% higher directional mass, but its
+joint mass is only 0.28–0.39% of the total. A near-normal sector contains 9.10–11.08%
+of total joint mass and has 5.43–6.52% lower directional mass. This reveals angular
+cancellation concealed by the aggregate moments. The rankings are descriptive,
+lanes share variates, and neither within-sector lighting nor actual scene incident
+radiance is measured. A 30% sector difference is not a 30% scene-level effect.
 
 The frozen native-triangle prototype subsequently completes a fixed 16-run
 comparison: one warm-up per mode and three alternating measured pairs for each
@@ -885,6 +896,54 @@ fresh scene controls
 and their independent audit
 (`3e0a418638e7f7268da38884fb1680acb77e28c47978592593e98d01d17a4b55`).
 
+The final combined production comparison uses frozen, uninstrumented Release
+CLIs: published renderer 19 at `89e04a6` and the renderer-20 production source in
+`a44b067` (unchanged by the subsequent test-only CI fix). The final binary's
+embedded source fingerprint matches the frozen 374-file production manifest.
+On Apple M4 Max / Darwin 25.6.0 / AppleClang 21, the fixed sixteen-run protocol
+uses 320×170, 64 spp, seed/material seed zero, batch size eight, and the same
+60-second checkpoint interval. Each scene has one warm-up per version followed
+by three alternating measured pairs. Metal validation is disabled for timing.
+All sixteen full Film payloads and 32 raw/clamped FLOAT planes match the
+published control; renderer identities differ only as expected and remain exact
+within each version. Independent auditing verifies these controls and timing
+statistics. Means and sample standard deviations exclude warm-ups:
+
+| Scene | Whole-process seconds, renderer 19 → 20 | Render/accumulation host seconds, renderer 19 → 20 |
+| --- | --- | --- |
+| Day | 94.243 ± 2.118 → 82.228 ± 2.234 | 46.484 ± 0.010 → 34.274 ± 0.037 |
+| Night | 118.632 ± 2.146 → 97.813 ± 2.249 | 70.452 ± 0.048 → 49.494 ± 0.037 |
+
+Whole-process time falls by 12.7%/17.5%; the render-and-accumulation host loop
+falls by 26.3%/29.7%. These are production timings, not GPU timestamps or time to
+a common quality target. Preparation rises slightly, from 2.276 → 2.436 seconds
+by day and 2.310 → 2.475 by night. Pipeline creation varies between about zero
+and four seconds. Process peak RSS remains approximately 13.35–13.36 GB; this
+is not a complete measure of Metal allocations and does not remove the measured
+additional native-AS storage requirement.
+
+Preparation explicitly excludes pipeline time, so the phase sum does not double
+count it. About 43 seconds remains outside all three named phases. That remainder
+includes unclassified parsing/translation, identity hashing, initial Film and
+checkpoint work, image exports, resource teardown and process/wrapper overhead;
+it cannot be attributed to one of those tasks by these timers. Periodic and final
+checkpoints are inside rendering/accumulation. The initial checkpoint is outside.
+All runs publish checkpoints at zero and 64 spp; the slower renderer-19 night runs
+also publish at 56 spp under the unchanged interval. These are actual CLI workload
+costs, not matched counts of checkpoint writes.
+
+At publication, the full 222-test Debug pre-push suite passes at `f87732b`, as do
+all six jobs in [CI run 44864412913](https://github.com/rlefko/rypath/actions/runs/44864412913).
+The preceding [run 44863474450](https://github.com/rlefko/rypath/actions/runs/44863474450)
+retains Linux and CodeQL compile failures: LLVM 18 diagnoses omitted `transform`
+initializers in the newly added budget test. Matching local LLVM 18 reproduces
+both errors. Explicit identity-transform initializers fix them without changing
+the assertions, and that test passes in all four builds. The reproduction receipt
+under `.cache/validation/ci-native-budget-001/` is
+`81e57d343393d8be1bf87c4d72a0996878f8517e412d6d684d63ccf2377fd4ec`;
+affected-test validation is
+`15eb8bb64b345a772af98cbb7fcf9a4db1f72a651300682f30edf2125d3c6491`.
+
 Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 
 | Receipt | SHA-256 |
@@ -919,6 +978,8 @@ Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 | `native-hint-small-scenes-001/independent-review-001/actual-review.json` | `1dfae3daf7b934f538a647f03118dbfa7157a5b4806994aa80c4413d7c5cfc72` |
 | `pbrt-adjoint-control-001/failure-capture-002/execution.json` | `ce50f14eced7765bbeb265e0a5abb3e384bc20d4aaa5d091bcbaee714dd31bf7` |
 | `floor-material-moment001/pdf-source-review001/REPORT.md` | `334d89f0aacd9ff0912f64b5f845aa5634889f6011e1a6c235c2df401d4bf28b` |
+| `floor-material-moment001/angular-moments001/result.json` | `a1bcd6ec75f2ddcfe83672d4dbb5847f68293dae3993916206eddc44750a04b9` |
+| `floor-material-moment001/angular-moments001/independent-review-001/receipt.json` | `e293f562deeab3f7027f3199741720e90f6c1b313603bfd12805803419cbeb7a` |
 | `floor-material-moment001/moments001/execution.json` | `c51cd903a004ec9784b75b27f76c73f47a29d95a0776b5b6a6e12bce96168dc5` |
 | `floor-material-moment001/moments001/independent-review-001/receipt.json` | `54707073fe083cfab866297646f469c1a589e5d658ec594ae547bed1cea0655e` |
 | `pbrt-adjoint-control-001/shared-support-001/study-execution.json` | `dca429621fda6c13a68b6adcc916cdcae7001dae048ba38d669c38c2e20fb393` |
@@ -930,6 +991,9 @@ Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 | `normalized-transform-performance-001/execution.json` | `912493cfabeb1b08874e442132aeb3fd8394a78b1bcab537d0ee3c728404c8a6` |
 | `normalized-transform-product-fast-001/execution.json` | `f0bca4790c1f8b6fcfd81b4bef672da410683490f9ae7bb56ca94cbaabd27238` |
 | `normalized-transform-fast-performance-001/execution.json` | `d4806a3bdf49f205e3dda5a92d2520fcf985494543a475821fc4621416ca1011` |
+| `production20-performance-001/execution.json` | `bb41d3f74ee5768e0b338a7337b97d013360e807ad2bde279dd9f4db77f6999a` |
+| `production20-performance-001/independent-review-001/actual-review.json` | `2b0ba970df86a8e0d0b1bcb410c083289b615202179105762e4f788313c285b5` |
+| `production20-performance-001/summary.json` | `a25e86ed24c8301fad9818a1bf35a9e018e11a1b5dbbc1bec5bd806f9ee19674` |
 | `normalized-transform-fast-repeats-001/execution.json` | `1fbce560a260f8eeafe937feb861b9cf3b07d956d4a3a510c8b64aa5046e9b59` |
 | `normalized-transform-fast-repeats-001/independent-review-001/actual-review.json` | `3767c80a360155642a746a89c2f48c1c0531229a6c1da029a2c6355c24d738a0` |
 
