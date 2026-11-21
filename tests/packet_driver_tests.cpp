@@ -204,13 +204,17 @@ void scheduling() {
     require(rejected.completion == RenderCompletion::failed && wrong_exposure.builds == 0,
             "Finite-clamp packet exposure mismatch reached preparation");
     scene.max_depth = 64;
-    settings = {1100, 1, 2, 1, 17};
+    const auto capacity = packet_wire::workspace_bytes / packet_wire::lane_bytes(scene.max_depth);
+    require(capacity > 0 && capacity < std::numeric_limits<std::uint32_t>::max(),
+            "Deep packet boundary fixture width exceeds uint32");
+    settings = {static_cast<std::uint32_t>(capacity + 1), 1, 2, 1, 17};
     Synthetic deep;
     deep.budget = settings.samples;
     auto deep_result = detail::drive_progressive(scene, settings, {}, deep.source());
     require(deep_result.completion == RenderCompletion::complete, deep_result.diagnostic);
-    const auto capacity = packet_wire::workspace_bytes / packet_wire::lane_bytes(scene.max_depth);
     require(deep.calls == 4, "Deep packet workspace failed to tile source pixels");
+    require(std::ranges::all_of(deep_result.film.pixels, [](auto &p) { return p.count == 2; }),
+            "Deep packet partition omitted or duplicated owners");
     for (const auto &r : deep.requests)
         require(r.pixel_count <= capacity, "Deep packet dispatch exceeded workspace");
 }
