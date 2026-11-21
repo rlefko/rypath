@@ -36,7 +36,8 @@ int main() {
         mesh.analytics.push_back(
             {.kind = AnalyticKind::sphere, .radius = 1, .z_min = -1, .z_max = 1});
         geometry.meshes.push_back(mesh);
-        geometry.instances = {{.mesh_index = 0}, {.mesh_index = 0, .non_opaque = true}};
+        geometry.instances = {{.mesh_index = 0, .transform = {}},
+                              {.mesh_index = 0, .transform = {}, .non_opaque = true}};
         // Existing policy charges three copies of uploads/staging, including
         // masked placements and all three expanded primitive-kind slots.
         const std::size_t bytes = 3 * (std::size_t{4 + 2} * 12 + sizeof(std::uint32_t) +
