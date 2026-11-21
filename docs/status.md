@@ -10,7 +10,7 @@ night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport
 BDPT camera/light connections and splats, finite sensor-space film clamping,
 raw EXR export, and an explicit bounded large-scene profile. Checkpoint
 format/identity/renderer/sampling/accumulation contracts on this follow-up branch
-are 3/12/18/7/2.
+are 3/12/19/7/2 after the full-sphere pole clipping repair.
 See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
 acceptance targets and historical validation. The follow-up adds native environment
 CDFs, combined light selection, directional shape/emission proposals and pinned
@@ -45,6 +45,14 @@ Execution-only arithmetic and visibility optimizations are integrated separately
 their combined repeated comparison reduces GPU time by 37.0% by day and 45.1%
 by night against the frozen renderer-18 candidate, with exact image controls.
 The remaining performance regression and quality failures still block completion.
+An exploratory native-triangle hint preserves the timing images and reduces
+GPU time further, with additional memory cost; repeated validation is pending.
+Its probes also expose a full-sphere pole rejection with hints disabled.
+Renderer 19 repairs that numerical clipping defect and rejects older checkpoints.
+The admitted day replay confirms the rare refracted-environment path persists.
+A guarded PBRT diagnostic separately isolates a negative reverse emission PDF
+in both correction-enabled and correction-disabled binaries; its failed study
+does not provide corrected comparison images.
 Unsupported media and geometry receive
 diagnostics rather than substitutions.
 
@@ -54,6 +62,12 @@ additional camera/film models and broader material semantics remain on the
 remain unestablished.
 
 ## Validation
+
+The full-sphere repair passes all 17 focused analytic/checkpoint tests in each
+of Debug, Release and ASan/UBSan with Metal API validation, plus the independent
+Python checkpoint decoder's 12 tests. The newly added native pole test first
+fails against the retained old shader. These checks apply to renderer 19 and
+are separate from the earlier complete suites below.
 
 The subsequent execution changes in `d1d205e` pass all 220 checks in each of
 Debug, Release and ASan/UBSan, plus 158 portable Clang 18 checks. Debug initially

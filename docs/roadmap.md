@@ -143,8 +143,11 @@ clarifies the work; completion is recorded in [status](status.md).
     failure, but within-renderer BDPT/PT differences remain, including in PBRT.
     Repeated timing of the integrated arithmetic/visibility optimizations reduces
     day/night GPU time by 37%/45% against renderer 18 with exact image controls.
-    Floor contribution attribution, current day-path replay and further measured
-    traversal improvements are the next validation steps.
+    The current day replay confirms a rare refracted-environment contribution;
+    a separate PBRT diagnostic identifies a negative reverse emission PDF.
+    Controlled night comparisons and repeated native-triangle acceleration
+    measurements remain in progress. Renderer 19 also repairs full-sphere pole
+    clipping exposed by the traversal probes.
     Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).

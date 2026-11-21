@@ -573,6 +573,37 @@ with the integrated three-run means of 44.788 and 68.651 above. This supplies
 no useful performance improvement and is not adopted. These single exploratory
 observations do not measure occupancy or register spilling.
 
+A native-triangle hint experiment uses opaque hardware candidates to seed the
+precise closest-hit search and certify early shadow occlusion. Original-source
+intersection validation remains authoritative; native distances and barycentrics
+are not accepted directly. A fixed six-run exploration (off, closest, both for
+each scene) preserves every Film byte, scene identity and raw/clamped FLOAT value.
+Day GPU times are 44.931, 36.547 and 35.798 seconds; night times are 68.876,
+58.218 and 52.271 seconds. Each run has 896 valid GPU intervals and no dispatch
+errors. These are single observations, not repeated performance evidence or an
+adopted implementation. The additional structure uses about 1.127 GB, with
+70.742 MB peak scratch and 29.611 MB peak input buffers. Parse-dominated process
+RSS does not measure incremental device-memory cost. Day's first whole-process
+time is about eight seconds above the earlier baseline despite similar GPU time;
+startup variability prevents attributing the full wall-time difference to hints.
+
+The hint regression tests exposed a separate full-sphere pole defect with hints
+disabled. The unchanged analytic helper rejects both roots after radius
+reprojection rounds a pole one binary32 step beyond the implicit sphere bound.
+A separate native-offer witness confirms the sphere is offered to the helper;
+this is not a missing acceleration-structure candidate. Renderer 19 applies only
+authored partial-sphere z clipping, following the active-bound condition in
+[PBRT's sphere intersection](https://pbr-book.org/4ed/Shapes/Spheres).
+Cylinder clipping, root arithmetic and UV bounds retain their previous behavior.
+The new test fails on the old shader and passes with the repair. It covers both
+poles, two radii, inside/non-unit rays, farther roots, hemispheres, clipped bands
+and a translated sphere preceding a triangle, checking closest-hit and occlusion
+against independent axial distances. Checkpoint readers reject renderer 18;
+independent Python serializers reproduce the old goldens before deriving the
+renderer-19 identity and checksum.
+All 17 focused analytic/checkpoint checks pass in Debug, Release and ASan/UBSan
+with Metal API validation; the Python checkpoint decoder passes 12 tests.
+
 The follow-up fixed night seed-0, 512-spp control keeps the frozen host and all
 other shader code unchanged while disabling the two importance shading-normal
 correction applications. The rebuilt enabled control reproduces every raw and
@@ -613,6 +644,42 @@ justification for removing the correction. The remaining floor discrepancy needs
 contribution/strategy attribution; this diagnostic does not replace the failed
 32-replicate quality study.
 
+A frozen-v8 replay also rechecks the preselected day outlier: seed/material 25,
+pixel (119,48), sample 171 of 256. All 256 owner contributions reconstruct the
+retained raw RGB exactly, and eight original/instrumented requests retain their
+entire original workspace prefixes. The initial camera audit used the scalar
+lens-probe sampling route and failed. A separate one-dispatch control follows
+the actual packet lens-dimension override and exactly reproduces the captured
+film words, lens words and primary ray. Its corrected offline admission retains
+the failed original audit and all other gates, without rerendering the owners.
+
+The admitted trace preserves the historical diffuse, dielectric transmission,
+coated reflection, dielectric transmission and environment path. Only the
+`(s=0,t=6)` connection contributes, with MIS weight one; the `4/9` and `9/4`
+transmission factors cancel. Sample 171 supplies 99.8881% of this owner's
+weighted luminance. The final spectral contribution differs from the historical
+v4 trace by at most 1.812e-6 relatively. This is the persistent rare refracted
+environment contribution, with no demonstrated MIS or refraction-scaling
+amplification defect. The importance correction does not execute on this
+radiance walk. Independent exact-rational checks validate all four selected
+triangle hits and their nearest ordering within each selected instance; all
+twelve returned distance/barycentric floats round correctly. These checks do
+not establish scene-wide closest-hit ordering, visibility, population variance
+or the cause of the full day/night quality gap.
+
+A separate diagnostic adds the same importance correction to pinned PBRT. Its
+uncorrected seed-32 control matches the retained FLOAT image exactly, but the
+corrected full-frame run stops at a guarded negative contribution. Fixed replays
+at pixel (46,64), sample 86 isolate `(s=1,t=6)`: a one-sided spherical emitter's
+`PDF_Le` returns -0.0004199222 for a back-hemisphere direction. Conversion to area
+density gives -15.30755; the MIS recurrence then returns -0.05610157. The four
+pre-MIS spectral lanes are positive. Both corrected and uncorrected diagnostic
+binaries reproduce every captured recurrence bit; neither applies the importance
+correction in this sample. This attributes the guarded failure to the pinned
+reference's reverse emission PDF, not to the correction. Rypath already returns
+zero outside the one-sided emission hemisphere. The failed diagnostic remains
+failed; no corrected image or statistical conclusion follows from these witnesses.
+
 Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 
 | Receipt | SHA-256 |
@@ -636,6 +703,12 @@ Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 | `adjoint-control-001/interpretation.json` | `f1a2f57b09b70b499b13b38c4c89e79a40587257b11188bad6e6c3f8020a7db2` |
 | `night-pt-roi-diagnostic-001/study-execution.json` | `f2a028ece2dfed74dac0913bdc90b1f0c25750025e1ffbbcc9d506e2e7c1be25` |
 | `night-pt-roi-diagnostic-001/analysis.json` | `96ec126ce6383455368063cd3887208003b02faae00332e78276c0f421235572` |
+| `day-owner-trace-001/offline-readmission-001/receipt.json` | `0a8d2b905f4176fc4483fb03d3683196e5fe93843bea059bdd548954f6e0d3fa` |
+| `day-owner-trace-001/independent-path-review-001/receipt.json` | `fbf4227309933ed9a98b7e8da510d3f623b52dcd0fe3fdb1cac83c8bf0c50848` |
+| `day-owner-trace-001/independent-path-review-001/selected-oracle-review.json` | `3244f5abb2b6dbf81f42433126860339cc258db7946a2e288da4ab2b499d76c1` |
+| `native-triangle-hint-003/trial/execution.json` | `741c86c84c61aec1d76a410c39b2f6a74a33b232795867f75610036f54223367` |
+| `native-triangle-hint-003/trial/independent-review-001/receipt.json` | `7f386f6b027d87902debe81891765af2ce6448ca7f07c4847b8cc8077a4b2699` |
+| `pbrt-adjoint-control-001/failure-capture-002/execution.json` | `ce50f14eced7765bbeb265e0a5abb3e384bc20d4aaa5d091bcbaee714dd31bf7` |
 
 The descriptive report's `report-plots-001/outputs/summary.json` retains all
 endpoints, mean safeguards and timing runs. The
