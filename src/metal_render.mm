@@ -12,6 +12,7 @@
 #include "light_sampling.hpp"
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
+#include "packet_dispatch.hpp"
 #include "packet_spectrum_shared.h"
 #include "packet_wire.h"
 #include "render_wire.h"
@@ -444,6 +445,7 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> triangles = nil;
     std::uint32_t native_hint_mode = 0;
+    std::size_t packet_payload_bytes = packet_wire::workspace_bytes;
     id<MTLBuffer> patches = nil;
     id<MTLBuffer> materials = nil;
     id<MTLBuffer> material_data = nil;
@@ -1858,9 +1860,8 @@ struct MetalRenderScene::Impl {
         const std::size_t stride = p.packet_transport ? p.packet_lane_bytes : sizeof(wire::Sample);
         const std::size_t slots = p.packet_transport ? p.lane_count : group_count * group_width + 1;
         const std::size_t guard_bytes = p.packet_transport ? 64 : 0;
-        if (p.packet_transport &&
-            (stride == 0 || p.lane_count > packet_wire::workspace_bytes / stride)) {
-            result.diagnostic = "Packet dispatch exceeds the 256 MiB workspace capacity";
+        if (p.packet_transport && (stride == 0 || p.lane_count > packet_payload_bytes / stride)) {
+            result.diagnostic = "Packet dispatch exceeds the configured workspace capacity";
             return result;
         }
         const auto bytes = slots * stride + guard_bytes;
@@ -1876,7 +1877,17 @@ struct MetalRenderScene::Impl {
             result.diagnostic = "Metal render output buffer allocation failed";
             return result;
         }
-        std::memset(output_bytes, 0xff, bytes);
+        if (p.packet_transport) {
+            // Preserve missing-output sentinels; path vertices are initialized by
+            // the shader before their counts expose them to other path operations.
+            // Unused internal Vertex storage is intentionally not poisoned.
+            const auto prefix_bytes = packet_wire::vertex_offset(p.max_depth);
+            for (std::size_t lane = 0; lane < p.lane_count; ++lane)
+                std::memset(output_bytes + lane * stride, 0xff, prefix_bytes);
+            std::memset(output_bytes + slots * stride, 0xff, guard_bytes);
+        } else {
+            std::memset(output_bytes, 0xff, bytes);
+        }
 
         id<MTLCommandBuffer> command = [queue commandBuffer];
         if (command == nil) {
@@ -2131,6 +2142,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        RenderTimings *timings) {
     @autoreleasepool {
         RenderBuildResult result;
+        std::optional<std::size_t> growth_estimate;
         try {
             result.diagnostic = validate_render_scene(scene);
         } catch (const std::bad_alloc &) {
@@ -2172,6 +2184,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             result.diagnostic = validate_render_preparation_budget(scene, &estimate);
             if (!result.diagnostic.empty())
                 return result;
+            growth_estimate = estimate;
             id<MTLDevice> budget_device = MTLCreateSystemDefaultDevice();
             if (budget_device != nil && budget_device.recommendedMaxWorkingSetSize > 0 &&
                 estimate > budget_device.recommendedMaxWorkingSetSize) {
@@ -2243,6 +2256,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                     "(AS/driver scratch/pipelines excluded)";
                 return result;
             }
+            growth_estimate = budget.combined;
             auto budget_device = MTLCreateSystemDefaultDevice();
             if (budget_device != nil && budget_device.recommendedMaxWorkingSetSize > 0 &&
                 budget.combined > budget_device.recommendedMaxWorkingSetSize) {
@@ -2455,6 +2469,28 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 if (*buffer == nil)
                     *buffer = sentinel;
             }
+        }
+        if (impl->parameters.packet_transport) {
+            const auto recommended = impl->device.recommendedMaxWorkingSetSize;
+            if (!growth_estimate && recommended > 0) {
+                // Unlimited scenes without hints were not previously estimated here.
+                // Optional growth must not introduce a new preparation failure.
+                try {
+                    std::size_t estimate = 0;
+                    if (validate_render_preparation_budget(scene, &estimate).empty())
+                        growth_estimate = estimate;
+                } catch (...) {
+                    // Keep the existing baseline when optional estimation cannot complete.
+                }
+            }
+            std::optional<std::size_t> finite_limit;
+            if (scene.preparation_byte_limit != std::numeric_limits<std::size_t>::max())
+                finite_limit = scene.preparation_byte_limit;
+            impl->packet_payload_bytes = packet_dispatch::payload_bytes(
+                growth_estimate, finite_limit, recommended, impl->device.maxBufferLength);
+            result.packet_lane_capacity = packet_dispatch::lane_capacity(
+                impl->packet_payload_bytes, impl->parameters.packet_lane_bytes,
+                impl->device.maxBufferLength);
         }
         result.scene.reset(new MetalRenderScene(std::move(impl)));
         result.status = GeometryStatus::success;

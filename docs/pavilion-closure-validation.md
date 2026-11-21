@@ -128,6 +128,16 @@ remain unchanged. Instrumentation changes execution and cannot establish the
 cause or serve as a production repair. The canonical-density prototype remains
 outside the renderer-22 integration described below.
 
+A reduced version still reproduces the failure after removing generated
+continuation work and the actual MIS-weight invocation. Removing only its four
+trailing PDF queries then restores the same 32 material and 96 lighting words;
+the positive control and every other retained output and typed field stay
+unchanged. The original failing binary is replayed first. This rejects that cut
+as a smaller failing reproducer and identifies sensitivity to the query block's
+presence. It does not diagnose a compiler defect or justify removing queries
+from production. The failed-preservation receipt is
+`c83f803c9a220d7928017142b0c4f3877302a1b30927f252cb337402eacfb72a`.
+
 ## Packet density and origin validity
 
 Renderer 22 preserves a layered PDF's validity through the packet adapter,
@@ -211,6 +221,114 @@ The execution receipt SHA-256 is
 the complete paired statistics and host phases are in the retained summary,
 SHA-256 `585e9a886af21d06ba35a1c6eb78c01dc497b755e0a1817e7db948cd9bf770e5`.
 
+A later conservative triangle-miss filter is rejected. Its scalar error bounds
+attempt to certify the same valid miss as both existing finite Pair solvers;
+uncertain cases use the unchanged original solver. Standalone checks cover
+32 results under strict and strict-Os flags, including two actual certifications
+per configuration. The complete candidate library then passes the existing
+arithmetic/witness, 40 transformed-ray and 463 native-hint dispatch checks.
+
+Four renderer-22 scene controls on M4 Max at 320×170/64 spp preserve every Film
+byte and raw/clamped FLOAT component against both the published reference and
+the opposite arm. With API validation enabled, observed GPU time rises from
+32.4009 to 43.0652 seconds by day and 47.4768 to 62.6249 seconds by night.
+These single controls are not a warmed performance estimate; they provide no
+reason to adopt this implementation or repeat its timing series. These observations
+do not measure register pressure or spills. The execution receipt is
+`2772988525ae19d1d01b7f960750f6912efca71835f6c298192647781f3bf2de`.
+
+A separate instrumented day prefix (samples 0–7 with total-sample setting 64)
+records 7,323,154 triangle-solver calls. The filter certifies 1,174,705 misses,
+**16.04% of calls**, all already handled by the ordinary fast solver. It saves
+no extended solves and certifies none of the 1,459,150 native-hint validations.
+Both pipelines preserve all captured path outputs, original workspace bytes,
+Film payloads and raw/clamped FLOAT components. This census identifies limited
+work avoidance in that observed prefix; it does not measure uninstrumented
+traversal frequency, attribute elapsed time or establish night-scene rates.
+Its execution receipt is
+`0c21b463da46383202d9e0bb1dfb5ad9c759f3918572d00086a679641c677fe8`.
+
+A subsequent explicit Pair-times-scalar specialization preserves the generic
+fallback and passes 668,296 differential cases under both strict and strict-Os
+GPU compilation, plus the three existing traversal admissions. All four
+day/night scene controls preserve Film and FLOAT output exactly. Observed GPU
+time changes by only −0.56% day / −0.63% night; startup differences confound the
+whole-process comparisons. Adoption and repeated timing are on hold because
+these single API-enabled controls establish no substantial improvement.
+The scene receipt is
+`161fdfe05f192285a2a83b80e74eeba7e343af79d7e88d67fb2235641886349a`.
+
+An Instruments Performance Limiters capture of published renderer 22 completes
+for a day render at 320×170/8 spp. Its Film and FLOAT outputs exactly match the
+unprofiled control. Analysis resolves 24,989,678 raw counter records into 85
+separate series. During the inferred rendering windows, unweighted sample means
+show 1.10% compute occupancy and a 99.71% occupancy-manager target. These are
+device-wide observations, not exclusive renderer counters or duration-weighted
+averages. The source-supported mapping selects the last 112 command buffers;
+their span sum differs from the application's interval sum by 1.11%.
+
+The measurements motivate testing dispatch underfill: the packet driver currently
+limits each one-sample dispatch to 4,096 pixels, although the existing 256 MiB
+workspace permits 9,992 lanes at the scene's depth. They do not establish a
+register/spill bottleneck or prove that larger dispatches will improve speed.
+The completed counter-analysis receipt is
+`a5e93605851a1456c912e12c3b9681c2457a9faff64015bd45938fb821dcb975`.
+
+A host-only pilot replaces the 4,096-pixel packet cap with the existing workspace
+capacity. The shader library, lane layout, samples and accumulation order remain
+unchanged. Both newly linked controls match published renderer 22 exactly; all
+four day/night Film payloads and raw/clamped FLOAT planes match their controls.
+Each frame retains 3,481,600 sample owners, while sample commands fall from 896
+to 384. Maximum output allocation rises from about 105 MiB to 256 MiB within the
+existing budget.
+
+| Scene | 4,096-lane GPU seconds | 9,992-lane GPU seconds | Process seconds, before → after |
+| --- | ---: | ---: | ---: |
+| Day | 32.510 | 15.393 | 53.622 → 32.613 |
+| Night | 47.759 | 22.306 | 65.746 → 39.595 |
+
+These are single API-enabled pairs at 320×170/64 spp, with no declared warm-up;
+they motivate further work but do not establish a repeated speedup, isolate
+occupancy from submission/cache effects, or close the time-to-quality target.
+The complete execution receipt is
+`b45dbf401cbab8acb9fd4f9fe18bfd219f9a9b6334715a6664f4e8465a3e8272`.
+
+A second paired host-only experiment increases the packet payload ceiling from
+256 MiB to 1 GiB, with the same shader and sample order. At depth five this raises
+capacity from 9,992 to 39,969 lanes and reduces the measured commands from 384 to
+128. The existing 16 GiB scene preparation limit and native device/allocation
+checks remain in force. Both original and candidate frames reproduce every
+published Film byte and raw/authored-clamped FLOAT component. Observed GPU time
+falls from 15.395 to 6.713 seconds by day and 22.325 to 10.719 seconds by night.
+The complete receipt is
+`63775ebccb4e0fb4fbc53ad08661dcd1f842c7a8f521a98a561bad156255e2e7`.
+
+With that same capacity, initializing only each lane's Result and reserved Splat
+records plus the final buffer guard reduces host setup work. Path construction
+writes vertices before exposing them through its counts; unused Vertex storage
+is no longer poisoned. Missing-output sentinels and guard checks remain, but this
+does reduce diagnostic coverage for erroneous internal Vertex reads. The change
+does not claim equivalent malformed-shader fault detection. All six image audits
+against published, paired and prior-capacity controls pass exactly.
+
+| Scene | Full-fill setup (s) | Prefix-fill setup (s) | Full-fill loop (s) | Prefix-fill loop (s) |
+| --- | ---: | ---: | ---: | ---: |
+| Day | 0.756 | 0.128 | 8.201 | 7.590 |
+| Night | 0.777 | 0.134 | 12.276 | 11.596 |
+
+These remain single API-enabled pilots, not warmed repeated admission. The
+integrated policy grows the default 256 MiB payload only with a known preparation
+estimate and available scene/device headroom, charging three bytes of estimated
+storage per additional payload byte, up to 1 GiB. Native maximum buffer size
+also bounds advertised capacity. Unknown estimates decline optional growth;
+scalar scheduling is unchanged. This extends preparation accounting rather than
+establishing a whole-process peak-memory bound. Integrated regression and final
+timing/quality checks remain separate. The integrated host change passes all 227
+Release tests, the selected Metal suites with API validation, and native tiling
+at the maximum supported path depth. Fresh integrated day/night controls retain
+all Film/FLOAT bits and produce 128 completed sample commands per frame. Their
+observed loops are 7.593 and 11.604 seconds; no repeated-speed claim follows.
+
 ## Quality protocol
 
 The separately versioned v2 runner requires 64 fresh independent replicates per
@@ -251,6 +369,9 @@ finite raw/clamped FLOAT outputs and independently decoded checkpoints. Their
 display previews use standard sRGB encoding without denoising; they do not
 establish final-resolution quality or convergence.
 
-Debug pre-push checks, GitHub CI and final scene-quality/performance acceptance
-are separate publication gates. Passing these regression checks does not resolve
-the cross-strategy density issue described above.
+Published renderer-22 revision `3c52b42` additionally passes all 227 Debug
+pre-push tests, all 227 ASan/UBSan tests, all 65 Debug Metal tests with API
+validation, and static analysis of both production Metal adapters. All jobs in
+[CI run 44900321433](https://github.com/rlefko/rypath/actions/runs/44900321433)
+pass. Final scene-quality/performance acceptance remains separate; these checks
+do not resolve the cross-strategy density issue described above.

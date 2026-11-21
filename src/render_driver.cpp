@@ -173,10 +173,12 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 auto batch = render_timed(control.timings, RenderTimingPhase::film_stage, [&] {
                     return PacketFilmBatch(result.film, batch_count);
                 });
-                const auto packet_pixels =
-                    std::min(std::uint32_t{4096},
-                             static_cast<std::uint32_t>(packet_wire::workspace_bytes /
-                                                        packet_wire::lane_bytes(scene.max_depth)));
+                const auto packet_pixels = std::min(
+                    render_tile_capacity,
+                    built.packet_lane_capacity != 0
+                        ? built.packet_lane_capacity
+                        : static_cast<std::uint32_t>(packet_wire::workspace_bytes /
+                                                     packet_wire::lane_bytes(scene.max_depth)));
                 // Splat destinations overlap pixel tiles. Canonical owner order
                 // is absolute sample, then source pixel, independent of batches.
                 for (std::uint64_t sample_offset = 0; sample_offset < batch_count;

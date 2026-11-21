@@ -3,6 +3,7 @@
 #include "bsdf_table_fixture.hpp"
 #include "checkpoint.hpp"
 #include "metal_render.hpp"
+#include "packet_dispatch.hpp"
 #include "packet_wire.h"
 #include "render_driver.hpp"
 #include "render_identity.hpp"
@@ -253,6 +254,10 @@ void scheduling() {
     scene.max_depth = 2;
     auto built = build_metal_renderer(scene);
     require(built.status == GeometryStatus::success && built.scene, built.diagnostic);
+    require(built.packet_lane_capacity > 0 && built.packet_lane_capacity <= render_tile_capacity &&
+                built.packet_lane_capacity <= packet_dispatch::maximum_payload_bytes /
+                                                  packet_wire::lane_bytes(scene.max_depth),
+            "Native packet build advertised an invalid lane capacity");
     constexpr std::array samplers{
         RenderSampler{}, RenderSampler{SamplerKind::sobol},
         RenderSampler{SamplerKind::sobol, SobolRandomization::none},
@@ -312,7 +317,12 @@ void scheduling() {
             empty.environment.fill(1);
             empty.max_depth = depth;
             empty.integrator = integrator;
-            const auto width = depth == 64 ? 1100u : 4u;
+            // Cross even the largest allowed workspace so native tiling remains covered.
+            const auto width =
+                depth == 64 ? static_cast<std::uint32_t>(packet_dispatch::maximum_payload_bytes /
+                                                         packet_wire::lane_bytes(depth)) +
+                                  1
+                            : 4u;
             auto rendered = render_progressive(empty, RenderSettings{width, 1, 1, 1, 19});
             require(rendered.completion == RenderCompletion::complete, rendered.diagnostic);
             require(validate_film_accumulation(rendered.film).empty(),

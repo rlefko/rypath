@@ -25,8 +25,9 @@ potentially recovered true intersections invalidate older checkpoints. Renderer
 21 corrects the internal proposal measure in layered directional-f MIS, with
 scalar and packet regression checks passing. Renderer 22 preserves invalid
 coating PDFs as failures and keeps outward ray origins within the supported
-normal-or-zero coordinate domain. Its 227 Release tests pass; the final
-combined revision still needs the remaining publication checks. Host hashing and opt-in timing
+normal-or-zero coordinate domain. Published revision `3c52b42` passes 227 tests
+in each supported preset, 164 portable tests, 65 Debug Metal tests with API
+validation, 237 Python tests, and GitHub CI. Host hashing and opt-in timing
 changes are also under validation; see the [closure record](pavilion-closure-validation.md).
 Scene quality and final performance acceptance remain open. See
 [geometry](geometry.md) and [checkpointing](checkpointing.md).
@@ -82,9 +83,21 @@ comparison, not time to a shared quality target.
 
 The tested integration is the current review slice. Further work must isolate
 the remaining process cost and scene-level discrepancies.
-The remaining slowdown, heavy tails and BDPT/PT floor discrepancy are open.
+The integrated bounded packet-workspace policy and output-prefix initialization
+now reproduce every renderer-22 Film byte and FLOAT component in fresh day/night
+controls. Their observed render loops take 7.59/11.60 seconds at 320×170/64 spp;
+these single API-enabled runs require warmed repeated confirmation. All 227
+Release tests pass on this host integration, including the updated native
+depth-limit tiling coverage. Heavy tails, the material-copy blocker and the
+BDPT/PT floor discrepancy remain open.
 
 ## Validation boundaries
+
+Renderer-22 publication `3c52b42` passes the checks above and all jobs in
+[CI run 44900321433](https://github.com/rlefko/rypath/actions/runs/44900321433).
+Focused Clang-Tidy 18 and static analysis of both production Metal adapters
+also pass. These checks exclude the unadopted canonical-density and traversal
+experiments; final scene quality and performance remain open.
 
 Published renderer 20 passes all 222 ASan/UBSan tests and 159 portable tests.
 Release evidence combines 217 non-CLI checks with Metal API validation and five
