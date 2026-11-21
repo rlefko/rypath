@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "image_texture.hpp"
+#include "pavilion_quality_bootstrap_v2.hpp"
 #include "pavilion_quality_metrics.hpp"
 #include <atomic>
 #include <bit>
@@ -8,7 +9,6 @@
 #include <iostream>
 #include <iterator>
 #include <mutex>
-#include <random>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -88,26 +88,6 @@ struct Dataset {
     std::vector<std::array<std::vector<double>, 3>> means[2];
     std::vector<pq::Estimate> point[2];
 };
-// Same per-draw seed-seq/rejection algorithm as v1; only two real arms.
-std::array<std::vector<unsigned>, 2> bootstrap_counts(unsigned n, std::uint64_t seed,
-                                                      unsigned draw) {
-    std::array<std::vector<unsigned>, 2> counts{std::vector<unsigned>(n), std::vector<unsigned>(n)};
-    if (n != 64)
-        throw std::runtime_error("v2 requires exactly 64 replicates per arm");
-    for (unsigned backend = 0; backend < 2; ++backend) {
-        std::seed_seq sequence{unsigned(seed), unsigned(seed >> 32), draw, backend};
-        std::mt19937 rng(sequence);
-        const std::uint32_t threshold = std::uint32_t(0u - n) % n;
-        for (unsigned i = 0; i < n; ++i) {
-            std::uint32_t word;
-            do {
-                word = rng();
-            } while (word < threshold);
-            ++counts[backend][word % n];
-        }
-    }
-    return counts;
-}
 // Manifest input and JSON output have distinct roles in the CLI contract.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 int analyze(const char *manifest, const char *destination) {
@@ -182,7 +162,8 @@ int analyze(const char *manifest, const char *destination) {
         try {
             for (unsigned draw; (draw = next.fetch_add(1)) < draws;) {
                 // One whole-image resample per arm/draw, shared across every plane/ROI.
-                auto counts = bootstrap_counts(n, seed, draw);
+                auto counts = pavilion_quality_v2::bootstrap_counts(
+                    {.replicates = n, .seed = seed, .draw = draw});
                 double maximum = -std::numeric_limits<double>::infinity();
                 for (const auto &group : data) {
                     auto candidate =
@@ -294,7 +275,6 @@ int analyze(const char *manifest, const char *destination) {
         throw std::runtime_error("Metrics write failed");
     return 0;
 }
-#ifndef PAVILION_QUALITY_V2_TESTING
 int main(int argc, char **argv) {
     try {
         if (argc == 5 && std::string(argv[1]) == "extract") {
@@ -310,5 +290,3 @@ int main(int argc, char **argv) {
         return 2;
     }
 }
-
-#endif

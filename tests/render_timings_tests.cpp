@@ -128,7 +128,8 @@ void driver_equivalence() {
                     a.calls == b.calls,
                 "Timing must preserve exact Film, failure and scheduling");
         require(phase(t, RenderTimingPhase::driver_sample).count == b.calls &&
-                    phase(t, RenderTimingPhase::driver_sample).exclusive_ns == 7 * b.calls,
+                    phase(t, RenderTimingPhase::driver_sample).exclusive_ns ==
+                        std::uint64_t{7} * b.calls,
                 "Every successful or failing sample call is accounted once");
     }
 }

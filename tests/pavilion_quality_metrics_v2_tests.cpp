@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Reuse the actual v2 bootstrap stream generator and the unchanged metric core.
-#define PAVILION_QUALITY_V2_TESTING
-#include "pavilion_quality_metrics_v2.cpp"
+#include "pavilion_quality_bootstrap_v2.hpp"
+#include "pavilion_quality_metrics.hpp"
+#include <iostream>
+#include <numeric>
+
+namespace pq = pavilion_quality;
+using pavilion_quality_v2::bootstrap_counts;
 
 namespace {
 void require_fixture(bool condition) {
@@ -53,15 +58,15 @@ void numerical64() {
     std::iota(ranks.begin(), ranks.end(), -100.);
     near(pq::quantile95(ranks), 18899.); // ceil(.95*20000)-1, then nonnegative.
     require_fixture(pq::quantile95(std::vector<double>(20000, -1)) == 0);
-    const auto first = bootstrap_counts(64, 1380798800, 0);
-    require_fixture(first == bootstrap_counts(64, 1380798800, 0));
-    require_fixture(first != bootstrap_counts(64, 1380798800, 1));
+    const auto first = bootstrap_counts({.replicates = 64, .seed = 1380798800, .draw = 0});
+    require_fixture(first == bootstrap_counts({.replicates = 64, .seed = 1380798800, .draw = 0}));
+    require_fixture(first != bootstrap_counts({.replicates = 64, .seed = 1380798800, .draw = 1}));
     for (const auto &arm : first)
         require_fixture(arm.size() == 64 && std::accumulate(arm.begin(), arm.end(), 0u) == 64);
     require_fixture(first[0] != first[1]);
     bool rejected = false;
     try {
-        (void)bootstrap_counts(32, 1380798800, 0);
+        (void)bootstrap_counts({.replicates = 32, .seed = 1380798800, .draw = 0});
     } catch (const std::runtime_error &) {
         rejected = true;
     }
