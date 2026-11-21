@@ -38,8 +38,8 @@ strategy records and exact renderer-23 day/night Film and FLOAT controls at
 `d7d10b2`; BDPT still finalizes both canonical stored directions.
 Its daytime loop remains 15.74% slower than fast-v5. A subsequent isolated
 `-O2` compiler control preserves all 2,944 output words and 8,800 typed material
-fields from `-O1`; its production integration is awaiting path, scene and speed
-qualification.
+fields from `-O1`, but its production packet-render test times out at 300 seconds
+while Metal compiles. That option is rejected; the working source retains `-O1`.
 Published revision `3c52b42` passes 227 tests
 in each supported preset, 164 portable tests, 65 Debug Metal tests with API
 validation, 237 Python tests, and GitHub CI. Host hashing and opt-in timing

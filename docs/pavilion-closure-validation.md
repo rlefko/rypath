@@ -455,10 +455,15 @@ control flow, rather than only metadata changes. Fresh captures match all
 2,944 output words and 8,800 typed material fields exactly, including the prior
 physical regression, with API validation enabled. Its receipt is
 `311db50532b34e311b114b3b8f5688a084bd79fd10c6280c9801492c62d62421`.
-The working integration adopts these two flags for further path, scene and
-speed qualification; this bounded material result establishes neither a speedup
-nor full numerical equivalence. All other shader optimization modes and
-renderer contract 24 remain unchanged.
+The subsequent production integration at `5516fc4` passes seven of eight focused
+Release tests, but `metal.packet_render` exceeds its unchanged 300-second
+deadline. Metal's compiler service remains CPU-active during that wait; the
+specific blocked pipeline call or optimizer pass is not established. The material
+probe uses a different entry point from the production packet kernel and cannot
+qualify that kernel's compilation. Both the timed-out test and its observed
+compiler process have exited. This rejects `-O2`; no scene or speed result is
+claimed for it, and the working source restores `-O1`. All other shader
+optimization modes and renderer contract 24 remain unchanged.
 
 ## Quality protocol
 
