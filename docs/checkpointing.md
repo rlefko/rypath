@@ -33,7 +33,7 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The sampling/convergence revision uses file format 3, identity 12, renderer 23,
+The sampling/convergence revision uses file format 3, identity 12, renderer 24,
 sampling 7 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
@@ -67,6 +67,13 @@ geometry and finalizes stored forward/reverse densities when the next endpoint
 is known. Actual sampled local directions and joint throughput remain separate.
 The new weighting convention rejects renderer-22 checkpoints; all earlier
 renderer contracts are also rejected.
+Renderer 24 skips evaluation and validation of unused canonical stored MIS
+densities in packet PT. BDPT still finalizes and validates both directions;
+all original sampled-density/area checks and the densities consumed by PT's
+emission/NEE MIS remain checked. This changes the numerical error domain:
+a PT path previously rejected solely by an unused stored-density query may now
+contribute. The physical target, sampling and raw accumulation layout are
+unchanged. Renderer-23 checkpoints are rejected explicitly.
 The checkpoint layout and raw accumulation
 remain unchanged; see the [regression record](transport-regression-validation.md).
 

@@ -414,6 +414,29 @@ at the maximum supported path depth. Fresh integrated day/night controls retain
 all Film/FLOAT bits and produce 128 completed sample commands per frame. Their
 observed loops are 7.593 and 11.604 seconds; no repeated-speed claim follows.
 
+The renderer-23 daytime pilot at `6828383` uses one warm-up per arm and five
+alternating measured pairs at 320×170/64 spp, with validation disabled and no
+overlapping renderer/compiler work. All twelve captures precede all image
+audits; every same-arm Film byte and raw/clamped FLOAT component matches its
+prebound reference. The mean render loop is 8.471438 seconds versus fast-v5's
+7.103950 seconds (ratio 1.192497), failing both the 1.10 ratio and 7.779024-second
+ceiling. Mean whole-process time is 24.413554 versus 52.189863 seconds. All
+captures and failures of the speed gates are retained; this daytime pilot does
+not replace the final two-scene timing or quality protocol. Its receipt is
+`18fa171737d59ef25fd57859f849d2a73879afe980a11e2a82199071db1ca842`.
+
+Renderer 24 consequently limits canonical stored-density finalization to BDPT.
+PT consumes fresh represented-geometry densities for emission and NEE MIS, not
+the stored forward/reverse factors. Both arrival sites now skip that unused
+work in PT; zero-initialized stored fields remain unused. Sampled forward and
+reverse PDFs, their area conversions, and all densities actually consumed by PT
+retain their existing validity checks. The direct finalizer and BDPT recurrence
+are unchanged. This changes the numerical error domain: PT may accept a path
+previously rejected solely by an unused canonical query. It is not a universal
+renderer-23 equivalence claim. The target physical model, joint throughput and
+sampling remain unchanged. Current-source transport, image and speed checks
+are required before admitting this optimization.
+
 ## Quality protocol
 
 The separately versioned v2 runner requires 64 fresh independent replicates per
@@ -437,8 +460,19 @@ that still encodes renderer 22. The retained independent Python serializer first
 reproduces both renderer-22 identity hashes, then derives renderer-23 hashes for
 the same 3,766-byte empty and 67,499-byte populated fixtures; only the tagged
 renderer field changes. Both updated identity fixtures pass in the focused
-Release rerun. This test-only correction changes no rendering code. Generated
-path validation, final scene comparisons and repeated timing remain pending.
+Release rerun. This test-only correction changes no rendering code. Published
+`6828383` also passes all 228 mandatory Debug tests. The generated-path and
+day/night sanity results above apply to renderer 23, not the pending renderer-24
+optimization. Renderer-24 wire and identity goldens are derived independently
+after reproducing all three prior renderer-23 hashes; only the renderer field
+changes.
+
+CI run `44931592050` passes macOS tests, formatting, Clang-Tidy and CodeQL. Linux
+passes all 164 Debug and 164 Release tests, then reaches its ten-minute job
+limit during ASan/UBSan tests without a reported assertion failure. The workflow
+now runs the three presets as separate jobs with independent ten-minute limits
+and `fail-fast: false`. The required Foundation Gate still requires every job
+to succeed; no tests or failure checks are removed.
 
 Historical renderer-21 validation passes 227 Release tests (151 non-CLI tests with Metal API
 validation and 76 CLI tests in their default environment), all 227 ASan/UBSan

@@ -18,7 +18,7 @@ and explicit overrides, and the [sampling record](sampling-convergence-validatio
 for the original study.
 
 The working checkpoint format/identity/renderer/sampling/accumulation contracts
-are **3/12/23/7/2**; the published `2359867` revision remains renderer 22.
+are **3/12/24/7/2**; published `6828383` uses renderer 23.
 Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
 validated native-triangle hints to eligible packet scenes, preserving procedural
 validation and stable closest-hit ordering. The new packet resource ABI and
@@ -26,11 +26,15 @@ potentially recovered true intersections invalidate older checkpoints. Renderer
 21 corrects the internal proposal measure in layered directional-f MIS, with
 scalar and packet regression checks passing. Renderer 22 preserves invalid
 coating PDFs as failures and keeps outward ray origins within the supported
-normal-or-zero coordinate domain. The pending renderer-23 integration gives MIS
+normal-or-zero coordinate domain. The renderer-23 integration gives MIS
 queries and stored densities one represented-geometry convention, preserving
 sampled joint throughput. Its current generated-path check passes all 388
 observed continuous-path strategy records; final scene-quality and repeated
 performance validation remain in progress.
+Renderer 24 skips canonical stored-density evaluation that PT never consumes,
+while retaining sampled-density checks and every density used by PT MIS. This
+explicit numerical error-domain change is awaiting current-source validation;
+BDPT still finalizes both canonical stored directions.
 Published revision `3c52b42` passes 227 tests
 in each supported preset, 164 portable tests, 65 Debug Metal tests with API
 validation, 237 Python tests, and GitHub CI. Host hashing and opt-in timing
@@ -98,13 +102,20 @@ depth-limit tiling coverage. A sole `-O1` compiler-mode change restores the full
 failing material context exactly. The current public regression reproduces the
 original `-Os` failure and qualifies exact `-O1` restoration. Fresh renderer-23
 day/night sanity loops take 8.49/13.04 seconds at 320×170/64 spp with API
-validation; the day observation exceeds the fixed target and needs warmed
-measurement. Scene-quality and final performance acceptance remain pending;
+validation. A subsequent fixed daytime series (one warm-up and five alternating
+pairs) measures 8.471 seconds against fast-v5's 7.104 seconds: 19.25% slower,
+despite whole-process time falling from 52.19 to 24.41 seconds. All twelve
+same-arm image controls pass. This fails both daytime loop targets and motivates
+the renderer-24 change; final timing and scene-quality acceptance remain pending;
 heavy tails and the BDPT/PT floor discrepancy remain open.
 This execution update is published at `2359867`; all 227 mandatory Debug pre-push
 tests and [CI run 44920623572](https://github.com/rlefko/rypath/actions/runs/44920623572)
 pass. The rebuilt modified-PBRT reference also passes its fixed numerical
 controls; fresh scene-quality comparisons remain pending.
+Published `6828383` passes all 228 mandatory Debug tests. Its Linux CI Debug and
+Release presets pass all 164 tests each, but the combined job reaches its
+ten-minute limit during sanitizer tests. The workflow now gives each preset a
+separate ten-minute job and retains the required aggregate Foundation Gate.
 
 ## Validation boundaries
 

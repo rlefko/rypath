@@ -169,7 +169,8 @@ inline bool finalize_walk_densities(const thread Resources &r, device uchar *pat
                 v.point.shading_normal = -incoming.direction;
                 v.wo = -incoming.direction;
                 v.beta = beta;
-                if (!finalize_walk_densities(r, path, count, v, mode)) {
+                // PT does not consume stored BDPT MIS densities.
+                if (p.bidirectional && !finalize_walk_densities(r, path, count, v, mode)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
@@ -334,8 +335,9 @@ inline bool finalize_walk_densities(const thread Resources &r, device uchar *pat
         v.connectible = !rypath_packet::delta_only(v.bsdf);
         const Vertex prev = path_vertex(path, count - 1);
         const float sampled_area_pdf = convert_density(pdf, prev, v);
+        // Retain sampled-area validation even when PT skips unused BDPT storage.
         if (!isfinite(sampled_area_pdf) || sampled_area_pdf < 0 ||
-            !finalize_walk_densities(r, path, count, v, mode)) {
+            (p.bidirectional && !finalize_walk_densities(r, path, count, v, mode))) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
