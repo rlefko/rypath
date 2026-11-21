@@ -1,3 +1,5 @@
+#include <charconv>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -28,16 +30,24 @@ int unavailable(const UnavailableRender &render) {
     return 2;
 }
 
-int render_png(const std::filesystem::path &output) {
+int render_png(const std::filesystem::path &output, std::int32_t material_seed = 0) {
     if (std::filesystem::is_directory(output)) {
         std::cerr << "rypath: could not publish EXR image: Is a directory\n";
         return 1;
     }
     std::ofstream png{output, std::ios::binary};
     const bool exr = output.extension() == ".exr";
-    if (exr)
+    if (exr) {
         png << "\x76\x2f\x31\x01";
-    else
+        // The fake emits just the bytes inspected by the CLI contract test.
+        // Include the same typed string attribute as production EXR output.
+        const auto seed = std::to_string(material_seed);
+        png << "rypath.materialSeed" << '\0' << "string" << '\0';
+        const auto size = static_cast<std::uint32_t>(seed.size());
+        for (unsigned byte = 0; byte < 4; ++byte)
+            png.put(static_cast<char>((size >> (8 * byte)) & 255));
+        png << seed;
+    } else
         png << "\x89PNG\r\n\x1a\n";
     png.close();
     if (!png) {
@@ -124,6 +134,7 @@ int demo(std::string_view scenario, const std::filesystem::path &output) {
 struct PbrtPaths {
     std::filesystem::path input;
     std::filesystem::path output;
+    std::int32_t material_seed = 0;
 };
 
 int pbrt(std::string_view scenario, const PbrtPaths &paths) {
@@ -168,7 +179,7 @@ int pbrt(std::string_view scenario, const PbrtPaths &paths) {
     }
     std::cout << "Render profile: pbrt-spectral-v1\n"
                  "Pixel filter: triangle (x radius 1, y radius 1.5)\n"
-                 "Light sampling: separate environment and uniform triangle area\n";
+                 "Light sampling: bvh; matched forward and reverse probabilities\n";
     if (sobol) {
         std::cout
             << "Sampler: sobol-v1 / owen (PBRT camera variates; rypath transport dimensions)\n"
@@ -179,10 +190,10 @@ int pbrt(std::string_view scenario, const PbrtPaths &paths) {
         std::cout << "Sampler: philox4x32-10-v1 (sequence differs from PBRT)\n"
                   << settings << "Seed: 0\n";
     }
-    std::cout << "Finite path maxdepth: 1\n";
+    std::cout << "Material seed: " << paths.material_seed << '\n' << "Finite path maxdepth: 1\n";
     if (scenario == "pbrt-success" || (scenario == "pbrt-independent-success" && !sobol) ||
         (scenario == "pbrt-sobol-success" && sobol)) {
-        return render_png(paths.output);
+        return render_png(paths.output, paths.material_seed);
     }
     if (scenario == "pbrt-portable") {
         return unavailable(
@@ -226,7 +237,24 @@ int main(int argc, char **argv) try {
         return demo(scenario, argv[3]);
     }
     if (mode == "--render-pbrt" && argc >= 5 && std::string_view{argv[3]} == "--output") {
-        return pbrt(scenario, {.input = argv[2], .output = argv[4]});
+        std::int32_t material_seed = 0;
+        for (int index = 5; index < argc; index += 2) {
+            if (std::string_view{argv[index]} != "--material-seed")
+                continue;
+            if (index + 1 == argc) {
+                std::cerr << "rypath: missing value for --material-seed\n";
+                return 1;
+            }
+            const std::string_view value{argv[index + 1]};
+            const auto parsed =
+                std::from_chars(value.data(), value.data() + value.size(), material_seed);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
+                std::cerr << "rypath: --material-seed must be a signed 32-bit integer\n";
+                return 1;
+            }
+        }
+        return pbrt(scenario,
+                    {.input = argv[2], .output = argv[4], .material_seed = material_seed});
     }
     return 3;
 } catch (const std::exception &error) {

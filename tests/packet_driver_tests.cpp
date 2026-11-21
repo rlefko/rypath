@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "packet_dispatch.hpp"
 #include "packet_spectrum_shared.h"
 #include "packet_wire.h"
 #include "render_driver.hpp"
@@ -42,12 +43,14 @@ struct Synthetic {
     unsigned builds = 0, calls = 0, fail_call = 0, corrupt_call = 0;
     bool cancel = false, scalar = false;
     std::uint64_t budget = 0;
+    std::uint32_t capacity = 0;
     std::vector<RenderRequest> requests;
     detail::RenderSampleSource source() {
         return {[this] {
                     ++builds;
                     RenderBuildResult b;
                     b.status = GeometryStatus::success;
+                    b.packet_lane_capacity = capacity;
                     return b;
                 },
                 [this](const RenderRequest &request) {
@@ -89,15 +92,24 @@ struct Synthetic {
 };
 void scheduling() {
     auto scene = packet_scene();
-    RenderSettings settings{4097, 1, 3, 2, 17};
+    scene.max_depth = 5;
+    constexpr std::uint32_t default_capacity = 9992;
+    require(packet_wire::workspace_bytes / packet_wire::lane_bytes(scene.max_depth) ==
+                default_capacity,
+            "Update the default workspace boundary fixture for a changed packet layout");
+    RenderSettings settings{default_capacity + 1, 1, 3, 2, 17};
     Synthetic all;
     all.budget = settings.samples;
     auto whole = detail::drive_progressive(scene, settings, {}, all.source());
     require(whole.completion == RenderCompletion::complete, whole.diagnostic);
     require(all.calls == 6, "Unexpected packet tile count");
+    require(std::ranges::all_of(whole.film.pixels, [](auto &p) { return p.count == 3; }),
+            "Default workspace partition omitted or duplicated owners");
+    require(std::ranges::any_of(whole.film.pixels, [](auto &p) { return p.splat_sum[1] > 0; }),
+            "Scheduling fixture did not exercise splat accumulation");
     for (std::size_t i = 0; i < all.requests.size(); ++i) {
         require(all.requests[i].sample_begin == i / 2, "Noncanonical packet absolute sample order");
-        require(all.requests[i].pixel_begin == (i % 2 ? 4096 : 0),
+        require(all.requests[i].pixel_begin == (i % 2 ? default_capacity : 0),
                 "Noncanonical packet source pixel order");
     }
     for (auto batch : {1u, 3u}) {
@@ -105,21 +117,29 @@ void scheduling() {
         alternate.batch_size = batch;
         Synthetic source;
         source.budget = settings.samples;
+        source.capacity = 257;
         auto rendered = detail::drive_progressive(scene, alternate, {}, source.source());
         require(rendered.completion == RenderCompletion::complete, rendered.diagnostic);
-        require(rendered.film == whole.film, "Batch partition changed packet/splat raw bits");
+        require(rendered.film == whole.film, "Tile/batch partition changed packet/splat raw bits");
+        require(source.requests.front().pixel_count == 257,
+                "Driver ignored advertised packet capacity");
+        for (const auto &request : source.requests)
+            require(request.pixel_count <= source.capacity,
+                    "Driver exceeded advertised packet capacity");
     }
     Synthetic prefix;
     prefix.budget = settings.samples;
+    prefix.capacity = 1234;
     RenderControl control;
     control.cancelled = [&] { return prefix.cancel; };
     auto partial = detail::drive_progressive(scene, settings, control, prefix.source());
     require(partial.completion == RenderCompletion::cancelled, partial.diagnostic);
-    require(prefix.calls == 4, "Cancellation interrupted a packet transaction");
+    require(prefix.calls == 18, "Cancellation interrupted a packet transaction");
     require(std::ranges::all_of(partial.film.pixels, [](auto &p) { return p.count == 2; }),
             "Cancellation left mixed owner counts");
     Synthetic rest;
     rest.budget = settings.samples;
+    rest.capacity = 1777;
     control = {};
     control.initial_film = &partial.film;
     auto resumed = detail::drive_progressive(scene, settings, control, rest.source());
@@ -189,6 +209,104 @@ void scheduling() {
     require(deep.calls == 4, "Deep packet workspace failed to tile source pixels");
     for (const auto &r : deep.requests)
         require(r.pixel_count <= capacity, "Deep packet dispatch exceeded workspace");
+}
+void workspace_policy() {
+    using packet_dispatch::lane_capacity;
+    using packet_dispatch::payload_bytes;
+    constexpr std::size_t baseline = std::size_t{256} * 1024 * 1024;
+    constexpr std::size_t maximum = std::size_t{1024} * 1024 * 1024;
+    constexpr auto largest = std::numeric_limits<std::size_t>::max();
+    require(packet_wire::workspace_bytes == baseline, "Default workspace changed");
+    require(payload_bytes({}, {}, largest, largest) == baseline,
+            "Unknown estimate authorized growth");
+    require(payload_bytes(1024, {}, 0, largest) == baseline,
+            "Unknown working set authorized growth");
+    require(payload_bytes(1024, {}, 1023, largest) == baseline &&
+                payload_bytes(1024, {}, 1024, largest) == baseline,
+            "Insufficient working-set headroom wrapped");
+    require(payload_bytes(1024, 1023, largest, largest) == baseline &&
+                payload_bytes(1024, 1024, largest, largest) == baseline,
+            "Insufficient finite-limit headroom wrapped");
+    require(payload_bytes(1024, {}, 1026, largest) == baseline &&
+                payload_bytes(1024, {}, 1027, largest) == baseline + 1 &&
+                payload_bytes(1024, {}, 1032, largest) == baseline + 2,
+            "Growth did not charge three accounted bytes per payload byte");
+    require(payload_bytes(1024, 1027, largest, largest) == baseline + 1 &&
+                payload_bytes(1024, largest, 1027, largest) == baseline + 1,
+            "Growth ignored the tighter scene/device budget");
+    require(payload_bytes(0, {}, largest, largest) == maximum,
+            "Large headroom overflowed or exceeded the 1 GiB ceiling");
+    require(payload_bytes(largest, {}, largest, largest) == baseline &&
+                payload_bytes(largest - 2, {}, largest, largest) == baseline,
+            "Near-SIZE_MAX subtraction or small headroom wrapped");
+    for (auto buffer : {std::size_t{0}, std::size_t{63}, std::size_t{64}, baseline, baseline + 64})
+        require(payload_bytes(0, {}, largest, buffer) == baseline,
+                "Optional growth shrank the existing baseline");
+    require(payload_bytes(0, {}, largest, baseline + 65) == baseline + 1,
+            "Growth did not reserve the complete buffer guard");
+    constexpr auto lane = packet_wire::lane_bytes(5);
+    require(lane_capacity(baseline, lane, largest) == 9992 &&
+                lane_capacity(maximum, lane, largest) == 39969,
+            "Default/grown depth-five capacity changed");
+    require(lane_capacity(maximum, lane, 2 * lane + 63) == 1 &&
+                lane_capacity(maximum, lane, 2 * lane + 64) == 2,
+            "Advertised device capacity failed at the guard boundary");
+    require(lane_capacity(largest, 1, largest) == render_tile_capacity,
+            "Advertised capacity exceeded backend request limit");
+    require(lane_capacity(largest, 0, largest) == 0 && lane_capacity(largest, lane, 63) == 0 &&
+                lane_capacity(largest, lane, 64) == 0 &&
+                lane_capacity(lane - 1, lane, largest) == 0,
+            "Invalid/undersized packet capacity wrapped");
+}
+void advertised_ceiling() {
+    auto scene = packet_scene();
+    RenderSettings settings{render_tile_capacity + 1, 1, 1, 1, 17};
+    Synthetic source;
+    source.budget = 1;
+    source.capacity = std::numeric_limits<std::uint32_t>::max();
+    auto result = detail::drive_progressive(scene, settings, {}, source.source());
+    require(result.completion == RenderCompletion::complete, result.diagnostic);
+    require(source.calls == 2 && source.requests[0].pixel_count == render_tile_capacity &&
+                source.requests[1].pixel_begin == render_tile_capacity &&
+                source.requests[1].pixel_count == 1,
+            "Driver failed to clamp advertised capacity to backend request limit");
+    require(std::ranges::all_of(result.film.pixels, [](auto &p) { return p.count == 1; }),
+            "Advertised-capacity partition omitted or duplicated owners");
+}
+void scalar_scheduling() {
+    const RenderScene scene;
+    const RenderSettings settings{4097, 1, 2, 2, 17};
+    const auto run = [&](std::uint32_t capacity, std::vector<RenderRequest> &requests) {
+        detail::RenderSampleSource source{
+            [=] {
+                RenderBuildResult built;
+                built.status = GeometryStatus::success;
+                built.packet_lane_capacity = capacity;
+                return built;
+            },
+            [&](const RenderRequest &request) {
+                requests.push_back(request);
+                RenderSamplesResult result;
+                result.status = GeometryStatus::success;
+                for (auto pixel = request.pixel_begin;
+                     pixel < request.pixel_begin + request.pixel_count; ++pixel)
+                    for (std::uint64_t sample = request.sample_begin;
+                         sample < request.sample_begin + request.sample_count; ++sample)
+                        result.samples.push_back({pixel, sample, 550, 1, 0, {}});
+                return result;
+            }};
+        return detail::drive_progressive(scene, settings, {}, source);
+    };
+    std::vector<RenderRequest> original, advertised;
+    auto a = run(0, original);
+    auto b = run(1, advertised);
+    require(a.completion == RenderCompletion::complete &&
+                b.completion == RenderCompletion::complete && a.film == b.film,
+            "Packet capacity altered scalar Film");
+    require(original.size() == 2 && advertised.size() == 2 && advertised[0].pixel_count == 4096 &&
+                advertised[1].pixel_count == 1 && advertised[0].sample_count == 2 &&
+                advertised[1].sample_count == 2,
+            "Packet capacity altered scalar dispatch partitioning");
 }
 void film_contract() {
     auto scene = packet_scene();
@@ -294,7 +412,10 @@ void film_contract() {
 } // namespace
 int main() {
     try {
+        workspace_policy();
         scheduling();
+        advertised_ceiling();
+        scalar_scheduling();
         film_contract();
         std::cout << "Packet driver and Film contracts passed\n";
     } catch (const std::exception &e) {

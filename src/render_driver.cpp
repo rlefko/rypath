@@ -2,8 +2,10 @@
 
 #include "render_driver.hpp"
 #include "packet_wire.h"
+#include "render_timings.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <exception>
 
@@ -13,10 +15,20 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                                        const RenderControl &control,
                                        const RenderSampleSource &source) {
     RenderResult result;
+    RenderTimingScope driver(control.timings, RenderTimingPhase::driver_overhead);
     try {
+        RenderTimingScope validation(control.timings, RenderTimingPhase::driver_validation);
         result.diagnostic = validate_render_settings(settings);
         if (!result.diagnostic.empty()) {
             return result;
+        }
+        if (scene.spectral_transport == SpectralTransport::packet &&
+            scene.integrator == IntegratorKind::bdpt && scene.max_depth > 0 &&
+            settings.sampler.kind == SamplerKind::halton) {
+            result.diagnostic =
+                validate_halton_light_range(settings.width, settings.height, 0, settings.samples);
+            if (!result.diagnostic.empty())
+                return result;
         }
         const auto depth_limit = sampler_max_depth(settings.sampler, scene_has_dielectrics(scene));
         if (settings.sampler.kind != SamplerKind::independent &&
@@ -50,6 +62,7 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
             result.diagnostic = "Invalid film model or exposure";
             return result;
         }
+        RenderTimingScope film_initialization(control.timings, RenderTimingPhase::film_initialize);
         const bool packet = scene.spectral_transport == SpectralTransport::packet;
         if (control.initial_film) {
             const auto &film = *control.initial_film;
@@ -98,8 +111,14 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
         }
         const auto pixel_total = static_cast<std::uint32_t>(result.film.pixels.size());
         auto completed = result.film.pixels.front().count;
+        film_initialization.close();
+        validation.close();
+        bool in_loop = false;
         const auto notify = [&] {
             if (control.committed) {
+                RenderTimingScope notification(control.timings,
+                                               in_loop ? RenderTimingPhase::checkpoint_callback
+                                                       : RenderTimingPhase::initial_checkpoint);
                 result.diagnostic = control.committed(result.film, result.device);
                 if (!result.diagnostic.empty())
                     return false;
@@ -120,7 +139,14 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 finish(RenderCompletion::cancelled);
             return result;
         }
-        auto built = source.prepare();
+        const auto preparation_start = std::chrono::steady_clock::now();
+        auto built = render_timed(control.timings, RenderTimingPhase::preparation,
+                                  [&] { return source.prepare(); });
+        result.pipeline_seconds = built.pipeline_seconds;
+        result.preparation_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - preparation_start)
+                .count() -
+            result.pipeline_seconds;
         result.device = built.device;
         result.status = built.status;
         result.diagnostic = built.diagnostic;
@@ -134,6 +160,9 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
         result.status = GeometryStatus::failure;
         if (!notify())
             return result;
+        const auto render_start = std::chrono::steady_clock::now();
+        RenderTimingScope loop(control.timings, RenderTimingPhase::render_loop);
+        in_loop = true;
         while (completed < settings.samples) {
             if (control.cancelled && control.cancelled()) {
                 finish(RenderCompletion::cancelled);
@@ -141,11 +170,15 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
             }
             const auto batch_count = std::min(settings.batch_size, settings.samples - completed);
             if (packet) {
-                PacketFilmBatch batch(result.film, batch_count);
-                const auto packet_pixels =
-                    std::min(std::uint32_t{4096},
-                             static_cast<std::uint32_t>(packet_wire::workspace_bytes /
-                                                        packet_wire::lane_bytes(scene.max_depth)));
+                auto batch = render_timed(control.timings, RenderTimingPhase::film_stage, [&] {
+                    return PacketFilmBatch(result.film, batch_count);
+                });
+                const auto packet_pixels = std::min(
+                    render_tile_capacity,
+                    built.packet_lane_capacity != 0
+                        ? built.packet_lane_capacity
+                        : static_cast<std::uint32_t>(packet_wire::workspace_bytes /
+                                                     packet_wire::lane_bytes(scene.max_depth)));
                 // Splat destinations overlap pixel tiles. Canonical owner order
                 // is absolute sample, then source pixel, independent of batches.
                 for (std::uint64_t sample_offset = 0; sample_offset < batch_count;
@@ -156,13 +189,15 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                         request.width = settings.width;
                         request.height = settings.height;
                         request.seed = settings.seed;
+                        request.material_seed = settings.material_seed;
                         request.sampler = settings.sampler;
                         request.pixel_begin = pixel_begin;
                         request.pixel_count = pixel_count;
                         request.sample_begin = completed + sample_offset;
                         request.sample_count = 1;
                         request.total_samples = settings.samples;
-                        auto tile = source.sample(request);
+                        auto tile = render_timed(control.timings, RenderTimingPhase::driver_sample,
+                                                 [&] { return source.sample(request); });
                         if (tile.status != GeometryStatus::success) {
                             result.diagnostic = "render packet batch: " + tile.diagnostic;
                             return result;
@@ -171,17 +206,22 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                             result.diagnostic = "Packet renderer returned scalar samples";
                             return result;
                         }
-                        result.diagnostic = batch.add(tile.packet_samples, tile.packet_splats);
+                        result.diagnostic =
+                            render_timed(control.timings, RenderTimingPhase::film_add, [&] {
+                                return batch.add(tile.packet_samples, tile.packet_splats);
+                            });
                         if (!result.diagnostic.empty())
                             return result;
                         pixel_begin += pixel_count;
                     }
                 }
-                result.diagnostic = batch.commit(result.film);
+                result.diagnostic = render_timed(control.timings, RenderTimingPhase::film_commit,
+                                                 [&] { return batch.commit(result.film); });
                 if (!result.diagnostic.empty())
                     return result;
             } else {
-                FilmBatch batch(result.film, batch_count);
+                auto batch = render_timed(control.timings, RenderTimingPhase::film_stage,
+                                          [&] { return FilmBatch(result.film, batch_count); });
                 // Pixel tiles may execute in any order. Within a pixel, absolute
                 // sample indices are always accumulated in increasing order.
                 for (std::uint32_t pixel_begin = 0; pixel_begin < pixel_total;) {
@@ -196,18 +236,22 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                         request.width = settings.width;
                         request.height = settings.height;
                         request.seed = settings.seed;
+                        request.material_seed = settings.material_seed;
                         request.sampler = settings.sampler;
                         request.pixel_begin = pixel_begin;
                         request.pixel_count = pixel_count;
                         request.sample_begin = completed + sample_offset;
                         request.sample_count = sample_count;
                         request.total_samples = settings.samples;
-                        auto tile = source.sample(request);
+                        auto tile = render_timed(control.timings, RenderTimingPhase::driver_sample,
+                                                 [&] { return source.sample(request); });
                         if (tile.status != GeometryStatus::success) {
                             result.diagnostic = "render batch: " + tile.diagnostic;
                             return result;
                         }
-                        result.diagnostic = batch.add(tile.samples);
+                        result.diagnostic =
+                            render_timed(control.timings, RenderTimingPhase::film_add,
+                                         [&] { return batch.add(tile.samples); });
                         if (!result.diagnostic.empty()) {
                             return result;
                         }
@@ -215,7 +259,8 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                     }
                     pixel_begin += pixel_count;
                 }
-                result.diagnostic = batch.commit(result.film);
+                result.diagnostic = render_timed(control.timings, RenderTimingPhase::film_commit,
+                                                 [&] { return batch.commit(result.film); });
                 if (!result.diagnostic.empty()) {
                     return result;
                 }
@@ -224,9 +269,13 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
             if (!notify())
                 return result;
             if (control.progress) {
-                control.progress(completed);
+                render_timed(control.timings, RenderTimingPhase::progress,
+                             [&] { control.progress(completed); });
             }
         }
+        loop.close();
+        result.render_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - render_start).count();
         finish(RenderCompletion::complete);
     } catch (const std::exception &error) {
         result.status = GeometryStatus::failure;
@@ -240,7 +289,7 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
     std::unique_ptr<MetalRenderScene> native;
     detail::RenderSampleSource source;
     source.prepare = [&] {
-        auto built = build_metal_renderer(scene);
+        auto built = build_metal_renderer(scene, {}, control.timings);
         if (built.status == GeometryStatus::success && !built.scene) {
             built.status = GeometryStatus::failure;
             built.diagnostic = "render build returned no scene";
@@ -248,8 +297,15 @@ RenderResult render_progressive(const RenderScene &scene, const RenderSettings &
         native = std::move(built.scene);
         return built;
     };
-    source.sample = [&](const RenderRequest &request) { return native->sample(request); };
-    return detail::drive_progressive(scene, settings, control, source);
+    source.sample = [&](const RenderRequest &request) {
+        return control.timings ? native->sample(request, *control.timings)
+                               : native->sample(request);
+    };
+    if (!control.timings)
+        return detail::drive_progressive(scene, settings, control, source);
+    auto result = detail::drive_progressive(scene, settings, control, source);
+    render_timed(control.timings, RenderTimingPhase::destruction, [&] { native.reset(); });
+    return result;
 }
 
 RenderResult render_progressive(const RenderScene &scene, const RenderSettings &settings,

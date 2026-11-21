@@ -1,0 +1,154 @@
+{
+  "schema": 2,
+  "protocol": "pavilion-quality-v2",
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "scene_manifest": "tests/corpus/pbrt-pavilion.json",
+  "scene_revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572",
+  "resolution": [
+    320,
+    170
+  ],
+  "replicates": 64,
+  "scenes": {
+    "day": {
+      "budgets": [
+        64,
+        256
+      ],
+      "primary_spp": 256,
+      "iso": 500
+    },
+    "night": {
+      "budgets": [
+        64,
+        512
+      ],
+      "primary_spp": 512,
+      "iso": 250
+    }
+  },
+  "planes": [
+    "raw",
+    "clamped"
+  ],
+  "raw_exposure": 1,
+  "regions": {
+    "full": [
+      0,
+      0,
+      320,
+      170
+    ],
+    "wall": [
+      8,
+      55,
+      65,
+      85
+    ],
+    "soffit": [
+      90,
+      42,
+      180,
+      64
+    ],
+    "floor": [
+      85,
+      93,
+      230,
+      104
+    ],
+    "pool": [
+      80,
+      115,
+      235,
+      160
+    ],
+    "glass": [
+      220,
+      60,
+      265,
+      92
+    ]
+  },
+  "region_bounds": "half-open top-down x0,y0,x1,y1",
+  "luminance_coefficients": [
+    0.2126,
+    0.7152,
+    0.0722
+  ],
+  "variance": "mean of unbiased per-pixel luminance sample variances",
+  "tail": {
+    "positive_residual": "replicate minus same-backend leave-one-out pixel mean",
+    "fraction": 0.001,
+    "count": "max(1,ceil(fraction*region_pixels))",
+    "metric": "sum largest positive squared residuals divided by all region pixels, averaged over replicates"
+  },
+  "bootstrap": {
+    "draws": 20000,
+    "seed": 1380798800,
+    "unit": "complete image replicate",
+    "backend_resampling": "independent",
+    "planes_and_regions": "joint within each backend",
+    "recompute": [
+      "means",
+      "leave-one-out residuals",
+      "tail ranks",
+      "reference epsilon"
+    ],
+    "confidence": 0.95,
+    "bounds": "one-sided simultaneous maximum-centered log-ratio bootstrap error across all 48 primary statistics"
+  },
+  "primary_gate_count": 48,
+  "maximum_ratio": 1.25,
+  "epsilon": "1e-12 * max(1, mean_pixel(square(reference ensemble mean luminance))) per scene, plane, region",
+  "near_zero_gate": "when reference energy<=epsilon require candidate upper energy<=1.25*epsilon; report absolute gate, not variance ratio",
+  "mean_gate": "unclamped RGB regional means: 5 combined standard errors + 2e-5 * max(1,abs(reference))",
+  "failure_policy": "Missing, duplicate, malformed, mixed-model/contract or inconclusive records fail admission. No dropped IDs, optional stopping, post-outcome extensions or fabricated historical64baseline.",
+  "full_images": {
+    "resolution": [
+      1600,
+      850
+    ],
+    "day_spp": 256,
+    "night_spp": 512,
+    "sampler_seed": 0,
+    "material_seed": 0
+  },
+  "timing": {
+    "repetitions": 5,
+    "parallel_validation": false,
+    "pbrt_threads": 16,
+    "budgets": "same fixed quality budgets",
+    "phases": [
+      "preparation",
+      "pipeline",
+      "render",
+      "end_to_end"
+    ],
+    "peak_memory": true
+  },
+  "overrides": "statistical variants change resolution,spp,sampler/material seeds and FLOAT storage; PBRT raw companion changes only Film clamping and stores unexposed values after known ISO conversion; all world,camera,filter,and original exposure settings retained",
+  "status": "draft-unfrozen",
+  "arms": [
+    "candidate",
+    "reference"
+  ],
+  "seed_ids": {
+    "candidate": null,
+    "reference": null
+  },
+  "seed_usage_ledger": null,
+  "freeze": null,
+  "models": null,
+  "artifacts": null,
+  "contracts": null,
+  "material_seed": "corresponding sampler seed for each arm; explicit authored sampler seed and material/hash seed must match the frozen ID",
+  "reference_policy": {
+    "kind": "modified-pbrt-diagnostic",
+    "stock_verified": false,
+    "description": "Root must freeze exact consistent target model, modifications, source and artifact identity before outcomes. This is not stock PBRT ground truth."
+  },
+  "quality_budgets": "primary_spp only;64spp remains a separately labeled timing/preview budget and cannot substitute for endpoints",
+  "selection_limit": "Root owns final64unused IDs per arm and reference model. Null draft fields forbid renderer/acceptor execution. Prior observed-ID ledger and model-review receipt must be bound before freeze.",
+  "metrics_engine": null
+}

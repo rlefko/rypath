@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#pragma once
+#include <cstdint>
+namespace canonical_full_golden {
+// Fixed binary32 physical witnesses from independently retained working21.
+// Fixed M4 Max/Metal control; see docs/pavilion-closure-validation.md for
+// provenance and qualification. This is not a cross-device accuracy oracle.
+inline constexpr std::uint32_t physical[8][2][8] = {
+    {
+        {0x3d388291u, 0x3d1dcb03u, 0x3d59d69fu, 0x3d4829d5u, 0x3e78e9ecu, 0x3e7259a6u, 0x3e808c62u,
+         0x3e7cc1fdu},
+        {0x3d35087cu, 0x3d1b9809u, 0x3d54aedau, 0x3d43e8e8u, 0x3d34dfcdu, 0x3d1b7511u, 0x3d547f0eu,
+         0x3d43bce1u},
+    },
+    {
+        {0x3cd8d040u, 0x3cd8d040u, 0x3cd8d040u, 0x3cd8d040u, 0x3e66354bu, 0x3e66354bu, 0x3e66354bu,
+         0x3e66354bu},
+        {0x3cd8d040u, 0x3cd8d040u, 0x3cd8d040u, 0x3cd8d040u, 0x3cd89f86u, 0x3cd89f86u, 0x3cd89f86u,
+         0x3cd89f86u},
+    },
+    {
+        {0x3ca8ba7eu, 0x3c616047u, 0x3cf3fc02u, 0x3ccb577bu, 0x3b3d2896u, 0x3af31a59u, 0x3b8bf8d2u,
+         0x3b66ea31u},
+        {0x3c72aeb8u, 0x3c263400u, 0x3cacaae6u, 0x3c90f395u, 0x3b7b3e50u, 0x3b2c10eeu, 0x3bb2c235u,
+         0x3b961098u},
+    },
+    {
+        {0x3b1b21a9u, 0x3b1b21a9u, 0x3b1b21a9u, 0x3b1b21a9u, 0x390fe158u, 0x390fe158u, 0x390fe158u,
+         0x390fe158u},
+        {0x3b1b21a9u, 0x3b1b21a9u, 0x3b1b21a9u, 0x3b1b21a9u, 0x3a209a9bu, 0x3a209a9bu, 0x3a209a9bu,
+         0x3a209a9bu},
+    },
+    {
+        {0x3d35576du, 0x3d1b99eeu, 0x3d55a6e5u, 0x3d447d47u, 0x3e785473u, 0x3e71f3e9u, 0x3e802763u,
+         0x3e7c12e1u},
+        {0x3d36316au, 0x3d1bc530u, 0x3d57ec2du, 0x3d45edfeu, 0x3d360877u, 0x3d1ba22eu, 0x3d57bba6u,
+         0x3d45c182u},
+    },
+    {
+        {0x3cd8d036u, 0x3cd8d036u, 0x3cd8d036u, 0x3cd8d036u, 0x3e663552u, 0x3e663552u, 0x3e663552u,
+         0x3e663552u},
+        {0x3cd8d034u, 0x3cd8d034u, 0x3cd8d034u, 0x3cd8d034u, 0x3cd89f7au, 0x3cd89f7au, 0x3cd89f7au,
+         0x3cd89f7au},
+    },
+    {
+        {0x3c8fd4cbu, 0x3c470a39u, 0x3cc80864u, 0x3caa19d1u, 0x3b45a3f1u, 0x3afdc4dcu, 0x3b924db7u,
+         0x3b71536cu},
+        {0x3c944dcbu, 0x3c47f196u, 0x3cd525c8u, 0x3cb222c6u, 0x3b998915u, 0x3b4eff38u, 0x3bdcaaa7u,
+         0x3bb86b77u},
+    },
+    {
+        {0x3b1b21acu, 0x3b1b21acu, 0x3b1b21acu, 0x3b1b21acu, 0x390fe158u, 0x390fe158u, 0x390fe158u,
+         0x390fe158u},
+        {0x3b1b21abu, 0x3b1b21abu, 0x3b1b21abu, 0x3b1b21abu, 0x3a209a9du, 0x3a209a9du, 0x3a209a9du,
+         0x3a209a9du},
+    },
+};
+} // namespace canonical_full_golden

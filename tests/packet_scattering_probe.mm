@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "layered_schedule_corrected_oracles.h"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <algorithm>
@@ -6,11 +7,279 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 namespace {
 void metal_error(const char *operation, NSError *error) {
     std::cerr << operation << ": "
               << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
+}
+bool directional_pdf_validity(id<MTLDevice> device, id<MTLLibrary> library) {
+    constexpr std::size_t cases = 7, words = 32;
+    constexpr std::uint32_t sentinel = 0xcdfacadeu;
+    std::array<std::uint32_t, (cases + 1) * words> initial{};
+    initial.fill(sentinel);
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"packet_pdf_validity_probe"];
+    id<MTLComputePipelineState> pipeline =
+        function ? [device newComputePipelineStateWithFunction:function error:&error] : nil;
+    if (!pipeline) {
+        metal_error("Packet PDF validity pipeline", error);
+        return false;
+    }
+    auto output = [device newBufferWithBytes:initial.data()
+                                      length:sizeof(initial)
+                                     options:MTLResourceStorageModeShared];
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!output || !output.contents || !queue || !command || !encoder)
+        return false;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:output offset:0 atIndex:0];
+    [encoder dispatchThreads:MTLSizeMake(cases + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min(NSUInteger{8}, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted) {
+        metal_error("Packet PDF validity command", command.error);
+        return false;
+    }
+    const auto *data = static_cast<const std::uint32_t *>(output.contents);
+    for (std::size_t i = cases * words; i < initial.size(); ++i)
+        if (data[i] != sentinel)
+            return false;
+    for (std::size_t i = 0; i < cases; ++i) {
+        const auto *r = data + i * words;
+        const auto value = [r](unsigned slot) { return std::bit_cast<float>(r[slot]); };
+        bool valid = r[0] == 0x50444631u && r[1] == i && r[2] == 1 && r[3] == 1 && r[12] == 1 &&
+                     r[13] == 1 && r[28] == 1;
+        if (i == 1) {
+            // Finite preparation succeeds, but eta squared overflows binary32.
+            // Invalid leaf arithmetic must not masquerade as legal support zero.
+            valid = valid && r[4] == 0 && value(5) == 0 && std::isnan(value(6)) &&
+                    std::isnan(value(7)) && r[8] == 0 && r[9] == 0 && r[10] == 0 &&
+                    std::isnan(value(24)) && std::isnan(value(25));
+        } else {
+            valid = valid && r[4] == 1 && r[8] == 1 && r[9] == 1 && r[26] == 1 && r[29] == 1 &&
+                    r[5] == r[6] && r[27] == r[7] && r[24] == r[6] && r[25] == r[7];
+            if (i == 0 || i == 2 || i == 3 || i == 5)
+                valid = valid && std::isfinite(value(6)) && value(6) > 0;
+            if (i == 0)
+                valid = valid && r[10] == 1 && r[14] == 1; // Nonvacuous joint Sample_f check.
+            if (i == 4)
+                valid = valid && value(6) == 0; // Non-layered support zero is legal.
+            if (i == 5)
+                valid = valid && r[10] == 0; // Valid layered tangent rejection.
+            if (i == 6)
+                valid = valid && r[10] == 1 && r[11] == 1; // Delta sample stays accepted.
+        }
+        if (!valid) {
+            std::cerr << "Packet PDF validity case " << i << " leaf/evaluation/sample flags "
+                      << r[4] << '/' << r[8] << '/' << r[9] << " queried PDF words " << r[6] << '/'
+                      << r[7] << '\n';
+            return false;
+        }
+    }
+    return true;
+}
+
+bool coating_schedule(id<MTLDevice> device, id<MTLLibrary> library) {
+    using namespace layered_schedule_oracles;
+    using Q = rypath::layered_probe::Query;
+    using R = rypath::layered_probe::Result;
+    std::array<Q, fixtures.size()> queries{};
+    for (std::size_t n = 0; n < queries.size(); ++n)
+        queries[n] = fixtures[n].query;
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"coating_schedule_probe"];
+    if (!function)
+        return false;
+    auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+    if (!pipeline) {
+        metal_error("Coating schedule pipeline", error);
+        return false;
+    }
+    auto input = [device newBufferWithBytes:queries.data()
+                                     length:sizeof(queries)
+                                    options:MTLResourceStorageModeShared];
+    auto output = [device newBufferWithLength:(queries.size() + 1) * sizeof(R)
+                                      options:MTLResourceStorageModeShared];
+    if (!input || !output || !output.contents)
+        return false;
+    auto data = static_cast<R *>(output.contents);
+    data[queries.size()].valid = 12345;
+    const unsigned count = static_cast<unsigned>(queries.size());
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!queue || !command || !encoder)
+        return false;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min(NSUInteger{32}, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted || data[queries.size()].valid != 12345)
+        return false;
+    for (std::size_t n = 0; n < queries.size(); ++n) {
+        const auto &r = data[n];
+        const auto e = layered_schedule_corrected::expected(n);
+        auto close = [&](float actual, float expected, float tolerance, const char *field) {
+            if (!std::isfinite(actual) || std::abs(actual - expected) > tolerance) {
+                std::cerr << "PBRT schedule " << fixtures[n].label << ' ' << field << ": " << actual
+                          << " expected " << expected << '\n';
+                return false;
+            }
+            return true;
+        };
+        // The fixed inputs and RNG schedule match. Permit only CPU/Metal
+        // transcendental/GGX arithmetic differences, not independent streams.
+        if (!r.valid || !r.evaluation_valid ||
+            !close(r.f, e[0], 5e-5f * std::max(1.f, std::abs(e[0])), "f") ||
+            !close(r.pdf, e[1], 5e-5f * std::max(1.f, std::abs(e[1])), "PDF"))
+            return false;
+        if (queries[n].operation == 4) {
+            // At disk corners a single sin/cos ULP can round z to zero.
+            // Check the radicand (z squared), whose bound remains conditioned.
+            if (bool(r.accepted) != (std::abs(r.iz) > 0)) {
+                std::cerr << "PBRT base map " << fixtures[n].label << " sample acceptance\n";
+                return false;
+            }
+            if (!close(r.sample_pdf, std::abs(r.iz) / 3.14159265358979323846f, 2e-7f,
+                       "sampled base PDF") ||
+                !close(r.ix, e[4], 2e-7f, "disk x") || !close(r.iy, e[5], 2e-7f, "disk y") ||
+                !close(r.iz * r.iz, e[6] * e[6], 2e-7f, "disk z squared") ||
+                (r.accepted && !close(r.weight, e[2], 2e-7f, "base weight")))
+                return false;
+        } else {
+            if (bool(r.accepted) != (e[3] > 0)) {
+                std::cerr << "PBRT schedule " << fixtures[n].label << " walk acceptance\n";
+                return false;
+            }
+            if (r.accepted &&
+                (!close(r.weight, e[2], 5e-5f, "joint weight") ||
+                 !close(r.ix, e[4], 5e-5f, "wi.x") || !close(r.iy, e[5], 5e-5f, "wi.y") ||
+                 !close(r.iz, e[6], 5e-5f, "wi.z")))
+                return false;
+        }
+    }
+    std::cout << "PASS " << count << " fixed modified-PBRT packet schedule/base-map fixtures\n";
+    return true;
+}
+bool coating_moments(id<MTLDevice> device, id<MTLLibrary> library) {
+    constexpr unsigned count = 131072, routes = 12;
+    // PBRT b0bdf461 with the two corrected coating MIS proposal calls.
+    // scripts/pbrt_layered_moments_probe.cpp; fixed PCG(17,29), 131072 samples.
+    // Only f/weighted-f columns changed; all 72 joint/PDF targets stay exact.
+    // Authenticated proposal SHA256:
+    // da53b157642728af8f48f971572309ae189e7633a930a432bb6ed5ee6c4ee7a5
+    // Mean and raw second moment for joint weight, weighted joint weight,
+    // f*cos, weighted f*cos, and directional PDF (the last three integrate
+    // a uniform upper hemisphere). These finite approximations are distinct.
+    constexpr double expected[routes][10] = {
+        {0.321860736847, 0.244908528094, 0.407147824532, 0.405096276358, 0.320757308162,
+         0.163443373771, 0.405552455696, 0.289120055581, 2.20646792897, 7.12102924611},
+        {0.321446524062, 0.205473994699, 0.406551870989, 0.340634568985, 0.320956115609,
+         0.159489086317, 0.405786658962, 0.282080747154, 2.20646792897, 7.12102924611},
+        {0.484329702855, 0.433300984926, 0.630784069651, 0.752638483952, 0.482015898476,
+         0.640948999356, 0.627584416425, 1.20065614432, 2.4452658914, 14.9651038158},
+        {0.484686496905, 0.392422026037, 0.631253374529, 0.687755132873, 0.481721173499,
+         0.630134518901, 0.627140564912, 1.18267713271, 2.4452658914, 14.9651038158},
+        {0.283016152033, 0.182684051477, 0.361501551437, 0.311699208666, 0.296292851015,
+         0.144692353284, 0.377509464645, 0.263504923981, 2.20513397933, 7.21007559881},
+        {0.283016170377, 0.182684073326, 0.36150157458, 0.31169924462, 0.296292852387,
+         0.144692354799, 0.377509466375, 0.263504926663, 2.20513397933, 7.21007559881},
+        {0.448214977921, 0.373131053162, 0.60805408148, 0.706060468516, 0.458677216919,
+         0.774808793701, 0.620066415188, 1.59566827129, 2.43945688566, 16.706759065},
+        {0.448215008686, 0.373131103545, 0.60805412313, 0.706060563467, 0.458677220075,
+         0.774808805703, 0.620066419455, 1.59566829531, 2.43945688566, 16.706759065},
+        {0.412836457244, 0.339137574552, 0.433530314036, 0.383802289774, 0.412087849204,
+         1.87050507127, 0.432995330654, 1.26492707551, 2.24634533419, 13.9130076048},
+        {0.412369845167, 0.308171673618, 0.432956066904, 0.333745456252, 0.412312180624,
+         1.86991127854, 0.433275734396, 1.26392573447, 2.24634533419, 13.9130076048},
+        {0.4168974057, 0.372479815178, 0.424195581935, 0.41069608421, 0.416411038133, 1.99729434306,
+         0.424240680322, 1.35398547756, 1.80558776196, 17.6628605023},
+        {0.417007112376, 0.326810833692, 0.42453415955, 0.339569070885, 0.416724079962,
+         1.99402974418, 0.424661799749, 1.34965528712, 1.80558776196, 17.6628605023},
+    };
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"coating_moments_probe"];
+    if (!function) {
+        std::cerr << "Missing coating_moments_probe\n";
+        return false;
+    }
+    auto pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+    if (!pipeline) {
+        metal_error("Coating moment pipeline", error);
+        return false;
+    }
+    const std::size_t values = std::size_t{count} * routes * 8;
+    auto output = [device newBufferWithLength:(values + 4) * sizeof(float)
+                                      options:MTLResourceStorageModeShared];
+    if (!output || !output.contents) {
+        std::cerr << "Coating moment output allocation failed\n";
+        return false;
+    }
+    auto data = static_cast<float *>(output.contents);
+    data[values] = 12345;
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!queue || !command || !encoder)
+        return false;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:output offset:0 atIndex:0];
+    [encoder dispatchThreads:MTLSizeMake(count * routes + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min(NSUInteger{32}, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted || data[values] != 12345) {
+        metal_error("Coating moment dispatch", command.error);
+        return false;
+    }
+    for (unsigned route = 0; route < routes; ++route) {
+        double sum[5] = {}, square[5] = {};
+        for (unsigned n = 0; n < count; ++n) {
+            const auto q = data + (std::size_t{route} * count + n) * 8;
+            if (q[5] != 1)
+                return false;
+            for (unsigned i = 0; i < 5; ++i) {
+                if (!std::isfinite(q[i]))
+                    return false;
+                sum[i] += q[i];
+                square[i] += double(q[i]) * q[i];
+            }
+        }
+        for (unsigned i = 0; i < 5; ++i) {
+            const double mean = sum[i] / count, target = expected[route][std::size_t{2} * i];
+            const double variance = std::max(0., square[i] / count - mean * mean);
+            const double reference_variance =
+                std::max(0., expected[route][std::size_t{2} * i + 1] - target * target);
+            // Selected before GPU results: six combined standard errors plus
+            // 0.1% absolute/relative numerical allowance. Hash discontinuities
+            // preclude pointwise equality after floating frame arithmetic.
+            const double tolerance = 6 * std::sqrt((variance + reference_variance) / count) +
+                                     .001 * std::max(1., std::abs(target));
+            std::cout << "Coating route " << route << " moment " << i << ": " << mean << " PBRT "
+                      << target << " tolerance " << tolerance << '\n';
+            if (std::abs(mean - target) > tolerance)
+                return false;
+        }
+    }
+    return true;
 }
 } // namespace
 int main(int argc, char **argv) {
@@ -64,7 +333,7 @@ int main(int argc, char **argv) {
             std::cerr << "Packet scattering pipeline reports zero maximum threads\n";
             return 3;
         }
-        constexpr std::size_t output_values = std::size_t{1024} * 13 * 4;
+        constexpr std::size_t output_values = std::size_t{1024} * 14 * 4;
         auto output = [device newBufferWithLength:(output_values + 4) * sizeof(float)
                                           options:MTLResourceStorageModeShared];
         if (!output) {
@@ -141,10 +410,10 @@ int main(int argc, char **argv) {
             std::cerr << "Packet scattering output has no CPU mapping after GPU completion\n";
             return 3;
         }
-        float worst[13] = {};
+        float worst[14] = {};
         for (unsigned n = 0; n < 1024; ++n)
-            for (unsigned c = 0; c < 13; ++c) {
-                auto q = p + (std::size_t{n} * 13 + c) * 4;
+            for (unsigned c = 0; c < 14; ++c) {
+                auto q = p + (std::size_t{n} * 14 + c) * 4;
                 worst[c] = std::max(worst[c], q[0]);
                 if (c == 11 && !(q[3] > 1e-7f)) {
                     std::cerr
@@ -157,9 +426,12 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
+        if (!directional_pdf_validity(device, library) || !coating_schedule(device, library) ||
+            !coating_moments(device, library))
+            return 1;
         std::cout << "1024 packet GPU cases passed, max errors " << worst[0] << ' ' << worst[1]
                   << ' ' << worst[2] << ' ' << worst[3] << ' ' << worst[4] << ' ' << worst[5] << ' '
                   << worst[6] << ' ' << worst[7] << ' ' << worst[8] << ' ' << worst[9] << ' '
-                  << worst[10] << ' ' << worst[11] << ' ' << worst[12] << '\n';
+                  << worst[10] << ' ' << worst[11] << ' ' << worst[12] << ' ' << worst[13] << '\n';
     }
 }

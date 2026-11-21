@@ -13,18 +13,39 @@ struct ProbeMask {
     const device probe::Case &input;
     uint triangle_calls = 0;
     uint patch_calls = 0;
+    uint triangle_primitive_mask = 0;
+    uint repeated_triangle_values_changed = 0;
+    float2 first_uv = 0;
+    float first_t = 0;
 
-    MaskedAlphaResult operator()(uint instance, uint, uint, intersection_type kind, float2,
-                                 float t) {
+    MaskedAlphaResult operator()(uint instance, uint, uint primitive, intersection_type kind,
+                                 float2 uv, float t) {
         const bool triangle = kind == intersection_type::triangle;
         const uint rule = triangle ? input.triangle_rule : input.patch_rule;
         if (triangle) {
             ++triangle_calls;
+            if (triangle_calls == 1) {
+                first_uv = uv;
+                first_t = t;
+            } else if ((rule == probe::accept_then_reject || rule == probe::accept_then_invalid) &&
+                       (any(as_type<uint2>(uv) != as_type<uint2>(first_uv)) ||
+                        as_type<uint>(t) != as_type<uint>(first_t))) {
+                ++repeated_triangle_values_changed;
+            }
+            uint matched = 0;
+            for (uint i = 0; i < 2; ++i)
+                if (input.expected_triangle_primitives[i] != probe::absent_primitive &&
+                    primitive == input.expected_triangle_primitives[i])
+                    matched |= 1u << i;
+            triangle_primitive_mask |= matched ? matched : probe::unexpected_triangle_primitive;
         } else {
             ++patch_calls;
         }
         if (instance == input.ignore_instance) {
             return {false, true};
+        }
+        if (triangle && (rule == probe::accept_then_reject || rule == probe::accept_then_invalid)) {
+            return {triangle_calls == 1, triangle_calls == 1 || rule == probe::accept_then_reject};
         }
         return {rule == probe::accept || (rule == probe::reject_near && t > 0.5f),
                 rule != probe::invalid};
@@ -56,7 +77,9 @@ kernel void rypath_masked_intersection_probe(instance_acceleration_structure sce
     result[lane] = {{kind, hit.instance_id, hit.geometry_id, hit.primitive_id, hit.distance,
                      hit.coordinates.x, hit.coordinates.y},
                     alpha.triangle_calls,
-                    alpha.patch_calls};
+                    alpha.patch_calls,
+                    alpha.triangle_primitive_mask,
+                    alpha.repeated_triangle_values_changed};
 }
 
 kernel void rypath_alpha_hash_probe(const device probe::HashCase *cases [[buffer(0)]],

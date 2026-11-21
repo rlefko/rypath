@@ -55,6 +55,13 @@ render settings return 2 before GPU acquisition; structural success alone is
 not sufficient. The pinned CPU PBRT comparison is opt-in and stays outside
 routine offline CTest/CI; see [validation](pbrt-render-validation.md).
 
+For render diagnostics, add `--timings build/render-timings.json` with a fresh
+output path. The JSON separates nested host phases from completed GPU command
+intervals, records missing timestamps, and retains failure or cancellation
+status. GPU intervals overlap host wait time; do not add them to host totals.
+Use a Release build, disable API validation and run repeated warmed comparisons
+for performance measurements. See the [Pavilion closure record](pavilion-closure-validation.md).
+
 CTest checks exact stdout, stderr, and exit status for no arguments, help,
 version, unsupported options, and excess arguments. All test presets fail when
 no tests are selected.

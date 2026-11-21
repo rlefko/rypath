@@ -156,6 +156,27 @@ inline Index halton_index(Word width, Word height, Word x, Word y, Index sample)
     }
     return offset + sample * stride;
 }
+// Film dimensions must be positive. Widen before rounding to avoid Word overflow.
+inline Index halton_light_tile_count(Word width, Word height) {
+    return ((Index(width) + 127) / 128) * ((Index(height) + 127) / 128);
+}
+inline Index halton_light_tile_slots(Word width, Word height) {
+    const Index count = halton_light_tile_count(width, height);
+    Index slots = 1;
+    while (slots < count)
+        slots *= 2;
+    return slots;
+}
+// Requires an in-film owner and an absolute sample accepted by
+// validate_halton_light_range. Camera paths keep halton_index unchanged.
+inline Index halton_light_index(Word width, Word height, Word x, Word y, Index sample) {
+    const Index tiles_x = (Index(width) + 127) / 128;
+    const Index tile = Index(x / 128) + tiles_x * (y / 128);
+    // A power of two is coprime to every light-dimension prime (all >= 5).
+    // Using the tile count directly can freeze a leading radical-inverse digit.
+    const Index light_sample = sample * halton_light_tile_slots(width, height) + tile;
+    return halton_index(width, height, x, y, light_sample);
+}
 inline float halton_camera(Word axis, Word resolution, Index index) {
     const Word scale = base_scale(resolution, axis == 0 ? 2 : 3);
     return radical(axis, index / scale);

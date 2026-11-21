@@ -82,7 +82,7 @@ if(RYPATH_ENABLE_SANITIZERS)
     target_link_options(rypath_jpeg PRIVATE -fsanitize=address,undefined)
 endif()
 include(cmake/OpenExrCore.cmake)
-add_library(rypath_image STATIC src/image_texture.cpp src/hdr_image.cpp src/exr_image.cpp)
+add_library(rypath_image STATIC src/image_texture.cpp src/hdr_image.cpp src/exr_image.cpp src/environment_sampling.cpp)
 target_include_directories(rypath_image PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_image PRIVATE rypath_png rypath_jpeg rypath_openexr_core)
 rypath_configure_host_target(rypath_image)
@@ -135,7 +135,8 @@ endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_prime_table}")
 
 add_library(rypath_render STATIC src/render.cpp src/packet_film.cpp src/area_power.cpp src/sampling.cpp src/gaussian_filter.cpp src/triangle_attributes.cpp
-    src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp)
+    src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp
+    src/light_sampling.cpp src/render_timings.cpp)
 set_source_files_properties(src/gaussian_filter.cpp PROPERTIES COMPILE_OPTIONS
     "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off>")
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"

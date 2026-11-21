@@ -276,8 +276,10 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
                  TransportMode mode = TransportMode::Radiance) {
     (void)mode;
     auto q = proposal(p);
-    if (has_surface() && has_coated() && (q.kind == 5 || q.kind == 6))
-        return rypath_packet_layered::directional_pdf(layered(p), wo, wi).pdf;
+    if (has_surface() && has_coated() && (q.kind == 5 || q.kind == 6)) {
+        auto density = rypath_packet_layered::directional_pdf(layered(p), wo, wi);
+        return density.valid ? density.pdf : NAN;
+    }
     return scalar_evaluate(q, wo, wi).pdf;
 }
 [[clang::noinline]] inline Evaluation evaluate(const thread Prepared &p, float3 wo, float3 wi,
@@ -291,7 +293,8 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         auto a =
             rypath_packet_layered::evaluate(q, wo, wi, seed, mode == TransportMode::Importance);
         e.f = a.f;
-        e.valid = a.valid;
+        e.valid = a.valid && isfinite(e.pdf) && e.pdf >= 0 && isfinite(e.reverse_pdf) &&
+                  e.reverse_pdf >= 0;
         return e;
     }
     for (uint i = 0; i < 4; ++i)
@@ -382,7 +385,9 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
     }
     out.reverse_pdf = out.delta ? out.pdf : pdf(p, out.wi, wo, opposite(mode));
     out.connectible = !out.delta;
-    out.valid = out.valid && all(isfinite(out.weight)) && all(out.weight >= 0);
+    out.valid = out.valid && all(isfinite(out.weight)) && all(out.weight >= 0) &&
+                isfinite(out.pdf) && out.pdf >= 0 && isfinite(out.reverse_pdf) &&
+                out.reverse_pdf >= 0;
     out.accepted = out.accepted && out.valid && maximum(out.weight) > 0;
     return out;
 }

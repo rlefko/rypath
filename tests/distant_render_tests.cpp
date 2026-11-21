@@ -110,6 +110,25 @@ template <class E> void exact(const RenderScene &s, E expected, std::string_view
 void constant(const RenderScene &s, double e, std::string_view label) {
     exact(s, [=](const auto &) { return e; }, label);
 }
+// Combined-light NEE draws one source and divides by its selection PMF.
+// The analytic sum remains its expectation, rather than a per-path identity.
+// Freeze the independent-path budget and six-standard-error rule before dispatch.
+void selected_mean(const RenderScene &s, double expected, std::string_view label) {
+    const auto values = sample(s, 32768);
+    double sum = 0, square = 0;
+    for (const auto &value : values) {
+        const double residual = value.radiance - expected;
+        sum += residual;
+        square += residual * residual;
+    }
+    const double n = static_cast<double>(values.size()), residual_mean = sum / n;
+    const double variance = std::max(0., (square - sum * residual_mean) / (n - 1));
+    const double se = std::sqrt(variance / n);
+    const double limit = 6 * se + 1e-4 * std::abs(expected);
+    std::cout << label << " expected=" << expected << " residual=" << residual_mean
+              << " standard_error=" << se << " limit=" << limit << '\n';
+    near(residual_mean, 0, limit, label);
+}
 void surfaces() {
     constexpr double pi = std::numbers::pi;
     auto s = base();
@@ -125,8 +144,8 @@ void surfaces() {
     p.position = {0, 0, 0};
     p.intensity.fill(1);
     s.point_lights.push_back(p);
-    constant(s, (2 * double(.8f) + 3 + 1) * double(s.materials[0].constant) / pi,
-             "distant and positional contributions add");
+    selected_mean(s, (2 * double(.8f) + 3 + 1) * double(s.materials[0].constant) / pi,
+                  "distant and positional contributions add");
     s.point_lights.clear();
     s.distant_lights.resize(1);
     for (unsigned i = 0; i < 471; ++i)

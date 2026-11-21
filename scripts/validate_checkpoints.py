@@ -23,7 +23,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = struct.Struct('<8s5I2Q')
-METADATA = struct.Struct('<IIQQQIIIdBBdIfff32sI')
+METADATA = struct.Struct('<IIQQQIIiIdBBdIfff32sI')
 PIXEL = struct.Struct('<6dQ20d')
 TARGET = 256
 SIDE = 32
@@ -52,6 +52,7 @@ class Checkpoint:
     seed: int
     sampler: int
     randomization: int
+    material_seed: int
     model: int
     exposure: float
     packet: bool
@@ -72,12 +73,12 @@ class Checkpoint:
 
 
 def decode(data):
-    """Decode format-2 records independently, including every packet film plane."""
+    """Decode format-3 records independently, including the separate material seed."""
     if len(data) < HEADER.size + METADATA.size + 32:
         raise ValueError('truncated checkpoint')
     magic, *values = HEADER.unpack_from(data)
     versions, metadata_size, payload_size = values[:5], values[5], values[6]
-    if magic != b'RYPCHK\r\n' or versions != [2, 11, 13, 4, 2]:
+    if magic != b'RYPCHK\r\n' or versions != [3, 12, 24, 7, 2]:
         raise ValueError('unsupported checkpoint header/contract')
     if (metadata_size < METADATA.size or metadata_size > 1024**2 or
             payload_size > 4 * 1024**3 or payload_size % PIXEL.size or
@@ -86,7 +87,7 @@ def decode(data):
     if hashlib.sha256(data[:-32]).digest() != data[-32:]:
         raise ValueError('checkpoint checksum mismatch')
     fields = METADATA.unpack_from(data, HEADER.size)
-    (width, height, target, batch, seed, sampler, randomization, model, exposure,
+    (width, height, target, batch, seed, sampler, randomization, material_seed, model, exposure,
      packet, compatibility_output, clamp, filter_kind, xr, yr, sigma, identity, n) = fields
     if (not width or not height or not target or not batch or sampler not in range(4) or
             randomization not in range(4) or model not in (0, 1) or
@@ -144,7 +145,7 @@ def decode(data):
                 (not count and any(v != 0 for v in floating)) or
                 (packet and count and not pixel[25] + pixel[26] > 0)):
             raise ValueError('invalid pixel state')
-    return Checkpoint(width, height, target, batch, seed, sampler, randomization, model,
+    return Checkpoint(width, height, target, batch, seed, sampler, randomization, material_seed, model,
                       exposure, bool(packet), bool(compatibility_output), clamp, filter_kind,
                       xr, yr, sigma, identity, tuple(segments), pixels, raw)
 
@@ -168,7 +169,7 @@ def read_checkpoint(path):
 
 def compare(reference, resumed, exact):
     """Apply the fixed raw XYZ mean gate; same binary additionally requires bits."""
-    keys = ('width', 'height', 'target', 'seed', 'sampler', 'randomization', 'model',
+    keys = ('width', 'height', 'target', 'seed', 'sampler', 'randomization', 'material_seed', 'model',
             'exposure', 'identity', 'count', 'packet', 'compatibility_output',
             'max_component_value', 'filter_kind', 'filter_x_radius', 'filter_y_radius', 'filter_sigma')
     if any(getattr(reference, key) != getattr(resumed, key) for key in keys):

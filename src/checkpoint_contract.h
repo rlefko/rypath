@@ -11,6 +11,6 @@ using Word = uint;
 using Word = std::uint32_t;
 #endif
 // Bump the appropriate contract whenever persisted rendering semantics change.
-enum : Word { format = 2, identity = 11, renderer = 13, sampling = 4, accumulation = 2 };
+enum : Word { format = 3, identity = 12, renderer = 24, sampling = 7, accumulation = 2 };
 } // namespace checkpoint_contract
 } // namespace rypath

@@ -83,8 +83,12 @@ adapts measured tensor coordinate mappings and piecewise bilinear sampling from
 `bxdfs.cpp` and `util/sampling.h`. Optical RGB texture reconstruction follows
 `util/spectrum.h`. These use the same pinned revision and Apache-2.0 terms above.
 
-The scalar-lane Metal implementations, checked packed buffers, material-local
-random streams and fixed density-only layered stream are rypath adaptations.
+The scalar-lane Metal implementations and checked packed buffers are rypath
+adaptations. `src/layered_rng_shared.h` now adapts typed MurmurHash64A and PCG32
+from pinned `util/hash.h` and `util/rng.h`; the layered value, density and walk
+use their separate PBRT hash domains. Exact ordered local directions retained
+for previously sampled BDPT edges are a rypath numerical adaptation. The former
+fixed density-only stream remains available only in diagnostic builds.
 See [surface validation](../../docs/surface-material-validation.md) for their
 numerical contract. Legacy Fourier sources have a separate
 [PBRT v3 notice](../pbrt-v3/README.md).
@@ -347,3 +351,20 @@ MIS from `src/pbrt/cpu/integrators.cpp`, with perspective camera importance from
 notices. The four-lane scattering interface, bounded workspace, deterministic
 host film reduction and checkpoint integration are rypath adaptations. No PBRT
 library is linked into the renderer.
+
+## Light selection and geometric sampling
+
+`src/light_sampling.cpp` and `shaders/light_sampling.h` adapt power selection,
+light bounds, angular importance, cone unions and 12-bucket SAH construction
+from pinned `lightsamplers.{h,cpp}` and `lights.cpp`.
+`src/light_geometry_sampling_shared.h` and `shaders/light_geometry_sampling.h`
+adapt incident triangle, rectangle, bilinear-patch and sphere proposals from
+`shapes.{h,cpp}` and `util/sampling.{h,cpp}`. Emitted positional-light proposals
+in `shaders/light_emission_sampling.h` follow `lights.cpp`.
+These sources retain the upstream copyright and [Apache-2.0 terms](LICENSE.txt).
+
+Native environment CDF construction, support mixtures, binary32 interval PDFs,
+affine directional Jacobians, bounded host construction and small-angle
+spherical-triangle arithmetic are rypath adaptations. The
+[sampling record](../../docs/sampling-convergence-validation.md) distinguishes
+those choices from the pinned implementation and records their validation.

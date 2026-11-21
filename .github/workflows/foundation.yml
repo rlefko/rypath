@@ -72,9 +72,13 @@ jobs:
             xargs -0 -n 1 -P 2 clang-tidy-18 -p build/debug
 
   linux:
-    name: Linux Clang build and tests
+    name: Linux Clang build and tests (${{ matrix.preset }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [debug, release, asan-ubsan]
     env:
       CC: clang-18
       CXX: clang++-18
@@ -83,18 +87,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-build
-      - name: Build and test Debug
-        run: bash scripts/check_debug.sh
-      - name: Build and test Release
+      - name: Build and test ${{ matrix.preset }}
+        env:
+          BUILD_PRESET: ${{ matrix.preset }}
         run: |
-          cmake --preset release
-          cmake --build --preset release
-          ctest --preset release
-      - name: Build and test with ASan and UBSan
-        run: |
-          cmake --preset asan-ubsan
-          cmake --build --preset asan-ubsan
-          ctest --preset asan-ubsan
+          cmake --preset "$BUILD_PRESET"
+          cmake --build --preset "$BUILD_PRESET"
+          ctest --preset "$BUILD_PRESET" --no-tests=error
 
   macos:
     name: macOS Arm64 build and tests

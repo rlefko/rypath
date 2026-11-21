@@ -159,14 +159,19 @@ inline AnalyticIntersection intersect_analytic_if(rypath::geometry_wire::Analyti
                 continue;
             v = (s.radius - radius) / (s.radius - s.inner_radius);
         } else {
-            if (p.z < s.z_min || p.z > s.z_max)
-                continue;
             if (s.subtype == 1u) {
+                // Full-sphere bounds are inactive. Radius reprojection can
+                // round a pole just outside those implicit endpoints.
+                if ((s.z_min > -s.radius && p.z < s.z_min) || (s.z_max < s.radius && p.z > s.z_max))
+                    continue;
                 const float t0 = acos(clamp(s.z_min / s.radius, -1.0f, 1.0f));
                 const float t1 = acos(clamp(s.z_max / s.radius, -1.0f, 1.0f));
                 v = (acos(clamp(p.z / s.radius, -1.0f, 1.0f)) - t0) / (t1 - t0);
-            } else
+            } else {
+                if (p.z < s.z_min || p.z > s.z_max)
+                    continue;
                 v = (p.z - s.z_min) / (s.z_max - s.z_min);
+            }
         }
         const float2 uv(clamp(phi / s.phi_max, 0.0f, 1.0f), clamp(v, 0.0f, 1.0f));
         if (all(isfinite(uv)) && accept(uv, t))

@@ -27,8 +27,60 @@ must be finite, directions nonzero, and bounds satisfy `0 <= t_min < t_max` with
 positive infinity allowed for `t_max`. Closest-hit queries return hit/miss,
 mesh/instance/primitive ordinals, `t`, and barycentric weights in original vertex
 order for triangles. Patch hits return a primitive-kind tag and `(u,v)` in the
-closed unit square. Occlusion issues a separate native any-hit query and returns
-a Boolean.
+closed unit square. Occlusion returns a Boolean after the first independently
+validated accepted native candidate.
+
+Triangle queries use Metal bounding-box acceleration structures and intersect
+offered boxes against original per-primitive vertices. This avoids relying on
+hardware triangle tests that omitted a true neighbor in a captured shared-edge ray.
+Compensated forward
+affine products and projected edge functions resolve near-edge false positives
+and distances that collapse to the same native float. Ordinary arithmetic uses
+guarded float pairs; exceptional intermediate range recomputes the full triangle
+with integer binary24 pairs carrying independent, bounded exponents. These are
+finite-precision predicates, not exact geometry. Comparisons of their represented
+distances use exact signed dyadic sums. Closest-hit queries do not commit native
+triangle distances. A conservative forward-transformed world-box exit may shorten
+the traversal range through a query reset; the original ray bounds still govern
+primitive classification. Unrepresentable bounds simply disable that pruning.
+Normal-domain exponent operations and FMA residual checks preserve the guarded
+pair arithmetic. World enclosures use binary32 only when each operation can
+produce the same extended bound; other inputs retain the integer construction.
+Forward-transform scalar products specialize only when both normalized operands
+have binary32 exponent 127. Their rounded product and exact FMA residual form
+the same pair as the general multiplication: the residual lies on the `2^-46`
+lattice and is normal or zero. The guard retains the general fallback, incoming
+invalid state and validation of both rescaled limbs. This changes execution cost,
+not the finite-pair intersection policy.
+When a reset offers the current-best triangle again, its immutable solve is
+reused while alpha is called again with the same validated coordinates and
+distance. Rejection retains the previous best; invalid alpha still aborts.
+
+Eligible packet scenes also build native opaque-triangle structures. Their
+offers are validated against original vertices and the original world ray before
+use. A shadow hint must identify a definite opaque blocker. A closest hint seeds
+the complete compensated distance and surface record before procedural traversal,
+which can still replace it with a nearer alpha, analytic, patch or triangle hit.
+An unavailable conservative cap leaves the original query interval intact; an
+empty procedural offer stream retains the accepted seed. Native misses and
+unsupported optional solves fall back to the existing traversal. Public geometry
+and stateful alpha callbacks keep their original paths.
+
+Eligibility is fixed by scene contents: packet transport, at least one opaque
+triangle placement, and no null/invisible passthrough, mix/glTF material or
+differing medium interface. Allocation and configured/device budget failures
+are reported; resource availability never silently changes the numerical mode.
+The extra structures preserve expanded instance ordinals and share primitive
+records. This changes candidate coverage and requires renderer contract 20;
+exact image controls are bounded evidence, not a universal identity guarantee.
+
+Packet connection visibility uses Boolean occlusion when every accepted surface
+blocks the segment. Scenes with any null-interface material or invisible-emitter
+placement retain closest-hit boundary traversal. Both routes preserve endpoint
+bounds and alpha validation; early termination need not visit the same candidates.
+See the
+[regression record](transport-regression-validation.md) for the numerical policy,
+measured coverage and limits.
 
 Input validity does not guarantee that the resulting bounds, inverse transforms,
 or hit parameters are representable in Metal's float32 arithmetic. For example,
@@ -37,8 +89,9 @@ Such extreme ranges are outside the validated numerical domain; accepting finite
 inputs is not a promise of exact or robust traversal for every such scene.
 
 Validation rejects nonfinite geometry, invalid indices, singular transforms,
-zero-area triangles, invalid rays, and sizes that exceed representation or device
-limits. Nonzero triangles have no arbitrary area cutoff. Empty scenes return
+invalid rays, and sizes that exceed representation or device limits. Zero-area
+triangles retain their primitive slots as explicitly empty box records. Nonzero triangles
+have no arbitrary area cutoff. Empty scenes return
 misses; empty ray batches return empty results. An operation that fails exposes
 a diagnostic rather than partially valid query results.
 
@@ -51,7 +104,12 @@ Exact native interval endpoints and isolated outer triangle edges/vertices have
 no stronger inclusion promise than Metal supplies. Tests characterize those
 boundaries separately. Shared interior edges and vertices must not create holes:
 a ray may select either incident triangle, but it must hit the surface. Equal
-closest-depth ties may select either valid nearest primitive.
+computed compensated-depth ties select stable native instance/geometry/primitive
+IDs. The finite-pair predicate uses closed computed edges and bounds. Its own
+roundoff can also move an exact geometric endpoint across a computed bound; it
+cannot recover a candidate omitted by native traversal. Detected
+unsupported arithmetic, including subnormal interval endpoints, fails visibly;
+this is not a universal exact-intersection guarantee.
 
 ## Native execution
 
@@ -61,8 +119,8 @@ automatic device substitution or CPU traversal fallback. An empty scene still
 requires an available ray-tracing backend.
 
 Each nonempty primitive kind in a mesh has its own native acceleration structure;
-Metal requires homogeneous triangle or bounding-box descriptors within each
-structure. A mixed mesh placement therefore expands to two native instances.
+The adapter retains separate box structures for triangles, patches and analytic
+shapes. A mixed mesh placement therefore expands to multiple native instances.
 The scene instance structure and readback mapping preserve source ordinals. Construction and query stages check command
 completion before consuming results. ARC retains the geometry, structures, and
 execution resources, and the compute encoder declares referenced child structures
@@ -141,7 +199,8 @@ implements traversal internally.
 - [Woop, Benthin, and Wald: Watertight Ray/Triangle Intersection](https://jcgt.org/published/0002/01/05/paper.pdf)
 - [Shewchuk: Adaptive Precision Floating-Point Arithmetic and Fast Robust Predicates](https://people.eecs.berkeley.edu/~jrs/papers/robustr.pdf)
 
-These inform the contracts and tests. Metal owns triangle intersection and
-traversal. Bilinear boxes use a custom intersection function with embedded corner
-data; an accepted-hit payload preserves the matching primitive and UV tuple
-through traversal. The portable references are independent test oracles.
+These inform the contracts and tests. Metal owns acceleration-structure traversal
+and candidate generation. Manual queries intersect triangles from embedded
+vertices and solve bilinear/analytic box candidates from embedded records, retaining
+the matching primitive and coordinates with the selected distance. The portable
+references are independent test oracles.

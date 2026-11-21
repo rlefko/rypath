@@ -126,7 +126,44 @@ clarifies the work; completion is recorded in [status](status.md).
     disk and open cylinder, four-wavelength vacuum BDPT, finite film clamping and
     an explicit large-scene profile render the pinned Pavilion day/night scenes
     at their authored resolution and sample counts;
-    see [Pavilion validation](pavilion-validation.md). Curves and motion remain.
+    see [Pavilion validation](pavilion-validation.md). Native light importance,
+    directional proposals and pinned coating randomness are the current
+    [sampling/convergence follow-up](sampling-convergence-validation.md); its
+    original frozen study does not meet its quality target. Subsequent night
+    attribution identified repeated Halton light splats; a full-Film light index
+    corrects that reuse and reduces authored-clamped variance. Separate validation
+    still fails the raw-tail and simultaneous quality targets. The subsequent
+    [transport/intersection diagnosis](transport-regression-validation.md) adds
+    the importance shading-normal adjoint and compensated native triangle
+    candidate validation. Its completed renderer-18 study still fails all 48
+    simultaneous quality bounds and ten night RGB mean safeguards, with a
+    substantial measured slowdown. Mean/outlier diagnosis and performance
+    recovery remain required; passing regression suites do not close these gaps.
+    A subsequent fixed night PT comparison finds no regional rypath/PBRT mean
+    failure, but within-renderer BDPT/PT differences remain, including in PBRT.
+    Repeated timing of the integrated arithmetic/visibility optimizations reduces
+    day/night GPU time by 37%/45% against renderer 18 with exact image controls.
+    The current day replay confirms a rare refracted-environment contribution;
+    a separate PBRT diagnostic identifies a negative reverse emission PDF.
+    Repeated native-triangle prototype measurements reduce GPU time further by
+    20%/24%, with about 1.13 GB of extra acceleration storage and exact controls.
+    Renderer 19 repairs full-sphere pole clipping; renderer 20 integrates validated
+    opaque-triangle hints, with current-source sanitizer, portable and scene
+    controls passing; publication checks are recorded with the PR revision.
+    The combined production comparison reduces fixed-workload whole-process time
+    by 12.7%/17.5% and render-loop time by 26.3%/29.7%, with exact image controls.
+    Renderer 21 corrects a coating MIS proposal-measure error, with reduced
+    physical and scalar/packet regression evidence. Buffered accelerated hashing
+    reduces measured identity cost; opt-in timing separates host and GPU phases.
+    See the [closure record](pavilion-closure-validation.md). Whole-region sampling,
+    held-out scene quality and final performance comparisons remain required.
+    Remaining process cost and time to a shared quality target are open.
+    Modified-PBRT night comparisons isolate the importance correction as a major
+    cause of the brightness difference; the floor BDPT/PT gap remains open.
+    The selected day owner's
+    outlier disappears under either a different mapping or independent sampling;
+    that finite diagnostic does not establish improved long-run variance.
+    Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).
     Wider color spaces, additional cameras, filters/samplers and faithfully

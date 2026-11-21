@@ -23,12 +23,14 @@ readback. It does not change a physical model or Monte Carlo estimator. See
 [Metal execution](metal-execution.md) for its contract and evidence requirements.
 
 The geometry backend accepts private C++ indexed meshes, affine instances, and
-ray batches. An immutable move-only owner retains one native triangle acceleration
-structure per mesh and an instance acceleration structure, reusing geometry across
+ray batches. An immutable move-only owner retains native bounding-box acceleration
+structures per mesh primitive family and an instance acceleration structure, reusing geometry across
 instances and synchronous queries. It owns its uploaded data independently of
 the caller. Closest-hit results retain source IDs, world ray parameters, and
 barycentrics; opaque occlusion uses a separate any-hit query. The test-only double
-reference independently transforms vertices and scans all triangles. See
+reference independently transforms vertices and scans all triangles. Triangle boxes
+carry original vertices for compensated intersection; hardware triangle tests can
+omit a true adjacent candidate near a shared edge. See
 [native geometry](geometry.md) for numerical limits, ownership, and validation.
 
 Native sphere, disk and open cylinder primitives add conservative bounding boxes
@@ -171,10 +173,10 @@ PNG decoding uses the vendored portable LodePNG decoder. The
 [dependency decision](pbrt-decision.md) records the integration boundary.
 
 External PLY decoding now feeds the same checked geometry and shape bindings.
-Mixed meshes retain triangles and true bilinear patches. Metal requires homogeneous
-primitive structures, so one source mixed mesh uses separate triangle and procedural
-patch structures, and one source placement may expand to two native instances.
-The adapter maps both back to the source placement. Intersection tables belong to
+Mixed meshes retain triangles and true bilinear patches. The adapter retains separate
+structures per primitive family, now all represented by native bounding boxes;
+one source placement may expand to multiple native instances.
+The adapter maps them back to the source placement. Intersection tables belong to
 their respective compute pipelines; accepted patch coordinates travel in an owned
 per-ray payload. The [PLY record](pbrt-ply-validation.md) covers resource limits,
 intersection conditioning, interpolation and area-light densities.
@@ -410,12 +412,41 @@ their original Philox sequence. Active perspective lenses append `lens-v1`:
 Sobol/ZSobol dimensions 1022/1023, Halton dimensions 998/999, or a disjoint
 independent Philox counter block, without
 renumbering camera, wavelength, transport or dielectric draws. Inactive lenses
-consume no lens draws. Current sampling contract 4, renderer contract 13 and identity
-schema 11 reject earlier checkpoints globally. Packet modes use their separate
+consume no lens draws. Halton BDPT keeps the camera's periodic CRT index but
+interleaves its light indices across all 128-pixel Film tiles, reserving a
+power-of-two number of sample slots. Light emission, importance walks and splat
+lens draws use the full-Film index; camera walks, wavelengths and camera-side
+direct lighting retain the original index. The host bounds the expanded signed
+index before dispatch or progressive preparation. PDFs and Film normalization
+are unchanged. Current sampling contract 7, renderer contract 24 and identity
+schema 12 reject earlier checkpoints globally. Checkpoint format 3 persists
+the separate signed material seed. Packet modes use their separate
 fixed 920-dimension allocation; the scalar lens extensions above remain unchanged. See
 [sampling/defaults validation](sampling-defaults-validation.md),
 [Sobol validation](pbrt-sobol-validation.md) and
 [depth-of-field validation](depth-of-field-validation.md).
+
+Importance transport applies the shading-normal adjoint to continuations and
+connection/splat endpoints, while preserving the camera-side radiance model.
+Native bounding-box candidates are intersected against original triangle vertices
+with compensated forward transforms and projected edges before selection or alpha evaluation. Renderer
+contracts 15 and 16 distinguish these transport and intersection changes, and
+contract 17 repairs the triangle arithmetic-range guard. Contract 18 adds triangle
+box coverage, symmetric pair multiplication, a bounded extended-exponent fallback,
+exact comparison of represented distances, and conservative traversal-range resets.
+Contract 19 preserves full-sphere pole hits when radius reprojection rounds just
+outside an inactive clipping bound; authored partial-sphere bounds still apply.
+Contract 20 adds native opaque-triangle hints to eligible packet traversal.
+Every native hit used is validated against original vertices; native distances
+and barycentrics are not accepted directly. A complete compensated closest-hit
+seed survives procedural traversal, including when it offers no candidates.
+The combined candidate coverage can differ from the earlier traversal.
+Contract 21 corrects the internal proposal measure in layered directional-f
+MIS: the complementary base/phase proposal uses reverse transmission from the
+external endpoint. Forward throughput and joint sampling remain unchanged. See
+the [closure record](pavilion-closure-validation.md).
+Earlier checkpoints
+are incompatible; see the [regression record](transport-regression-validation.md).
 
 Positive diffuse area power is prepared per final generated primitive after
 displacement. Portable preparation computes each shared image's native luminance

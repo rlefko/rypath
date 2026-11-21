@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "qmc_shared.h"
 #include "sampling.hpp"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 using namespace rypath;
 void require(bool pass, const char *message) {
     if (!pass)
@@ -73,8 +75,113 @@ constexpr Answer answers[] = {
     {{3, 257, 73, 234, 71, 511, 998, 3, 2147483647, 1024},
      {56914355ull, 1062735798ull, 1060768422ull, 1051997180ull, 1059952022ull, 1048595673ull}},
 };
+void test_halton_light_indices() {
+    for (unsigned width : {1u, 3u, 127u, 128u}) {
+        for (unsigned height : {1u, 5u, 127u, 128u}) {
+            require(qmc::halton_light_tile_count(width, height) == 1 &&
+                        qmc::halton_light_tile_slots(width, height) == 1,
+                    "Single-tile light packing changed");
+            for (unsigned y = 0; y < height; ++y)
+                for (unsigned x = 0; x < width; ++x)
+                    for (std::uint64_t sample : {0ull, 1ull, 0x100000000ull})
+                        require(qmc::halton_light_index(width, height, x, y, sample) ==
+                                    qmc::halton_index(width, height, x, y, sample),
+                                "Single-tile Halton light index changed");
+        }
+    }
+    for (unsigned width : {127u, 128u, 129u}) {
+        for (unsigned height : {127u, 128u, 129u}) {
+            const std::uint64_t tiles_x = width > 128 ? 2 : 1;
+            const std::uint64_t tiles_y = height > 128 ? 2 : 1;
+            require(qmc::halton_light_tile_count(width, height) == tiles_x * tiles_y,
+                    "Halton light tile boundary count");
+            for (unsigned x : {0u, 126u, width - 1})
+                for (unsigned y : {0u, 126u, height - 1}) {
+                    const auto tile = x / 128 + tiles_x * (y / 128);
+                    const auto slots = tiles_x * tiles_y;
+                    require(qmc::halton_light_index(width, height, x, y, 7) ==
+                                qmc::halton_index(width, height, x, y, 7 * slots + tile),
+                            "Halton light tile boundary index");
+                }
+        }
+    }
+    // Enumerate every owner and two absolute samples, including partial tiles.
+    for (const auto size : {std::array{320u, 170u}, std::array{1600u, 850u}}) {
+        const auto width = size[0], height = size[1];
+        std::vector<std::uint64_t> indices;
+        indices.reserve(std::size_t(width) * height * 2);
+        for (std::uint64_t sample : {17ull, 18ull})
+            for (unsigned y = 0; y < height; ++y)
+                for (unsigned x = 0; x < width; ++x)
+                    indices.push_back(qmc::halton_light_index(width, height, x, y, sample));
+        std::ranges::sort(indices);
+        require(std::ranges::adjacent_find(indices) == indices.end(),
+                "Halton light owners or samples alias across tiles");
+    }
+    // 23 tiles must reserve 32 slots: a stride of 23 freezes the leading digit
+    // of light dimension 8 (base 23), including its scrambled permutations.
+    require(qmc::primes[8] == 23 && qmc::halton_light_tile_count(2944, 1) == 23 &&
+                qmc::halton_light_tile_slots(2944, 1) == 32,
+            "Halton light slots must be a power of two");
+    for (unsigned mode : {0u, 1u, 3u}) {
+        std::array<bool, 23> seen{};
+        for (unsigned sample = 0; sample < 23; ++sample) {
+            const auto index = qmc::halton_light_index(2944, 1, 0, 0, sample);
+            const auto digit = unsigned(23 * qmc::radical(8, index, mode, 123));
+            require(digit < seen.size() && !seen[digit],
+                    "Halton light prime-23 leading digit lost progressive coverage");
+            seen[digit] = true;
+        }
+    }
+    const auto before = qmc::halton_light_index(320, 170, 319, 169, (1ull << 32) - 1);
+    const auto after = qmc::halton_light_index(320, 170, 319, 169, 1ull << 32);
+    const auto stride = std::uint64_t{128} * 243;
+    require(after > before && after - before == stride * 8,
+            "Halton light absolute sample carry truncated");
+}
+void test_halton_light_ranges() {
+    for (const auto size : {std::array{1u, 1u}, std::array{127u, 128u}, std::array{129u, 129u},
+                            std::array{1600u, 850u}}) {
+        const auto width = size[0], height = size[1];
+        const auto stride = std::uint64_t{qmc::base_scale(width, 2)} * qmc::base_scale(height, 3);
+        const auto limit = (std::uint64_t{INT64_MAX} - (stride - 1)) / stride;
+        const auto last_tile = qmc::halton_light_tile_count(width, height) - 1;
+        const auto last = (limit - last_tile) / qmc::halton_light_tile_slots(width, height);
+        require(validate_halton_light_range(width, height, last, 1).empty() &&
+                    validate_halton_light_range(width, height, 0, last + 1).empty(),
+                "Halton light last valid range rejected");
+        require(!validate_halton_light_range(width, height, last + 1, 1).empty() &&
+                    !validate_halton_light_range(width, height, last, 2).empty(),
+                "Halton light overflowing range accepted");
+        require(qmc::halton_light_index(width, height, width - 1, height - 1, last) <=
+                    std::uint64_t{INT64_MAX},
+                "Validated Halton light index exceeded signed capacity");
+    }
+    require(validate_halton_light_range(1, 1, INT64_MAX, 1).empty() &&
+                qmc::halton_light_index(1, 1, 0, 0, INT64_MAX) == std::uint64_t{INT64_MAX},
+            "Scalar Halton signed maximum changed");
+    require(qmc::halton_light_tile_count(UINT32_MAX, UINT32_MAX) == (1ull << 50) &&
+                qmc::halton_light_tile_slots(UINT32_MAX, UINT32_MAX) == (1ull << 50) &&
+                qmc::halton_light_tile_count(UINT32_MAX, 1) == (1ull << 25),
+            "Halton light tile arithmetic overflowed at maximum dimensions");
+    require(!validate_halton_light_range(UINT32_MAX, UINT32_MAX, 0, 1).empty(),
+            "Halton light film exceeding index capacity accepted");
+    require(!validate_halton_light_range(0, 1, 0, 1).empty() &&
+                !validate_halton_light_range(1, 0, 0, 1).empty() &&
+                !validate_halton_light_range(1, 1, 0, 0).empty() &&
+                !validate_halton_light_range(1, 1, UINT64_MAX, 2).empty(),
+            "Invalid Halton light dimensions or absolute range accepted");
+    require(validate_halton_light_range(320, 170, 1ull << 32, 257).empty(),
+            "Halton light wide absolute range rejected");
+    require(validate_sampler_range({SamplerKind::halton, SobolRandomization::none}, 0, 1, 1,
+                                   INT64_MAX, 1)
+                .empty(),
+            "Generic scalar Halton range changed");
+}
 int main() {
     try {
+        test_halton_light_indices();
+        test_halton_light_ranges();
         const auto &tables = sobol_tables();
         for (const auto &answer : answers) {
             const auto &q = answer.q;

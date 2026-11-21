@@ -3,7 +3,14 @@
 // pbrt is Copyright(c) 1998-2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
 // See third_party/pbrt/LICENSE.txt. Scalar spectral lane; radiance transport.
 #pragma once
+#include "../src/layered_rng_shared.h"
 #include "transmission.h"
+#ifndef RYPATH_COATING_DIAGNOSTIC_PDF_FIXED
+#define RYPATH_COATING_DIAGNOSTIC_PDF_FIXED 0
+#endif
+#ifndef RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT
+#define RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT 0
+#endif
 namespace rypath_layered {
 using Evaluation = rypath_conductor::Evaluation;
 using Sample = rypath_conductor::Sample;
@@ -13,9 +20,25 @@ struct Parameters {
     bool conductor_base;
     float reflectance, thickness, albedo, g;
     uint max_depth, samples;
+    int material_seed;
 };
-// Local integer generator; the caller supplies the path/event key. No shared state.
+// No shared state: each PBRT operation hashes its exact ordered float inputs.
 struct RNG {
+    rypath_layered_rng::PCG pcg;
+    RNG(rypath_layered_rng::Wide sequence, rypath_layered_rng::Wide offset)
+        : pcg(sequence, offset) {}
+    float next() { return pcg.next(); }
+    float2 pair() {
+        float a = next();
+        float b = next();
+        return float2(a, b);
+    }
+};
+// Diagnostic builds can isolate the former fixed-PDF and event-local value
+// policies. Production defaults to PBRT domains; the sampled joint walk always
+// uses PBRT PCG, so the two-by-two experiment changes only f/PDF estimates.
+#if RYPATH_COATING_DIAGNOSTIC_PDF_FIXED || RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT
+struct DiagnosticLegacyRNG {
     uint state;
     float next() {
         state += 0x9e3779b9u;
@@ -26,11 +49,17 @@ struct RNG {
         return float(v >> 8) * 0x1p-24f;
     }
     float2 pair() {
-        float a = next();
-        float b = next();
+        float a = next(), b = next();
         return float2(a, b);
     }
 };
+#endif
+inline rypath_layered_rng::Wide direction_hash(float3 w) {
+    return rypath_layered_rng::direction(w.x, w.y, w.z);
+}
+inline rypath_layered_rng::Wide seeded_direction_hash(int seed, float3 w) {
+    return rypath_layered_rng::seeded_direction(seed, w.x, w.y, w.z);
+}
 inline bool valid_parameters(const thread Parameters &p) {
     return isfinite(p.reflectance) && p.reflectance >= 0 && p.reflectance <= 1 &&
            isfinite(p.thickness) && isfinite(p.albedo) && p.albedo >= 0 && p.albedo <= 1 &&
@@ -144,8 +173,38 @@ inline Evaluation base_evaluate(const thread Parameters &p, float3 wo, float3 wi
     return {p.reflectance / M_PI_F, abs(wi.z) / M_PI_F, true};
 }
 inline Sample base_sample(const thread Parameters &p, float3 wo, float2 u) {
-    return p.conductor_base ? rypath_conductor::sample(p.conductor, wo, u)
-                            : rypath_transmission::diffuse_sample(p.reflectance, 0, wo, 0, u);
+#pragma clang fp contract(off)
+    if (p.conductor_base)
+        return rypath_conductor::sample(p.conductor, wo, u);
+    Sample fail{float3(0), 0, 0, false, false, true};
+    if (!isfinite(p.reflectance) || p.reflectance < 0 || !all(isfinite(wo)) ||
+        !rypath_transmission::randoms(0, u)) {
+        fail.valid = false;
+        return fail;
+    }
+    if (p.reflectance == 0 || wo.z == 0)
+        return fail;
+    // PBRT DiffuseBxDF uses SampleCosineHemisphere's concentric disk map.
+    // Retain that map here: equal distributions alone do not preserve the
+    // direction-seeded finite f/PDF estimates or the sampled hidden path.
+    float2 offset = 2 * u - 1;
+    float2 disk(0);
+    if (offset.x != 0 || offset.y != 0) {
+        float radius, theta;
+        if (abs(offset.x) > abs(offset.y)) {
+            radius = offset.x;
+            theta = (M_PI_F / 4) * (offset.y / offset.x);
+        } else {
+            radius = offset.y;
+            theta = (M_PI_F / 2) - (M_PI_F / 4) * (offset.x / offset.y);
+        }
+        disk = radius * float2(cos(theta), sin(theta));
+    }
+    float3 wi(disk, sqrt(max(0.0f, 1 - disk.x * disk.x - disk.y * disk.y)));
+    if (wo.z < 0)
+        wi.z = -wi.z;
+    float pdf = abs(wi.z) / M_PI_F;
+    return {wi, p.reflectance, pdf, false, p.reflectance > 0 && pdf > 0, true};
 }
 inline bool base_delta(const thread Parameters &p) {
     return p.conductor_base && p.conductor.smooth;
@@ -166,12 +225,11 @@ inline Evaluation directional_pdf(const thread Parameters &p, float3 wo, float3 
         wi = -wi;
     }
     float sum = 0;
-    // Deliberate PBRT adaptation: use one fixed density-only RNG domain.
-    // Event-local seeds break complementary MIS weights, while hashing the
-    // directions makes frame-rounding ULPs select unrelated density estimates.
-    // The density remains a deterministic function of wo/wi; f and sampled
-    // transport below retain their independent event-local random walks.
-    RNG rng{0xb5297a4du};
+#if RYPATH_COATING_DIAGNOSTIC_PDF_FIXED
+    DiagnosticLegacyRNG rng{0xb5297a4du};
+#else
+    RNG rng{seeded_direction_hash(p.material_seed, wi), direction_hash(wo)};
+#endif
     if (wo.z * wi.z > 0) {
         auto direct = top_evaluate(p, wo, wi, 1);
         if (!direct.valid)
@@ -192,6 +250,8 @@ inline Evaluation directional_pdf(const thread Parameters &p, float3 wo, float3 
                     return {0, 0, false};
                 sum += e.pdf;
             } else {
+                // PBRT consumes the interface choice even for a single-lobe base.
+                (void)rng.next();
                 auto c = base_sample(p, -a.wi, rng.pair());
                 if (!c.valid)
                     return {0, 0, false};
@@ -231,12 +291,14 @@ inline Sample sample(const thread Parameters &p, float3 wo, float uc, float2 u, 
     float3 w = s.wi;
     float weight = s.weight, z = thickness(p);
     bool delta = s.delta;
-    RNG rng{seed ^ 0x68e31da4u};
+    (void)seed;
+    RNG rng{seeded_direction_hash(p.material_seed, wo), rypath_layered_rng::sample(uc, u.x, u.y)};
     bool exited = w.z > 0;
     for (uint depth = 0; !exited && depth < p.max_depth; ++depth) {
         if (depth > 3 && weight < .25f) {
-            float survival = weight;
-            if (rng.next() >= survival)
+            float q = max(0.0f, 1 - weight);
+            float survival = 1 - q;
+            if (rng.next() < q)
                 return fail;
             weight /= survival;
         }
@@ -309,15 +371,24 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
     if (!direct.valid)
         return {0, 0, false};
     float total = float(p.samples) * direct.f;
-    RNG rng{seed ^ 0x1b56c4e9u};
+    (void)seed;
+#if RYPATH_COATING_DIAGNOSTIC_EVAL_EVENT
+    DiagnosticLegacyRNG rng{seed ^ 0x1b56c4e9u};
+#else
+    RNG rng{seeded_direction_hash(p.material_seed, wo), direction_hash(wi)};
+#endif
     for (uint n = 0; n < p.samples; ++n) {
         float uc = rng.next();
         auto a = top_sample(p, wo, uc, rng.pair(), 2);
+        if (!a.valid)
+            return {0, 0, false};
+        if (!a.accepted)
+            continue;
         uc = rng.next();
         auto b = top_sample(p, wi, uc, rng.pair(), 2, true);
-        if (!a.valid || !b.valid)
+        if (!b.valid)
             return {0, 0, false};
-        if (!a.accepted || !b.accepted)
+        if (!b.accepted)
             continue;
         float beta = a.weight, z = thickness(p);
         float3 w = a.wi;
@@ -325,8 +396,9 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
         float light = b.weight / abs(b.wi.z);
         for (uint depth = 0; depth < p.max_depth; ++depth) {
             if (depth > 3 && beta < .25f) {
-                float survival = beta;
-                if (rng.next() >= survival)
+                float q = max(0.0f, 1 - beta);
+                float survival = 1 - q;
+                if (rng.next() < q)
                     break;
                 beta /= survival;
             }
@@ -346,14 +418,21 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
                     total += beta * p.albedo * ph * wt * tr(zp - thickness(p), b.wi) * light;
                     float3 next = phase_sample(-w, p.g, rng.pair());
                     float phase_pdf = phase(-w, next, p.g);
+                    // PBRT rejects a tangent phase proposal before changing path state.
+                    if (next.z == 0 || phase_pdf == 0)
+                        continue;
                     beta *= p.albedo;
                     w = next;
                     z = zp;
                     if (w.z > 0 && !top_specular_flags(p)) {
                         auto e = top_evaluate(p, -w, wi, 2);
-                        if (!e.valid)
+                        auto exit_proposal = top_evaluate(p, wi, -w, 2);
+                        if (!e.valid || !exit_proposal.valid)
                             return {0, 0, false};
-                        total += beta * tr(z - thickness(p), w) * e.f * power(phase_pdf, e.pdf);
+                        // The virtual-light proposal starts at wi and samples
+                        // -w, in the same internal solid angle as the phase proposal.
+                        total += beta * tr(z - thickness(p), w) * e.f *
+                                 power(phase_pdf, exit_proposal.pdf);
                     }
                     if (!all(isfinite(w)) || !isfinite(beta) || !isfinite(total))
                         return {0, 0, false};
@@ -378,6 +457,8 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
                     float wt = top_specular_flags(p) ? 1 : power(b.pdf, e.pdf);
                     total += beta * e.f * abs(b.wi.z) * wt * tr(thickness(p), b.wi) * light;
                 }
+                // Keep the unused single-lobe choice in the PBRT RNG schedule.
+                (void)rng.next();
                 auto s = base_sample(p, -w, rng.pair());
                 if (!s.valid)
                     return {0, 0, false};
@@ -389,7 +470,13 @@ inline Evaluation evaluate(const thread Parameters &p, float3 wo, float3 wi, uin
                     auto e = top_evaluate(p, -w, wi, 2);
                     if (!e.valid)
                         return {0, 0, false};
-                    float wt = base_delta(p) ? 1 : power(s.pdf, e.pdf);
+                    float wt = 1;
+                    if (!base_delta(p)) {
+                        auto exit_proposal = top_evaluate(p, wi, -w, 2);
+                        if (!exit_proposal.valid)
+                            return {0, 0, false};
+                        wt = power(s.pdf, exit_proposal.pdf);
+                    }
                     total += beta * tr(thickness(p), w) * e.f * wt;
                 }
             }

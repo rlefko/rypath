@@ -7,12 +7,13 @@ struct Query {
     float reflectance, thickness, albedo, g;
     float ox, oy, oz, ix, iy, iz, uc, u, v;
     unsigned conductor_base, max_depth, samples, seed, operation;
+    int material_seed;
 };
 struct Result {
     float f, pdf, ix, iy, iz, weight, sample_pdf;
     float conditional_pdf, conditional_weight, hg_pdf;
     unsigned valid, accepted, delta, evaluation_valid;
 };
-static_assert(sizeof(Query) == 100 && sizeof(Result) == 56, "Layered probe layout");
+static_assert(sizeof(Query) == 104 && sizeof(Result) == 56, "Layered probe layout");
 } // namespace layered_probe
 } // namespace rypath

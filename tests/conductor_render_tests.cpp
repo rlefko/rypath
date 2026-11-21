@@ -244,10 +244,11 @@ void film_accounting(const fs::path &fixtures) {
         }
     }
 }
-// Original three-vertex extraction from an owned sphere showcase. This sample
-// has positive local wi.z (~1.2e-9); float frame conversion gives a world dot
-// near -6.9e-9. The conductor support/PDF remains defined in its local frame.
-void grazing_world_frame(const fs::path &scratch) {
+// Original three-vertex extraction and fixed sample from an owned showcase.
+// Precise barycentrics changed its almost-tangent local sample from positive to
+// negative. Keep scene/sample accounting here; conductor_probe pins the original
+// frame and direction to test local support through the renderer's shared helper.
+void grazing_scene_accounting(const fs::path &scratch) {
     const auto path = scratch / "grazing-conductor-frame.pbrt";
     std::ofstream(path) << R"(LookAt 0 1.5 -3  0 0 4  0 1 0
 Camera "perspective" "float fov" [27]
@@ -275,8 +276,10 @@ Shape "trianglemesh" "integer indices" [0 1 2]
                         .sampler = {SamplerKind::sobol, SobolRandomization::fastowen}};
     const auto paths = sample(*build(scene), query);
     require(paths.size() == 1 && paths[0].pixel == 328010 && paths[0].sample == 294 &&
-                paths[0].scatterings == 1 && paths[0].radiance > 0,
-            "Positive local conductor sample was lost at a grazing world-frame conversion");
+                std::isfinite(paths[0].radiance) &&
+                ((paths[0].scatterings == 0 && paths[0].radiance == 0) ||
+                 (paths[0].scatterings == 1 && paths[0].radiance > 0)),
+            "Grazing scene sample must remain a finite local null or one reflection");
 }
 void invalid_dynamic_roughness(const fs::path &scratch, const fs::path &fixtures) {
     std::ifstream input(fixtures / "roughness-graph.pbrt");
@@ -363,7 +366,7 @@ int main(int argc, char **argv) {
         diffuse_delta_emitter(scratch);
         graph_branch_sensitivity(fixtures);
         film_accounting(fixtures);
-        grazing_world_frame(scratch);
+        grazing_scene_accounting(scratch);
         invalid_dynamic_roughness(scratch, fixtures);
         for (const auto name : {"rough-au", "anisotropic-cu", "numeric-file-optical",
                                 "detail-alpha", "anisotropy-rotated", "roughness-graph"})

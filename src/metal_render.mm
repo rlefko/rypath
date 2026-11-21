@@ -4,10 +4,16 @@
 #include "analytic.hpp"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "native_hint_budget.hpp"
+#include "render_timings.hpp"
 
+#include "environment_sampling.hpp"
 #include "gaussian_filter.hpp"
+#include "light_sampling.hpp"
 #include "metal_execution.hpp"
 #include "metal_geometry_access.hpp"
+#include "packet_dispatch.hpp"
+#include "packet_spectrum_shared.h"
 #include "packet_wire.h"
 #include "render_wire.h"
 #include "rgb_spectrum.hpp"
@@ -19,6 +25,7 @@
 #include <algorithm>
 #include <bit>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -437,6 +444,8 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> instances = nil;
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> triangles = nil;
+    std::uint32_t native_hint_mode = 0;
+    std::size_t packet_payload_bytes = packet_wire::workspace_bytes;
     id<MTLBuffer> patches = nil;
     id<MTLBuffer> materials = nil;
     id<MTLBuffer> material_data = nil;
@@ -467,7 +476,146 @@ struct MetalRenderScene::Impl {
     wire::Parameters parameters{};
     bool dielectrics = false;
 
-    std::string upload_auxiliary_data(const RenderScene &scene, std::vector<wire::Word> &data) {
+    std::string append_light_tables(const RenderScene &scene, std::vector<wire::Word> &data,
+                                    std::span<const LightSamplingInput> area) {
+        std::vector<LightSamplingInput> input(area.begin(), area.end());
+        const double pi = std::numbers::pi;
+        const double radius = std::max(double(parameters.scene_radius), 1e-8);
+        std::map<const ImagePyramid *, double> image_means;
+        const auto image_mean = [&](std::uint32_t index) -> double {
+            if (index >= scene.image_textures.size() || !scene.image_textures[index].image)
+                return -1;
+            auto *image = scene.image_textures[index].image.get();
+            auto it = image_means.find(image);
+            if (it != image_means.end())
+                return it->second;
+            const auto mean = light_image_power(*image);
+            return mean ? image_means.emplace(image, *mean).first->second : -1;
+        };
+        const auto append_position = [&](GeometryPoint position, double power) {
+            LightSamplingInput entry;
+            entry.low = entry.high = {position.x, position.y, position.z};
+            entry.power = power;
+            entry.two_sided = false;
+            input.push_back(entry);
+            return std::ref(input.back());
+        };
+        for (const auto &light : scene.point_lights) {
+            auto &entry =
+                append_position(light.position, 4 * pi * light_spectrum_power(light.intensity))
+                    .get();
+            entry.bounds_power =
+                4 * pi * *std::max_element(light.intensity.begin(), light.intensity.end());
+        }
+        for (const auto &light : scene.spot_lights) {
+            auto &entry =
+                append_position(light.position,
+                                2 * pi *
+                                    ((1 - light.cos_falloff_start) +
+                                     (light.cos_falloff_start - light.cos_falloff_end) / 2) *
+                                    light_spectrum_power(light.intensity))
+                    .get();
+            entry.bounds_power =
+                4 * pi * *std::max_element(light.intensity.begin(), light.intensity.end());
+            float cos_emission =
+                static_cast<float>(std::cos(std::acos(double(light.cos_falloff_end)) -
+                                            std::acos(double(light.cos_falloff_start))));
+            if (cos_emission == 1)
+                cos_emission = light.cos_falloff_end != light.cos_falloff_start
+                                   ? .999f
+                                   : std::nextafter(1.f, 0.f);
+            light_positional_cone(entry, light.light_from_world, light.cos_falloff_start,
+                                  cos_emission);
+        }
+        for (const auto &light : scene.goniometric_lights) {
+            const auto &image = *scene.image_textures[light.image_texture].image;
+            const auto &base = image.levels.front();
+            double mean = 0;
+            for (unsigned y = 0; y < base.height; ++y)
+                for (unsigned x = 0; x < base.width; ++x) {
+                    const auto rgb = image_base_texel_linear_rgb(image, x, y);
+                    if (!rgb)
+                        return "Invalid goniometric light sampling image";
+                    mean += (*rgb)[0];
+                }
+            mean /= double(base.width) * base.height;
+            auto &entry = append_position(light.position,
+                                          4 * pi * mean * light_spectrum_power(light.intensity))
+                              .get();
+            entry.bounds_power =
+                4 * pi * mean * *std::max_element(light.intensity.begin(), light.intensity.end());
+        }
+        for (const auto &light : scene.projection_lights) {
+            const auto power = light_projection_power(
+                *scene.image_textures[light.image_texture].image, light.inv_tan_half_fov,
+                light.screen_half_width, light.screen_half_height);
+            if (!power)
+                return "Invalid projection light sampling image";
+            const auto bound = light_image_bounds_power(
+                *scene.image_textures[light.image_texture].image, {1, 1, 1}, true);
+            if (!bound)
+                return "Invalid projection light bounds image";
+            auto &entry = append_position(light.position, *power * light.image_scale).get();
+            entry.bounds_power = *bound * light.image_scale;
+            const double x = double(light.screen_half_width) / light.inv_tan_half_fov;
+            const double y = double(light.screen_half_height) / light.inv_tan_half_fov;
+            light_positional_cone(entry, light.light_from_world, 1,
+                                  static_cast<float>(1 / std::sqrt(1 + x * x + y * y)));
+        }
+        for (const auto &light : scene.distant_lights) {
+            LightSamplingInput entry;
+            entry.infinite = true;
+            entry.power = pi * radius * radius * light_spectrum_power(light.radiance);
+            input.push_back(entry);
+        }
+        parameters.environment_light = UINT32_MAX;
+        if (scene.environment_image != UINT32_MAX ||
+            std::ranges::any_of(scene.environment, [](float v) { return v > 0; })) {
+            LightSamplingInput entry;
+            entry.infinite = true;
+            const double mean =
+                scene.environment_image == UINT32_MAX
+                    ? light_spectrum_power(scene.environment)
+                    : image_mean(scene.environment_image) * scene.environment_image_scale;
+            if (mean < 0)
+                return "Invalid environment light sampling image";
+            entry.power = 4 * pi * pi * radius * radius * mean;
+            parameters.environment_light = static_cast<wire::Word>(input.size());
+            input.push_back(entry);
+        }
+        std::string error;
+        const auto tables = build_light_sampling(input, scene.preparation_byte_limit, error);
+        if (!tables)
+            return error;
+        parameters.light_sampler = scene.integrator == IntegratorKind::bdpt
+                                       ? 1
+                                       : static_cast<wire::Word>(scene.light_sampler);
+        parameters.light_count = static_cast<wire::Word>(input.size());
+        const auto append = [&]<class T>(const std::vector<T> &items, wire::Word &offset) -> bool {
+            constexpr auto stride = sizeof(T) / sizeof(wire::Word);
+            const auto limit = std::min<std::size_t>(128 * 1024 * 1024,
+                                                     device.maxBufferLength / sizeof(wire::Word));
+            if (data.size() > limit || items.size() > (limit - data.size()) / stride)
+                return false;
+            offset = static_cast<wire::Word>(data.size());
+            for (const auto &item : items) {
+                auto words = std::bit_cast<std::array<wire::Word, stride>>(item);
+                data.insert(data.end(), words.begin(), words.end());
+            }
+            return true;
+        };
+        if (!append(tables->alias, parameters.light_alias_begin) ||
+            !append(tables->records, parameters.light_records_begin) ||
+            !append(tables->nodes, parameters.light_nodes_begin) ||
+            !append(tables->infinite, parameters.infinite_lights_begin))
+            return "Light sampling tables exceed the shared GPU data budget";
+        parameters.light_node_count = static_cast<wire::Word>(tables->nodes.size());
+        parameters.infinite_light_count = static_cast<wire::Word>(tables->infinite.size());
+        return {};
+    }
+
+    std::string upload_auxiliary_data(const RenderScene &scene, std::vector<wire::Word> &data,
+                                      std::span<const LightSamplingInput> area = {}) {
         constexpr std::size_t words = sizeof(wire::Medium) / sizeof(wire::Word);
         const auto limit =
             std::min<std::size_t>(128 * 1024 * 1024, device.maxBufferLength / sizeof(wire::Word));
@@ -492,6 +640,9 @@ struct MetalRenderScene::Impl {
             return "Positional lights exceed the shared GPU data budget";
         parameters.positional_begin = static_cast<wire::Word>(data.size());
         parameters.positional_count = static_cast<wire::Word>(count);
+        std::vector<wire::PositionalLight> packed_positional;
+        using DirectionKey = std::tuple<const ImagePyramid *, wire::Word, float, float, float>;
+        std::map<DirectionKey, std::array<wire::Word, 3>> direction_tables;
         const auto append = [&](const auto &source, wire::Word kind) {
             wire::PositionalLight light{};
             light.kind = kind;
@@ -523,17 +674,56 @@ struct MetalRenderScene::Impl {
                 std::ranges::copy(source.light_from_world, light.light_from_world);
                 light.image_texture = source.image_texture;
             }
+            if constexpr (std::is_same_v<std::decay_t<decltype(source)>, GoniometricLight> ||
+                          std::is_same_v<std::decay_t<decltype(source)>, ProjectionLight>) {
+                const auto &image = *scene.image_textures[source.image_texture].image;
+                const DirectionKey key{
+                    &image, light.kind,
+                    light.kind == wire::projection_light ? light.inv_tan_half_fov : 0,
+                    light.kind == wire::projection_light ? light.screen_half_width : 1,
+                    light.kind == wire::projection_light ? light.screen_half_height : 1};
+                auto found = direction_tables.find(key);
+                if (found == direction_tables.end()) {
+                    std::string error;
+                    const auto distribution = build_light_direction_sampling(
+                        image,
+                        std::min<std::size_t>(scene.preparation_byte_limit,
+                                              (limit - data.size()) * sizeof(wire::Word)),
+                        error, std::get<2>(key), std::get<3>(key), std::get<4>(key));
+                    if (!distribution)
+                        throw std::runtime_error(error);
+                    const std::array<wire::Word, 3> metadata{static_cast<wire::Word>(data.size()),
+                                                             distribution->width,
+                                                             distribution->height};
+                    for (float value : distribution->cdf)
+                        data.push_back(std::bit_cast<wire::Word>(value));
+                    found = direction_tables.emplace(key, metadata).first;
+                }
+                light.sampling_begin = found->second[0];
+                light.sampling_width = found->second[1];
+                light.sampling_height = found->second[2];
+            }
+            packed_positional.push_back(light);
+        };
+        try {
+            for (const auto &source : scene.point_lights)
+                append(source, wire::point_light);
+            for (const auto &source : scene.spot_lights)
+                append(source, wire::spot_light);
+            for (const auto &source : scene.goniometric_lights)
+                append(source, wire::goniometric_light);
+            for (const auto &source : scene.projection_lights)
+                append(source, wire::projection_light);
+        } catch (const std::runtime_error &error) {
+            return error.what();
+        }
+        if (data.size() > limit || packed_positional.size() > (limit - data.size()) / light_words)
+            return "Positional light records exceed the GPU data budget";
+        parameters.positional_begin = static_cast<wire::Word>(data.size());
+        for (const auto &light : packed_positional) {
             const auto encoded = std::bit_cast<std::array<wire::Word, light_words>>(light);
             data.insert(data.end(), encoded.begin(), encoded.end());
-        };
-        for (const auto &source : scene.point_lights)
-            append(source, wire::point_light);
-        for (const auto &source : scene.spot_lights)
-            append(source, wire::spot_light);
-        for (const auto &source : scene.goniometric_lights)
-            append(source, wire::goniometric_light);
-        for (const auto &source : scene.projection_lights)
-            append(source, wire::projection_light);
+        }
         constexpr std::size_t distant_words = sizeof(wire::DistantLight) / sizeof(wire::Word);
         if (data.size() > limit ||
             scene.distant_lights.size() > (limit - data.size()) / distant_words)
@@ -548,6 +738,8 @@ struct MetalRenderScene::Impl {
             const auto encoded = std::bit_cast<std::array<wire::Word, distant_words>>(light);
             data.insert(data.end(), encoded.begin(), encoded.end());
         }
+        if (auto error = append_light_tables(scene, data, area); !error.empty())
+            return error;
         parameters.material_data_words = static_cast<wire::Word>(data.size());
         if (data.empty())
             data.push_back(0);
@@ -834,60 +1026,15 @@ struct MetalRenderScene::Impl {
         std::vector<float> cdf;
         if (scene.environment_image != max_index) {
             const auto &image = *scene.image_textures[scene.environment_image].image;
-            const auto source_width = image.levels.front().width;
-            const auto width = std::min(wire::Word(wire::environment_grid_limit), source_width);
-            graph_parameters.environment_width = width;
-            const auto count = std::size_t(width + 1) * (width + 1);
-            if (count > max_index || count > device.maxBufferLength / sizeof(float) ||
-                count > ImageLimits{}.retained_bytes / sizeof(float)) {
-                return "Environment sampling table exceeds resource limits";
-            }
-            cdf.assign(count, 0);
-            std::vector<double> sums(width);
-            std::vector<double> row(width + 1);
-            double total = 0;
-            for (std::uint32_t y = 0; y < width; ++y) {
-                row[0] = 0;
-                for (std::uint32_t x = 0; x < width; ++x) {
-                    // Area-average native texels into a bounded proposal grid.
-                    // Fractional overlap preserves NPOT source mass at bin edges;
-                    // native radiance retains every original pixel.
-                    const double x0 = double(x) * source_width / width,
-                                 x1 = double(x + 1) * source_width / width;
-                    const double y0 = double(y) * source_width / width,
-                                 y1 = double(y + 1) * source_width / width;
-                    double mass = 0;
-                    for (auto sy = static_cast<std::uint32_t>(y0);
-                         sy < std::min(source_width, static_cast<std::uint32_t>(std::ceil(y1)));
-                         ++sy) {
-                        const double wy = std::min(y1, double(sy + 1)) - std::max(y0, double(sy));
-                        for (auto sx = static_cast<std::uint32_t>(x0);
-                             sx < std::min(source_width, static_cast<std::uint32_t>(std::ceil(x1)));
-                             ++sx) {
-                            const double wx =
-                                std::min(x1, double(sx + 1)) - std::max(x0, double(sx));
-                            const auto rgb = image_base_texel_linear_rgb(image, sx, sy);
-                            if (!rgb)
-                                return "Environment sampling texel is invalid";
-                            mass += wx * wy * (double((*rgb)[0]) + (*rgb)[1] + (*rgb)[2]) / 3;
-                        }
-                    }
-                    row[x + 1] = row[x] + mass;
-                }
-                sums[y] = row.back();
-                total += sums[y];
-                const auto begin = std::size_t(width + 1) * (y + 1);
-                for (std::uint32_t x = 1; x <= width; ++x) {
-                    cdf[begin + x] = sums[y] > 0 ? static_cast<float>(row[x] / sums[y])
-                                                 : float(x) / float(width);
-                }
-            }
-            double accumulated = 0;
-            for (std::uint32_t y = 0; y < width; ++y) {
-                accumulated += sums[y];
-                cdf[y + 1] = total > 0 ? static_cast<float>(accumulated / total)
-                                       : float(y + 1) / float(width);
-            }
+            std::string sampling_error;
+            const auto distribution = build_environment_sampling(
+                image, std::min<std::size_t>(scene.preparation_byte_limit, device.maxBufferLength),
+                sampling_error);
+            if (!distribution)
+                return sampling_error;
+            graph_parameters.environment_width = distribution->width;
+            graph_parameters.environment_compensated_offset = distribution->compensated_offset;
+            cdf = distribution->cdf;
             const auto &m = scene.environment_texture_from_world.values;
             for (unsigned row_index = 0; row_index < 3; ++row_index) {
                 for (unsigned col = 0; col < 3; ++col) {
@@ -971,7 +1118,7 @@ struct MetalRenderScene::Impl {
     }
 
     std::string upload_area_lighting(const RenderScene &scene,
-                                     const std::vector<wire::Instance> &packed_instances) {
+                                     std::vector<wire::Instance> &packed_instances) {
         static_assert(no_area_emission == wire::no_emission);
         if (scene.area_emissions.size() > max_index ||
             scene.area_emissions.size() > device.maxBufferLength / sizeof(wire::AreaEmission)) {
@@ -1005,10 +1152,11 @@ struct MetalRenderScene::Impl {
         std::vector<wire::Emitter> packed_emitters;
         packed_emitters.reserve(std::max<std::size_t>(1, emitter_count));
         for (wire::Word ordinal = 0; ordinal < parameters.instance_count; ++ordinal) {
-            const auto &instance = packed_instances[ordinal];
+            auto &instance = packed_instances[ordinal];
             if (instance.emission == wire::no_emission) {
                 continue;
             }
+            instance.emitter_begin = static_cast<wire::Word>(packed_emitters.size());
             for (wire::Word primitive = 0; primitive < instance.triangle_count; ++primitive) {
                 packed_emitters.push_back({ordinal, primitive, wire::triangle_primitive});
             }
@@ -1365,7 +1513,228 @@ struct MetalRenderScene::Impl {
             for (std::size_t j = 0; j < count; ++j)
                 packed_data.push_back(std::bit_cast<wire::Word>(power_factors[begin + j]));
         }
-        if (auto error = upload_auxiliary_data(scene, packed_data); !error.empty())
+        if (auto error = upload_area_lighting(scene, packed_instances); !error.empty())
+            return error;
+        std::vector<LightSamplingInput> area_inputs;
+        area_inputs.reserve(parameters.emitter_count);
+        std::vector<double> emission_means(scene.area_emissions.size(), -1);
+        std::vector<double> emission_bounds_means(scene.area_emissions.size(), -1);
+        for (std::size_t ordinal = 0; ordinal < packed_instances.size(); ++ordinal) {
+            const auto &instance = packed_instances[ordinal];
+            if (instance.emission == wire::no_emission)
+                continue;
+            const auto &emission = scene.area_emissions[instance.emission];
+            double &mean = emission_means[instance.emission];
+            double &bound_mean = emission_bounds_means[instance.emission];
+            if (mean < 0) {
+                if (emission.image_texture != UINT32_MAX) {
+                    const auto value =
+                        light_image_power(*scene.image_textures[emission.image_texture].image);
+                    if (!value)
+                        return "Invalid area light sampling image";
+                    mean = *value * emission.image_scale;
+                    const auto bound = light_image_bounds_power(
+                        *scene.image_textures[emission.image_texture].image);
+                    if (!bound)
+                        return "Invalid area light bounds image";
+                    bound_mean = *bound * emission.image_scale;
+                } else if (emission.gltf_material != UINT32_MAX) {
+                    const auto &gltf = scene.materials[emission.gltf_material].gltf;
+                    const auto value =
+                        gltf.emissive_texture == UINT32_MAX
+                            ? light_rgb_power(gltf.emissive)
+                            : light_image_power(*scene.image_textures[gltf.emissive_texture].image,
+                                                gltf.emissive);
+                    if (!value)
+                        return "Invalid glTF light sampling emission";
+                    mean = *value * emission.image_scale;
+                    if (gltf.emissive_texture == UINT32_MAX)
+                        bound_mean =
+                            (double(gltf.emissive[0]) + gltf.emissive[1] + gltf.emissive[2]) / 3 *
+                            emission.image_scale;
+                    else {
+                        const auto bound = light_image_bounds_power(
+                            *scene.image_textures[gltf.emissive_texture].image, gltf.emissive);
+                        if (!bound)
+                            return "Invalid glTF light bounds image";
+                        bound_mean = *bound * emission.image_scale;
+                    }
+                } else {
+                    mean = light_spectrum_power(emission.radiance);
+                    bound_mean =
+                        *std::max_element(emission.radiance.begin(), emission.radiance.end());
+                }
+            }
+            const auto world = [&](Vec p) {
+                Vec q{};
+                for (unsigned a = 0; a < 3; ++a)
+                    q[a] = instance.matrix[4 * a] * p[0] + instance.matrix[4 * a + 1] * p[1] +
+                           instance.matrix[4 * a + 2] * p[2] + instance.matrix[4 * a + 3];
+                return q;
+            };
+            const auto vertex = [&](wire::Word i) {
+                const auto &p = packed_positions[instance.vertex_begin + i];
+                return world({p.x, p.y, p.z});
+            };
+            const auto sub = [](Vec a, Vec b) {
+                return Vec{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+            };
+            const auto norm = [](Vec v) { return std::hypot(v[0], v[1], v[2]); };
+            const auto append = [&](std::span<const Vec> corners, double area, Vec normal,
+                                    std::size_t primitive, bool flat) {
+                LightSamplingInput input;
+                input.low = {INFINITY, INFINITY, INFINITY};
+                input.high = {-INFINITY, -INFINITY, -INFINITY};
+                for (const auto &p : corners)
+                    for (unsigned a = 0; a < 3; ++a) {
+                        input.low[a] = std::min(input.low[a], static_cast<float>(p[a]));
+                        input.high[a] = std::max(input.high[a], static_cast<float>(p[a]));
+                    }
+                double factor = 1;
+                if (instance.area_power_begin != UINT32_MAX)
+                    factor =
+                        std::bit_cast<float>(packed_data[instance.area_power_begin + primitive]);
+                input.power =
+                    std::numbers::pi * area * mean * factor * (emission.two_sided ? 2 : 1);
+                // Bounds().phi intentionally omits Phi()'s two-sided factor.
+                input.bounds_power = std::numbers::pi * area * bound_mean * factor;
+                input.two_sided = emission.two_sided;
+                const double length = norm(normal);
+                if (flat && length > 0) {
+                    for (unsigned a = 0; a < 3; ++a)
+                        input.direction[a] = static_cast<float>(normal[a] / length);
+                    input.cos_outer = std::nextafter(1.f, 0.f);
+                    input.two_sided = emission.two_sided;
+                }
+                area_inputs.push_back(input);
+                return std::ref(area_inputs.back());
+            };
+            for (wire::Word i = 0; i < instance.triangle_count; ++i) {
+                const auto &t = packed_triangles[instance.triangle_begin + i];
+                const std::array<Vec, 3> p{vertex(t.vertices[0]), vertex(t.vertices[1]),
+                                           vertex(t.vertices[2])};
+                auto n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+                if (instance.reverse_orientation)
+                    for (auto &v : n)
+                        v = -v;
+                auto &entry = append(p, .5 * norm(n), n, i, true).get();
+                if (instance.normal_begin != wire::no_normals &&
+                    emission.gltf_material == UINT32_MAX) {
+                    const auto *values = static_cast<const wire::Point *>(normals.contents);
+                    bool positive = false, negative = false;
+                    for (unsigned j = 0; j < 3; ++j) {
+                        const auto &v = values[instance.normal_begin + t.vertices[j]];
+                        const double cosine = n[0] * v.x + n[1] * v.y + n[2] * v.z;
+                        const double uncertainty =
+                            8 * std::numeric_limits<float>::epsilon() * norm(n) *
+                            std::hypot(double(v.x), double(v.y), double(v.z));
+                        positive |= cosine >= -uncertainty;
+                        negative |= cosine < uncertainty;
+                    }
+                    if (positive && negative)
+                        entry.two_sided = true;
+                    else if (negative)
+                        for (auto &v : entry.direction)
+                            v = -v;
+                }
+            }
+            for (wire::Word i = 0; i < instance.patch_count; ++i) {
+                const auto &patch = packed_patches[instance.patch_begin + i];
+                std::array<Vec, 4> p;
+                for (unsigned j = 0; j < 4; ++j)
+                    p[j] = vertex(patch.vertices[j]);
+                const double area = light_patch_area(p);
+                auto &entry = append(p, area, {0, 0, 1}, instance.triangle_count + i, false).get();
+                std::array<Vec, 4> ns{cross(sub(p[1], p[0]), sub(p[2], p[0])),
+                                      cross(sub(p[1], p[0]), sub(p[3], p[1])),
+                                      cross(sub(p[3], p[2]), sub(p[2], p[0])),
+                                      cross(sub(p[3], p[2]), sub(p[3], p[1]))};
+                if (instance.reverse_orientation)
+                    for (auto &n : ns)
+                        for (auto &v : n)
+                            v = -v;
+                // Authored normals can flip the geometric normal across the patch.
+                // A two-sided cone of the underlying normals retains both orientations.
+                if (instance.normal_begin != wire::no_normals &&
+                    emission.gltf_material == UINT32_MAX) {
+                    const auto *values = static_cast<const wire::Point *>(normals.contents);
+                    bool positive = false, negative = false;
+                    for (unsigned j = 0; j < 4; ++j) {
+                        const auto &v = values[instance.normal_begin + patch.vertices[j]];
+                        const double cosine = ns[j][0] * v.x + ns[j][1] * v.y + ns[j][2] * v.z;
+                        const double uncertainty =
+                            8 * std::numeric_limits<float>::epsilon() * norm(ns[j]) *
+                            std::hypot(double(v.x), double(v.y), double(v.z));
+                        positive |= cosine >= -uncertainty;
+                        negative |= cosine < uncertainty;
+                    }
+                    if (positive && negative)
+                        entry.two_sided = true;
+                    else if (negative)
+                        for (auto &n : ns)
+                            for (auto &v : n)
+                                v = -v;
+                }
+                std::array<Vec, 4> nonzero_normals;
+                std::size_t count = 0;
+                for (const auto &normal : ns)
+                    if (norm(normal) > 0)
+                        nonzero_normals[count++] = normal;
+                light_normal_cone(entry, std::span(nonzero_normals).first(count));
+            }
+
+            const auto source = MetalGeometryAccess::source_instance(*geometry, ordinal);
+            const auto &mesh = meshes[geometry_data.instances[source].mesh_index];
+            for (wire::Word i = 0; i < instance.analytic_count; ++i) {
+                const auto &shape = mesh.analytics[i];
+                const auto bounds = analytic_bounds(shape);
+                std::array<Vec, 8> corners;
+                for (unsigned j = 0; j < 8; ++j)
+                    corners[j] =
+                        world({bounds[j & 1].x, bounds[(j >> 1) & 1].y, bounds[(j >> 2) & 1].z});
+                double area = 0;
+                // This integration is a proposal power estimate, never an emission normalization.
+                for (unsigned y = 0; y < 16; ++y)
+                    for (unsigned x = 0; x < 16; ++x) {
+                        auto surface =
+                            evaluate_analytic(shape, {float(x + .5f) / 16, float(y + .5f) / 16});
+                        Vec du{surface.dpdu.x, surface.dpdu.y, surface.dpdu.z},
+                            dv{surface.dpdv.x, surface.dpdv.y, surface.dpdv.z};
+                        Vec wu{}, wv{};
+                        for (unsigned a = 0; a < 3; ++a) {
+                            wu[a] = instance.matrix[4 * a] * du[0] +
+                                    instance.matrix[4 * a + 1] * du[1] +
+                                    instance.matrix[4 * a + 2] * du[2];
+                            wv[a] = instance.matrix[4 * a] * dv[0] +
+                                    instance.matrix[4 * a + 1] * dv[1] +
+                                    instance.matrix[4 * a + 2] * dv[2];
+                        }
+                        area += norm(cross(wu, wv)) / 256;
+                    }
+                GeometryTransform transform;
+                for (unsigned j = 0; j < 12; ++j)
+                    transform.values[j] = instance.matrix[j];
+                if (const auto exact = analytic_world_area(shape, transform))
+                    area = *exact;
+                auto &entry = append(corners, area, {0, 0, 1},
+                                     instance.triangle_count + instance.patch_count + i, false)
+                                  .get();
+                if (shape.kind == AnalyticKind::disk) {
+                    Vec u{instance.matrix[0], instance.matrix[4], instance.matrix[8]};
+                    Vec v{instance.matrix[1], instance.matrix[5], instance.matrix[9]};
+                    auto normal = cross(u, v);
+                    // Match analytic_surface_point: the cofactor already carries
+                    // handedness, and the packed orientation supplies the only flip.
+                    if (instance.reverse_orientation != 0)
+                        for (auto &x : normal)
+                            x = -x;
+                    const std::array<Vec, 1> normals{normal};
+                    light_normal_cone(entry, normals);
+                }
+                // Sphere/cylinder NormalBounds are full sphere in pinned PBRT too.
+            }
+        }
+        if (auto error = upload_auxiliary_data(scene, packed_data, area_inputs); !error.empty())
             return error;
         instances = upload(device, packed_instances);
         positions = upload(device, packed_positions);
@@ -1377,16 +1746,22 @@ struct MetalRenderScene::Impl {
             knots == nil || patches == nil || material_data == nil) {
             return "Metal render shading buffer allocation failed";
         }
-        if (auto error = upload_area_lighting(scene, packed_instances); !error.empty())
-            return error;
         return upload_graph(scene);
     }
 
-    RenderSamplesResult sample(const RenderRequest &request) {
+    RenderSamplesResult sample(const RenderRequest &request, RenderTimings *timings = nullptr) {
+        RenderTimingScope setup(timings, RenderTimingPhase::dispatch_setup);
         RenderSamplesResult result;
         result.diagnostic = validate_request(request);
         if (!result.diagnostic.empty()) {
             return result;
+        }
+        if (parameters.packet_transport && parameters.bidirectional && parameters.max_depth > 0 &&
+            request.sampler.kind == SamplerKind::halton) {
+            result.diagnostic = validate_halton_light_range(
+                request.width, request.height, request.sample_begin, request.sample_count);
+            if (!result.diagnostic.empty())
+                return result;
         }
         if (parameters.packet_transport && request.sample_count != 1) {
             result.diagnostic = "Packet requests require one absolute sample per dispatch";
@@ -1467,6 +1842,7 @@ struct MetalRenderScene::Impl {
         p.sample_high = static_cast<wire::Word>(request.sample_begin >> 32);
         p.seed_low = static_cast<wire::Word>(request.seed);
         p.seed_high = static_cast<wire::Word>(request.seed >> 32);
+        p.material_seed = request.material_seed;
         p.emergency_limit = request.emergency_limit;
         p.boundary_limit = request.boundary_limit;
         p.lane_count = request.pixel_count * request.sample_count;
@@ -1484,9 +1860,8 @@ struct MetalRenderScene::Impl {
         const std::size_t stride = p.packet_transport ? p.packet_lane_bytes : sizeof(wire::Sample);
         const std::size_t slots = p.packet_transport ? p.lane_count : group_count * group_width + 1;
         const std::size_t guard_bytes = p.packet_transport ? 64 : 0;
-        if (p.packet_transport &&
-            (stride == 0 || p.lane_count > packet_wire::workspace_bytes / stride)) {
-            result.diagnostic = "Packet dispatch exceeds the 256 MiB workspace capacity";
+        if (p.packet_transport && (stride == 0 || p.lane_count > packet_payload_bytes / stride)) {
+            result.diagnostic = "Packet dispatch exceeds the configured workspace capacity";
             return result;
         }
         const auto bytes = slots * stride + guard_bytes;
@@ -1502,7 +1877,17 @@ struct MetalRenderScene::Impl {
             result.diagnostic = "Metal render output buffer allocation failed";
             return result;
         }
-        std::memset(output_bytes, 0xff, bytes);
+        if (p.packet_transport) {
+            // Preserve missing-output sentinels; path vertices are initialized by
+            // the shader before their counts expose them to other path operations.
+            // Unused internal Vertex storage is intentionally not poisoned.
+            const auto prefix_bytes = packet_wire::vertex_offset(p.max_depth);
+            for (std::size_t lane = 0; lane < p.lane_count; ++lane)
+                std::memset(output_bytes + lane * stride, 0xff, prefix_bytes);
+            std::memset(output_bytes + slots * stride, 0xff, guard_bytes);
+        } else {
+            std::memset(output_bytes, 0xff, bytes);
+        }
 
         id<MTLCommandBuffer> command = [queue commandBuffer];
         if (command == nil) {
@@ -1531,7 +1916,13 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:emitters offset:0 atIndex:10];
             [encoder setBuffer:normals offset:0 atIndex:11];
             [encoder setBuffer:patches offset:0 atIndex:13];
-            [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
+            if (p.packet_transport) {
+                if (empty_packet_structure != nil)
+                    [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:14];
+                else
+                    MetalGeometryAccess::bind_hint(*geometry, encoder, 14);
+            } else
+                [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
             [encoder setBuffer:texture_uvs offset:0 atIndex:15];
             [encoder setBuffer:texture_frames offset:0 atIndex:16];
             [encoder setBuffer:image_textures offset:0 atIndex:17];
@@ -1568,7 +1959,14 @@ struct MetalRenderScene::Impl {
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
         [encoder endEncoding];
-        result.diagnostic = metal::complete(command, "Metal render sample dispatch");
+        setup.close();
+        result.diagnostic = render_timed(timings, RenderTimingPhase::dispatch_wait, [&] {
+            return metal::complete(command, "Metal render sample dispatch");
+        });
+        if (timings)
+            timings->gpu_command(command.status == MTLCommandBufferStatusCompleted,
+                                 command.GPUStartTime, command.GPUEndTime);
+        RenderTimingScope decode(timings, RenderTimingPhase::dispatch_decode);
         if (!result.diagnostic.empty()) {
             return result;
         }
@@ -1714,11 +2112,37 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request) {
         return impl_->sample(request);
     }
 }
+RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request, RenderTimings &timings) {
+    @autoreleasepool {
+        if (!impl_)
+            return {.diagnostic = "Metal render scene is moved-from", .samples = {}};
+        return impl_->sample(request, &timings);
+    }
+}
+
+namespace {
+// Scan all materials, including unused entries and mix children. Prepared
+// native placements copy the validated per-source invisible-emitter flags.
+bool packet_visibility_requires_closest(const RenderScene &scene) {
+    return std::ranges::any_of(scene.materials,
+                               [](const auto &material) {
+                                   return material.scattering == ScatteringKind::null_interface;
+                               }) ||
+           std::ranges::any_of(scene.instance_invisible_emitters,
+                               [](std::uint32_t invisible) { return invisible != 0; });
+}
+} // namespace
 
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path) {
+    return build_metal_renderer(scene, library_path, nullptr);
+}
+RenderBuildResult build_metal_renderer(const RenderScene &scene,
+                                       const std::filesystem::path &library_path,
+                                       RenderTimings *timings) {
     @autoreleasepool {
         RenderBuildResult result;
+        std::optional<std::size_t> growth_estimate;
         try {
             result.diagnostic = validate_render_scene(scene);
         } catch (const std::bad_alloc &) {
@@ -1743,6 +2167,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             if (!result.diagnostic.empty())
                 return result;
         }
+        if (!parameters.packet_transport) {
+            result.diagnostic = prepare_packet_scene_sphere(scene, parameters);
+            if (!result.diagnostic.empty())
+                return result;
+        }
         if (scene.model == RenderModel::demo &&
             (!(parameters.film_scale > 0.0f) || !std::isfinite(parameters.film_scale) ||
              !finite(parameters.forward) || !finite(parameters.right) || !finite(parameters.up))) {
@@ -1755,6 +2184,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             result.diagnostic = validate_render_preparation_budget(scene, &estimate);
             if (!result.diagnostic.empty())
                 return result;
+            growth_estimate = estimate;
             id<MTLDevice> budget_device = MTLCreateSystemDefaultDevice();
             if (budget_device != nil && budget_device.recommendedMaxWorkingSetSize > 0 &&
                 estimate > budget_device.recommendedMaxWorkingSetSize) {
@@ -1789,13 +2219,53 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             }
             for (std::size_t i = 0; i < prepared.instances.size(); ++i) {
                 prepared.instances[i].non_opaque =
+                    prepared.instances[i].non_opaque || scene.geometry.instances[i].non_opaque ||
                     (!scene.instance_alpha_roots.empty() &&
                      scene.instance_alpha_roots[i] != max_index) ||
                     gltf_visibility(scene.materials[scene.instance_materials[i]]);
             }
         }
         const auto &geometry_data = prepared.instances.empty() ? scene.geometry : prepared;
-        auto built = build_metal_geometry(geometry_data, library_path);
+        // Global exclusions are deliberately conservative, including unused/mix children.
+        // volume_transport by itself does not imply a medium interface (vacuum is eligible).
+        const bool hint_passthrough = packet_visibility_requires_closest(scene);
+        const bool hint_complex_material = std::ranges::any_of(scene.materials, [](const auto &m) {
+            return m.scattering == ScatteringKind::mix || m.scattering == ScatteringKind::gltf;
+        });
+        const bool hint_medium_boundary = std::ranges::any_of(
+            scene.instance_media, [](const auto &m) { return m.inside != m.outside; });
+        std::size_t opaque_triangle_sources = 0;
+        for (const auto &instance : geometry_data.instances) {
+            if (!geometry_data.meshes[instance.mesh_index].triangles.empty()) {
+                if (!instance.non_opaque)
+                    ++opaque_triangle_sources;
+            }
+        }
+        const bool hint_eligible = parameters.packet_transport && !hint_passthrough &&
+                                   !hint_complex_material && !hint_medium_boundary &&
+                                   opaque_triangle_sources != 0;
+        if (hint_eligible) {
+            std::size_t base_estimate = 0;
+            result.diagnostic = validate_render_preparation_budget(scene, &base_estimate);
+            if (!result.diagnostic.empty())
+                return result;
+            const auto budget =
+                native_hint_budget(geometry_data, base_estimate, scene.preparation_byte_limit);
+            if (!budget.valid) {
+                result.diagnostic = "Native hint inputs exceed configured preparation byte budget "
+                                    "(AS/driver scratch/pipelines excluded)";
+                return result;
+            }
+            growth_estimate = budget.combined;
+            auto budget_device = MTLCreateSystemDefaultDevice();
+            if (budget_device != nil && budget_device.recommendedMaxWorkingSetSize > 0 &&
+                budget.combined > budget_device.recommendedMaxWorkingSetSize) {
+                result.diagnostic =
+                    "Native hint preparation estimate exceeds device recommended working-set size";
+                return result;
+            }
+        }
+        auto built = build_metal_geometry_with_hints(geometry_data, library_path, hint_eligible);
         result.device = std::move(built.device);
         if (built.status != GeometryStatus::success) {
             result.status = built.status;
@@ -1805,6 +2275,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
 
         auto impl = std::make_unique<MetalRenderScene::Impl>();
         impl->geometry = std::move(built.scene);
+        if (hint_eligible && !MetalGeometryAccess::has_hint(*impl->geometry)) {
+            result.diagnostic = "Required native triangle hint acceleration structure is missing";
+            return result;
+        }
+        impl->native_hint_mode = hint_eligible ? 3u : 0u;
         impl->device = MetalGeometryAccess::device(*impl->geometry);
         impl->queue = MetalGeometryAccess::queue(*impl->geometry);
         if (impl->queue == nil) {
@@ -1887,7 +2362,12 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                        m.scattering == ScatteringKind::coated_conductor;
             });
             [constants setConstantValue:&coated type:MTLDataTypeBool atIndex:17];
+            const bool passthrough = packet_visibility_requires_closest(scene);
+            [constants setConstantValue:&passthrough type:MTLDataTypeBool atIndex:18];
+            [constants setConstantValue:&impl->native_hint_mode type:MTLDataTypeUInt atIndex:19];
         }
+        RenderTimingScope pipeline_timing(timings, RenderTimingPhase::pipeline);
+        const auto pipeline_start = std::chrono::steady_clock::now();
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,
                                               intersection, constants);
         if (impl->pipeline == nil) {
@@ -1900,6 +2380,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 return result;
             }
         }
+        result.pipeline_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - pipeline_start)
+                .count();
+        pipeline_timing.close();
         impl->environment = upload(impl->device, scene.environment);
         if (impl->environment == nil) {
             result.diagnostic = "Metal render environment buffer allocation failed";
@@ -1986,8 +2470,100 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                     *buffer = sentinel;
             }
         }
+        if (impl->parameters.packet_transport) {
+            const auto recommended = impl->device.recommendedMaxWorkingSetSize;
+            if (!growth_estimate && recommended > 0) {
+                // Unlimited scenes without hints were not previously estimated here.
+                // Optional growth must not introduce a new preparation failure.
+                try {
+                    std::size_t estimate = 0;
+                    if (validate_render_preparation_budget(scene, &estimate).empty())
+                        growth_estimate = estimate;
+                } catch (...) {
+                    // Keep the existing baseline when optional estimation cannot complete.
+                }
+            }
+            std::optional<std::size_t> finite_limit;
+            if (scene.preparation_byte_limit != std::numeric_limits<std::size_t>::max())
+                finite_limit = scene.preparation_byte_limit;
+            impl->packet_payload_bytes = packet_dispatch::payload_bytes(
+                growth_estimate, finite_limit, recommended, impl->device.maxBufferLength);
+            result.packet_lane_capacity = packet_dispatch::lane_capacity(
+                impl->packet_payload_bytes, impl->parameters.packet_lane_bytes,
+                impl->device.maxBufferLength);
+        }
         result.scene.reset(new MetalRenderScene(std::move(impl)));
         result.status = GeometryStatus::success;
+        return result;
+    }
+}
+
+ShadingNormalProbeResult
+probe_shading_normal(const std::vector<shading_normal_probe::Query> &queries,
+                     const std::filesystem::path &library_path) {
+    ShadingNormalProbeResult result;
+    if (queries.empty() || queries.size() > 65536) {
+        result.diagnostic = "Shading normal probe requires 1..65536 inputs";
+        return result;
+    }
+    @autoreleasepool {
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (device == nil) {
+            result.status = MetalStatus::no_device;
+            result.diagnostic = "No Metal device";
+            return result;
+        }
+        auto library = metal::load_library(device, library_path, result.diagnostic);
+        if (library == nil)
+            return result;
+        auto pipeline =
+            metal::load_pipeline(device, library, @"shading_normal_probe", result.diagnostic);
+        if (pipeline == nil)
+            return result;
+        auto queue = [device newCommandQueue];
+        constexpr std::size_t guard_bytes = 64;
+        const auto payload = queries.size() * sizeof(shading_normal_probe::Result);
+        auto input = [device newBufferWithBytes:queries.data()
+                                         length:queries.size() * sizeof(queries[0])
+                                        options:MTLResourceStorageModeShared];
+        auto output = [device newBufferWithLength:payload + 2 * guard_bytes
+                                          options:MTLResourceStorageModeShared];
+        if (queue == nil || input == nil || output == nil) {
+            result.diagnostic = "Shading normal probe resource allocation failed";
+            return result;
+        }
+        std::memset(output.contents, 0xa5, payload + 2 * guard_bytes);
+        const auto count = static_cast<std::uint32_t>(queries.size());
+        auto command = [queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        if (command == nil || encoder == nil) {
+            result.diagnostic = "Shading normal probe encoder creation failed";
+            return result;
+        }
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:input offset:0 atIndex:0];
+        [encoder setBuffer:output offset:guard_bytes atIndex:1];
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        // Include inactive lanes to exercise the kernel's bounds check.
+        const auto width = metal::group_width(device, pipeline);
+        const auto groups = (count + width - 1) / width;
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+        [encoder endEncoding];
+        result.diagnostic = metal::complete(command, "shading normal probe");
+        if (!result.diagnostic.empty())
+            return result;
+        const auto *bytes = static_cast<const unsigned char *>(output.contents);
+        for (std::size_t i = 0; i < guard_bytes; ++i) {
+            if (bytes[i] != 0xa5 || bytes[guard_bytes + payload + i] != 0xa5) {
+                result.diagnostic = "Shading normal probe output guard overwritten";
+                return result;
+            }
+        }
+        result.values.resize(count);
+        std::memcpy(result.values.data(), bytes + guard_bytes, payload);
+        result.guard_count = 2 * guard_bytes;
+        result.status = MetalStatus::success;
         return result;
     }
 }

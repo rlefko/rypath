@@ -105,6 +105,26 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
     return rypath_packet::compatible(out);
 }
 
+// The actual neighboring position becomes known only after tracing the next
+// edge. Finalize both MIS densities here so stored factors and connection
+// queries see the same represented geometry. This never changes path throughput.
+inline bool finalize_walk_densities(const thread Resources &r, device uchar *path, uint count,
+                                    thread Vertex &next, Mode mode) {
+    const Vertex middle = path_vertex(path, count - 1);
+    const Vertex before = count > 1 ? path_vertex(path, count - 2) : Vertex{};
+    next.pdf_fwd = middle.delta ? 0 : vertex_pdf(r, middle, before, next, mode);
+    if (!isfinite(next.pdf_fwd) || next.pdf_fwd < 0)
+        return false;
+    if (count > 1) {
+        const float reverse =
+            middle.delta ? 0 : vertex_pdf(r, middle, next, before, rypath_packet::opposite(mode));
+        if (!isfinite(reverse) || reverse < 0)
+            return false;
+        path_vertex(path, count - 2).pdf_rev = reverse;
+    }
+    return true;
+}
+
 [[clang::noinline]] inline uint random_walk(thread Resources &r, thread wire::Sample &sample,
                                             thread Wavelengths &lambda, ray incoming, float4 beta,
                                             float pdf, device uchar *path, uint count,
@@ -128,6 +148,9 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         r.alpha.incoming = incoming;
         const auto hit =
             p.instance_count == 0 ? SurfaceHit{intersection_type::none, 0, 0, 0, 0, float2(0), true}
+            : (native_triangle_hint_mode & 2u)
+                ? trace_packet_seeded_closest(incoming, r.scene, all_visible, r.intersection_table,
+                                              r.alpha, alpha_enabled)
             : alpha_enabled
                 ? trace_masked_surface(incoming, r.scene, all_visible, r.alpha)
                 : trace_surface(closest, incoming, r.scene, all_visible, r.intersection_table);
@@ -139,12 +162,18 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
             if (mode == Mode::Radiance) {
                 Vertex v{};
                 v.type = environment_vertex;
+                v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
+                v.light = p.environment_light;
                 v.point.position = incoming.origin + incoming.direction;
                 v.point.geometric_normal = -incoming.direction;
                 v.point.shading_normal = -incoming.direction;
                 v.wo = -incoming.direction;
                 v.beta = beta;
-                v.pdf_fwd = pdf;
+                // PT does not consume stored BDPT MIS densities.
+                if (p.bidirectional && !finalize_walk_densities(r, path, count, v, mode)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
                 v.connectible = true;
                 path_vertex(path, count++) = v;
             }
@@ -166,11 +195,19 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         Vertex v{};
         v.type = surface_vertex;
+        v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
         v.instance = hit.instance_id;
         v.primitive = hit.primitive_id;
         v.kind = kind;
         v.uv = hit.coordinates;
-        v.light = instance.emission;
+        v.light =
+            instance.emission == wire::no_emission
+                ? 0xffffffffu
+                : instance.emitter_begin +
+                      (kind == wire::triangle_primitive ? hit.primitive_id
+                       : kind == wire::patch_primitive
+                           ? instance.triangle_count + hit.primitive_id
+                           : instance.triangle_count + instance.patch_count + hit.primitive_id);
         v.wo = -incoming.direction;
         if (!surface_point(hit.coordinates, kind, instance, hit.primitive_id, r.alpha.positions,
                            r.alpha.triangles, r.alpha.patches, r.alpha.normals, p.normal_count,
@@ -297,8 +334,10 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         v.beta = beta;
         v.connectible = !rypath_packet::delta_only(v.bsdf);
         const Vertex prev = path_vertex(path, count - 1);
-        v.pdf_fwd = convert_density(pdf, prev, v);
-        if (!isfinite(v.pdf_fwd) || v.pdf_fwd < 0) {
+        const float sampled_area_pdf = convert_density(pdf, prev, v);
+        // Retain sampled-area validation even when PT skips unused BDPT storage.
+        if (!isfinite(sampled_area_pdf) || sampled_area_pdf < 0 ||
+            (p.bidirectional && !finalize_walk_densities(r, path, count, v, mode))) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -312,8 +351,9 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         const auto draws =
             random(r, sample, index, (mode == Mode::Radiance ? 4u : 69u) + count - 2);
+        const float3 sampled_wo_local = v.frame.local(v.wo);
         const auto continuation =
-            rypath_packet::sample(v.bsdf, v.frame.local(v.wo), sample_uniform(p, draws.x),
+            rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
                                   uniform2(p, draws.yz), v.seed, mode);
         if (!continuation.valid) {
             sample.status = wire::invalid_arithmetic;
@@ -321,6 +361,14 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         if (!continuation.accepted)
             break;
+        // Retain exact sampled locals for throughput and directional-f queries.
+        // MIS densities instead use actual neighboring geometry after tracing.
+        device auto &stored = path_vertex(path, count - 1);
+        stored.sampled_wo_local = sampled_wo_local;
+        stored.sampled_wi_local = continuation.wi;
+        stored.sampled_prev_id = prev.path_id;
+        stored.sampled_next_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
+        stored.pair_valid = true;
         float3 wi = v.frame.world(continuation.wi);
         if (!rypath_surface_detail::unit_vector(wi, wi)) {
             sample.status = wire::invalid_arithmetic;
@@ -328,11 +376,24 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         // Preserve the sampled joint coating-walk ratio. Its directional MIS
         // proxy is a separate density and must never replace this weight.
-        beta *= continuation.weight;
+        if (mode == Mode::Importance) {
+            // Use the exact local cosines used by sample(), not a world/local
+            // round trip that can erase a nonzero grazing sampled direction.
+            const auto correction = rypath_shading_normal::correction(
+                sampled_wo_local.z, continuation.wi.z, dot(v.wo, v.point.geometric_normal),
+                dot(wi, v.point.geometric_normal));
+            for (uint lane = 0; lane < 4; ++lane)
+                beta[lane] = rypath_shading_normal::multiply(beta[lane], continuation.weight[lane],
+                                                             correction);
+        } else {
+            beta *= continuation.weight;
+        }
         if (!finite_nonnegative(beta)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
+        // Keep original sampled forward/reverse validation. Canonical queries
+        // must not conceal an invalid sampled proxy or its area conversion.
         pdf = continuation.pdf;
         float reverse_pdf = continuation.reverse_pdf;
         if (continuation.delta) {
@@ -344,7 +405,6 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        path_vertex(path, count - 2).pdf_rev = reverse_area_pdf;
         const float3 origin = offset(v, wi);
         if (!all(isfinite(origin))) {
             sample.status = wire::invalid_arithmetic;

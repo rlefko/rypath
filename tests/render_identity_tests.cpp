@@ -3,6 +3,7 @@
 #include "metal_render.hpp"
 #include "render_identity.hpp"
 
+#include <bit>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -20,11 +21,49 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3716-byte empty-scene fixture includes field tags and all defaults.
+    // the 3766-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "73af24dbc8041e7891bd985d54519bda61e8f5059e8b8d155ad324339eb38fc6",
+                "4ff4173224e12d6aad7a6c12b257dabc311b690c3b2af93f9bea8df6112b0d79",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
+    {
+        // Independently serialized fixture, retaining nested counts, shared
+        // content and exact nonfinite/-zero bits across the8192-byte buffer.
+        RenderScene populated;
+        auto image = std::make_shared<ImagePyramid>();
+        image->encoding = ImageEncoding{};
+        image->wrap = ImageWrap{};
+        image->levels = {{65, 65, 0}};
+        image->texels.resize(4097);
+        for (std::size_t i = 0; i < image->texels.size(); ++i)
+            image->texels[i] = static_cast<std::uint32_t>(i * 1664525 + 1013904223);
+        auto transfer = std::make_shared<std::array<float, 256>>();
+        for (std::size_t i = 0; i < transfer->size(); ++i)
+            (*transfer)[i] = std::bit_cast<float>(static_cast<std::uint32_t>(i * 1234567));
+        (*transfer)[0] = std::bit_cast<float>(std::uint32_t{0x80000000});
+        (*transfer)[1] = std::bit_cast<float>(std::uint32_t{0x7fc12345});
+        (*transfer)[2] = std::bit_cast<float>(std::uint32_t{0x7f800000});
+        image->custom_transfer = transfer;
+        populated.image_textures.resize(3);
+        for (auto &texture : populated.image_textures)
+            texture.image = image;
+        populated.geometry.meshes.resize(1);
+        auto &positions = populated.geometry.meshes[0].positions;
+        positions.resize(257);
+        for (std::size_t i = 0; i < positions.size(); ++i)
+            positions[i] = {static_cast<float>(i), -static_cast<float>(i),
+                            std::bit_cast<float>(std::uint32_t{0x80000000})};
+        const auto expected = render_identity(populated, settings);
+        require(digest_hex(expected) ==
+                    "439e1617dd1ced2bc856e5b24514d477e8b5fbe5286d59958d64e66de2b9d3eb",
+                "canonical populated identity golden");
+        populated.image_textures[1].image = std::make_shared<ImagePyramid>(*image);
+        require(render_identity(populated, settings) == expected,
+                "canonical content independent of sharing topology");
+        (*transfer)[0] = 0;
+        require(render_identity(populated, settings) != expected,
+                "canonical primitive bulk stream preserves negative zero");
+    }
     scene.exposure = 42;
     settings.batch_size = 19;
     require(baseline == render_identity(scene, settings), "presentation and scheduling excluded");
@@ -34,6 +73,10 @@ void identity_checks() {
         require(render_identity(copy, settings) != baseline, name);
     };
     changed([](auto &s) { s.integrator = IntegratorKind::bdpt; }, "integrator identity");
+    changed([](auto &s) { s.light_sampler = LightSamplerKind::power; },
+            "power light selection identity");
+    changed([](auto &s) { s.light_sampler = LightSamplerKind::uniform; },
+            "uniform light selection identity");
     changed([](auto &s) { s.spectral_transport = SpectralTransport::packet; },
             "spectral transport identity");
     changed([](auto &s) { s.max_component_value = 50; }, "film clamp identity");
@@ -110,6 +153,10 @@ void identity_checks() {
     setting_changed([](auto &s) { ++s.height; }, "film height");
     setting_changed([](auto &s) { ++s.samples; }, "fixed target spp");
     setting_changed([](auto &s) { ++s.seed; }, "sampling seed");
+    setting_changed([](auto &s) { s.material_seed = INT32_MIN; },
+                    "negative stochastic material seed");
+    setting_changed([](auto &s) { s.material_seed = INT32_MAX; },
+                    "positive stochastic material seed");
     setting_changed([](auto &s) { s.sampler.kind = SamplerKind::sobol; }, "sampler");
     setting_changed([](auto &s) { s.sampler.randomization = SobolRandomization::none; },
                     "randomizer");
@@ -352,6 +399,8 @@ void identity_checks() {
     deep([](auto &s) { ++s.geometry.meshes[0].patches[0][3]; }, "patch payload");
     deep([](auto &s) { s.geometry.meshes[0].tangents[0].x += 1; }, "tangent payload");
     deep([](auto &s) { s.geometry.instances[0].transform.values[3] += 1; }, "instance transform");
+    deep([](auto &s) { s.geometry.instances[0].non_opaque = !s.geometry.instances[0].non_opaque; },
+         "native triangle hint opacity eligibility");
     deep([](auto &s) { s.materials[0].knots[0].value += 1; }, "material spectrum");
     deep([](auto &s) { s.materials[0].eta.knots[0].value += 1; }, "optical spectrum");
     deep([](auto &s) { s.materials[0].surface.interface_eta.knots[0].value += 1; },

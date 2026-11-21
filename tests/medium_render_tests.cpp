@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "metal_render.hpp"
 #include "pbrt_render.hpp"
+#include "render_driver.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -447,7 +448,7 @@ void surface_stream() {
                     "Zero extinction changed the existing surface sampling stream");
     }
 }
-void failures() {
+void failures(bool full_boundary_stress = false) {
     auto scene = base();
     scene.media = {medium(0, 0)};
     plane(scene, 1, true);
@@ -460,28 +461,71 @@ void failures() {
     scene.instance_media[0].inside = 8;
     require(!validate_render_scene(scene).empty(), "Invalid interface medium accepted");
     scene.instance_media[0] = {};
-    // Failure is a failed batch, never a replacement black path or successful
-    // partial Film. This deliberately crosses the declared null safety limit.
-    for (unsigned i = 1; i <= medium_boundary_limit; ++i)
+    // Exercise actual native boundary exhaustion and the production transaction
+    // driver at a bounded request limit. The normal suite also retains the
+    // original default-limit case: disabling conservative traversal pruning
+    // makes those thousands of stacked null interfaces prohibitively expensive.
+    const unsigned limit = full_boundary_stress ? medium_boundary_limit : 8u;
+    for (unsigned i = 1; i < limit; ++i)
         plane(scene, 1 + .01f * static_cast<float>(i), true);
-    const auto failed = render_progressive(
-        scene, {.width = 1, .height = 1, .samples = 1, .batch_size = 1, .seed = 42});
-    require(failed.status == GeometryStatus::failure, "Null boundary overflow did not fail");
-    for (const auto &pixel : failed.film.pixels)
-        require(pixel.count == 0, "Failed medium batch committed samples to Film");
+    if (!full_boundary_stress) {
+        auto allowed = request(1);
+        allowed.seed = 42;
+        allowed.boundary_limit = limit;
+        const auto paths = sample(*build(scene), allowed);
+        require(paths.size() == 1 && paths.front().scatterings == 0 && paths.front().radiance == 1,
+                "Exactly the allowed number of null crossings must reach the environment");
+    }
+    plane(scene, 1 + .01f * static_cast<float>(limit), true);
+    const RenderSettings settings{
+        .width = 1, .height = 1, .samples = 1, .batch_size = 1, .seed = 42};
+    RenderResult failed;
+    if (full_boundary_stress) {
+        failed = render_progressive(scene, settings);
+    } else {
+        std::unique_ptr<MetalRenderScene> native;
+        detail::RenderSampleSource source;
+        source.prepare = [&] {
+            auto built = build_metal_renderer(scene);
+            native = std::move(built.scene);
+            return built;
+        };
+        bool saw_native_exhaustion = false;
+        source.sample = [&](RenderRequest query) {
+            query.boundary_limit = limit;
+            auto result = native->sample(query);
+            saw_native_exhaustion =
+                result.status == GeometryStatus::failure && result.samples.empty() &&
+                result.packet_samples.empty() && result.packet_splats.empty() &&
+                result.diagnostic.find("medium boundary or random-stream budget exhausted") !=
+                    std::string::npos;
+            return result;
+        };
+        failed = detail::drive_progressive(scene, settings, {}, source);
+        require(saw_native_exhaustion, "One extra null crossing must fail the native sample batch");
+    }
+    require(failed.status == GeometryStatus::failure &&
+                failed.completion == RenderCompletion::failed &&
+                failed.diagnostic.find("medium boundary or random-stream budget exhausted") !=
+                    std::string::npos,
+            "Null boundary overflow did not fail with its specific diagnostic");
+    require(failed.film == make_film(1, 1, scene.model, scene.exposure),
+            "Failed medium batch changed the fresh Film");
 }
 } // namespace
 int main(int argc, char **argv) {
     try {
-        bool allow_no_device = false, allow_no_ray_tracing = false;
+        bool allow_no_device = false, allow_no_ray_tracing = false, boundary_stress = false;
         for (int i = 1; i < argc; ++i) {
             const std::string_view option(argv[i]);
             if (!option.starts_with("--"))
                 continue; // Optional scratch path, matching other native test drivers.
-            require(option == "--allow-no-device" || option == "--allow-no-ray-tracing",
+            require(option == "--allow-no-device" || option == "--allow-no-ray-tracing" ||
+                        option == "--boundary-stress",
                     "Unknown medium render test option");
             allow_no_device |= option == "--allow-no-device";
             allow_no_ray_tracing |= option == "--allow-no-ray-tracing";
+            boundary_stress |= option == "--boundary-stress";
         }
         auto scene = base();
         scene.media = {medium(0, 0)};
@@ -494,6 +538,11 @@ int main(int argc, char **argv) {
         }
         require(capability.status == GeometryStatus::success && capability.scene,
                 capability.diagnostic);
+        if (boundary_stress) {
+            failures(true);
+            std::cout << "PASS full 4096-crossing native boundary exhaustion and failed Film\n";
+            return 0;
+        }
         bounded_fog_regression();
         grazing_beer();
         finite_point_endpoint();
@@ -506,10 +555,12 @@ int main(int argc, char **argv) {
         partitions();
         surface_stream();
         failures();
+        failures(true);
         std::cout
             << "PASS bounded fog, grazing Beer, finite point endpoints, Beer/emission, infinite "
                "source/depth, nested/split/oriented media, "
-               "independent phase/MIS quadrature, glass, sampler partitions and failed Film\n";
+               "independent phase/MIS quadrature, glass, sampler partitions, full boundary "
+               "exhaustion and failed Film\n";
         return 0;
     } catch (const std::exception &e) {
         std::cerr << "Medium render: " << e.what() << '\n';

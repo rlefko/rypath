@@ -11,7 +11,8 @@ int main() {
     static_assert(std::is_same_v<Float, float>);
     std::cout << std::setprecision(9);
     float eta, ax, ay, be, bk, bx, by, R, t, a, g, ox, oy, oz, ix, iy, iz, uc, u, v;
-    unsigned conductor, depth, samples, seed, operation;
+    unsigned conductor, depth, samples, operation;
+    int seed;
     PBRTOptions opts;
     Options = &opts;
     while (std::cin >> eta >> ax >> ay >> be >> bk >> bx >> by >> R >> t >> a >> g >> ox >> oy >>

@@ -16,10 +16,11 @@ from validate_checkpoints import (HEADER, METADATA, PIXEL, TARGET, Segment, comm
 
 def wire(count=3, target=3, segments=None, sums=(2., 3., 4.), correction=(0., 0., 0.),
          exposure=1., model=1, packet=False, compatibility_output=False,
-         clamp=float('inf'), pixel_extra=None, filter_kind=0, xr=.5, yr=.5, sigma=.5):
+         clamp=float('inf'), pixel_extra=None, filter_kind=0, xr=.5, yr=.5, sigma=.5,
+         material_seed=0):
     if segments is None:
         segments = [] if not count else [Segment(0, count, 'build', 'device', 'arch', 'os')]
-    metadata = METADATA.pack(1, 1, target, 1, 37, 0, 2, model, exposure, packet,
+    metadata = METADATA.pack(1, 1, target, 1, 37, 0, 2, material_seed, model, exposure, packet,
                              compatibility_output, clamp, filter_kind, xr, yr, sigma,
                              b'i' * 32, len(segments))
     for segment in segments:
@@ -31,7 +32,7 @@ def wire(count=3, target=3, segments=None, sums=(2., 3., 4.), correction=(0., 0.
         pixel_extra = [0.] * 20
         pixel_extra[-2] = count if packet else 0.
     payload = PIXEL.pack(*sums, *correction, count, *pixel_extra)
-    data = HEADER.pack(b'RYPCHK\r\n', 2, 11, 13, 4, 2, len(metadata), len(payload)) + metadata + payload
+    data = HEADER.pack(b'RYPCHK\r\n', 3, 12, 24, 7, 2, len(metadata), len(payload)) + metadata + payload
     return data + hashlib.sha256(data).digest()
 
 
@@ -40,6 +41,12 @@ def rehash(data):
 
 
 class CheckpointValidatorTests(unittest.TestCase):
+    def test_material_seed_is_signed_and_part_of_resume_settings(self):
+        for seed in (-2147483648, -1, 0, 2147483647):
+            self.assertEqual(decode(wire(material_seed=seed)).material_seed, seed)
+        with self.assertRaisesRegex(ValueError, 'settings'):
+            compare(decode(wire(material_seed=-1)), decode(wire(material_seed=0)), exact=True)
+
     def test_independent_wire_decoder_and_checksum(self):
         raw = wire(correction=(1e-16, -1e-16, 1e-17))
         result = decode(raw)
@@ -59,7 +66,7 @@ class CheckpointValidatorTests(unittest.TestCase):
                 decode(raw[:cut])
         # Independently mutate all five authenticated contract words. In
         # particular, every prior format/identity/renderer/sampling/accumulation contract fails.
-        for offset, version in ((8, 1), (8, 3), (12, 10), (16, 12), (20, 3), (24, 1), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (12, 8), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (16, 9), (16, 10), (20, 1), (24, 3)):
+        for offset, version in ((16, 23), (16, 22), (16, 21), (16, 20), (16, 14), (16, 15), (16, 16), (16, 17), (16, 18), (16, 19), (8, 1), (8, 2), (8, 4), (12, 11), (16, 13), (20, 6), (20, 5), (20, 4), (12, 10), (16, 12), (20, 3), (24, 1), (12, 3), (12, 4), (12, 5), (12, 6), (12, 7), (12, 8), (16, 3), (16, 4), (16, 5), (16, 6), (16, 7), (16, 8), (16, 9), (16, 10), (20, 1), (24, 3)):
             with self.subTest(contract_offset=offset, version=version):
                 bad = bytearray(raw)
                 struct.pack_into('<I', bad, offset, version)
@@ -92,7 +99,7 @@ class CheckpointValidatorTests(unittest.TestCase):
         self.assertEqual(empty.segments, ())
 
     def test_packet_planes_weights_and_metadata_are_validated(self):
-        self.assertEqual(METADATA.size, 114)
+        self.assertEqual(METADATA.size, 118)
         self.assertEqual(PIXEL.size, 216)
         extra = [float(i + 1) / 100 for i in range(20)]
         result = decode(wire(packet=True, compatibility_output=True, clamp=.002,

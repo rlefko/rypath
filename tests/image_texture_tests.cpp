@@ -1537,6 +1537,28 @@ void ewa_lookup() {
             "EWA must reject nonfinite needed inputs");
 }
 
+void large_native_lookup() {
+    // A thin image exercises the absolute boundary without a large allocation.
+    DecodedImage source{.width = image_dimension_ceiling,
+                        .height = 1,
+                        .rgb = Bytes(std::size_t(image_dimension_ceiling) * 3, 255)};
+    const auto native = success(build_image_base(source, ImageEncoding::linear, ImageWrap::clamp,
+                                                 {.max_dimension = image_dimension_ceiling}));
+    const auto rgb = image_base_texel_linear_rgb(native, image_dimension_ceiling - 1, 0);
+    require(rgb && *rgb == std::array<float, 3>{1, 1, 1},
+            "Large-profile texel lookup must not reapply the default dimension cap");
+    require(image_base_linear_rgb(native, 0.75f, 0.5f) == rgb,
+            "Large-profile filtered lookup must accept the absolute boundary");
+    require(!image_base_texel_linear_rgb(native, image_dimension_ceiling, 0),
+            "Large-profile lookup must still reject out-of-range coordinates");
+    auto malformed = native;
+    malformed.levels[0].width = 0;
+    require(!image_base_texel_linear_rgb(malformed, 0, 0), "Zero image width rejected");
+    malformed.levels[0].width = image_dimension_ceiling + 1;
+    malformed.texels.push_back(0);
+    require(!image_base_texel_linear_rgb(malformed, 0, 0), "Absolute image ceiling enforced");
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -1558,6 +1580,7 @@ int main(int argc, char *argv[]) {
         mip_pyramid();
         mip_pyramid_16_bit();
         npot_black_and_native_view();
+        large_native_lookup();
         scalar_channel_and_gamma();
         lookup_16_bit();
         lookup();

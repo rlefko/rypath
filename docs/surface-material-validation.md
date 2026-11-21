@@ -1,5 +1,9 @@
 # Extended surface material validation
 
+This is the historical surface-material validation record. The later
+[sampling follow-up](sampling-convergence-validation.md) replaces the coating
+RNG policy described below and records current corresponding-route checks.
+
 ## Scope and references
 
 This change extends the surface model and estimator, without changing raw Film

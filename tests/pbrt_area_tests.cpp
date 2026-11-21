@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "area_reference.hpp"
+#include "light_geometry_sampling_shared.h"
 #include "metal_render.hpp"
 #include "pbrt_render.hpp"
 #include "rgb_spectrum.hpp"
@@ -302,13 +303,17 @@ void image_power_dynamic_range() {
             "Explicit zero image scale remains black");
 }
 
-void null_slots_and_last_hit() {
+void combined_selection_and_last_hit() {
     auto scene = scene_base();
+    scene.light_sampler = LightSamplerKind::uniform;
     add_mesh(scene, quad(-1, 1, -1, 1, 0), 1);
     // Interleave an empty native instance before two lights to exercise original-to-native
     // remapping.
     add_mesh(scene, {}, 0);
-    for (const auto radiance : {1.0F, 2.0F, 3.0F}) {
+    // The fourth source is authored black geometry, not a padded sampler slot.
+    // Uniform selection retains its actual probability and continuation can
+    // still hit a bright endpoint at the authored maximum depth.
+    for (const auto radiance : {1.0F, 2.0F, 3.0F, 0.0F}) {
         const auto index = static_cast<std::uint32_t>(scene.area_emissions.size());
         auto emitter = off_axis_triangle();
         for (auto &p : emitter.positions) {
@@ -319,26 +324,28 @@ void null_slots_and_last_hit() {
     }
     const auto samples = sample(*build(scene), request(paths));
     std::array<std::size_t, 4> away_slots{};
-    std::size_t null_slot_hits = 0;
+    std::size_t black_selection_hits = 0;
     for (const auto &s : samples) {
         require(s.scatterings == 1, "Expected the receiver to scatter once");
         const auto words = sample_words(seed, 0, s.sample, 1);
-        const auto slot = words[3] & 3U;
+        const auto light_words = sample_words(seed, 0, s.sample, 2);
+        const auto slot = static_cast<unsigned>(4 * sample_uniform(light_words[0]));
         const auto azimuth = sample_uniform(words[1]);
         // For a -Z normal, this azimuth interval travels towards -X, away
         // from all emitters at positive X. Only NEE can contribute.
         if (azimuth < 0.2F || azimuth > 0.8F) {
-            require(slot == 3 ? s.radiance == 0 : s.radiance > 0,
-                    "The three emitters must use three live slots and one null slot");
+            require(
+                slot == 3 ? s.radiance == 0 : s.radiance > 0,
+                "Uniform selection must distinguish three emitting sources and one black source");
             ++away_slots[slot];
         }
         if (slot == 3 && s.radiance > 0) {
-            ++null_slot_hits;
+            ++black_selection_hits;
         }
     }
     require(std::ranges::all_of(away_slots, [](std::size_t count) { return count > 100; }) &&
-                null_slot_hits > 100,
-            "Missing null-slot BSDF hits at authored maxdepth");
+                black_selection_hits > 100,
+            "Missing black-source selection or BSDF endpoint emission at authored maxdepth");
 }
 
 RenderScene shadow_scene(float scale) {
@@ -450,16 +457,66 @@ void tangent_triangle_emission() {
                 film.pixels.front().count == query.sample_count,
             "Tangent triangle samples did not commit the complete Film batch");
 
-    // Move the reference to either side of the source plane. Sample 3 hits
-    // the source only from the left; both sides retain ordinary finite area
-    // NEE. Its nonunit BSDF MIS weight must not become the tangent fallback.
-    auto left = build(tangent_triangle_scene(5.375F));
-    auto right = build(tangent_triangle_scene(5.625F));
+    // Mirror the reference across the two-sided source. Both NEE proposals are
+    // identical by reflection, but sample 3's continuation hits only from the
+    // left. Their difference isolates the BSDF-hit contribution. Use an explicit
+    // uniform inventory so its selection PDF is independently known: 1/2.
+    auto left_scene = tangent_triangle_scene(5.375F);
+    auto right_scene = tangent_triangle_scene(5.625F);
+    // Keep this oracle's receiver coordinates well conditioned. The original
+    // broad floor above intentionally retains the tangent reconstruction case;
+    // its large-edge interpolation is unsuitable for a tight mirrored-PDF oracle.
+    const std::vector<GeometryPoint> local_floor{
+        {5, -.5F, 4}, {5, -.5F, 5}, {6, -.5F, 5}, {6, -.5F, 4}};
+    left_scene.geometry.meshes.front().positions = local_floor;
+    right_scene.geometry.meshes.front().positions = local_floor;
+    left_scene.light_sampler = right_scene.light_sampler = LightSamplerKind::uniform;
+    auto left = build(left_scene);
+    auto right = build(right_scene);
     const auto left_values = sample(*left, query);
     const auto right_values = sample(*right, query);
     const double bsdf_hit = left_values[3].radiance - right_values[3].radiance;
-    require(right_values[3].radiance > 0 && right_values[3].radiance < 0.002F && bsdf_hit > 0.09 &&
-                bsdf_hit < 0.105,
+    // Recover the cosine-hemisphere direction from its independent Philox words.
+    // The floor normal is +Y, with tangent -X and bitangent +Z.
+    const auto words = sample_words(query.seed, 0, 3, 1);
+    const double radial = std::sqrt(sample_uniform(words[0]));
+    const double phi = 2 * std::numbers::pi * sample_uniform(words[1]);
+    namespace gm = rypath_light_geometry_math;
+    const gm::V3 direction{float(-radial * std::cos(phi)),
+                           float(std::sqrt(1 - sample_uniform(words[0]))),
+                           float(radial * std::sin(phi))};
+    const gm::V3 reference{5.375F, -.5F, float(-8 + double(12.6039848F))};
+    const auto endpoint = reference + (.125F / direction.x) * direction;
+    require(direction.x > 0 && endpoint.y > -.5F && endpoint.y < 2.5F && endpoint.z > 4.275F &&
+                endpoint.z < 4.725F,
+            "Positive-cosine control must hit the source through BSDF continuation");
+    const auto &source = left_scene.geometry.meshes.back();
+    const float edge_y = (2.5F - endpoint.y) / 3;
+    const float edge_z = (endpoint.z - 4.275F) / (4.725F - 4.275F);
+    const auto &triangle = source.triangles[edge_z >= edge_y ? 0 : 1];
+    gm::V3 p[3];
+    for (unsigned i = 0; i < 3; ++i) {
+        const auto &v = source.positions[triangle[i]];
+        p[i] = {v.x, v.y, v.z};
+    }
+    const float solid_angle = gm::triangle_solid_angle(p[0], p[1], p[2], reference);
+    require(gm::spherical_triangle(solid_angle),
+            "Positive-cosine control must exercise the new spherical proposal");
+    // The geometry core has independent quadrature and pinned PBRT fixture
+    // coverage. Here it supplies the conditional density while this test checks
+    // the caller's selection PMF and complementary power-heuristic weight.
+    const auto square = gm::triangle_inverse(p[0], p[1], p[2], reference, direction);
+    const double light_pdf =
+        .5 *
+        gm::bilinear_pdf(square, gm::triangle_cosines(p[0], p[1], p[2], reference, {0, 1, 0})) /
+        solid_angle;
+    const double bsdf_pdf = direction.y / std::numbers::pi;
+    const double weight = bsdf_pdf * bsdf_pdf / (bsdf_pdf * bsdf_pdf + light_pdf * light_pdf);
+    const double weighted_expected = expected * weight;
+    std::cout << "Positive-cosine BSDF hit observed=" << bsdf_hit
+              << " expected=" << weighted_expected << " MIS weight=" << weight << '\n';
+    require(right_values[3].radiance > 0 && weight > .05 && weight < .95 &&
+                std::abs(bsdf_hit - weighted_expected) < 1e-5 + 2e-4 * weighted_expected,
             "Positive-cosine triangle emission lost its ordinary nonunit MIS weight");
 
     // A rough conductor uses the separate continuous-microfacet MIS branch.
@@ -575,7 +632,7 @@ int main(int argc, char **argv) {
         primary_emission();
         power_scaling();
         image_power_dynamic_range();
-        null_slots_and_last_hit();
+        combined_selection_and_last_hit();
         finite_segments(1);
         finite_segments(65536);
         finite_segments(1, true);
