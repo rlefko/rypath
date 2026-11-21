@@ -4,6 +4,7 @@
 #include "analytic.hpp"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "native_hint_budget.hpp"
 
 #include "environment_sampling.hpp"
 #include "gaussian_filter.hpp"
@@ -441,6 +442,7 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> instances = nil;
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> triangles = nil;
+    std::uint32_t native_hint_mode = 0;
     id<MTLBuffer> patches = nil;
     id<MTLBuffer> materials = nil;
     id<MTLBuffer> material_data = nil;
@@ -1901,7 +1903,13 @@ struct MetalRenderScene::Impl {
             [encoder setBuffer:emitters offset:0 atIndex:10];
             [encoder setBuffer:normals offset:0 atIndex:11];
             [encoder setBuffer:patches offset:0 atIndex:13];
-            [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
+            if (p.packet_transport) {
+                if (empty_packet_structure != nil)
+                    [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:14];
+                else
+                    MetalGeometryAccess::bind_hint(*geometry, encoder, 14);
+            } else
+                [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
             [encoder setBuffer:texture_uvs offset:0 atIndex:15];
             [encoder setBuffer:texture_frames offset:0 atIndex:16];
             [encoder setBuffer:image_textures offset:0 atIndex:17];
@@ -2177,13 +2185,52 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             }
             for (std::size_t i = 0; i < prepared.instances.size(); ++i) {
                 prepared.instances[i].non_opaque =
+                    prepared.instances[i].non_opaque || scene.geometry.instances[i].non_opaque ||
                     (!scene.instance_alpha_roots.empty() &&
                      scene.instance_alpha_roots[i] != max_index) ||
                     gltf_visibility(scene.materials[scene.instance_materials[i]]);
             }
         }
         const auto &geometry_data = prepared.instances.empty() ? scene.geometry : prepared;
-        auto built = build_metal_geometry(geometry_data, library_path);
+        // Global exclusions are deliberately conservative, including unused/mix children.
+        // volume_transport by itself does not imply a medium interface (vacuum is eligible).
+        const bool hint_passthrough = packet_visibility_requires_closest(scene);
+        const bool hint_complex_material = std::ranges::any_of(scene.materials, [](const auto &m) {
+            return m.scattering == ScatteringKind::mix || m.scattering == ScatteringKind::gltf;
+        });
+        const bool hint_medium_boundary = std::ranges::any_of(
+            scene.instance_media, [](const auto &m) { return m.inside != m.outside; });
+        std::size_t opaque_triangle_sources = 0;
+        for (const auto &instance : geometry_data.instances) {
+            if (!geometry_data.meshes[instance.mesh_index].triangles.empty()) {
+                if (!instance.non_opaque)
+                    ++opaque_triangle_sources;
+            }
+        }
+        const bool hint_eligible = parameters.packet_transport && !hint_passthrough &&
+                                   !hint_complex_material && !hint_medium_boundary &&
+                                   opaque_triangle_sources != 0;
+        if (hint_eligible) {
+            std::size_t base_estimate = 0;
+            result.diagnostic = validate_render_preparation_budget(scene, &base_estimate);
+            if (!result.diagnostic.empty())
+                return result;
+            const auto budget =
+                native_hint_budget(geometry_data, base_estimate, scene.preparation_byte_limit);
+            if (!budget.valid) {
+                result.diagnostic = "Native hint inputs exceed configured preparation byte budget "
+                                    "(AS/driver scratch/pipelines excluded)";
+                return result;
+            }
+            auto budget_device = MTLCreateSystemDefaultDevice();
+            if (budget_device != nil && budget_device.recommendedMaxWorkingSetSize > 0 &&
+                budget.combined > budget_device.recommendedMaxWorkingSetSize) {
+                result.diagnostic =
+                    "Native hint preparation estimate exceeds device recommended working-set size";
+                return result;
+            }
+        }
+        auto built = build_metal_geometry_with_hints(geometry_data, library_path, hint_eligible);
         result.device = std::move(built.device);
         if (built.status != GeometryStatus::success) {
             result.status = built.status;
@@ -2193,6 +2240,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
 
         auto impl = std::make_unique<MetalRenderScene::Impl>();
         impl->geometry = std::move(built.scene);
+        if (hint_eligible && !MetalGeometryAccess::has_hint(*impl->geometry)) {
+            result.diagnostic = "Required native triangle hint acceleration structure is missing";
+            return result;
+        }
+        impl->native_hint_mode = hint_eligible ? 3u : 0u;
         impl->device = MetalGeometryAccess::device(*impl->geometry);
         impl->queue = MetalGeometryAccess::queue(*impl->geometry);
         if (impl->queue == nil) {
@@ -2277,6 +2329,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             [constants setConstantValue:&coated type:MTLDataTypeBool atIndex:17];
             const bool passthrough = packet_visibility_requires_closest(scene);
             [constants setConstantValue:&passthrough type:MTLDataTypeBool atIndex:18];
+            [constants setConstantValue:&impl->native_hint_mode type:MTLDataTypeUInt atIndex:19];
         }
         const auto pipeline_start = std::chrono::steady_clock::now();
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,

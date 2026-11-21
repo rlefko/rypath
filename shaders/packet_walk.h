@@ -128,6 +128,9 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         r.alpha.incoming = incoming;
         const auto hit =
             p.instance_count == 0 ? SurfaceHit{intersection_type::none, 0, 0, 0, 0, float2(0), true}
+            : (native_triangle_hint_mode & 2u)
+                ? trace_packet_seeded_closest(incoming, r.scene, all_visible, r.intersection_table,
+                                              r.alpha, alpha_enabled)
             : alpha_enabled
                 ? trace_masked_surface(incoming, r.scene, all_visible, r.alpha)
                 : trace_surface(closest, incoming, r.scene, all_visible, r.intersection_table);

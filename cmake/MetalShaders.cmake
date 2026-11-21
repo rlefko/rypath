@@ -47,6 +47,7 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bilinear.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/analytic.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/intersection.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/native_triangle_hint.h"
         )
     endif()
     if(shader STREQUAL "gltf_texture_probe")
@@ -224,3 +225,48 @@ add_custom_command(
     VERBATIM
 )
 add_custom_target(rypath_light_geometry_shader DEPENDS "${rypath_light_geometry_library}")
+
+# Compile the unseeded control and hint regression routes separately so their
+# inline solver definitions cannot be merged across the two test libraries.
+set(native_hint_probe_libraries)
+foreach(arm IN ITEMS control hint)
+    set(probe_air "${rypath_runtime_directory}/CMakeFiles/rypath-native-hint-${arm}.air")
+    set(probe_library "${rypath_runtime_directory}/rypath-native-hint-${arm}.metallib")
+    add_custom_command(OUTPUT "${probe_air}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+        COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+            "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math
+            "-I${CMAKE_SOURCE_DIR}/shaders" "-I${CMAKE_SOURCE_DIR}/src"
+            -c "${CMAKE_SOURCE_DIR}/tests/native_triangle_hint/${arm}.metal" -o "${probe_air}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/native_triangle_hint/${arm}.metal"
+            "${CMAKE_SOURCE_DIR}/tests/native_triangle_hint/composition.metal"
+            "${CMAKE_SOURCE_DIR}/tests/native_triangle_hint/seed.metal"
+            "${CMAKE_SOURCE_DIR}/tests/native_triangle_hint/composition_wire.h"
+            "${CMAKE_SOURCE_DIR}/tests/native_triangle_hint/seed_wire.h"
+            "${CMAKE_SOURCE_DIR}/tests/native_triangle_hint/hint_probe_wire.h"
+            "${CMAKE_SOURCE_DIR}/shaders/intersection.h"
+            "${CMAKE_SOURCE_DIR}/shaders/native_triangle_hint.h"
+            "${CMAKE_SOURCE_DIR}/shaders/triangle_candidate.h"
+            "${CMAKE_SOURCE_DIR}/shaders/triangle_traversal_bounds.h"
+            "${CMAKE_SOURCE_DIR}/shaders/analytic.h"
+            "${CMAKE_SOURCE_DIR}/shaders/bilinear.h"
+            "${CMAKE_SOURCE_DIR}/shaders/masked_intersection.h"
+            "${CMAKE_SOURCE_DIR}/shaders/masked_probe.metal"
+            "${CMAKE_SOURCE_DIR}/shaders/alpha_hash.h"
+            "${CMAKE_SOURCE_DIR}/src/masked_probe_wire.h"
+            "${CMAKE_SOURCE_DIR}/src/geometry_wire.h"
+            "${CMAKE_SOURCE_DIR}/src/triangle_extended.h"
+            "${CMAKE_SOURCE_DIR}/src/triangle_product_guard.h"
+            "${CMAKE_SOURCE_DIR}/src/triangle_traversal_bounds.h"
+        VERBATIM)
+    add_custom_command(OUTPUT "${probe_library}"
+        COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${probe_air}" -o "${probe_library}"
+        DEPENDS "${probe_air}" VERBATIM)
+    list(APPEND native_hint_probe_libraries "${probe_library}")
+    if(arm STREQUAL "control")
+        set(rypath_native_hint_control_library "${probe_library}")
+    else()
+        set(rypath_native_hint_test_library "${probe_library}")
+    endif()
+endforeach()
+add_custom_target(rypath_native_hint_shaders DEPENDS ${native_hint_probe_libraries})

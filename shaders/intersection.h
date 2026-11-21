@@ -123,13 +123,25 @@ inline bool earlier(uint instance, uint geometry, uint primitive, const thread S
 }
 } // namespace rypath_intersection_detail
 
+// Internal packet-only preaccepted opaque candidate. Public/generic callers
+// retain nullptr; no alpha callback acceptance is cached for arbitrary Alpha.
+struct TraceSurfaceSeed {
+    bool available = false;
+    SurfaceHit surface{};
+    triangle_extended::Pair distance{};
+    bool has_cap = false;
+    float cap = INFINITY;
+};
+
 // Never commit native rounded hit distances. After accepting a triangle, a
 // conservative world-box exit cap may restart traversal while retaining the
 // precise closest hit. Candidate predicates always use the original ray bounds.
 template <typename Alpha>
 inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
                                           metal::raytracing::instance_acceleration_structure scene,
-                                          uint mask, thread Alpha &alpha, bool any_hit = false) {
+                                          uint mask, thread Alpha &alpha, bool any_hit = false,
+                                          float initial_traversal_max = INFINITY,
+                                          const thread TraceSurfaceSeed *initial_seed = nullptr) {
     using namespace metal;
     using namespace metal::raytracing;
     using namespace rypath_intersection_detail;
@@ -145,11 +157,50 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
     intersection_params parameters;
     parameters.force_opacity(forced_opacity::non_opaque);
     parameters.accept_any_intersection(false);
-    Query query(ray, scene, mask, parameters);
+    float starting_max = min(ray.max_distance, initial_traversal_max);
+    if (isnan(initial_traversal_max) || starting_max < ray.min_distance)
+        return invalid_hit();
+    if (any_hit && initial_seed != nullptr)
+        return invalid_hit();
     SurfaceHit best{
         intersection_type::none, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0, {0, 0}, true};
     triangle_extended::Pair distance{};
-    float traversal_max = ray.max_distance;
+    if (initial_seed != nullptr && initial_seed->available) {
+        const auto seed = initial_seed->surface;
+        if (!seed.valid || seed.type != intersection_type::triangle ||
+            seed.primitive_kind != rypath::geometry_wire::triangle ||
+            seed.instance_id == 0xffffffffu || seed.geometry_id != 0 ||
+            seed.primitive_id == 0xffffffffu || !isfinite(seed.distance) ||
+            !all(isfinite(seed.coordinates)) || !triangle_extended::valid(initial_seed->distance))
+            return invalid_hit();
+        const auto lower = triangle_extended::compare(
+            initial_seed->distance,
+            triangle_extended::pair_from_bits(as_type<uint>(ray.min_distance)));
+        if (!lower.valid || lower.order < 0)
+            return invalid_hit();
+        if (isfinite(ray.max_distance)) {
+            const auto upper = triangle_extended::compare(
+                initial_seed->distance,
+                triangle_extended::pair_from_bits(as_type<uint>(ray.max_distance)));
+            if (!upper.valid || upper.order > 0)
+                return invalid_hit();
+        }
+        // Store the complete pair before constructing the query. It survives
+        // both an unavailable cap and an empty native procedural offer stream.
+        best = seed;
+        distance = initial_seed->distance;
+        if (initial_seed->has_cap && pc_normal(initial_seed->cap) &&
+            initial_seed->cap > ray.min_distance && initial_seed->cap < starting_max) {
+            const auto exterior = triangle_extended::compare(
+                triangle_extended::pair_from_bits(as_type<uint>(initial_seed->cap)), distance);
+            if (exterior.valid && exterior.order > 0)
+                starting_max = initial_seed->cap;
+        }
+    }
+    auto starting_ray = ray;
+    starting_ray.max_distance = starting_max;
+    Query query(starting_ray, scene, mask, parameters);
+    float traversal_max = starting_max;
     while (query.next()) {
         auto kind = query.get_candidate_intersection_type();
         auto surface_kind = kind;
@@ -335,3 +386,5 @@ inline SurfaceHit trace_shadow(thread MixedIntersector &trace, metal::raytracing
     rypath_intersection_detail::AcceptAll alpha;
     return trace_validated_surface(ray, scene, mask, alpha, true);
 }
+
+#include "native_triangle_hint.h"

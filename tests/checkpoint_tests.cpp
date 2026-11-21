@@ -157,7 +157,7 @@ void codec(const std::filesystem::path &dir) {
     const auto original = read(path);
     // Independent Python struct.pack('<...') + hashlib implementation of the documented layout.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "df872cb1bf2accebb7a1de23ef0397473bb777a9a93f6340e0f5656c9e027da2",
+                "9de8e4ea63e6cc51c5bc1a33de3c1d6f562103a0c9b73e42bac747c27e2ab58a",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);
@@ -198,12 +198,12 @@ void codec(const std::filesystem::path &dir) {
             "invalid packet plane rejected transactionally");
     require(read(path) == original, "invalid packet plane preserves prior checkpoint");
     // Prior identity/renderer contracts remain unsupported even with valid authentication.
-    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 34>{
-             {{16, 18}, {16, 14}, {16, 15}, {16, 16}, {16, 17}, {20, 6},  {8, 2},
-              {12, 11}, {16, 13}, {20, 5},  {20, 4},  {8, 1},   {12, 10}, {16, 12},
-              {20, 3},  {24, 1},  {12, 3},  {12, 4},  {12, 5},  {12, 6},  {12, 7},
-              {12, 8},  {12, 9},  {16, 3},  {16, 4},  {16, 5},  {16, 6},  {16, 7},
-              {16, 8},  {16, 9},  {16, 10}, {16, 11}, {20, 1},  {20, 2}}}) {
+    for (const auto [offset, version] : std::array<std::pair<std::size_t, std::uint32_t>, 35>{
+             {{16, 19}, {16, 18}, {16, 14}, {16, 15}, {16, 16}, {16, 17}, {20, 6},
+              {8, 2},   {12, 11}, {16, 13}, {20, 5},  {20, 4},  {8, 1},   {12, 10},
+              {16, 12}, {20, 3},  {24, 1},  {12, 3},  {12, 4},  {12, 5},  {12, 6},
+              {12, 7},  {12, 8},  {12, 9},  {16, 3},  {16, 4},  {16, 5},  {16, 6},
+              {16, 7},  {16, 8},  {16, 9},  {16, 10}, {16, 11}, {20, 1},  {20, 2}}}) {
         auto legacy = original;
         put(legacy, offset, version, 4);
         rehash(legacy);

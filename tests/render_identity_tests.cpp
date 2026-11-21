@@ -22,7 +22,7 @@ void identity_checks() {
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
     // the 3766-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "e8303b2f32ef00f62647d8def4cac6cdb38cf460b9a9756a4f5d1c75973396d9",
+                "5db505ec72e3e0bd7e9f826a25c36521b7a0771751cd42c636597ac70a641539",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     scene.exposure = 42;
@@ -360,6 +360,8 @@ void identity_checks() {
     deep([](auto &s) { ++s.geometry.meshes[0].patches[0][3]; }, "patch payload");
     deep([](auto &s) { s.geometry.meshes[0].tangents[0].x += 1; }, "tangent payload");
     deep([](auto &s) { s.geometry.instances[0].transform.values[3] += 1; }, "instance transform");
+    deep([](auto &s) { s.geometry.instances[0].non_opaque = !s.geometry.instances[0].non_opaque; },
+         "native triangle hint opacity eligibility");
     deep([](auto &s) { s.materials[0].knots[0].value += 1; }, "material spectrum");
     deep([](auto &s) { s.materials[0].eta.knots[0].value += 1; }, "optical spectrum");
     deep([](auto &s) { s.materials[0].surface.interface_eta.knots[0].value += 1; },

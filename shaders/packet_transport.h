@@ -39,7 +39,7 @@ struct Resources {
     rypath_image_light::Images images;
     const device sobol::Tables *tables;
     instance_acceleration_structure scene;
-    MixedIntersectionTable intersection_table;
+    instance_acceleration_structure intersection_table;
 };
 inline device Vertex &path_vertex(device uchar *path, uint i) {
     return *reinterpret_cast<device Vertex *>(path + i * storage::vertex_bytes);
@@ -372,8 +372,15 @@ inline bool visible(thread Resources &r, const thread Vertex &a, const thread Ve
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
     for (uint crossings = 0; crossings <= r.alpha.parameters->boundary_limit; ++crossings) {
         r.alpha.incoming = segment;
+        NativeTriangleHint opaque_hint{};
+        opaque_hint.valid = true;
+        if (!packet_visibility_passthrough && (native_triangle_hint_mode & 1u) != 0)
+            opaque_hint =
+                native_opaque_shadow_hint(segment, r.intersection_table, all_visible, r.alpha);
         const auto hit =
-            packet_visibility_passthrough
+            !opaque_hint.valid      ? rypath_intersection_detail::invalid_hit()
+            : opaque_hint.available ? opaque_hint.surface
+            : packet_visibility_passthrough
                 ? (alpha_enabled ? trace_masked_surface(segment, r.scene, all_visible, r.alpha)
                                  : trace_surface(closest, segment, r.scene, all_visible,
                                                  r.intersection_table))

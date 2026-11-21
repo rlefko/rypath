@@ -32,4 +32,9 @@ GeometryBuildResult build_metal_geometry(const GeometryData &, const std::filesy
     };
 }
 
+GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry,
+                                                    const std::filesystem::path &library, bool) {
+    return build_metal_geometry(geometry, library);
+}
+
 } // namespace rypath

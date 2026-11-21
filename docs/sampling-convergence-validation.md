@@ -204,7 +204,8 @@ change its thresholds or relabel it as accepted.
 ## Persistence and resource boundaries
 
 Current format/identity/renderer/sampling/accumulation contracts are
-**3/12/19/7/2** after the full-sphere clipping repair. The completed scene study
+**3/12/20/7/2** after the full-sphere clipping repair and native-triangle hint
+integration. The completed scene study
 above remains frozen at renderer 18; the earlier light-index measurements below
 use renderer 14.
 Format 3 is required because checkpoint metadata now stores the separate signed

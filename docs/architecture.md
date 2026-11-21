@@ -418,7 +418,7 @@ power-of-two number of sample slots. Light emission, importance walks and splat
 lens draws use the full-Film index; camera walks, wavelengths and camera-side
 direct lighting retain the original index. The host bounds the expanded signed
 index before dispatch or progressive preparation. PDFs and Film normalization
-are unchanged. Current sampling contract 7, renderer contract 19 and identity
+are unchanged. Current sampling contract 7, renderer contract 20 and identity
 schema 12 reject earlier checkpoints globally. Checkpoint format 3 persists
 the separate signed material seed. Packet modes use their separate
 fixed 920-dimension allocation; the scalar lens extensions above remain unchanged. See
@@ -436,6 +436,11 @@ box coverage, symmetric pair multiplication, a bounded extended-exponent fallbac
 exact comparison of represented distances, and conservative traversal-range resets.
 Contract 19 preserves full-sphere pole hits when radius reprojection rounds just
 outside an inactive clipping bound; authored partial-sphere bounds still apply.
+Contract 20 adds native opaque-triangle hints to eligible packet traversal.
+Every native hit used is validated against original vertices; native distances
+and barycentrics are not accepted directly. A complete compensated closest-hit
+seed survives procedural traversal, including when it offers no candidates.
+The combined candidate coverage can differ from the earlier traversal.
 Earlier checkpoints
 are incompatible; see the [regression record](transport-regression-validation.md).
 

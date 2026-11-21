@@ -53,12 +53,31 @@ template <class T> id<MTLBuffer> upload(id<MTLDevice> device, std::span<const T>
 
 id<MTLAccelerationStructure> build_structure(id<MTLDevice> device, id<MTLCommandQueue> queue,
                                              MTLAccelerationStructureDescriptor *descriptor,
-                                             NSString *label, std::string &diagnostic) {
+                                             NSString *label, std::string &diagnostic,
+                                             NativeHintStats *hint_stats = nullptr) {
     const auto sizes = [device accelerationStructureSizesWithDescriptor:descriptor];
     if (sizes.accelerationStructureSize == 0 ||
         sizes.buildScratchBufferSize > device.maxBufferLength) {
         diagnostic = "Metal acceleration structure sizing failed";
         return nil;
+    }
+    if (hint_stats) {
+        const auto recommended = device.recommendedMaxWorkingSetSize;
+        const auto allocated = device.currentAllocatedSize;
+        if (recommended &&
+            (allocated > recommended || sizes.accelerationStructureSize > recommended - allocated ||
+             sizes.buildScratchBufferSize >
+                 recommended - allocated - sizes.accelerationStructureSize)) {
+            diagnostic = "Native hint build exceeds device recommended working-set size";
+            return nil;
+        }
+        if (sizes.accelerationStructureSize > UINT64_MAX - hint_stats->acceleration_bytes) {
+            diagnostic = "Native hint acceleration size overflow";
+            return nil;
+        }
+        hint_stats->acceleration_bytes += sizes.accelerationStructureSize;
+        hint_stats->scratch_peak_bytes =
+            std::max(hint_stats->scratch_peak_bytes, std::uint64_t(sizes.buildScratchBufferSize));
     }
     id<MTLAccelerationStructure> structure =
         [device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
@@ -278,7 +297,8 @@ std::size_t primitive_count(const GeometryMesh &mesh, PrimitiveKind kind) {
 // Metal requires all geometry descriptors in a BLAS to have the same type.
 id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue> queue,
                                         const GeometryMesh &mesh, PrimitiveKind kind,
-                                        std::string &diagnostic) {
+                                        std::string &diagnostic,
+                                        id<MTLBuffer> __strong *shared_records = nullptr) {
     const bool triangle = kind == PrimitiveKind::triangle;
     MTLAccelerationStructureGeometryDescriptor *geometry =
         triangle                                ? triangle_descriptor(device, mesh, diagnostic)
@@ -287,6 +307,9 @@ id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue
     if (geometry == nil) {
         return nil;
     }
+    if (triangle && shared_records)
+        *shared_records =
+            ((MTLAccelerationStructureBoundingBoxGeometryDescriptor *)geometry).primitiveDataBuffer;
     MTLPrimitiveAccelerationStructureDescriptor *descriptor =
         [MTLPrimitiveAccelerationStructureDescriptor descriptor];
     descriptor.geometryDescriptors = @[ geometry ];
@@ -295,6 +318,54 @@ id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue
                            : kind == PrimitiveKind::bilinear_patch ? @"rypath bilinear patches"
                                                                    : @"rypath analytic shapes",
                            diagnostic);
+}
+
+id<MTLAccelerationStructure> build_hint_mesh(id<MTLDevice> device, id<MTLCommandQueue> queue,
+                                             const GeometryMesh &mesh, id<MTLBuffer> record_buffer,
+                                             NativeHintStats &stats, std::string &diagnostic) {
+    if (!fits_buffer<GeometryPoint>(device, mesh.positions.size()) ||
+        !fits_buffer<std::array<Word, 3>>(device, mesh.triangles.size())) {
+        diagnostic = "Native hint vertex/index buffer exceeds device limit";
+        return nil;
+    }
+    if (record_buffer == nil ||
+        record_buffer.length != mesh.triangles.size() * sizeof(ProceduralRecord)) {
+        diagnostic = "Native hint shared record buffer mismatch";
+        return nil;
+    }
+    auto vertices = upload(device, std::span<const GeometryPoint>{mesh.positions});
+    // Upload original indices directly. A native offer of a proven zero-area
+    // slot is rejected by its shared miss tag, so no CPU index copy is needed.
+    auto index_buffer = upload(device, std::span<const std::array<Word, 3>>{mesh.triangles});
+    if (vertices == nil || index_buffer == nil) {
+        diagnostic = "Native hint vertex/index allocation failed";
+        return nil;
+    }
+    auto triangle = [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    triangle.vertexBuffer = vertices;
+    triangle.vertexStride = sizeof(GeometryPoint);
+    triangle.vertexFormat = MTLAttributeFormatFloat3;
+    triangle.indexBuffer = index_buffer;
+    triangle.indexType = MTLIndexTypeUInt32;
+    triangle.triangleCount = mesh.triangles.size();
+    triangle.opaque = YES;
+    triangle.primitiveDataBuffer = record_buffer;
+    triangle.primitiveDataStride = sizeof(ProceduralRecord);
+    triangle.primitiveDataElementSize = sizeof(ProceduralRecord);
+    auto descriptor = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+    descriptor.geometryDescriptors = @[ triangle ];
+    stats.input_peak_bytes =
+        std::max(stats.input_peak_bytes, std::uint64_t(vertices.length + index_buffer.length));
+    if (record_buffer.length > UINT64_MAX - stats.shared_record_bytes) {
+        diagnostic = "Native hint shared record size overflow";
+        return nil;
+    }
+    stats.shared_record_bytes += record_buffer.length;
+    auto result = build_structure(device, queue, descriptor, @"rypath native triangle hint",
+                                  diagnostic, &stats);
+    if (result)
+        ++stats.native_blas_count;
+    return result;
 }
 
 struct InstanceIndices {
@@ -317,6 +388,9 @@ struct MetalGeometryScene::Impl {
     id<MTLIntersectionFunctionTable> occlusion_table = nil;
     NSArray<id<MTLAccelerationStructure>> *meshes = nil;
     id<MTLAccelerationStructure> instances = nil;
+    id<MTLAccelerationStructure> hint_instances = nil;
+    NSArray<id<MTLAccelerationStructure>> *hint_meshes = nil;
+    NativeHintStats hint_stats;
     std::vector<InstanceIndices> instance_indices;
 
     void bind(id<MTLComputeCommandEncoder> encoder, NSUInteger slot) const {
@@ -559,8 +633,9 @@ GeometryOcclusionResult MetalGeometryScene::occlusion(std::span<const GeometryRa
     }
 }
 
-GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
-                                         const std::filesystem::path &library_path) {
+GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry,
+                                                    const std::filesystem::path &library_path,
+                                                    bool build_hints) {
     @autoreleasepool {
         GeometryBuildResult result;
         result.diagnostic = validate_geometry(geometry);
@@ -660,6 +735,8 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
             }
 
             NSMutableArray<id<MTLAccelerationStructure>> *structures = [NSMutableArray array];
+            NSMutableDictionary<NSNumber *, id<MTLAccelerationStructure>> *native_hints =
+                build_hints ? [NSMutableDictionary dictionary] : nil;
             std::vector<std::array<Word, primitive_kinds.size()>> mesh_to_structure(
                 geometry.meshes.size());
             for (std::size_t index = 0; index < geometry.meshes.size(); ++index) {
@@ -670,8 +747,17 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
                     }
                     // Release each completed build's descriptors and command resources.
                     @autoreleasepool {
+                        id<MTLBuffer> records = nil;
                         id<MTLAccelerationStructure> structure =
-                            build_mesh(device, impl->queue, mesh, kind, result.diagnostic);
+                            build_mesh(device, impl->queue, mesh, kind, result.diagnostic,
+                                       build_hints ? &records : nullptr);
+                        if (structure && records && build_hints) {
+                            auto native = build_hint_mesh(device, impl->queue, mesh, records,
+                                                          impl->hint_stats, result.diagnostic);
+                            if (native == nil)
+                                return result;
+                            native_hints[@(index)] = native;
+                        }
                         if (structure == nil) {
                             result.diagnostic += " (mesh " + std::to_string(index) + ")";
                             return result;
@@ -683,6 +769,29 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
                 }
             }
             impl->meshes = [structures copy];
+            NSMutableArray<id<MTLAccelerationStructure>> *hint_structures =
+                [structures mutableCopy];
+            std::vector<Word> hint_indices(build_hints ? geometry.meshes.size() : 0,
+                                           max_wire_index);
+            if (build_hints)
+                for (std::size_t index = 0; index < geometry.meshes.size(); ++index) {
+                    const auto &mesh = geometry.meshes[index];
+                    if (mesh.triangles.empty())
+                        continue;
+                    @autoreleasepool {
+                        auto structure = native_hints[@(index)];
+                        if (structure == nil) {
+                            result.diagnostic = "Native hint child missing after build";
+                            return result;
+                        }
+                        if (hint_structures.count > max_wire_index) {
+                            result.diagnostic = "Native hint child index overflow";
+                            return result;
+                        }
+                        hint_indices[index] = static_cast<Word>(hint_structures.count);
+                        [hint_structures addObject:structure];
+                    }
+                }
 
             std::vector<MTLAccelerationStructureInstanceDescriptor> native_instances;
             native_instances.reserve(impl->instance_indices.size());
@@ -721,12 +830,69 @@ GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
                 result.diagnostic += " (instances)";
                 return result;
             }
+            if (build_hints && impl->hint_stats.native_blas_count) {
+                auto hint_instances = native_instances;
+                for (std::size_t i = 0; i < hint_instances.size(); ++i) {
+                    const auto &source = impl->instance_indices[i];
+                    if (source.kind == PrimitiveKind::triangle &&
+                        !geometry.instances[source.source_index].non_opaque)
+                        hint_instances[i].accelerationStructureIndex =
+                            hint_indices[source.mesh_index];
+                    else
+                        hint_instances[i].mask = 0;
+                }
+                auto hint_buffer = upload(
+                    device,
+                    std::span<const MTLAccelerationStructureInstanceDescriptor>{hint_instances});
+                if (hint_buffer == nil) {
+                    result.diagnostic = "Native hint instance allocation failed";
+                    return result;
+                }
+                auto hint_descriptor = [MTLInstanceAccelerationStructureDescriptor descriptor];
+                hint_descriptor.instancedAccelerationStructures = hint_structures;
+                hint_descriptor.instanceDescriptorBuffer = hint_buffer;
+                hint_descriptor.instanceDescriptorStride =
+                    sizeof(MTLAccelerationStructureInstanceDescriptor);
+                hint_descriptor.instanceCount = hint_instances.size();
+                impl->hint_instances = build_structure(device, impl->queue, hint_descriptor,
+                                                       @"rypath native hint instances",
+                                                       result.diagnostic, &impl->hint_stats);
+                if (impl->hint_instances == nil)
+                    return result;
+                impl->hint_meshes = [hint_structures copy];
+                impl->hint_stats.instance_count = hint_instances.size();
+                impl->hint_stats.eligible_instance_count = std::ranges::count_if(
+                    hint_instances, [](const auto &instance) { return instance.mask != 0; });
+                impl->hint_stats.input_peak_bytes =
+                    std::max(impl->hint_stats.input_peak_bytes, std::uint64_t(hint_buffer.length));
+            }
         }
 
         result.scene.reset(new MetalGeometryScene(std::move(impl)));
         result.status = GeometryStatus::success;
         return result;
     }
+}
+
+GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
+                                         const std::filesystem::path &library) {
+    return build_metal_geometry_with_hints(geometry, library, false);
+}
+bool MetalGeometryAccess::has_hint(const MetalGeometryScene &scene) {
+    return scene.impl_ && scene.impl_->hint_instances != nil;
+}
+NativeHintStats MetalGeometryAccess::hint_stats(const MetalGeometryScene &scene) {
+    return scene.impl_ ? scene.impl_->hint_stats : NativeHintStats{};
+}
+void MetalGeometryAccess::bind_hint(const MetalGeometryScene &scene,
+                                    id<MTLComputeCommandEncoder> encoder, NSUInteger slot) {
+    if (!has_hint(scene)) {
+        bind(scene, encoder, slot);
+        return;
+    }
+    [encoder setAccelerationStructure:scene.impl_->hint_instances atBufferIndex:slot];
+    for (id<MTLAccelerationStructure> mesh in scene.impl_->hint_meshes)
+        [encoder useResource:mesh usage:MTLResourceUsageRead];
 }
 
 } // namespace rypath
