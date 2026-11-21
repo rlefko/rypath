@@ -296,3 +296,80 @@ kernel void shading_normal_probe(const device rypath::shading_normal_probe::Quer
                     rypath_shading_normal::multiply(q.a, q.b, endpoint),
                     0};
 }
+
+// A finite Prepared coating can still exceed binary32 optical range. Keep this
+// separate from the fixed schedule/moment routes: invalid arithmetic is not a
+// legitimate zero-support density. No injected failures or seed search.
+kernel void packet_pdf_validity_probe(device uint *output [[buffer(0)]],
+                                      uint tid [[thread_position_in_grid]]) {
+    constexpr uint cases = 7, words = 32;
+    if (tid >= cases)
+        return;
+    device uint *out = output + tid * words;
+    for (uint i = 0; i < words; ++i)
+        out[i] = 0;
+    out[0] = 0x50444631u;
+    out[1] = tid;
+    rypath_packet::Prepared p{};
+    p.active_mask = 15;
+    bool prepared = true;
+    for (uint i = 0; i < 4; ++i) {
+        thread auto &a = p.lane[i];
+        a.kind = tid == 4 ? 0 : tid == 6 ? 2 : 5;
+        a.reflectance = .5f;
+        prepared = rypath_dielectric::prepare(tid == 1 ? 0x1p65f : 1.5f, tid == 6 ? 0.f : .1f,
+                                              tid == 6 ? 0.f : .1f, false, a.dielectric) &&
+                   prepared;
+        thread auto &l = a.layered;
+        l.interface = a.dielectric;
+        l.conductor_base = false;
+        l.reflectance = .5f;
+        l.thickness = .01f;
+        l.albedo = l.g = 0;
+        l.max_depth = 10;
+        l.samples = 1;
+        l.material_seed = 24;
+    }
+    const float3 wo = tid == 5 ? float3(1, 0, 0) : float3(0, 0, 1);
+    const float3 wi = tid == 2 || tid == 4 ? float3(0, 0, -1)
+                      : tid == 3           ? float3(1, 0, 0)
+                                           : float3(0, 0, 1);
+    const bool coated = p.lane[0].kind == 5;
+    const auto leaf =
+        coated ? rypath_packet_layered::directional_pdf(rypath_packet::layered(p), wo, wi)
+               : rypath_packet::scalar_evaluate(rypath_packet::proposal(p), wo, wi);
+    const auto reverse =
+        coated ? rypath_packet_layered::directional_pdf(rypath_packet::layered(p), wi, wo)
+               : rypath_packet::scalar_evaluate(rypath_packet::proposal(p), wi, wo);
+    const auto e = rypath_packet::evaluate(p, wo, wi, 0);
+    const float uc = tid == 0 ? 0.f : .8f; // Case0 takes a supported direct reflection.
+    const auto s = rypath_packet::sample(p, wo, uc, float2(.3f, .7f), 0);
+    bool joint_preserved = true;
+    if (coated) {
+        const auto joint =
+            rypath_packet_layered::sample(rypath_packet::layered(p), wo, uc, float2(.3f, .7f), 0);
+        joint_preserved = all(as_type<uint4>(joint.weight) == as_type<uint4>(s.weight)) &&
+                          all(as_type<uint3>(joint.wi) == as_type<uint3>(s.wi)) &&
+                          as_type<uint>(joint.pdf) == as_type<uint>(s.pdf) &&
+                          joint.delta == s.delta;
+    }
+    out[2] = prepared;
+    out[3] = rypath_packet::compatible(p);
+    out[4] = leaf.valid;
+    out[5] = as_type<uint>(leaf.pdf);
+    out[6] = as_type<uint>(rypath_packet::pdf(p, wo, wi));
+    out[7] = as_type<uint>(rypath_packet::pdf(p, wi, wo));
+    out[8] = e.valid;
+    out[9] = s.valid;
+    out[10] = s.accepted;
+    out[11] = s.delta;
+    out[12] = all(isfinite(e.f));
+    out[13] = joint_preserved;
+    out[14] = any(s.weight > 0);
+    out[24] = as_type<uint>(e.pdf);
+    out[25] = as_type<uint>(e.reverse_pdf);
+    out[26] = reverse.valid;
+    out[27] = as_type<uint>(reverse.pdf);
+    out[28] = all(isfinite(s.weight)) && all(s.weight >= 0);
+    out[29] = isfinite(s.pdf) && s.pdf >= 0 && isfinite(s.reverse_pdf) && s.reverse_pdf >= 0;
+}

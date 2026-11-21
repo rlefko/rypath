@@ -54,8 +54,7 @@ RenderScene base(bool receiver = true) {
         mesh(scene, {{-8, -8, 3}, {8, -8, 3}, {8, 8, 3}, {-8, 8, 3}});
     return scene;
 }
-RenderSamplesResult dispatch(MetalRenderScene &scene, RenderRequest request) {
-    auto result = scene.sample(request);
+void validate_dispatch_result(const RenderSamplesResult &result, const RenderRequest &request) {
     require(result.status == GeometryStatus::success, result.diagnostic);
     require(result.samples.empty() && result.packet_samples.size() == request.pixel_count &&
                 result.guard_count > 0,
@@ -76,13 +75,178 @@ RenderSamplesResult dispatch(MetalRenderScene &scene, RenderRequest request) {
     for (const auto &s : result.packet_splats)
         for (auto x : s.radiance)
             require(std::isfinite(x) && x >= 0, "Nonfinite raw splat plane");
+}
+RenderSamplesResult dispatch(MetalRenderScene &scene, RenderRequest request) {
+    auto result = scene.sample(request);
+    validate_dispatch_result(result, request);
     return result;
 }
+void invalid_directional_pdf() {
+    // The public material/packer accepts this finite eta; its binary32 optical
+    // square is not representable. Both renderer specializations must fail the
+    // whole packet batch, while the same scene with ordinary eta remains valid.
+    for (auto integrator : {IntegratorKind::path, IntegratorKind::bdpt})
+        for (float eta : {1.5f, 0x1p65f}) {
+            auto scene = base();
+            scene.integrator = integrator;
+            scene.environment.fill(1);
+            auto &material = scene.materials.front();
+            material.scattering = ScatteringKind::coated_diffuse;
+            material.eta.knots = {{360, eta}, {830, eta}};
+            material.eta.extend_endpoints = true;
+            material.u_roughness = material.v_roughness = .1f;
+            material.remap_roughness = false;
+            material.surface.thickness = .01f;
+            material.surface.albedo = material.surface.g = 0;
+            material.surface.max_depth = 10;
+            material.surface.samples = 1;
+            // Coated materials consume the texture-context frame even without
+            // an image. Preserve the mesh's default per-triangle UV convention;
+            // prepare the same shape/placement derivatives the packer consumes.
+            scene.instance_texture_frames.resize(scene.geometry.instances.size());
+            for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+                const auto &surface = scene.instance_surface_transforms[i];
+                const auto error = prepare_texture_triangle_frames(
+                    scene.geometry.meshes[scene.geometry.instances[i].mesh_index], surface.shape,
+                    surface.placement, scene.instance_texture_frames[i]);
+                require(error.empty(), error);
+            }
+            auto built = build_metal_renderer(scene);
+            require(built.status == GeometryStatus::success && built.scene, built.diagnostic);
+            const RenderRequest query{.width = 1,
+                                      .height = 1,
+                                      .seed = 19317,
+                                      .material_seed = 24,
+                                      .pixel_count = 1,
+                                      .sample_count = 1,
+                                      .total_samples = 1};
+            if (eta == 1.5f) {
+                (void)dispatch(*built.scene, query);
+            } else {
+                const auto failed = built.scene->sample(query);
+                require(failed.status == GeometryStatus::failure && failed.packet_samples.empty() &&
+                            failed.packet_splats.empty() &&
+                            failed.diagnostic.find("non-finite or invalid path arithmetic") !=
+                                std::string::npos,
+                        "Invalid layered arithmetic must fail the entire packet batch");
+            }
+        }
+}
+
 bool same(const PacketSample &a, const PacketSample &b) {
     return a.pixel == b.pixel && a.sample == b.sample && a.wavelengths == b.wavelengths &&
            a.wavelength_pdfs == b.wavelength_pdfs && a.radiance == b.radiance &&
            a.filter_weight == b.filter_weight && a.splat_count == b.splat_count;
 }
+void area_emitter_offset() {
+    // Real public packer/sample path. Each packet request owns one sample;
+    // capture all fixed IDs before checking success, including the old-code
+    // negative control. No failed request is rerun or replaced.
+    struct Outcome {
+        unsigned context = 0;
+        RenderRequest request;
+        GeometryStatus build_status = GeometryStatus::failure;
+        std::string build_diagnostic;
+        bool dispatched = false;
+        RenderSamplesResult result;
+    };
+    std::array<Outcome, 32> outcomes;
+    for (unsigned context = 0; context < 4; ++context) {
+        RenderScene scene;
+        scene.model = RenderModel::pbrt;
+        scene.spectral_transport = SpectralTransport::packet;
+        scene.integrator = IntegratorKind::bdpt;
+        scene.max_depth = 4;
+        scene.environment.fill(0);
+        SpectralMaterial black;
+        black.kind = SpectralMaterialKind::constant;
+        black.constant = 0;
+        scene.materials.push_back(black);
+        scene.area_emissions.emplace_back().radiance.fill(1);
+        const float z = context < 2 ? 0.f : context == 2 ? 1.f : -1.f;
+        GeometryMesh emitter;
+        emitter.positions = {{-1, -1, z}, {1, -1, z}, {0, 1, z}};
+        emitter.triangles = context & 1 ? std::vector<std::array<unsigned, 3>>{{0, 2, 1}}
+                                        : std::vector<std::array<unsigned, 3>>{{0, 1, 2}};
+        emitter.uvs = {{0, 0}, {1, 0}, {.5f, 1}};
+        scene.geometry.meshes.push_back(std::move(emitter));
+        scene.geometry.instances.emplace_back();
+        scene.instance_materials = {0};
+        scene.instance_emissions = {0};
+        scene.raster_camera =
+            RasterCamera{{0, 0, 2}, {-.00025f, -.00025f, -1}, {.0005f, 0, 0}, {0, .0005f, 0}};
+        auto built = build_metal_renderer(scene);
+        for (unsigned sample = 0; sample < 8; ++sample) {
+            auto &outcome = outcomes[context * 8 + sample];
+            outcome.context = context;
+            outcome.request = RenderRequest{.width = 1,
+                                            .height = 1,
+                                            .seed = 19317,
+                                            .material_seed = 24,
+                                            .pixel_count = 1,
+                                            .sample_begin = sample,
+                                            .sample_count = 1,
+                                            .total_samples = 256};
+            outcome.build_status = built.status;
+            outcome.build_diagnostic = built.diagnostic;
+            outcome.dispatched = built.status == GeometryStatus::success && bool(built.scene);
+            if (outcome.dispatched)
+                outcome.result = built.scene->sample(outcome.request);
+        }
+    }
+    unsigned dispatched = 0, successes = 0, zero_invalid_hit = 0, translated_success = 0;
+    bool failures_publish_nothing = true;
+    // Print every retained outcome before any assertion below can throw. A
+    // failed build stays explicitly undispatched, not a fabricated sample.
+    for (const auto &outcome : outcomes) {
+        const auto &result = outcome.result;
+        const bool success = outcome.dispatched && result.status == GeometryStatus::success;
+        dispatched += unsigned(outcome.dispatched);
+        successes += unsigned(success);
+        translated_success += unsigned(success && outcome.context >= 2);
+        zero_invalid_hit += unsigned(
+            outcome.dispatched && outcome.context < 2 && result.status == GeometryStatus::failure &&
+            result.diagnostic.find("invalid native hit data") != std::string::npos);
+        if (!success)
+            failures_publish_nothing = failures_publish_nothing && result.samples.empty() &&
+                                       result.packet_samples.empty() &&
+                                       result.packet_splats.empty();
+        std::cout << "Offset area outcome context=" << outcome.context
+                  << " sample=" << outcome.request.sample_begin
+                  << " dispatched=" << outcome.dispatched
+                  << " build_status=" << static_cast<unsigned>(outcome.build_status)
+                  << " status=" << static_cast<unsigned>(result.status)
+                  << " samples=" << result.samples.size()
+                  << " packet_samples=" << result.packet_samples.size()
+                  << " packet_splats=" << result.packet_splats.size()
+                  << " diagnostic=" << std::quoted(result.diagnostic)
+                  << " build_diagnostic=" << std::quoted(outcome.build_diagnostic) << '\n';
+    }
+    std::cout << "Offset area summary requests=32 dispatched=" << dispatched
+              << " successes=" << successes << " z0_invalid_native_hit=" << zero_invalid_hit
+              << " translated_success=" << translated_success
+              << " failures_publish_nothing=" << failures_publish_nothing << std::endl;
+    require(failures_publish_nothing,
+            "Failed area-emitter request published partial samples/splats");
+    for (const auto &outcome : outcomes)
+        if (outcome.dispatched && outcome.result.status == GeometryStatus::success) {
+            validate_dispatch_result(outcome.result, outcome.request);
+            if ((outcome.context & 1) == 0)
+                require(std::ranges::any_of(outcome.result.packet_samples.front().radiance,
+                                            [](float x) { return x > 0; }),
+                        "Front-facing area emitter lost its direct signal");
+        }
+    // Old round_out must retain16 z0 invalid-hit outcomes and16 translated
+    // successes in the log, then FAIL this unchanged all-success contract.
+    require(dispatched == outcomes.size() && successes == outcomes.size(),
+            "Area-emitter origins require all32 fixed public requests to succeed");
+    for (unsigned context = 0; context < 2; ++context)
+        for (unsigned sample = 0; sample < 8; ++sample)
+            require(same(outcomes[context * 8 + sample].result.packet_samples.front(),
+                         outcomes[(context + 2) * 8 + sample].result.packet_samples.front()),
+                    "Area-emitter offset changed raw ownership/emission versus translated control");
+}
+
 void scheduling() {
     auto scene = base();
     scene.environment.fill(1);
@@ -866,6 +1030,10 @@ int main(int argc, char **argv) {
                 capability.diagnostic);
         std::cout << "Packet native: scheduling/samplers/lens/limits" << std::endl;
         scheduling();
+        std::cout << "Packet native: invalid layered PDF arithmetic" << std::endl;
+        invalid_directional_pdf();
+        std::cout << "Packet native: zero-plane area-emitter origins" << std::endl;
+        area_emitter_offset();
         std::cout << "Packet native: Halton BDPT light tiles/ranges" << std::endl;
         halton_light_tiles();
         std::cout << "Packet native: point identity" << std::endl;

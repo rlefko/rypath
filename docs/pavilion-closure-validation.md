@@ -111,6 +111,48 @@ while preserving sampled joint throughput, delta events and endpoint measures.
 Changing only the fresh query leaves inconsistent denominators. These checks
 do not establish that a directional PDF proxy equals the hidden-walk marginal.
 
+An isolated canonical-density prototype also has actual-walker evidence: all
+427 observed strategy families satisfy the common rational partition, versus
+81 of 427 with the old density convention. The largest GPU weight discrepancy
+from the independent rational value is `1.28e-7`. Across 37 contexts and four
+pipeline variants per arm, observed material fields and within-arm sample/splat
+controls pass; the material checks cover 7,952 coating lanes per arm. This
+supports the density repair but is not a scene-quality result.
+
+Adoption remains blocked by a separate constructed-context failure: four
+nonzero-base cases lose all four nested reflectances in two stored vertex
+copies, changing twelve strategy lighting results. The original binary
+reproduces exactly. Enabling GPU validation restores precisely those 32 material
+words and 96 lighting words, with no reported fault; all other captured words
+remain unchanged. Instrumentation changes execution and cannot establish the
+cause or serve as a production repair. The canonical-density prototype remains
+outside the renderer-22 integration described below.
+
+## Packet density and origin validity
+
+Renderer 22 preserves a layered PDF's validity through the packet adapter,
+forward/reverse evaluation and MIS consumers. Invalid values cannot become
+legal zero-support densities through coincident-edge or black-contribution
+early exits. The sampled joint throughput, physical scattering function and
+random draws are unchanged. GPU checks cover seven packet PDF cases and 32
+actual density-conversion cases; public PT and BDPT requests reject a finite
+coating eta whose optical square overflows, while ordinary eta succeeds.
+
+Outward ray-origin rounding now chooses the strict neighbor among finite
+binary32 normal values and signed zero. In particular, departing zero produces
+the smallest normal value in the requested direction, rather than a subnormal
+outside the supported traversal domain. Tangential coordinates remain unchanged;
+nonfinite inputs and outward overflow still fail. CPU checks cover 48 boundary
+queries, and the actual GPU helper covers 288 axis/sign/untouched-coordinate
+queries.
+
+All 32 fixed public area-emitter requests succeed with the fix. Restoring only
+the old rounding code in the matching shader snapshot causes all 16 zero-plane
+requests to fail with invalid-hit diagnostics; all 16 translated controls still
+succeed. Every request's outcome is retained before assertions, and failed
+requests publish no partial samples or splats. This is a numerical-domain repair,
+not a variance or speed result. Renderer-21 checkpoints are explicitly rejected.
+
 ## Host cost and timing instrumentation
 
 `--timings PATH` adds opt-in JSON measurements for PBRT render commands. Nested
@@ -185,7 +227,7 @@ evidence of improved variance until the complete planned comparisons finish.
 
 ## Current regression checks
 
-The renderer-21 tree passes 227 Release tests (151 non-CLI tests with Metal API
+Historical renderer-21 validation passes 227 Release tests (151 non-CLI tests with Metal API
 validation and 76 CLI tests in their default environment), all 227 ASan/UBSan
 tests, all 164 portable tests with Metal disabled, and 237 Python tests using the
 project environment. The first Release run exposed a stale renderer-20 binary
@@ -193,6 +235,21 @@ checkpoint checksum. Independent Python serialization reproduces the old golden
 and the new renderer-21 golden; the corrected test passes and explicitly rejects
 authenticated renderer-20 checkpoints. The initial system-Python test invocation
 lacked the pinned `emoji` dependency; the complete rerun uses the project venv.
+
+The renderer-22 PDF/origin integration on parent `1902d2a` passes all 227 Release
+tests, all 164 portable tests, the six affected CTest targets with Metal API
+validation, and all 237 Python tests. Clang-Tidy 18 passes on the four affected
+C++ test translation units. Its independent checkpoint serializer reproduces the old
+renderer-21 goldens before deriving the new renderer-22 values. The first focused
+run exposed missing texture-frame metadata in the new coated-material fixture;
+preparing the actual per-instance frames repairs the fixture and its rerun passes.
+An initially misconfigured full-suite run was interrupted because API validation
+must be unset for CLI output-contract tests; the complete run uses that policy.
+These checks do not include the unadopted canonical-density prototype.
+Fresh renderer-22 day/night progress renders at 320×170 and 64 spp complete with
+finite raw/clamped FLOAT outputs and independently decoded checkpoints. Their
+display previews use standard sRGB encoding without denoising; they do not
+establish final-resolution quality or convergence.
 
 Debug pre-push checks, GitHub CI and final scene-quality/performance acceptance
 are separate publication gates. Passing these regression checks does not resolve

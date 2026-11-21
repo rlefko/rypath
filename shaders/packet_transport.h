@@ -51,10 +51,15 @@ inline uint light_count(constant wire::Parameters &p) { return p.light_count; }
 inline bool infinite(const thread Vertex &v) { return v.type == environment_vertex; }
 inline bool on_surface(const thread Vertex &v) { return any(v.point.geometric_normal != 0); }
 inline float convert_density(float pdf, const thread Vertex &from, const thread Vertex &to) {
+    // Preserve invalid evaluated densities before geometric support early-outs.
+    if (!isfinite(pdf) || pdf < 0)
+        return NAN;
     if (infinite(to))
         return pdf;
     const float3 d = to.point.position - from.point.position;
     const float d2 = dot(d, d);
+    if (!all(isfinite(d)) || !isfinite(d2))
+        return NAN;
     if (!(d2 > 0))
         return 0;
     if (on_surface(to))
@@ -770,6 +775,10 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
             sample.status = wire::invalid_arithmetic;
             return 0;
         }
+        if (!isfinite(sampled_pdf) || sampled_pdf < 0) {
+            sample.status = wire::invalid_arithmetic;
+            return 0;
+        }
         if (!(sampled_pdf > 0) || !nonzero(sampled.beta))
             return 0;
         value = pt.beta * f(pt, direction, Mode::Radiance) * sampled.beta *
@@ -793,6 +802,12 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
                 (abs(dot(pt.point.shading_normal, wi)) / d2);
         if (nonzero(value) && !visible(r, pt, qs, sample))
             return 0;
+    }
+    // A NaN alternative must not select the legal zero-support unit weight.
+    if (!p.bidirectional && (!isfinite(sampled_pdf) || sampled_pdf < 0 ||
+                             !isfinite(alternative_pdf) || alternative_pdf < 0)) {
+        sample.status = wire::invalid_arithmetic;
+        return 0;
     }
     if (!finite_nonnegative(value)) {
         sample.status = wire::invalid_arithmetic;

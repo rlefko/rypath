@@ -7,12 +7,86 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 namespace {
 void metal_error(const char *operation, NSError *error) {
     std::cerr << operation << ": "
               << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
 }
+bool directional_pdf_validity(id<MTLDevice> device, id<MTLLibrary> library) {
+    constexpr std::size_t cases = 7, words = 32;
+    constexpr std::uint32_t sentinel = 0xcdfacadeu;
+    std::array<std::uint32_t, (cases + 1) * words> initial{};
+    initial.fill(sentinel);
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"packet_pdf_validity_probe"];
+    id<MTLComputePipelineState> pipeline =
+        function ? [device newComputePipelineStateWithFunction:function error:&error] : nil;
+    if (!pipeline) {
+        metal_error("Packet PDF validity pipeline", error);
+        return false;
+    }
+    auto output = [device newBufferWithBytes:initial.data()
+                                      length:sizeof(initial)
+                                     options:MTLResourceStorageModeShared];
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!output || !output.contents || !queue || !command || !encoder)
+        return false;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:output offset:0 atIndex:0];
+    [encoder dispatchThreads:MTLSizeMake(cases + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min(NSUInteger{8}, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted) {
+        metal_error("Packet PDF validity command", command.error);
+        return false;
+    }
+    const auto *data = static_cast<const std::uint32_t *>(output.contents);
+    for (std::size_t i = cases * words; i < initial.size(); ++i)
+        if (data[i] != sentinel)
+            return false;
+    for (std::size_t i = 0; i < cases; ++i) {
+        const auto *r = data + i * words;
+        const auto value = [r](unsigned slot) { return std::bit_cast<float>(r[slot]); };
+        bool valid = r[0] == 0x50444631u && r[1] == i && r[2] == 1 && r[3] == 1 && r[12] == 1 &&
+                     r[13] == 1 && r[28] == 1;
+        if (i == 1) {
+            // Finite preparation succeeds, but eta squared overflows binary32.
+            // Invalid leaf arithmetic must not masquerade as legal support zero.
+            valid = valid && r[4] == 0 && value(5) == 0 && std::isnan(value(6)) &&
+                    std::isnan(value(7)) && r[8] == 0 && r[9] == 0 && r[10] == 0 &&
+                    std::isnan(value(24)) && std::isnan(value(25));
+        } else {
+            valid = valid && r[4] == 1 && r[8] == 1 && r[9] == 1 && r[26] == 1 && r[29] == 1 &&
+                    r[5] == r[6] && r[27] == r[7] && r[24] == r[6] && r[25] == r[7];
+            if (i == 0 || i == 2 || i == 3 || i == 5)
+                valid = valid && std::isfinite(value(6)) && value(6) > 0;
+            if (i == 0)
+                valid = valid && r[10] == 1 && r[14] == 1; // Nonvacuous joint Sample_f check.
+            if (i == 4)
+                valid = valid && value(6) == 0; // Non-layered support zero is legal.
+            if (i == 5)
+                valid = valid && r[10] == 0; // Valid layered tangent rejection.
+            if (i == 6)
+                valid = valid && r[10] == 1 && r[11] == 1; // Delta sample stays accepted.
+        }
+        if (!valid) {
+            std::cerr << "Packet PDF validity case " << i << " leaf/evaluation/sample flags "
+                      << r[4] << '/' << r[8] << '/' << r[9] << " queried PDF words " << r[6] << '/'
+                      << r[7] << '\n';
+            return false;
+        }
+    }
+    return true;
+}
+
 bool coating_schedule(id<MTLDevice> device, id<MTLLibrary> library) {
     using namespace layered_schedule_oracles;
     using Q = rypath::layered_probe::Query;
@@ -352,7 +426,8 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-        if (!coating_schedule(device, library) || !coating_moments(device, library))
+        if (!directional_pdf_validity(device, library) || !coating_schedule(device, library) ||
+            !coating_moments(device, library))
             return 1;
         std::cout << "1024 packet GPU cases passed, max errors " << worst[0] << ' ' << worst[1]
                   << ' ' << worst[2] << ' ' << worst[3] << ' ' << worst[4] << ' ' << worst[5] << ' '

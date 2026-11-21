@@ -5,6 +5,7 @@
 
 #include "../src/checkpoint_contract.h"
 #include "../src/lens_probe_wire.h"
+#include "../src/offset_rounding_shared.h"
 #include "../src/qmc_probe_wire.h"
 #include "../src/qmc_shared.h"
 #include "../src/render_wire.h"
@@ -810,7 +811,9 @@ static float gamma_bound(float n) {
 static float3 round_out(float3 position, float3 n) {
     for (uint i = 0; i < 3; ++i) {
         if (n[i] != 0.0f) {
-            position[i] = nextafter(position[i], copysign(INFINITY, n[i]));
+            const auto rounded =
+                rypath_offset_rounding::outward(as_type<uint>(position[i]), signbit(n[i]));
+            position[i] = as_type<float>(rounded.bits);
         }
     }
     return position;

@@ -18,12 +18,15 @@ and explicit overrides, and the [sampling record](sampling-convergence-validatio
 for the original study.
 
 Current checkpoint format/identity/renderer/sampling/accumulation contracts are
-**3/12/21/7/2**. Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
+**3/12/22/7/2**. Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
 validated native-triangle hints to eligible packet scenes, preserving procedural
 validation and stable closest-hit ordering. The new packet resource ABI and
 potentially recovered true intersections invalidate older checkpoints. Renderer
 21 corrects the internal proposal measure in layered directional-f MIS, with
-scalar and packet regression checks passing. Host hashing and opt-in timing
+scalar and packet regression checks passing. Renderer 22 preserves invalid
+coating PDFs as failures and keeps outward ray origins within the supported
+normal-or-zero coordinate domain. Its 227 Release tests pass; the final
+combined revision still needs the remaining publication checks. Host hashing and opt-in timing
 changes are also under validation; see the [closure record](pavilion-closure-validation.md).
 Scene quality and final performance acceptance remain open. See
 [geometry](geometry.md) and [checkpointing](checkpointing.md).

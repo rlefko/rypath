@@ -33,7 +33,7 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The sampling/convergence revision uses file format 3, identity 12, renderer 21,
+The sampling/convergence revision uses file format 3, identity 12, renderer 22,
 sampling 7 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
@@ -57,7 +57,12 @@ where measured images are identical. It also changes the packet acceleration
 resource binding; the loaded shader handshake rejects both directions of an
 older host/library mismatch. Renderer 21 corrects the internal solid-angle
 proposal measure in layered directional-f MIS, preserving the forward
-throughput and joint sampling. All earlier renderer contracts are rejected.
+throughput and joint sampling. Renderer 22 preserves invalid coating densities
+as failures through the packet adapter and MIS consumers. It also rounds ray
+origins to the next representable normal value or signed zero, avoiding
+subnormal coordinates outside the supported traversal domain. These changes affect
+batch validity and numerical paths, so renderer-21 checkpoints cannot resume
+under renderer 22. All earlier renderer contracts are rejected.
 The checkpoint layout and raw accumulation
 remain unchanged; see the [regression record](transport-regression-validation.md).
 

@@ -46,3 +46,43 @@ kernel void rypath_probe_light_geometry(
         valid ? 1u : 0u,
         cone ? 1u : 0u};
 }
+
+// Calls the production helper from render.metal, with no copied conversion math.
+kernel void rypath_probe_density_conversion(
+    const device rypath::light_geometry_probe::DensityQuery *queries [[buffer(0)]],
+    device rypath::light_geometry_probe::DensityResult *results [[buffer(1)]],
+    constant uint &count [[buffer(2)]], uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const auto q = queries[index];
+    rypath_bdpt::Vertex from{}, to{};
+    from.point.position = unpack(q.from);
+    to.point.position = unpack(q.to);
+    to.point.geometric_normal = unpack(q.normal);
+    to.type = q.infinite ? rypath_bdpt::environment_vertex : rypath_bdpt::light_vertex;
+    const float3 edge = to.point.position - from.point.position;
+    results[index] = {
+        as_type<uint>(rypath_bdpt::convert_density(as_type<float>(q.pdf_bits), from, to)),
+        as_type<uint>(dot(edge, edge)), uint(any(edge != 0)), 0x44454e31u};
+}
+
+// Exercise actual shared production round_out, including inactive coordinates.
+kernel void rypath_probe_offset_rounding(
+    const device rypath::light_geometry_probe::OffsetQuery *queries [[buffer(0)]],
+    device rypath::light_geometry_probe::OffsetResult *results [[buffer(1)]],
+    constant uint &count [[buffer(2)]], uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const auto q = queries[index];
+    float3 position(.25f, -.5f, 1), normal(0);
+    position[q.axis] = as_type<float>(q.bits);
+    if (q.move)
+        normal[q.axis] = q.negative ? -1.f : 1.f;
+    const auto rounded = round_out(position, normal);
+    const auto scalar = rypath_offset_rounding::outward(q.bits, q.negative != 0);
+    results[index] = {
+        {as_type<uint>(rounded.x), as_type<uint>(rounded.y), as_type<uint>(rounded.z)},
+        scalar.bits,
+        scalar.valid ? 1u : 0u,
+        0x4f464631u};
+}

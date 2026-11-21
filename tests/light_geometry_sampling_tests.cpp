@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "light_geometry_sampling_shared.h"
+#include "offset_rounding_cases.hpp"
 #include <array>
 #include <iostream>
 #include <numbers>
@@ -21,6 +22,16 @@ void near(float value, float expected, float tolerance, const std::string &messa
             message + ": " + std::to_string(value) + " vs " + std::to_string(expected));
 }
 V3 interpolate(V3 a, V3 b, V3 c, V2 uv) { return a + uv.x * (b - a) + uv.y * (c - a); }
+
+void offset_rounding() {
+    for (const auto &test : offset_rounding_test::cases)
+        for (bool negative : {false, true}) {
+            const auto actual = rypath_offset_rounding::outward(test.input, negative);
+            require(actual.bits == (negative ? test.negative : test.positive) &&
+                        actual.valid == (negative ? test.negative_valid : test.positive_valid),
+                    "Offset rounding boundary word " + std::to_string(test.input));
+        }
+}
 
 void bilinear() {
     const Weights weights{.01f, .2f, .4f, 1};
@@ -190,6 +201,7 @@ void spheres() {
 } // namespace
 int main() {
     try {
+        offset_rounding();
         bilinear();
         pinned_pbrt_fixtures();
         triangles();

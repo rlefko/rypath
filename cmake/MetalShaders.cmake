@@ -80,6 +80,7 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scalar_lighting.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/offset_rounding_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_transport.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_walk.h")

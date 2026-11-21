@@ -418,7 +418,7 @@ power-of-two number of sample slots. Light emission, importance walks and splat
 lens draws use the full-Film index; camera walks, wavelengths and camera-side
 direct lighting retain the original index. The host bounds the expanded signed
 index before dispatch or progressive preparation. PDFs and Film normalization
-are unchanged. Current sampling contract 7, renderer contract 21 and identity
+are unchanged. Current sampling contract 7, renderer contract 22 and identity
 schema 12 reject earlier checkpoints globally. Checkpoint format 3 persists
 the separate signed material seed. Packet modes use their separate
 fixed 920-dimension allocation; the scalar lens extensions above remain unchanged. See

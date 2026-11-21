@@ -23,12 +23,12 @@ void identity_checks() {
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
     // the 3766-byte empty-scene fixture includes field tags and all defaults.
     require(digest_hex(baseline) ==
-                "1940f815e7ba9ef2139b11d8715565fcdc314037879f365286b6f84b23c9cfd8",
+                "8396b4466ca57f9f76a1021ce46bf76df259bf5b5bd00737b9d8613328a70da6",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     {
-        // Retained pre-buffering canonical serializer golden. More than8192
-        // bytes, nested counts, shared content, and exact nonfinite/-zero bits.
+        // Independently serialized fixture, retaining nested counts, shared
+        // content and exact nonfinite/-zero bits across the8192-byte buffer.
         RenderScene populated;
         auto image = std::make_shared<ImagePyramid>();
         image->encoding = ImageEncoding{};
@@ -55,7 +55,7 @@ void identity_checks() {
                             std::bit_cast<float>(std::uint32_t{0x80000000})};
         const auto expected = render_identity(populated, settings);
         require(digest_hex(expected) ==
-                    "97bfdb1ebd431147d91f44e8f855e73c2aa60f35a29968f29d077683d6851f97",
+                    "a082a0710fb125bc06f89386e1e9d71f06ad5965132a2e009536ecc213f9f6d4",
                 "canonical populated identity golden");
         populated.image_textures[1].image = std::make_shared<ImagePyramid>(*image);
         require(render_identity(populated, settings) == expected,

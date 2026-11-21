@@ -3,8 +3,10 @@
 #include "light_geometry_sampling_probe_wire.h"
 #include "light_geometry_sampling_shared.h"
 #include "metal_execution.hpp"
+#include "offset_rounding_cases.hpp"
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -43,6 +45,162 @@ wire::Instance instance() {
     result.analytic_begin = UINT32_MAX;
     return result;
 }
+void offset_rounding(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
+    std::vector<probe::OffsetQuery> queries;
+    for (const auto &test : offset_rounding_test::cases)
+        for (wire::Word axis = 0; axis < 3; ++axis)
+            for (wire::Word negative : {0u, 1u})
+                for (wire::Word move : {0u, 1u})
+                    queries.push_back({test.input, axis, negative, move});
+    constexpr wire::Word sentinel = 0xcdfacadeu;
+    std::vector<probe::OffsetResult> initial(
+        queries.size() + 1, {{sentinel, sentinel, sentinel}, sentinel, sentinel, sentinel});
+    std::string diagnostic;
+    const auto pipeline =
+        metal::load_pipeline(device, library, @"rypath_probe_offset_rounding", diagnostic);
+    require(pipeline != nil, diagnostic);
+    const auto input = buffer(device, queries), output = buffer(device, initial);
+    const auto command = [queue commandBuffer];
+    const auto encoder = [command computeCommandEncoder];
+    require(input != nil && output != nil && input.contents && output.contents && command != nil &&
+                encoder != nil,
+            "Offset rounding probe allocation failed");
+    const auto count = static_cast<wire::Word>(queries.size());
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(queries.size() + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(metal::group_width(device, pipeline), 1, 1)];
+    [encoder endEncoding];
+    diagnostic = metal::complete(command, "Offset rounding probe");
+    require(diagnostic.empty(), diagnostic);
+    require(std::memcmp(input.contents, queries.data(),
+                        queries.size() * sizeof(probe::OffsetQuery)) == 0,
+            "Offset rounding query changed");
+    const auto *result = static_cast<const probe::OffsetResult *>(output.contents);
+    require(std::memcmp(result + queries.size(), initial.data() + queries.size(),
+                        sizeof(probe::OffsetResult)) == 0,
+            "Offset rounding guard overwritten");
+    std::size_t at = 0;
+    for (const auto &test : offset_rounding_test::cases)
+        for (wire::Word axis = 0; axis < 3; ++axis)
+            for (bool negative : {false, true})
+                for (bool move : {false, true}) {
+                    const auto &value = result[at++];
+                    const auto expected = negative ? test.negative : test.positive;
+                    const auto valid = negative ? test.negative_valid : test.positive_valid;
+                    require(value.magic == 0x4f464631u && value.scalar_bits == expected &&
+                                value.scalar_valid == (valid ? 1u : 0u),
+                            "Offset shared helper boundary word " + std::to_string(test.input));
+                    const std::array<wire::Word, 3> unchanged{0x3e800000u, 0xbf000000u,
+                                                              0x3f800000u};
+                    for (unsigned i = 0; i < 3; ++i)
+                        require(value.rounded[i] ==
+                                    (i == axis ? (move ? expected : test.input) : unchanged[i]),
+                                "Actual round_out axis/sign/no-round word " +
+                                    std::to_string(test.input));
+                }
+    std::cout << "Offset rounding Metal: " << queries.size()
+              << " exact axis/sign/no-round cases passed\n";
+}
+
+void density_conversion(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
+    struct DensityCase {
+        std::string name;
+        probe::DensityQuery query;
+        wire::Word expected;
+        bool nan;
+        unsigned
+            edge; // 0 coincident,1 underflow,2 length2,3 overflow,4 nonfinite,5 infinite target.
+    };
+    std::vector<DensityCase> cases;
+    const auto add = [&](std::string name, wire::Word pdf, wire::Point from, wire::Point to,
+                         wire::Word infinite, wire::Word expected, bool nan, unsigned edge) {
+        cases.push_back(
+            {std::move(name), {from, to, {0, 0, 1}, pdf, infinite}, expected, nan, edge});
+    };
+    constexpr wire::Word one = 0x3f800000u, negative_zero = 0x80000000u;
+    const wire::Point zero{}, tiny{0, 0, 0x1p-80f}, ordinary{0, 0, 2};
+    for (const wire::Word pdf : {0x7fc00001u, 0x7f800000u, 0xff800000u, 0xbf800000u}) {
+        const auto label = "Invalid input " + std::to_string(pdf);
+        add(label + " coincident", pdf, zero, zero, 0, 0, true, 0);
+        add(label + " squared underflow", pdf, zero, tiny, 0, 0, true, 1);
+        add(label + " infinite target", pdf, zero, zero, 1, 0, true, 5);
+    }
+    for (const wire::Word pdf : {0u, one, negative_zero}) {
+        add("Valid coincident " + std::to_string(pdf), pdf, zero, zero, 0, 0, false, 0);
+        add("Valid squared underflow " + std::to_string(pdf), pdf, zero, tiny, 0, 0, false, 1);
+        add("Valid infinite target " + std::to_string(pdf), pdf, zero, zero, 1, pdf, false, 5);
+        // Distance2=4 and cosine=1: the exact expected result is pdf/4.
+        // Explicit words, rather than a host reimplementation of convert_density.
+        add("Valid ordinary " + std::to_string(pdf), pdf, zero, ordinary, 0,
+            pdf == one ? 0x3e800000u : pdf, false, 2);
+    }
+    const float infinity = std::bit_cast<float>(wire::Word{0x7f800000u});
+    const float nan = std::bit_cast<float>(wire::Word{0x7fc00001u});
+    const float maximum = std::bit_cast<float>(wire::Word{0x7f7fffffu});
+    for (const wire::Word pdf : {0u, one}) {
+        add("Infinite edge " + std::to_string(pdf), pdf, zero, {0, 0, infinity}, 0, 0, true, 4);
+        add("NaN edge " + std::to_string(pdf), pdf, zero, {0, 0, nan}, 0, 0, true, 4);
+        add("Squared overflow " + std::to_string(pdf), pdf, zero, {0, 0, 0x1p100f}, 0, 0, true, 3);
+        add("Subtraction overflow " + std::to_string(pdf), pdf, {0, 0, -maximum}, {0, 0, maximum},
+            0, 0, true, 3);
+    }
+    std::vector<probe::DensityQuery> queries;
+    for (const auto &test : cases)
+        queries.push_back(test.query);
+    constexpr wire::Word sentinel = 0xcdfacadeu;
+    std::vector<probe::DensityResult> initial(cases.size() + 1,
+                                              {sentinel, sentinel, sentinel, sentinel});
+    std::string diagnostic;
+    const auto pipeline =
+        metal::load_pipeline(device, library, @"rypath_probe_density_conversion", diagnostic);
+    require(pipeline != nil, diagnostic);
+    const auto input = buffer(device, queries), output = buffer(device, initial);
+    const auto command = [queue commandBuffer];
+    const auto encoder = [command computeCommandEncoder];
+    require(input != nil && output != nil && input.contents && output.contents && command != nil &&
+                encoder != nil,
+            "Density conversion probe allocation failed");
+    const auto count = static_cast<wire::Word>(cases.size());
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(cases.size() + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(metal::group_width(device, pipeline), 1, 1)];
+    [encoder endEncoding];
+    diagnostic = metal::complete(command, "Density conversion probe");
+    require(diagnostic.empty(), diagnostic);
+    require(std::memcmp(input.contents, queries.data(),
+                        queries.size() * sizeof(probe::DensityQuery)) == 0,
+            "Density conversion input changed");
+    const auto *result = static_cast<const probe::DensityResult *>(output.contents);
+    require(std::memcmp(result + cases.size(), initial.data() + cases.size(),
+                        sizeof(probe::DensityResult)) == 0,
+            "Density conversion guard overwritten");
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto &test = cases[i];
+        const auto &value = result[i];
+        require(value.magic == 0x44454e31u, test.name + " missing result");
+        require(test.nan ? std::isnan(std::bit_cast<float>(value.pdf_bits))
+                         : value.pdf_bits == test.expected,
+                test.name + " density policy mismatch, word " + std::to_string(value.pdf_bits));
+        if (test.edge == 0 || test.edge == 1)
+            require(value.distance_squared_bits == 0 && value.nonzero_edge == test.edge,
+                    test.name + " did not exercise declared coincident/underflow edge");
+        if (test.edge == 2)
+            require(value.distance_squared_bits == 0x40800000u && value.nonzero_edge == 1,
+                    test.name + " ordinary distance2 must be exactly4");
+        if (test.edge == 3 || test.edge == 4)
+            require(!std::isfinite(std::bit_cast<float>(value.distance_squared_bits)) &&
+                        value.nonzero_edge == 1,
+                    test.name + " did not exercise nonfinite geometry arithmetic");
+    }
+    std::cout << "Density conversion Metal: " << cases.size() << " exact policy cases passed\n";
+}
+
 void run(id<MTLDevice> device, const std::filesystem::path &library_path) {
     std::string diagnostic;
     const auto library = metal::load_library(device, library_path, diagnostic);
@@ -52,6 +210,8 @@ void run(id<MTLDevice> device, const std::filesystem::path &library_path) {
     require(pipeline != nil, diagnostic);
     const auto queue = [device newCommandQueue];
     require(queue != nil, "Geometry probe queue allocation failed");
+    offset_rounding(device, library, queue);
+    density_conversion(device, library, queue);
     std::vector<wire::Point> positions;
     std::vector<wire::Instance> instances;
     std::vector<wire::Emitter> emitters;
