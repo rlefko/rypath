@@ -475,9 +475,52 @@ predicate. This uses Apple's documented
 and the optional-constant query in section 5.8.1 of the
 [Metal language specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf).
 It changes no model, random draws, arithmetic formulas, storage layout or
-checkpoint contract. Current-source material, generated-path, exact day/night
-and repeated-speed qualification remain pending; no compiler elimination or
-performance claim follows from the source change alone.
+checkpoint contract. At local revision `ed70254`, eight focused Release tests
+pass with Metal API validation enabled for GPU work. The generic fallback matches
+all 2,944 output words and 8,800 typed material fields of the accepted O1 control.
+The actual specialized walker passes 373/373 canonical strategy records versus
+81/373 for its mixed-density inverse; the literal PT fixture preserves zero
+unused stores. Fresh day/night controls retain every accepted renderer-24 Film
+byte, raw/clamped FLOAT component and scene identity.
+
+A complete fixed daytime pilot uses one warm-up and five alternating measured
+pairs per arm at 320×170, 64 spp. All twelve same-arm Film/FLOAT controls pass.
+The specialized host render loop averages **8.258184 seconds**, against fast-v5's
+**7.107336 seconds** (ratio **1.1619239614**). Both the 1.10 ratio gate and inherited
+7.779024-second ceiling fail. Whole-process means are 24.158364 and 51.978949
+seconds respectively; the process gate passes. Specialization has no established
+speed benefit. An earlier interrupted attempt completed three renders before
+its prelaunch guard detected an external Xcode process. It is preserved and
+excluded entirely; the complete series restarted at warm-ups with unchanged
+inputs, order, limits and gates, without selecting from partial timing values.
+
+These are fixed-sample host loop/process measurements, not a GPU hotspot or
+image-quality conclusion. Final full timing and fresh quality acceptance remain
+open. Current evidence receipts have SHA-256:
+
+- Completed Release: `f07a3b6d7d276613288b25bbe2c6ede40593022d0b5c8b10d373968203a73242`
+- Generic context: `90ffd2e19d8557107b5995f0e2591ebe88b5188f6da3f9c2e5a6ef98a7689d95`
+- Actual walker: `6c559cf4f7c6e5d8c6a63deea81b23f3063f65563ce04e63510ef2ecca187bbc`
+- Day/night controls: `e1d84e552e8fab724b4c304abdb2933384e60c26e58898ed74fe3291462efa5c`
+- Completed daytime pilot: `1e5afdacdd43c3a1b1630f7292315002b4199fedda26a0ece326cba0add31074`
+
+A subsequent fixed eight-capture control changes only the private host's packet
+cap to 4,096 pixels. Both arms use the identical actual specialized Metal library;
+the derivative replaces only the driver archive member and retains the original
+ordered link operands. One warm-up per arm and three alternating measured pairs
+all complete before audits begin. Every checkpoint Film byte and raw/clamped
+FLOAT component matches the accepted day reference. All expected GPU intervals
+and full sample counts are present, with validation disabled for timing.
+
+The adaptive and 4,096-pixel arms average respectively **7.358882 and 35.086568
+seconds** over completed GPU intervals, and **8.217509 and 36.128127 seconds** in
+the host render loop. Command counts are 128 and 896. Decode time remains
+approximately 0.485/0.489 seconds and Film addition 0.0785/0.0799 seconds. The
+smaller tile is slower in every measured pair. This identifies sensitivity to
+submission size in this scene and rejects that candidate; it does not isolate
+occupancy, cache behavior, buffer initialization or a shader hotspot. GPU and
+host-wait intervals overlap and must not be added. Complete execution SHA-256:
+`bb81afd45308f110381ecd44dc5d6f247e263785663644e1aec1ad9051383a10`.
 
 ## Quality protocol
 
@@ -488,10 +531,38 @@ resampling rules. It validates the actual library beside the resolved executable
 as well as the executable and other frozen inputs. The draft manifest cannot
 launch until model, source, seed ledger and artifacts are bound.
 
-The reduced day investigation uses the whole predeclared soffit ROI and a fixed
-polar/concentric by Halton/independent factorial. Selected-owner observations
-remain exploratory. Neither additional replicates nor a changed sampling map is
-evidence of improved variance until the complete planned comparisons finish.
+The completed day investigation at `ed70254` uses the entire predeclared soffit
+ROI, x[90,180), y[42,64), with polar/concentric mapping crossed with
+Halton/independent sampling. All four arms retain 32 seeds at 256 spp. All 128
+owner comparisons and eight full/window controls pass; all 3,118 retained files
+are authenticated. Renderer, offline analysis and outer supervision exit zero
+with no remaining owned process or GPU hold. The complete operation takes
+approximately 49 minutes.
+
+Concentric mapping reduces the measured average per-pixel, across-seed variance
+of authored-clamped RGB by approximately **6.8%, 10.7% and 12.2%** under Halton.
+Under independent sampling, those variances are nearly unchanged. The four mean
+crops use every replicate with fixed standard sRGB display and no exposure fit
+or denoising. Paired contrasts describe ROI means, not uncertainty bounds for
+the variance changes. Raw variance is sensitive to rare bright paths; weighted
+sensor-Y values above one occur 4, 6, 6 and 3 times respectively across
+16,220,160 paths per arm (polar/Halton, polar/independent, concentric/Halton,
+concentric/independent). Those small counts do not establish tail-rate ordering.
+
+This supports concentric/Halton as the candidate for the fresh full-image
+comparison. It does not establish a Halton implementation defect, sampler
+adoption, full-image quality, or PBRT parity: the region was historically
+selected and the seeds reused. Only generic packet diffuse mapping changes in
+this diagnostic; coating and diffuse-transmission mappings remain unchanged.
+PBRT's [sampling derivation](https://pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multidimensional_Functions)
+explains how the concentric map preserves the continuous cosine distribution
+while reducing distortion of the input sample pattern. Finite boundary outcomes
+and the exact floating-point implementations can still differ.
+
+Completed execution SHA-256:
+`0d55cc228a8804d55f4bf1cf80ff386f76e87d71ccceb844ca73b6c73248670c`.
+Analysis SHA-256:
+`53a6c168816d05065b211d852de5cb55c0858d30f67778066ee7986d70f5dfe6`.
 
 ## Current regression checks
 
@@ -516,6 +587,11 @@ limit during ASan/UBSan tests without a reported assertion failure. The workflow
 now runs the three presets as separate jobs with independent ten-minute limits
 and `fail-fast: false`. The required Foundation Gate still requires every job
 to succeed; no tests or failure checks are removed.
+
+Published `6a645d3` passes all 228 mandatory Debug tests and all eight jobs in
+[CI run 44938487943](https://github.com/rlefko/rypath/actions/runs/44938487943),
+including all three separate Linux presets and the Foundation Gate. This
+validates the CI scheduling fix; it does not cover later local `ed70254`.
 
 Historical renderer-21 validation passes 227 Release tests (151 non-CLI tests with Metal API
 validation and 76 CLI tests in their default environment), all 227 ASan/UBSan

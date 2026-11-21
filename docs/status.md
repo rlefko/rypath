@@ -2,178 +2,94 @@
 
 ## Current milestone
 
-Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50)
-at `dd8682d5`. The active follow-up is
-[PR #51](https://github.com/rlefko/rypath/pull/51), which remains a draft while
-performance and raw-image quality regressions are investigated. It must not be
-interpreted as completed PBRT parity.
+Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
+[PR #51](https://github.com/rlefko/rypath/pull/51) remains a draft while correctness,
+performance and raw-image quality closure continue. It is not completed PBRT parity.
 
-The supported slice renders the pinned Barcelona Pavilion day and night scenes
-with sphere/disk/open-cylinder geometry, four-wavelength vacuum transport,
-BDPT connections and splats, raw EXR export and separately accumulated authored
-film clamping. The follow-up adds environment CDFs, combined light selection,
-directional shape/emission proposals and coating RNG domains. See the
-[Pavilion record](pavilion-validation.md) for the physical model, scene acquisition
-and explicit overrides, and the [sampling record](sampling-convergence-validation.md)
-for the original study.
+The selected Pavilion slice supports spectral packet transport, native geometry,
+PT/BDPT connections and splats, raw FLOAT EXR output and separately accumulated
+authored film clamping. See the [Pavilion model record](pavilion-validation.md),
+[architecture](architecture.md) and [closure evidence](pavilion-closure-validation.md)
+for scope, limitations and detailed validation history.
 
-The working checkpoint format/identity/renderer/sampling/accumulation contracts
-are **3/12/24/7/2**, including published `6a645d3`.
-Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
-validated native-triangle hints to eligible packet scenes, preserving procedural
-validation and stable closest-hit ordering. The new packet resource ABI and
-potentially recovered true intersections invalidate older checkpoints. Renderer
-21 corrects the internal proposal measure in layered directional-f MIS, with
-scalar and packet regression checks passing. Renderer 22 preserves invalid
-coating PDFs as failures and keeps outward ray origins within the supported
-normal-or-zero coordinate domain. The renderer-23 integration gives MIS
-queries and stored densities one represented-geometry convention, preserving
-sampled joint throughput. Its current generated-path check passes all 388
-observed continuous-path strategy records; final scene-quality and repeated
-performance validation remain in progress.
-Renderer 24 skips canonical stored-density evaluation that PT never consumes,
-while retaining sampled-density checks and every density used by PT MIS. This
-explicit numerical error-domain change passes 373 observed continuous-path
-strategy records and exact renderer-23 day/night Film and FLOAT controls at
-`d7d10b2`; BDPT still finalizes both canonical stored directions.
-Its daytime loop remains 15.74% slower than fast-v5. A subsequent isolated
-`-O2` compiler control preserves all 2,944 output words and 8,800 typed material
-fields from `-O1`, but its production packet-render test times out at 300 seconds
-while Metal compiles. That option is rejected; the working source retains `-O1`.
-The next execution change specializes packet pipelines for the scene's fixed
-PT/BDPT choice. Existing probes retain runtime selection; numerical and timing
-qualification of this specialization is pending.
-Published revision `3c52b42` passes 227 tests
-in each supported preset, 164 portable tests, 65 Debug Metal tests with API
-validation, 237 Python tests, and GitHub CI. Host hashing and opt-in timing
-changes are also under validation; see the [closure record](pavilion-closure-validation.md).
-Scene quality and final performance acceptance remain open. See
-[geometry](geometry.md) and [checkpointing](checkpointing.md).
+Current format/identity/renderer/sampling/accumulation contracts are **3/12/24/7/2**.
+Renderer 24 skips canonical stored-density queries that PT never consumes while
+retaining sampled and consumed density checks; BDPT still finalizes both stored
+directions. This is an explicit numerical error-domain change, documented in
+[checkpointing](checkpointing.md).
 
-## Findings and remaining gaps
+## Published and local validation
 
-The [transport regression record](transport-regression-validation.md) contains
-the detailed evidence and immutable artifact hashes:
+Published `6a645d3` passes all **228 mandatory Debug tests** and all eight jobs in
+[CI run 44938487943](https://github.com/rlefko/rypath/actions/runs/44938487943).
+That CI result covers the published revision, not the later local specialization.
 
-- Repeated Halton light paths across 128-pixel tiles are repaired. A missing
-  importance shading-normal correction is also repaired; it caused the traced
-  night outlier. Near-edge native triangle inconsistencies required compensated
-  validation, broader candidate coverage and numerical boundary repairs.
-- The frozen renderer-18 quality study still fails: **0/48** simultaneous
-  variance/tail bounds and **26/36** raw mean safeguards pass. Day passes all
-  18 mean checks; night passes eight. Fresh 1600×850 day-256 and night-512
-  images are complete and independently checked, but do not establish parity.
-- A separate 32-frame modified-PBRT diagnostic isolates much of the night
-  brightness difference. Applying the same importance correction brings all six
-  glass/floor RGB comparisons with rypath BDPT within the inherited rule.
-  Floor red and green still differ from PBRT path tracing. Neither reference
-  convergence nor variance parity follows from this result.
-- An exact day replay identifies a rare refracted-environment path, rather than
-  a display/filter artifact. A selected-pixel, 32-seed sampling diagnostic loses
-  the observed outlier when either the hemisphere mapping or sampler changes.
-  Selection and finite-sample limits prevent adopting a sampling change from
-  this evidence alone.
-- Integrated arithmetic and visibility optimizations reduce repeated GPU time
-  by 37.0% by day and 45.1% by night against frozen renderer 18. A separate
-  native-triangle prototype reduces it a further 20.3% and 24.3% in its measured
-  comparison, with exact timing-image controls and about 1.13 GB of additional
-  acceleration storage. Small-scene controls pass but show no established
-  small-scene speedup. These are matched-workload results, not time to quality.
-  A separate repeated arithmetic comparison reduces GPU time by 9.13%/8.86%
-  and whole-process time by 4.66%/5.43%, with exact images. These component
-  measurements are distinct from the combined production comparison below.
+Local, unpushed `ed70254` adds an optional PT/BDPT pipeline function constant.
+Production binds the scene's fixed choice; diagnostic probes retain runtime
+selection when the constant is unset. Its current evidence is:
 
-The batched day diagnostic reproduces all 128 earlier cases exactly. Its
-4,096-spp extension is declined before extended outcomes: the measured forecast
-is 676.126 seconds, above the unchanged 600-second operational limit. This adds
-execution evidence, not additional tail observations.
+- Eight focused Release tests pass, with API validation for GPU work.
+- Generic full-context output retains all **2,944 words and 8,800 typed fields**
+  exactly against the accepted renderer 24 control.
+- The actual-walker oracle passes **373/373** canonical records versus **81/373**
+  for the matched mixed-density inverse.
+- Day/night controls retain the accepted renderer 24 identity, every Film byte
+  and every raw/authored-clamped FLOAT component bit.
 
-Fresh renderer-20 day/night controls at 320×170 and 64 spp reproduce every
-raw and authored-clamped FLOAT component and full Film byte of renderer 19.
-Independent auditing also reproduces both standard-sRGB previews.
-A direct 16-run production comparison now measures the combined changes. At
-320×170 and 64 spp, three measured pairs after warm-up reduce whole-process
-time by **12.7% day / 17.5% night** versus published renderer 19. Rendering and
-accumulation take **26.3% / 29.7%** less time; these are host phases, not GPU
-timestamps. All sixteen Film and raw/clamped FLOAT controls are exact. About
-43 seconds remains outside the named phases. This is a fixed-sample workload
-comparison, not time to a shared quality target.
+Local validation covers these focused gates; full-suite and CI qualification for
+`ed70254` remain open. Detailed gates and historical revisions remain in the
+[closure record](pavilion-closure-validation.md).
 
-The tested integration is the current review slice. Further work must isolate
-the remaining process cost and scene-level discrepancies.
-The integrated bounded packet-workspace policy and output-prefix initialization
-now reproduce every renderer-22 Film byte and FLOAT component in fresh day/night
-controls. Their observed render loops take 7.59/11.60 seconds at 320×170/64 spp;
-these single API-enabled runs require warmed repeated confirmation. All 227
-Release tests pass on this host integration, including the updated native
-depth-limit tiling coverage. A sole `-O1` compiler-mode change restores the full
-failing material context exactly. The current public regression reproduces the
-original `-Os` failure and qualifies exact `-O1` restoration. Fresh renderer-23
-day/night sanity loops take 8.49/13.04 seconds at 320×170/64 spp with API
-validation. A subsequent fixed daytime series (one warm-up and five alternating
-pairs) measures 8.471 seconds against fast-v5's 7.104 seconds: 19.25% slower,
-despite whole-process time falling from 52.19 to 24.41 seconds. All twelve
-same-arm image controls pass. This fails both daytime loop targets and motivates
-the renderer-24 change; final timing and scene-quality acceptance remain pending;
-heavy tails and the BDPT/PT floor discrepancy remain open.
-This execution update is published at `2359867`; all 227 mandatory Debug pre-push
-tests and [CI run 44920623572](https://github.com/rlefko/rypath/actions/runs/44920623572)
-pass. The rebuilt modified-PBRT reference also passes its fixed numerical
-controls; fresh scene-quality comparisons remain pending.
-Published `6828383` passes all 228 mandatory Debug tests. Its Linux CI Debug and
-Release presets pass all 164 tests each, but the combined job reaches its
-ten-minute limit during sanitizer tests. The workflow now gives each preset a
-separate ten-minute job and retains the required aggregate Foundation Gate.
-Published `6a645d3` passes all 228 Debug tests with that fix and renderer 24;
-[its CI run](https://github.com/rlefko/rypath/actions/runs/44938487943) is in progress.
+## Current performance and open work
 
-## Validation boundaries
+The completed specialized DAY64 pilot uses one warm-up per arm and five
+alternating measured pairs at 320×170, 64 spp, seed/material 0. All twelve same-arm
+Film/FLOAT controls pass. Recorded means are:
 
-Renderer-22 publication `3c52b42` passes the checks above and all jobs in
-[CI run 44900321433](https://github.com/rlefko/rypath/actions/runs/44900321433).
-Focused Clang-Tidy 18 and static analysis of both production Metal adapters
-also pass. These checks exclude the unadopted canonical-density and traversal
-experiments; final scene quality and performance remain open.
+| Host measurement | Specialized renderer 24 | Frozen fast-v5 |
+| --- | ---: | ---: |
+| Render and accumulation | 8.258184 s | 7.107336 s |
+| Whole process | 24.158364 s | 51.9789489 s |
 
-Published renderer 20 passes all 222 ASan/UBSan tests and 159 portable tests.
-Release evidence combines 217 non-CLI checks with Metal API validation and five
-CLI checks under their default environment. The initial full API-enabled run
-fails those five CLI checks solely because its injected banner violates their
-unchanged empty-stderr assertions; the failed run is retained. The native tests
-include five affine transforms, complete seed-distance preservation and integer
-rounding oracles. Both directions of the renderer-19/20 host-library mismatch
-are rejected; the Python checkpoint decoder passes 12 tests.
+The loop ratio is **1.1619239614**. Both the 1.10 ratio limit and 7.779024-second
+loop ceiling fail; the process-time gate passes. These are host loop/process
+measurements, not isolated GPU kernel time. Specialization has no established
+speed win. An earlier attempt stopped at a prelaunch Xcode-process check; it is
+preserved and excluded, not counted as a renderer performance result.
 
-Focused Clang-Tidy and static analysis of both changed production Metal adapters
-and the native probe pass. Clang-Tidy first catches implicit integer widening in
-a test's expected byte count; explicit operand types fix it, and the affected
-test passes again in all four builds. CI then catches omitted transform
-initializers in the new budget fixture under LLVM 18. Explicit identity
-initializers preserve the fixture; matching LLVM 18 reproduces the error before
-the fix and passes afterward, and the affected test passes in all four builds.
-Publication `f87732b` passes all 222 Debug pre-push tests and all six jobs in
-[CI run 44864412913](https://github.com/rlefko/rypath/actions/runs/44864412913).
-Later publication checks are reported with their revision in PR #51.
+The isolated `-O2` control preserves full-context fields, but production packet
+rendering reaches its unchanged 300-second compilation deadline. O2 is rejected;
+production retains **O1**. A completed same-shader tile control preserves all
+eight full Film/FLOAT outputs, but reducing the cap to 4,096 pixels increases
+GPU commands from 128 to 896 and the loop from 8.22 to 36.13 seconds. This rules
+out that scheduling candidate; it does not identify a GPU hotspot. A compact
+vertex-storage candidate is prepared for separate qualification.
 
-Published renderer-19 revision `89e04a6` passes the full 220-test Debug pre-push
-suite and all six jobs in
-[CI run 44846373287](https://github.com/rlefko/rypath/actions/runs/44846373287).
-Its sphere repair passes 17 focused analytic/checkpoint tests in each supported
-preset with Metal API validation; the old shader first fails the new pole case.
+The completed day soffit factorial retains all 32 seeds per arm at
+256 spp, with 128 ownership and eight window controls passing. Concentric mapping
+reduces measured authored-clamped RGB variance by approximately 7–12% under
+Halton in that region; independent sampling is nearly unchanged. Rare bright
+paths remain, and raw variance is sensitive to those events. Concentric/Halton
+is the candidate for fresh full-image quality evaluation; no sampler change has
+been adopted.
 
-Earlier execution changes pass 220 tests in each of Debug, Release and ASan/UBSan,
-158 portable Clang checks, 64 native Debug checks with API validation, and focused
-static analysis. All six jobs in
-[CI run 44830941172](https://github.com/rlefko/rypath/actions/runs/44830941172)
-pass at publication revision `b0b7bbb`. These checks and the older renderer-18
-full-image audits are historical evidence, not checks of current renderer 20.
-The [transport](transport-regression-validation.md),
-[sampling](sampling-convergence-validation.md) and
-[Pavilion](pavilion-validation.md) records retain prior failures and validation
-at their respective revisions.
+Current full 48-capture performance acceptance, 64-replicate raw-quality admission
+and final 1600×850 day-256/night-512 images remain open. No current parity,
+convergence or time-to-quality claim follows from the fixed-sample controls.
 
-This remains selected-scene coverage. Unsupported media and geometry receive
-diagnostics rather than substitutions. Curves, motion, heterogeneous media,
-additional cameras/films, broader material semantics and full mesh-format
-coverage remain on the [roadmap](roadmap.md). Offline MVP acceptance and full
-pinned-corpus coverage remain unestablished.
+## Historical evidence and coverage boundary
+
+The frozen renderer 18 quality study passes **0/48** simultaneous variance/tail
+bounds and **26/36** raw-mean safeguards. Later repairs address repeated Halton
+light paths, importance shading-normal correction, conservative triangle
+coverage, pole clipping, coating proposal measures and canonical MIS geometry.
+Those repairs and earlier full-size images do not replace fresh current quality
+admission. See [transport regressions](transport-regression-validation.md),
+[sampling](sampling-convergence-validation.md) and the
+[Pavilion closure record](pavilion-closure-validation.md) for retained failures,
+component measurements and revision-specific checks.
+
+This remains selected-scene coverage. Unsupported geometry/media receive
+explicit diagnostics. Full pinned-corpus coverage and offline MVP acceptance
+remain unestablished; broader materials, cameras, media and mesh-format support
+remain on the [roadmap](roadmap.md). PR #51 remains draft and unmerged.
