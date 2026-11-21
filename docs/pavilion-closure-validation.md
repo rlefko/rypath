@@ -197,7 +197,31 @@ the current run. They are a fixed M4 Max/toolchain regression witness, not a
 cross-device accuracy oracle. The whole-output negative/positive qualification
 above separately establishes that this public port retains the original failure.
 This admits the material workaround; generated-path, scene-quality and final
-performance acceptance still require the current Release build.
+performance acceptance require separate current-source evidence.
+
+The fresh renderer-23 generated-path run uses the completed Release build at
+`db18645`, with four freshly compiled libraries and the same 37 fixtures. All
+296 context/sample rows and 148 captures are retained. Every one of the 388
+observed continuous-path strategy records has the common rational density family;
+the matched inverse-density control agrees in 81 of 388 records. The largest
+observed hardware-weight discrepancy is `1.28e-7`. Each arm checks 7,668 coating
+lanes, with exact within-arm Result/Splat controls and no semantic failures.
+Successful finalization covers 399 finite arrivals, 107 environment escapes and
+336 count-one cases. Delta, capacity, zero-throughput, tilted-normal and finite
+PT controls also pass. The retained runtime receipt is
+`002a6c93664248baa845a0a6691e5be9880acd724d91ce37b1e496c5a8a6c2fd`.
+These are observations of tagged strategy records, not independent paths or a
+proof of unbiasedness. The host auditor does not independently reconstruct
+eligibility to require a family tag for every eligible path; no actual omission
+was found. Discrete-delta strategy enumeration and broader feature coverage
+remain outside this fixture. Historical renderer-21 counts above are separate.
+
+Fresh renderer-23 day/night sanity images at 320×170 and 64 spp have complete
+checkpoints, finite raw/authored-clamped FLOAT output and 128 completed sample
+commands each. Their observed render loops are 8.492 and 13.039 seconds with API
+validation enabled. The day observation exceeds the fixed 7.779-second target;
+neither run is warmed repeated performance acceptance. Visible sampling noise
+remains, and fresh quality bounds and final-resolution images are still required.
 
 ## Packet density and origin validity
 
