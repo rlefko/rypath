@@ -406,6 +406,16 @@ evidence of improved variance until the complete planned comparisons finish.
 
 ## Current regression checks
 
+Renderer-23 integration at `050812e` builds successfully and passes 237 Python
+tests. The first full Release run passes 227 of 228 tests, including all Metal
+tests, with no availability skips. Its sole failure is an identity-test golden
+that still encodes renderer 22. The retained independent Python serializer first
+reproduces both renderer-22 identity hashes, then derives renderer-23 hashes for
+the same 3,766-byte empty and 67,499-byte populated fixtures; only the tagged
+renderer field changes. Both updated identity fixtures pass in the focused
+Release rerun. This test-only correction changes no rendering code. Generated
+path validation, final scene comparisons and repeated timing remain pending.
+
 Historical renderer-21 validation passes 227 Release tests (151 non-CLI tests with Metal API
 validation and 76 CLI tests in their default environment), all 227 ASan/UBSan
 tests, all 164 portable tests with Metal disabled, and 237 Python tests using the
