@@ -178,6 +178,50 @@ kernel void rypath_triangle_normal_exponent_probe(const device uint4 *input [[bu
                              uint(pc_normal_scale_exponent(int((words.x >> 23) & 255u), e)),
                              0x45585031u};
 }
+// Direct normalized product and full transform route compared with the
+// unchanged general Pair multiply. Independent integer expectations live in
+// the shared portable fixture; these entries retain both operation results.
+kernel void rypath_triangle_normalized_product_probe(const device uint4 *input [[buffer(0)]],
+                                                     device uint4 *output [[buffer(1)]],
+                                                     constant uint &count [[buffer(2)]],
+                                                     uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const uint4 words = input[index];
+    const float a = as_type<float>(words.x), b = as_type<float>(words.y);
+    bool valid = words.z != 0, reference_valid = valid;
+    const auto actual = pc_mul_normalized_scalars(a, b, valid);
+    const auto reference = pc_mul(BilinearNumber(a), BilinearNumber(b), reference_valid);
+    const bool domain = ((words.x >> 23) & 255u) == 127u && ((words.y >> 23) & 255u) == 127u;
+    output[index * 2] = {as_type<uint>(actual.high), as_type<uint>(actual.low), uint(valid),
+                         as_type<uint>(reference.high)};
+    output[index * 2 + 1] = {as_type<uint>(reference.low), uint(reference_valid), uint(domain),
+                             0x4e545031u};
+}
+kernel void rypath_triangle_transform_product_probe(const device uint4 *input [[buffer(0)]],
+                                                    device uint4 *output [[buffer(1)]],
+                                                    constant uint &count [[buffer(2)]],
+                                                    uint index [[thread_position_in_grid]]) {
+    if (index >= count)
+        return;
+    const uint4 words = input[index];
+    const float a = as_type<float>(words.x), b = as_type<float>(words.y);
+    const int exponent = as_type<int>(words.z);
+    bool valid = words.w != 0, reference_valid = valid;
+    const auto actual = pc_transform_product(a, b, exponent, valid);
+    const bool zero = (words.x & 0x7fffffffu) == 0 || (words.y & 0x7fffffffu) == 0;
+    BilinearNumber reference(0);
+    if (!zero) {
+        const int ae = pc_ilogb_abs(a), be = pc_ilogb_abs(b);
+        reference = pc_mul(BilinearNumber(pc_scale(a, -ae, reference_valid)),
+                           BilinearNumber(pc_scale(b, -be, reference_valid)), reference_valid);
+        reference = pc_scale(reference, ae + be - exponent, reference_valid);
+    }
+    output[index * 2] = {as_type<uint>(actual.high), as_type<uint>(actual.low), uint(valid),
+                         as_type<uint>(reference.high)};
+    output[index * 2 + 1] = {as_type<uint>(reference.low), uint(reference_valid), uint(zero),
+                             0x54525031u};
+}
 kernel void rypath_triangle_witness_probe(const device wire::Triangle &triangle [[buffer(0)]],
                                           const device Ray &input [[buffer(1)]],
                                           device uint *output [[buffer(2)]]) {

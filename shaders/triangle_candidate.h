@@ -174,14 +174,24 @@ inline BilinearProjection pc_project(TrianglePoint p, TrianglePoint o, float3 d,
         pc_sub(pc_mul(y, BilinearNumber(d[dominant]), ok), pc_mul(z, BilinearNumber(d[j]), ok), ok),
         z};
 }
+// General Pair multiplication remains authoritative outside this normalized domain.
+inline BilinearNumber pc_mul_normalized_scalars(float a, float b, thread bool &ok) {
+    if (((as_type<uint>(a) >> 23) & 255u) != 127u || ((as_type<uint>(b) >> 23) & 255u) != 127u)
+        return pc_mul(BilinearNumber(a), BilinearNumber(b), ok);
+    // Strict RN-even normalized domain: product and exact FMA residual are normal
+    // or zero; the old guards and renormalization cannot change either limb.
+    const float product = a * b;
+    const float residual = fma(a, b, -product);
+    return BilinearNumber{product, residual};
+}
 inline BilinearNumber pc_transform_product(float coefficient, float coordinate, int exponent,
                                            thread bool &ok) {
     if ((as_type<uint>(coefficient) & 0x7fffffff) == 0 ||
         (as_type<uint>(coordinate) & 0x7fffffff) == 0)
         return BilinearNumber(0);
     int ce = pc_ilogb_abs(coefficient), pe = pc_ilogb_abs(coordinate);
-    auto product = pc_mul(BilinearNumber(pc_scale(coefficient, -ce, ok)),
-                          BilinearNumber(pc_scale(coordinate, -pe, ok)), ok);
+    auto product = pc_mul_normalized_scalars(pc_scale(coefficient, -ce, ok),
+                                             pc_scale(coordinate, -pe, ok), ok);
     return pc_scale(product, ce + pe - exponent, ok);
 }
 inline PreciseTriangleCandidate

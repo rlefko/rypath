@@ -89,6 +89,65 @@ void check_math_helpers(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
             need(std::bit_cast<std::int32_t>(w[5]) == exponent - 127,
                  "Native normal ilogb agrees with independent raw exponent");
     }
+    check_normalized_product_cpu();
+    const auto normalized = normalized_product_cases();
+    const auto nw = dispatch(@"rypath_triangle_normalized_product_probe", normalized);
+    for (std::size_t i = 0; i < normalized.size(); ++i) {
+        const auto c = normalized[i];
+        const auto *w = nw.data() + i * 8;
+        const bool domain = normalized_product_domain(c[0], c[1]);
+        need(w[2] == w[5] && w[6] == domain && w[7] == 0x4e545031u,
+             "Normalized product exponent guard/fallback validity agrees with general multiply");
+        need(c[2] || !w[2], "Normalized product cannot restore incoming false validity");
+        if (domain) {
+            const auto expected = normalized_product_oracle(c[0], c[1]);
+            need(w[0] == expected[0] && w[1] == expected[1] && w[2] == c[2] && w[0] == w[3] &&
+                     w[1] == w[4],
+                 "Normalized product/FMA limbs agree with integer RN-even oracle, including "
+                 "ties/signs");
+        } else if (w[2]) {
+            need(w[0] == w[3] && w[1] == w[4],
+                 "Fallback accepted Pair bits, including signed-zero controls, are unchanged");
+        }
+    }
+    const auto transforms = transform_product_cases();
+    const auto tw = dispatch(@"rypath_triangle_transform_product_probe", transforms);
+    for (std::size_t i = 0; i < transforms.size(); ++i) {
+        const auto c = transforms[i];
+        const auto *w = tw.data() + i * 8;
+        const bool zero = (c[0] & 0x7fffffffu) == 0 || (c[1] & 0x7fffffffu) == 0;
+        need(w[2] == w[5] && w[6] == zero && w[7] == 0x54525031u,
+             "Complete transform product matches the previous graph's validity and zero shortcut");
+        need(c[3] || !w[2], "Transform product cannot restore incoming false validity");
+        if (zero) {
+            need(w[0] == 0 && w[1] == 0 && w[2] == c[3] && w[3] == 0 && w[4] == 0,
+                 "Transform zero shortcut preserves its canonical zero before opposite-domain "
+                 "inspection");
+            continue;
+        }
+        auto expected = normalized_product_oracle((c[0] & 0x807fffffu) | 0x3f800000u,
+                                                  (c[1] & 0x807fffffu) | 0x3f800000u);
+        const int scale = int((c[0] >> 23) & 255u) + int((c[1] >> 23) & 255u) - 254 -
+                          std::bit_cast<std::int32_t>(c[2]);
+        const auto scale_word = [&](Word &bits) {
+            if ((bits & 0x7fffffffu) == 0)
+                return true;
+            const int exponent = int((bits >> 23) & 255u) + scale;
+            if (exponent < 1 || exponent > 254)
+                return false;
+            bits = (bits & 0x807fffffu) | (Word(exponent) << 23);
+            return true;
+        };
+        const bool high_supported = scale_word(expected[0]);
+        const bool low_supported = scale_word(expected[1]);
+        need(w[2] == (bool(c[3]) && high_supported && low_supported),
+             "Both transform limbs retain independent exponent-range validation");
+        if (high_supported && low_supported)
+            need(w[0] == expected[0] && w[1] == expected[1] && w[0] == w[3] && w[1] == w[4],
+                 "Scaled transform Pair bits match independent integer product/exponent oracle");
+    }
+    std::cout << normalized.size() << " direct normalized products and " << transforms.size()
+              << " full transform product controls checked\n";
     std::cout << residual.size() << " retained FMA controls and " << scales.size()
               << " native normal exponent controls checked\n";
 }

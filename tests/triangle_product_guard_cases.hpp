@@ -137,6 +137,7 @@ inline void check_rounded_cpu() {
 }
 inline void check_cpu() {
     triangle_math::check_residual_cpu();
+    triangle_math::check_normalized_product_cpu();
     check_rounded_cpu();
     for (auto c : cases()) {
         float p = value(c.high_a) * value(c.high_b);
