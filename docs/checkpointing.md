@@ -33,7 +33,7 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The sampling/convergence revision uses file format 3, identity 12, renderer 24,
+The current revision uses file format 3, identity 12, renderer 25,
 sampling 7 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
@@ -76,6 +76,14 @@ contribute. The physical target, sampling and raw accumulation layout are
 unchanged. Renderer-23 checkpoints are rejected explicitly.
 The checkpoint layout and raw accumulation
 remain unchanged; see the [regression record](transport-regression-validation.md).
+
+Renderer 25 reduces the opaque packet Vertex reservation from 2048 to 1024 bytes.
+The actual Vertex fields, Result/Splat prefixes, sampling and accumulation are
+unchanged; host and shader must agree on the new slot pitch. The renderer contract
+makes both directions of an old/new library mismatch fail the loaded-library
+handshake and rejects renderer-24 checkpoints and identities. This is an execution
+ABI change, not a change to the physical target or density policy. Numerical and
+performance qualification of the compact layout is separate from its definition.
 
 ## Identity and compatible continuation
 

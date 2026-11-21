@@ -93,7 +93,7 @@ struct Synthetic {
 void scheduling() {
     auto scene = packet_scene();
     scene.max_depth = 5;
-    constexpr std::uint32_t default_capacity = 9992;
+    constexpr std::uint32_t default_capacity = 19807;
     require(packet_wire::workspace_bytes / packet_wire::lane_bytes(scene.max_depth) ==
                 default_capacity,
             "Update the default workspace boundary fixture for a changed packet layout");
@@ -245,8 +245,8 @@ void workspace_policy() {
     require(payload_bytes(0, {}, largest, baseline + 65) == baseline + 1,
             "Growth did not reserve the complete buffer guard");
     constexpr auto lane = packet_wire::lane_bytes(5);
-    require(lane_capacity(baseline, lane, largest) == 9992 &&
-                lane_capacity(maximum, lane, largest) == 39969,
+    require(lane_capacity(baseline, lane, largest) == 19807 &&
+                lane_capacity(maximum, lane, largest) == render_tile_capacity,
             "Default/grown depth-five capacity changed");
     require(lane_capacity(maximum, lane, 2 * lane + 63) == 1 &&
                 lane_capacity(maximum, lane, 2 * lane + 64) == 2,

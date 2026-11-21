@@ -7,7 +7,7 @@ namespace packet_wire {
 using Word = render_wire::Word;
 // Opaque per-vertex storage is interpreted only by the Metal implementation.
 // A compile-time device assertion checks the capacity and alignment.
-enum : Word { vertex_bytes = 2048 };
+enum : Word { vertex_bytes = 1024 };
 enum : Word { workspace_bytes = 256u * 1024u * 1024u };
 enum : Word { max_depth = 64 };
 struct Result {
