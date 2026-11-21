@@ -130,11 +130,15 @@ void scheduling() {
     Synthetic prefix;
     prefix.budget = settings.samples;
     prefix.capacity = 1234;
+    const auto tiles_per_sample = 1 + (settings.width - 1) / prefix.capacity;
+    require(tiles_per_sample > 1 && settings.width % prefix.capacity != 0,
+            "Cancellation fixture requires multiple tiles and a partial tail");
     RenderControl control;
     control.cancelled = [&] { return prefix.cancel; };
     auto partial = detail::drive_progressive(scene, settings, control, prefix.source());
     require(partial.completion == RenderCompletion::cancelled, partial.diagnostic);
-    require(prefix.calls == 18, "Cancellation interrupted a packet transaction");
+    require(prefix.calls == settings.batch_size * tiles_per_sample,
+            "Cancellation interrupted a packet transaction");
     require(std::ranges::all_of(partial.film.pixels, [](auto &p) { return p.count == 2; }),
             "Cancellation left mixed owner counts");
     Synthetic rest;
