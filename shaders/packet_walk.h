@@ -105,6 +105,26 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
     return rypath_packet::compatible(out);
 }
 
+// The actual neighboring position becomes known only after tracing the next
+// edge. Finalize both MIS densities here so stored factors and connection
+// queries see the same represented geometry. This never changes path throughput.
+inline bool finalize_walk_densities(const thread Resources &r, device uchar *path, uint count,
+                                    thread Vertex &next, Mode mode) {
+    const Vertex middle = path_vertex(path, count - 1);
+    const Vertex before = count > 1 ? path_vertex(path, count - 2) : Vertex{};
+    next.pdf_fwd = middle.delta ? 0 : vertex_pdf(r, middle, before, next, mode);
+    if (!isfinite(next.pdf_fwd) || next.pdf_fwd < 0)
+        return false;
+    if (count > 1) {
+        const float reverse =
+            middle.delta ? 0 : vertex_pdf(r, middle, next, before, rypath_packet::opposite(mode));
+        if (!isfinite(reverse) || reverse < 0)
+            return false;
+        path_vertex(path, count - 2).pdf_rev = reverse;
+    }
+    return true;
+}
+
 [[clang::noinline]] inline uint random_walk(thread Resources &r, thread wire::Sample &sample,
                                             thread Wavelengths &lambda, ray incoming, float4 beta,
                                             float pdf, device uchar *path, uint count,
@@ -149,7 +169,10 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
                 v.point.shading_normal = -incoming.direction;
                 v.wo = -incoming.direction;
                 v.beta = beta;
-                v.pdf_fwd = pdf;
+                if (!finalize_walk_densities(r, path, count, v, mode)) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
                 v.connectible = true;
                 path_vertex(path, count++) = v;
             }
@@ -310,8 +333,9 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         v.beta = beta;
         v.connectible = !rypath_packet::delta_only(v.bsdf);
         const Vertex prev = path_vertex(path, count - 1);
-        v.pdf_fwd = convert_density(pdf, prev, v);
-        if (!isfinite(v.pdf_fwd) || v.pdf_fwd < 0) {
+        const float sampled_area_pdf = convert_density(pdf, prev, v);
+        if (!isfinite(sampled_area_pdf) || sampled_area_pdf < 0 ||
+            !finalize_walk_densities(r, path, count, v, mode)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -335,9 +359,8 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
         }
         if (!continuation.accepted)
             break;
-        // Retain the exact ordered local floats used by the directional PDF.
-        // Reconstructing a world-space edge and returning to the frame can
-        // change one ULP and therefore select an unrelated PBRT hash stream.
+        // Retain exact sampled locals for throughput and directional-f queries.
+        // MIS densities instead use actual neighboring geometry after tracing.
         device auto &stored = path_vertex(path, count - 1);
         stored.sampled_wo_local = sampled_wo_local;
         stored.sampled_wi_local = continuation.wi;
@@ -367,6 +390,8 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
             sample.status = wire::invalid_arithmetic;
             break;
         }
+        // Keep original sampled forward/reverse validation. Canonical queries
+        // must not conceal an invalid sampled proxy or its area conversion.
         pdf = continuation.pdf;
         float reverse_pdf = continuation.reverse_pdf;
         if (continuation.delta) {
@@ -378,7 +403,6 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        path_vertex(path, count - 2).pdf_rev = reverse_area_pdf;
         const float3 origin = offset(v, wi);
         if (!all(isfinite(origin))) {
             sample.status = wire::invalid_arithmetic;

@@ -67,9 +67,13 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/conductor_probe_wire.h")
     endif()
-    if(shader STREQUAL "render" OR shader STREQUAL "packet_scattering_probe")
-        # Bound code growth in mixed-material rendering and the all-family probe.
-        # Preserve strict FP while reducing runtime compiler input size.
+    if(shader STREQUAL "render")
+        # The full-context material regression loses nested coating values at -Os
+        # on the validated Metal toolchain; -O1 restores its exact physical controls.
+        # Keep strict FP and qualify renderer performance separately.
+        list(APPEND shader_options -O1)
+    elseif(shader STREQUAL "packet_scattering_probe")
+        # Bound code growth in the all-family probe while preserving strict FP.
         list(APPEND shader_options -Os)
     endif()
     if(shader STREQUAL "render")
@@ -216,7 +220,7 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
     COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
         "-fmodules-cache-path=${rypath_metal_cache}" "-I${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-        -fno-fast-math -Os -c "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
+        -fno-fast-math -O1 -c "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
         -o "${rypath_light_geometry_air}"
     COMMAND "${RYPATH_XCRUN}" --sdk macosx metal "${rypath_metal_min_version}"
         -o "${rypath_light_geometry_library}" "${rypath_light_geometry_air}"

@@ -304,6 +304,18 @@ inline float3 local_direction(const thread Vertex &v, const thread Vertex &endpo
     }
     return v.frame.local(direction);
 }
+// Solid-angle proxy for the same represented path in PT's two strategies.
+inline float represented_scattering_pdf(const thread Vertex &v, const thread Vertex &previous,
+                                        const thread Vertex &next, Mode mode) {
+    const float3 before = infinite(previous) ? -previous.point.geometric_normal
+                                             : previous.point.position - v.point.position;
+    const float3 after =
+        infinite(next) ? -next.point.geometric_normal : next.point.position - v.point.position;
+    if (all(before == 0) || all(after == 0))
+        return 0;
+    return rypath_packet::pdf(v.bsdf, v.frame.local(normalize(before)),
+                              v.frame.local(normalize(after)), mode);
+}
 inline float vertex_pdf(const thread Resources &r, const thread Vertex &v,
                         const thread Vertex &previous, const thread Vertex &next, Mode mode) {
     if (v.type == light_vertex || infinite(v))
@@ -315,23 +327,9 @@ inline float vertex_pdf(const thread Resources &r, const thread Vertex &v,
     const float3 wi = normalize(delta);
     if (v.type == camera_vertex)
         return convert_density(camera_pdf(*r.alpha.parameters, v.point.position, wi), v, next);
-    const float3 before = infinite(previous) ? -previous.point.geometric_normal
-                                             : previous.point.position - v.point.position;
-    if (all(before == 0))
-        return 0;
-    const float3 wo = normalize(before);
-    float3 local_wo = v.frame.local(wo), local_wi = v.frame.local(wi);
-    if (v.pair_valid) {
-        if (previous.path_id == v.sampled_prev_id)
-            local_wo = v.sampled_wo_local;
-        else if (previous.path_id == v.sampled_next_id)
-            local_wo = v.sampled_wi_local;
-        if (next.path_id == v.sampled_next_id)
-            local_wi = v.sampled_wi_local;
-        else if (next.path_id == v.sampled_prev_id)
-            local_wi = v.sampled_wo_local;
-    }
-    const float pdf = rypath_packet::pdf(v.bsdf, local_wo, local_wi, mode);
+    // These densities are MIS proxies; sampled locals and joint weights are
+    // preserved separately and never replaced by this directional estimate.
+    const float pdf = represented_scattering_pdf(v, previous, next, mode);
     return convert_density(pdf, v, next);
 }
 inline float4 f(const thread Vertex &v, float3 direction, Mode mode) {
@@ -757,13 +755,7 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
         value = pt.beta * radiance;
         if (!p.bidirectional && t > 2 && !previous.delta) {
             const Vertex before = path_vertex(camera, t - 3);
-            const float3 wi = infinite(pt) ? -pt.point.geometric_normal
-                                           : normalize(pt.point.position - previous.point.position);
-            const float3 wo = infinite(before)
-                                  ? -before.point.geometric_normal
-                                  : normalize(before.point.position - previous.point.position);
-            sampled_pdf = rypath_packet::pdf(previous.bsdf, local_direction(previous, before, wo),
-                                             local_direction(previous, pt, wi), Mode::Radiance);
+            sampled_pdf = represented_scattering_pdf(previous, before, pt, Mode::Radiance);
             alternative_pdf = direct_pdf(r, previous, pt);
         }
     } else if (s == 1) {
@@ -785,10 +777,13 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
                 abs(dot(pt.point.shading_normal, direction));
         if (nonzero(value) && !visible(r, pt, sampled, sample))
             return 0;
-        if (!p.bidirectional && !sampled.delta_light)
-            alternative_pdf = rypath_packet::pdf(
-                pt.bsdf, pt.pair_valid ? pt.sampled_wo_local : pt.frame.local(pt.wo),
-                pt.frame.local(direction), Mode::Radiance);
+        if (!p.bidirectional && !sampled.delta_light) {
+            const Vertex before = path_vertex(camera, t - 2);
+            alternative_pdf = represented_scattering_pdf(pt, before, sampled, Mode::Radiance);
+            // Retain SampleLi's actual ratio; only recompute its MIS proxy in
+            // the same represented-geometry convention as the escape route.
+            sampled_pdf = direct_pdf(r, pt, sampled);
+        }
     } else {
         const Vertex qs = path_vertex(light, s - 1);
         if (!pt.connectible || !qs.connectible)

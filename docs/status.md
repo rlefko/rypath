@@ -17,15 +17,19 @@ directional shape/emission proposals and coating RNG domains. See the
 and explicit overrides, and the [sampling record](sampling-convergence-validation.md)
 for the original study.
 
-Current checkpoint format/identity/renderer/sampling/accumulation contracts are
-**3/12/22/7/2**. Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
+The working checkpoint format/identity/renderer/sampling/accumulation contracts
+are **3/12/23/7/2**; the published `2359867` revision remains renderer 22.
+Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
 validated native-triangle hints to eligible packet scenes, preserving procedural
 validation and stable closest-hit ordering. The new packet resource ABI and
 potentially recovered true intersections invalidate older checkpoints. Renderer
 21 corrects the internal proposal measure in layered directional-f MIS, with
 scalar and packet regression checks passing. Renderer 22 preserves invalid
 coating PDFs as failures and keeps outward ray origins within the supported
-normal-or-zero coordinate domain. Published revision `3c52b42` passes 227 tests
+normal-or-zero coordinate domain. The pending renderer-23 integration gives MIS
+queries and stored densities one represented-geometry convention, preserving
+sampled joint throughput. Its full validation remains in progress.
+Published revision `3c52b42` passes 227 tests
 in each supported preset, 164 portable tests, 65 Debug Metal tests with API
 validation, 237 Python tests, and GitHub CI. Host hashing and opt-in timing
 changes are also under validation; see the [closure record](pavilion-closure-validation.md).
@@ -88,8 +92,15 @@ now reproduce every renderer-22 Film byte and FLOAT component in fresh day/night
 controls. Their observed render loops take 7.59/11.60 seconds at 320×170/64 spp;
 these single API-enabled runs require warmed repeated confirmation. All 227
 Release tests pass on this host integration, including the updated native
-depth-limit tiling coverage. Heavy tails, the material-copy blocker and the
-BDPT/PT floor discrepancy remain open.
+depth-limit tiling coverage. A sole `-O1` compiler-mode change restores the full
+failing material context exactly. The current public regression reproduces the
+original `-Os` failure and qualifies exact `-O1` restoration. Generated-path,
+scene-quality and final performance validation remain pending; heavy tails and
+the BDPT/PT floor discrepancy remain open.
+This execution update is published at `2359867`; all 227 mandatory Debug pre-push
+tests and [CI run 44920623572](https://github.com/rlefko/rypath/actions/runs/44920623572)
+pass. The rebuilt modified-PBRT reference also passes its fixed numerical
+controls; fresh scene-quality comparisons remain pending.
 
 ## Validation boundaries
 

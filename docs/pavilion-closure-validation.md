@@ -85,6 +85,19 @@ proposal SHA-256 is
 Full scene comparisons and actual transport-strategy context checks remain
 separate requirements.
 
+A subsequent complete modified-PBRT rebuild includes all 77 library translation
+units and the CLI, so both explicit layered instantiations and inline consumers
+use the corrected coating proposals. It also retains the reviewed importance
+shading-normal and one-sided emission-support corrections. All 87 build commands
+succeed, with the archive's ordered object payloads checked and inputs unchanged.
+The retained stock helper reproduces all 28×8 fixture bits; the rebuilt corrected
+helper matches all 28 directional-f targets and preserves the other 196 fields.
+The angular-support test passes 6,216 checks over 3,089 queries, and the two fixed
+day/night debug paths pass their finite-contribution/support guards. This is
+modified-reference admission, not unmodified PBRT ground truth or a scene-quality
+result. The admission receipt is
+`ac552c67fa6d46624824fc68aa4ce12b8fe57ed407e9c6cf4ae7a412bc9849c3`.
+
 ## Cross-strategy density consistency
 
 A separate GPU probe calls the production BDPT balance heuristic for all three
@@ -115,11 +128,11 @@ An isolated canonical-density prototype also has actual-walker evidence: all
 427 observed strategy families satisfy the common rational partition, versus
 81 of 427 with the old density convention. The largest GPU weight discrepancy
 from the independent rational value is `1.28e-7`. Across 37 contexts and four
-pipeline variants per arm, observed material fields and within-arm sample/splat
+captures per context (two arms, each observed and unobserved), material fields and within-arm sample/splat
 controls pass; the material checks cover 7,952 coating lanes per arm. This
 supports the density repair but is not a scene-quality result.
 
-Adoption remains blocked by a separate constructed-context failure: four
+That prototype's adoption was blocked by a separate constructed-context failure: four
 nonzero-base cases lose all four nested reflectances in two stored vertex
 copies, changing twelve strategy lighting results. The original binary
 reproduces exactly. Enabling GPU validation restores precisely those 32 material
@@ -137,6 +150,54 @@ as a smaller failing reproducer and identifies sensitivity to the query block's
 presence. It does not diagnose a compiler defect or justify removing queries
 from production. The failed-preservation receipt is
 `c83f803c9a220d7928017142b0c4f3877302a1b30927f252cb337402eacfb72a`.
+
+Further reduction isolates the direct reverse-PDF query: the passing and failing
+intermediate kernels differ by five instructions, while their represented
+material constructors, full-size copies and lifetimes agree. This intermediate
+code precedes device-specific compilation and does not locate the hardware
+failure. A full-context `-fno-strict-aliasing` control removes every actual
+`!tbaa` and `!tbaa.struct` attachment, but reproduces all original outputs and
+80 typed vertex slots exactly, including the same incorrect material values.
+All four native commands complete; both physical-restoration checks fail.
+Other alias mechanisms remain enabled. The rejected control's receipt is
+`84486de21a79d1fd68afc164189c2a9e8a5639fcdf019a6109ca69f2cbb0e320`.
+That control does not establish a compiler workaround.
+
+A subsequent sole `-Os` to `-O1` change in both original full shader contexts
+restores exactly the 32 material and 96 physical-response words. All other
+368-word outputs and all 80 paired typed vertex slots match their respective
+controls; all twelve nonzero physical records and all ten native/report commands
+pass. Original failing and positive binaries first reproduce their entire output
+and scratch buffers. The actual AIR loses `optsize` while preserving the target,
+layout and strict floating-point options. This qualifies a compiler-mode
+workaround candidate, without identifying a compiler defect or a device-code
+mechanism. The runtime receipt is
+`c418c2d575db627c884af34c77e04ba64103d90af6aa21f71e9dd4fe3a37b15c`.
+Current-source regression, generated-path, scene-quality and performance
+qualification remain separate requirements. The working integration limits
+`-O1` to the full renderer translation unit and its matching probe.
+
+The current renderer-23 public regression preserves the full original context,
+including its generated path and trailing PDF queries. A separate read-only
+kernel extracts 220 explicit scalar fields from each of 40 stored vertices;
+scratch bytes must remain unchanged across that readback. Compiling this same
+source with `-Os` reproduces all 2,944 original failing output words and all
+8,800 typed fields, with only the declared renderer-21 to renderer-23 metadata
+translation. Compiling with the production `-O1` option restores exactly the
+96 physical words and 32 nested reflectances. Every other output and typed field
+stays exact. Both command buffers complete with API validation enabled and GPU
+validation disabled; input immutability, guards and diagnostic inventories pass.
+The paired qualification receipt is
+`4246f690e545cdde48ace7b65d26c7d3de66e7e73d08aa17f2f5203402b09fd5`.
+
+`metal.canonical_full_context` always requires the correct physical result.
+Its 128 literal physical words expand to 192 strategy values and come from the
+independently retained working renderer-21 positive context, authenticated before
+the current run. They are a fixed M4 Max/toolchain regression witness, not a
+cross-device accuracy oracle. The whole-output negative/positive qualification
+above separately establishes that this public port retains the original failure.
+This admits the material workaround; generated-path, scene-quality and final
+performance acceptance still require the current Release build.
 
 ## Packet density and origin validity
 
