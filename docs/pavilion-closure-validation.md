@@ -174,7 +174,7 @@ workaround candidate, without identifying a compiler defect or a device-code
 mechanism. The runtime receipt is
 `c418c2d575db627c884af34c77e04ba64103d90af6aa21f71e9dd4fe3a37b15c`.
 Current-source regression, generated-path, scene-quality and performance
-qualification remain separate requirements. The working integration limits
+qualification remain separate requirements. That integration limited
 `-O1` to the full renderer translation unit and its matching probe.
 
 The current renderer-23 public regression preserves the full original context,
@@ -434,8 +434,31 @@ retain their existing validity checks. The direct finalizer and BDPT recurrence
 are unchanged. This changes the numerical error domain: PT may accept a path
 previously rejected solely by an unused canonical query. It is not a universal
 renderer-23 equivalence claim. The target physical model, joint throughput and
-sampling remain unchanged. Current-source transport, image and speed checks
-are required before admitting this optimization.
+sampling remain unchanged.
+
+At `d7d10b2`, eight focused Release tests pass with API validation, including
+the full material context and invalid sampled-density checks. The generated-path
+check passes all 373 observed continuous strategy records; its inverse control passes
+81. Literal PT rows retain zero unused stored densities and do not manufacture
+virtual BDPT families. No natural invalid-unused-query witness has been found.
+Both 320×170/64-spp day/night controls retain every renderer-23 Film byte and
+raw/clamped FLOAT bit. The fixed daytime series still fails both speed gates:
+8.213380 seconds versus fast-v5's 7.096472 (ratio 1.157389), with whole-process
+means of 24.112730 and 52.109692 seconds. All twelve same-arm image audits pass.
+The timing receipt is
+`8b3420e49bfbf414f4838df94780a3864f3e8c130357308b2df3c242f37c2b9a`.
+
+A subsequent isolated compiler control changes only the two full-context
+translation units from `-O1` to `-O2`, preserving strict FP, source, host and
+ABI. Both actual AIR exports show eliminated redundant loads and simplified
+control flow, rather than only metadata changes. Fresh captures match all
+2,944 output words and 8,800 typed material fields exactly, including the prior
+physical regression, with API validation enabled. Its receipt is
+`311db50532b34e311b114b3b8f5688a084bd79fd10c6280c9801492c62d62421`.
+The working integration adopts these two flags for further path, scene and
+speed qualification; this bounded material result establishes neither a speedup
+nor full numerical equivalence. All other shader optimization modes and
+renderer contract 24 remain unchanged.
 
 ## Quality protocol
 
@@ -462,8 +485,9 @@ the same 3,766-byte empty and 67,499-byte populated fixtures; only the tagged
 renderer field changes. Both updated identity fixtures pass in the focused
 Release rerun. This test-only correction changes no rendering code. Published
 `6828383` also passes all 228 mandatory Debug tests. The generated-path and
-day/night sanity results above apply to renderer 23, not the pending renderer-24
-optimization. Renderer-24 wire and identity goldens are derived independently
+day/night sanity results in that publication apply to renderer 23; fresh
+renderer-24 evidence is reported separately above. Renderer-24 wire and identity
+goldens are derived independently
 after reproducing all three prior renderer-23 hashes; only the renderer field
 changes.
 
