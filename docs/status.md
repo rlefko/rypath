@@ -18,7 +18,7 @@ and explicit overrides, and the [sampling record](sampling-convergence-validatio
 for the original study.
 
 The working checkpoint format/identity/renderer/sampling/accumulation contracts
-are **3/12/24/7/2**; published `6828383` uses renderer 23.
+are **3/12/24/7/2**, including published `6a645d3`.
 Renderer 19 repairs full-sphere pole clipping. Renderer 20 adds
 validated native-triangle hints to eligible packet scenes, preserving procedural
 validation and stable closest-hit ordering. The new packet resource ABI and
@@ -40,6 +40,9 @@ Its daytime loop remains 15.74% slower than fast-v5. A subsequent isolated
 `-O2` compiler control preserves all 2,944 output words and 8,800 typed material
 fields from `-O1`, but its production packet-render test times out at 300 seconds
 while Metal compiles. That option is rejected; the working source retains `-O1`.
+The next execution change specializes packet pipelines for the scene's fixed
+PT/BDPT choice. Existing probes retain runtime selection; numerical and timing
+qualification of this specialization is pending.
 Published revision `3c52b42` passes 227 tests
 in each supported preset, 164 portable tests, 65 Debug Metal tests with API
 validation, 237 Python tests, and GitHub CI. Host hashing and opt-in timing
@@ -121,6 +124,8 @@ Published `6828383` passes all 228 mandatory Debug tests. Its Linux CI Debug and
 Release presets pass all 164 tests each, but the combined job reaches its
 ten-minute limit during sanitizer tests. The workflow now gives each preset a
 separate ten-minute job and retains the required aggregate Foundation Gate.
+Published `6a645d3` passes all 228 Debug tests with that fix and renderer 24;
+[its CI run](https://github.com/rlefko/rypath/actions/runs/44938487943) is in progress.
 
 ## Validation boundaries
 

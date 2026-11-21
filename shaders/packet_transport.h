@@ -92,17 +92,18 @@ inline float4 environment_radiance(const thread Resources &r, float3 direction,
 }
 inline float environment_pdf(const thread Resources &r, float3 direction) {
     return environment_image_enabled
-               ? rypath_image_light::environment_pdf(*r.alpha.graph.parameters, r.environment_cdf,
-                                                     direction, !r.alpha.parameters->bidirectional)
-               : (r.alpha.parameters->bidirectional ? 1 / (4 * pi) : 0);
+               ? rypath_image_light::environment_pdf(
+                     *r.alpha.graph.parameters, r.environment_cdf, direction,
+                     !packet_bidirectional_enabled(*r.alpha.parameters))
+               : (packet_bidirectional_enabled(*r.alpha.parameters) ? 1 / (4 * pi) : 0);
 }
 inline bool sample_environment(const thread Resources &r, float2 u, thread float3 &direction,
                                thread float &pdf) {
     if (environment_image_enabled)
-        return rypath_image_light::sample_environment(*r.alpha.graph.parameters, r.environment_cdf,
-                                                      u, direction, pdf,
-                                                      !r.alpha.parameters->bidirectional);
-    if (!r.alpha.parameters->bidirectional) {
+        return rypath_image_light::sample_environment(
+            *r.alpha.graph.parameters, r.environment_cdf, u, direction, pdf,
+            !packet_bidirectional_enabled(*r.alpha.parameters));
+    if (!packet_bidirectional_enabled(*r.alpha.parameters)) {
         direction = float3(0, 0, 1);
         pdf = 0;
         return true;
@@ -753,7 +754,7 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
             return 0;
         }
         value = pt.beta * radiance;
-        if (!p.bidirectional && t > 2 && !previous.delta) {
+        if (!packet_bidirectional_enabled(p) && t > 2 && !previous.delta) {
             const Vertex before = path_vertex(camera, t - 3);
             sampled_pdf = represented_scattering_pdf(previous, before, pt, Mode::Radiance);
             alternative_pdf = direct_pdf(r, previous, pt);
@@ -777,7 +778,7 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
                 abs(dot(pt.point.shading_normal, direction));
         if (nonzero(value) && !visible(r, pt, sampled, sample))
             return 0;
-        if (!p.bidirectional && !sampled.delta_light) {
+        if (!packet_bidirectional_enabled(p) && !sampled.delta_light) {
             const Vertex before = path_vertex(camera, t - 2);
             alternative_pdf = represented_scattering_pdf(pt, before, sampled, Mode::Radiance);
             // Retain SampleLi's actual ratio; only recompute its MIS proxy in
@@ -799,8 +800,8 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
             return 0;
     }
     // A NaN alternative must not select the legal zero-support unit weight.
-    if (!p.bidirectional && (!isfinite(sampled_pdf) || sampled_pdf < 0 ||
-                             !isfinite(alternative_pdf) || alternative_pdf < 0)) {
+    if (!packet_bidirectional_enabled(p) && (!isfinite(sampled_pdf) || sampled_pdf < 0 ||
+                                             !isfinite(alternative_pdf) || alternative_pdf < 0)) {
         sample.status = wire::invalid_arithmetic;
         return 0;
     }
@@ -809,7 +810,8 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
         return 0;
     }
     if (nonzero(value)) {
-        const float weight = p.bidirectional       ? mis_weight(r, light, camera, sampled, s, t)
+        const float weight = packet_bidirectional_enabled(p)
+                                 ? mis_weight(r, light, camera, sampled, s, t)
                              : alternative_pdf > 0 ? power_weight(sampled_pdf, alternative_pdf)
                                                    : 1;
         if (!(weight >= 0 && weight <= 1) || !isfinite(weight)) {

@@ -2365,6 +2365,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             const bool passthrough = packet_visibility_requires_closest(scene);
             [constants setConstantValue:&passthrough type:MTLDataTypeBool atIndex:18];
             [constants setConstantValue:&impl->native_hint_mode type:MTLDataTypeUInt atIndex:19];
+            const bool bidirectional = impl->parameters.bidirectional != 0;
+            [constants setConstantValue:&bidirectional type:MTLDataTypeBool atIndex:20];
         }
         RenderTimingScope pipeline_timing(timings, RenderTimingPhase::pipeline);
         const auto pipeline_start = std::chrono::steady_clock::now();

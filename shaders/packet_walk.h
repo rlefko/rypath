@@ -170,7 +170,8 @@ inline bool finalize_walk_densities(const thread Resources &r, device uchar *pat
                 v.wo = -incoming.direction;
                 v.beta = beta;
                 // PT does not consume stored BDPT MIS densities.
-                if (p.bidirectional && !finalize_walk_densities(r, path, count, v, mode)) {
+                if (packet_bidirectional_enabled(p) &&
+                    !finalize_walk_densities(r, path, count, v, mode)) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }
@@ -337,7 +338,8 @@ inline bool finalize_walk_densities(const thread Resources &r, device uchar *pat
         const float sampled_area_pdf = convert_density(pdf, prev, v);
         // Retain sampled-area validation even when PT skips unused BDPT storage.
         if (!isfinite(sampled_area_pdf) || sampled_area_pdf < 0 ||
-            (p.bidirectional && !finalize_walk_densities(r, path, count, v, mode))) {
+            (packet_bidirectional_enabled(p) &&
+             !finalize_walk_densities(r, path, count, v, mode))) {
             sample.status = wire::invalid_arithmetic;
             break;
         }

@@ -465,6 +465,20 @@ compiler process have exited. This rejects `-O2`; no scene or speed result is
 claimed for it, and the working source restores `-O1`. All other shader
 optimization modes and renderer contract 24 remain unchanged.
 
+The next execution-only change binds optional Metal function constant 20 to the
+saved scene parameter's PT/BDPT truth value. All fourteen integrator-dependent
+shader conditions use the same predicate, including environment proposals and
+MIS validity checks. The saved choice is immutable across sample requests.
+When the constant is unset, standalone probes retain the original runtime
+predicate. This uses Apple's documented
+[function specialization](https://developer.apple.com/documentation/metal/using-function-specialization-to-build-pipeline-variants)
+and the optional-constant query in section 5.8.1 of the
+[Metal language specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf).
+It changes no model, random draws, arithmetic formulas, storage layout or
+checkpoint contract. Current-source material, generated-path, exact day/night
+and repeated-speed qualification remain pending; no compiler elimination or
+performance claim follows from the source change alone.
+
 ## Quality protocol
 
 The separately versioned v2 runner requires 64 fresh independent replicates per

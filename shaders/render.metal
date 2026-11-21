@@ -63,6 +63,8 @@ constant bool packet_fourier_enabled [[function_constant(16)]];
 constant bool packet_coated_enabled [[function_constant(17)]];
 // Packet visibility needs closest traversal only when accepted surfaces can pass through.
 constant bool packet_visibility_passthrough [[function_constant(18)]];
+// Unset in standalone probes to preserve their runtime integrator selection.
+constant bool packet_bidirectional [[function_constant(20)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -3033,6 +3035,11 @@ kernel void rypath_qmc_probe(const device sobol::Tables &tables [[buffer(0)]],
 }
 
 #define RYPATH_PACKET_RENDER 1
+inline bool packet_bidirectional_enabled(constant wire::Parameters &p) {
+    return is_function_constant_defined(packet_bidirectional) ? packet_bidirectional
+                                                              : bool(p.bidirectional);
+}
+
 #include "packet_transport.h"
 
 kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
@@ -3078,7 +3085,8 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     // light contributions need a separate full-film sequence to avoid
     // tracing and splatting the same light sample from multiple owners.
     ulong light_index = index;
-    if (p.sampler_kind == wire::halton_sampler && p.bidirectional && p.max_depth > 0) {
+    if (p.sampler_kind == wire::halton_sampler && packet_bidirectional_enabled(p) &&
+        p.max_depth > 0) {
         const ulong absolute_sample = (ulong(sample.sample_high) << 32) | sample.sample_low;
         light_index = qmc::halton_light_index(p.width, p.height, sample.pixel % p.width,
                                               sample.pixel / p.width, absolute_sample);
@@ -3123,7 +3131,7 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     if (all(isfinite(incoming.direction)) && camera_pdf >= 0 && isfinite(camera_pdf)) {
         camera_count = bdpt::random_walk(resources, sample, lambda, incoming, float4(1), camera_pdf,
                                          camera, 1, p.max_depth + 2, bdpt::Mode::Radiance, index);
-        if (p.bidirectional && sample.status == wire::success)
+        if (packet_bidirectional_enabled(p) && sample.status == wire::success)
             light_count = bdpt::light_path(resources, sample, lambda, light_index, light);
     } else {
         sample.status = wire::invalid_arithmetic;
@@ -3131,12 +3139,13 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     float4 radiance(0);
     uint splat_count = 0;
     for (uint t = 2; t <= camera_count && sample.status == wire::success; ++t) {
-        const uint s_max = min(p.bidirectional ? max(light_count, 1u) : 1u, p.max_depth + 2 - t);
+        const uint s_max =
+            min(packet_bidirectional_enabled(p) ? max(light_count, 1u) : 1u, p.max_depth + 2 - t);
         for (uint s = 0; s <= s_max && sample.status == wire::success; ++s)
             radiance +=
                 bdpt::camera_connection(resources, sample, lambda, index, light, camera, s, t);
     }
-    if (p.bidirectional) {
+    if (packet_bidirectional_enabled(p)) {
         for (uint s = 2; s <= light_count && sample.status == wire::success; ++s) {
             packet_storage::Splat splat{};
             if (bdpt::camera_splat(resources, sample, lambda, light_index, light, camera, s, splat))
