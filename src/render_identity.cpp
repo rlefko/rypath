@@ -2,20 +2,46 @@
 #include "render_identity.hpp"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <string_view>
 #include <type_traits>
 
 namespace rypath {
 namespace {
-// No native object representation enters this stream. All sizes are u64 LE,
+// No aggregate object representation enters this stream. All sizes are u64 LE,
 // enums u32 LE, booleans/presence u8, and IEEE float/double words LE. Each
 // named field is prefixed by its UTF-8 name with a u64 byte length; sequences
 // have a u64 element count. Fixed arrays also carry their count.
 class Canonical {
     Sha256 hash_;
-    void byte(std::uint8_t x) { hash_.update(std::span<const std::uint8_t>(&x, 1)); }
+    std::array<std::uint8_t, 8192> buffer_{};
+    std::size_t used_ = 0;
+    void flush() {
+        hash_.update(std::span(buffer_).first(used_));
+        used_ = 0;
+    }
+    void append(std::span<const std::uint8_t> bytes) {
+        while (!bytes.empty()) {
+            if (used_ == 0 && bytes.size() >= buffer_.size()) {
+                hash_.update(bytes);
+                return;
+            }
+            const auto n = std::min(bytes.size(), buffer_.size() - used_);
+            std::copy_n(bytes.begin(), n, buffer_.begin() + static_cast<std::ptrdiff_t>(used_));
+            used_ += n;
+            bytes = bytes.subspan(n);
+            if (used_ == buffer_.size())
+                flush();
+        }
+    }
+    void byte(std::uint8_t x) {
+        buffer_[used_++] = x;
+        if (used_ == buffer_.size())
+            flush();
+    }
 
   public:
     template <typename T>
@@ -28,7 +54,14 @@ class Canonical {
             bytes[i] = static_cast<std::uint8_t>(bits & 255);
             bits >>= 8;
         }
-        hash_.update(bytes);
+        if (buffer_.size() - used_ < sizeof(T))
+            flush();
+        // Stage the fixed-width word so each byte store cannot alias the
+        // adjacent used_ counter. The compiler can emit one word-sized copy.
+        std::memcpy(buffer_.data() + used_, bytes.data(), bytes.size());
+        used_ += bytes.size();
+        if (used_ == buffer_.size())
+            flush();
     }
     void value(bool x) { byte(x ? 1 : 0); }
     void value(float x) { value(std::bit_cast<std::uint32_t>(x)); }
@@ -40,7 +73,7 @@ class Canonical {
     }
     void tag(std::string_view name) {
         value(static_cast<std::uint64_t>(name.size()));
-        hash_.update({reinterpret_cast<const std::uint8_t *>(name.data()), name.size()});
+        append({reinterpret_cast<const std::uint8_t *>(name.data()), name.size()});
     }
     template <typename T> void field(std::string_view name, const T &x) {
         tag(name);
@@ -51,8 +84,22 @@ class Canonical {
     template <typename T> void value(const std::vector<T> &x) { sequence(x); }
     template <typename T> void sequence(const T &x) {
         value(static_cast<std::uint64_t>(std::size(x)));
-        for (const auto &element : x)
-            value(element);
+        using Element = std::remove_cvref_t<decltype(*std::data(x))>;
+        // These primitive arrays have exactly the canonical LE bit encoding.
+        // Nested arrays and structures still serialize their own counts/tags;
+        // no padding, pointers, enum widths or bool representation enter it.
+        if constexpr (std::endian::native == std::endian::little &&
+                      (std::is_same_v<Element, std::uint8_t> ||
+                       std::is_same_v<Element, std::uint16_t> ||
+                       std::is_same_v<Element, std::uint32_t> ||
+                       std::is_same_v<Element, std::uint64_t> || std::is_same_v<Element, float> ||
+                       std::is_same_v<Element, double>)) {
+            append({reinterpret_cast<const std::uint8_t *>(std::data(x)),
+                    std::size(x) * sizeof(Element)});
+        } else {
+            for (const auto &element : x)
+                value(element);
+        }
     }
     template <typename T> void value(const std::optional<T> &x) {
         value(x.has_value());
@@ -362,7 +409,10 @@ class Canonical {
         FIELD(randomization);
     }
 #undef FIELD
-    Sha256Digest finish() { return hash_.finish(); }
+    Sha256Digest finish() {
+        flush();
+        return hash_.finish();
+    }
 };
 } // namespace
 Sha256Digest render_identity(const RenderScene &scene, const RenderSettings &settings) {

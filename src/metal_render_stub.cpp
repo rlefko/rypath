@@ -31,6 +31,14 @@ RenderBuildResult build_metal_renderer(const RenderScene &, const std::filesyste
     };
 }
 
+RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request, RenderTimings &) {
+    return sample(request);
+}
+RenderBuildResult build_metal_renderer(const RenderScene &scene,
+                                       const std::filesystem::path &library, RenderTimings *) {
+    return build_metal_renderer(scene, library);
+}
+
 ShadingNormalProbeResult probe_shading_normal(const std::vector<shading_normal_probe::Query> &,
                                               const std::filesystem::path &) {
     return {.status = MetalStatus::not_built,

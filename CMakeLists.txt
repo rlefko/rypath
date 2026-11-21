@@ -136,7 +136,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${rypath_prime_t
 
 add_library(rypath_render STATIC src/render.cpp src/packet_film.cpp src/area_power.cpp src/sampling.cpp src/gaussian_filter.cpp src/triangle_attributes.cpp
     src/texture_footprint.cpp src/reflectance_curve.cpp src/texture_graph.cpp
-    src/light_sampling.cpp)
+    src/light_sampling.cpp src/render_timings.cpp)
 set_source_files_properties(src/gaussian_filter.cpp PROPERTIES COMPILE_OPTIONS
     "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off>")
 target_include_directories(rypath_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"

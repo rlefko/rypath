@@ -30,6 +30,11 @@ RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &s
                                const CheckpointOptions &options, const std::filesystem::path &image,
                                std::span<const std::filesystem::path> inputs, std::string build,
                                const std::function<void(std::uint64_t)> &progress = {});
+RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &settings,
+                               const CheckpointOptions &options, const std::filesystem::path &image,
+                               std::span<const std::filesystem::path> inputs, std::string build,
+                               const std::function<void(std::uint64_t)> &progress,
+                               RenderTimings *timings);
 std::string checkpoint_provenance(std::span<const CheckpointSegment> segments);
 
 } // namespace rypath

@@ -7,6 +7,8 @@
 
 namespace rypath {
 
+class RenderTimings;
+
 struct RenderRequest {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
@@ -45,6 +47,7 @@ class MetalRenderScene {
     MetalRenderScene(const MetalRenderScene &) = delete;
     MetalRenderScene &operator=(const MetalRenderScene &) = delete;
     RenderSamplesResult sample(const RenderRequest &request);
+    RenderSamplesResult sample(const RenderRequest &request, RenderTimings &timings);
 
   private:
     struct Impl;
@@ -52,6 +55,8 @@ class MetalRenderScene {
     explicit MetalRenderScene(std::unique_ptr<Impl> impl);
     friend RenderBuildResult build_metal_renderer(const RenderScene &,
                                                   const std::filesystem::path &);
+    friend RenderBuildResult build_metal_renderer(const RenderScene &,
+                                                  const std::filesystem::path &, RenderTimings *);
 };
 struct RenderBuildResult {
     GeometryStatus status = GeometryStatus::failure;
@@ -62,6 +67,9 @@ struct RenderBuildResult {
 };
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path = {});
+RenderBuildResult build_metal_renderer(const RenderScene &scene,
+                                       const std::filesystem::path &library_path,
+                                       RenderTimings *timings);
 
 // Fixed-input native numerical validation; no scene/AS or transport state changes.
 struct ShadingNormalProbeResult {
@@ -83,6 +91,7 @@ struct RenderControl {
     // A diagnostic fails the render while preserving the committed Film.
     std::function<std::string(const Film &, const MetalDeviceInfo &)> committed;
     std::function<void(std::uint64_t)> progress;
+    RenderTimings *timings = nullptr;
 };
 struct RenderResult {
     GeometryStatus status = GeometryStatus::failure;

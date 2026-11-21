@@ -236,11 +236,28 @@ rypath_configure_host_target(rypath_checkpoint_tests)
 add_test(NAME render.checkpoint_codec COMMAND rypath_checkpoint_tests)
 set_tests_properties(render.checkpoint_codec PROPERTIES TIMEOUT 30)
 
+foreach(implementation IN ITEMS native portable)
+    add_executable(rypath_sha256_${implementation}_tests sha256_stream_tests.cpp ../src/sha256.cpp)
+    target_include_directories(rypath_sha256_${implementation}_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    if(implementation STREQUAL "portable")
+        target_compile_definitions(rypath_sha256_${implementation}_tests PRIVATE RYPATH_SHA256_FORCE_PORTABLE=1)
+    endif()
+    rypath_configure_host_target(rypath_sha256_${implementation}_tests)
+    add_test(NAME render.sha256_${implementation} COMMAND rypath_sha256_${implementation}_tests)
+    set_tests_properties(render.sha256_${implementation} PROPERTIES TIMEOUT 30)
+endforeach()
+
 add_executable(rypath_render_job_tests render_job_tests.cpp)
 target_link_libraries(rypath_render_job_tests PRIVATE rypath_metal_backend)
 rypath_configure_host_target(rypath_render_job_tests)
 add_test(NAME render.checkpoint_job COMMAND rypath_render_job_tests)
 set_tests_properties(render.checkpoint_job PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_render_timings_tests render_timings_tests.cpp)
+target_link_libraries(rypath_render_timings_tests PRIVATE rypath_metal_backend)
+rypath_configure_host_target(rypath_render_timings_tests)
+add_test(NAME render.timings COMMAND rypath_render_timings_tests)
+set_tests_properties(render.timings PROPERTIES TIMEOUT 30)
 
 add_executable(rypath_render_identity_tests render_identity_tests.cpp)
 target_link_libraries(rypath_render_identity_tests PRIVATE rypath_checkpoint rypath_metal_backend)
@@ -343,7 +360,7 @@ string(CONCAT help_text
     "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
     "              [--stl-colors auto|viscam|magics]\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
-    "           [--resource-profile standard|large] [--raw-output PATH.exr]\n"
+    "           [--resource-profile standard|large] [--raw-output PATH.exr] [--timings PATH.json]\n"
     "           [--material-seed 0]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
     "              [--samples 128] [--batch-size 8] [--seed 1]\n"

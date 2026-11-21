@@ -3,6 +3,7 @@
 #include "metal_render.hpp"
 #include "render_identity.hpp"
 
+#include <bit>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -25,6 +26,44 @@ void identity_checks() {
                 "1940f815e7ba9ef2139b11d8715565fcdc314037879f365286b6f84b23c9cfd8",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
+    {
+        // Retained pre-buffering canonical serializer golden. More than8192
+        // bytes, nested counts, shared content, and exact nonfinite/-zero bits.
+        RenderScene populated;
+        auto image = std::make_shared<ImagePyramid>();
+        image->encoding = ImageEncoding{};
+        image->wrap = ImageWrap{};
+        image->levels = {{65, 65, 0}};
+        image->texels.resize(4097);
+        for (std::size_t i = 0; i < image->texels.size(); ++i)
+            image->texels[i] = static_cast<std::uint32_t>(i * 1664525 + 1013904223);
+        auto transfer = std::make_shared<std::array<float, 256>>();
+        for (std::size_t i = 0; i < transfer->size(); ++i)
+            (*transfer)[i] = std::bit_cast<float>(static_cast<std::uint32_t>(i * 1234567));
+        (*transfer)[0] = std::bit_cast<float>(std::uint32_t{0x80000000});
+        (*transfer)[1] = std::bit_cast<float>(std::uint32_t{0x7fc12345});
+        (*transfer)[2] = std::bit_cast<float>(std::uint32_t{0x7f800000});
+        image->custom_transfer = transfer;
+        populated.image_textures.resize(3);
+        for (auto &texture : populated.image_textures)
+            texture.image = image;
+        populated.geometry.meshes.resize(1);
+        auto &positions = populated.geometry.meshes[0].positions;
+        positions.resize(257);
+        for (std::size_t i = 0; i < positions.size(); ++i)
+            positions[i] = {static_cast<float>(i), -static_cast<float>(i),
+                            std::bit_cast<float>(std::uint32_t{0x80000000})};
+        const auto expected = render_identity(populated, settings);
+        require(digest_hex(expected) ==
+                    "97bfdb1ebd431147d91f44e8f855e73c2aa60f35a29968f29d077683d6851f97",
+                "canonical populated identity golden");
+        populated.image_textures[1].image = std::make_shared<ImagePyramid>(*image);
+        require(render_identity(populated, settings) == expected,
+                "canonical content independent of sharing topology");
+        (*transfer)[0] = 0;
+        require(render_identity(populated, settings) != expected,
+                "canonical primitive bulk stream preserves negative zero");
+    }
     scene.exposure = 42;
     settings.batch_size = 19;
     require(baseline == render_identity(scene, settings), "presentation and scheduling excluded");

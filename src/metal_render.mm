@@ -5,6 +5,7 @@
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
 #include "native_hint_budget.hpp"
+#include "render_timings.hpp"
 
 #include "environment_sampling.hpp"
 #include "gaussian_filter.hpp"
@@ -1746,7 +1747,8 @@ struct MetalRenderScene::Impl {
         return upload_graph(scene);
     }
 
-    RenderSamplesResult sample(const RenderRequest &request) {
+    RenderSamplesResult sample(const RenderRequest &request, RenderTimings *timings = nullptr) {
+        RenderTimingScope setup(timings, RenderTimingPhase::dispatch_setup);
         RenderSamplesResult result;
         result.diagnostic = validate_request(request);
         if (!result.diagnostic.empty()) {
@@ -1946,7 +1948,14 @@ struct MetalRenderScene::Impl {
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
         [encoder endEncoding];
-        result.diagnostic = metal::complete(command, "Metal render sample dispatch");
+        setup.close();
+        result.diagnostic = render_timed(timings, RenderTimingPhase::dispatch_wait, [&] {
+            return metal::complete(command, "Metal render sample dispatch");
+        });
+        if (timings)
+            timings->gpu_command(command.status == MTLCommandBufferStatusCompleted,
+                                 command.GPUStartTime, command.GPUEndTime);
+        RenderTimingScope decode(timings, RenderTimingPhase::dispatch_decode);
         if (!result.diagnostic.empty()) {
             return result;
         }
@@ -2092,6 +2101,13 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request) {
         return impl_->sample(request);
     }
 }
+RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request, RenderTimings &timings) {
+    @autoreleasepool {
+        if (!impl_)
+            return {.diagnostic = "Metal render scene is moved-from", .samples = {}};
+        return impl_->sample(request, &timings);
+    }
+}
 
 namespace {
 // Scan all materials, including unused entries and mix children. Prepared
@@ -2108,6 +2124,11 @@ bool packet_visibility_requires_closest(const RenderScene &scene) {
 
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path) {
+    return build_metal_renderer(scene, library_path, nullptr);
+}
+RenderBuildResult build_metal_renderer(const RenderScene &scene,
+                                       const std::filesystem::path &library_path,
+                                       RenderTimings *timings) {
     @autoreleasepool {
         RenderBuildResult result;
         try {
@@ -2331,6 +2352,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             [constants setConstantValue:&passthrough type:MTLDataTypeBool atIndex:18];
             [constants setConstantValue:&impl->native_hint_mode type:MTLDataTypeUInt atIndex:19];
         }
+        RenderTimingScope pipeline_timing(timings, RenderTimingPhase::pipeline);
         const auto pipeline_start = std::chrono::steady_clock::now();
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,
                                               intersection, constants);
@@ -2347,6 +2369,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         result.pipeline_seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - pipeline_start)
                 .count();
+        pipeline_timing.close();
         impl->environment = upload(impl->device, scene.environment);
         if (impl->environment == nil) {
             result.diagnostic = "Metal render environment buffer allocation failed";
