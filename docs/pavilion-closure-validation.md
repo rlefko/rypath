@@ -465,7 +465,7 @@ compiler process have exited. This rejects `-O2`; no scene or speed result is
 claimed for it, and the working source restores `-O1`. All other shader
 optimization modes and renderer contract 24 remain unchanged.
 
-The next execution-only change binds optional Metal function constant 20 to the
+The subsequent execution-only change binds optional Metal function constant 20 to the
 saved scene parameter's PT/BDPT truth value. All fourteen integrator-dependent
 shader conditions use the same predicate, including environment proposals and
 MIS validity checks. The saved choice is immutable across sample requests.
@@ -496,7 +496,7 @@ inputs, order, limits and gates, without selecting from partial timing values.
 
 These are fixed-sample host loop/process measurements, not a GPU hotspot or
 image-quality conclusion. Final full timing and fresh quality acceptance remain
-open. Current evidence receipts have SHA-256:
+open. The specialized renderer-24 evidence receipts have SHA-256:
 
 - Completed Release: `f07a3b6d7d276613288b25bbe2c6ede40593022d0b5c8b10d373968203a73242`
 - Generic context: `90ffd2e19d8557107b5995f0e2591ebe88b5188f6da3f9c2e5a6ef98a7689d95`
@@ -521,6 +521,90 @@ submission size in this scene and rejects that candidate; it does not isolate
 occupancy, cache behavior, buffer initialization or a shader hotspot. GPU and
 host-wait intervals overlap and must not be added. Complete execution SHA-256:
 `bb81afd45308f110381ecd44dc5d6f247e263785663644e1aec1ad9051383a10`.
+
+## Compact packet vertex storage
+
+Local revision `e8838e6` retains O1, lazy PT densities and optional PT/BDPT
+specialization, while reducing the opaque per-vertex reservation from 2,048 to
+1,024 bytes. The actual vertex remains 1,008 bytes with 16-byte alignment;
+Parameters, Result and Splat layouts remain unchanged. At depth five the lane
+stride falls to 13,552 bytes. The existing admitted workspace and 65,536-owner
+request ceiling then accommodate the complete 320×170 Film in one command per
+absolute sample. Renderer contract 25 rejects the incompatible old storage
+layout; the tuple is **3/12/25/7/2**. Scattering formulas, random draws, sample
+order and physical parameters remain unchanged.
+
+All eleven focused Release tests pass, including the GPU checks with Metal API
+validation, and all twelve independent decoder tests pass. The independent
+serializer first reproduces all three renderer-24 goldens before deriving 25.
+The actual renderer-25 host rejects a renderer-24 library, and the preserved
+renderer-24 host rejects a renderer-25 library. The full generic context retains
+all **2,936 non-version output words and 8,800 typed material fields** exactly; only eight
+renderer metadata words differ. This is focused current-source evidence, not a
+claim that the complete suite or CI has run on this local revision.
+
+Two earlier focused attempts each pass ten of eleven tests, with all GPU tests
+passing, and expose stale assumptions in the host `render.packet_driver`
+fixtures. Both failed attempts and their original receipts remain unchanged:
+
+- The cancellation fixture retained 18 calls from the old 9,993-pixel fixture.
+  The new width 19,808 and capacity 1,234 require 17 tiles per sample and 34 calls for the
+  complete two-sample transaction. The corrected test derives the ceiling count
+  and requires multiple tiles plus a partial tail. Cancellation still waits for
+  the transaction boundary, every pixel still has count two, and resumed Film
+  equality and rollback checks remain.
+- The depth-64 fixture retained width 1,100, below the compact baseline
+  capacity of 1,969. Its corrected width is capacity plus one, 1,970, forcing
+  four calls over two absolute samples. Per-request capacity guards remain and
+  every pixel must have count two. No production limit or depth is relaxed.
+
+These are test-only corrections, not accepted rendering discrepancies. Their
+retained failure receipts have SHA-256
+`97a46929ffa51c40dbe8574c273499dbefc608886736be84fc9f9ac26402a0d1`
+and `0054ea7d6eea7f62238e1706bc438973f73aae79bff1024d2ceac2744b991703`.
+The subsequent complete focused run passes all eleven tests.
+
+The fresh compact walker captures all 37 fixtures and four observed/unobserved
+canonical/inverse pipelines. All **373/373** canonical strategy records share
+the exact rational family, versus **81/373** for the matched mixed-density
+inverse. Maximum absolute canonical hardware-weight error is
+**1.2760500966990662e-7**. Both arms retain all material-copy/physical controls,
+7,548 checked coating lanes per arm, and the literal PT fixture's eight zero-store
+rows without a virtual BDPT family. This is generated-path proxy consistency, not a
+proof of an unbiased layered marginal or image quality.
+
+Both fresh day/night 320×170, 64-spp controls retain every **11,750,400-byte Film
+payload** and every raw/authored-clamped FLOAT component of specialized renderer
+24. The declared contract/identity/build transition remains explicit; actual new
+scene identities are recorded consistently in checkpoints, EXRs and timings.
+Each scene has 64 valid GPU command intervals, full phase/sample coverage and
+3,481,600 sample owners. These API-enabled controls establish execution
+equivalence, not repeated performance.
+
+The subsequent fixed DAY64 pilot completes one warm-up per arm and five
+alternating measured pairs with validation disabled. All twelve native captures
+finish before all twelve same-arm Film/FLOAT audits; every audit passes.
+Compact25 is faster in all five measured pairs. Mean host render loops are
+**6.464162 seconds** for compact25 and **7.081396 seconds** for fast-v5, ratio
+**0.912837242826132**. Mean whole-process times are **22.3684843** and
+**52.108765 seconds**. The unchanged 1.10 ratio limit, 7.779024-second loop
+ceiling and historical process-time gate all pass. All 109 retained files and
+owned-process/GPU completion are verified. This passes the fixed daytime pilot;
+it does not close full two-scene timing, convergence or time to quality.
+
+Compact storage is retained for the next candidate. A generic packet diffuse
+concentric-map candidate, potentially renderer 26 / sampling 8, is only
+source-prepared and is not applied or adopted. It requires separate source,
+material/walker/scene and fresh quality qualification. Full 48-capture performance,
+fresh 64-replicate quality and final 1600×850 day-256/night-512 images remain open.
+
+The compact-025 ROOT review receipts retain the exact source and execution
+associations. Completed Release and execution SHA-256 values are:
+
+- Release: `a90d6dec2e9765174ea09c2e8f9fd3f094891edb0ee7ba390199b44d956bd2e9`
+- Actual walker: `db449e941e5b6c9fbb26d20ac7618e408c23bcfd86d0e5c2b36c3513ab3eb79a`
+- Day/night controls: `cc31f447d904a0d7a4624426730fee8299a2123f81747b8dcebc6a360ddedc42`
+- Fixed daytime pilot: `0fc6b44ef99b1f370c6343a093f083cace0a7ee0dee5216ca3d886ee505cf034`
 
 ## Quality protocol
 
@@ -566,6 +650,9 @@ Analysis SHA-256:
 
 ## Current regression checks
 
+The focused current compact25 checks are recorded above. The following earlier
+revision-specific results remain historical evidence.
+
 Renderer-23 integration at `050812e` builds successfully and passes 237 Python
 tests. The first full Release run passes 227 of 228 tests, including all Metal
 tests, with no availability skips. Its sole failure is an identity-test golden
@@ -591,7 +678,8 @@ to succeed; no tests or failure checks are removed.
 Published `6a645d3` passes all 228 mandatory Debug tests and all eight jobs in
 [CI run 44938487943](https://github.com/rlefko/rypath/actions/runs/44938487943),
 including all three separate Linux presets and the Foundation Gate. This
-validates the CI scheduling fix; it does not cover later local `ed70254`.
+validates the CI scheduling fix; it does not cover later local `ed70254` or
+compact25 `e8838e6`.
 
 Historical renderer-21 validation passes 227 Release tests (151 non-CLI tests with Metal API
 validation and 76 CLI tests in their default environment), all 227 ASan/UBSan
