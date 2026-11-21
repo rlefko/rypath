@@ -12,11 +12,12 @@ authored film clamping. See the [Pavilion model record](pavilion-validation.md),
 [architecture](architecture.md) and [closure evidence](pavilion-closure-validation.md)
 for scope, limitations and detailed validation history.
 
-Current candidate `e8838e6` uses format/identity/renderer/sampling/accumulation
-contracts **3/12/25/7/2**. Renderer 25 halves the reserved packet vertex slot to
-1,024 bytes, preserving the actual 1,008-byte vertex and transport arithmetic.
-Compact storage is retained for the next candidate after material, walker,
-scene and fixed daytime timing qualification. Renderer 24's explicit numerical
+The current candidate uses format/identity/renderer/sampling/accumulation
+contracts **3/12/26/8/2**. Renderer 26 applies concentric sampling to generic
+packet diffuse continuation; its separate qualification is pending. It retains
+the qualified renderer-25 compact storage: a 1,024-byte slot for the unchanged
+1,008-byte vertex. The renderer-25 results below apply to `e8838e6`, before the
+sampling change. Renderer 24's explicit numerical
 error-domain change remains: PT skips unused stored BDPT densities while
 retaining sampled and consumed checks; BDPT finalizes both directions. See
 [checkpointing](checkpointing.md).
@@ -73,9 +74,9 @@ The completed selected day soffit factorial retains all 32 seeds per arm at
 256 spp, with 128 owner and eight window controls passing. Concentric mapping
 reduces measured clamped RGB variance by approximately 7–12% under Halton in that
 region; independent sampling is nearly unchanged. Raw variance remains sensitive
-to rare events. Concentric/Halton renderer 26 / sampling 8 helpers are source-prepared,
-but the mapping patch is **not applied or adopted**. Its separate qualification
-and fresh full-image quality evaluation remain pending.
+to rare events. The concentric/Halton renderer-26 mapping is now applied as the
+next candidate. Its separate numerical, performance and fresh full-image quality
+qualification remain pending; the regional result does not establish adoption.
 
 Current full 48-capture performance acceptance, fresh 64-replicate quality admission
 and final 1600×850 day-256/night-512 images remain open. No parity, convergence or

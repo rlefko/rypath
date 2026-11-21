@@ -33,8 +33,8 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The current revision uses file format 3, identity 12, renderer 25,
-sampling 7 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
+The current revision uses file format 3, identity 12, renderer 26,
+sampling 8 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
 the sampler randomization in metadata. Earlier formats and contracts are rejected
@@ -84,6 +84,16 @@ makes both directions of an old/new library mismatch fail the loaded-library
 handshake and rejects renderer-24 checkpoints and identities. This is an execution
 ABI change, not a change to the physical target or density policy. Numerical and
 performance qualification of the compact layout is separate from its definition.
+
+Renderer 26 / sampling 8 changes only generic packet diffuse kind0 continuation
+from the polar to the concentric cosine map. The input variates, dimensions,
+seed streams, cosine proposal density and intended physical target remain;
+realized directions, finite sample images and boundary rejections can change.
+Coating, diffuse transmission and scalar maps remain unchanged. Both PT and BDPT
+packet walks share the new map. Renderer25/sampling7 checkpoints and old/new
+host/library pairs are incompatible; file format, identity schema, accumulation
+layout and the compact Vertex slot pitch are unchanged. This contract definition
+does not establish full-quality or performance acceptance.
 
 ## Identity and compatible continuation
 

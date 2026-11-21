@@ -9,10 +9,148 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 namespace {
 void metal_error(const char *operation, NSError *error) {
     std::cerr << operation << ": "
               << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
+}
+bool diffuse_map(id<MTLDevice> device, id<MTLLibrary> library) {
+    constexpr float near_one = 0x1.fffffep-1f;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    // Axis/diagonal values are closed-form geometry, not a second disk mapper.
+    const double h = std::sqrt(.5), k = std::sqrt(.125);
+    const double a = 1 - 0x1p-23;
+    const double edge_cos = std::cos(a * 3.14159265358979323846 / 4);
+    const double edge_sin = std::sin(a * 3.14159265358979323846 / 4);
+    struct Case {
+        std::array<float, 4> query;
+        std::array<double, 3> expected;
+        bool valid;
+    };
+    constexpr unsigned count = 27;
+    const std::array<Case, count> cases{
+        {Case{{.5f, .5f, .25f, 0}, {0, 0, 1}, true},
+         Case{{.75f, .5f, .25f, 0}, {.5, 0, .75}, true},
+         Case{{.25f, .5f, .25f, 0}, {-.5, 0, .75}, true},
+         Case{{.5f, .75f, .25f, 0}, {0, .5, .75}, true},
+         Case{{.5f, .25f, .25f, 0}, {0, -.5, .75}, true},
+         Case{{.75f, .75f, .25f, 0}, {k, k, .75}, true},
+         Case{{.25f, .75f, .25f, 0}, {-k, k, .75}, true},
+         Case{{.25f, .25f, .25f, 0}, {-k, -k, .75}, true},
+         Case{{.75f, .25f, .25f, 0}, {k, -k, .75}, true},
+         Case{{0, .5f, .25f, 0}, {-1, 0, 0}, true},
+         Case{{.5f, 0, .25f, 0}, {0, -1, 0}, true},
+         Case{{0, 0, .25f, 0}, {-h, -h, 0}, true},
+         Case{{near_one, near_one, .25f, 0}, {a * h, a * h, 1 - a * a}, true},
+         Case{{near_one, .5f, .25f, 0}, {a, 0, 1 - a * a}, true},
+         Case{{0, near_one, .25f, 0}, {-edge_cos, edge_sin, 0}, true},
+         Case{{near_one, 0, .25f, 0}, {edge_sin, -edge_cos, 0}, true},
+         Case{{nan, .5f, .25f, 0}, {}, false},
+         Case{{.5f, nan, .25f, 0}, {}, false},
+         Case{{-.125f, .5f, .25f, 0}, {}, false},
+         Case{{.5f, 1, .25f, 0}, {}, false},
+         Case{{.5f, .5f, nan, 0}, {}, false},
+         Case{{.5f, .5f, -.125f, 0}, {}, false},
+         Case{{.5f, .5f, 1, 0}, {}, false},
+         Case{{1, .5f, .25f, 0}, {}, false},
+         Case{{inf, .5f, .25f, 0}, {}, false},
+         Case{{.5f, inf, .25f, 0}, {}, false},
+         Case{{.5f, .5f, inf, 0}, {}, false}}};
+    std::array<std::array<float, 4>, count> queries{};
+    for (std::size_t n = 0; n < cases.size(); ++n)
+        queries[n] = cases[n].query;
+    constexpr std::size_t words = 24, variants = 8;
+    std::array<float, (count * variants + 1) * words> initial{};
+    initial.fill(12345);
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"packet_diffuse_map_probe"];
+    id<MTLComputePipelineState> pipeline =
+        function ? [device newComputePipelineStateWithFunction:function error:&error] : nil;
+    if (!pipeline) {
+        metal_error("Packet diffuse map pipeline", error);
+        return false;
+    }
+    auto input = [device newBufferWithBytes:queries.data()
+                                     length:sizeof(queries)
+                                    options:MTLResourceStorageModeShared];
+    auto output = [device newBufferWithBytes:initial.data()
+                                      length:sizeof(initial)
+                                     options:MTLResourceStorageModeShared];
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!input || !output || !output.contents || !queue || !command || !encoder)
+        return false;
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(cases.size() * variants + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min(NSUInteger{8}, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted) {
+        metal_error("Packet diffuse map command", command.error);
+        return false;
+    }
+    const auto *data = static_cast<const float *>(output.contents);
+    for (std::size_t n = cases.size() * variants * words; n < initial.size(); ++n)
+        if (data[n] != 12345)
+            return false;
+    const auto close = [](double x, double y) {
+        return std::isfinite(x) && std::abs(x - y) <= 2e-7;
+    };
+    for (std::size_t variant = 0; variant < variants; ++variant)
+        for (std::size_t n = 0; n < cases.size(); ++n) {
+            const auto *r = data + (variant * cases.size() + n) * words;
+            const auto &c = cases[n];
+            const auto fail = [&] {
+                std::cerr << "Packet diffuse map case " << n << " variant " << variant << '\n';
+                return false;
+            };
+            if (r[9] != (c.valid ? 1 : 0) || r[11] != 0 || r[15] != 0)
+                return fail();
+            if (!c.valid) {
+                if (r[10] != 0 || r[3] != 0)
+                    return fail();
+            }
+            if (!r[10]) {
+                if (r[8] != 0 || r[14] != 0)
+                    return fail();
+                for (unsigned lane = 0; lane < 4; ++lane)
+                    if (r[4 + lane] != 0)
+                        return fail();
+            }
+            if (c.valid) {
+                const double sign = (variant & 1) ? -1 : 1;
+                if (!close(r[0], c.expected[0]) || !close(r[1], c.expected[1]) ||
+                    !close(double(r[2]) * r[2], c.expected[2]) || sign * r[2] < 0 ||
+                    !close(r[3], std::abs(r[2]) / 3.14159265358979323846) ||
+                    r[10] != (r[3] > 0 ? 1 : 0))
+                    return fail();
+                if (r[10]) {
+                    // Unit wo gives reverse density1/pi; sampled forward density uses actual z.
+                    if (!close(r[8], 1 / 3.14159265358979323846) || !close(r[12], r[3]) ||
+                        !close(r[13], r[8]) || r[14] != 1)
+                        return fail();
+                    for (unsigned lane = 0; lane < 4; ++lane) {
+                        const bool active = !(variant & 4) || lane == 1 || lane == 3;
+                        if (!close(r[4 + lane], active ? (lane + 1) * .125 : 0))
+                            return fail();
+                    }
+                }
+            }
+            for (unsigned offset : {16u, 20u})
+                if (!close(r[offset], -h) || !close(r[offset + 1], 0) || !close(r[offset + 2], h) ||
+                    r[offset + 3] != 1)
+                    return fail();
+        }
+    return true;
 }
 bool directional_pdf_validity(id<MTLDevice> device, id<MTLLibrary> library) {
     constexpr std::size_t cases = 7, words = 32;
@@ -426,8 +564,8 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-        if (!directional_pdf_validity(device, library) || !coating_schedule(device, library) ||
-            !coating_moments(device, library))
+        if (!diffuse_map(device, library) || !directional_pdf_validity(device, library) ||
+            !coating_schedule(device, library) || !coating_moments(device, library))
             return 1;
         std::cout << "1024 packet GPU cases passed, max errors " << worst[0] << ' ' << worst[1]
                   << ' ' << worst[2] << ' ' << worst[3] << ' ' << worst[4] << ' ' << worst[5] << ' '

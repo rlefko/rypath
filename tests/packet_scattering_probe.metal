@@ -2,6 +2,45 @@
 #include "../src/packet_spectrum_shared.h"
 #include "layered_rng_oracles.h"
 #include "packet_scattering.h"
+// Fixed analytic boundary queries through the actual packet kind0 sampler.
+kernel void packet_diffuse_map_probe(const device float4 *queries [[buffer(0)]],
+                                     device float4 *output [[buffer(1)]],
+                                     constant uint &count [[buffer(2)]],
+                                     uint index [[thread_position_in_grid]]) {
+    if (index >= count * 8)
+        return;
+    const float4 query = queries[index % count];
+    const uint variant = index / count;
+    const float3 wo(0, 0, (variant & 1u) ? -1.0f : 1.0f);
+    const auto mode = (variant & 2u) ? rypath_packet::TransportMode::Importance
+                                     : rypath_packet::TransportMode::Radiance;
+    rypath_packet::Prepared p{};
+    p.active_mask = (variant & 4u) ? 10u : 15u;
+    for (uint lane = 0; lane < 4; ++lane) {
+        p.lane[lane].kind = 0;
+        p.lane[lane].reflectance = float(lane + 1) * .125f;
+    }
+    const auto s = rypath_packet::sample(p, wo, query.z, query.xy, 17, mode);
+    rypath_packet::Evaluation e{};
+    if (s.valid && s.accepted)
+        e = rypath_packet::evaluate(p, wo, s.wi, 17, mode);
+    output[index * 6] = float4(s.wi, s.pdf);
+    output[index * 6 + 1] = s.weight;
+    output[index * 6 + 2] = float4(s.reverse_pdf, s.valid, s.accepted, s.transmission);
+    output[index * 6 + 3] = float4(e.pdf, e.reverse_pdf, e.valid, s.delta);
+    // Center variates still use the old polar map on the untouched routes.
+    rypath_scattering::Prepared scalar{};
+    scalar.kind = 0;
+    scalar.reflectance = 1;
+    const auto old_scalar =
+        rypath_scattering::sample(scalar, float3(0, 0, 1), .25f, float2(.5f), 17);
+    scalar.kind = 4;
+    const auto old_transmission =
+        rypath_packet::scalar_sample(scalar, float3(0, 0, 1), .25f, float2(.5f));
+    output[index * 6 + 4] = float4(old_scalar.wi, old_scalar.valid && old_scalar.accepted);
+    output[index * 6 + 5] =
+        float4(old_transmission.wi, old_transmission.valid && old_transmission.accepted);
+}
 kernel void packet_scattering_probe(device float4 *out [[buffer(0)]],
                                     const device uint *table [[buffer(1)]],
                                     uint tid [[thread_position_in_grid]]) {

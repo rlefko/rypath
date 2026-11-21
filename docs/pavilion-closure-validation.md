@@ -592,10 +592,10 @@ ceiling and historical process-time gate all pass. All 109 retained files and
 owned-process/GPU completion are verified. This passes the fixed daytime pilot;
 it does not close full two-scene timing, convergence or time to quality.
 
-Compact storage is retained for the next candidate. A generic packet diffuse
-concentric-map candidate, potentially renderer 26 / sampling 8, is only
-source-prepared and is not applied or adopted. It requires separate source,
-material/walker/scene and fresh quality qualification. Full 48-capture performance,
+Compact storage is retained for the next candidate. The generic packet diffuse
+concentric-map candidate, renderer 26 / sampling 8, is applied separately after
+this qualification. It still requires its own material/walker/scene and fresh
+quality qualification. Full 48-capture performance,
 fresh 64-replicate quality and final 1600×850 day-256/night-512 images remain open.
 
 The compact-025 ROOT review receipts retain the exact source and execution
