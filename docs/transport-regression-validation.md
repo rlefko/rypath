@@ -667,6 +667,50 @@ twelve returned distance/barycentric floats round correctly. These checks do
 not establish scene-wide closest-hit ordering, visibility, population variance
 or the cause of the full day/night quality gap.
 
+A subsequent fixed diagnostic compares polar and concentric diffuse-direction
+mapping under Halton and independent sampling at that same preselected owner.
+All four conditions retain the original camera/raster context, 32 seed/material
+seeds and 256 spp. The original Halton/polar condition first reproduces all 32
+retained final raw/clamped pixels exactly. All 128 cases then complete with
+32,768 correctly identified, guarded packet records and zero splats. Day's
+`volpath` route globally disables light-path splats, so the selected owner's
+reduction is complete; the other 54,399 pixels are explicitly unrendered.
+
+| Mapping / sampler | Raw pixel luminance mean | Variance across 32 seed estimates | High-contribution samples / 8,192 |
+| --- | ---: | ---: | ---: |
+| Polar / Halton | 0.136588 | 0.556373 | 1 |
+| Polar / independent | 0.005083 | 8.682e-7 | 0 |
+| Concentric / Halton | 0.004945 | 7.031e-7 | 0 |
+| Concentric / independent | 0.004995 | 6.035e-7 | 0 |
+
+The preset high-contribution threshold is weighted, unexposed sensor Y greater
+than one; this is not a classification of every caustic path. Its sole event is
+the original seed-25/sample-171 contribution. The retained PBRT day runs at
+seeds 32–63 give a contextual pixel mean of 0.004773 and variance 1.970e-6 after
+removing exposure; these are different seeds, not paired candidate controls.
+Independent auditing verifies packet identity, sensor sums, Film reduction,
+output conversion, seed statistics and all four paired one-factor contrasts.
+
+The outlier disappears from this small dataset when either the mapping or the
+sampler changes. Because the owner was selected for its original outlier and
+independent sampling also removes that observed event, this does not isolate a
+mapping-specific improvement or establish lower population variance, equal
+support, or PBRT convergence parity. No sampling change is adopted from this
+result. A predeclared 4,096-spp extension is not run: before variant outcomes,
+its forecast is 20.440 seconds of setup plus 64 times the 27.302-second baseline
+owner loop, exceeding its 600-second operational budget. The original failed
+scene-level quality verdict and thresholds remain unchanged.
+
+A subsequent host-only batching diagnostic uses eight independent owner lanes
+per dispatch with the same frozen shaders. Independent auditing reproduces all
+128 earlier cases: 32,768 complete packet records, every Film byte and all 768
+raw/clamped RGB values are exact. The sole wire-parameter difference is lane
+count one to eight; sample order and eight-sample Film commits remain unchanged.
+The larger extension is again declined before extended outcomes: 20.019 seconds
+of setup plus 16 times the 41.007-second complete four-arm control loop predicts
+676.126 seconds, above the unchanged 600-second limit. No 4,096-spp or new tail
+observations follow from this run; the original cost decision remains retained.
+
 A separate diagnostic adds the same importance correction to pinned PBRT. Its
 uncorrected seed-32 control matches the retained FLOAT image exactly, but the
 corrected full-frame run stops at a guarded negative contribution. Fixed replays
@@ -678,7 +722,168 @@ binaries reproduce every captured recurrence bit; neither applies the importance
 correction in this sample. This attributes the guarded failure to the pinned
 reference's reverse emission PDF, not to the correction. Rypath already returns
 zero outside the one-sided emission hemisphere. The failed diagnostic remains
-failed; no corrected image or statistical conclusion follows from these witnesses.
+failed; no corrected image or statistical conclusion follows from those witnesses.
+
+A subsequent fixed diagnostic repairs that hemisphere support in both PBRT arms
+before comparing the importance correction. Both modified binaries pass the
+same 3,089 angular queries and the captured failing path. The new study completes
+all 32 full raw night renders: seeds 32–47, 320×170, 512 spp and maximum depth
+five, with correction disabled then enabled for each seed. These are modified
+PBRT diagnostics, not official reference images or fully matched floating-point
+implementations. The inherited regional mean rule is unchanged: five combined
+standard errors plus `2e-5 * max(1, abs(reference mean))`.
+
+| Region | Correction-enabled PBRT RGB mean | rypath BDPT RGB mean | Checks within inherited rule |
+| --- | --- | --- | --- |
+| Glass | 0.076464 / 0.043620 / 0.020216 | 0.073898 / 0.042224 / 0.019496 | 3/3 |
+| Floor | 0.016633 / 0.006792 / 0.001913 | 0.016675 / 0.006836 / 0.001930 | 3/3 |
+
+The correction lowers PBRT's glass means by 11.6–15.4% and floor means by
+38.1–40.1% relative to its shared-support, correction-disabled arm. The support
+repair alone leaves every floor mean exactly unchanged; its largest glass mean
+change is 1.95e-9. All twelve paired contrasts retain their seed differences,
+covariances and descriptive standard errors. This isolates the correction as a
+substantial cause of the prior cross-renderer brightness difference in these
+regions. It does not establish variance parity or a converged reference.
+
+Independent auditing recomputes all 32 new and 48 retained reference images.
+All eighteen inherited comparisons remain visible: correction-enabled PBRT
+passes 6/6 against rypath BDPT, 4/6 against PBRT PT, and 0/6 against original
+PBRT BDPT. Floor red and green remain higher than PBRT PT by 51.2% and 39.6%;
+blue is 18.0% higher but inside the rule. The remaining BDPT/PT discrepancy
+requires separate convergence or path-level evidence. The existing finite coated
+model is one concrete hypothesis: joint-walk continuation and independently
+evaluated directional scattering are distinct approximate routes (see the
+[Pavilion coating record](pavilion-validation.md)). This is not yet an attribution
+of the floor difference. Matched outer depth and compensated path-tracing roulette
+do not identify a deterministic termination defect. This diagnostic does not
+replace the failed scene-level quality study.
+
+A bounded material diagnostic decodes a retained horizontal coated-floor vertex
+(sample 118, camera vertex 3), then evaluates its exact outgoing direction and
+four wavelength/material lanes through the pinned PBRT oracle. The interface is
+rough (`alpha = 0.102019608`), so this case has no omitted specular atom. It fixes
+32 replicates of 4,096 queries per lane: 524,288 total, with every zero return
+retained in its denominator. Independent auditing regenerates all input rows and
+recomputes the five moments and paired standard errors.
+
+| Lane | Joint-walk constant-light mean | Directional evaluation mean | Difference ± paired SE |
+| --- | --- | --- | --- |
+| 0 | 0.09582243 | 0.09696519 | 0.00114276 ± 0.00054902 |
+| 1 | 0.07554390 | 0.07580426 | 0.00026036 ± 0.00052064 |
+| 2 | 0.12259998 | 0.12487037 | 0.00227039 ± 0.00060237 |
+| 3 | 0.10820541 | 0.10983460 | 0.00162919 ± 0.00056007 |
+
+These descriptive constant-light differences are 0.34–1.85%, with the largest
+3.77 paired standard errors from zero; there is no new acceptance cutoff. A
+second smooth directional lighting function also remains in the retained results.
+The lanes share variates, and one outgoing direction under two simple lighting
+functions does not bound localized differences under Pavilion illumination or
+MIS. This does not explain or dismiss the scene-level floor discrepancy.
+
+The directional PDF proxy integrates to 2.356579 ± 0.007031 SE in this case.
+That is not by itself evidence of bias: source inspection confirms both pinned
+PBRT BDPT and rypath keep the joint sampled throughput weight separate from the
+forward/reverse directional densities used for MIS. Neither divides sampled
+throughput by this proxy. Conditional agreement of the two scattering routes and
+consistent strategy weights remain open questions; substituting the joint PDF
+for the directional proxy would mix different probability measures.
+
+The frozen native-triangle prototype subsequently completes a fixed 16-run
+comparison: one warm-up per mode and three alternating measured pairs for each
+Pavilion scene, at 320×170, 64 spp and seed/material seed zero. Every full Film,
+identity, request sequence and raw/authored-clamped FLOAT component matches its
+control. All 14,336 GPU intervals are valid. Independent auditing reproduces the
+following means and sample standard deviations (three measurements per arm):
+
+| Scene | GPU seconds, disabled → enabled | Whole-process seconds, disabled → enabled |
+| --- | --- | --- |
+| Day | 44.923 ± 0.035 → 35.785 ± 0.037 | 91.954 ± 0.058 → 82.924 ± 0.103 |
+| Night | 68.840 ± 0.040 → 52.146 ± 0.010 | 116.010 ± 0.085 → 99.329 ± 0.085 |
+
+GPU time falls by 20.3% and 24.3%, respectively. Additional acceleration storage
+is 1,127,115,776 bytes by day and 1,127,531,520 bytes by night; peak construction
+scratch is 70,741,632 bytes and input staging is 29,611,248 bytes. The already
+shared primitive records are not counted again as a new allocation. About
+43 seconds of whole-process time remains outside the classified phases; it
+cannot all be attributed to renderer preparation. These are matched-workload
+results on the frozen renderer-18 prototype, not measurements of current
+production code or time to a shared quality target.
+
+A separate fixed 32-run comparison exercises opaque hit/miss geometry, a scene
+containing accepting and rejecting alpha layers before opaque geometry,
+all-alpha geometry, and an analytic-only scene. Each uses 64×64, 64 spp,
+a mode-zero/mode-three warm-up,
+and three alternating pairs. All 32 full Film/identity controls, 64 FLOAT planes
+and 2,048 GPU intervals pass; ineligible scenes allocate no hint resources.
+Enabled opaque GPU means are 0.0753 → 0.0721 seconds and mixed-alpha means are
+0.3428 → 0.3311 seconds. Disabled controls also vary by a few milliseconds, so
+these small timings do not establish a general speedup. They provide bounded
+correctness, routing and resource evidence for a production integration attempt.
+The subsequent renderer-20 integration passes the current-source geometry,
+persistence and scene controls described below.
+
+Normalized forward-transform products provide a separate execution experiment.
+The first shortcut retains the general arithmetic guards and renormalization.
+It passes strict numerical checks, but its single exploratory day/night pairs
+increase GPU time by 4.5% and 4.9%; it is not adopted. The leaner version uses a
+rounded multiply plus FMA residual only for two exponent-127 operands, retaining
+the general fallback and both-limb rescaling checks. Its strict geometry and
+render-`-Os` probes pass 121,186 cases, including incoming-invalid state, against
+both the old graph and an independent integer oracle.
+
+The leaner version's separate current-renderer-19 pilot preserves all four full
+Film/identity controls, eight FLOAT planes and 3,584 valid GPU intervals. Day GPU
+time is 44.765 → 40.688 seconds and night is 68.662 → 62.589 seconds. Whole-process
+day time nevertheless rises from 90.46 to 97.60 seconds; night falls from 115.27
+to 109.48 seconds. These single unwarmed pairs motivate a fixed repeated study,
+not a general speed claim. Their controls do not measure the combined current
+renderer-20 integration. The old slower variant and adverse day wall time remain
+part of the evidence.
+
+The fixed follow-up completes sixteen runs: one off/on warm-up and three measured
+pairs in alternating order per scene. Independent auditing verifies every full
+Film/identity record, 32 FLOAT planes and 14,336 valid GPU intervals. Measured
+means and sample standard deviations exclude warm-ups:
+
+| Scene | GPU seconds, old → specialized | Whole-process seconds, old → specialized |
+| --- | --- | --- |
+| Day | 44.781 ± 0.037 → 40.693 ± 0.034 | 91.270 ± 0.255 → 87.017 ± 0.150 |
+| Night | 68.648 ± 0.038 → 62.567 ± 0.042 | 115.873 ± 0.169 → 109.580 ± 0.159 |
+
+GPU time falls by 9.13% and 8.86%; whole-process time by 4.66% and 5.43%.
+Peak resident memory remains about 13.78 GB in each arm. These are frozen
+renderer-19, matched-workload measurements of the arithmetic specialization,
+not combined renderer-20 measurements or time to a shared quality target.
+The native-hint and arithmetic speedups must not simply be added together.
+
+The current renderer-20 integration passes all 222 ASan/UBSan tests and 159
+portable tests. Release validation consists of 217 checks with Metal API
+validation enabled plus the five CLI checks in their default environment. The
+first full API-enabled Release run retains five failures: those commands exit
+successfully, but Metal's injected banner violates their unchanged empty-stderr
+assertions. No renderer or test expectation is relaxed. Static analysis of both
+production Metal adapters and the native probe passes. Focused Clang-Tidy first
+reports integer widening in a test's expected allocation size; explicit operand
+types fix it, with that test rerun successfully in all four builds. The Python
+checkpoint decoder passes twelve tests, and both older-host/newer-library and
+newer-host/older-library combinations reject their renderer-contract mismatch.
+
+Fresh renderer-20 day and night renders at 320×170, 64 spp and seed zero run with
+Metal API validation. Each full 11,750,400-byte Film and all 652,800 combined raw
+and authored-clamped FLOAT components match renderer 19 exactly; identities
+change as required by the contract. Independent auditing verifies the source and
+asset bindings and reconstructs all 326,400 standard-sRGB preview channels.
+These are correctness controls, not repeated combined-performance measurements.
+Receipts under `.cache/validation/` retain the initial API-enabled failures
+(`native-hint-001/current-validation.json`,
+`797e0d7dd846c35b5a06ee1d4b4e666e0aa3a11492ab0ec473acf58e71994fb6`),
+post-fix static and affected-test validation
+(`b7011e9396c8e346890a48ab100fdfcd53299737bc02a309c991788722161e90`),
+fresh scene controls
+(`94244febd385ed5b492ef8b29fa0fb29896d8736b9b3959098b691371bccb1d1`)
+and their independent audit
+(`3e0a418638e7f7268da38884fb1680acb77e28c47978592593e98d01d17a4b55`).
 
 Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 
@@ -708,7 +913,25 @@ Authenticated evidence under `.cache/pavilion-convergence/final-v8/`:
 | `day-owner-trace-001/independent-path-review-001/selected-oracle-review.json` | `3244f5abb2b6dbf81f42433126860339cc258db7946a2e288da4ab2b499d76c1` |
 | `native-triangle-hint-003/trial/execution.json` | `741c86c84c61aec1d76a410c39b2f6a74a33b232795867f75610036f54223367` |
 | `native-triangle-hint-003/trial/independent-review-001/receipt.json` | `7f386f6b027d87902debe81891765af2ce6448ca7f07c4847b8cc8077a4b2699` |
+| `native-triangle-hint-003/formal-comparison-001/execution.json` | `01e6fa65f7cc9f1a2eca34c073432ebd6658697351ed9231c86349c1e834cbc1` |
+| `native-triangle-hint-003/formal-comparison-001/independent-review-001/receipt.json` | `95c83d8ba427fee97b0fe2afee620e0ce8fb1620c404b2674e41a4e5810e25eb` |
+| `native-hint-small-scenes-001/execution.json` | `48f336baf8c3c48b62323a27747e71658cb1a0527c0be44c3629f019778c5f75` |
+| `native-hint-small-scenes-001/independent-review-001/actual-review.json` | `1dfae3daf7b934f538a647f03118dbfa7157a5b4806994aa80c4413d7c5cfc72` |
 | `pbrt-adjoint-control-001/failure-capture-002/execution.json` | `ce50f14eced7765bbeb265e0a5abb3e384bc20d4aaa5d091bcbaee714dd31bf7` |
+| `floor-material-moment001/pdf-source-review001/REPORT.md` | `334d89f0aacd9ff0912f64b5f845aa5634889f6011e1a6c235c2df401d4bf28b` |
+| `floor-material-moment001/moments001/execution.json` | `c51cd903a004ec9784b75b27f76c73f47a29d95a0776b5b6a6e12bce96168dc5` |
+| `floor-material-moment001/moments001/independent-review-001/receipt.json` | `54707073fe083cfab866297646f469c1a589e5d658ec594ae547bed1cea0655e` |
+| `pbrt-adjoint-control-001/shared-support-001/study-execution.json` | `dca429621fda6c13a68b6adcc916cdcae7001dae048ba38d669c38c2e20fb393` |
+| `pbrt-adjoint-control-001/shared-support-001/study-analysis.json` | `a5206ae179de8578456f030d5690e2a374465e549c9e7b236b8f2e9f9a6c5839` |
+| `pbrt-adjoint-control-001/shared-support-001/independent-review-001/study-review.json` | `76fae336c2d4d8748d9ab3f3684f3667dcbf7e4314124d61fa96a1b16cdfbf86` |
+| `day-cosine-map-diagnostic-001/execution.json` | `9615f0bb4bd5f65bd9112e988e2e9c5e4b6689b8a7891d927d69246791659c81` |
+| `day-cosine-map-batched-001/execution.json` | `8e44cb920b35f8fd72e9154dd79d1c21900dc8f997d8733fa862d2ac303446bc` |
+| `day-cosine-map-batched-001/independent-review-001/actual-review.json` | `4c3729835fd923387b4df99d5ac5cc34b612cbcc94ff0e68b4add5635eee9684` |
+| `normalized-transform-performance-001/execution.json` | `912493cfabeb1b08874e442132aeb3fd8394a78b1bcab537d0ee3c728404c8a6` |
+| `normalized-transform-product-fast-001/execution.json` | `f0bca4790c1f8b6fcfd81b4bef672da410683490f9ae7bb56ca94cbaabd27238` |
+| `normalized-transform-fast-performance-001/execution.json` | `d4806a3bdf49f205e3dda5a92d2520fcf985494543a475821fc4621416ca1011` |
+| `normalized-transform-fast-repeats-001/execution.json` | `1fbce560a260f8eeafe937feb861b9cf3b07d956d4a3a510c8b64aa5046e9b59` |
+| `normalized-transform-fast-repeats-001/independent-review-001/actual-review.json` | `3767c80a360155642a746a89c2f48c1c0531229a6c1da029a2c6355c24d738a0` |
 
 The descriptive report's `report-plots-001/outputs/summary.json` retains all
 endpoints, mean safeguards and timing runs. The

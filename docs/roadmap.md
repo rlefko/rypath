@@ -145,9 +145,16 @@ clarifies the work; completion is recorded in [status](status.md).
     day/night GPU time by 37%/45% against renderer 18 with exact image controls.
     The current day replay confirms a rare refracted-environment contribution;
     a separate PBRT diagnostic identifies a negative reverse emission PDF.
-    Controlled night comparisons and repeated native-triangle acceleration
-    measurements remain in progress. Renderer 19 also repairs full-sphere pole
-    clipping exposed by the traversal probes.
+    Repeated native-triangle prototype measurements reduce GPU time further by
+    20%/24%, with about 1.13 GB of extra acceleration storage and exact controls.
+    Renderer 19 repairs full-sphere pole clipping; renderer 20 integrates validated
+    opaque-triangle hints, with current-source sanitizer, portable and scene
+    controls passing; publication checks are recorded with the PR revision.
+    Modified-PBRT night comparisons isolate the importance correction as a major
+    cause of the brightness difference; the floor BDPT/PT gap remains open.
+    The selected day owner's
+    outlier disappears under either a different mapping or independent sampling;
+    that finite diagnostic does not establish improved long-run variance.
     Curves and motion remain.
     Halton, ZSobol, Gaussian reconstruction and omitted PBRT descriptors extend
     camera sampling; see [sampling validation](sampling-defaults-validation.md).

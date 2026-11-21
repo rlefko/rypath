@@ -46,9 +46,33 @@ primitive classification. Unrepresentable bounds simply disable that pruning.
 Normal-domain exponent operations and FMA residual checks preserve the guarded
 pair arithmetic. World enclosures use binary32 only when each operation can
 produce the same extended bound; other inputs retain the integer construction.
+Forward-transform scalar products specialize only when both normalized operands
+have binary32 exponent 127. Their rounded product and exact FMA residual form
+the same pair as the general multiplication: the residual lies on the `2^-46`
+lattice and is normal or zero. The guard retains the general fallback, incoming
+invalid state and validation of both rescaled limbs. This changes execution cost,
+not the finite-pair intersection policy.
 When a reset offers the current-best triangle again, its immutable solve is
 reused while alpha is called again with the same validated coordinates and
 distance. Rejection retains the previous best; invalid alpha still aborts.
+
+Eligible packet scenes also build native opaque-triangle structures. Their
+offers are validated against original vertices and the original world ray before
+use. A shadow hint must identify a definite opaque blocker. A closest hint seeds
+the complete compensated distance and surface record before procedural traversal,
+which can still replace it with a nearer alpha, analytic, patch or triangle hit.
+An unavailable conservative cap leaves the original query interval intact; an
+empty procedural offer stream retains the accepted seed. Native misses and
+unsupported optional solves fall back to the existing traversal. Public geometry
+and stateful alpha callbacks keep their original paths.
+
+Eligibility is fixed by scene contents: packet transport, at least one opaque
+triangle placement, and no null/invisible passthrough, mix/glTF material or
+differing medium interface. Allocation and configured/device budget failures
+are reported; resource availability never silently changes the numerical mode.
+The extra structures preserve expanded instance ordinals and share primitive
+records. This changes candidate coverage and requires renderer contract 20;
+exact image controls are bounded evidence, not a universal identity guarantee.
 
 Packet connection visibility uses Boolean occlusion when every accepted surface
 blocks the segment. Scenes with any null-interface material or invisible-emitter
