@@ -78,7 +78,7 @@ def decode(data):
         raise ValueError('truncated checkpoint')
     magic, *values = HEADER.unpack_from(data)
     versions, metadata_size, payload_size = values[:5], values[5], values[6]
-    if magic != b'RYPCHK\r\n' or versions != [3, 12, 26, 8, 2]:
+    if magic != b'RYPCHK\r\n' or versions != [3, 12, 27, 9, 2]:
         raise ValueError('unsupported checkpoint header/contract')
     if (metadata_size < METADATA.size or metadata_size > 1024**2 or
             payload_size > 4 * 1024**3 or payload_size % PIXEL.size or

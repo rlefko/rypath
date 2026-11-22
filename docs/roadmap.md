@@ -157,6 +157,12 @@ clarifies the work; completion is recorded in [status](status.md).
     reduces measured identity cost; opt-in timing separates host and GPU phases.
     See the [closure record](pavilion-closure-validation.md). Whole-region sampling,
     held-out scene quality and final performance comparisons remain required.
+    Renderer26's completed fresh study passes all 36 raw-mean safeguards but none
+    of the 48 simultaneous variance/tail bounds. Exact outlier replays now identify
+    a measured interaction between reference roulette and authored clamping;
+    [packet PT roulette](packet-roulette-validation.md) is the current estimator
+    follow-up, with native numerical checks passing and fresh scene quality and
+    performance qualification pending.
     Remaining process cost and time to a shared quality target are open.
     Modified-PBRT night comparisons isolate the importance correction as a major
     cause of the brightness difference; the floor BDPT/PT gap remains open.

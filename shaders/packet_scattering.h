@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "../src/packet_roulette_shared.h"
 #include "packet_layered.h"
 #include "scattering.h"
 // Renderer specialization and all-family probes require distinct symbols.
@@ -181,13 +182,15 @@ inline rypath_scattering::Sample diffuse_reflection_sample(float R, float3 wo, f
     return s;
 }
 inline rypath_scattering::Sample scalar_sample(const thread rypath_scattering::Prepared &p,
-                                               float3 wo, float uc, float2 u) {
+                                               float3 wo, float uc, float2 u,
+                                               thread float &sampled_eta) {
+    sampled_eta = 1;
     if (p.kind == 0)
         return diffuse_reflection_sample(p.reflectance, wo, uc, u);
     if (has_conductor() && p.kind == 1)
         return rypath_conductor::sample(p.conductor, wo, u);
     if (has_dielectric() && p.kind == 2)
-        return rypath_dielectric::sample(p.dielectric, wo, uc, u);
+        return rypath_dielectric::sample(p.dielectric, wo, uc, u, sampled_eta);
     if (has_gltf() && p.kind == 11)
         return rypath_gltf::sample(p.gltf, wo, uc, u);
     if (has_surface()) {
@@ -203,6 +206,11 @@ inline rypath_scattering::Sample scalar_sample(const thread rypath_scattering::P
         }
     }
     return {float3(0), 0, 0, false, false, false};
+}
+inline rypath_scattering::Sample scalar_sample(const thread rypath_scattering::Prepared &p,
+                                               float3 wo, float uc, float2 u) {
+    float sampled_eta;
+    return scalar_sample(p, wo, uc, u, sampled_eta);
 }
 // Direction-shaping parameters must be shared. Dispersive refraction requires
 // wavelength termination before preparation; inactive lanes do not constrain it.
@@ -363,7 +371,9 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         out.valid = a.valid;
         out.pdf_is_proportional = true;
     } else {
-        auto a = scalar_sample(q, wo, uc, u);
+        float sampled_eta;
+        auto a = scalar_sample(q, wo, uc, u, sampled_eta);
+        out.eta = sampled_eta;
         if (has_surface() && has_thin_dielectric() && q.kind == 3 && a.valid && wo.z != 0) {
             float R = 0, n = 0;
             for (uint i = 0; i < 4; ++i)
@@ -413,9 +423,7 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         }
         out.accepted = out.valid && maximum(out.weight) > 0;
     }
-    out.transmission = wo.z * out.wi.z < 0;
-    if (out.transmission && q.kind == 2)
-        out.eta = wo.z > 0 ? q.dielectric.eta : 1 / q.dielectric.eta;
+    out.transmission = rypath_packet_roulette::opposite_hemispheres(wo.z, out.wi.z);
     if (has_fourier() && out.transmission && (q.kind == 7 || q.kind == 8) &&
         q.table[0] == RYPATH_TABLE_FOURIER) {
         float eta = tb_f(q.table, 4);

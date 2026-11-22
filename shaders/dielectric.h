@@ -129,7 +129,9 @@ inline float refraction_coefficient(float eta, float co, float ct) {
     return co < 0 ? ((eta - 1) * (eta + 1)) / (eta * c + ct)
                   : (((1 - eta) * (1 + eta)) / eta) / (c + eta * ct);
 }
-inline Sample sample(const thread Parameters &p, float3 wo, float uc, float2 u) {
+inline Sample sample(const thread Parameters &p, float3 wo, float uc, float2 u,
+                     thread float &sampled_eta) {
+    sampled_eta = 1;
     Sample s = {float3(0), 0, 0, p.smooth, false, true};
     if (!all(isfinite(wo)) || !isfinite(uc) || uc < 0 || uc >= 1 || !all(isfinite(u)) ||
         any(u < 0) || any(u >= 1)) {
@@ -220,6 +222,13 @@ inline Sample sample(const thread Parameters &p, float3 wo, float uc, float2 u) 
     }
     s.valid = s.valid && isfinite(s.pdf) && s.pdf > 0 && isfinite(s.weight) && s.weight > 0;
     s.accepted = s.valid;
+    if (s.accepted && !reflection)
+        sampled_eta = ep;
     return s;
+}
+// Preserve the scalar return ABI and one shared sampling-math implementation.
+inline Sample sample(const thread Parameters &p, float3 wo, float uc, float2 u) {
+    float sampled_eta;
+    return sample(p, wo, uc, u, sampled_eta);
 }
 } // namespace rypath_dielectric

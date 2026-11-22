@@ -2,6 +2,155 @@
 #include "../src/packet_spectrum_shared.h"
 #include "layered_rng_oracles.h"
 #include "packet_scattering.h"
+// The same shared RR helper used by random_walk, plus actual sampled-eta producers.
+kernel void packet_outer_roulette_probe(device float4 *output [[buffer(0)]],
+                                        const device uint *table [[buffer(1)]],
+                                        uint tid [[thread_position_in_grid]]) {
+    if (tid >= 48)
+        return;
+    if (tid < 16) {
+        rypath_packet_roulette::Vector beta(.25f, .125f, 0, 0);
+        rypath_packet_roulette::EtaScale state;
+        uint depth = 2;
+        float u = .75f;
+        if (tid == 0)
+            u = 0;
+        if (tid == 2) {
+            depth = 1;
+            u = 0;
+        }
+        if (tid == 3)
+            beta = float4(0x1p-26f, 0, 0, 0);
+        if (tid == 4)
+            rypath_packet_roulette::account_transmission(state, INFINITY, true);
+        if (tid == 5) {
+            rypath_packet_roulette::account_transmission(state, 2, true);
+            beta = .25f;
+        }
+        if (tid == 6) {
+            rypath_packet_roulette::account_transmission(state, 2, true);
+            rypath_packet_roulette::account_transmission(state, .5f, true);
+        }
+        if (tid == 7)
+            rypath_packet_roulette::account_transmission(state, 0x1p65f, true);
+        if (tid == 8)
+            u = 0x1.fffffep-1f;
+        if (tid == 9)
+            beta = float4(0, .25f, 0, .125f);
+        if (tid == 10)
+            beta = float4(1, .5f, 0, 0);
+        if (tid == 11)
+            beta = 0;
+        if (tid == 12)
+            rypath_packet_roulette::account_transmission(state, NAN, false);
+        if (tid == 13) {
+            beta = float4(2, 1, 0, 0);
+            state.value = FLT_MAX;
+        }
+        if (tid == 14) {
+            beta = float4(0x1p-126f, 0, 0, 0);
+            state.value = 0x1p-10f;
+        }
+        if (tid == 15) {
+            state.value = 0x1p120f;
+            rypath_packet_roulette::account_transmission(state, 16, true);
+        }
+        const auto decision = rypath_packet_roulette::prepare(beta, state, depth);
+        const bool alive = rypath_packet_roulette::continue_path(beta, state, depth, u);
+        output[tid * 4] = beta;
+        output[tid * 4 + 1] =
+            float4(decision.termination, decision.eligible, state.value, state.enabled);
+        output[tid * 4 + 2] = float4(alive, depth, 0, 0);
+        output[tid * 4 + 3] = float4(rypath_packet_roulette::opposite_hemispheres(1e-20f, -1e-20f),
+                                     rypath_packet_roulette::opposite_hemispheres(-1e-20f, 1e-20f),
+                                     rypath_packet_roulette::opposite_hemispheres(1e-20f, 1e-20f),
+                                     rypath_packet_roulette::opposite_hemispheres(-0.f, 1.f));
+        return;
+    }
+    const uint which = (tid - 16) % 16;
+    const auto mode = tid >= 32 ? rypath_packet::TransportMode::Importance
+                                : rypath_packet::TransportMode::Radiance;
+    rypath_packet::Prepared p{};
+    p.active_mask = which == 13 ? 1u : 15u;
+    float3 wo(0, 0, 1);
+    float uc = .99f;
+    float2 u(.125f, .375f);
+    if (which == 1 || which == 5 || which == 15)
+        wo.z = -1;
+    if (which == 2)
+        uc = 0;
+    if (which == 3)
+        wo = float3(sqrt(.75f), 0, -.5f);
+    if (which == 6) {
+        wo = float3(1, 0, -1e-37f);
+        u = float2(.9f, .25f);
+    }
+    if (which == 10)
+        uc = 0;
+    if (which == 12)
+        u.y = .25f;
+    if (which == 14)
+        u.y = .75f;
+    if (which == 15)
+        u.y = .25f;
+    for (uint lane = 0; lane < 4; ++lane) {
+        thread auto &a = p.lane[lane];
+        a.kind = 2;
+        rypath_dielectric::prepare(
+            which == 6 ? .4f : 1.5f, which == 6 ? 10.f : (which == 4 || which == 5 ? .2f : 0.f),
+            which == 6 ? 10.f : (which == 4 || which == 5 ? .3f : 0.f), false, a.dielectric);
+        if (which == 7)
+            a.kind = 3;
+        if (which == 8) {
+            a.kind = 4;
+            a.reflectance = 0;
+            a.transmittance = .5f;
+        }
+        if (which == 9) {
+            a.kind = 11;
+            rypath_gltf::prepare(.5f, 0, 0, a.gltf);
+        }
+        if (which == 10) {
+            a.kind = 5;
+            thread auto &l = a.layered;
+            l.interface = a.dielectric;
+            l.reflectance = .5f;
+            l.thickness = .1f;
+            l.albedo = 0;
+            l.g = 0;
+            l.max_depth = 10;
+            l.samples = 1;
+        }
+        if (which == 11) {
+            a.kind = 1;
+            rypath_conductor::prepare(1.5f, 2, 0, 0, false, a.conductor);
+        }
+        if (which == 12 || which == 14 || which == 15) {
+            a.kind = 8;
+            a.table = table;
+            a.wavelength = 400 + 100 * lane;
+        }
+        if (which == 13 && lane > 0)
+            a.dielectric.eta = 2;
+    }
+    float exact_eta = 1;
+    bool unchanged_scalar = true;
+    if (which <= 6 || which == 13) {
+        const auto a = rypath_dielectric::sample(p.lane[0].dielectric, wo, uc, u, exact_eta);
+        const auto b = rypath_dielectric::sample(p.lane[0].dielectric, wo, uc, u);
+        unchanged_scalar = all(as_type<uint3>(a.wi) == as_type<uint3>(b.wi)) &&
+                           as_type<uint>(a.pdf) == as_type<uint>(b.pdf) &&
+                           as_type<uint>(a.weight) == as_type<uint>(b.weight) &&
+                           a.delta == b.delta && a.accepted == b.accepted && a.valid == b.valid;
+    }
+    const auto sampled = rypath_packet::sample(p, wo, uc, u, 17, mode);
+    output[tid * 4] = float4(sampled.eta, exact_eta, sampled.valid, sampled.accepted);
+    output[tid * 4 + 1] =
+        float4(sampled.transmission, sampled.delta, sampled.weight.x, unchanged_scalar);
+    output[tid * 4 + 2] = float4(wo.z, sampled.wi.z, p.active_mask,
+                                 sampled.weight.y + sampled.weight.z + sampled.weight.w);
+    output[tid * 4 + 3] = 0;
+}
 // Fixed analytic boundary queries through the actual packet kind0 sampler.
 kernel void packet_diffuse_map_probe(const device float4 *queries [[buffer(0)]],
                                      device float4 *output [[buffer(1)]],

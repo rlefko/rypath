@@ -135,6 +135,7 @@ inline bool finalize_walk_densities(const thread Resources &r, device uchar *pat
         return count;
     }
     MixedIntersector closest;
+    rypath_packet_roulette::EtaScale roulette_eta;
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
     uint crossings = 0;
     r.alpha.sample = &sample;
@@ -413,6 +414,17 @@ inline bool finalize_walk_densities(const thread Resources &r, device uchar *pat
             break;
         }
         incoming = ray(origin, wi);
+        if (!packet_bidirectional_enabled(p) && mode == Mode::Radiance) {
+            rypath_packet_roulette::account_transmission(roulette_eta, continuation.eta,
+                                                         continuation.transmission);
+            if (nonzero(beta)) {
+                // Reserved fourth continuation component: no dimension renumbering
+                // or reuse of the independent material/coating random streams.
+                const float u_rr = sample_uniform(p, draws.w);
+                if (!rypath_packet_roulette::continue_path(beta, roulette_eta, count - 1, u_rr))
+                    break;
+            }
+        }
     }
     return count;
 }

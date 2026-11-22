@@ -15,6 +15,125 @@ void metal_error(const char *operation, NSError *error) {
     std::cerr << operation << ": "
               << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
 }
+bool outer_roulette(id<MTLDevice> device, id<MTLLibrary> library, id<MTLBuffer> table) {
+    constexpr unsigned count = 48, words = 16;
+    std::array<float, count * words + 1> initial{};
+    initial.fill(std::numeric_limits<float>::quiet_NaN());
+    initial.back() = 12345;
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"packet_outer_roulette_probe"];
+    auto pipeline =
+        function ? [device newComputePipelineStateWithFunction:function error:&error] : nil;
+    auto output = [device newBufferWithBytes:initial.data()
+                                      length:sizeof(initial)
+                                     options:MTLResourceStorageModeShared];
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!pipeline || !output || !queue || !command || !encoder) {
+        metal_error("Packet roulette probe setup", error);
+        return false;
+    }
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:output offset:0 atIndex:0];
+    [encoder setBuffer:table offset:0 atIndex:1];
+    [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min<NSUInteger>(64, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted) {
+        metal_error("Packet roulette probe execution", command.error);
+        return false;
+    }
+    const auto *values = static_cast<const float *>(output.contents);
+    if (!values || values[count * words] != 12345) {
+        std::cerr << "Packet roulette probe guard\n";
+        return false;
+    }
+    for (unsigned n = 0; n < 16; ++n) {
+        std::array<float, 4> expected{1, .5f, 0, 0};
+        bool eligible = true, enabled = true, alive = true;
+        float scale = 1;
+        if (n == 0) {
+            expected = {.25f, .125f, 0, 0};
+            alive = false;
+        }
+        if (n == 2) {
+            expected = {.25f, .125f, 0, 0};
+            eligible = false;
+        }
+        if (n == 3) {
+            expected = {0x1p-26f, 0, 0, 0};
+            eligible = false;
+        }
+        if (n == 4 || n == 7 || n == 15) {
+            expected = {.25f, .125f, 0, 0};
+            eligible = false;
+            enabled = false;
+        }
+        if (n == 5) {
+            expected = {.25f, .25f, .25f, .25f};
+            scale = 4;
+            eligible = false;
+        }
+        if (n == 9)
+            expected = {0, 1, 0, .5f};
+        if (n == 10) {
+            expected = {1, .5f, 0, 0};
+            eligible = false;
+        }
+        if (n == 11) {
+            expected = {0, 0, 0, 0};
+            eligible = false;
+        }
+        if (n == 13) {
+            expected = {2, 1, 0, 0};
+            scale = std::numeric_limits<float>::max();
+            eligible = false;
+        }
+        if (n == 14) {
+            expected = {0x1p-126f, 0, 0, 0};
+            scale = 0x1p-10f;
+            eligible = false;
+        }
+        if (n == 15)
+            scale = 0x1p120f;
+        const float *q = values + n * words;
+        if (!std::equal(expected.begin(), expected.end(), q) || q[4] != (eligible ? .75f : 0) ||
+            q[5] != float(eligible) || q[6] != scale || q[7] != float(enabled) ||
+            q[8] != float(alive) || q[12] != 1 || q[13] != 1 || q[14] != 0 || q[15] != 0) {
+            std::cerr << "Packet roulette branch case " << n << '\n';
+            return false;
+        }
+    }
+    for (unsigned n = 16; n < count; ++n) {
+        const unsigned which = (n - 16) % 16;
+        const float *q = values + n * words;
+        // Rejected extreme arithmetic is permitted, but both old/new scalar APIs
+        // must agree and every returned packet eta must be the producer's actual ep.
+        if (q[7] != 1 || (which != 6 && (q[2] != 1 || q[3] != 1))) {
+            std::cerr << "Packet sampled eta validity case " << n << '\n';
+            return false;
+        }
+        if ((which <= 6 || which == 13) && q[0] != q[1]) {
+            std::cerr << "Packet eta differs from sampled dielectric optics " << n << '\n';
+            return false;
+        }
+        if (which != 6) {
+            const float expected = which == 0 || which == 4 || which == 13 || which == 14 ? 1.5f
+                                   : which == 1 || which == 5 || which == 15 ? 1.f / 1.5f
+                                                                             : 1.f;
+            if (q[0] != expected || (which == 13 && (q[10] != 1 || q[11] != 0))) {
+                std::cerr << "Packet event eta convention case " << n << '\n';
+                return false;
+            }
+        }
+    }
+    return true;
+}
 bool diffuse_map(id<MTLDevice> device, id<MTLLibrary> library) {
     constexpr float near_one = 0x1.fffffep-1f;
     const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -564,8 +683,9 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-        if (!diffuse_map(device, library) || !directional_pdf_validity(device, library) ||
-            !coating_schedule(device, library) || !coating_moments(device, library))
+        if (!outer_roulette(device, library, table_buffer) || !diffuse_map(device, library) ||
+            !directional_pdf_validity(device, library) || !coating_schedule(device, library) ||
+            !coating_moments(device, library))
             return 1;
         std::cout << "1024 packet GPU cases passed, max errors " << worst[0] << ' ' << worst[1]
                   << ' ' << worst[2] << ' ' << worst[3] << ' ' << worst[4] << ' ' << worst[5] << ' '

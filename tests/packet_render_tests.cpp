@@ -10,6 +10,7 @@
 #include "shading_normal_cases.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -500,6 +501,283 @@ struct Moments {
         return n > 1 ? std::max(0., (square - sum * sum / n) / (n - 1)) / n : 0;
     }
 };
+void roulette_scheduling(const RenderScene &scene, RenderBuildResult &built) {
+    constexpr std::array samplers{
+        RenderSampler{}, RenderSampler{SamplerKind::halton, SobolRandomization::permutedigits},
+        RenderSampler{SamplerKind::sobol}, RenderSampler{SamplerKind::zsobol}};
+    const auto directory =
+        std::filesystem::temp_directory_path() /
+        ("rypath-roulette-" +
+         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    require(std::filesystem::create_directory(directory), "Roulette checkpoint directory");
+    std::cout << "Roulette checkpoint evidence " << directory << '\n';
+    auto pixel_words = [](const FilmPixel &pixel) {
+        std::array<std::uint64_t, 27> words{};
+        unsigned at = 0;
+        for (const auto *values :
+             {&pixel.sum, &pixel.correction, &pixel.splat_sum, &pixel.splat_correction,
+              &pixel.compatibility_sum, &pixel.compatibility_correction,
+              &pixel.compatibility_splat_sum, &pixel.compatibility_splat_correction})
+            for (double value : *values)
+                words[at++] = std::bit_cast<std::uint64_t>(value);
+        words[at++] = pixel.count;
+        words[at++] = std::bit_cast<std::uint64_t>(pixel.weight_sum);
+        words[at] = std::bit_cast<std::uint64_t>(pixel.weight_correction);
+        return words;
+    };
+    auto same_owner = [](const PacketSample &a, const PacketSample &b) {
+        auto bits = [](float x, float y) {
+            return std::bit_cast<std::uint32_t>(x) == std::bit_cast<std::uint32_t>(y);
+        };
+        return a.pixel == b.pixel && a.sample == b.sample && a.splat_begin == b.splat_begin &&
+               a.splat_count == b.splat_count && bits(a.filter_weight, b.filter_weight) &&
+               std::equal(a.wavelengths.begin(), a.wavelengths.end(), b.wavelengths.begin(),
+                          bits) &&
+               std::equal(a.wavelength_pdfs.begin(), a.wavelength_pdfs.end(),
+                          b.wavelength_pdfs.begin(), bits) &&
+               std::equal(a.radiance.begin(), a.radiance.end(), b.radiance.begin(), bits);
+    };
+    for (auto sampler : samplers) {
+        std::vector<PacketSample> expected;
+        auto source = [&](unsigned capacity, bool capture) {
+            detail::RenderSampleSource result;
+            result.prepare = [&, capacity] {
+                RenderBuildResult ready;
+                ready.status = GeometryStatus::success;
+                ready.device = built.device;
+                ready.packet_lane_capacity = capacity;
+                return ready;
+            };
+            result.sample = [&, capture](const RenderRequest &input) {
+                auto request = input;
+                request.threadgroup_width = capture ? 32 : input.pixel_begin == 0 ? 1 : 16;
+                auto output = dispatch(*built.scene, request);
+                require(output.packet_splats.empty(), "PT roulette produced splats");
+                for (const auto &owner : output.packet_samples) {
+                    if (capture)
+                        expected.push_back(owner);
+                    else
+                        require(same_owner(owner, expected.at(std::size_t(owner.sample) * 16 +
+                                                              owner.pixel)),
+                                "Roulette owner bits changed across partition or resume");
+                }
+                return output;
+            };
+            return result;
+        };
+        RenderSettings settings{.width = 4,
+                                .height = 4,
+                                .samples = 64,
+                                .batch_size = 8,
+                                .seed = 51383,
+                                .sampler = sampler};
+        const auto whole = detail::drive_progressive(scene, settings, {}, source(16, true));
+        require(whole.completion == RenderCompletion::complete && expected.size() == 1024,
+                whole.diagnostic);
+        unsigned full = 0;
+        for (const auto &owner : expected)
+            full += unsigned(owner.wavelength_pdfs[1] > 0);
+        require(full > 512 && full < 1024 * 95 / 100,
+                "Sampler scheduling fixture did not exercise roulette and dispersion");
+        require(std::ranges::any_of(
+                    whole.film.pixels,
+                    [](const auto &pixel) { return pixel.sum != pixel.compatibility_sum; }),
+                "Roulette checkpoint fixture did not exercise authored clamping");
+        settings.batch_size = 16;
+        std::uint64_t committed = 0;
+        RenderControl control;
+        control.committed = [&](const Film &film, const MetalDeviceInfo &) {
+            committed = film.pixels.front().count;
+            return std::string{};
+        };
+        control.cancelled = [&] { return committed >= 16; };
+        const auto partial = detail::drive_progressive(scene, settings, control, source(7, false));
+        require(partial.completion == RenderCompletion::cancelled && committed == 16,
+                "Roulette cancellation did not preserve the complete prefix");
+        const auto path =
+            directory / (std::to_string(static_cast<unsigned>(sampler.kind)) + ".rycp");
+        const auto identity = render_identity(scene, settings);
+        RenderCheckpoint checkpoint{
+            partial.film,
+            settings,
+            identity,
+            {{0, 16, "roulette test", built.device.name, built.device.architecture, ""}}};
+        require(write_checkpoint(checkpoint, path).empty(), "Roulette checkpoint publication");
+        const auto decoded = read_checkpoint(path);
+        require(decoded.value && decoded.value->identity == identity, decoded.diagnostic);
+        settings.batch_size = 3;
+        control = {};
+        control.initial_film = &decoded.value->film;
+        const auto resumed = detail::drive_progressive(scene, settings, control, source(7, false));
+        require(resumed.completion == RenderCompletion::complete && resumed.film == whole.film,
+                "Roulette checkpoint continuation changed Film metadata or values");
+        for (std::size_t i = 0; i < whole.film.pixels.size(); ++i)
+            require(pixel_words(whole.film.pixels[i]) == pixel_words(resumed.film.pixels[i]),
+                    "Roulette continuation changed a Film field's bits");
+        std::cout << "Roulette sampler " << static_cast<unsigned>(sampler.kind)
+                  << ": 1024 exact owners and complete Film/checkpoint, full packets " << full
+                  << '\n';
+    }
+    std::filesystem::remove_all(directory);
+}
+void roulette_continuation_energy(RenderScene scene) {
+    // Two forward .5-transmission events followed by a constant environment.
+    // Packet PT has no constant-environment NEE proposal: only escaped camera
+    // paths contribute. Their raw expectation is .25, independent of wavelength.
+    scene.geometry.instances.resize(2);
+    scene.instance_materials.resize(2);
+    scene.instance_surface_transforms.resize(2);
+    scene.instance_texture_frames.resize(2);
+    scene.point_lights.clear();
+    scene.environment.fill(1);
+    scene.max_depth = 2;
+    auto built = build_metal_renderer(scene);
+    require(built.status == GeometryStatus::success && built.scene, built.diagnostic);
+    Moments means;
+    unsigned zero = 0, nonzero = 0;
+    for (unsigned seed = 0; seed < 8; ++seed) {
+        double mean = 0;
+        for (unsigned absolute = 0; absolute < 64; ++absolute) {
+            const RenderRequest query{.width = 4,
+                                      .height = 4,
+                                      .seed = 51383u + 7919u * seed,
+                                      .pixel_count = 16,
+                                      .sample_begin = absolute,
+                                      .sample_count = 1,
+                                      .total_samples = 64};
+            const auto output = dispatch(*built.scene, query);
+            for (const auto &owner : output.packet_samples) {
+                const bool survived = owner.radiance[0] > 0;
+                zero += unsigned(!survived);
+                nonzero += unsigned(survived);
+                for (unsigned lane = 0; lane < 4; ++lane)
+                    require(owner.wavelength_pdfs[lane] > 0 &&
+                                (survived ? std::abs(owner.radiance[lane] - 1) < 1e-5f
+                                          : owner.radiance[lane] == 0),
+                            "Native roulette failed to compensate future throughput");
+                mean += owner.radiance[0] / double(64 * 16);
+            }
+        }
+        means.add(mean);
+        std::cout << "Roulette continuation seed " << seed << " mean " << mean << '\n';
+    }
+    const double tolerance = 6 * std::sqrt(means.variance_mean()) + .002 * .25;
+    require(zero > 0 && nonzero > 0 && std::abs(means.mean() - .25) <= tolerance,
+            "Native roulette raw mean disagrees with the two-sheet analytic target");
+    std::cout << "Roulette continuation: zero " << zero << " nonzero " << nonzero << " mean "
+              << means.mean() << " expected .25 tolerance " << tolerance << '\n';
+}
+void roulette_future_dispersion() {
+    // Only the first sheet can see the point light through a nonzero BSDF.
+    // Later paths carry no additional lighting. Stopping before the glass may
+    // change the final wavelength packet, but must not rescale that earlier NEE.
+    auto scene = base(false);
+    scene.integrator = IntegratorKind::path;
+    scene.light_sampler = LightSamplerKind::power;
+    scene.max_component_value = .25;
+    scene.raster_camera = RasterCamera{{}, {-.001f, -.001f, 1}, {.002f, 0, 0}, {0, .002f, 0}};
+    auto &sheet = scene.materials.front();
+    sheet.constant = 0;
+    sheet.scattering = ScatteringKind::diffuse_transmission;
+    sheet.surface.transmittance = .5f;
+    auto glass = sheet;
+    glass.scattering = ScatteringKind::dielectric;
+    glass.eta.knots = {{360, 1.1f}, {830, 1.8f}};
+    glass.eta.extend_endpoints = true;
+    glass.u_roughness = glass.v_roughness = 0;
+    glass.remap_roughness = false;
+    scene.materials.push_back(glass);
+    for (unsigned i = 0; i < 3; ++i) {
+        const auto z = float(i + 1);
+        const float extent = i == 0 ? 2.f : 10000.f;
+        mesh(scene,
+             {{-extent, -extent, z},
+              {extent, -extent, z},
+              {extent, extent, z},
+              {-extent, extent, z}},
+             false, i == 2 ? 1u : 0u);
+    }
+    scene.instance_texture_frames.resize(scene.geometry.instances.size());
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        const auto &surface = scene.instance_surface_transforms[i];
+        require(prepare_texture_triangle_frames(
+                    scene.geometry.meshes[scene.geometry.instances[i].mesh_index], surface.shape,
+                    surface.placement, scene.instance_texture_frames[i])
+                    .empty(),
+                "Roulette dispersion fixture frames");
+    }
+    PointLight point;
+    point.position = {0, 0, 1.5f};
+    point.intensity.fill(1);
+    scene.point_lights.push_back(point);
+    scene.max_depth = 1;
+    auto shallow = build_metal_renderer(scene);
+    require(shallow.status == GeometryStatus::success && shallow.scene, shallow.diagnostic);
+    scene.max_depth = 3;
+    auto deep = build_metal_renderer(scene);
+    require(deep.status == GeometryStatus::success && deep.scene, deep.diagnostic);
+    Moments differences, reference;
+    unsigned full_packets = 0, hero_packets = 0;
+    constexpr double analytic = 2 / std::numbers::pi;
+    for (unsigned seed = 0; seed < 8; ++seed) {
+        double sums[2] = {};
+        for (unsigned absolute = 0; absolute < 64; ++absolute) {
+            const RenderRequest query{.width = 4,
+                                      .height = 4,
+                                      .seed = 51383u + 7919u * seed,
+                                      .pixel_count = 16,
+                                      .sample_begin = absolute,
+                                      .sample_count = 1,
+                                      .total_samples = 64};
+            const std::array outputs{dispatch(*shallow.scene, query), dispatch(*deep.scene, query)};
+            for (unsigned arm = 0; arm < outputs.size(); ++arm)
+                for (const auto &owner : outputs[arm].packet_samples) {
+                    unsigned active = 0;
+                    double integral = 0;
+                    for (unsigned lane = 0; lane < 4; ++lane) {
+                        require(std::abs(owner.radiance[lane] - analytic) < analytic * 1e-4,
+                                "Later roulette changed earlier point-light NEE");
+                        if (owner.wavelength_pdfs[lane] > 0) {
+                            ++active;
+                            integral += double(owner.radiance[lane]) / owner.wavelength_pdfs[lane];
+                        }
+                    }
+                    require(active == 1 || active == 4, "Invalid dispersive packet support");
+                    if (arm == 0)
+                        require(active == 4, "Shallow control unexpectedly reached dispersion");
+                    else {
+                        full_packets += unsigned(active == 4);
+                        hero_packets += unsigned(active == 1);
+                    }
+                    // Independent spectral integral of the constant radiance
+                    // over [360,830], with the packet's actual final PDFs.
+                    sums[arm] += integral / (4 * 470 * 64 * 16);
+                }
+        }
+        reference.add(sums[0]);
+        differences.add(sums[1] - sums[0]);
+        std::cout << "Roulette dispersion seed " << seed << " shallow " << sums[0] << " deep "
+                  << sums[1] << '\n';
+    }
+    // Two .5-throughput sheets give survival .25. A broad predeclared
+    // interval distinguishes actual roulette from a few geometric misses.
+    constexpr unsigned total = 8 * 64 * 16;
+    require(full_packets + hero_packets == total && full_packets > total / 2 &&
+                full_packets < total * 95 / 100 && hero_packets > 0,
+            "Dispersion fixture did not exercise both roulette stop and continuation");
+    // Fixed eight independent seeds; paired 6-SE bound and 0.2% numerical
+    // allowance declared before execution. No seed replacement on failure.
+    const double tolerance = 6 * std::sqrt(differences.variance_mean()) + .002 * reference.mean();
+    require(std::abs(differences.mean()) <= tolerance,
+            "Roulette before dispersion changed the earlier spectral integral mean");
+    require(std::abs(reference.mean() - analytic) <=
+                6 * std::sqrt(reference.variance_mean()) + .002 * analytic,
+            "Shallow spectral integral disagrees with point-light analytic radiance");
+    std::cout << "Roulette future dispersion: full " << full_packets << " hero " << hero_packets
+              << " paired difference " << differences.mean() << " tolerance " << tolerance << '\n';
+    roulette_scheduling(scene, deep);
+    roulette_continuation_energy(scene);
+}
 void area_black_environment() {
     auto scene = base();
     // The emitter lies outside the camera frustum and faces the matte receiver.
@@ -986,7 +1264,8 @@ int main(int argc, char **argv) {
     try {
         if (argc == 2 && (std::string_view(argv[1]) == "--shading-normal" ||
                           std::string_view(argv[1]) == "--shading-normal-spot" ||
-                          std::string_view(argv[1]) == "--shading-normal-spot-extended")) {
+                          std::string_view(argv[1]) == "--shading-normal-spot-extended" ||
+                          std::string_view(argv[1]) == "--roulette-dispersion")) {
             auto capability = query_metal_device();
 #if defined(RYPATH_ALLOW_NO_METAL_DEVICE)
             if (capability.status == MetalStatus::no_device)
@@ -997,6 +1276,11 @@ int main(int argc, char **argv) {
             if (!capability.device.compute_ray_tracing)
                 return 77;
 #endif
+            if (std::string_view(argv[1]) == "--roulette-dispersion") {
+                roulette_future_dispersion();
+                std::cout << "PASS native roulette before future dispersion\n";
+                return 0;
+            }
             shading_normal_native(std::string_view(argv[1]) != "--shading-normal",
                                   std::string_view(argv[1]) == "--shading-normal-spot-extended");
             std::cout << "PASS native shading-normal oracle and PT/BDPT means\n";

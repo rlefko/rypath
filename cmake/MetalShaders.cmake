@@ -115,6 +115,7 @@ foreach(shader IN ITEMS smoke geometry analytic_probe packet_scattering_probe re
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_scattering.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_layered.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_spectrum_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_roulette_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/layered_rng_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gltf_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/layered.h"

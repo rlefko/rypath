@@ -33,8 +33,8 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The current revision uses file format 3, identity 12, renderer 26,
-sampling 8 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
+The current revision uses file format 3, identity 12, renderer 27,
+sampling 9 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
 the sampler randomization in metadata. Earlier formats and contracts are rejected
@@ -94,6 +94,19 @@ packet walks share the new map. Renderer25/sampling7 checkpoints and old/new
 host/library pairs are incompatible; file format, identity schema, accumulation
 layout and the compact Vertex slot pitch are unchanged. This contract definition
 does not establish full-quality or performance acceptance.
+
+Renderer 27 / sampling 9 adds compensated outer roulette to vacuum packet PT
+after the second scattering. It uses the previously unused fourth component of
+each existing camera continuation block, with the actual sampled relative eta
+for refraction compensation. It changes path termination, weights and finite
+sample images, including the expectation of the separate authored-clamped plane.
+BDPT retains its finite-depth walk without outer roulette. The numerical fallback
+continues without roulette when its compensation cannot be represented safely;
+it does not clamp raw throughput or add a path failure. Renderer26/sampling8
+checkpoints and old/new host/library pairs are incompatible. File format,
+identity schema, accumulation layout and Vertex slot pitch remain unchanged.
+See the [roulette validation record](packet-roulette-validation.md) for the
+estimator, evidence and remaining qualification work.
 
 ## Identity and compatible continuation
 
