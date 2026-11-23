@@ -501,17 +501,32 @@ convergence and time-to-quality qualification remain separate; passing a small
 mean study does not establish a visual or performance benefit. MCMC is not yet
 integrated here.
 
-A subsequent compiler-boundary fix keeps acceleration-structure and sampler
-resources out of the non-inlined MIS recurrence. The inline wrapper computes the
-same four reverse densities in the same order; the recurrence receives only
-vertices, densities and path buffers. This follows an Xcode 16.4 hosted pipeline
-compilation failure after the replay-resource layout expanded; source inspection
-identifies that boundary as a candidate cause, not a proven driver diagnosis.
-Current-source M4 Max checks pass 16 Debug, 16 Release and four focused
-ASan/UBSan tests with Metal API validation, including exact canonical
-partition/finalizer/full-context controls, packet/PT/BDPT and Area integration.
-The hosted environment must separately verify compilation. These correctness
-runs are not performance measurements.
+Packet replay state is passed explicitly through the live PT sampling helpers,
+separately from the resource aggregate containing native acceleration structures.
+Offline callers retain null defaults. The resource declaration and complete
+non-inlined MIS body match the pre-Area implementation; random addresses, draw
+order and numerical operations are unchanged. The replay pointer refers to a
+validated thread-local payload for one dispatch and is never persisted in path
+state. Scalar replay remains unchanged.
+
+This targets a hosted Xcode 16.4 pipeline-creation failure in
+`rypath_probe_canonical_partition`. The earlier `e4c00b8` implementation passes
+241 mandatory Debug tests on M4 Max but fails that hosted check; local execution
+does not establish older-backend compiler admission. The exact compiler defect
+is not diagnosed. Error reports now retain a bounded underlying NSError chain
+and distinct failure reasons when the platform supplies them. Hosted compilation
+must be checked separately from M4 Max numerical validation.
+
+At `87bcee5`, four focused tests pass in each of Debug, Release and ASan/UBSan
+with Metal API validation: light geometry, canonical full context, wavefront
+frames and Area frames. Total durations are 130.87 s, 76.18 s and 78.33 s;
+there are no skips, failures or retries. Canonical physical/typed mismatch
+counts remain zero across eight contexts, 24 MIS cases and 8,800 typed fields.
+Independent review checks all five replay-forwarding edges and resource
+constructions; token comparisons preserve the original MIS and all non-forwarding
+sampler operations. Focused LLVM 18 analysis passes for the error diagnostics.
+These are correctness checks, not performance measurements or proof of the
+hosted compiler fix.
 
 ## Primary references
 
