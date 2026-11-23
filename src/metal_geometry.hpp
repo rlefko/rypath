@@ -74,7 +74,7 @@ struct GeometryBuildResult {
     MetalDeviceInfo device;
     std::string diagnostic;
     std::unique_ptr<MetalGeometryScene> scene;
-    AccelerationBuildInfo acceleration_build;
+    AccelerationBuildInfo acceleration_build{};
 };
 
 // Supplementary hints apply only to the compensated profile. Explicit native
