@@ -19,6 +19,7 @@ struct FrameConfig {
     // Immutable numerical profile for this session; offline builders retain
     // their separate compensated default.
     IntersectionProfile intersection_profile = IntersectionProfile::native;
+    ShadowTraversal shadow_traversal = ShadowTraversal::query;
     FrameExecution execution = FrameExecution::wavefront;
     std::uint32_t capacity = 65536;
     // Rounds per asynchronous command, never a path-depth or boundary limit.
@@ -127,6 +128,7 @@ struct FrameSessionBuildResult {
     MetalDeviceInfo device;
     std::string diagnostic;
     std::unique_ptr<FrameSession> session;
+    ShadowTraversalSelection shadow_traversal;
 };
 // PT only. Callers explicitly copy/override authored BDPT before building.
 FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &,

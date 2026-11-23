@@ -187,7 +187,7 @@ target_include_directories(rypath_gltf PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_gltf PUBLIC rypath_pbrt_render PRIVATE rypath_checkpoint rypath_mesh_bundle)
 rypath_configure_host_target(rypath_gltf)
 
-add_library(rypath_metal_backend STATIC src/render_driver.cpp src/exr_output.cpp src/render_job.cpp)
+add_library(rypath_metal_backend STATIC src/render_driver.cpp src/exr_output.cpp src/render_job.cpp src/shadow_traversal.cpp)
 target_include_directories(rypath_metal_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_metal_backend PRIVATE rypath_geometry rypath_render PUBLIC rypath_checkpoint)
 rypath_configure_host_target(rypath_metal_backend)

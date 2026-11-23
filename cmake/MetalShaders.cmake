@@ -53,6 +53,9 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/medium_probe_wire.h")
     endif()
+    if(shader STREQUAL "geometry" OR shader STREQUAL "render")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/opaque_shadow.h")
+    endif()
     if(shader STREQUAL "geometry" OR shader STREQUAL "render" OR shader STREQUAL "masked_probe" OR shader STREQUAL "analytic_probe")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle_candidate.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/triangle_product_guard.h"
@@ -344,3 +347,17 @@ add_custom_command(OUTPUT "${rypath_mutation_math_library}"
         -o "${rypath_mutation_math_library}"
     DEPENDS "${rypath_mutation_math_air}" VERBATIM)
 add_custom_target(rypath_mutation_math_shader DEPENDS "${rypath_mutation_math_library}")
+
+# Native-capable legacy/mixed entry-point fixture for opaque capability checks.
+set(rypath_opaque_capability_air "${rypath_runtime_directory}/CMakeFiles/rypath-opaque-capability.air")
+set(rypath_opaque_capability_library "${rypath_runtime_directory}/rypath-opaque-capability.metallib")
+add_custom_command(OUTPUT "${rypath_opaque_capability_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -c
+        "${CMAKE_SOURCE_DIR}/tests/opaque_shadow_capability.metal" -o "${rypath_opaque_capability_air}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/opaque_shadow_capability.metal" VERBATIM)
+add_custom_command(OUTPUT "${rypath_opaque_capability_library}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_opaque_capability_air}"
+        -o "${rypath_opaque_capability_library}"
+    DEPENDS "${rypath_opaque_capability_air}" VERBATIM)
+add_custom_target(rypath_opaque_capability_shader DEPENDS "${rypath_opaque_capability_library}")

@@ -76,7 +76,11 @@ struct Options {
     std::uint64_t frames = 120, warmup = 8, seed = 1;
     std::int32_t material_seed = 0;
     rypath::IntersectionProfile intersection_profile = rypath::IntersectionProfile::native;
+    rypath::ShadowTraversal shadow_traversal = rypath::ShadowTraversal::query;
 };
+const char *shadow_name(rypath::ShadowTraversal mode) {
+    return mode == rypath::ShadowTraversal::opaque_auto ? "opaque-auto" : "query";
+}
 const char *profile_name(rypath::IntersectionProfile profile) {
     return profile == rypath::IntersectionProfile::native ? "native" : "compensated";
 }
@@ -104,6 +108,7 @@ const char *usage =
     "Usage: rypath-frame-benchmark (--scene SCENE.pbrt | --demo) --output REPORT.json\n"
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
     "  [--seed 1] [--material-seed 0] [--intersections native|compensated (default: native)]\n"
+    "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
@@ -211,6 +216,13 @@ std::string parse(int argc, char **argv, Options &o) {
         } else if (key == "--group-width") {
             if (!integer(value, o.group_width) || !o.group_width || o.group_width > 256)
                 return "group width must be in [1,256]";
+        } else if (key == "--shadow-traversal") {
+            if (value == "query")
+                o.shadow_traversal = rypath::ShadowTraversal::query;
+            else if (value == "opaque-auto")
+                o.shadow_traversal = rypath::ShadowTraversal::opaque_auto;
+            else
+                return "invalid shadow traversal: " + std::string(value);
         } else if (key == "--intersections") {
             if (value == "native")
                 o.intersection_profile = rypath::IntersectionProfile::native;
@@ -589,6 +601,7 @@ struct Report {
     std::vector<std::string> provenance;
     std::vector<fs::path> dependencies;
     std::vector<Observation> observations;
+    std::optional<rypath::ShadowTraversalSelection> shadow_traversal;
     std::string json(int code) const {
         std::ostringstream out;
         out.imbue(std::locale::classic());
@@ -646,6 +659,19 @@ struct Report {
         else
             out << "null";
         out << ",\"intersection_profile\":" << quote(profile_name(options.intersection_profile))
+            << ",\"shadow_traversal_requested\":" << quote(shadow_name(options.shadow_traversal))
+            << ",\"shadow_traversal_effective\":"
+            << (shadow_traversal ? quote(shadow_name(shadow_traversal->effective)) : "null")
+            << ",\"opaque_shadow_eligible\":"
+            << (shadow_traversal ? (shadow_traversal->eligible ? "true" : "false") : "null")
+            << ",\"opaque_shadow_eligibility_reason\":"
+            << (shadow_traversal ? quote(shadow_traversal->reason) : "null")
+            << ",\"shadow_traversal_fallback_reason\":"
+            << quote(shadow_traversal &&
+                             options.shadow_traversal == rypath::ShadowTraversal::opaque_auto &&
+                             !shadow_traversal->eligible
+                         ? shadow_traversal->reason
+                         : "")
             << ",\"integrator\":" << quote(integrator) << ",\"max_depth\":" << max_depth
             << ",\"sampler\":\"independent\",\"samples_per_pixel_per_frame\":1,\"footprint_"
                "samples\":1,"
@@ -653,6 +679,16 @@ struct Report {
             << options.frames << ",\"requested_warmup\":" << options.warmup
             << ",\"completed_frames\":" << frames_completed
             << ",\"completed_warmup\":" << warmup_completed
+            << ",\"shadow_traversal_frames\":{\"opaque_auto\":"
+            << (shadow_traversal &&
+                        shadow_traversal->effective == rypath::ShadowTraversal::opaque_auto
+                    ? frames_completed
+                    : 0)
+            << ",\"query\":"
+            << (shadow_traversal && shadow_traversal->effective == rypath::ShadowTraversal::query
+                    ? frames_completed
+                    : 0)
+            << ",\"excludes_warmup\":true}"
             << ",\"consumed_sample_indices\":" << observations.size()
             << ",\"startup_seconds\":" << startup_seconds
             << ",\"warmup_seconds\":" << warmup_seconds
@@ -954,6 +990,7 @@ int run(const Options &options) {
         config.footprint_samples = 1;
         config.profile_stages = options.profile_stages;
         config.intersection_profile = options.intersection_profile;
+        config.shadow_traversal = options.shadow_traversal;
         config.execution = options.execution;
         config.estimator = options.estimator;
         config.target_scale = options.target_scale;
@@ -975,6 +1012,7 @@ int run(const Options &options) {
             report.diagnostic =
                 built.diagnostic.empty() ? "frame session unavailable" : built.diagnostic;
         } else {
+            report.shadow_traversal = built.shadow_traversal;
             const auto warmup_start = Clock::now();
             std::unique_ptr<rypath::Frame> last;
             std::unique_ptr<rypath::ReconstructionStream> reconstruction;

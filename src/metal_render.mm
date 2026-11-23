@@ -18,6 +18,7 @@
 #include "metal_execution.hpp"
 #include "metal_frame_access.hpp"
 #include "metal_geometry_access.hpp"
+#include "opaque_shadow_capability.hpp"
 #include "packet_dispatch.hpp"
 #include "packet_spectrum_shared.h"
 #include "packet_wire.h"
@@ -464,6 +465,7 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> triangles = nil;
     std::uint32_t native_hint_mode = 0;
+    bool opaque_shadows = false;
     std::size_t packet_payload_bytes = packet_wire::workspace_bytes;
     id<MTLBuffer> patches = nil;
     id<MTLBuffer> materials = nil;
@@ -2538,8 +2540,13 @@ struct FrameSession::Impl {
     }
     std::string prepare_wavefront(id<MTLLibrary> library) {
         auto &r = *renderer->impl_;
-        wavefront = std::make_shared<FrameWavefrontPrograms>();
+        NSString *shade_entry = r.parameters.packet_transport ? @"rypath_wavefront_shade_packet"
+                                                              : @"rypath_wavefront_shade_scalar";
         std::string error;
+        if (r.opaque_shadows &&
+            !metal::verify_opaque_shadow_capability(library, shade_entry, error))
+            return error;
+        wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
             metal::load_pipeline(r.device, library, @"rypath_wavefront_contract", error);
         if (handshake == nil)
@@ -2604,9 +2611,7 @@ struct FrameSession::Impl {
             if (wavefront->trace_table == nil)
                 return error;
         }
-        wavefront->shade = load(r.parameters.packet_transport ? @"rypath_wavefront_shade_packet"
-                                                              : @"rypath_wavefront_shade_scalar",
-                                intersection);
+        wavefront->shade = load(shade_entry, intersection);
         if (wavefront->shade == nil)
             return error;
         if (!r.parameters.packet_transport) {
@@ -3736,6 +3741,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
 FrameSessionBuildResult build_frame_session(const RenderScene &scene, const FrameConfig &config,
                                             const std::filesystem::path &library_path) {
     FrameSessionBuildResult result;
+    result.shadow_traversal.requested = config.shadow_traversal;
     const auto pixels = std::uint64_t(config.width) * config.height;
     if (!pixels || pixels > max_index || !config.footprint_samples ||
         !config.transient_byte_limit) {
@@ -3783,8 +3789,9 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
             "Live frame sessions require explicit PT and unclamped raw scene overrides";
         return result;
     }
-    auto built =
-        build_metal_renderer(scene, library_path, RenderBuildOptions{config.intersection_profile});
+    auto built = build_metal_renderer(
+        scene, library_path,
+        RenderBuildOptions{config.intersection_profile, config.shadow_traversal});
     result.device = built.device;
     result.status = built.status;
     result.diagnostic = built.diagnostic;
@@ -3796,6 +3803,7 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         result.status = GeometryStatus::failure;
         return result;
     }
+    result.shadow_traversal = built.shadow_traversal;
     result.session = std::unique_ptr<FrameSession>(new FrameSession(std::move(impl)));
     result.status = GeometryStatus::success;
     return result;
@@ -3828,6 +3836,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        RenderBuildOptions options, RenderTimings *timings) {
     @autoreleasepool {
         RenderBuildResult result;
+        result.shadow_traversal.requested = options.shadow_traversal;
         std::optional<std::size_t> growth_estimate;
         try {
             result.diagnostic = validate_render_scene(scene);
@@ -3912,6 +3921,13 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             }
         }
         const auto &geometry_data = prepared.instances.empty() ? scene.geometry : prepared;
+        if (options.shadow_traversal != ShadowTraversal::query &&
+            options.shadow_traversal != ShadowTraversal::opaque_auto) {
+            result.diagnostic = "Invalid shadow traversal mode";
+            return result;
+        }
+        const auto shadow_selection = select_shadow_traversal(
+            scene, geometry_data, options.intersection_profile, options.shadow_traversal);
         // Global exclusions are deliberately conservative, including unused/mix children.
         // volume_transport by itself does not imply a medium interface (vacuum is eligible).
         const bool hint_passthrough = packet_visibility_requires_closest(scene);
@@ -3997,6 +4013,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                               ? @"rypath_render_packets"
                               : (impl->parameters.instance_count == 0 ? @"rypath_render_sky"
                                                                       : @"rypath_render_paths");
+        impl->opaque_shadows = shadow_selection.effective == ShadowTraversal::opaque_auto;
+        if (impl->opaque_shadows &&
+            !metal::verify_opaque_shadow_capability(library, entry, result.diagnostic))
+            return result;
         id<MTLFunction> intersection = nil;
         if (impl->parameters.instance_count != 0 || impl->parameters.packet_transport) {
             intersection = metal::load_patch_intersection(library, result.diagnostic);
@@ -4042,6 +4062,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         const bool native = options.intersection_profile == IntersectionProfile::native;
         if (native)
             [constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
+        [constants setConstantValue:&impl->opaque_shadows type:MTLDataTypeBool atIndex:22];
         if (impl->parameters.packet_transport) {
             // Scan every material, including children reached through mix nodes.
             const ScatteringKind families[] = {ScatteringKind::thin_dielectric,
@@ -4190,6 +4211,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 impl->packet_payload_bytes, impl->parameters.packet_lane_bytes,
                 impl->device.maxBufferLength);
         }
+        result.shadow_traversal = shadow_selection;
         result.scene.reset(new MetalRenderScene(std::move(impl)));
         result.status = GeometryStatus::success;
         return result;

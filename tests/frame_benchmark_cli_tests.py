@@ -16,6 +16,7 @@ def invoke(args, expected=1):
 
 help_text = invoke(["--help"], 0).stdout
 assert "--intersections native|compensated" in help_text
+assert "--shadow-traversal query|opaque-auto" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--guide-cache on|off" in help_text
 assert "--reconstructed-capture" in help_text
@@ -51,6 +52,7 @@ for option, values in (
     ("--target-scale", ("0", "-1", "nan", "inf", "1e-45", "1e100", "1e-6x")),
     ("--intersections", ("invalid",)),
     ("--motion-offset", ("0", "nan", "inf", "1e100", "1x")),
+    ("--shadow-traversal", ("invalid",)),
     ("--capacity", ("0", "65537", "-1")),
     ("--quantum", ("0", "1025", "-1")),
     ("--group-width", ("0", "257", "-1")),
@@ -225,6 +227,16 @@ with tempfile.TemporaryDirectory() as directory:
         selected_data = json.loads(selected.read_text())
         assert selected_data["settings"]["intersection_profile"] == profile
         assert selected_data["completed_frames"] == 0
+    for mode in ("query", "opaque-auto"):
+        destination = root / f"shadow-{mode}.json"
+        invoke(["--scene", str(malformed), "--output", str(destination),
+                "--shadow-traversal", mode])
+        selected = json.loads(destination.read_text())
+        assert selected["settings"]["shadow_traversal_requested"] == mode
+        assert selected["settings"]["shadow_traversal_effective"] is None
+        assert selected["shadow_traversal_frames"] == {
+            "opaque_auto": 0, "query": 0, "excludes_warmup": True
+        }
     destination = root / "area.json"
     invoke(["--scene", str(malformed), "--output", str(destination),
             "--estimator", "area-replay", "--target-scale", "0.125"])

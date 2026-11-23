@@ -373,6 +373,12 @@ inline bool visible(thread Resources &r, const thread Vertex &a, const thread Ve
     const float3 origin = offset(a, direction);
     const float3 target = offset(b, -direction);
     ray segment(origin, target - origin, 0, 0x1.fffffep-1f);
+    if (native_opaque_shadows_enabled()) {
+        const auto shadow = native_opaque_shadow(segment, r.scene, all_visible);
+        if (!shadow.valid)
+            sample.status = wire::invalid_hit;
+        return shadow.valid && !shadow.occluded;
+    }
     MixedIntersector closest;
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
     for (uint crossings = 0; crossings <= r.alpha.parameters->boundary_limit; ++crossings) {
