@@ -100,8 +100,8 @@ clamp: increases of 34.01%, 13.46% and 13.60%. These are one-frame spatial
 statistics, not a converged reference or an explanation of every MetalFX artifact.
 The same interactive check shows persistent noisy sky and a washed-out interior.
 Apple's linear-color contract does not establish signed spectral RGB or arbitrary
-XYZ color-basis support. The MetalFX path therefore remains a separately labeled,
-unqualified reconstruction option.
+XYZ color-basis support. The MetalFX path remains a separately labeled option;
+the measured integration limits are discussed below.
 
 The fallback filters combined signed linear RGB in float32. It adapts temporal
 moments and hierarchical filtering from
@@ -198,9 +198,26 @@ output-kind metadata and guide pixel accounting. The raw-RGB capture agrees with
 an independent clamp/half-conversion oracle within two half ULPs and a float
 arithmetic allowance. This validates direct-RGB publication, not denoising quality.
 
-Reconstruction image quality, sustained complete-pipeline timing, and fallback
-qualification remain separate gates. No denoised FPS or quality improvement is
-claimed from these correctness tests.
+These correctness tests alone establish neither denoising quality nor rendered
+FPS. The separate measured study below supplies bounded quality and timing
+evidence.
+
+## Measured pipeline snapshot
+
+The [audited qualification](pipeline-qualification.md) at historical `0ef51ba`
+compares both reconstruction modes on six static fixtures and signed temporal
+reconstruction on five eligible motion fixtures. Independent/temporal has lower
+post-cap physical MSE than Area-one/temporal in all six static fixtures, supporting
+the viewer's independent/temporal default. Finite references, motion-anchor-only
+truth and the mostly uniform coated fixture limit the conclusion.
+
+The MetalFX findings describe this integration, not the framework generally.
+Its primary pinhole/F0 guides omit reflected/transmitted surface replacement and
+Fresnel blending; its input clips negative spectral RGB. Exact GGX roughness and
+per-pixel stochastic sampling versus global jitter remain unresolved integration
+questions. These limits remain separate from raw transport. The native timing
+study misses the suite's 20–30 FPS target, including all four sustained controls.
+See the qualification record for full tables, uncertainty and timing scopes.
 
 Primary platform references: Apple's [MetalFX integration session](https://developer.apple.com/videos/play/wwdc2025/211/),
 [temporal denoised scaler](https://developer.apple.com/documentation/metalfx/mtlfxtemporaldenoisedscaler),

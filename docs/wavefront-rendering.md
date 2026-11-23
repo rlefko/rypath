@@ -96,6 +96,21 @@ no reuse, mutation, guide generation or denoising, and Cornell's p95 exceeds
 retained earlier [native megakernel measurements](frame-rendering.md) are faster
 than this build's megakernel controls and remain a separate regression reference.
 
+An independent OpenEXR 3.4.4 / NumPy 2.4.5 decoder checked all four FLOAT captures,
+dimensions, finite values and sample/profile/execution metadata. The matched
+seed-one, sample-35 RGB values are exactly equal between modes for both scenes
+(6,220,800 values per scene). This verifies those sample controls, not convergence
+or equal-quality rendering time.
+
+The retained measurement source is `0e1010414ea2781ff9eb5a86cc1286eae8b29539`;
+manifest SHA-256 is
+`8c610dbafe9f13787d1cff3b3f1d8652d517424878fa9fe44fcd8f42455cf592`.
+The executable and metallib are retained with the reports and captures. An earlier
+incomplete study is retained separately: its per-lane CAS allocator measured
+3.090 s for Cornell wavefront versus 93.99 ms for the matched megakernel. The run
+was stopped for investigation; replacing contended allocation with one range
+reservation produced the measurements above.
+
 ### Compact packet state
 
 The subsequent `826fccc` implementation reduces shader-reported packet state
@@ -112,7 +127,7 @@ exercise the retained-history dependencies and visible overflow behavior.
 A separate isolated Release comparison against the frozen pre-compaction build
 uses native 1080p, seeds 31001–31003, four warmup and 24 measured frames, default
 capacity/quantum/group width, and independent raw rendering. All 336 frames
-complete. The final FLOAT captures agree bit-for-bit in all six scene/seed
+complete. The final FLOAT capture pixels agree bit-for-bit in all six scene/seed
 pairs (37,324,800 compared RGB components). This supports unchanged output for
 these controls; it does not establish universal bit identity.
 
@@ -137,20 +152,33 @@ selects scalar transport; it remains a scalar control and is excluded from the
 packet speedup. The corrected comparison asserts the effective packet/scalar
 backend from both the report and captured EXR metadata.
 
-An independent OpenEXR 3.4.4 / NumPy 2.4.5 decoder checked all four FLOAT captures,
-dimensions, finite values and sample/profile/execution metadata. The matched
-seed-one, sample-35 RGB values are exactly equal between modes for both scenes
-(6,220,800 values per scene). This verifies those sample controls, not convergence
-or equal-quality rendering time.
+### Integrated qualification snapshot
 
-The retained measurement source is `0e1010414ea2781ff9eb5a86cc1286eae8b29539`;
-manifest SHA-256 is
-`8c610dbafe9f13787d1cff3b3f1d8652d517424878fa9fe44fcd8f42455cf592`.
-The executable and metallib are retained with the reports and captures. An earlier
-incomplete study is retained separately: its per-lane CAS allocator measured
-3.090 s for Cornell wavefront versus 93.99 ms for the matched megakernel. The run
-was stopped for investigation; replacing contended allocation with one range
-reservation produced the measurements above.
+A later comparison repeats the same 12-run protocol at clean source `0ef51ba`,
+which also includes the Area packet-resource compiler compatibility fix. The
+original baseline remains frozen at `c8b94b1`. All 288 measured and 48 warmup
+frames complete; all six matched final capture pairs again have bit-identical
+RGB pixels (37,324,800 components). Both reports and EXR metadata confirm scalar
+Cornell and packet coating. This is separate evidence from the isolated storage
+comparison above, not an attribution of every integrated timing difference to
+storage alone.
+
+| Scene | Build | Median range (ms) | Observed p95 range (ms) |
+| --- | --- | ---: | ---: |
+| Cornell scalar | Frozen baseline | 50.776–51.031 | 51.638–52.013 |
+| Cornell scalar | Integrated compact state | 48.813–51.103 | 50.432–52.087 |
+| Coated packet | Frozen baseline | 390.798–391.139 | 393.691–394.018 |
+| Coated packet | Integrated compact state | 290.334–291.721 | 293.607–294.492 |
+
+Paired packet medians fall 25.4–25.8%; scalar results are mixed. Packet process
+peak RSS is 569.6–575.9 MiB for the baseline and 569.9–576.6 MiB for the candidate,
+so no RSS reduction is established. These processes also perform final captures;
+their high-water marks have a different scope from the capture-free pipeline
+matrix. Results remain raw-only, descriptive measurements, not a quality pass.
+Evidence is retained under
+`.cache/validation/packet-storage-001/paired-release-003/`.
+See [pipeline qualification](pipeline-qualification.md) for independent/Area
+denoised timing, image quality and sustained measurements at the same snapshot.
 
 The execution structure follows the motivation in
 [Megakernels Considered Harmful](https://research.nvidia.com/sites/default/files/pubs/2013-07_Megakernels-Considered-Harmful/laine2013hpg_paper.pdf).
