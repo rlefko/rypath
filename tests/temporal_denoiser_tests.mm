@@ -198,7 +198,8 @@ struct Moments {
     Image mean, variance;
 };
 Image spatial(const Fixture &f, Moments moments, unsigned iterations, bool prefilter = false,
-              SpatialVariancePolicy policy = SpatialVariancePolicy::paired) {
+              SpatialVariancePolicy policy = SpatialVariancePolicy::paired,
+              double variance_floor = 1e-4) {
     auto &[mean, variance] = moments;
     constexpr std::array<double, 5> kernel{1, 4, 6, 4, 1};
     for (unsigned iteration = 0; iteration < iterations; ++iteration) {
@@ -238,7 +239,7 @@ Image spatial(const Fixture &f, Moments moments, unsigned iterations, bool prefi
                                                      : policy == SpatialVariancePolicy::center
                                                          ? guidance[c]
                                                          : std::min(guidance[c], variance[q][c]);
-                        distance += delta * delta / (4 * edge_variance + 1e-4);
+                        distance += delta * delta / (4 * edge_variance + variance_floor);
                     }
                     const double weight = kernel[unsigned(x + 2)] * kernel[unsigned(y + 2)] / 256 *
                                           geometry(f, p, q) * std::exp(-distance);
@@ -394,14 +395,52 @@ void continuity_and_halo(MetalFrameLease &lease) {
     compare(split.capture(), whole.capture(), "Triangulation invariance across connected plane",
             1e-5);
     const auto baseline = whole.capture();
-    for (auto &pixel : whole.color)
-        for (unsigned c = 0; c < 3; ++c)
-            pixel[c] *= 1024.f;
-    require(execute(*a, whole, lease.queue()).empty(), "Exposure-scaled execution");
-    auto exposed = whole.capture();
+    Image original_values(pixels);
     for (unsigned p = 0; p < pixels; ++p)
         for (unsigned c = 0; c < 3; ++c)
-            near(exposed[p][c], baseline[p][c] * 1024., "Exposure equivariance", 2e-4, .02);
+            original_values[p][c] = whole.color[p][c];
+    const auto original_oracle =
+        spatial(whole, {original_values, cold_variance(whole, original_values)}, 5);
+    compare(baseline, original_oracle, "Original exposure independent stencil", 6e-4);
+    constexpr double exposure_scale = 1024.;
+    for (auto &pixel : whole.color)
+        for (unsigned c = 0; c < 3; ++c)
+            pixel[c] *= float(exposure_scale);
+    Image scaled_values(pixels);
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            scaled_values[p][c] = whole.color[p][c];
+    const auto scaled_variance = cold_variance(whole, scaled_values);
+    const auto scaled_oracle = spatial(whole, {scaled_values, scaled_variance}, 5);
+    // The absolute floor stays 1e-4 in production. Homogeneity is restored only
+    // when that floor is scaled along with color squared and its variance.
+    const auto homogeneous_oracle =
+        spatial(whole, {scaled_values, scaled_variance}, 5, false, SpatialVariancePolicy::paired,
+                1e-4 * exposure_scale * exposure_scale);
+    require(execute(*a, whole, lease.queue()).empty(), "Exposure-scaled execution");
+    const auto exposed = whole.capture();
+    Image normalized_exposed = exposed, normalized_oracle = scaled_oracle;
+    double observed_scaling_deviation = 0, expected_floor_deviation = 0;
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c) {
+            normalized_exposed[p][c] /= exposure_scale;
+            normalized_oracle[p][c] /= exposure_scale;
+            observed_scaling_deviation =
+                std::max(observed_scaling_deviation,
+                         std::abs(exposed[p][c] - baseline[p][c] * exposure_scale));
+            expected_floor_deviation =
+                std::max(expected_floor_deviation,
+                         std::abs(scaled_oracle[p][c] - original_oracle[p][c] * exposure_scale));
+            near(homogeneous_oracle[p][c] / exposure_scale, original_oracle[p][c],
+                 "CPU exposure homogeneity when variance floor also scales", 1e-10, 1e-12);
+        }
+    // Preserve the existing five-pass stencil error bounds in source units;
+    // do not compare different mathematical filters as if exposure-equivariant.
+    compare(normalized_exposed, normalized_oracle,
+            "Scaled exposure fixed-floor independent stencil", 6e-4);
+    std::cout << "exposure_fixed_floor scale=" << exposure_scale
+              << " observed_max_scaling_deviation=" << observed_scaling_deviation
+              << " oracle_max_floor_deviation=" << expected_floor_deviation << '\n';
     // Distinct connected components and close parallel layers cannot exchange color.
     Fixture layers(lease.device());
     auto no_leak = adapter(lease, 5, 64, false, true);
