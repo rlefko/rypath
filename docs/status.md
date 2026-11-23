@@ -10,8 +10,10 @@ megakernel baselines are 86.1–86.6 ms for Cornell and 196.6–199.4 ms for the
 packet scene; subsequent wavefront measurements are reported separately.
 The experimental [native viewer](viewer.md) now connects these implemented
 stages with camera controls, raw/reconstructed comparison and paired EXR capture.
-Native 1080p at 20–30 rendered FPS remains a target; end-to-end image quality,
-sustained performance and signed-temporal UI qualification are pending.
+Native 1080p at 20–30 rendered FPS remains a target. The audited static fixture
+study selects independent sampling and signed temporal reconstruction as viewer
+defaults. Signed-temporal viewer controls and capture checks pass; sustained
+performance qualification remains pending.
 
 Opt-in [Area-domain path reuse](area-reuse.md) now replays film, lens, wavelength
 and complete indirect transport. Bounded importance contrast limits reuse-induced
@@ -24,10 +26,10 @@ Separate [frame reconstruction](reconstruction.md) consumes completed raw frames
 It offers MetalFX denoising/upscaling and a native-resolution signed-float temporal
 fallback, with guide approximation counters, retained GPU outputs and direct
 linear-RGB captures. The fallback avoids clipping fresh spectral samples before
-filtering. Integrated correctness checks pass; reference-image quality and
-complete-pipeline timing remain to be qualified. The viewer exposes
-`--mode temporal|metalfx|raw`, with MetalFX still the default. Implemented modes and
-passing renderer checks do not establish viewer image quality.
+filtering. Integrated correctness checks pass, and the static study favors this
+fallback over the current MetalFX integration. The viewer exposes
+`--mode temporal|metalfx|raw`. Broader image-quality acceptance and complete-pipeline
+timing remain open; see the [viewer evidence](viewer.md#validation-boundary).
 
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,

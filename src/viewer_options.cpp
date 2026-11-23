@@ -22,10 +22,10 @@ bool real(std::string_view text, double &output) {
 const char *usage() {
     return "Usage: rypath-viewer (--scene SCENE.pbrt | --demo) [options]\n"
            "  --width 1920 --height 1080  fixed internal resolution\n"
-           "  --mode temporal|metalfx|raw  (default: metalfx, native resolution)\n"
+           "  --mode temporal|metalfx|raw  (default: temporal, native resolution)\n"
            "  --reconstruction temporal|metalfx|raw-rgb  alternate option spelling\n"
-           "  --estimator area-replay|independent  (default: area-replay)\n"
-           "  --mutations 0|1|2|4  (default: 1; independent uses zero)\n"
+           "  --estimator independent|area-replay  (default: independent)\n"
+           "  --mutations 0|1|2|4  (default: 1 for Area; independent uses zero)\n"
            "  --frames N  exit after N completed pipeline frames; omitted means unlimited\n"
            "  --seed 1 --exposure 0 --near-plane .001 --capture-dir DIR (default: "
            "Pictures/rypath)\n"

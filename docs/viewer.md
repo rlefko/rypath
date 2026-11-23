@@ -1,11 +1,11 @@
 # Native pipeline viewer
 
 The macOS `rypath-viewer` executable presents completed GPU frames through AppKit
-and a CAMetalLayer. It uses native Metal intersections, wavefront PT, Area-domain
-full replay with one corrected mutation, and native-resolution MetalFX by default.
-The first version has static scenes and camera interaction. It does not animate
-geometry or interpolate frames. These defaults are experimental pipeline choices;
-measured image quality and speed determine their eventual promotion.
+and a CAMetalLayer. Its default is native Metal intersections, wavefront PT,
+independent sampling and signed temporal reconstruction at native resolution.
+Area-domain full replay with corrected MCMC mutations and MetalFX remain explicit
+options. The first version has static scenes and camera interaction; geometry
+animation and frame interpolation are not implemented.
 
 ```sh
 cmake --preset release
@@ -29,14 +29,21 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | Option | Behavior |
 | --- | --- |
 | `--width W --height H` | Fixed internal and reconstruction resolution; defaults to 1920×1080 |
-| `--mode temporal\|metalfx\|raw` | Explicit output mode; MetalFX remains the default |
-| `--estimator area-replay\|independent` | Area replay by default; independent is the unreused control |
-| `--mutations 0\|1\|2\|4` | One corrected mutation by default; independent uses zero |
+| `--mode temporal\|metalfx\|raw` | Explicit output mode; temporal is the default |
+| `--estimator area-replay\|independent` | Independent by default; Area replay selects the experimental reuse pipeline |
+| `--mutations 0\|1\|2\|4` | Area replay uses one corrected mutation by default; independent uses zero |
 | `--frames N` | Exit after N completed pipeline frames; omitted means unlimited |
 | `--seed N` | Render seed, default 1 |
 | `--exposure EV` | Display EV, default 0; range −24 to +24 |
 | `--near-plane D` | Positive normal-float guide near plane, default .001; raw rays are unchanged |
 | `--capture-dir DIR` | Parent for requested captures; defaults to `Pictures/rypath` |
+
+The full [golden pipeline candidate](golden-pipeline.md) is selected explicitly:
+
+```sh
+build/release/rypath-viewer.app/Contents/MacOS/rypath-viewer --demo \
+  --estimator area-replay --mutations 1 --mode temporal
+```
 
 `--reconstruction temporal|metalfx|raw-rgb` is the alternate mode spelling;
 specify the mode only once. Dimensions must be positive and no greater than
@@ -142,16 +149,41 @@ also passes Release (27.10 s) and ASan/UBSan (.82 s) with API validation. A bund
 Release application check exercises translation, rotation, Home reset, raw/MetalFX
 switching, exposure, paired capture under Pictures/rypath, and Escape termination.
 
-The temporal option, comparison toggle and signed-HDR presentation changes have
-source coverage in the portable option tests. Interactive temporal-mode checks
-and reference-image quality qualification remain pending; earlier viewer checks
-above do not validate this extension. The title's frame rate is not evidence that
-the native-1080p quality/performance target has been met.
+The signed-temporal extension and measured default selection pass Debug/Release
+viewer builds and portable option tests (0.24/0.31 s), focused LLVM 18 analysis and
+formatting. A current Release application check at native 1920×1080 exercises
+raw/temporal toggling, translation and rotation, Home reset, exposure, window zoom,
+paired capture and Escape termination. Resizing preserves internal dimensions.
+Two three-frame 128² runs with Metal API validation also complete: independent
+sampling and explicit Area-one, both with temporal reconstruction.
 
-The initial interactive image check exposes strong spectral background noise and
-widespread per-sample negative RGB clipping in MetalFX input. This is a failed
-quality observation, not a qualified denoising result; the reconstruction fallback
-and reference-image study must resolve it before selecting a default.
+An independent OpenEXR/NumPy decoder verifies all four native-1080p FLOAT captures
+and paired sample/epoch/mode metadata. Temporal values remain signed (observed
+minima −2.63 immediately after reset and −0.0456 after settling); display EV 0.5
+is metadata, with film exposure one. These checks establish functionality and
+capture behavior, not sustained FPS or ghost-free motion. Evidence is retained in
+`.cache/validation/signed-viewer-ui-001`. The title's frame rate is not evidence
+that the native-1080p performance target is met.
+
+The initial MetalFX interactive check exposed strong spectral background noise
+and widespread per-sample negative RGB clipping in its input. A separate frozen
+qualification snapshot `0ef51ba` then compared both reconstruction modes on six
+scenes at 320×180, 96 frames, four independent seed blocks and 2,048-SPP references
+in eight batches. All twelve static datasets and five camera-motion datasets pass
+an independent pixel/metadata audit. The study preserves signed raw and filtered
+RGB, finite-reference uncertainty and the different timing scopes.
+
+Across the six static fixtures, independent sampling with temporal reconstruction
+has lower warm physical MSE than either independent/MetalFX or Area-one/temporal.
+Area-one/independent temporal MSE ratios are 1.79–3.86, while Area-one evaluates
+seven full paths per pixel with eligible history instead of one. Those measured
+comparisons select independent plus temporal as the usable default. They do not
+establish universal estimator superiority, motion quality or native-1080p FPS.
+The mostly uniform coated fixture supplies limited spatial-quality coverage.
+The measured snapshot also contains the subsequent packet-state storage
+optimization; the default change itself does not change transport or filtering.
+Full-replay Area/MCMC remains the explicit research candidate until its added cost
+and correlation earn a measured quality benefit.
 
 See [reconstruction](reconstruction.md) for surface-guide approximations and
 [the golden pipeline](golden-pipeline.md) for the measurement target.

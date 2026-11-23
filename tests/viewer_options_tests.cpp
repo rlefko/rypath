@@ -46,15 +46,23 @@ void defaults_and_modes() {
     require(defaults.demo && defaults.scene.empty() && !defaults.help, "Demo selection defaults");
     require(defaults.width == 1920 && defaults.height == 1080,
             "Viewer defaults to fixed native 1080p internal resolution");
-    require(defaults.estimator == FrameEstimator::area_replay && defaults.mutation_steps == 1 &&
-                defaults.reconstruction == ReconstructionMode::metalfx,
-            "Viewer defaults to Area replay with one mutation and MetalFX");
+    require(
+        defaults.estimator == FrameEstimator::independent && defaults.mutation_steps == 1 &&
+            defaults.reconstruction == ReconstructionMode::temporal,
+        "Viewer defaults to independent/temporal while retaining one mutation as Area preference");
     require(defaults.frames == 0 && defaults.seed == 1 && defaults.exposure_ev == 0 &&
                 defaults.near_plane == .001 && defaults.capture_directory.empty(),
             "Default frame limit, seed, presentation, and capture path");
+    const auto area_default = accepted({"--demo", "--estimator", "area-replay"});
+    require(area_default.estimator == FrameEstimator::area_replay &&
+                area_default.mutation_steps == 1 &&
+                area_default.reconstruction == ReconstructionMode::temporal,
+            "Explicit Area opt-in retains its default one mutation");
     for (const auto steps : {0u, 1u, 2u, 4u}) {
-        const auto area = accepted({"--demo", "--mutations", std::to_string(steps)});
-        require(area.mutation_steps == steps, "Supported mutation count preserved");
+        const auto area = accepted(
+            {"--demo", "--estimator", "area-replay", "--mutations", std::to_string(steps)});
+        require(area.estimator == FrameEstimator::area_replay && area.mutation_steps == steps,
+                "Supported Area mutation count preserved");
     }
     const auto independent = accepted({"--demo", "--estimator", "independent", "--mutations", "4",
                                        "--reconstruction", "raw-rgb"});
@@ -148,6 +156,10 @@ void syntax_and_help() {
                 usage.find("--mode temporal|metalfx|raw") != std::string::npos &&
                 usage.find("raw/selected denoiser") != std::string::npos,
             "Help describes source selection and the finite frame limit");
+    require(usage.find("default: temporal, native resolution") != std::string::npos &&
+                usage.find("default: independent") != std::string::npos &&
+                usage.find("default: 1 for Area") != std::string::npos,
+            "Help distinguishes viewer defaults from opt-in Area mutation preference");
     rejected({"--demo", "--demo"}, "duplicate flag");
     rejected({"--demo", "--width", "1", "--width", "2"}, "duplicate valued option");
     rejected({"--demo", "--not-an-option", "1"}, "unknown option");

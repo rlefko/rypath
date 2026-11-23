@@ -7,9 +7,9 @@ open.
 
 **Current state: progressive Metal rendering, a strict PBRT spectral profile, and
 an experimental [native viewer](docs/viewer.md).** The viewer offers camera controls,
-raw/reconstructed comparison and paired linear-RGB captures. MetalFX remains its
-default; signed temporal reconstruction is explicit, and viewer quality remains
-unqualified.
+raw/reconstructed comparison and paired linear-RGB captures. Independent sampling
+and signed temporal reconstruction are the fixture-tested defaults; Area/MCMC and
+MetalFX remain explicit options. Native-1080p performance remains unqualified.
 
 Render the built-in demo or PBRT files containing supported sampled spectra or
 linear sRGB colors. Diffuse reflectance supports blackbody, built-in and file spectra,
