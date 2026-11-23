@@ -54,6 +54,46 @@ Pinned PBRT v4 `b0bdf461` omits this factor in BDPT. The correction deliberately
 differs from that implementation to make light tracing agree with rypath's
 existing camera-side radiance model; it is not a claim of PBRT v4 BDPT identity.
 
+## Opt-in native intersection profile
+
+The direct geometry and render builders now expose an explicit native triangle
+profile while retaining compensated defaults and the existing offline checkpoint
+contract. Its hardware triangle distances and barycentrics define a separate
+numerical result, including the edge differences documented below. It does not
+apply compensated predicates to native candidates or recover native misses.
+The standalone native shader contract also verifies the active specialization.
+
+The new `metal.native_intersection_profile` test reports the two captured Day
+rays over four fresh structures and the missing-neighbor ray from
+`triangle_box_coverage_tests.cpp`, alongside their independent CPU oracle. These
+are characterization records, not equality gates. Its ordinary geometry,
+alpha/procedural composition and scalar/packet transport gates are separate.
+On 2026-11-22, the uncommitted native-profile implementation based on `aaf3996`
+passed the Debug `metal.native_intersection_profile` test in **74.18 seconds**
+on an **M4 Max, 40-core GPU, macOS 26.6, Xcode 26.6**. The command was
+`ctest --preset debug -R '^metal.native_intersection_profile$' --output-on-failure`.
+The ordinary affine/winding/two-sided/source-identity and finite-interval oracles,
+alpha callback and procedural composition checks, scalar/packet glTF and mix
+shape-alpha gates, null/invisible passthrough checks and existing unsupported
+packet-medium diagnostic all passed.
+
+The scalar absorption slab used four fixed seeds and 16,384 analog paths. Its
+observed mean was **0.605469**, against Beer–Lambert `exp(-0.5)` = **0.606531**;
+the predeclared Hoeffding-plus-numerical tolerance was **0.0256052**. Every path
+retained its expected binary killed/surviving outcome.
+
+| Captured ray | Native result | Independent oracle | Repetition |
+| --- | --- | --- | --- |
+| Day ray 0 | Primitive 773, `t = 4.37547`, occluded | Primitive 773 | Same result over four fresh builds |
+| Day ray 1 | Primitive 556, `t = 17.6717`, occluded | Primitive 601 | Same result over four fresh builds |
+| Missing-neighbor witness | Hit primitive 0 | Primitive 1 | One build |
+
+The latter two differences remain visible characterization of the explicit
+native numerical profile. This run does not establish default compensated-profile
+regression coverage, performance gains, or results for later revisions. Other
+measurements in this record predate this opt-in implementation and remain
+inherited evidence.
+
 ## Day intersection
 
 Same-AS repetitions were stable, but fresh native acceleration structures

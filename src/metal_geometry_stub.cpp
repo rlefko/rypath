@@ -37,4 +37,15 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
     return build_metal_geometry(geometry, library);
 }
 
+GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
+                                         const std::filesystem::path &library,
+                                         GeometryBuildOptions) {
+    return build_metal_geometry(geometry, library);
+}
+GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry,
+                                                    const std::filesystem::path &library, bool,
+                                                    GeometryBuildOptions options) {
+    return build_metal_geometry(geometry, library, options);
+}
+
 } // namespace rypath

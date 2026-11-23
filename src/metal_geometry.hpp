@@ -11,6 +11,12 @@
 
 namespace rypath {
 
+// Numerical intersection contract; compensated remains the offline default.
+enum class IntersectionProfile { compensated, native };
+struct GeometryBuildOptions {
+    IntersectionProfile intersection_profile = IntersectionProfile::compensated;
+};
+
 enum class GeometryStatus { success, not_built, no_device, no_ray_tracing, failure };
 
 struct GeometryClosestResult {
@@ -53,6 +59,11 @@ class MetalGeometryScene {
            // retain procedural traversal and the original source/primitive identities.
         GeometryBuildResult
         build_metal_geometry_with_hints(const GeometryData &, const std::filesystem::path &, bool);
+    friend GeometryBuildResult
+    build_metal_geometry(const GeometryData &, const std::filesystem::path &, GeometryBuildOptions);
+    friend GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &,
+                                                               const std::filesystem::path &, bool,
+                                                               GeometryBuildOptions);
     friend struct MetalGeometryAccess;
 };
 
@@ -63,10 +74,16 @@ struct GeometryBuildResult {
     std::unique_ptr<MetalGeometryScene> scene;
 };
 
-// Native adapters may request supplementary opaque triangles; public queries
-// retain procedural traversal and the original source/primitive identities.
+// Supplementary hints apply only to the compensated profile. Explicit native
+// builds reject hints; both profiles preserve source/primitive identities.
 GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &,
                                                     const std::filesystem::path &, bool);
+
+GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &,
+                                                    const std::filesystem::path &, bool,
+                                                    GeometryBuildOptions);
+GeometryBuildResult build_metal_geometry(const GeometryData &, const std::filesystem::path &,
+                                         GeometryBuildOptions);
 
 // An empty path uses the same executable-relative library as the compute check.
 GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
