@@ -63,7 +63,34 @@ Callers provide matching texture camera transforms and explicitly identify the
 camera medium after a boundary crossing. Non-vacuum camera overrides require
 scalar PBRT volume transport. Failed submissions leave the session usable.
 
-This baseline establishes an execution and measurement contract. It makes no
-interactive frame rate, equal-image-quality, or M4 Max performance claim. Hardware
-validation and measurements must identify the implementation revision and retain
-the JSON; no measurements are implied by this document.
+## Initial M4 Max evidence
+
+On 2026-11-22, implementation `1c1d7bb` passed the frame-session tests in Release
+and ASan/UBSan with Metal API validation. The checks cover independent host sensor
+reduction, scalar and packet tiles, dielectric geometry, translated world/alpha
+textures, fixed footprints beyond sample index 2³², camera media, retained-frame
+lifetime, capacity rejection and nonfinite-output failure. The portable availability,
+CLI and statistics checks pass. Focused LLVM 18 clang-tidy and the native Clang
+analyzer pass. Full publication checks are reported on the PR.
+
+The resident **compensated-intersection megakernel** baseline uses an M4 Max
+(40 GPU cores, 128 GB), macOS 26.6 and Xcode 26.6. Each scene has three independent
+seeds, four warmup frames and 32 measured frames per seed at native 1920×1080,
+one new sample per pixel, with API validation off. Scene order alternates. All
+216 frames complete with exact pixel/sample accounting and valid GPU timestamps.
+Captures occur after timing. The table gives ranges across the three runs.
+
+| Scene and transport | CPU submit/wait median | CPU submit/wait p95 |
+| --- | ---: | ---: |
+| Cornell adapted, scalar PT, depth 65 | 1156.3–1164.7 ms | 1181.3–1191.1 ms |
+| Coated path fixture, packet PT, depth 5 | 228.0–229.2 ms | 231.8–232.3 ms |
+
+These are small-scene baseline measurements, with no reuse or reconstruction.
+They do **not** meet the interactive target or establish image-quality equivalence.
+Native triangle and wavefront changes must be measured against this retained
+baseline rather than assuming published speedups apply.
+
+The measured Release source digest is
+`00eb5d22587441c92b1b11431d108d0e3893db2286a6129fc0de69072b2970d8`.
+Local JSON reports, command manifests, raw FLOAT EXRs, PNG previews and frozen
+executables are retained under `.cache/validation/resident-frames-001/`.
