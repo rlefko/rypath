@@ -256,7 +256,10 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
         roughness = m.scattering == 3 || prepared.dielectric.smooth
                         ? 0
                         : max(prepared.dielectric.alpha_x, prepared.dielectric.alpha_y);
-        if (!rypath_dielectric::fresnel(cosine, prepared.dielectric.eta, specular))
+        // A thin sheet has the same exterior medium on both sides; only a
+        // solid interface uses signed incidence to select the interior ratio.
+        if (!rypath_dielectric::fresnel(m.scattering == 3 ? abs(cosine) : cosine,
+                                        prepared.dielectric.eta, specular))
             return false;
         if (m.scattering == 3)
             specular = 2 * specular / (1 + specular);
@@ -267,7 +270,9 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
     case 5:
     case 6: {
         float top;
-        if (!rypath_dielectric::fresnel(cosine, prepared.layered.interface.eta, top))
+        // The supported layered BSDFs flip backside wo into the exterior
+        // hemisphere before evaluating their top interface.
+        if (!rypath_dielectric::fresnel(abs(cosine), prepared.layered.interface.eta, top))
             return false;
         specular = top;
         const float attenuation = (1 - top) * (1 - top);
@@ -400,7 +405,8 @@ inline bool reconstruction_guide_appearance(constant ReconstructionGuideArgument
         } else {
             float ep, ct;
             bool tir;
-            if (!rypath_dielectric::optics(cosine, prepared.dielectric.eta, F, ep, ct, tir))
+            if (!rypath_dielectric::optics(m.scattering == 3 ? abs(cosine) : cosine,
+                                           prepared.dielectric.eta, F, ep, ct, tir))
                 return false;
             if (!tir) {
                 direction = m.scattering == 3
@@ -726,8 +732,8 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
                                 m, material_auxiliary(m, material_data, p.material_data_words), rho,
                                 knots, p, graph, context, 550.f, material_data,
                                 graph.images.spectra, prepared) ||
-                            !rypath_dielectric::optics(cosine, prepared.dielectric.eta, F, ep, ct,
-                                                       tir)) {
+                            !rypath_dielectric::optics(m.scattering == 3 ? abs(cosine) : cosine,
+                                                       prepared.dielectric.eta, F, ep, ct, tir)) {
                             reconstruction_guide_fail(a, gw::invalid_material);
                             return;
                         }

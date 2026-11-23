@@ -578,6 +578,109 @@ void appearance_cases(const std::string &library) {
     for (unsigned c = 0; c < 3; ++c)
         close(glass.texture[3][4 * center + c], F * .2 + (1 - F) * .8, .002,
               "Thin-sheet Fresnel blend independent normal-incidence oracle");
+    // Backside oblique thin sheets still see air on both sides. At |cos|=.5,
+    // treating the sign as an interior eta1.5 interface would incorrectly TIR.
+    const RasterCamera oblique{
+        {0, 0, 0}, {float(std::sqrt(3.)) - .3f, -.3f, 1}, {.6f, 0, 0}, {0, .6f, 0}};
+    const auto oblique_camera = camera(oblique);
+    const auto center_ray = oblique_camera.center_ray(width / 2, height / 2);
+    need(center_ray.has_value(), "Backside oblique thin-sheet camera");
+    const double cosine = center_ray->direction[2];
+    close(cosine, .5, 1e-7, "Independent oblique incidence");
+    const double transmitted_cosine = std::sqrt(1 - (1 - cosine * cosine) / (1.5 * 1.5));
+    const double rs = (cosine - 1.5 * transmitted_cosine) / (cosine + 1.5 * transmitted_cosine);
+    const double rp = (1.5 * cosine - transmitted_cosine) / (1.5 * cosine + transmitted_cosine);
+    const double interface_fresnel = .5 * (rs * rs + rp * rp);
+    const double thin_fresnel = 2 * interface_fresnel / (1 + interface_fresnel);
+    const auto enlarge = [](RenderScene &s) {
+        for (auto &mesh : s.geometry.meshes)
+            for (auto &p : mesh.positions) {
+                p.x *= 4;
+                p.y *= 4;
+            }
+    };
+    auto backside = base(oblique);
+    auto sheet = scene.materials.front();
+    backside.materials = {sheet, dark, light};
+    plane(backside, 3);
+    plane(backside, -3, 1);
+    plane(backside, 6, 2);
+    for (auto &triangle : backside.geometry.meshes[0].triangles)
+        std::swap(triangle[1], triangle[2]); // +Z normal: negative incidence.
+    enlarge(backside);
+    prepare(backside);
+    auto oblique_cfg = config(oblique_camera, oblique_camera);
+    oblique_cfg.flags = gw::appearance_guides;
+    const auto primary_backside = guide(backside, oblique_cfg, library);
+    need(primary_backside.counters.failure == 0 &&
+             primary_backside.counters.appearance_replacement == pixels,
+         "Backside primary thin-sheet replacement accounting");
+    for (unsigned c = 0; c < 3; ++c)
+        close(primary_backside.texture[3][4 * center + c],
+              thin_fresnel * .2 + (1 - thin_fresnel) * .8, .002,
+              "Independent backside oblique primary thin-sheet Fresnel blend");
+    // A solid dielectric really is exiting the denser medium here and must TIR.
+    backside.materials[0].scattering = ScatteringKind::dielectric;
+    const auto solid_backside = guide(backside, oblique_cfg, library);
+    need(solid_backside.counters.failure == 0, "Backside solid dielectric guide validity");
+    for (unsigned c = 0; c < 3; ++c)
+        close(solid_backside.texture[3][4 * center + c], .2, .002,
+              "Signed solid dielectric total-internal reflection is retained");
+    // The same backside sheet encountered on a mirror's secondary guide path
+    // transmits straight through and attenuates by (1-thin_F), never fake TIR.
+    auto secondary = base(oblique);
+    auto mirror = secondary.materials.front();
+    mirror.scattering = ScatteringKind::conductor;
+    mirror.eta = {{{360, .3f}, {830, .3f}}, true};
+    mirror.k = {{{360, 3.f}, {830, 3.f}}, true};
+    secondary.materials = {mirror, sheet, light};
+    plane(secondary, 3);
+    plane(secondary, -3, 1); // -Z normal, reflected incoming ray travels toward -Z.
+    plane(secondary, -6, 2);
+    enlarge(secondary);
+    prepare(secondary);
+    const auto secondary_backside = guide(secondary, oblique_cfg, library);
+    need(secondary_backside.counters.failure == 0 &&
+             secondary_backside.counters.appearance_replacement == pixels &&
+             secondary_backside.counters.appearance_bounded >= pixels,
+         "Backside secondary thin-sheet continuation accounting");
+    for (unsigned c = 0; c < 3; ++c)
+        close(secondary_backside.texture[3][4 * center + c],
+              fresnel(cosine) * (1 - thin_fresnel) * .8, .002,
+              "Independent backside oblique secondary thin-sheet transmission oracle");
+    // Both supported coatings flip backside wo into their exterior hemisphere.
+    // Pin the existing F + (1-F)^2 substrate proxy, not an exact layered integral.
+    for (const auto family : {ScatteringKind::coated_diffuse, ScatteringKind::coated_conductor}) {
+        auto coating_scene = base(oblique);
+        auto &coating = coating_scene.materials[0];
+        coating.scattering = family;
+        coating.constant = .6f;
+        coating.surface.interface_eta = {{{360, 1.5f}, {830, 1.5f}}, true};
+        if (family == ScatteringKind::coated_conductor) {
+            coating.eta = {{{360, .3f}, {830, .3f}}, true};
+            coating.k = {{{360, 3.f}, {830, 3.f}}, true};
+        }
+        plane(coating_scene, 3);
+        for (auto &triangle : coating_scene.geometry.meshes[0].triangles)
+            std::swap(triangle[1], triangle[2]);
+        enlarge(coating_scene);
+        prepare(coating_scene);
+        const auto coated_backside = guide(coating_scene, oblique_cfg, library);
+        need(coated_backside.counters.failure == 0 &&
+                 coated_backside.counters.layered_approximation == pixels,
+             "Backside oblique coating approximation accounting");
+        const double attenuation = (1 - interface_fresnel) * (1 - interface_fresnel);
+        for (unsigned c = 0; c < 3; ++c) {
+            close(coated_backside.texture[3][4 * center + c],
+                  family == ScatteringKind::coated_diffuse ? attenuation * .6 : 0, .002,
+                  "Independent backside coating exterior-Fresnel substrate oracle");
+            close(coated_backside.texture[4][4 * center + c],
+                  interface_fresnel + (family == ScatteringKind::coated_conductor
+                                           ? attenuation * fresnel(cosine)
+                                           : 0),
+                  .002, "Independent backside coating exterior-Fresnel specular oracle");
+        }
+    }
     auto forbidden = cfg;
     forbidden.flags |= gw::signed_temporal;
     need((guide(scene, forbidden, library).counters.failure & gw::invalid_config) != 0,
