@@ -50,7 +50,7 @@ void defaults_and_modes() {
                 defaults.reconstruction == ReconstructionMode::metalfx,
             "Viewer defaults to Area replay with one mutation and MetalFX");
     require(defaults.frames == 0 && defaults.seed == 1 && defaults.exposure_ev == 0 &&
-                defaults.near_plane == .001 && defaults.capture_directory == "captures",
+                defaults.near_plane == .001 && defaults.capture_directory.empty(),
             "Default frame limit, seed, presentation, and capture path");
     for (const auto steps : {0u, 1u, 2u, 4u}) {
         const auto area = accepted({"--demo", "--mutations", std::to_string(steps)});

@@ -4,7 +4,7 @@
 
 namespace rypath::viewer {
 struct Options {
-    std::filesystem::path scene, capture_directory = "captures";
+    std::filesystem::path scene, capture_directory; // Empty resolves to Pictures/rypath in the app.
     bool demo = false, help = false;
     std::uint32_t width = 1920, height = 1080, mutation_steps = 1;
     std::uint64_t frames = 0, seed = 1; // Zero frames means interactive/unlimited.

@@ -921,6 +921,16 @@ int main(int argc, char **argv) {
                 std::cout << viewer::usage();
                 return 0;
             }
+            if (options.capture_directory.empty()) {
+                const auto pictures =
+                    [[NSFileManager defaultManager] URLsForDirectory:NSPicturesDirectory
+                                                           inDomains:NSUserDomainMask]
+                        .firstObject;
+                const auto path = pictures ? pictures.fileSystemRepresentation : nullptr;
+                if (!path)
+                    throw std::runtime_error("Could not resolve the Pictures capture directory");
+                options.capture_directory = std::filesystem::path(path) / "rypath";
+            }
             ViewerState state(options, load_scene(options));
             auto app = [NSApplication sharedApplication];
             [app setActivationPolicy:NSApplicationActivationPolicyRegular];

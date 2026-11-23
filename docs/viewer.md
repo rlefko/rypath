@@ -31,9 +31,9 @@ completed pipeline frames and returns failure on a rendering/reconstruction erro
 - Cmd+S saves a fresh directory containing paired raw and reconstructed FLOAT EXRs.
 - Escape closes the viewer; the View menu provides fullscreen.
 
-Capture directories are created only on request. `--capture-dir` selects their
-parent. The raw EXR contains the unexposed linear-RGB conversion of retained raw
-XYZ. The reconstructed EXR directly stores the separate presentation RGB, with
+Capture directories are created only on request under `Pictures/rypath` by default.
+`--capture-dir` selects a different parent. The raw EXR contains the unexposed
+linear-RGB conversion of retained raw XYZ. The reconstructed EXR directly stores the separate presentation RGB, with
 mode, sample, epoch, estimator and mutation metadata. Display tone mapping and EV
 are not baked into either capture. The display applies a simple Reinhard map and
 one sRGB transfer, and explicitly tags the layer with the sRGB color space for
@@ -87,8 +87,15 @@ thin slabs, exact native entry/exit endpoints, later roots of a single sphere,
 transformed interfaces, label consistency, budget handling, raw preservation and
 lifetime checks. Separate 128² launch/auto-exit smoke runs complete three native
 MetalFX/independent frames and three raw-RGB/Area-one-mutation frames. These are
-functional checks, not 1080p performance measurements. Bundled UI interaction,
-Release/sanitizer classifier checks and visual-quality qualification remain open.
+functional checks, not 1080p performance measurements. The same classifier suite
+also passes Release (27.10 s) and ASan/UBSan (.82 s) with API validation. A bundled
+Release application check exercises translation, rotation, Home reset, raw/MetalFX
+switching, exposure, paired capture under Pictures/rypath, and Escape termination.
+
+The initial interactive image check exposes strong spectral background noise and
+widespread per-sample negative RGB clipping in MetalFX input. This is a failed
+quality observation, not a qualified denoising result; the reconstruction fallback
+and reference-image study must resolve it before selecting a default.
 
 See [reconstruction](reconstruction.md) for surface-guide approximations and
 [the golden pipeline](golden-pipeline.md) for the measurement target.
