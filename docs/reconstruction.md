@@ -147,9 +147,13 @@ The repair retains the explicitly clamped half-float MetalFX color input. It
 does not establish arbitrary signed-RGB or XYZ support, repair spectral clipping,
 or apply saturation/exposure compensation. New tests specify noise-free chroma,
 small-feature contrast, directional mirror Fresnel, thin-glass blending,
-policy/cache dependencies, invalid exposure and raw preservation. These tests
-have not yet been built or executed on this revision; no new performance or
-image-quality qualification is claimed.
+policy/cache dependencies, invalid exposure and raw preservation. The Debug
+raw, MetalFX, signed, conditioning, adapter and guide tests passed with Metal
+API validation on M4 Max on 2026-11-23, through `87b387f`. Backside thin-sheet
+and coating guides use the physical absolute-cosine convention; solid dielectric
+guides retain the signed interface convention and total internal reflection.
+Independent review found no remaining source blocker. These synthetic checks
+do not establish scene color fidelity, reflected-detail retention or performance.
 
 ## Exact surface-guide reuse
 

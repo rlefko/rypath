@@ -109,7 +109,9 @@ uploads, denoising and readback. Upstream temporal-only work, fresh MetalFX base
 guide snapshot and comparator creation costs are reported separately. These
 instrumented values are not rendered FPS or a production GPU-only benchmark.
 The adapter remains confined to diagnostic/test executables. Replay/reference
-runs reject these comparator options. Quality and GPU validation are pending.
+runs reject these comparator options. The targeted Debug conditioning, adapter,
+guide and reconstruction tests passed with Metal API validation on M4 Max on
+2026-11-23. Scene quality and complete-pipeline performance remain unqualified.
 
 ## Validation record
 
