@@ -86,13 +86,47 @@ exposure. Negative RGB and values above 65,504 are clamped only in presentation
 storage, with separate counters. Nonfinite conversion fails. No radiance clamp is
 added to raw rendering or Area/MCMC weights.
 
+## Headless measurement and capture
+
+`rypath-frame-benchmark --reconstruction metalfx` measures native-resolution
+reconstruction by default. `--output-width` and `--output-height` select explicit
+upscaling; `--reconstruction raw-rgb` measures the color-conversion control.
+The default `none` retains the raw-only benchmark. All modes retain independent
+raw frame timing. `pipeline_summary` includes raw rendering, stream creation
+when needed, guide generation and reconstruction completion in wall time. The
+creation frame has no combined GPU timestamp because its contract probe is
+untimed; it is never presented as a complete GPU measurement. Captures occur
+outside measured frame intervals.
+
+`--capture` writes the raw FLOAT EXR; `--reconstructed-capture` writes a separate
+FLOAT EXR directly from the reconstruction's unexposed linear RGB, with output
+kind, dimensions and source identity metadata. RGB is never passed through an
+XYZ interpretation. Fresh destinations and sibling pending files are required.
+Tone mapping and display exposure are separate consumers.
+
 ## Validation boundary
 
-The initial library build and portable camera tests pass. Earlier standalone
-adapter tests executed native 128² and 128²-to-256² constant/noisy plane sequences
-with Metal API validation on M4 Max, macOS 26.6, Xcode 26.6 and SDK 26.5. Integrated
-guide, stream, lifetime, image-quality and performance qualification is separate
-and remains in progress. No denoised FPS or quality improvement is claimed here.
+On the M4 Max with macOS 26.6, Xcode 26.6 and SDK 26.5, integrated Debug tests with
+Metal API validation passed for raw RGB (20.73 s), MetalFX streams (9.45 s), actual
+scene guides (0.62 s), and the adapter (0.46 s). These measurements cover the
+`1139b5d` implementation with the subsequently committed integration fixtures;
+they are correctness-test durations, not performance measurements.
+
+The stream fixtures check an independent XYZ/matrix/half-conversion oracle,
+unchanged raw XYZ, pending/busy behavior, two retained outputs, cross-queue GPU
+leases surviving source/session/stream destruction, repeated sample indices,
+epoch/reset/failure recovery, translation, rotation, lens changes, glass/media
+approximation reporting, and native/upscaled output. Guide fixtures compare
+analytic plane depth and normals, CPU camera motion, background rotation,
+null/alpha-zero/invisible pass-through, transformed patches, spectral quadrature,
+near-plane failure and counter overflow. They do not exhaust every material's
+approximate guide mapping. Adapter tests also reject aliases and oversized
+textures. Portable camera and benchmark CLI tests and focused LLVM 18 static
+analysis pass.
+
+Reconstruction image quality, sustained complete-pipeline timing, and fallback
+qualification remain separate gates. No denoised FPS or quality improvement is
+claimed from these correctness tests.
 
 Primary platform references: Apple's [MetalFX integration session](https://developer.apple.com/videos/play/wwdc2025/211/),
 [temporal denoised scaler](https://developer.apple.com/documentation/metalfx/mtlfxtemporaldenoisedscaler),

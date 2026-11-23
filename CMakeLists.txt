@@ -254,7 +254,7 @@ add_executable(rypath_frame_benchmark src/frame_benchmark.cpp)
 set_target_properties(rypath_frame_benchmark PROPERTIES
     OUTPUT_NAME rypath-frame-benchmark
     RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
-target_link_libraries(rypath_frame_benchmark PRIVATE rypath_metal_backend rypath_pbrt_render rypath_checkpoint)
+target_link_libraries(rypath_frame_benchmark PRIVATE rypath_reconstruction rypath_pbrt_render rypath_checkpoint)
 target_compile_definitions(rypath_frame_benchmark PRIVATE
     RYPATH_BUILD_DESCRIPTION="${PROJECT_VERSION} ${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION} $<CONFIG> source=${rypath_source_digest} flags=${rypath_flags_digest}")
 rypath_configure_host_target(rypath_frame_benchmark)
