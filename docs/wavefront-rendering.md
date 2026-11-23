@@ -211,8 +211,8 @@ consumer barriers publish hit and hot-state writes before shading; refill fully
 initializes hot and cold owner state before slot reuse. Only the selected large
 pools are allocated; other argument bindings use small sentinels. The shader
 handshake reports each allocation's size/alignment, and host per-buffer and total
-working-set checks include the selected pools. Wavefront contract 5 rejects older
-libraries.
+working-set checks include the selected pools. Wavefront contract 8 rejects older
+libraries and validates the current fixed-entry policy mapping.
 
 Reports retain requested packet settings and effective settings (null when no
 packet execution applies), and raw captures record both controls. These are
@@ -226,9 +226,10 @@ triangle/bilinear-patch receivers. Native intersections cover all seven policies
 at capacity seventeen; compensated intersections cover each layout with one
 event. Both use high absolute sample indices, the existing direct-sample sensor
 oracle tolerance, and bitwise same-profile policy comparisons. These additional
-alpha/mixed-geometry/profile cases have built in Debug and await scheduled GPU
-validation; the measured record below predates these additions. The tests require scheduled
-GPU execution; building them alone supplies no hardware equivalence evidence.
+alpha/mixed-geometry/profile controls pass in all three presets; the later
+contract-8 record supplies current correctness evidence. The original bounded
+record below predates these additions. The tests require actual GPU execution;
+building them alone supplies no hardware equivalence evidence.
 
 ### Bounded packet-policy correctness evidence
 
