@@ -47,7 +47,7 @@ struct FrameRequest {
 };
 enum class FrameStatus { pending, complete, failed };
 struct FrameInfo {
-    GPUStageDiagnostics gpu_stages;
+    GPUStageDiagnostics gpu_stages{};
     std::uint32_t width = 0, height = 0;
     std::uint64_t sample_index = 0, epoch = 0;
     FrameStatus status = FrameStatus::pending;

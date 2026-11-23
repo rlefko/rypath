@@ -906,8 +906,9 @@ int run(const Options &options) {
             if (!rypath::frame_benchmark::motion_medium_supported(scene))
                 throw std::runtime_error("Motion cannot classify distinct medium interfaces");
             (void)rypath::frame_benchmark::translated_camera(scene, *options.motion_offset);
+            const auto quarter = options.frames / 4;
             (void)rypath::frame_benchmark::translated_camera(
-                scene, float(double(*options.motion_offset) / double(options.frames / 4)));
+                scene, float(double(*options.motion_offset) / double(quarter)));
         }
         report.integrator = scene.volume_transport ? "volpath" : "path";
         report.max_depth = scene.max_depth;

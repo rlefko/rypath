@@ -46,6 +46,10 @@ int main() try {
     scene.perspective_lens.emplace();
     scene.perspective_lens->radius = .125f;
     auto pose = translated_camera(scene, .5f);
+    if (!pose.perspective_lens)
+        throw std::runtime_error("Translated camera lost perspective lens");
+    if (!pose.texture_camera)
+        throw std::runtime_error("Translated camera lost texture transform");
     require(pose.camera.origin.x == 1.5f && pose.camera.target.x == 1.5f &&
                 pose.camera.origin.y == 2 && pose.camera.target.z == -3 &&
                 pose.camera_medium == 3 && pose.perspective_lens->radius == .125f &&
@@ -53,12 +57,18 @@ int main() try {
             "Demo translation changed lens, medium, linear camera or direction");
     scene.raster_camera = RasterCamera{{4, 5, 6}, {-.5f, .5f, -1}, {1, 0, 0}, {0, -1, 0}};
     pose = translated_camera(scene, -.25f);
+    if (!pose.raster_camera)
+        throw std::runtime_error("Translated camera lost raster snapshot");
+    if (!scene.raster_camera)
+        throw std::runtime_error("Source camera lost raster snapshot");
     require(pose.raster_camera->origin.x == 3.75f && pose.raster_camera->origin.y == 5 &&
                 pose.raster_camera->corner.x == -.5f && pose.raster_camera->dx.x == 1 &&
                 pose.raster_camera->dy.y == -1,
             "Raster translation changed ray directions");
     scene.raster_camera->origin.x = 0x1p30f;
     rejects([&] { (void)translated_camera(scene, .125f); });
+    if (!scene.raster_camera)
+        throw std::runtime_error("Source camera lost raster snapshot");
     scene.raster_camera->origin.x = std::numeric_limits<float>::max();
     rejects([&] { (void)translated_camera(scene, std::numeric_limits<float>::max()); });
     require(motion_medium_supported(scene), "Uniform camera medium rejected");

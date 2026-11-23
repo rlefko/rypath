@@ -24,7 +24,7 @@ struct ReconstructionCounters {
     std::uint32_t passthrough = 0, media_approximation = 0, invalid_previous = 0, background = 0;
 };
 struct ReconstructionInfo {
-    GPUStageDiagnostics gpu_stages;
+    GPUStageDiagnostics gpu_stages{};
     ReconstructionStatus status = ReconstructionStatus::pending;
     FrameInfo source{};
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
