@@ -1711,3 +1711,38 @@ if(RYPATH_ENABLE_METAL)
     set_tests_properties(metal.reconstruction_adapter PROPERTIES TIMEOUT 120
         ENVIRONMENT "MTL_DEBUG_LAYER=1" SKIP_RETURN_CODE 77)
 endif()
+
+if(RYPATH_ENABLE_METAL)
+    foreach(kind IN ITEMS stream guide)
+        add_executable(rypath_reconstruction_${kind}_tests reconstruction_${kind}_tests.mm)
+        target_link_libraries(rypath_reconstruction_${kind}_tests PRIVATE rypath_reconstruction
+            "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+        set_target_properties(rypath_reconstruction_${kind}_tests PROPERTIES OBJCXX_STANDARD 20
+            OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+            RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+        target_compile_options(rypath_reconstruction_${kind}_tests PRIVATE -fobjc-arc)
+        rypath_configure_host_target(rypath_reconstruction_${kind}_tests)
+        foreach(capability DEVICE RAY_TRACING)
+            if(RYPATH_ALLOW_NO_METAL_${capability})
+                target_compile_definitions(rypath_reconstruction_${kind}_tests PRIVATE
+                    RYPATH_ALLOW_NO_METAL_${capability}=1)
+            endif()
+        endforeach()
+    endforeach()
+    if(RYPATH_ALLOW_NO_METALFX_DENOISER)
+        target_compile_definitions(rypath_reconstruction_stream_tests PRIVATE
+            RYPATH_ALLOW_NO_METALFX_DENOISER=1)
+    endif()
+    add_test(NAME metal.reconstruction_raw COMMAND rypath_reconstruction_stream_tests --raw)
+    add_test(NAME metal.reconstruction_temporal COMMAND rypath_reconstruction_stream_tests --metalfx)
+    add_test(NAME metal.reconstruction_guides COMMAND rypath_reconstruction_guide_tests "${rypath_metal_library}")
+    set_tests_properties(metal.reconstruction_raw metal.reconstruction_temporal
+        metal.reconstruction_guides PROPERTIES TIMEOUT 240 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
+        set_tests_properties(metal.reconstruction_raw metal.reconstruction_temporal
+            metal.reconstruction_guides PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    if(RYPATH_ALLOW_NO_METALFX_DENOISER)
+        set_tests_properties(metal.reconstruction_temporal PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()

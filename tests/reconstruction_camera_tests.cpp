@@ -41,9 +41,15 @@ void matrix_matches(const rc::Camera &camera, rc::Point point, double tolerance)
           "column-major matrix Y differs from projection");
     close(clip[2] / clip[3], projection.depth, tolerance, "matrix reversed depth differs");
 }
+template <typename T> T checked(std::optional<T> value) {
+    if (!value)
+        throw std::runtime_error("Expected an available camera/projection value");
+    return *value;
+}
 rc::Camera built(const rypath::RasterCamera &source, const rc::CameraConfig &config) {
     const auto result = rc::Camera::build(source, config);
-    require(result.camera.has_value(), result.diagnostic.c_str());
+    if (!result.camera)
+        throw std::runtime_error(result.diagnostic);
     return *result.camera;
 }
 } // namespace
@@ -58,10 +64,11 @@ int main() try {
     demo.vertical_fov_degrees = 90;
     const auto demo_result = rc::Camera::build(demo, config);
     require(demo_result.camera.has_value(), "demo camera rejected");
-    const auto camera = *demo_result.camera;
+    const auto camera = checked(demo_result.camera);
     // Independent demo primary-ray expression: F+(2u-1)*aspect*R+(1-2v)*U.
     const auto top_left = camera.center_ray(0, 0);
-    require(top_left.has_value(), "center ray unavailable");
+    if (!top_left)
+        throw std::runtime_error("center ray unavailable");
     const double length = std::sqrt(1.5 * 1.5 + .5 * .5 + 1);
     close(top_left->direction[0], -1.5 / length, 1e-12, "demo X convention reversed");
     close(top_left->direction[1], .5 / length, 1e-12, "demo Y convention reversed");
@@ -69,7 +76,7 @@ int main() try {
     require(!camera.center_ray(4, 0) && !camera.center_ray(0, 2), "out-of-range ray accepted");
     for (unsigned y = 0; y < 2; ++y)
         for (unsigned x = 0; x < 4; ++x) {
-            const auto ray = *camera.center_ray(x, y);
+            const auto ray = checked(camera.center_ray(x, y));
             // Intersect z=-7, independently of the projection utility.
             const auto p = along(ray, -7 / ray.direction[2]);
             const auto projected = camera.project(p);
@@ -95,7 +102,7 @@ int main() try {
     const auto asymmetric = built(raster, raster_config);
     for (unsigned y : {0u, 91u, 359u})
         for (unsigned x : {0u, 318u, 639u}) {
-            const auto ray = *asymmetric.center_ray(x, y);
+            const auto ray = checked(asymmetric.center_ray(x, y));
             const auto p = along(ray, -6 / ray.direction[2]);
             const double t = (p[2] - raster.origin.z) / raster.corner.z;
             const double v = ((p[1] - raster.origin.y) / t - raster.corner.y) / raster.dy.y;
@@ -133,13 +140,15 @@ int main() try {
     RenderCamera shifted = demo;
     shifted.origin = {1, 0, 0};
     shifted.target = {1, 0, -1};
-    const auto translated = *rc::Camera::build(shifted, config).camera;
+    const auto translated = checked(rc::Camera::build(shifted, config).camera);
     auto displacement = rc::motion(translated, camera, {0, 0, -5});
-    require(displacement.pixels.has_value(), "translated motion missing");
+    if (!displacement.pixels)
+        throw std::runtime_error("translated motion missing");
     close((*displacement.pixels)[0], .2, 1e-12, "motion must be previous minus current");
     close((*displacement.pixels)[1], 0, 1e-12, "translation induced vertical motion");
     auto background = rc::background_motion(translated, camera, {0, 0, -5});
-    require(background.pixels.has_value(), "background motion missing");
+    if (!background.pixels)
+        throw std::runtime_error("background motion missing");
     close((*background.pixels)[0], 0, 1e-12, "background incorrectly uses camera translation");
     close(background.current.depth, 0, 0, "background depth is not zero");
     const auto background_view = transform(translated.world_to_view(), {0, 0, -5, 0});
@@ -147,16 +156,17 @@ int main() try {
     close(background_clip[2] / background_clip[3], 0, 0, "matrix background depth is not zero");
     close((background_clip[0] / background_clip[3] + 1) * 2, 2, 1e-12,
           "matrix background incorrectly uses translation");
-    const auto resized = *rc::Camera::build(demo, {8, 4, .25, {}}).camera;
+    const auto resized = checked(rc::Camera::build(demo, {8, 4, .25, {}}).camera);
     require(!rc::motion(resized, camera, {0, 0, -5}).pixels &&
                 !rc::background_motion(resized, camera, {0, 0, -1}).pixels,
             "cross-resolution motion accepted without a reset");
 
     RenderCamera rotated = demo;
     rotated.target = {1, 0, -1};
-    const auto rotation = *rc::Camera::build(rotated, config).camera;
+    const auto rotation = checked(rc::Camera::build(rotated, config).camera);
     const auto rotation_motion = rc::background_motion(rotation, camera, {0, 0, -1});
-    require(rotation_motion.pixels.has_value(), "rotation background motion missing");
+    if (!rotation_motion.pixels)
+        throw std::runtime_error("rotation background motion missing");
     close((*rotation_motion.pixels)[0], 1, 1e-7, "rotation background sign/magnitude");
     matrix_matches(rotation, {0, 0, -5}, 1e-6);
     require(!rc::background_motion(camera, rotation, {0, 0, 1}).pixels,

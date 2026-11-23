@@ -71,8 +71,9 @@ std::array<gw::SpectralNode, gw::node_count> spectral_nodes(std::uint32_t model)
 reconstruction::CameraBuildResult make_camera(const MetalFrameLease &lease, double near_plane) {
     const reconstruction::CameraConfig config{
         lease.info().width, lease.info().height, near_plane, {}};
-    if (lease.camera().raster_camera)
-        return reconstruction::Camera::build(*lease.camera().raster_camera, config);
+    const auto &raster = lease.camera().raster_camera;
+    if (raster)
+        return reconstruction::Camera::build(*raster, config);
     return reconstruction::Camera::build(lease.camera().camera, config);
 }
 simd_float4x4 simd_matrix(const reconstruction::Matrix &source) {
@@ -322,6 +323,10 @@ struct ReconstructionStream::Impl {
         id<MTLCommandBuffer> prepare(std::string &error, const reconstruction::Camera &previous,
                                      bool previous_valid) {
             auto &s = *state;
+            if (!current) {
+                error = "Reconstruction job camera is unavailable";
+                return nil;
+            }
             gw::Config cfg{};
             cfg.width = s.width;
             cfg.height = s.height;
@@ -455,6 +460,10 @@ struct ReconstructionStream::Impl {
                     finish("MetalFX command creation failed");
                     return;
                 }
+                if (!current) {
+                    finish("Reconstruction job camera is unavailable");
+                    return;
+                }
                 auto inputs = state->inputs;
                 inputs.output = frame->output->texture;
                 inputs.world_to_view = simd_matrix(current->world_to_view());
@@ -555,7 +564,7 @@ ReconstructionCapture ReconstructedFrame::capture() const {
             for (std::size_t x = 0; x < info.width; ++x)
                 for (unsigned c = 0; c < 3; ++c) {
                     std::uint16_t bits;
-                    std::memcpy(&bits, bytes + y * pitch + x * 8 + c * 2, 2);
+                    std::memcpy(&bits, bytes + y * pitch + x * 8 + std::size_t(c) * 2, 2);
                     const auto value = decode_half(bits);
                     if (!std::isfinite(value)) {
                         result.diagnostic = "Reconstruction capture contains nonfinite RGB";
@@ -659,6 +668,10 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
         job->source = std::move(acquired.lease);
         job->current = *camera.camera;
         std::string error;
+        if (!previous) {
+            result.diagnostic = "Reconstruction previous camera is unavailable";
+            return result;
+        }
         auto command = job->prepare(error, *previous, !reset);
         if (command == nil) {
             result.diagnostic = std::move(error);

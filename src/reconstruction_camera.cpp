@@ -138,7 +138,7 @@ CameraBuildResult Camera::from_basis(Point origin, Point corner, Point dx, Point
     std::array<double, 16> world_to_view{}, view_to_clip{};
     const auto rebased_camera = sub(origin, camera.matrix_origin_);
     for (unsigned row = 0; row < 3; ++row) {
-        for (unsigned col = 0; col < 3; ++col)
+        for (std::size_t col = 0; col < 3; ++col)
             world_to_view[col * 4 + row] = view[row][col];
         world_to_view[12 + row] = -dot(view[row], rebased_camera);
     }
@@ -146,7 +146,7 @@ CameraBuildResult Camera::from_basis(Point origin, Point corner, Point dx, Point
     // q=inverse([corner dx dy])*relative_world. u=q.y/q.x,
     // v=q.z/q.x. Multiplication by plane depth makes clip W=view Z.
     const double plane = dot(*forward, corner);
-    for (unsigned col = 0; col < 3; ++col) {
+    for (std::size_t col = 0; col < 3; ++col) {
         const auto &axis = view[col]; // Inverse of the orthonormal view rotation.
         const double q0 = dot(camera.inverse_[0], axis);
         const double q1 = dot(camera.inverse_[1], axis);
