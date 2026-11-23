@@ -547,6 +547,9 @@ void reference(const Options &o, const Scene &scene, FrameSession &session, Outp
             for (std::size_t p = 0; p < sum.size(); ++p)
                 for (unsigned c = 0; c < 3; ++c)
                     sum[p][c] += capture.raw_xyz[p][c];
+            if ((sample + 1) % 64 == 0 || sample + 1 == o.reference_samples)
+                std::cout << "reference samples " << (sample + 1) << '/' << o.reference_samples
+                          << std::endl;
         }
     std::vector<std::array<float, 3>> rgb(sum.size());
     for (std::size_t p = 0; p < sum.size(); ++p) {
