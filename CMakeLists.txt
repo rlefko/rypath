@@ -17,6 +17,8 @@ option(RYPATH_ENABLE_METAL "Build the macOS Metal backend" ${rypath_macos})
 option(RYPATH_ALLOW_NO_METAL_DEVICE "Allow Metal tests to skip when no device is visible" OFF)
 option(RYPATH_ALLOW_NO_METAL_RAY_TRACING
     "Allow ray tracing tests to skip when the Metal device lacks compute ray tracing" OFF)
+option(RYPATH_ALLOW_NO_METALFX_DENOISER
+    "Allow reconstruction tests to skip when the SDK, OS or device lacks MetalFX denoising" OFF)
 option(RYPATH_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 if(RYPATH_ENABLE_METAL AND NOT rypath_macos)
@@ -222,6 +224,23 @@ else()
     target_sources(rypath_metal_backend PRIVATE
         src/metal_backend_stub.cpp src/metal_geometry_stub.cpp
         src/metal_render_stub.cpp src/image_output_stub.cpp)
+endif()
+
+
+# Reconstruction is a separate consumer of immutable completed raw frames.
+add_library(rypath_reconstruction STATIC src/reconstruction_camera.cpp)
+target_link_libraries(rypath_reconstruction PUBLIC rypath_metal_backend)
+rypath_configure_host_target(rypath_reconstruction)
+if(RYPATH_ENABLE_METAL)
+    find_library(RYPATH_METALFX_FRAMEWORK MetalFX REQUIRED)
+    target_sources(rypath_reconstruction PRIVATE src/metalfx_denoiser.mm src/metal_reconstruction.mm)
+    set_target_properties(rypath_reconstruction PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_reconstruction PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    target_link_libraries(rypath_reconstruction PRIVATE "${RYPATH_METAL_FRAMEWORK}"
+        "${RYPATH_METALFX_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+else()
+    target_sources(rypath_reconstruction PRIVATE src/reconstruction_stub.cpp)
 endif()
 
 add_executable(rypath src/main.cpp)

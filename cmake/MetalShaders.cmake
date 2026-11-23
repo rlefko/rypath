@@ -36,6 +36,10 @@ foreach(shader IN ITEMS frame smoke geometry analytic_probe packet_scattering_pr
             "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h")
     endif()
+    if(shader STREQUAL "render")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/reconstruction_guides.metal"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/reconstruction_guide_wire.h")
+    endif()
     if(shader STREQUAL "render" OR shader STREQUAL "medium_probe")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/medium.h"
