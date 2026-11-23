@@ -64,26 +64,29 @@ struct TemporalDenoiser::Impl {
     std::uint32_t width = 0, height = 0, history_limit = 0, iterations = 0;
     std::array<History, 2> history;
     std::array<Spatial, 2> spatial;
-    std::array<std::unique_ptr<MetalFramePipeline>, 4> pipelines;
+    std::array<std::unique_ptr<MetalFramePipeline>, 5> pipelines;
+    std::vector<Spatial> trace;
     unsigned current = 0;
     bool valid = false, pending = false;
     TemporalDenoiserStats last;
 };
 TemporalDenoiser::TemporalDenoiser(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 TemporalDenoiser::~TemporalDenoiser() = default;
-std::uint64_t TemporalDenoiser::owned_resource_bytes(std::uint32_t width, std::uint32_t height) {
+std::uint64_t TemporalDenoiser::owned_resource_bytes(std::uint32_t width, std::uint32_t height,
+                                                     bool capture_diagnostics) {
     if (!width || !height || width > dimension_limit || height > dimension_limit)
         return std::numeric_limits<std::uint64_t>::max();
     const auto padded_width = (std::uint64_t(width) + 63) / 64 * 64;
     const auto padded_height = (std::uint64_t(height) + 63) / 64 * 64;
-    return padded_width * padded_height * 192 + 18 * 65536ull;
+    return padded_width * padded_height * (capture_diagnostics ? 384 : 192) +
+           (capture_diagnostics ? 30 : 18) * 65536ull;
 }
 TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
                                                       const TemporalDenoiserConfig &config) {
-    const auto [width, height, history_limit, spatial_iterations] = config;
+    const auto [width, height, history_limit, spatial_iterations, capture_diagnostics] = config;
     if (!lease.device())
         return {.diagnostic = "Temporal denoiser requires a Metal device"};
-    const auto bytes = owned_resource_bytes(width, height);
+    const auto bytes = owned_resource_bytes(width, height, capture_diagnostics);
     if (bytes == std::numeric_limits<std::uint64_t>::max())
         return {.diagnostic = "Temporal denoiser dimensions must be in [1,16384]"};
     if (history_limit == 0 || history_limit > tw::maximum_history ||
@@ -101,10 +104,11 @@ TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
     impl->height = height;
     impl->history_limit = history_limit;
     impl->iterations = spatial_iterations;
-    const std::array<NSString *, 4> entries{
+    const std::array<NSString *, 5> entries{
         @"rypath_temporal_denoiser_reset", @"rypath_temporal_denoiser_accumulate",
-        @"rypath_temporal_denoiser_spatial", @"rypath_temporal_denoiser_finish"};
-    for (std::size_t i = 0; i < entries.size(); ++i) {
+        @"rypath_temporal_denoiser_spatial", @"rypath_temporal_denoiser_finish",
+        @"rypath_temporal_denoiser_snapshot"};
+    for (std::size_t i = 0; i < (capture_diagnostics ? entries.size() : entries.size() - 1); ++i) {
         auto built = lease.create_guide_pipeline(entries[i]);
         if (built.status != GeometryStatus::success || !built.pipeline)
             return {.diagnostic = "Temporal denoiser pipeline: " + built.diagnostic};
@@ -158,6 +162,13 @@ TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
     for (auto &bank : impl->spatial) {
         bank.mean = texture(MTLPixelFormatRGBA32Float);
         bank.variance = texture(MTLPixelFormatRGBA32Float);
+    }
+    if (capture_diagnostics) {
+        impl->trace.resize(spatial_iterations + 1);
+        for (auto &pass : impl->trace) {
+            pass.mean = texture(MTLPixelFormatRGBA32Float);
+            pass.variance = texture(MTLPixelFormatRGBA32Float);
+        }
     }
     impl->counters = [impl->device newBufferWithLength:sizeof(tw::Counters)
                                                options:MTLResourceStorageModeShared];
@@ -230,7 +241,8 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
                    destination_variance = nil;
     const auto dispatch = [&](unsigned index, const tw::Config &config, bool single = false) {
         static constexpr const char *labels[] = {"temporal.reset", "temporal.accumulate",
-                                                 "temporal.spatial", "temporal.finish"};
+                                                 "temporal.spatial", "temporal.finish",
+                                                 "temporal.snapshot"};
         if (stages && !stages->begin(command, encoder, labels[index]))
             return;
         if (split_encoders) {
@@ -272,7 +284,21 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
     [encoder setTexture:impl_->spatial[0].mean atIndex:tw::destination_mean_id];
     [encoder setTexture:impl_->spatial[0].variance atIndex:tw::destination_variance_id];
     dispatch(1, config);
+    const auto snapshot = [&](unsigned pass, unsigned source) {
+        if (impl_->trace.empty())
+            return;
+        source_mean = impl_->spatial[source].mean;
+        source_variance = impl_->spatial[source].variance;
+        destination_mean = impl_->trace[pass].mean;
+        destination_variance = impl_->trace[pass].variance;
+        [encoder setTexture:source_mean atIndex:tw::source_mean_id];
+        [encoder setTexture:source_variance atIndex:tw::source_variance_id];
+        [encoder setTexture:destination_mean atIndex:tw::destination_mean_id];
+        [encoder setTexture:destination_variance atIndex:tw::destination_variance_id];
+        dispatch(4, config);
+    };
     unsigned source = 0;
+    snapshot(0, source);
     for (unsigned i = 0; i < impl_->iterations; ++i) {
         config.step = 1u << i;
         config.iteration = i;
@@ -289,6 +315,7 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
                     atIndex:tw::destination_variance_id];
         dispatch(2, config);
         source = 1 - source;
+        snapshot(i + 1, source);
     }
     if (split_encoders)
         source_mean = impl_->spatial[source].mean;
@@ -329,4 +356,19 @@ std::string TemporalDenoiser::complete(bool command_succeeded) {
     return {};
 }
 TemporalDenoiserStats TemporalDenoiser::stats() const { return impl_->last; }
+std::vector<NamedMetalTexture> TemporalDenoiser::diagnostic_textures() const {
+    if (impl_->pending || !impl_->valid || impl_->trace.empty())
+        return {};
+    const auto &h = impl_->history[impl_->current];
+    std::vector<NamedMetalTexture> result{
+        {"temporal.mean", h.mean},     {"temporal.variance", h.variance},
+        {"temporal.count", h.count},   {"temporal.depth", h.depth},
+        {"temporal.normal", h.normal}, {"temporal.identity", h.identity}};
+    for (std::size_t i = 0; i < impl_->trace.size(); ++i) {
+        const auto name = "spatial." + std::to_string(i);
+        result.push_back({name + ".mean", impl_->trace[i].mean});
+        result.push_back({name + ".variance", impl_->trace[i].variance});
+    }
+    return result;
+}
 } // namespace rypath

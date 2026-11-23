@@ -336,3 +336,17 @@ kernel void rypath_temporal_denoiser_finish(
     if (simd_lane == 0 && completed)
         atomic_fetch_add_explicit(&status.completed, completed, memory_order_relaxed);
 }
+
+// Diagnostic copy only. Never participates in the recurrence or edge weights.
+kernel void rypath_temporal_denoiser_snapshot(
+    constant tdw::Config &config [[buffer(0)]],
+    texture2d<float, access::read> source_mean [[texture(tdw::source_mean_id)]],
+    texture2d<float, access::read> source_variance [[texture(tdw::source_variance_id)]],
+    texture2d<float, access::write> destination_mean [[texture(tdw::destination_mean_id)]],
+    texture2d<float, access::write> destination_variance [[texture(tdw::destination_variance_id)]],
+    uint2 pixel [[thread_position_in_grid]]) {
+    if (pixel.x >= config.width || pixel.y >= config.height)
+        return;
+    destination_mean.write(source_mean.read(pixel), pixel);
+    destination_variance.write(source_variance.read(pixel), pixel);
+}
