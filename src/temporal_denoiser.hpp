@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "spatial_variance_policy.hpp"
 // Internal Objective-C++ adapter. Raw Monte Carlo XYZ is never modified.
 #import <Metal/Metal.h>
 #include <cstdint>
@@ -17,8 +18,11 @@ struct TemporalDenoiserInputs {
     // Current surface projected into the previous camera, not the current depth.
     id<MTLTexture> previous_depth = nil; // R32Float.
     id<MTLTexture> identity =
-        nil;                     // RGBA32Uint(instance,primitive,kind,material), all UINT_MAX sky.
-    id<MTLTexture> output = nil; // Distinct RGBA32Float, shader-write usage.
+        nil; // RGBA32Uint(instance,primitive,kind,material), all UINT_MAX sky.
+    id<MTLTexture> spatial_position = nil,
+                   spatial_normal = nil; // Camera-relative xyz / geometric normal, RGBA32Float.
+    id<MTLTexture> spatial_group = nil;  // R32Uint; indexed connected coplanar triangles.
+    id<MTLTexture> output = nil;         // Distinct RGBA32Float, shader-write usage.
     bool reset_history = true;
 };
 struct TemporalDenoiserStats {
@@ -27,6 +31,9 @@ struct TemporalDenoiserStats {
 struct TemporalDenoiserConfig {
     std::uint32_t width = 0, height = 0;
     std::uint32_t history_limit = 64, spatial_iterations = 5;
+    bool variance_prefilter = false; // Optional 3x3 geometry-aware guidance only.
+    SpatialVariancePolicy spatial_variance_policy = SpatialVariancePolicy::paired;
+    bool strict_spatial_segments = false; // Explicit raster-gap experiment.
 };
 struct TemporalDenoiserCreateResult;
 // Externally serialized. Encode only one pending command; call complete after

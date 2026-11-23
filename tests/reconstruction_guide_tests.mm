@@ -132,8 +132,8 @@ float half(unsigned short h) {
 }
 struct Captured {
     gw::Counters counters{};
-    std::array<std::vector<float>, 9> texture;
-    std::vector<std::uint32_t> identity;
+    std::array<std::vector<float>, 12> texture;
+    std::vector<std::uint32_t> identity, continuity;
     FrameCapture raw_before, raw_after;
 };
 Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &library,
@@ -155,6 +155,8 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     auto acquired = MetalFrameAccess::acquire(*submitted.frame);
     need(acquired.status == FrameStatus::complete && acquired.lease, acquired.diagnostic);
     auto &lease = *acquired.lease;
+    need(lease.reconstruction_groups() == nil,
+         "Ordinary scene/frame preparation must not build continuity");
     std::array<std::unique_ptr<MetalFramePipeline>, 4> pipeline;
     const std::array<NSString *, 4> names{
         @"rypath_reconstruction_guide_contract", @"rypath_reconstruction_guide_reset",
@@ -183,7 +185,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     std::memcpy(&actual, contract.contents, sizeof(actual));
     need(actual.version == gw::contract && actual.config_bytes == 368 &&
              actual.counters_bytes == 64 && actual.node_bytes == 16 && actual.nodes == 16 &&
-             actual.argument_count == 13,
+             actual.argument_count == gw::continuity_id + 1,
          "Native reconstruction guide contract");
     const auto spectral = nodes();
     auto config_buffer = [device newBufferWithBytes:&cfg
@@ -201,24 +203,27 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     need(config_buffer != nil && node_buffer != nil && counters != nil && arguments != nil,
          "Guide input buffers");
     const bool signed_color = (cfg.flags & gw::signed_temporal) != 0;
-    const std::array<MTLPixelFormat, 9> format{signed_color ? MTLPixelFormatRGBA32Float
-                                                            : MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatR32Float,
-                                               MTLPixelFormatRG16Float,
-                                               MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatR16Float,
-                                               MTLPixelFormatR32Float,
-                                               MTLPixelFormatRGBA32Uint};
-    const std::array<unsigned, 9> channels{4, 1, 2, 4, 4, 4, 1, 1, 4};
+    const std::array<MTLPixelFormat, 12> format{signed_color ? MTLPixelFormatRGBA32Float
+                                                             : MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatR32Float,
+                                                MTLPixelFormatRG16Float,
+                                                MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatR16Float,
+                                                MTLPixelFormatR32Float,
+                                                MTLPixelFormatRGBA32Uint,
+                                                MTLPixelFormatRGBA32Float,
+                                                MTLPixelFormatRGBA32Float,
+                                                MTLPixelFormatR32Uint};
+    const std::array<unsigned, 12> channels{4, 1, 2, 4, 4, 4, 1, 1, 4, 4, 4, 1};
     const auto component_bytes = [&](unsigned i) {
         return i == 1 || i >= 7 || (i == 0 && signed_color) ? 4u : 2u;
     };
-    std::array<id<MTLTexture>, 9> texture{};
-    std::array<id<MTLBuffer>, 9> readback{};
-    std::array<NSUInteger, 9> row_bytes{};
-    for (unsigned i = 0; i < 9; ++i) {
+    std::array<id<MTLTexture>, 12> texture{};
+    std::array<id<MTLBuffer>, 12> readback{};
+    std::array<NSUInteger, 12> row_bytes{};
+    for (unsigned i = 0; i < 12; ++i) {
         auto d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format[i]
                                                                     width:width
                                                                    height:height
@@ -237,10 +242,19 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     [argument_encoder setBuffer:lease.raw_xyz() offset:0 atIndex:gw::raw_xyz_id];
     [argument_encoder setBuffer:node_buffer offset:0 atIndex:gw::nodes_id];
     [argument_encoder setBuffer:counters offset:0 atIndex:gw::counters_id];
-    for (unsigned i = 0; i < 9; ++i)
+    for (unsigned i = 0; i < 12; ++i)
         [argument_encoder setTexture:texture[i] atIndex:gw::color_id + i];
+    need(lease.prepare_reconstruction_groups().empty(),
+         "Lazy reconstruction continuity preparation");
+    auto continuity = lease.reconstruction_groups();
+    out.continuity.resize(continuity.length / sizeof(std::uint32_t));
+    std::memcpy(out.continuity.data(), continuity.contents, continuity.length);
+    need(lease.prepare_reconstruction_groups().empty() &&
+             lease.reconstruction_groups() == continuity,
+         "Continuity metadata must be prepared once per immutable scene");
+    [argument_encoder setBuffer:lease.reconstruction_groups() offset:0 atIndex:gw::continuity_id];
     const auto resources = [&](id<MTLComputeCommandEncoder> e) {
-        for (auto b : {config_buffer, node_buffer, lease.raw_xyz()})
+        for (auto b : {config_buffer, node_buffer, lease.raw_xyz(), lease.reconstruction_groups()})
             [e useResource:b usage:MTLResourceUsageRead];
         [e useResource:counters usage:MTLResourceUsageRead | MTLResourceUsageWrite];
         for (auto t : texture)
@@ -250,7 +264,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     need(command != nil, "Guide command");
     auto initialize = [command blitCommandEncoder];
     need(initialize != nil, "Initialize guide outputs for explicit failure cases");
-    for (unsigned i = 0; i < 9; ++i)
+    for (unsigned i = 0; i < 12; ++i)
         [initialize copyFromBuffer:readback[i]
                       sourceOffset:0
                  sourceBytesPerRow:row_bytes[i]
@@ -297,7 +311,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     [encoder endEncoding];
     auto blit = [command blitCommandEncoder];
     need(blit != nil, "Guide readback encoder");
-    for (unsigned i = 0; i < 9; ++i)
+    for (unsigned i = 0; i < 12; ++i)
         [blit copyFromTexture:texture[i]
                          sourceSlice:0
                          sourceLevel:0
@@ -316,7 +330,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
          "Guide execution: " + error(command.error));
     std::memcpy(&out.counters, counters.contents, sizeof(out.counters));
     out.identity.resize(std::size_t(pixels) * 4);
-    for (unsigned i = 0; i < 9; ++i) {
+    for (unsigned i = 0; i < 12; ++i) {
         out.texture[i].resize(std::size_t(pixels) * channels[i]);
         const auto *bytes = static_cast<const unsigned char *>(readback[i].contents);
         for (std::size_t y = 0; y < height; ++y)
@@ -488,6 +502,25 @@ void counter_sizes(const std::string &library) {
              "Nonfinite color contributes no success counters in a partial group");
     }
 }
+void continuity_alignment(const std::string &library) {
+    auto r = raster();
+    auto scene = base(r);
+    plane(scene, 3);
+    plane(scene, 6);
+    scene.geometry.meshes[1].positions[3].z = 6.1f;
+    auto &matrix = scene.geometry.instances[1].transform.values;
+    matrix[0] = 1e-5f;
+    matrix[5] = 1e5f;
+    matrix[10] = 1e3f;
+    // Reused mesh instance must retain the same packed group range.
+    scene.geometry.instances.push_back(scene.geometry.instances[0]);
+    scene.instance_materials.push_back(0);
+    scene.instance_emissions.push_back(no_area_emission);
+    scene.instance_surface_transforms.emplace_back();
+    auto result = guide(scene, config(camera(r), camera(r)), library);
+    need(result.continuity == std::vector<std::uint32_t>{0, 0, 0, 1},
+         "Multi-mesh indexed continuity ranges and repeated transformed instances");
+}
 void cases(const std::string &library) {
     const auto original = raster(), moved = raster({.origin_x = .3f, .yaw = .2f});
     const auto old_camera = camera(original), current = camera(moved);
@@ -637,6 +670,7 @@ int main(int argc, char **argv) {
 #endif
             need(device.device.compute_ray_tracing, "Guide tests require compute ray tracing");
             cases(argv[1]);
+            continuity_alignment(argv[1]);
             counter_sizes(argv[1]);
             std::cout << "Reconstruction guide native validation passed\n";
             return 0;

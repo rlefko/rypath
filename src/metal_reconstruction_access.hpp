@@ -37,7 +37,8 @@ struct MetalReconstructedFrameAccess {
 // surface guides only after completion; never exposes stream-owned textures.
 struct MetalReconstructionGuideSnapshot {
     std::string diagnostic;
-    std::array<std::vector<std::byte>, 8> textures;
+    std::array<std::vector<std::byte>, 11>
+        textures; // Last three are temporal-only geometry guides.
 };
 struct MetalReconstructionStreamProbe {
     static MetalReconstructionGuideSnapshot capture_guides(const ReconstructionStream &);
