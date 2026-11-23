@@ -17,6 +17,11 @@ else()
     add_test(NAME frame.unavailable COMMAND rypath_frame_session_tests)
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME cli.reconstruction_diagnostics COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/reconstruction_diagnostics_cli_tests.py"
+        "$<TARGET_FILE:rypath_reconstruction_diagnostics>")
+endif()
 add_test(NAME cli.frame_benchmark COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/frame_benchmark_cli_tests.py" "$<TARGET_FILE:rypath_frame_benchmark>")
 add_test(NAME cli.pipeline_qualification COMMAND "${Python3_EXECUTABLE}"
