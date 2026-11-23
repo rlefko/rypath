@@ -17,6 +17,7 @@ struct WavefrontArguments {
     device atomic_uint *done [[id(wf::done_id)]];
     device wf::DispatchArguments *current_dispatch [[id(wf::current_dispatch_id)]];
     device wf::DispatchArguments *refill_dispatch [[id(wf::refill_dispatch_id)]];
+    device const rypath_replay::ReplayState *replay_input [[id(wf::replay_input_id)]];
 };
 inline void wavefront_fail(constant WavefrontArguments &a, uint failure) {
     atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
@@ -28,7 +29,7 @@ inline bool wavefront_config_valid(constant WavefrontArguments &a) {
     const auto c = *a.config;
     return c.pixel_count > 0 && c.capacity > 0 && c.capacity <= wf::default_capacity &&
            c.packet <= 1 && (c.model == wire::demo_model || c.model == wire::pbrt_model) &&
-           c.group_width > 0 && c.reserved[0] == 0 && c.reserved[1] == 0 && c.reserved[2] == 0;
+           c.group_width > 0 && c.replay_enabled <= 1 && c.reserved[0] == 0 && c.reserved[1] == 0;
 }
 inline void wavefront_dispatch(device wf::DispatchArguments *args, uint count, uint group) {
     // Division plus remainder avoids the count+group-1 overflow.
@@ -87,7 +88,8 @@ inline bool wavefront_parameters(constant WavefrontArguments &a, constant wire::
         p.pixel_count != a.config->pixel_count || p.lane_count != a.config->pixel_count ||
         p.width == 0 || p.height == 0 || ulong(p.width) * p.height != a.config->pixel_count ||
         p.packet_transport != a.config->packet || p.model != a.config->model ||
-        p.bidirectional != 0) {
+        p.bidirectional != 0 ||
+        (a.config->replay_enabled && p.sampler_kind != wire::independent_sampler)) {
         wavefront_fail(a, wf::invalid_config);
         return false;
     }
@@ -96,12 +98,24 @@ inline bool wavefront_parameters(constant WavefrontArguments &a, constant wire::
 inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant wire::Parameters &p,
                                        const device sobol::Tables &tables,
                                        const device float *environment, uint slot, uint pixel) {
+    rypath_replay::ReplayState replay{};
+    if (a.config->replay_enabled) {
+        replay = a.replay_input[pixel];
+        if (!rypath_replay::valid(replay)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+    }
     if (a.config->packet) {
         ulong index = 0;
-        wire::Sample sample = begin_sample(p, tables, pixel, index);
-        const auto lens = draw_words(p, tables, sample, index, 1);
-        sample.lens_words[0] = lens.x;
-        sample.lens_words[1] = lens.y;
+        wire::Sample sample = a.config->replay_enabled
+                                  ? begin_replay_sample(p, tables, pixel, replay)
+                                  : begin_sample(p, tables, pixel, index);
+        if (!a.config->replay_enabled) {
+            const auto lens = draw_words(p, tables, sample, index, 1);
+            sample.lens_words[0] = lens.x;
+            sample.lens_words[1] = lens.y;
+        }
         auto lambda =
             rypath_packet_spectrum::sample_visible(sample_uniform(p, sample.random_words[2]));
         sample.wavelength = lambda.lambda[0];
@@ -116,6 +130,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
         resources.p = &p;
         resources.tables = &tables;
         resources.environment = environment;
+        resources.replay = a.config->replay_enabled ? &replay : nullptr;
         wavefront_scalar(a, slot) = rypath_scalar::scalar_init(resources, pixel);
     }
 }
@@ -199,37 +214,50 @@ kernel void rypath_wavefront_trace_scalar(RYPATH_WAVEFRONT_PARAMETERS(MixedInter
     uint slot;
     if (!wavefront_slot(a, lane, slot))
         return;
-    const rypath_scalar::ScalarResources resources{&p,
-                                                   scene,
-                                                   instances,
-                                                   positions,
-                                                   triangles,
-                                                   materials,
-                                                   environment,
-                                                   knots,
-                                                   emissions,
-                                                   emitters,
-                                                   normals,
-                                                   &tables,
-                                                   patches,
-                                                   intersection_table,
-                                                   texture_uvs,
-                                                   texture_frames,
-                                                   image_textures,
-                                                   image_levels,
-                                                   image_texels,
-                                                   image_transfer,
-                                                   image_spectra,
-                                                   &texture_p,
-                                                   graph_nodes,
-                                                   graph_knots,
-                                                   &graph_p,
-                                                   surface_vertices,
-                                                   surface_transforms,
-                                                   environment_cdf,
-                                                   illuminant,
-                                                   material_data};
+    rypath_scalar::ScalarResources resources{&p,
+                                             scene,
+                                             instances,
+                                             positions,
+                                             triangles,
+                                             materials,
+                                             environment,
+                                             knots,
+                                             emissions,
+                                             emitters,
+                                             normals,
+                                             &tables,
+                                             patches,
+                                             intersection_table,
+                                             texture_uvs,
+                                             texture_frames,
+                                             image_textures,
+                                             image_levels,
+                                             image_texels,
+                                             image_transfer,
+                                             image_spectra,
+                                             &texture_p,
+                                             graph_nodes,
+                                             graph_knots,
+                                             &graph_p,
+                                             surface_vertices,
+                                             surface_transforms,
+                                             environment_cdf,
+                                             illuminant,
+                                             material_data};
     auto state = wavefront_scalar(a, slot);
+    rypath_replay::ReplayState replay{};
+    if (a.config->replay_enabled) {
+        if (state.sample.pixel >= a.config->pixel_count) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        replay = a.replay_input[state.sample.pixel];
+        if (!rypath_replay::valid(replay)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        resources.replay = &replay;
+    }
     rypath_scalar::scalar_trace(resources, state);
     wavefront_scalar(a, slot) = state;
 }
@@ -238,37 +266,50 @@ kernel void rypath_wavefront_shade_scalar(RYPATH_WAVEFRONT_PARAMETERS(MixedInter
     uint slot;
     if (!wavefront_slot(a, lane, slot))
         return;
-    const rypath_scalar::ScalarResources resources{&p,
-                                                   scene,
-                                                   instances,
-                                                   positions,
-                                                   triangles,
-                                                   materials,
-                                                   environment,
-                                                   knots,
-                                                   emissions,
-                                                   emitters,
-                                                   normals,
-                                                   &tables,
-                                                   patches,
-                                                   intersection_table,
-                                                   texture_uvs,
-                                                   texture_frames,
-                                                   image_textures,
-                                                   image_levels,
-                                                   image_texels,
-                                                   image_transfer,
-                                                   image_spectra,
-                                                   &texture_p,
-                                                   graph_nodes,
-                                                   graph_knots,
-                                                   &graph_p,
-                                                   surface_vertices,
-                                                   surface_transforms,
-                                                   environment_cdf,
-                                                   illuminant,
-                                                   material_data};
+    rypath_scalar::ScalarResources resources{&p,
+                                             scene,
+                                             instances,
+                                             positions,
+                                             triangles,
+                                             materials,
+                                             environment,
+                                             knots,
+                                             emissions,
+                                             emitters,
+                                             normals,
+                                             &tables,
+                                             patches,
+                                             intersection_table,
+                                             texture_uvs,
+                                             texture_frames,
+                                             image_textures,
+                                             image_levels,
+                                             image_texels,
+                                             image_transfer,
+                                             image_spectra,
+                                             &texture_p,
+                                             graph_nodes,
+                                             graph_knots,
+                                             &graph_p,
+                                             surface_vertices,
+                                             surface_transforms,
+                                             environment_cdf,
+                                             illuminant,
+                                             material_data};
     auto state = wavefront_scalar(a, slot);
+    rypath_replay::ReplayState replay{};
+    if (a.config->replay_enabled) {
+        if (state.sample.pixel >= a.config->pixel_count) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        replay = a.replay_input[state.sample.pixel];
+        if (!rypath_replay::valid(replay)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        resources.replay = &replay;
+    }
     rypath_scalar::scalar_shade(resources, state);
     wavefront_scalar(a, slot) = state;
     if (state.finished) {
@@ -310,6 +351,19 @@ rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
     rypath_bdpt::Resources resources{
         alpha,           knots,        emissions, emitters, environment,
         environment_cdf, light_images, &tables,   scene,    intersection_table};
+    rypath_replay::ReplayState replay{};
+    if (a.config->replay_enabled) {
+        if (state.sample.pixel >= a.config->pixel_count) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        replay = a.replay_input[state.sample.pixel];
+        if (!rypath_replay::valid(replay)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        resources.replay = &replay;
+    }
     rypath_bdpt::packet_pt_step(resources, state);
     wavefront_packet(a, slot) = state;
     if (state.complete) {

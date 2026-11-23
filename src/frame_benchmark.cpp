@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_wire.h"
 #include "frame_session.hpp"
 #include "frame_statistics.hpp"
 #include "image_output.hpp"
@@ -55,6 +56,8 @@ struct Options {
     fs::path scene, output, capture, preview;
     bool demo = false;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
+    rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
+    float target_scale = 1.f;
     std::uint32_t capacity = rypath::FrameConfig{}.capacity;
     std::uint32_t quantum = rypath::FrameConfig{}.quantum;
     std::uint32_t group_width = rypath::FrameConfig{}.group_width;
@@ -69,14 +72,25 @@ const char *profile_name(rypath::IntersectionProfile profile) {
 const char *execution_name(rypath::FrameExecution execution) {
     return execution == rypath::FrameExecution::wavefront ? "wavefront" : "megakernel";
 }
+const char *estimator_name(rypath::FrameEstimator estimator) {
+    return estimator == rypath::FrameEstimator::area_replay ? "area-replay" : "independent";
+}
+std::string precise_float(float value) {
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out.precision(std::numeric_limits<float>::max_digits10);
+    out << value;
+    return out.str();
+}
 const char *usage =
     "Usage: rypath-frame-benchmark (--scene SCENE.pbrt | --demo) --output REPORT.json\n"
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
     "  [--seed 1] [--material-seed 0] [--intersections native|compensated (default: native)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
+    "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
-    "Fresh output paths required. Serial resident-scene, one new sample/pixel/frame baseline.\n";
+    "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
 std::string parse(int argc, char **argv, Options &o) {
     std::set<std::string_view> seen;
     for (int i = 1; i < argc; ++i) {
@@ -98,7 +112,20 @@ std::string parse(int argc, char **argv, Options &o) {
             o.capture = value;
         else if (key == "--preview")
             o.preview = value;
-        else if (key == "--execution") {
+        else if (key == "--estimator") {
+            if (value == "independent")
+                o.estimator = rypath::FrameEstimator::independent;
+            else if (value == "area-replay")
+                o.estimator = rypath::FrameEstimator::area_replay;
+            else
+                return "invalid estimator: " + std::string(value);
+        } else if (key == "--target-scale") {
+            std::istringstream input{std::string(value)};
+            input.imbue(std::locale::classic());
+            input >> o.target_scale;
+            if (!input || !input.eof() || !std::isnormal(o.target_scale) || o.target_scale <= 0)
+                return "target scale must be positive, finite and normal";
+        } else if (key == "--execution") {
             if (value == "wavefront")
                 o.execution = rypath::FrameExecution::wavefront;
             else if (value == "megakernel")
@@ -142,6 +169,9 @@ std::string parse(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if (o.estimator == rypath::FrameEstimator::area_replay &&
+        o.execution != rypath::FrameExecution::wavefront)
+        return "area-replay requires wavefront execution";
     if (o.demo == !o.scene.empty())
         return "choose exactly one of --scene and --demo";
     if (o.output.empty())
@@ -312,7 +342,10 @@ std::vector<std::string> overrides(rypath::pbrt::Result &checked, const Options 
 }
 struct Observation : rypath::FrameStatisticsSample {
     std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0,
-                  command_count = 0;
+                  command_count = 0, area_serial = 0, history_generation = 0,
+                  completed_evaluations = 0, fresh_candidates = 0;
+    std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
+    bool history_used = false;
     std::string diagnostic;
 };
 struct Report {
@@ -341,6 +374,17 @@ struct Report {
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
             << ",\"seed\":" << options.seed << ",\"material_seed\":" << options.material_seed
             << ",\"execution\":" << quote(execution_name(options.execution))
+            << ",\"estimator\":" << quote(estimator_name(options.estimator))
+            << ",\"area_contract\":"
+            << (options.estimator == rypath::FrameEstimator::area_replay
+                    ? rypath::area_wire::contract
+                    : 0)
+            << ",\"replay_contract\":"
+            << (options.estimator == rypath::FrameEstimator::area_replay ? rypath_replay::contract
+                                                                         : 0)
+            << ",\"area_target\":\"bounded-l1-contrast-0.1-v1\""
+            << ",\"target_scale\":" << options.target_scale
+            << ",\"fresh_paths_per_pixel_per_frame\":1"
             << ",\"capacity\":" << options.capacity << ",\"effective_capacity\":"
             << (options.execution == rypath::FrameExecution::wavefront
                     ? std::to_string(std::min<std::uint64_t>(
@@ -389,7 +433,13 @@ struct Report {
                 << ",\"complete\":" << (f.complete ? "true" : "false")
                 << ",\"completed_samples\":" << f.completed_samples
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
-                << ",\"command_count\":" << f.command_count
+                << ",\"command_count\":" << f.command_count << ",\"area_serial\":" << f.area_serial
+                << ",\"history_used\":" << (f.history_used ? "true" : "false")
+                << ",\"history_generation\":" << f.history_generation
+                << ",\"temporal_candidates\":" << f.temporal_candidates
+                << ",\"spatial_candidates\":" << f.spatial_candidates
+                << ",\"completed_evaluations\":" << f.completed_evaluations
+                << ",\"fresh_candidates\":" << f.fresh_candidates
                 << ",\"cpu_wall_seconds\":" << f.cpu_seconds << ",\"gpu_seconds\":";
             if (f.gpu_seconds)
                 out << *f.gpu_seconds;
@@ -541,6 +591,8 @@ int run(const Options &options) {
         config.footprint_samples = 1;
         config.intersection_profile = options.intersection_profile;
         config.execution = options.execution;
+        config.estimator = options.estimator;
+        config.target_scale = options.target_scale;
         config.capacity = options.capacity;
         config.quantum = options.quantum;
         config.group_width = options.group_width;
@@ -582,6 +634,13 @@ int run(const Options &options) {
                     observation.completed_samples = info.completed_samples;
                     observation.camera_upload_bytes = info.camera_upload_bytes;
                     observation.command_count = info.command_count;
+                    observation.area_serial = info.area_serial;
+                    observation.history_used = info.history_used;
+                    observation.history_generation = info.history_generation;
+                    observation.temporal_candidates = info.temporal_candidates;
+                    observation.spatial_candidates = info.spatial_candidates;
+                    observation.completed_evaluations = info.completed_evaluations;
+                    observation.fresh_candidates = info.fresh_candidates;
                     observation.diagnostic = info.diagnostic;
                     if (info.gpu_time_valid && std::isfinite(info.gpu_seconds) &&
                         info.gpu_seconds >= 0)
@@ -629,6 +688,20 @@ int run(const Options &options) {
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.footprint_samples", "1"},
                     {"rypath.frame.execution", execution_name(options.execution)},
+                    {"rypath.frame.estimator", estimator_name(options.estimator)},
+                    {"rypath.area.contract",
+                     std::to_string(options.estimator == rypath::FrameEstimator::area_replay
+                                        ? rypath::area_wire::contract
+                                        : 0)},
+                    {"rypath.area.target_scale", precise_float(options.target_scale)},
+                    {"rypath.area.target", "bounded-l1-contrast-0.1-v1"},
+                    {"rypath.area.serial", std::to_string(frame_info.area_serial)},
+                    {"rypath.area.history_used", frame_info.history_used ? "true" : "false"},
+                    {"rypath.area.generation", std::to_string(frame_info.history_generation)},
+                    {"rypath.area.temporal_count", std::to_string(frame_info.temporal_candidates)},
+                    {"rypath.area.spatial_count", std::to_string(frame_info.spatial_candidates)},
+                    {"rypath.frame.evaluations", std::to_string(frame_info.completed_evaluations)},
+                    {"rypath.frame.fresh_candidates", std::to_string(frame_info.fresh_candidates)},
                     {"rypath.frame.capacity", std::to_string(options.capacity)},
                     {"rypath.frame.effective_capacity",
                      options.execution == rypath::FrameExecution::wavefront

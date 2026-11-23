@@ -4,7 +4,7 @@
 namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 2, default_capacity = 65536 };
+enum : Word { contract = 3, default_capacity = 65536 };
 enum Failure : Word {
     invalid_config = 1u,
     queue_overflow = 2u,
@@ -25,11 +25,12 @@ enum Argument : Word {
     cie_id,
     done_id,
     current_dispatch_id,
-    refill_dispatch_id
+    refill_dispatch_id,
+    replay_input_id
 };
 struct Config {
     Word pixel_count, capacity, packet, model;
-    Word group_width, reserved[3];
+    Word group_width, replay_enabled, reserved[2];
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;

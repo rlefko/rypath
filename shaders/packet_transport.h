@@ -40,6 +40,7 @@ struct Resources {
     const device sobol::Tables *tables;
     instance_acceleration_structure scene;
     instance_acceleration_structure intersection_table;
+    thread const rypath_replay::ReplayState *replay = nullptr;
 };
 inline device Vertex &path_vertex(device uchar *path, uint i) {
     return *reinterpret_cast<device Vertex *>(path + i * storage::vertex_bytes);
@@ -78,7 +79,7 @@ inline float2 uniform2(constant wire::Parameters &p, uint2 words) {
 }
 inline uint4 random(const thread Resources &r, const thread wire::Sample &sample, ulong index,
                     uint block) {
-    return draw_words(*r.alpha.parameters, *r.tables, sample, index, block);
+    return draw_words(*r.alpha.parameters, *r.tables, sample, index, block, r.replay);
 }
 inline float4 environment_radiance(const thread Resources &r, float3 direction,
                                    const thread Wavelengths &lambda) {

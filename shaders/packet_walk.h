@@ -9,6 +9,9 @@ inline uint4 material_words(const thread Resources &r, const thread wire::Sample
                             uint material, uint bounce, Mode mode) {
     const constant auto &p = *r.alpha.parameters;
     const uint role = mode == Mode::Radiance ? 0x63616d31u : 0x6c697431u;
+    if (r.replay)
+        return rypath_replay_sampler::vector(
+            rypath_replay_sampler::material(*r.replay, bounce, material, role));
     return philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
                         rypath::sampling_contract::material_local_block(bounce)),
                   uint2(p.seed_low ^ material,

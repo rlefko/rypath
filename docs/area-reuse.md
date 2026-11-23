@@ -1,15 +1,113 @@
 # Area-domain reservoir math
 
-This stage adds only the CPU/MSL-compatible streaming selection helper in
-[`reservoir_shared.h`](../src/reservoir_shared.h). Renderer integration, replay
-storage, film/lens and indirect-path reuse, temporal/spatial scheduling, and GPU
-execution are pending. MCMC is a separate subsequent stage. No current renderer,
-physical model, sampler stream, Film plane, or checkpoint contract changes here.
+The opt-in `FrameEstimator::area_replay` implementation reuses full camera paths
+across film, lens, wavelength and indirect transport variables. It is an
+area-domain full-replay GRIS adaptation, with a correctness baseline that
+retraces destination paths. It does not yet implement the Area ReSTIR paper's
+fractional footprint matching or primary-hit lens reconnection. MCMC is a
+separate subsequent stage. Independent rendering remains the default; offline
+transport and checkpoint contracts remain separate.
 
-The intended integration targets the complete camera estimator over film, lens,
-wavelength and transport random variables. It is not direct-light sampling
-relabeled as Area ReSTIR. Full replay is the correctness baseline; it retraces
-the complete destination path and does not yet amortize path suffix evaluation.
+The benchmark enables it with `--estimator area-replay` and requires wavefront
+execution. `--target-scale` selects the positive normal scale (default `1`) in
+the bounded-contrast target described below. It does not clamp radiance or UCWs.
+Reports distinguish fresh paths, complete replay
+evaluations, reservoir pool sizes, submission serials and history generations.
+Native and compensated intersections remain separate numerical choices.
+
+## GPU schedule and history
+
+A fresh payload is evaluated once per destination pixel. Temporal reuse merges
+that result with the previous reservoir's payload, fully reevaluated at the
+current camera; reset frames use the fresh input alone. The selected temporal
+result is frozen before spatial reuse. Each pixel then merges its cached center
+with fully replayed left, right, upper and lower neighbors. Edge clamping keeps
+all five scheduled slots, including duplicates. Cached source-pixel or
+previous-frame XYZ never substitutes for destination evaluation.
+
+Each frame has one fresh path per pixel and **five complete path evaluations
+after a reset, six with history**. Output is the selected unweighted XYZ times
+its normalized contribution weight, counted once. All replay and reservoir work
+is included in command counts and timing. Raw output is separate from the
+recyclable leaf and temporal caches.
+
+One Area frame may be pending per session. Two history banks are independent of
+retained frame captures. A successful final callback publishes history; failed
+frames cannot publish partial output and preserve eligible prior history.
+Changing `FrameRequest::epoch` permanently invalidates eligibility, including
+when that submission fails. A monotonic internal submission serial separates
+selection decisions even when output sample indices repeat. Only successful
+publication advances the global history generation. Camera cuts should change
+epoch; smooth motion uses complete current-camera replay without primary-hit
+reprojection in this version.
+
+## Bounded importance contrast
+
+The current renderer policy is a positive, bounded importance proxy:
+
+```text
+L = abs(X) + abs(Y) + abs(Z)
+t(F) = 1 + 0.1 * L / (target_scale + L)
+1 <= t(F) <= R, where R = binary32(1.1) = 1.100000023841858...
+```
+
+`bounded_target_xyz` divides the three magnitudes and scale by their maximum
+before forming the ratio. The normalized denominator lies in `[1,4]`; it never
+forms the potentially overflowing unscaled HDR L1 sum. Output is checked against
+`[1,R]`. Tiny importance-proxy terms may underflow or flush without losing
+support, since the target remains at least one. This is not a promise of
+subnormal transport support. Raw XYZ is untouched, including its sign and
+magnitude. The target is not a radiance clamp, nor is the finalized UCW clamped.
+
+This deliberately limits importance contrast to ten percent. It sacrifices much
+of the importance-sampling strength of a radiance-like target to prevent the
+reuse-specific weight explosion described below. No variance or speedup benefit
+is established by this choice. Keep the same `R` for later `0/1/2/4`-mutation
+ablations; raising contrast only in lower-mutation arms would confound their
+quality comparison. The scale controls the transition within this common range,
+not its endpoints.
+
+### Failed linear-target evidence
+
+The earlier linear target `epsilon + L`, with `epsilon = 1e-6`, passed the other
+expanded NEE, indirect, homogeneous-media and constant-radiance mean smoke
+checks but failed the Gaussian/DOF half-occluder case. Its retained
+`.cache/validation/area-expanded-gpu.log` reports an X-channel mean residual of
+**-2.747978** against tolerance **2.213187** over 16 independent sessions, each
+with a cold frame followed by two warm frames. The diagnostic rerun in
+`.cache/validation/area-diagnostic-gpu.log` preserves the same failure; the
+aggregates are retained in `.cache/validation/area-linear-edge-summary.json`.
+
+| X-channel mean over the 16 sessions | Value |
+| --- | ---: |
+| Cold Area output | 37.030404 |
+| First warm output | 35.064811 |
+| Second warm output | 34.356766 |
+| Independent raw reference | 37.458766 |
+| Analytic half-emitter | 37.402891 |
+
+The deficit grows in the partially visible neighboring columns while bright
+columns are more stable. This supports a rare-weight mechanism; it does not
+prove the adapter free of bugs or turn the failed gate into passing evidence.
+These are historical working-tree results for the linear policy, not GPU
+qualification of the bounded policy.
+
+A two-state example shows why sixteen empirical standard errors can miss a
+large contribution. Let the source states have `F_s = (L,0)` and target
+`(L+epsilon,epsilon)`. Two fresh uniform candidates form a mixed lit/dark pool
+with probability `1/2`. Conditional on that pool, the dark state is selected
+with probability `epsilon/(L+2*epsilon)` and UCW
+`(L+2*epsilon)/(2*epsilon)`. That rare branch supplies one quarter of the dark
+indicator's required total weighted mass of one half. If the destination lights
+that state instead, half its expected signal lies in this rare tail. With
+`L=100` and `epsilon=1e-6`, the branch occurs about once in 200 million pools.
+An entirely black source pixel has a constant target and is not this mechanism.
+
+Positive support alone therefore does not make a finite-seed mean/SE gate a
+reliable bias detector for this policy. The linear helper remains available for
+math diagnostics; the renderer uses bounded contrast. Target changes require
+new history and provenance rather than importing linear-policy reservoirs into
+the bounded-weight guarantee.
 
 ## Normalized contribution weights
 
@@ -51,7 +149,7 @@ convergence rate for persistent histories.
 confidence, or an effective independent sample count. Importing a normalized
 reservoir contributes one input with its stored UCW. Multiplying by historical
 `M` and using this same normalization would implement a different estimator.
-Each local merge accepts at most **32** inputs. Planned temporal and spatial
+Each local merge accepts at most **32** inputs. Temporal and spatial
 passes use two and five inputs respectively; a reservoir's earlier ancestry
 does not consume this local budget. A 33rd input fails visibly rather than being
 ignored or starting an implicit second merge.
@@ -68,7 +166,11 @@ cannot establish this for a caller's sampling-dependent rejection policy.
 zero-based selected stream index, and a sticky failure status. It holds no path
 payload. `no_selection` identifies the empty state.
 
-- `target_xyz(x, y, z, epsilon)` returns a checked target
+- `bounded_target_xyz(x, y, z, target_scale)` implements the renderer's bounded
+  proxy. XYZ must be finite; scale must be positive, finite and normal. Finite
+  subnormal XYZ can affect the proxy differently when a backend flushes terms;
+  no exact subnormal L1 agreement is claimed. All returned targets lie in `[1,R]`.
+- `target_xyz(x, y, z, epsilon)` retains the earlier diagnostic linear target
   `epsilon + ((abs(x) + abs(y)) + abs(z))`. The caller supplies the support floor;
   there is no default shader floor. Negative XYZ components retain their
   magnitude in this proxy; the helper does not clamp the contribution.
@@ -153,10 +255,12 @@ floating-point unbiasedness or universal CPU/GPU bitwise agreement. The shared
 implementation deliberately has a narrower, checked arithmetic envelope:
 
 - Weights, targets, scores and final UCWs must be positive, finite normal
-  binary32 values. Nonzero subnormal XYZ inputs and a subnormal
-  floor are rejected. There is no denormal-support claim on Metal devices.
-- XYZ target additions and score multiplication must not overflow. The target
-  proxy uses the stated binary32 addition order; it is not an exact real L1 sum.
+  binary32 values. The linear diagnostic helper rejects nonzero subnormal XYZ
+  and a subnormal floor; the bounded proxy accepts finite XYZ and a positive
+  normal scale. There is no denormal-support claim for physical transport.
+- Score multiplication and accumulation must not overflow. The bounded target
+  avoids unscaled HDR L1 overflow and uses checked binary32 arithmetic; it is
+  not an exact real L1 sum.
 - Score-sum rounding can absorb a small input. This is normalizer error; it does
   not eliminate the input's event because the smaller probability is represented
   with a separate exponent. The mantissa ratio also rounds to binary32. No
@@ -274,12 +378,85 @@ This assumes the fresh measure is exact in the declared replay-domain model,
 valid imports, exogenous selection, consistent targets, and no additional
 unaccounted numerical error. Using the 32-input envelope for both passes gives
 a steady bound below `2.29e-5` for CPU round-to-nearest, or `4.58e-5` using the
-conservative non-fast Metal formula. The planned two/five-input bounds are
+conservative non-fast Metal formula. The two/five-input bounds are
 tighter: below `2.504e-6` and `5.007e-6`, respectively.
 Other pass counts or fresh/history mixing weights need their own recurrence.
 This coefficient-error statement supplies neither a variance bound nor a
 physical-model accuracy guarantee, and does not qualify an integrated pipeline
 before its sampling, arithmetic and scheduling contracts are tested.
+
+### Realized UCW magnitude bounds
+
+These are bounds on the weight of **every realized outcome**, separate from the
+weighted-measure coefficient-error bounds above. They use the target's enforced
+range `[1,R]`, one fresh weight-one temporal candidate, immutable spatial inputs,
+and correctly normalized two/five-input merges. Let `B` be the maximum UCW over
+the previous published history. In real arithmetic,
+
+```text
+temporal: W_t <= R * (1+B)/2
+after n fixed mutation steps: W_m <= R^n * W_t
+spatial: W_new <= R * max_neighbor(W_m)
+g = R^(n+2)
+B_next <= g * (1+B)/2
+```
+
+The spatial inequality holds for all five slots, including repeated clamped
+neighbors: an average of bounded incoming weights remains bounded. The mutation
+inequality reserves a subsequent stage with `n` in `0/1/2/4`; PR4 itself has
+`n=0`. No history-only stage or additional resampling pass is implicit here.
+
+If `g<2`, the warm recurrence has fixed point `g/(2-g)`. A cold reset is a
+different case: temporal `K=1` returns weight one, so
+`B_cold <= R^(n+1)`, not `g/2`. The global bound is the maximum of this cold bound
+and the warm fixed point. Freshly created bounded-policy histories satisfy it;
+arbitrary imported linear-policy weights do not inherit it. A fresh temporal
+candidate also gives a warm lower bound `1/(2*R^(n+2))`, independently of how
+small an old weight is. Cold lower bounds are larger.
+
+For finite arithmetic, use the same conditional operation-error assumption `u`
+as above. A direct magnitude bound for a `K`-candidate merge follows from one
+rounded score multiplication, `K-1` positive additions, and two final divisions:
+
+```text
+W_out <= R * mean(incoming_W) * (1+u)^(K+2)
+```
+
+This gives factors `(1+u)^4` and `(1+u)^7` for the temporal and spatial stages.
+Unlike the earlier coefficient bound, it does not contain selection-probability
+errors: the magnitude of a realized finalized weight depends on the sum and
+selected target, not on the probability that selected it.
+
+For the planned actual-forward/reverse dyadic MH correction, a represented
+downhill probability is at least its ideal ratio times `1-u`; the accepted UCW
+operation adds at most `1+u`. A conservative maximum mutation factor is thus
+`R*(1+u)/(1-u)` per step. Including all stages,
+
+```text
+G = R^(n+2) * (1+u)^(11+n) / (1-u)^n
+B_next <= G * (1+B)/2
+B_warm <= G/(2-G), provided G < 2
+B_cold <= R^(n+1) * (1+u)^(7+n) / (1-u)^n
+W_warm >= (1-u)^(9+2*n) / (2*R^(n+2))
+```
+
+The lower bound uses the fresh temporal score of at least one, then the minimum
+mutation and spatial factors. With the actual binary32 `R` above and conservative
+`u=2^-23`, the resulting outward-rounded bounds are:
+
+| Mutation steps | Cold upper | Global upper | Warm lower |
+| ---: | ---: | ---: | ---: |
+| 0 (current stage) | 1.100001 | 1.531651 | 0.413222 |
+| 1 (subsequent stage) | 1.210002 | 1.989547 | 0.375656 |
+| 2 (subsequent stage) | 1.331002 | 2.732059 | 0.341506 |
+| 4 (subsequent stage) | 1.610514 | 7.755236 | 0.282236 |
+
+The common contrast keeps `G` below two for every legal step count. Changing the
+schedule, target contrast, mutation correction or arithmetic assumptions requires
+a new bound. These limits prevent reuse-induced explosive UCWs; they do not
+bound raw physical path contributions, establish finite physical variance, prove
+the implementation correct, or predict time to image quality. They are derived
+envelopes, not measured GPU outcomes.
 
 ## Validation boundary
 
@@ -294,9 +471,28 @@ thresholds need below/equal/above tests, including small events in either
 candidate order and extreme exponent gaps. These checks supply evidence for
 this helper, not a renderer bias study.
 
-No build or GPU validation was run while introducing the header and this record.
-Film/lens/path replay, temporal/spatial integration, MCMC, shader execution and
-time-to-quality measurements are pending and must be reported separately.
+The portable finite-domain and replay-identity tests pass, including the capped
+HDR absorption case, malformed random-bit counters and five generations of
+correlated reuse. The integrated host and strict Metal shader compile, and the
+benchmark argument/provenance tests pass. The linear-policy runtime failure is
+retained above.
+
+On the M4 Max, the initial bounded-policy Debug run with Metal API validation
+passed the full frame test (42.56 s), CPU/MSL arithmetic probe (0.39 s), queue
+reservation probe (0.31 s), and portable bounded-target oracle (0.35 s). Frame
+coverage includes camera retracing, epochs and failed-frame recovery, retained
+lifetimes, scheduling variants, and 16 independent session-seed comparisons
+against native direct Monte Carlo. The unchanged Gaussian/defocus gate now passes,
+along with point NEE, an independently witnessed indirect bounce and bounded
+scattering/emission cases. Point-lit volume scheduling coverage is separate from
+the mean gates because inverse-square point sources can give heavy-tailed volume
+estimators. The test records cold/warm/warm observations per seed rather than
+treating correlated pixels or history frames as independent samples.
+
+These are mean smoke checks and arithmetic/lifetime evidence. Release, sanitizer,
+longer convergence and time-to-quality qualification remain separate; passing a
+small mean study does not establish a visual or performance benefit. MCMC is not
+yet integrated here.
 
 ## Primary references
 

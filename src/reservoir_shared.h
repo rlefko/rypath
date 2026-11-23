@@ -16,7 +16,7 @@ namespace rypath_reservoir {
 constant constexpr unsigned no_selection = 0xffffffffu;
 constant constexpr unsigned maximum_candidate_count = 32;
 constant constexpr unsigned maximum_random_words = 9;
-inline unsigned bits(float value) { return metal::as_type<unsigned>(value); }
+inline unsigned bits(float value) { return as_type<unsigned>(value); }
 inline float fraction(float value, thread int &exponent) { return metal::frexp(value, exponent); }
 inline float scale(float value, int exponent) { return metal::ldexp(value, exponent); }
 #else
@@ -37,7 +37,13 @@ inline bool normal_or_zero(float value) {
     const auto magnitude = bits(value) & 0x7fffffffu;
     return magnitude == 0 || (magnitude >= 0x00800000u && magnitude < 0x7f800000u);
 }
-inline float magnitude(float value) { return value < 0 ? -value : value; }
+inline float magnitude(float value) {
+#if defined(__METAL_VERSION__)
+    return as_type<float>(bits(value) & 0x7fffffffu);
+#else
+    return std::bit_cast<float>(bits(value) & 0x7fffffffu);
+#endif
+}
 
 enum class Status : unsigned {
     ok,
@@ -100,6 +106,37 @@ inline ScalarResult target_xyz(float x, float y, float z, float epsilon) {
     const float xyz = xy + magnitude(z);
     const float target = epsilon + xyz;
     if (!finite(xy) || !finite(xyz) || !positive_normal(target))
+        return {0, Status::arithmetic_failure};
+    return {target, Status::ok};
+}
+
+// Current full-replay policy: limit importance contrast, never radiance/UCWs.
+// Real formula: 1 + 0.1 * L1(XYZ)/(scale + L1(XYZ)). Dividing all terms by
+// their maximum keeps the denominator in [1,4] even for finite HDR XYZ whose
+// unscaled L1 sum would overflow. Tiny proxy terms may underflow or flush;
+// this is not a claim of subnormal transport support. The raw XYZ is untouched.
+inline ScalarResult bounded_target_xyz(float x, float y, float z, float target_scale) {
+    if (!finite(x) || !finite(y) || !finite(z) || !positive_normal(target_scale))
+        return {0, Status::invalid_target};
+    const float ax = magnitude(x), ay = magnitude(y), az = magnitude(z);
+    float maximum = target_scale;
+    if (ax > maximum)
+        maximum = ax;
+    if (ay > maximum)
+        maximum = ay;
+    if (az > maximum)
+        maximum = az;
+    const float normalized_l1 = ((ax / maximum) + (ay / maximum)) + (az / maximum);
+    const float normalized_scale = target_scale / maximum;
+    const float denominator = normalized_scale + normalized_l1;
+    if (!finite(normalized_l1) || normalized_l1 < 0 || normalized_l1 > 3 ||
+        !finite(normalized_scale) || normalized_scale < 0 || normalized_scale > 1 ||
+        !finite(denominator) || denominator < 1 || denominator > 4)
+        return {0, Status::arithmetic_failure};
+    const float ratio = normalized_l1 / denominator;
+    const float target = 1 + .1f * ratio;
+    if (!finite(ratio) || ratio < 0 || ratio > 1 || !positive_normal(target) || target < 1 ||
+        target > 1.1f)
         return {0, Status::arithmetic_failure};
     return {target, Status::ok};
 }

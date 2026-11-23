@@ -33,6 +33,7 @@ struct ScalarResources {
     const device float *environment_cdf;
     const device float *illuminant;
     const device uint *material_data;
+    thread const rypath_replay::ReplayState *replay = nullptr;
 };
 
 // Only value state crosses dispatch boundaries; resources and thread pointers are rebuilt.
@@ -64,7 +65,8 @@ inline void scalar_store_ray(thread ScalarState &state, ray incoming) {
 
 inline ScalarState scalar_init(const thread ScalarResources &r, uint lane) {
     ScalarState state{};
-    state.sample = begin_sample(*r.p, *r.tables, lane, state.index);
+    state.sample = r.replay ? begin_replay_sample(*r.p, *r.tables, lane, *r.replay)
+                            : begin_sample(*r.p, *r.tables, lane, state.index);
     const ray incoming = primary_ray(*r.p, state.sample);
     scalar_store_ray(state, incoming);
     state.primary_direction = incoming.direction;
@@ -131,7 +133,7 @@ inline void scalar_sky_step(const thread ScalarResources &r, thread ScalarState 
                     sample.status = wire::emergency_depth;
                     break;
                 }
-                const auto flight_words = medium_words(p, sample, draw);
+                const auto flight_words = medium_words(p, sample, draw, r.replay);
                 const float distance = rypath_medium::flight(total, u01(flight_words.x));
                 const float3 point = fma(float3(distance), incoming.direction, incoming.origin);
                 if (!isfinite(distance) || !all(isfinite(point))) {
@@ -193,7 +195,7 @@ inline void scalar_sky_step(const thread ScalarResources &r, thread ScalarState 
                         break;
                     }
                 }
-                const auto phase_words = medium_words(p, sample, draw);
+                const auto phase_words = medium_words(p, sample, draw, r.replay);
                 const float3 wi = rypath_medium::phase_sample(
                     -incoming.direction, m->g, float2(u01(phase_words.x), u01(phase_words.y)));
                 ++sample.scatterings;
@@ -372,7 +374,7 @@ inline void scalar_shade(const thread ScalarResources &r, thread ScalarState &st
             }
             sample.radiance += throughput * segment.emission;
             if (total > 0) {
-                const auto flight_words = medium_words(p, sample, medium_draw);
+                const auto flight_words = medium_words(p, sample, medium_draw, r.replay);
                 const float flight = rypath_medium::flight(total, u01(flight_words.x));
                 if (flight < distance || isinf(distance)) {
                     if (!isfinite(flight)) {
@@ -392,8 +394,8 @@ inline void scalar_shade(const thread ScalarResources &r, thread ScalarState &st
                         break;
                     }
                     throughput *= s / total;
-                    const auto light_words = medium_words(p, sample, medium_draw);
-                    const auto phase_words = medium_words(p, sample, medium_draw);
+                    const auto light_words = medium_words(p, sample, medium_draw, r.replay);
+                    const auto phase_words = medium_words(p, sample, medium_draw, r.replay);
                     const auto direct =
                         medium_direct(position, -direction, m->g, current_medium, light_words,
                                       scene, intersection_table, alpha, materials, material_data,
@@ -593,10 +595,12 @@ inline void scalar_shade(const thread ScalarResources &r, thread ScalarState &st
                                  surface_materials_enabled || gltf_enabled) &&
                                 material.scattering != 0;
         const uint4 material_random =
-            philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
-                         rypath::sampling_contract::material_local_block(bounce)),
-                   uint2(p.seed_low ^ material_index,
-                         p.seed_high ^ rypath::sampling_contract::material_stream_v1));
+            r.replay ? rypath_replay_sampler::vector(
+                           rypath_replay_sampler::material(*r.replay, bounce, material_index, 0))
+                     : philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
+                                    rypath::sampling_contract::material_local_block(bounce)),
+                              uint2(p.seed_low ^ material_index,
+                                    p.seed_high ^ rypath::sampling_contract::material_stream_v1));
         float rho = NAN;
         if (microfacet && material.scattering != 4 && material.scattering != 5) {
             rho = 1.0f;
@@ -698,8 +702,8 @@ inline void scalar_shade(const thread ScalarResources &r, thread ScalarState &st
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        const uint4 light_words = draw_words(p, tables, sample, index, 2 + 2 * bounce);
-        const uint4 bsdf_words = draw_words(p, tables, sample, index, 1 + 2 * bounce);
+        const uint4 light_words = draw_words(p, tables, sample, index, 2 + 2 * bounce, r.replay);
+        const uint4 bsdf_words = draw_words(p, tables, sample, index, 1 + 2 * bounce, r.replay);
         const rypath_light_sampling::Context light_context{
             point.position, microfacet ? frame.z : point.shading_normal};
         if (p.model == wire::demo_model) {
@@ -826,7 +830,8 @@ inline void scalar_shade(const thread ScalarResources &r, thread ScalarState &st
         if (microfacet) {
             const float lobe =
                 (dielectric || material.scattering == 11)
-                    ? sample_uniform(p, dielectric_lobe_word(p, tables, sample, index, bounce))
+                    ? sample_uniform(
+                          p, dielectric_lobe_word(p, tables, sample, index, bounce, r.replay))
                     : u01(material_random.x);
             const auto local_continuation = sample_scattering(
                 scattering, wo, lobe,

@@ -5,6 +5,7 @@
 // opt in, validate the payload, and keep destination identity in wire::Sample.
 namespace rypath_replay_sampler {
 using namespace rypath_replay;
+inline metal::uint4 vector(Words4 words) { return {words.x, words.y, words.z, words.w}; }
 inline Words4 transport(thread const ReplayState &state, Word block) {
     return tail_words(state, {TailDomain::transport, block, 0, 0});
 }
