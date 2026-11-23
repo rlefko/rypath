@@ -1584,6 +1584,8 @@ endif()
 add_executable(rypath_reservoir_tests reservoir_tests.cpp)
 target_include_directories(rypath_reservoir_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_reservoir_tests)
+target_compile_options(rypath_reservoir_tests PRIVATE
+    "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
 add_test(NAME render.reservoir_finite_domain COMMAND rypath_reservoir_tests)
 set_tests_properties(render.reservoir_finite_domain PROPERTIES TIMEOUT 30)
 
@@ -1620,6 +1622,8 @@ if(RYPATH_ENABLE_METAL)
         OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
         RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
     target_compile_options(rypath_area_math_probe PRIVATE -fobjc-arc)
+    target_compile_options(rypath_area_math_probe PRIVATE
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
     rypath_configure_host_target(rypath_area_math_probe)
     add_dependencies(rypath_area_math_probe rypath_area_math_shader)
     add_test(NAME metal.area_math COMMAND rypath_area_math_probe "${rypath_area_math_library}")
@@ -1633,5 +1637,7 @@ endif()
 add_executable(rypath_bounded_target_tests bounded_target_tests.cpp)
 target_include_directories(rypath_bounded_target_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_bounded_target_tests)
+target_compile_options(rypath_bounded_target_tests PRIVATE
+    "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
 add_test(NAME render.bounded_target COMMAND rypath_bounded_target_tests)
 set_tests_properties(render.bounded_target PROPERTIES TIMEOUT 30)
