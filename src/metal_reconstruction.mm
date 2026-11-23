@@ -243,9 +243,13 @@ struct ReconstructionStream::Impl {
         const auto owned_bytes =
             (62 + (signed_color ? 44 : 0)) * padded_pixels(width, height) +
             2ull * pixel_bytes * padded_pixels(config.output_width, config.output_height) +
-            2 * capture_bytes + (signed_color ? 21 : 18) * 65536ull + temporal_bytes +
-            (signed_color ? lease.reconstruction_groups().allocatedSize : 0) + sizeof(gw::Config) +
-            sizeof(gw::Counters) + sizeof(gw::SpectralNode) * gw::node_count +
+            2 * capture_bytes +
+            (signed_color                                 ? 19
+             : config.mode == ReconstructionMode::metalfx ? 18
+                                                          : 16) *
+                65536ull +
+            temporal_bytes + (signed_color ? lease.reconstruction_groups().allocatedSize : 0) +
+            sizeof(gw::Config) + sizeof(gw::Counters) + sizeof(gw::SpectralNode) * gw::node_count +
             argument_encoder.encodedLength + 2;
         if (capture_bytes > device.maxBufferLength || owned_bytes > (8ull << 30) ||
             (device.recommendedMaxWorkingSetSize &&
@@ -934,18 +938,24 @@ ReconstructionStream::submit(const Frame &source, const ReconstructionSubmitOpti
         job->frame = frame;
         job->source = std::move(acquired.lease);
         job->current = *camera.camera;
-        // Allocate before any history mutation/dispatch; the callback owns this hint.
-        job->exposure =
-            texture(impl_->device, {MTLPixelFormatR16Float, MTLTextureUsageShaderRead, 1, 1},
-                    MTLStorageModeShared);
-        if (job->exposure == nil) {
-            result.diagnostic = "Reconstruction exposure allocation failed";
-            return result;
+        // Only MetalFX consumes exposure. Its unit hint is immutable and shared;
+        // non-unit hints belong to this job and outlive both GPU callbacks.
+        if (impl_->denoiser) {
+            job->exposure = impl_->inputs.exposure;
+            if (float(exposure_value) != 1.f) {
+                job->exposure = texture(impl_->device,
+                                        {MTLPixelFormatR16Float, MTLTextureUsageShaderRead, 1, 1},
+                                        MTLStorageModeShared);
+                if (job->exposure == nil) {
+                    result.diagnostic = "Reconstruction exposure allocation failed";
+                    return result;
+                }
+                [job->exposure replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+                                 mipmapLevel:0
+                                   withBytes:&exposure_value
+                                 bytesPerRow:2];
+            }
         }
-        [job->exposure replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
-                         mipmapLevel:0
-                           withBytes:&exposure_value
-                         bytesPerRow:2];
         if (reset) {
             std::lock_guard lock(impl_->mutex);
             impl_->guide_key.reset();

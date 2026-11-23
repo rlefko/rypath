@@ -108,7 +108,9 @@ pass-through counters retain their existing per-event accounting.
 per-submission positive, finite display-exposure hint, rounded to R16F. Its
 accepted range is [2^-24, 65504]. `ReconstructionInfo::exposure` reports the
 encoded value. The existing `submit(frame, bool)` overload retains exposure 1.
-Each job retains its own exposure texture through both completion callbacks.
+Each MetalFX job retains its actual exposure texture through both completion
+callbacks; unit hints reuse immutable default storage. Raw and signed jobs do
+not allocate per-submission exposure storage.
 Exposure never multiplies raw XYZ or output RGB; `preExposure` remains 1 because
 input pixels are unexposed. This follows Apple's
 [exposure-hint contract](https://developer.apple.com/videos/play/wwdc2025/211/).

@@ -338,7 +338,9 @@ void exposure_metadata(ReconstructionMode mode) {
     auto input = source(*owner);
     source_complete(*input);
     const auto raw = input->capture();
-    auto recon = stream(*input, mode);
+    auto built = build_reconstruction_stream(*input, {.mode = mode, .capture_diagnostics = true});
+    require(built.stream != nullptr, built.diagnostic);
+    auto recon = std::move(built.stream);
     for (const float invalid :
          {0.f, -1.f, 0x1p-25f, 65505.f, std::numeric_limits<float>::infinity(),
           std::numeric_limits<float>::quiet_NaN()}) {
@@ -353,6 +355,19 @@ void exposure_metadata(ReconstructionMode mode) {
         require(submitted.frame != nullptr, submitted.diagnostic);
         const auto info = complete(*submitted.frame, mode);
         require(info.exposure == exposure, "Per-submission exposure metadata changed");
+        if (mode == ReconstructionMode::metalfx) {
+            const auto snapshot = MetalReconstructionStreamProbe::capture_diagnostics(*recon);
+            require(snapshot.diagnostic.empty(), snapshot.diagnostic);
+            const auto hint =
+                std::find_if(snapshot.textures.begin(), snapshot.textures.end(),
+                             [](const auto &t) { return t.name == "input.exposure"; });
+            require(hint != snapshot.textures.end() && hint->width == 1 && hint->height == 1 &&
+                        hint->format == MTLPixelFormatR16Float && hint->bytes.size() == 2,
+                    "Actual per-job exposure snapshot missing");
+            _Float16 value;
+            std::memcpy(&value, hint->bytes.data(), 2);
+            require(float(value) == exposure, "Exposure snapshot used stale/default storage");
+        }
         unchanged(*input, raw);
         if (mode == ReconstructionMode::raw_rgb)
             raw_oracle(raw, capture(*submitted.frame), scene.model);

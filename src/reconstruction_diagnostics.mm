@@ -572,6 +572,9 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                 for (unsigned c = 0; c < 3; ++c)
                     mean[p][c] += (double(rgb[c]) - mean[p][c]) / (frame + 1);
             }
+            const auto raw_rgb_hash =
+                digest_hex(sha256({reinterpret_cast<const std::uint8_t *>(raw_rgb.data()),
+                                   raw_rgb.size() * sizeof(raw_rgb[0])}));
             std::vector<std::array<float, 3>> temporal_mean;
             bool temporal_reset = true;
             double temporal_wall = 0;
@@ -625,6 +628,7 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                     @"appearance_fallback" : @(info.counters.appearance_fallback),
                     @"output_RGB_sha256" : ns(hash),
                     @"same_input_raw_XYZ_sha256" : ns(raw_hash),
+                    @"raw_RGB_sha256" : ns(raw_rgb_hash),
                     @"regions" : region_means(result.linear_rgb, regions, o),
                     @"raw_regions" : region_means(raw_rgb, regions, o),
                     @"history_accepted" : @(info.history_accepted),
@@ -667,6 +671,9 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                         const auto conditioned_hash = digest_hex(sha256(
                             {reinterpret_cast<const std::uint8_t *>(conditioned.linear_rgb.data()),
                              conditioned.linear_rgb.size() * sizeof(conditioned.linear_rgb[0])}));
+                        const auto conditioned_input_hash = digest_hex(
+                            sha256({reinterpret_cast<const std::uint8_t *>(temporal_mean.data()),
+                                    temporal_mean.size() * sizeof(temporal_mean[0])}));
                         const auto rgb_json = [](const std::array<double, 3> &v) {
                             return @[ @(v[0]), @(v[1]), @(v[2]) ];
                         };
@@ -686,6 +693,8 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                             @"epoch" : @(pose.epoch),
                             @"reset_history" : @(conditioned.history_reset),
                             @"same_input_raw_XYZ_sha256" : ns(raw_hash),
+                            @"raw_RGB_sha256" : ns(raw_rgb_hash),
+                            @"conditioned_input_RGB_sha256" : ns(conditioned_input_hash),
                             @"output_RGB_sha256" : ns(conditioned_hash),
                             @"regions" : region_means(conditioned.linear_rgb, regions, o),
                             @"raw_regions" : region_means(raw_rgb, regions, o),
@@ -1087,6 +1096,10 @@ int main(int argc, char **argv) {
                     @"width" : @(options.width),
                     @"height" : @(options.height),
                     @"frames" : @(options.frames),
+                    @"motion_offset" : options.motion_offset ? (id) @(*options.motion_offset)
+                                                             : (id)NSNull.null,
+                    @"reference_samples" : @(options.reference_samples),
+                    @"capture_mode" : ns(options.capture_mode),
                     @"estimator" : config.estimator == FrameEstimator::area_replay ? @"area1"
                                                                                    : @"independent",
                     @"mutation_steps" : @(config.mutation_steps),
