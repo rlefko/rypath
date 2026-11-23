@@ -90,6 +90,14 @@ in float32. Counters report pixels with negative channels or channels above the
 half-float limit, including when no clamp is applied. Nonfinite conversion fails.
 No radiance clamp is added to raw rendering or Area/MCMC weights.
 
+Color conversion and temporal completion/history telemetry aggregate exact integer
+counts within each dispatched SIMD group before updating global counters. Partial
+groups and out-of-image lanes contribute only their successful in-image pixels.
+Failure flags remain immediate atomics, and guide subtotal additions retain overflow
+checks. This changes execution only; pixel arithmetic, texture writes, temporal
+recurrences and the raw estimator are unchanged. Surface-guide approximation and
+pass-through counters retain their existing per-event accounting.
+
 ## Optional exact surface-guide reuse
 
 `ReconstructionConfig::cache_surface_guides` and benchmark `--guide-cache on|off`
@@ -194,6 +202,16 @@ XYZ interpretation. Fresh destinations and sibling pending files are required.
 Tone mapping and display exposure are separate consumers.
 
 ## Validation boundary
+
+The SIMD counter-aggregation working tree based on `4b1cc65` passes the five
+focused Debug checks (`metal.reconstruction_raw`, `metal.reconstruction_temporal`,
+`metal.reconstruction_signed`, `metal.reconstruction_guides`, and
+`metal.temporal_denoiser`) with Metal API validation on M4 Max, macOS 26.6,
+Xcode 26.6 and SDK 26.5. New fixtures cover widths 1, 31, 32 and 33, padded color
+dispatch, exact success/history totals, multi-pixel counter overflow, nonfinite
+input and failure recovery. The portable camera test also passes. This is
+correctness evidence; Release/sanitizer checks and performance measurements for
+this change remain separate from the historical results below.
 
 The signed fallback implementation `a6705bd` adds six focused reconstruction checks
 on M4 Max with Metal API validation. Debug, Release and ASan/UBSan pass in

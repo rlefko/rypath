@@ -312,11 +312,11 @@ kernel void rypath_reconstruction_guide_reset(constant ReconstructionGuideArgume
         atomic_store_explicit(counters + i, 0u, memory_order_relaxed);
     (void)reconstruction_guide_valid(a);
 }
-kernel void rypath_reconstruction_guide_color(constant ReconstructionGuideArguments &a
-                                              [[buffer(1)]],
-                                              uint lane [[thread_position_in_grid]]) {
+// Per-pixel early exits stay inside the helper so every dispatched lane reaches
+// the SIMD epilogue, including partial groups and out-of-image lanes.
+inline uint3 reconstruction_guide_color_pixel(constant ReconstructionGuideArguments &a, uint lane) {
     if (!reconstruction_guide_valid(a) || lane >= ulong(a.config->width) * a.config->height)
-        return;
+        return uint3(0);
     const auto xyz = a.raw_xyz[lane];
     const auto m = a.config->xyz_to_rgb;
     const float3 color(m[0] * xyz.x + m[1] * xyz.y + m[2] * xyz.z,
@@ -324,16 +324,32 @@ kernel void rypath_reconstruction_guide_color(constant ReconstructionGuideArgume
                        m[8] * xyz.x + m[9] * xyz.y + m[10] * xyz.z);
     if (!all(isfinite(color))) {
         reconstruction_guide_fail(a, gw::invalid_value);
-        return;
+        return uint3(0);
     }
-    if (any(color < float3(0)))
-        reconstruction_guide_count(a, &a.counters->color_negative);
-    if (any(color > float3(65504)))
-        reconstruction_guide_count(a, &a.counters->color_high);
+    const uint negative = any(color < float3(0));
+    const uint high = any(color > float3(65504));
     const auto converted =
         (a.config->flags & gw::signed_temporal) ? color : clamp(color, float3(0), float3(65504));
     a.color.write(float4(converted, 1), uint2(lane % a.config->width, lane / a.config->width));
-    reconstruction_guide_count(a, &a.counters->completed);
+    return uint3(1u, negative, high);
+}
+
+kernel void rypath_reconstruction_guide_color(constant ReconstructionGuideArguments &a
+                                              [[buffer(1)]],
+                                              uint lane [[thread_position_in_grid]],
+                                              uint simd_lane [[thread_index_in_simdgroup]]) {
+    const uint3 counts = reconstruction_guide_color_pixel(a, lane);
+    const uint completed = simd_sum(counts.x);
+    const uint negative = simd_sum(counts.y);
+    const uint high = simd_sum(counts.z);
+    if (simd_lane == 0) {
+        if (negative)
+            reconstruction_guide_count(a, &a.counters->color_negative, negative);
+        if (high)
+            reconstruction_guide_count(a, &a.counters->color_high, high);
+        if (completed)
+            reconstruction_guide_count(a, &a.counters->completed, completed);
+    }
 }
 
 #define RYPATH_RECONSTRUCTION_GUIDE_PARAMETERS                                                     \

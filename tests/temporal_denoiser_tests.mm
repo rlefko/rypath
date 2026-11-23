@@ -13,7 +13,7 @@
 
 namespace {
 using namespace rypath;
-constexpr unsigned width = 9, height = 5, pixels = width * height;
+unsigned width = 9, height = 5, pixels = width * height;
 using Color = std::array<float, 4>;
 using Identity = std::array<std::uint32_t, 4>;
 using RGB = std::array<double, 3>;
@@ -461,6 +461,51 @@ void failure_and_validation(MetalFrameLease &lease) {
     require(execute(*denoiser, f, lease.queue()).empty() && denoiser->stats().history_accepted == 0,
             "Command failure recovery");
 }
+void counter_sizes(const RenderScene &scene) {
+    for (const unsigned size : {1u, 31u, 32u, 33u}) {
+        width = size;
+        height = size == 1 ? 1 : 3;
+        pixels = width * height;
+        auto built = build_frame_session(scene, {.width = width, .height = height});
+        require(built.session != nullptr, built.diagnostic);
+        auto submitted = built.session->submit({});
+        require(submitted.frame != nullptr, submitted.diagnostic);
+        require(submitted.frame->wait().status == FrameStatus::complete,
+                "Counter fixture source frame completion");
+        auto acquired = MetalFrameAccess::acquire(*submitted.frame);
+        require(acquired.lease != nullptr, acquired.diagnostic);
+        auto &lease = *acquired.lease;
+        auto denoiser = adapter(lease);
+        Fixture f(lease.device());
+        for (auto &value : f.color)
+            value = {-2, 4, 100000, 1};
+        require(execute(*denoiser, f, lease.queue()).empty(), "Counter cold frame");
+        require(denoiser->stats().completed == pixels && denoiser->stats().history_accepted == 0 &&
+                    denoiser->stats().history_rejected == pixels,
+                "Exact cold counters across partial and full SIMD groups");
+        f.inputs.reset_history = false;
+        for (unsigned p = 0; p < pixels; ++p) {
+            f.color[p] = {-4, 8, 100004, 1};
+            f.identity[p][1] = p % 2;
+        }
+        require(execute(*denoiser, f, lease.queue()).empty(), "Counter mixed-history frame");
+        require(denoiser->stats().completed == pixels &&
+                    denoiser->stats().history_accepted == (pixels + 1) / 2 &&
+                    denoiser->stats().history_rejected == pixels / 2,
+                "Exact mixed-history counters across partial and full SIMD groups");
+        Image expected(pixels);
+        for (unsigned p = 0; p < pixels; ++p)
+            expected[p] = p % 2 ? RGB{-4, 8, 100004} : RGB{-3, 6, 100002};
+        compare(f.capture(), expected, "Independent exact two-frame recurrence", 0);
+        f.color[0][0] = std::numeric_limits<float>::quiet_NaN();
+        require(!execute(*denoiser, f, lease.queue()).empty(), "Partial-group input failure");
+        f.color[0][0] = -4;
+        require(execute(*denoiser, f, lease.queue()).empty() &&
+                    denoiser->stats().completed == pixels &&
+                    denoiser->stats().history_rejected == pixels,
+                "Failure invalidates history and recovers with exact counters");
+    }
+}
 } // namespace
 int main() {
     @autoreleasepool {
@@ -501,6 +546,7 @@ int main() {
             spatial_cases(*acquired.lease);
             reprojection(*acquired.lease);
             failure_and_validation(*acquired.lease);
+            counter_sizes(scene);
             std::cout << "Signed temporal denoiser numerical/API qualification passed; image "
                          "quality unqualified\n";
             return 0;
