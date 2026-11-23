@@ -117,3 +117,39 @@ The measured Release source digest is
 `00eb5d22587441c92b1b11431d108d0e3893db2286a6129fc0de69072b2970d8`.
 Local JSON reports, command manifests, raw FLOAT EXRs, PNG previews and frozen
 executables are retained under `.cache/validation/resident-frames-001/`.
+
+### Native traversal comparison
+
+Revision `2ff4753` was measured on the same 40-core M4 Max, macOS 26.6 and Xcode
+26.6 in Release, without concurrent GPU workloads. Each profile uses three seeds,
+four warmup frames and 32 measured frames per seed at 1920×1080 and 1 SPP. Profile
+and scene order alternate. All 432 submitted frames completed with valid GPU
+timestamps. This is the resident megakernel; wavefront and reconstruction are
+not part of this comparison.
+
+| Scene | Compensated median frame time | Native median frame time | Native p95 range |
+| --- | ---: | ---: | ---: |
+| Cornell, scalar | 1156.2–1161.9 ms | 86.1–86.6 ms | 88.1–89.2 ms |
+| Coated plane, packet | 228.5–229.5 ms | 196.6–199.4 ms | 201.1–201.4 ms |
+
+The ratios of the three-run median frame times are **13.43×** for Cornell and
+**1.157×** for the coated plane. These are CPU submission-to-completion times;
+they exclude startup and explicit capture. Neither scene meets the 50 ms target.
+The table establishes scene-specific execution gains, not time to equal converged
+quality or the performance of the complete proposed pipeline.
+
+Independent OpenEXR 3.4.4 decoding checks all four captured FLOAT RGB images for
+full dimensions, finite values, profile metadata and matched seed/sample identity.
+At seed 1, sample 35, the coated-plane RGB values agree exactly. Cornell's RGB RMS
+difference is `3.3774e-7` and maximum absolute difference is `2.8634e-4`; these are
+paired single-sample controls, not a general equivalence guarantee. The documented
+native edge witnesses remain intentional differences between numerical profiles.
+
+Receipts are retained outside Git under
+`.cache/validation/native-frames-001/`: commands and per-frame timings in
+`baseline/manifest.json`, independent decoding in `image-audit.json`, and source,
+executable and metallib identities. Manifest SHA-256:
+`02a8c7601781d80b1ec62f7c35c2aa55f1cf8164b3f256f512ffbe6889c6b746`.
+An earlier capture attempt completed its frames but failed on an overlong EXR
+attribute name; its report is retained separately and excluded from this table.
+The corrected capture uses `rypath.frame.intersections`.
