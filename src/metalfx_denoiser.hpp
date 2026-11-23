@@ -63,7 +63,7 @@ class MetalFXDenoiser {
     const MetalFXDenoiserRequirements &requirements() const;
     // Empty diagnostic means encoding succeeded, not that GPU execution passed.
     // Inputs are linear RGB (not XYZ), un-pre-exposed, with opaque color alpha=1.
-    // Exposure is a caller-populated 1x1 R16Float texture containing 1.0. Contents
+    // Exposure is a caller-populated positive finite 1x1 R16Float display hint. Contents
     // cannot be verified without GPU work/readback. Optional guides are disabled.
     std::string encode(id<MTLCommandBuffer> command, const MetalFXDenoiserInputs &inputs);
     static MetalFXDenoiserCreateResult create(id<MTLDevice> device,

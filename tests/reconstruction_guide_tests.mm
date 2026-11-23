@@ -3,9 +3,11 @@
 #include "reconstruction_camera.hpp"
 #include "reconstruction_guide_wire.h"
 #include "rgb_spectrum.hpp"
+#include "texture_footprint.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -182,8 +184,8 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     gw::Contract actual{};
     std::memcpy(&actual, contract.contents, sizeof(actual));
     need(actual.version == gw::contract && actual.config_bytes == 368 &&
-             actual.counters_bytes == 64 && actual.node_bytes == 16 && actual.nodes == 16 &&
-             actual.argument_count == 13,
+             actual.counters_bytes == sizeof(gw::Counters) && actual.node_bytes == 16 &&
+             actual.nodes == 16 && actual.argument_count == 13,
          "Native reconstruction guide contract");
     const auto spectral = nodes();
     auto config_buffer = [device newBufferWithBytes:&cfg
@@ -460,6 +462,113 @@ std::array<double, 3> linear_color(bool dense) {
         sum[c] /= white[c];
     return sum;
 }
+void appearance_cases(const std::string &library) {
+    width = 5;
+    height = 3;
+    pixels = width * height;
+    const auto r = raster();
+    const auto cam = camera(r);
+    const auto prepare = [](RenderScene &scene) {
+        const std::array<double, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        scene.instance_texture_frames.resize(scene.geometry.instances.size());
+        for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+            auto &xf = scene.instance_surface_transforms[i];
+            xf.shape = xf.placement = identity;
+            need(prepare_texture_triangle_frames(scene.geometry.meshes[i], xf.shape, xf.placement,
+                                                 scene.instance_texture_frames[i])
+                     .empty(),
+                 "Appearance fixture texture context");
+        }
+    };
+    const auto fresnel = [](double cosine) {
+        const std::complex<double> eta(.3, 3);
+        const auto eta2 = eta * eta;
+        const auto root = std::sqrt(eta2 - (1 - cosine * cosine));
+        return .5 * (std::norm((cosine - root) / (cosine + root)) +
+                     std::norm((eta2 * cosine - root) / (eta2 * cosine + root)));
+    };
+    auto scene = base(r);
+    scene.materials[0].scattering = ScatteringKind::conductor;
+    scene.materials[0].eta = {{{360, .3f}, {830, .3f}}, true};
+    scene.materials[0].k = {{{360, 3.f}, {830, 3.f}}, true};
+    auto target = base(r).materials.front();
+    target.kind = SpectralMaterialKind::sampled;
+    target.knots = {{360, .02f}, {430, .9f}, {470, .9f}, {500, .02f}, {830, .02f}};
+    scene.materials.push_back(target);
+    plane(scene, 3);
+    plane(scene, -3, 1);
+    prepare(scene);
+    auto cfg = config(cam, cam);
+    cfg.flags = gw::appearance_guides;
+    const auto replaced = guide(scene, cfg, library);
+    need(replaced.counters.failure == 0 && replaced.counters.appearance_replacement == pixels &&
+             replaced.counters.directional_approximation == pixels &&
+             replaced.counters.appearance_fallback == 0,
+         "Mirror appearance replacement accounting");
+    std::array<double, 3> target_rgb{};
+    const auto spectral = nodes();
+    for (const auto &node : spectral) {
+        double rho = 0;
+        for (std::size_t k = 1; k < target.knots.size(); ++k) {
+            const auto a = target.knots[k - 1], b = target.knots[k];
+            if (node.wavelength >= a.wavelength && node.wavelength <= b.wavelength)
+                rho = a.value + (b.value - a.value) * (node.wavelength - a.wavelength) /
+                                    (b.wavelength - a.wavelength);
+        }
+        const std::array<double, 3> weight{node.r, node.g, node.b};
+        for (unsigned c = 0; c < 3; ++c)
+            target_rgb[c] += weight[c] * rho;
+    }
+    for (unsigned i = 0; i < pixels; ++i) {
+        const auto ray = cam.center_ray(i % width, i / width);
+        need(ray.has_value(), "Appearance oracle camera ray");
+        const double F = fresnel(ray->direction[2]);
+        for (unsigned c = 0; c < 3; ++c) {
+            close(replaced.texture[3][4 * i + c], std::clamp(F * target_rgb[c], 0., 1.), .002,
+                  "Directional Fresnel times high-chroma reflected albedo");
+            close(replaced.texture[4][4 * i + c], 0, 0,
+                  "Replaced specular guide is separate proxy");
+        }
+    }
+    // A tiny reflected patch affects only the central pinhole guide pixel.
+    for (auto &point : scene.geometry.meshes[1].positions) {
+        point.x *= .005f;
+        point.y *= .005f;
+    }
+    prepare(scene);
+    const auto feature = guide(scene, cfg, library);
+    need(feature.counters.failure == 0 && feature.counters.appearance_replacement == 1 &&
+             feature.counters.appearance_fallback == pixels - 1,
+         "Bounded guide tracing must preserve a small reflected feature");
+    const unsigned center = (height / 2) * width + width / 2;
+    need(feature.texture[3][4 * center + 2] > .3f,
+         "High-chroma small reflection missing from appearance albedo");
+    // Thin glass blends two deterministically resolved surfaces. At normal
+    // incidence eta1.5 gives F=.04, thin-sheet F=2*.04/1.04.
+    scene = base(r);
+    scene.materials[0].scattering = ScatteringKind::thin_dielectric;
+    scene.materials[0].eta = {{{360, 1.5f}, {830, 1.5f}}, true};
+    auto dark = base(r).materials.front(), light = dark;
+    dark.constant = .2f;
+    light.constant = .8f;
+    scene.materials.push_back(dark);
+    scene.materials.push_back(light);
+    plane(scene, 3);
+    plane(scene, -3, 1);
+    plane(scene, 6, 2);
+    prepare(scene);
+    const auto glass = guide(scene, cfg, library);
+    need(glass.counters.failure == 0 && glass.counters.appearance_replacement == pixels,
+         "Thin-glass reflected/transmitted replacement accounting");
+    const double F = .08 / 1.04;
+    for (unsigned c = 0; c < 3; ++c)
+        close(glass.texture[3][4 * center + c], F * .2 + (1 - F) * .8, .002,
+              "Thin-sheet Fresnel blend independent normal-incidence oracle");
+    auto forbidden = cfg;
+    forbidden.flags |= gw::signed_temporal;
+    need((guide(scene, forbidden, library).counters.failure & gw::invalid_config) != 0,
+         "Appearance guides must reject signed temporal correspondence");
+}
 void counter_sizes(const std::string &library) {
     for (const unsigned size : {1u, 31u, 32u, 33u}) {
         width = size;
@@ -637,6 +746,7 @@ int main(int argc, char **argv) {
 #endif
             need(device.device.compute_ray_tracing, "Guide tests require compute ray tracing");
             cases(argv[1]);
+            appearance_cases(argv[1]);
             counter_sizes(argv[1]);
             std::cout << "Reconstruction guide native validation passed\n";
             return 0;

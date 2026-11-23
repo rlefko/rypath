@@ -4,8 +4,8 @@
 namespace rypath {
 namespace reconstruction_guide_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 2, node_count = 16 };
-enum Flag : Word { media_scene = 1u, signed_temporal = 2u };
+enum : Word { contract = 3, node_count = 16 };
+enum Flag : Word { media_scene = 1u, signed_temporal = 2u, appearance_guides = 4u };
 enum Failure : Word {
     invalid_config = 1u,
     invalid_hit = 2u,
@@ -42,6 +42,8 @@ struct Counters {
     Counter fourier_fallback, layered_approximation, transmission_approximation,
         normal_approximation;
     Counter passthrough, media_approximation, invalid_previous, background;
+    Counter directional_approximation, appearance_replacement, appearance_bounded,
+        appearance_fallback;
 };
 enum Argument : Word {
     config_id,
@@ -62,7 +64,7 @@ struct Contract {
     Word version, config_bytes, node_bytes, counters_bytes;
     Word nodes, argument_count, reserved[2];
 };
-static_assert(sizeof(Config) == 368 && sizeof(SpectralNode) == 16 && sizeof(Counters) == 64 &&
+static_assert(sizeof(Config) == 368 && sizeof(SpectralNode) == 16 && sizeof(Counters) == 80 &&
                   sizeof(Contract) == 32,
               "Reconstruction guide ABI");
 } // namespace reconstruction_guide_wire

@@ -27,8 +27,9 @@ inline bool reconstruction_guide_valid(constant ReconstructionGuideArguments &a)
     if (c.width == 0 || c.height == 0 || ulong(c.width) * c.height > 0xfffffffful ||
         c.previous_valid > 1 || (c.model != wire::demo_model && c.model != wire::pbrt_model) ||
         c.spectral_nodes != gw::node_count ||
-        (c.flags & ~uint(gw::media_scene | gw::signed_temporal)) != 0 || c.reserved[0] != 0 ||
-        c.reserved[1] != 0) {
+        ((c.flags & gw::signed_temporal) && (c.flags & gw::appearance_guides)) ||
+        (c.flags & ~uint(gw::media_scene | gw::signed_temporal | gw::appearance_guides)) != 0 ||
+        c.reserved[0] != 0 || c.reserved[1] != 0) {
         reconstruction_guide_fail(a, gw::invalid_config);
         return false;
     }
@@ -222,8 +223,8 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
                                          const device wire::Material &m,
                                          const device wire::SpectralKnot *knots,
                                          graph_wire::Context context, float wavelength,
-                                         thread float &diffuse, thread float &specular,
-                                         thread float &roughness) {
+                                         float cosine, thread float &diffuse,
+                                         thread float &specular, thread float &roughness) {
     float rho;
     if (!reconstruction_guide_reflectance(resources, m, knots, context, wavelength, rho))
         return false;
@@ -244,13 +245,14 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
         roughness = prepared.conductor.smooth
                         ? 0
                         : max(prepared.conductor.alpha_x, prepared.conductor.alpha_y);
-        return rypath_conductor::fresnel(1, prepared.conductor.eta, prepared.conductor.k, specular);
+        return rypath_conductor::fresnel(abs(cosine), prepared.conductor.eta, prepared.conductor.k,
+                                         specular);
     case 2:
     case 3:
         roughness = m.scattering == 3 || prepared.dielectric.smooth
                         ? 0
                         : max(prepared.dielectric.alpha_x, prepared.dielectric.alpha_y);
-        if (!rypath_dielectric::fresnel(1, prepared.dielectric.eta, specular))
+        if (!rypath_dielectric::fresnel(cosine, prepared.dielectric.eta, specular))
             return false;
         if (m.scattering == 3)
             specular = 2 * specular / (1 + specular);
@@ -261,7 +263,7 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
     case 5:
     case 6: {
         float top;
-        if (!rypath_dielectric::fresnel(1, prepared.layered.interface.eta, top))
+        if (!rypath_dielectric::fresnel(cosine, prepared.layered.interface.eta, top))
             return false;
         specular = top;
         const float attenuation = (1 - top) * (1 - top);
@@ -272,7 +274,7 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
             diffuse = attenuation * prepared.layered.reflectance;
         } else {
             float base;
-            if (!rypath_conductor::fresnel(1, prepared.layered.conductor.eta,
+            if (!rypath_conductor::fresnel(abs(cosine), prepared.layered.conductor.eta,
                                            prepared.layered.conductor.k, base))
                 return false;
             specular += attenuation * base;
@@ -292,6 +294,128 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
     default:
         return false;
     }
+}
+// Bounded appearance-only path. Geometry is traced once at 550 nm, not once per
+// spectral node. Secondary smooth interfaces continue deterministically; omitted
+// secondary reflection branches and the four-event bound are explicit approximations.
+// This never writes transport state, correspondence depth, motion, or identity.
+struct ReconstructionAppearance {
+    float3 albedo, normal;
+    float roughness;
+    bool resolved;
+};
+inline bool reconstruction_guide_appearance(constant ReconstructionGuideArguments &a,
+                                            const thread SurfaceAlpha &original_resources,
+                                            instance_acceleration_structure scene,
+                                            const device wire::SpectralKnot *knots, ray incoming,
+                                            thread ReconstructionAppearance &out) {
+    out = {float3(0), float3(0), 1, false};
+    auto resources = original_resources;
+    float attenuation = 1;
+    const constant auto &p = *resources.parameters;
+    for (uint event = 0; event < 4; ++event) {
+        resources.incoming = incoming;
+        uint skipped = 0;
+        ReconstructionGuideAlpha alpha{resources, &skipped};
+        const auto hit = trace_masked_surface(incoming, scene, all_visible, alpha);
+        if (!hit.valid)
+            return false;
+        if (skipped)
+            reconstruction_guide_count(a, &a.counters->passthrough, skipped);
+        if (hit.type == intersection_type::none)
+            return true; // Environment has no surface albedo; retain primary proxy.
+        if (hit.instance_id >= p.instance_count || hit.geometry_id != 0 ||
+            !isfinite(hit.distance) || hit.distance < 0 || !all(isfinite(hit.coordinates)))
+            return false;
+        const device auto &instance = resources.instances[hit.instance_id];
+        const uint kind = hit.primitive_kind;
+        if (hit.primitive_id >= primitive_count(instance, kind) ||
+            instance.material >= p.material_count)
+            return false;
+        SurfacePoint point;
+        if (!surface_point(hit.coordinates, kind, instance, hit.primitive_id, resources.positions,
+                           resources.triangles, resources.patches, resources.normals,
+                           p.normal_count, PointSource::native_hit, point, resources.material_data))
+            return false;
+        const device auto &m = resources.materials[instance.material];
+        if (m.scattering == 9 || m.scattering == 7 || m.scattering == 8)
+            return true; // These families retain their already-counted primary fallback.
+        graph_wire::Context context{};
+        const bool context_needed = m.scattering != 0 || m.kind == wire::image_material ||
+                                    m.kind == wire::graph_material || m.bump_root != 0xffffffffu ||
+                                    m.normal_map != 0xffffffffu;
+        if (context_needed && !reconstruction_guide_context(resources, instance, hit.primitive_id,
+                                                            kind, hit.coordinates, point, context))
+            return false;
+        if (m.bump_root != 0xffffffffu || m.normal_map != 0xffffffffu || m.scattering == 11) {
+            rypath_surface_detail::Frame frame;
+            if (!apply_surface_detail(
+                    hit.instance_id, instance, hit.primitive_id, kind, hit.coordinates,
+                    resources.triangles, resources.patches, resources.uvs, resources.vertices,
+                    resources.transforms, m, resources.graph, context, 550.f, point, frame, true,
+                    material_auxiliary(m, resources.material_data, p.material_data_words),
+                    incoming.direction))
+                return false;
+        }
+        float3 normal;
+        if (!rypath_surface_detail::unit_vector(point.shading_normal, normal))
+            return false;
+        const float cosine = dot(-incoming.direction, normal);
+        float3 albedo(0);
+        float roughness = 0;
+        for (uint i = 0; i < gw::node_count; ++i) {
+            const auto node = a.nodes[i];
+            float d, s, r;
+            if (!reconstruction_guide_optical(resources, m, knots, context, node.wavelength, cosine,
+                                              d, s, r) ||
+                !isfinite(d) || !isfinite(s) || !isfinite(r))
+                return false;
+            albedo += float3(node.r, node.g, node.b) * (d + s);
+            roughness = max(roughness, r);
+        }
+        if (roughness != 0 || (m.scattering != 1 && m.scattering != 2 && m.scattering != 3)) {
+            out = {attenuation * albedo, normal, roughness, true};
+            return all(isfinite(out.albedo));
+        }
+        reconstruction_guide_count(a, &a.counters->appearance_bounded);
+        float rho;
+        rypath_scattering::Prepared prepared{};
+        if (!reconstruction_guide_reflectance(resources, m, knots, context, 550.f, rho) ||
+            !prepare_scattering(
+                m, material_auxiliary(m, resources.material_data, p.material_data_words), rho,
+                knots, p, resources.graph, context, 550.f, resources.material_data,
+                resources.graph.images.spectra, prepared))
+            return false;
+        float3 direction = reflect(incoming.direction, normal);
+        float F;
+        if (m.scattering == 1) {
+            if (!rypath_conductor::fresnel(abs(cosine), prepared.conductor.eta,
+                                           prepared.conductor.k, F))
+                return false;
+            attenuation *= F;
+        } else {
+            float ep, ct;
+            bool tir;
+            if (!rypath_dielectric::optics(cosine, prepared.dielectric.eta, F, ep, ct, tir))
+                return false;
+            if (!tir) {
+                direction = m.scattering == 3
+                                ? incoming.direction
+                                : incoming.direction / ep +
+                                      (abs(cosine) / ep - ct) * (cosine < 0 ? -normal : normal);
+                if (m.scattering == 3)
+                    F = 2 * F / (1 + F);
+                attenuation *= 1 - F;
+            }
+        }
+        if (!all(isfinite(direction)) || !isfinite(attenuation))
+            return false;
+        incoming =
+            ray(spawn_toward(incoming, hit.distance, point, direction), normalize(direction));
+        if (!all(isfinite(incoming.origin)))
+            return false;
+    }
+    return true;
 }
 kernel void rypath_reconstruction_guide_contract(device gw::Contract *out [[buffer(0)]]) {
     *out = {gw::contract,
@@ -545,8 +669,11 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
                 const float3 weight(node.r, node.g, node.b);
                 float d, s, r;
                 if (!(node.wavelength >= 360 && node.wavelength <= 830) || !all(isfinite(weight)) ||
-                    !reconstruction_guide_optical(resources, m, knots, context, node.wavelength, d,
-                                                  s, r) ||
+                    !reconstruction_guide_optical(resources, m, knots, context, node.wavelength,
+                                                  (a.config->flags & gw::appearance_guides)
+                                                      ? dot(-incoming.direction, normal)
+                                                      : 1.f,
+                                                  d, s, r) ||
                     !isfinite(d) || !isfinite(s) || !isfinite(r) || d < 0 || s < 0 || r < 0) {
                     reconstruction_guide_fail(a, gw::invalid_material);
                     return;
@@ -557,6 +684,84 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
             }
             if (m.scattering == 5 || m.scattering == 6)
                 reconstruction_guide_count(a, &a.counters->layered_approximation);
+        }
+        if ((a.config->flags & gw::appearance_guides) && !fallback) {
+            if (m.scattering != 0)
+                reconstruction_guide_count(a, &a.counters->directional_approximation);
+            if (roughness == 0 && (m.scattering == 1 || m.scattering == 2 || m.scattering == 3)) {
+                bool replaced = false;
+                if (!(a.config->flags & gw::media_scene) && p.camera_medium == 0xffffffffu) {
+                    const float cosine = dot(-incoming.direction, normal);
+                    ReconstructionAppearance reflected, transmitted;
+                    const float3 rd = reflect(incoming.direction, normal);
+                    const ray rr(spawn_toward(incoming, hit.distance, point, rd), normalize(rd));
+                    if (!reconstruction_guide_appearance(a, resources, scene, knots, rr,
+                                                         reflected)) {
+                        reconstruction_guide_fail(a, gw::invalid_material);
+                        return;
+                    }
+                    if (m.scattering == 1 && reflected.resolved) {
+                        diffuse = specular * reflected.albedo;
+                        specular = 0;
+                        normal = reflected.normal;
+                        roughness = reflected.roughness;
+                        replaced = true;
+                    } else if (m.scattering == 2 || m.scattering == 3) {
+                        float rho;
+                        rypath_scattering::Prepared prepared{};
+                        float F, ep, ct;
+                        bool tir;
+                        if (!reconstruction_guide_reflectance(resources, m, knots, context, 550.f,
+                                                              rho) ||
+                            !prepare_scattering(
+                                m, material_auxiliary(m, material_data, p.material_data_words), rho,
+                                knots, p, graph, context, 550.f, material_data,
+                                graph.images.spectra, prepared) ||
+                            !rypath_dielectric::optics(cosine, prepared.dielectric.eta, F, ep, ct,
+                                                       tir)) {
+                            reconstruction_guide_fail(a, gw::invalid_material);
+                            return;
+                        }
+                        if (m.scattering == 3)
+                            F = 2 * F / (1 + F);
+                        if (tir && reflected.resolved) {
+                            diffuse = reflected.albedo;
+                            normal = reflected.normal;
+                            roughness = reflected.roughness;
+                            specular = 0;
+                            replaced = true;
+                        } else if (!tir) {
+                            const float3 td =
+                                m.scattering == 3
+                                    ? incoming.direction
+                                    : incoming.direction / ep +
+                                          (abs(cosine) / ep - ct) * (cosine < 0 ? -normal : normal);
+                            const ray tr(spawn_toward(incoming, hit.distance, point, td),
+                                         normalize(td));
+                            if (!reconstruction_guide_appearance(a, resources, scene, knots, tr,
+                                                                 transmitted)) {
+                                reconstruction_guide_fail(a, gw::invalid_material);
+                                return;
+                            }
+                            if (reflected.resolved && transmitted.resolved) {
+                                const float3 blended_normal =
+                                    F * reflected.normal + (1 - F) * transmitted.normal;
+                                // Opposing surface normals cannot define one truthful normal.
+                                if (rypath_surface_detail::unit_vector(blended_normal, normal)) {
+                                    diffuse = specular * reflected.albedo +
+                                              (1 - specular) * transmitted.albedo;
+                                    roughness =
+                                        F * reflected.roughness + (1 - F) * transmitted.roughness;
+                                    specular = 0;
+                                    replaced = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                reconstruction_guide_count(a, replaced ? &a.counters->appearance_replacement
+                                                       : &a.counters->appearance_fallback);
+            }
         }
         if (!all(isfinite(diffuse)) || !all(isfinite(specular)) || !isfinite(roughness)) {
             reconstruction_guide_fail(a, gw::invalid_value);

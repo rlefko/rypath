@@ -98,6 +98,53 @@ checks. This changes execution only; pixel arithmetic, texture writes, temporal
 recurrences and the raw estimator are unchanged. Surface-guide approximation and
 pass-through counters retain their existing per-event accounting.
 
+## Experimental MetalFX input repair
+
+`submit(frame, ReconstructionSubmitOptions{.exposure = value})` supplies a
+per-submission positive, finite display-exposure hint, rounded to R16F. Its
+accepted range is [2^-24, 65504]. `ReconstructionInfo::exposure` reports the
+encoded value. The existing `submit(frame, bool)` overload retains exposure 1.
+Each job retains its own exposure texture through both completion callbacks.
+Exposure never multiplies raw XYZ or output RGB; `preExposure` remains 1 because
+input pixels are unexposed. This follows Apple's
+[exposure-hint contract](https://developer.apple.com/videos/play/wwdc2025/211/).
+
+`MetalFXGuidePolicy::primary_surface` remains the default.
+`MetalFXGuidePolicy::appearance` is an explicit MetalFX-only experiment, following
+Apple's [appearance-guide guidance](https://developer.apple.com/videos/play/wwdc2026/359/).
+It evaluates view-direction Fresnel in the spectral guide quadrature. Smooth
+conductor/glass guides trace reflected and transmitted geometry at 550 nm and
+replace diffuse albedo, normal and roughness with resolved appearance proxies.
+Glass combines the two surface appearances by Fresnel; its combined appearance is
+stored in the diffuse guide with zero separate specular guide. The depth and
+motion still describe the primary surface; this is a partial appearance-guide
+adaptation, not complete reflected/refracted temporal correspondence. The signed
+temporal mode always retains its primary guides and rejects this policy.
+
+Each branch has at most four secondary surface events. Secondary smooth glass
+continues transmission (or total-internal reflection), omitting secondary
+reflection branches; secondary conductor throughput and glass continuation use
+550 nm optics, so secondary spectral dispersion/tint is approximate. Terminal
+surfaces use the existing 16-node spectral material quadrature. Unresolved
+backgrounds, unsupported material families, exhausted bounds and media retain
+primary proxies. `directional_approximation`, `appearance_replacement`,
+`appearance_bounded` and `appearance_fallback` expose these decisions. This
+policy does not modify transport or raw accumulation. The policy flag is part
+of the exact guide-cache key; exposure is not a surface-guide dependency.
+
+Optional specular-hit-distance and strength-mask inputs remain disabled. SDK
+26.5's strength-mask header says 1 skips denoising, while WWDC26 describes 0 as
+no denoising. Endpoint GPU tests are required before interpreting or enabling
+that mask. No hit-distance convention has been qualified in this adapter.
+
+The repair retains the explicitly clamped half-float MetalFX color input. It
+does not establish arbitrary signed-RGB or XYZ support, repair spectral clipping,
+or apply saturation/exposure compensation. New tests specify noise-free chroma,
+small-feature contrast, directional mirror Fresnel, thin-glass blending,
+policy/cache dependencies, invalid exposure and raw preservation. These tests
+have not yet been built or executed on this revision; no new performance or
+image-quality qualification is claimed.
+
 ## Exact surface-guide reuse
 
 `ReconstructionConfig::cache_surface_guides` and benchmark `--guide-cache on|off`

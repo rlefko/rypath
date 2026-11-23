@@ -116,6 +116,9 @@ struct ReconstructionStream::Impl {
     std::optional<FrameCamera> previous_frame_camera;
     std::optional<std::vector<std::uint32_t>> guide_key;
     gw::Counters guide_counts{};
+    // Actual exposure used by the last successful job. Diagnostic snapshots must
+    // copy this under mutex, rather than the default inputs.exposure texture.
+    id<MTLTexture> last_exposure = nil;
     ReconstructionConfig config;
     std::uint32_t width = 0, height = 0, model = 0;
     id<MTLDevice> device = nil;
@@ -152,6 +155,12 @@ struct ReconstructionStream::Impl {
             config.mode != ReconstructionMode::metalfx &&
             config.mode != ReconstructionMode::temporal)
             return "Invalid reconstruction mode";
+        if (config.metalfx_guide_policy != MetalFXGuidePolicy::primary_surface &&
+            config.metalfx_guide_policy != MetalFXGuidePolicy::appearance)
+            return "Invalid MetalFX guide policy";
+        if (config.mode != ReconstructionMode::metalfx &&
+            config.metalfx_guide_policy != MetalFXGuidePolicy::primary_surface)
+            return "Appearance guides require MetalFX reconstruction";
         if (!std::isfinite(config.near_plane) || !(config.near_plane > 0) ||
             !std::isnormal(float(config.near_plane)))
             return "Reconstruction near plane must pack to a positive normal float";
@@ -218,7 +227,7 @@ struct ReconstructionStream::Impl {
         const auto owned_bytes =
             (62 + (signed_color ? 8 : 0)) * padded_pixels(width, height) +
             2ull * pixel_bytes * padded_pixels(config.output_width, config.output_height) +
-            2 * capture_bytes + 16 * 65536ull + temporal_bytes + sizeof(gw::Config) +
+            2 * capture_bytes + 18 * 65536ull + temporal_bytes + sizeof(gw::Config) +
             sizeof(gw::Counters) + sizeof(gw::SpectralNode) * gw::node_count +
             argument_encoder.encodedLength + 2;
         if (capture_bytes > device.maxBufferLength || owned_bytes > (8ull << 30) ||
@@ -318,6 +327,7 @@ struct ReconstructionStream::Impl {
         std::unique_ptr<MetalFrameLease> source;
         std::optional<reconstruction::Camera> current;
         std::vector<std::uint32_t> guide_key;
+        id<MTLTexture> exposure = nil; // Retained by this submission through completion.
         bool all_times_valid = true;
         double gpu_seconds = 0;
         bool camera_changed() const {
@@ -403,6 +413,7 @@ struct ReconstructionStream::Impl {
                     state->previous_valid = state->config.mode != ReconstructionMode::raw_rgb;
                     state->epoch_known = true;
                     state->epoch = frame->info.source.epoch;
+                    state->last_exposure = exposure;
                     frame->info.status = ReconstructionStatus::complete;
                     frame->info.gpu_time_valid = all_times_valid;
                     frame->info.gpu_seconds = all_times_valid ? gpu_seconds : 0;
@@ -451,6 +462,9 @@ struct ReconstructionStream::Impl {
             cfg.flags = source->parameters().medium_count ? gw::media_scene : 0;
             if (s.temporal)
                 cfg.flags |= gw::signed_temporal;
+            if (s.config.mode == ReconstructionMode::metalfx &&
+                s.config.metalfx_guide_policy == MetalFXGuidePolicy::appearance)
+                cfg.flags |= gw::appearance_guides;
             std::memcpy(s.configuration.contents, &cfg, sizeof(cfg));
 
             [s.argument_encoder setArgumentBuffer:s.arguments offset:0];
@@ -616,6 +630,7 @@ struct ReconstructionStream::Impl {
                     return;
                 }
                 auto inputs = state->inputs;
+                inputs.exposure = exposure;
                 inputs.output = frame->output->texture;
                 inputs.world_to_view = simd_matrix(current->world_to_view());
                 inputs.view_to_clip = simd_matrix(current->view_to_clip());
@@ -797,12 +812,23 @@ ReconstructionBuildResult build_reconstruction_stream(const Frame &source,
     }
 }
 ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, bool reset_history) {
+    return submit(source, ReconstructionSubmitOptions{.reset_history = reset_history});
+}
+ReconstructionSubmitResult
+ReconstructionStream::submit(const Frame &source, const ReconstructionSubmitOptions &options) {
     @autoreleasepool {
         ReconstructionSubmitResult result;
         if (!impl_) {
             result.diagnostic = "Reconstruction stream is moved-from";
             return result;
         }
+        if (!std::isfinite(options.exposure) || options.exposure < 0x1p-24f ||
+            options.exposure > 65504.f) {
+            result.diagnostic =
+                "Reconstruction exposure must be positive finite half-float metadata";
+            return result;
+        }
+        const _Float16 exposure_value = static_cast<_Float16>(options.exposure);
         auto acquired = MetalFrameAccess::acquire(source);
         result.source_status = acquired.status;
         if (!acquired.lease) {
@@ -841,13 +867,11 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
                 result.diagnostic = "Both reconstruction output slots are retained";
                 return result;
             }
-            reset = reset_history || !impl_->previous_valid || !impl_->epoch_known ||
+            reset = options.reset_history || !impl_->previous_valid || !impl_->epoch_known ||
                     impl_->epoch != acquired.info.epoch ||
                     impl_->previous_lens_radius != acquired.lease->parameters().lens_radius ||
                     impl_->previous_focal_distance != acquired.lease->parameters().focal_distance ||
                     impl_->previous_camera_medium != acquired.lease->parameters().camera_medium;
-            if (reset)
-                impl_->guide_key.reset();
             previous = reset ? camera.camera : impl_->previous;
         }
         auto frame = std::make_shared<ReconstructedFrame::Impl>();
@@ -859,6 +883,7 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
                        .mode = impl_->config.mode,
                        .width = impl_->config.output_width,
                        .height = impl_->config.output_height,
+                       .exposure = float(exposure_value),
                        .history_reset = reset,
                        .defocus_approximation = impl_->config.mode != ReconstructionMode::raw_rgb &&
                                                 acquired.lease->parameters().lens_radius > 0};
@@ -867,6 +892,22 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
         job->frame = frame;
         job->source = std::move(acquired.lease);
         job->current = *camera.camera;
+        // Allocate before any history mutation/dispatch; the callback owns this hint.
+        job->exposure =
+            texture(impl_->device, {MTLPixelFormatR16Float, MTLTextureUsageShaderRead, 1, 1},
+                    MTLStorageModeShared);
+        if (job->exposure == nil) {
+            result.diagnostic = "Reconstruction exposure allocation failed";
+            return result;
+        }
+        [job->exposure replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+                         mipmapLevel:0
+                           withBytes:&exposure_value
+                         bytesPerRow:2];
+        if (reset) {
+            std::lock_guard lock(impl_->mutex);
+            impl_->guide_key.reset();
+        }
         std::string error;
         if (!previous) {
             result.diagnostic = "Reconstruction previous camera is unavailable";
