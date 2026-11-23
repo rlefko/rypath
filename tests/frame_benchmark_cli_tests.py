@@ -32,6 +32,9 @@ for args in (
     ["--demo", "--output", "x.json", "--as-build"],
     ["--demo", "--output", "x.json", "--as-build", "invalid"],
     ["--demo", "--output", "x.json", "--as-build", "fast-all", "--intersections", "compensated"],
+    ["--demo", "--output", "x.json", "--execution", "megakernel", "--packet-events", "2"],
+    ["--demo", "--output", "x.json", "--execution", "megakernel", "--packet-layout", "hot-cold"],
+    ["--demo", "--output", "x.json", "--packet-layout", "split-trace", "--packet-events", "4"],
     [], ["--demo"], ["--demo", "--scene", "x", "--output", "x.json"],
     ["--demo", "--demo", "--output", "x.json"],
     ["--demo", "--output", "x.json", "--width", "0"],
@@ -50,6 +53,8 @@ for args in (
     invoke(args)
 
 for option, values in (
+    ("--packet-events", ("0", "3", "5", "-1", "nan")),
+    ("--packet-layout", ("invalid",)),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
@@ -224,6 +229,12 @@ with tempfile.TemporaryDirectory() as directory:
         assert metadata["supported"] is None
         assert metadata["blas_bytes"] == metadata["tlas_bytes"] == 0
         assert metadata["device_allocated_bytes"] is None
+    for layout in ("packed", "hot-cold", "split-trace"):
+        destination = root / ("packet-" + layout + ".json")
+        invoke(["--scene", str(malformed), "--output", str(destination), "--packet-layout", layout])
+        selected = json.loads(destination.read_text())["settings"]
+        assert selected["packet_layout"] == layout and selected["packet_events"] == 1
+        assert selected["effective_packet_events"] is None and selected["effective_packet_layout"] is None
     destination = root / "upscale.json"
     invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",
             "--reconstruction", "metalfx", "--output-width", "34", "--output-height", "18"])

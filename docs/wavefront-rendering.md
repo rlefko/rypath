@@ -184,3 +184,71 @@ The execution structure follows the motivation in
 [Megakernels Considered Harmful](https://research.nvidia.com/sites/default/files/pubs/2013-07_Megakernels-Considered-Harmful/laine2013hpg_paper.pdf).
 Our queue layout, packet staging and asynchronous command policy are adaptations;
 published GPU speedups do not establish M4 Max results.
+
+## Opt-in packet scheduling experiments
+
+`FrameConfig.packet_events` and `--packet-events 1|2|4` select how many unchanged
+packet events execute locally before publishing state. The default remains one.
+An event includes one trace/shade attempt or transparent-boundary crossing;
+termination stops the local loop immediately. The loop does not renumber random
+streams, alter coating walks, reorder endpoint/direct contributions, or truncate
+paths. Scalar transport and megakernel execution reject nondefault packet
+controls instead of silently ignoring them.
+
+`FrameConfig.packet_layout` and `--packet-layout packed|hot-cold|split-trace`
+select storage/execution. `packed` retains the default full per-slot state.
+`hot-cold` stores ray/sample/wavelength/throughput/radiance/progress state apart
+from the complete frozen latest Vertex and assembles the original thread state
+for shading. The Vertex retains all prepared scattering lanes and scene-table
+pointers: represented directional PDFs still evaluate the prepared BSDF using
+neighbor geometry, rather than substituting the sampled PDF.
+
+`split-trace` uses the same separate pools and adds a per-slot checked hit buffer.
+A separate trace dispatch reads only hot state and publishes the hit plus any
+alpha/sample state updates. Shading consumes that hit through the original event
+body. This mode requires one packet event per publication. Existing producer/
+consumer barriers publish hit and hot-state writes before shading; refill fully
+initializes hot and cold owner state before slot reuse. Only the selected large
+pools are allocated; other argument bindings use small sentinels. The shader
+handshake reports each allocation's size/alignment, and host per-buffer and total
+working-set checks include the selected pools. Wavefront contract 5 rejects older
+libraries.
+
+Reports retain requested packet settings and effective settings (null when no
+packet execution applies), and raw captures record both controls. These are
+execution experiments, with no established speedup. `metal.wavefront_frame`
+adds exact paired raw-XYZ controls for packet sky, diffuse, glass, coating and
+null/invisible history, capacity one/seventeen and high absolute sample indices.
+It also checks retained lifetimes, sample/evaluation accounting, nonfinite-output
+failure and explicit unsupported-policy rejection.
+Additional targeted controls use a stochastic glTF alpha sheet and adjacent
+triangle/bilinear-patch receivers. Native intersections cover all seven policies
+at capacity seventeen; compensated intersections cover each layout with one
+event. Both use high absolute sample indices, the existing direct-sample sensor
+oracle tolerance, and bitwise same-profile policy comparisons. These additional
+alpha/mixed-geometry/profile cases have built in Debug and await scheduled GPU
+validation; the measured record below predates these additions. The tests require scheduled
+GPU execution; building them alone supplies no hardware equivalence evidence.
+
+### Bounded packet-policy correctness evidence
+
+On November 23, 2026, Debug source digest
+`e7b53300244884b27a848d7e69cc82812f36167e1847eb9ce3b7bf89c1750d32`
+on M4 Max / Darwin 25.6.0 / AppleClang 21.0 passes the expanded wavefront-frame
+and queue tests with Metal API validation (123.91 s and 0.26 s). These are
+correctness-test durations, not performance measurements. The shader reports
+1,232-byte packed state, a 224-byte hot state, 1,008-byte retained Vertex, and
+48-byte split hit record; alignments are 16/16/16/8 bytes. The new host explicitly
+rejects the older contract-4 metallib.
+
+A separate 64×64, three-frame smoke covers all seven valid layout/fusion policies
+for both independent and Area-one replay, with temporal reconstruction: all 42
+pipeline frames complete. Independent OpenEXR 3.4.4 / NumPy 2.4.5 decoding confirms
+finite FLOAT RGB and correct requested/effective report settings and raw EXR
+metadata. Every policy's final raw and reconstructed RGB values agree bit for bit
+with its same-estimator packed/one-event control. These controls retain the
+fixture's existing finite-layered-model diagnostic; scheduling adds no coating
+cutoff. This bounded evidence establishes neither general bit identity nor a
+speedup, and does not replace a matched Release performance/quality study.
+Receipts, exact commands, per-policy images, decoder script, hashes and the ABI
+probe are retained outside Git under `.cache/validation/packet-schedule-001/`.

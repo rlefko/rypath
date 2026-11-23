@@ -2178,6 +2178,7 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request, Rende
 
 struct FrameWavefrontBuffers {
     id<MTLBuffer> config = nil, scalar_state = nil, packet_state = nil;
+    id<MTLBuffer> packet_hot = nil, packet_cold = nil, packet_hit = nil;
     id<MTLBuffer> queue[2]{nil, nil};
     id<MTLBuffer> free_slots = nil, counters = nil, done = nil;
     id<MTLBuffer> current_dispatch = nil, refill_dispatch = nil;
@@ -2463,6 +2464,9 @@ struct FrameSession::Impl {
         camera_scene.perspective_lens = scene.perspective_lens;
         camera_scene.filter = scene.filter;
         auto &r = *renderer->impl_;
+        if ((config.packet_events != 1 || config.packet_layout != FramePacketLayout::packed) &&
+            !r.parameters.packet_transport)
+            return "Packet scheduling controls require effective packet transport";
         std::string error;
         auto library = metal::load_library(r.device, library_path, error);
         if (library == nil)
@@ -2596,7 +2600,11 @@ struct FrameSession::Impl {
             contract.counters_bytes != sizeof(wavefront_wire::Counters) ||
             contract.dispatch_bytes != sizeof(wavefront_wire::DispatchArguments) ||
             !alignment_valid(contract.scalar_bytes, contract.scalar_alignment) ||
-            !alignment_valid(contract.packet_bytes, contract.packet_alignment))
+            !alignment_valid(contract.packet_bytes, contract.packet_alignment) ||
+            !alignment_valid(contract.hot_bytes, contract.hot_alignment) ||
+            !alignment_valid(contract.cold_bytes, contract.cold_alignment) ||
+            !alignment_valid(contract.hit_bytes, contract.hit_alignment) || contract.reserved[0] ||
+            contract.reserved[1])
             return "Metal wavefront shader contract mismatch; rebuild the metallib";
         const auto load = [&](NSString *name, id<MTLFunction> intersection = nil) {
             return metal::load_pipeline(r.device, library, name, error, intersection,
@@ -2620,14 +2628,20 @@ struct FrameSession::Impl {
         auto intersection = metal::load_patch_intersection(library, error);
         if (intersection == nil)
             return error;
-        if (!r.parameters.packet_transport) {
-            wavefront->trace = load(@"rypath_wavefront_trace_scalar", intersection);
+        if (!r.parameters.packet_transport ||
+            config.packet_layout == FramePacketLayout::split_trace) {
+            wavefront->trace =
+                load(r.parameters.packet_transport ? @"rypath_wavefront_trace_packet"
+                                                   : @"rypath_wavefront_trace_scalar",
+                     intersection);
             if (wavefront->trace == nil)
                 return error;
-            wavefront->trace_table =
-                metal::make_intersection_table(wavefront->trace, intersection, error);
-            if (wavefront->trace_table == nil)
-                return error;
+            if (!r.parameters.packet_transport) {
+                wavefront->trace_table =
+                    metal::make_intersection_table(wavefront->trace, intersection, error);
+                if (wavefront->trace_table == nil)
+                    return error;
+            }
         }
         wavefront->shade = load(shade_entry, intersection);
         if (wavefront->shade == nil)
@@ -2651,8 +2665,16 @@ struct FrameSession::Impl {
             return "Wavefront argument encoder creation failed";
         config.capacity =
             std::min<std::uint64_t>(config.capacity, std::uint64_t(config.width) * config.height);
-        state_bytes = r.parameters.packet_transport ? contract.packet_bytes : contract.scalar_bytes;
+        const bool separated = config.packet_layout != FramePacketLayout::packed;
+        state_bytes = r.parameters.packet_transport
+                          ? (separated ? contract.hot_bytes : contract.packet_bytes)
+                          : contract.scalar_bytes;
         const std::uint64_t state_allocation = std::uint64_t(config.capacity) * state_bytes;
+        const std::uint64_t cold_bytes =
+            separated ? std::uint64_t(config.capacity) * contract.cold_bytes : 16;
+        const std::uint64_t hit_bytes = config.packet_layout == FramePacketLayout::split_trace
+                                            ? std::uint64_t(config.capacity) * contract.hit_bytes
+                                            : 16;
         const std::uint64_t raw_bytes =
             std::uint64_t(config.width) * config.height * sizeof(wire::Point);
         const std::uint64_t done_bytes =
@@ -2663,9 +2685,11 @@ struct FrameSession::Impl {
                      sizeof(wavefront_wire::Config) + sizeof(wavefront_wire::Counters) +
                      2 * sizeof(wavefront_wire::DispatchArguments) + 2 * argument_bytes +
                      r.graph_nodes.length + r.surface_transforms.length;
+        slot_bytes += cold_bytes + hit_bytes + 16; // Alternative layout sentinels/pools.
         slot_bytes += 32; // Independent replay sentinel; Area replaces it with full replay input.
         const std::uint64_t total = 2 * std::uint64_t(slot_bytes) + cie.length;
-        if (state_allocation > r.device.maxBufferLength || raw_bytes > r.device.maxBufferLength ||
+        if (cold_bytes > r.device.maxBufferLength || hit_bytes > r.device.maxBufferLength ||
+            state_allocation > r.device.maxBufferLength || raw_bytes > r.device.maxBufferLength ||
             done_bytes > r.device.maxBufferLength || argument_bytes > r.device.maxBufferLength ||
             total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
             (r.device.recommendedMaxWorkingSetSize &&
@@ -2853,9 +2877,19 @@ struct FrameSession::Impl {
         if (replay != nil)
             b.replay = replay;
         const auto state_allocation = std::size_t(config.capacity) * state_bytes;
-        if (!allocate(b.replay, 32) || !allocate(b.config, sizeof(wavefront_wire::Config), true) ||
+        const bool separated = config.packet_layout != FramePacketLayout::packed;
+        if (!allocate(b.packet_hot, separated ? state_allocation : 16) ||
+            !allocate(b.packet_cold,
+                      separated ? std::size_t(config.capacity) * wavefront->contract.cold_bytes
+                                : 16) ||
+            !allocate(b.packet_hit,
+                      config.packet_layout == FramePacketLayout::split_trace
+                          ? std::size_t(config.capacity) * wavefront->contract.hit_bytes
+                          : 16) ||
+            !allocate(b.replay, 32) || !allocate(b.config, sizeof(wavefront_wire::Config), true) ||
             !allocate(b.scalar_state, r.parameters.packet_transport ? 16 : state_allocation) ||
-            !allocate(b.packet_state, r.parameters.packet_transport ? state_allocation : 16) ||
+            !allocate(b.packet_state,
+                      r.parameters.packet_transport && !separated ? state_allocation : 16) ||
             !allocate(b.queue[0], std::size_t(config.capacity) * 4) ||
             !allocate(b.queue[1], std::size_t(config.capacity) * 4) ||
             !allocate(b.free_slots, std::size_t(config.capacity) * 4) ||
@@ -2872,13 +2906,14 @@ struct FrameSession::Impl {
                                          r.parameters.model,
                                          config.group_width,
                                          config.estimator == FrameEstimator::area_replay ? 1u : 0u,
-                                         {0, 0}};
+                                         config.packet_events,
+                                         static_cast<std::uint32_t>(config.packet_layout)};
         std::memcpy(b.config.contents, &cfg, sizeof(cfg));
         std::memset(b.counters.contents, 0, b.counters.length);
         for (unsigned variant = 0; variant < 2; ++variant) {
             auto encoder = wavefront->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[variant] offset:0];
-            const std::array<id<MTLBuffer>, 13> resources{b.config,
+            const std::array<id<MTLBuffer>, 16> resources{b.config,
                                                           b.scalar_state,
                                                           b.packet_state,
                                                           b.queue[variant],
@@ -2890,6 +2925,9 @@ struct FrameSession::Impl {
                                                           b.done,
                                                           b.current_dispatch,
                                                           b.refill_dispatch,
+                                                          b.packet_hot,
+                                                          b.packet_cold,
+                                                          b.packet_hit,
                                                           b.replay};
             for (NSUInteger index = 0; index < resources.size(); ++index)
                 [encoder setBuffer:resources[index] offset:0 atIndex:index];
@@ -3147,9 +3185,10 @@ struct FrameSession::Impl {
                         [encoder useResource:resource usage:usage];
                 };
                 const auto read_write = MTLResourceUsageRead | MTLResourceUsageWrite;
-                for (auto buffer : {b.scalar_state, b.packet_state, b.queue[0], b.queue[1],
-                                    b.free_slots, b.counters, b.done, b.current_dispatch,
-                                    b.refill_dispatch, frame->raw, b.replay})
+                for (auto buffer :
+                     {b.scalar_state, b.packet_state, b.queue[0], b.queue[1], b.free_slots,
+                      b.counters, b.done, b.current_dispatch, b.refill_dispatch, frame->raw,
+                      b.replay, b.packet_hot, b.packet_cold, b.packet_hit})
                     use_resource(buffer, read_write);
                 use_resource(b.config, MTLResourceUsageRead);
                 use_resource(cie, MTLResourceUsageRead);
@@ -3262,8 +3301,11 @@ struct FrameSession::Impl {
                     first = false;
                 }
                 for (std::uint32_t round = 0; !area_finalizing && round < config.quantum; ++round) {
-                    if (!parameters.packet_transport)
-                        full(programs->trace, programs->trace_table, "wavefront.trace");
+                    if (!parameters.packet_transport ||
+                        config.packet_layout == FramePacketLayout::split_trace)
+                        full(programs->trace, programs->trace_table,
+                             parameters.packet_transport ? "wavefront.packet_trace"
+                                                         : "wavefront.trace");
                     full(programs->shade, programs->shade_table, "wavefront.shade");
                     generic(programs->prepare_refill, 1, false, "wavefront.prepare_refill");
                     generic(programs->refill, 0, true, "wavefront.refill");
@@ -3799,8 +3841,24 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     if (config.execution == FrameExecution::wavefront &&
         (!config.capacity || config.capacity > wavefront_wire::default_capacity ||
          !config.quantum || config.quantum > 1024 || !config.group_width ||
-         config.group_width > 256)) {
-        result.diagnostic = "Invalid wavefront capacity, quantum, or group width";
+         config.group_width > 256 ||
+         (config.packet_events != 1 && config.packet_events != 2 && config.packet_events != 4))) {
+        result.diagnostic = "Invalid wavefront capacity, quantum, group width, or packet events";
+        return result;
+    }
+    if (config.packet_layout != FramePacketLayout::packed &&
+        config.packet_layout != FramePacketLayout::hot_cold &&
+        config.packet_layout != FramePacketLayout::split_trace) {
+        result.diagnostic = "Invalid packet layout";
+        return result;
+    }
+    if ((config.packet_events != 1 || config.packet_layout != FramePacketLayout::packed) &&
+        config.execution != FrameExecution::wavefront) {
+        result.diagnostic = "Packet scheduling controls require wavefront execution";
+        return result;
+    }
+    if (config.packet_layout == FramePacketLayout::split_trace && config.packet_events != 1) {
+        result.diagnostic = "Split packet trace requires packet_events=1";
         return result;
     }
     if (scene.integrator == IntegratorKind::bdpt || std::isfinite(scene.max_component_value)) {

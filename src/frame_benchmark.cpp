@@ -72,6 +72,8 @@ struct Options {
     std::uint32_t capacity = rypath::FrameConfig{}.capacity;
     std::uint32_t quantum = rypath::FrameConfig{}.quantum;
     std::uint32_t group_width = rypath::FrameConfig{}.group_width;
+    std::uint32_t packet_events = 1;
+    rypath::FramePacketLayout packet_layout = rypath::FramePacketLayout::packed;
     std::uint32_t width = 1920, height = 1080;
     std::uint64_t frames = 120, warmup = 8, seed = 1;
     std::int32_t material_seed = 0;
@@ -81,6 +83,11 @@ struct Options {
 };
 const char *shadow_name(rypath::ShadowTraversal mode) {
     return mode == rypath::ShadowTraversal::opaque_auto ? "opaque-auto" : "query";
+}
+const char *packet_layout_name(rypath::FramePacketLayout layout) {
+    return layout == rypath::FramePacketLayout::hot_cold      ? "hot-cold"
+           : layout == rypath::FramePacketLayout::split_trace ? "split-trace"
+                                                              : "packed";
 }
 const char *profile_name(rypath::IntersectionProfile profile) {
     return profile == rypath::IntersectionProfile::native ? "native" : "compensated";
@@ -114,6 +121,7 @@ const char *usage =
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
+    "  [--packet-events 1|2|4 (default: 1)] [--packet-layout packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--motion-offset WORLD_X (measured quarters: hold A, translate, hold B, cut A)]\n"
     "  [--profile-stages] [--capture-frame N --capture-path FRAME.gputrace]\n"
@@ -215,6 +223,19 @@ std::string parse(int argc, char **argv, Options &o) {
         } else if (key == "--quantum") {
             if (!integer(value, o.quantum) || !o.quantum || o.quantum > 1024)
                 return "quantum must be in [1,1024]";
+        } else if (key == "--packet-layout") {
+            if (value == "packed")
+                o.packet_layout = rypath::FramePacketLayout::packed;
+            else if (value == "hot-cold")
+                o.packet_layout = rypath::FramePacketLayout::hot_cold;
+            else if (value == "split-trace")
+                o.packet_layout = rypath::FramePacketLayout::split_trace;
+            else
+                return "invalid packet layout";
+        } else if (key == "--packet-events") {
+            if (!integer(value, o.packet_events) ||
+                (o.packet_events != 1 && o.packet_events != 2 && o.packet_events != 4))
+                return "packet events must be 1, 2, or 4";
         } else if (key == "--group-width") {
             if (!integer(value, o.group_width) || !o.group_width || o.group_width > 256)
                 return "group width must be in [1,256]";
@@ -293,6 +314,11 @@ std::string parse(int argc, char **argv, Options &o) {
         return "motion requires at least eight measured frames divisible by four";
     if (!o.capture_path.empty() && o.capture_path.extension() != ".gputrace")
         return "--capture-path requires .gputrace";
+    if ((o.packet_events != 1 || o.packet_layout != rypath::FramePacketLayout::packed) &&
+        o.execution != rypath::FrameExecution::wavefront)
+        return "packet scheduling controls require wavefront execution";
+    if (o.packet_layout == rypath::FramePacketLayout::split_trace && o.packet_events != 1)
+        return "split packet trace requires --packet-events 1";
     if (!o.reconstructed_capture.empty() && o.reconstructed_capture.extension() != ".exr")
         return "--reconstructed-capture requires .exr";
     if (o.estimator == rypath::FrameEstimator::area_replay &&
@@ -609,6 +635,7 @@ struct Report {
     std::uint64_t registry_id = 0, warmup_completed = 0, frames_completed = 0;
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
+    bool packet_controls_effective = false;
     std::vector<std::string> provenance;
     std::vector<fs::path> dependencies;
     std::vector<Observation> observations;
@@ -661,6 +688,12 @@ struct Report {
                     ? std::to_string(std::min<std::uint64_t>(
                           options.capacity, std::uint64_t(options.width) * options.height))
                     : "null")
+            << ",\"packet_layout\":" << quote(packet_layout_name(options.packet_layout))
+            << ",\"packet_events\":" << options.packet_events << ",\"effective_packet_events\":"
+            << (packet_controls_effective ? std::to_string(options.packet_events) : "null")
+            << ",\"effective_packet_layout\":"
+            << (packet_controls_effective ? quote(packet_layout_name(options.packet_layout))
+                                          : "null")
             << ",\"quantum\":" << options.quantum << ",\"group_width\":" << options.group_width
             << ",\"profile_stages\":" << (options.profile_stages ? "true" : "false")
             << ",\"capture_path\":" << quote(options.capture_path.string())
@@ -998,6 +1031,9 @@ int run(const Options &options) {
         }
         report.integrator = scene.volume_transport ? "volpath" : "path";
         report.max_depth = scene.max_depth;
+        report.packet_controls_effective =
+            scene.spectral_transport == rypath::SpectralTransport::packet &&
+            options.execution == rypath::FrameExecution::wavefront;
         report.provenance.push_back("effective exposure " + std::to_string(scene.exposure));
         report.provenance.push_back(
             "effective spectral transport " +
@@ -1035,6 +1071,8 @@ int run(const Options &options) {
         config.capacity = options.capacity;
         config.quantum = options.quantum;
         config.group_width = options.group_width;
+        config.packet_events = options.packet_events;
+        config.packet_layout = options.packet_layout;
         auto built = rypath::build_frame_session(scene, config);
         report.acceleration_build = built.acceleration_build;
         report.startup_seconds = seconds(start);
@@ -1255,6 +1293,8 @@ int run(const Options &options) {
                          : "not-applicable"},
                     {"rypath.frame.quantum", std::to_string(options.quantum)},
                     {"rypath.frame.group_width", std::to_string(options.group_width)},
+                    {"rypath.frame.packet_events", std::to_string(options.packet_events)},
+                    {"rypath.frame.packet_layout", packet_layout_name(options.packet_layout)},
                     {"rypath.frame.command_count", std::to_string(frame_info.command_count)},
                     {"rypath.frame.integrator", report.integrator},
                     {"rypath.frame.intersections", profile_name(options.intersection_profile)},

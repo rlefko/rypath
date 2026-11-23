@@ -3,6 +3,7 @@
 #include "pbrt_render.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -302,6 +303,193 @@ void packet_history_cases() {
                 std::string::npos,
             "Mixed-null material must retain its explicit unsupported-model diagnostic");
 }
+RenderScene packet_alpha_coverage() {
+    auto scene = diffuse(true);
+    SpectralMaterial coverage;
+    coverage.scattering = ScatteringKind::gltf;
+    coverage.gltf.alpha_mode = 2;
+    coverage.gltf.double_sided = true;
+    coverage.gltf.base_color = {.1f, .2f, .3f, .5f};
+    scene.materials.push_back(coverage);
+    plane(scene, 1, false, {}, 1);
+    // Match the existing packet alpha-visibility fixture's prepared bindings.
+    scene.instance_surface_transforms.resize(scene.geometry.instances.size());
+    scene.instance_texture_frames.resize(scene.geometry.instances.size());
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        if (!instance_uses_texture_context(scene, i))
+            continue;
+        const auto &surface = scene.instance_surface_transforms[i];
+        const auto error = prepare_texture_triangle_frames(
+            scene.geometry.meshes[scene.geometry.instances[i].mesh_index], surface.shape,
+            surface.placement, scene.instance_texture_frames[i]);
+        require(error.empty(), error);
+    }
+    require(validate_render_scene(scene).empty(), "Packet alpha-policy fixture validation");
+    return scene;
+}
+RenderScene packet_mixed_geometry() {
+    auto scene = diffuse(true);
+    // Primary rays across the film reach triangle receivers at x<0 and a
+    // bilinear receiver at x>0. Both kinds coexist in the same native scene.
+    auto &left = scene.geometry.meshes.front();
+    left.positions[1].x = left.positions[2].x = 0;
+    GeometryMesh right;
+    right.positions = {{0, -16, 3}, {16, -16, 3}, {16, 16, 3}, {0, 16, 3}};
+    right.patches = {{0, 3, 1, 2}};
+    scene.geometry.meshes.push_back(std::move(right));
+    scene.geometry.instances.push_back({1, {}});
+    auto material = scene.materials.front();
+    material.constant = .2f;
+    scene.materials.push_back(material);
+    scene.instance_materials.push_back(1);
+    scene.instance_media.push_back({});
+    require(validate_render_scene(scene).empty(), "Packet mixed-policy fixture validation");
+    return scene;
+}
+void packet_visibility_policy_cases() {
+    const std::array<RenderScene, 2> scenes{packet_alpha_coverage(), packet_mixed_geometry()};
+    for (std::size_t scene_index = 0; scene_index < scenes.size(); ++scene_index) {
+        const auto &scene = scenes[scene_index];
+        for (const auto profile : {IntersectionProfile::native, IntersectionProfile::compensated}) {
+            auto control = configuration(FrameExecution::wavefront);
+            control.capacity = 17;
+            control.quantum = 1;
+            control.intersection_profile = profile;
+            auto baseline = build_frame_session(scene, control);
+            require(baseline.status == GeometryStatus::success && baseline.session,
+                    baseline.diagnostic);
+            const auto expected = capture(*submit(*baseline.session), control, true);
+            // Keep the existing numerical oracle tolerance separate from exact
+            // same-profile scheduling comparisons below.
+            sensor_oracle(scene, control, expected);
+            for (const auto layout : {FramePacketLayout::packed, FramePacketLayout::hot_cold,
+                                      FramePacketLayout::split_trace}) {
+                for (const auto events : {1u, 2u, 4u}) {
+                    if (events != 1 && (layout == FramePacketLayout::split_trace ||
+                                        profile == IntersectionProfile::compensated))
+                        continue;
+                    auto config = control;
+                    config.packet_layout = layout;
+                    config.packet_events = events;
+                    auto built = build_frame_session(scene, config);
+                    require(built.status == GeometryStatus::success && built.session,
+                            built.diagnostic);
+                    auto frame = submit(*built.session);
+                    built.session.reset();
+                    const auto actual = capture(*frame, config, true);
+                    const auto info = frame->wait();
+                    require(info.completed_evaluations == expected.raw_xyz.size() &&
+                                info.fresh_candidates == expected.raw_xyz.size(),
+                            "Visibility policy exact evaluation accounting");
+                    for (std::size_t pixel = 0; pixel < actual.raw_xyz.size(); ++pixel)
+                        for (unsigned channel = 0; channel < 3; ++channel)
+                            require(
+                                std::bit_cast<std::uint32_t>(actual.raw_xyz[pixel][channel]) ==
+                                    std::bit_cast<std::uint32_t>(expected.raw_xyz[pixel][channel]),
+                                "Visibility policy raw bits: scene=" + std::to_string(scene_index) +
+                                    " profile=" + std::to_string(static_cast<int>(profile)) +
+                                    " layout=" + std::to_string(static_cast<int>(layout)) +
+                                    " events=" + std::to_string(events) +
+                                    " pixel=" + std::to_string(pixel));
+                }
+            }
+        }
+    }
+}
+void packet_scheduling_variants() {
+    const std::array<RenderScene, 6> scenes{base(true),
+                                            diffuse(true),
+                                            glass(true),
+                                            fixture("coated-path.pbrt"),
+                                            packet_history(false, 4),
+                                            packet_history(true, 4)};
+    for (const auto &scene : scenes) {
+        auto control = configuration(FrameExecution::wavefront);
+        control.capacity = 17;
+        control.quantum = 1;
+        auto baseline = build_frame_session(scene, control);
+        require(baseline.status == GeometryStatus::success && baseline.session,
+                baseline.diagnostic);
+        const auto expected = capture(*submit(*baseline.session), control, true);
+        for (const auto layout : {FramePacketLayout::packed, FramePacketLayout::hot_cold,
+                                  FramePacketLayout::split_trace}) {
+            for (const auto events : {1u, 2u, 4u}) {
+                if (layout == FramePacketLayout::split_trace && events != 1)
+                    continue;
+                for (const auto capacity : {1u, 17u}) {
+                    auto config = control;
+                    config.packet_layout = layout;
+                    config.packet_events = events;
+                    config.capacity = capacity;
+                    auto built = build_frame_session(scene, config);
+                    require(built.status == GeometryStatus::success && built.session,
+                            built.diagnostic);
+                    auto frame = submit(*built.session);
+                    built.session.reset(); // All selected pools must survive continuations.
+                    const auto actual = capture(*frame, config, true);
+                    const auto info = frame->wait();
+                    require(info.completed_evaluations == expected.raw_xyz.size() &&
+                                info.fresh_candidates == expected.raw_xyz.size(),
+                            "Packet variant exact evaluation accounting");
+                    for (std::size_t pixel = 0; pixel < actual.raw_xyz.size(); ++pixel)
+                        for (unsigned channel = 0; channel < 3; ++channel)
+                            require(
+                                std::bit_cast<std::uint32_t>(actual.raw_xyz[pixel][channel]) ==
+                                    std::bit_cast<std::uint32_t>(expected.raw_xyz[pixel][channel]),
+                                "Packet scheduling must preserve exact raw XYZ bits");
+                }
+            }
+        }
+    }
+    for (const auto layout :
+         {FramePacketLayout::packed, FramePacketLayout::hot_cold, FramePacketLayout::split_trace}) {
+        for (const auto events : {1u, 2u, 4u}) {
+            if (layout == FramePacketLayout::split_trace && events != 1)
+                continue;
+            auto config = configuration(FrameExecution::wavefront);
+            config.packet_layout = layout;
+            config.packet_events = events;
+            config.capacity = 1;
+            config.quantum = 1;
+            auto overflow = base(true);
+            overflow.environment.fill(std::numeric_limits<float>::max());
+            auto built = build_frame_session(overflow, config);
+            require(built.status == GeometryStatus::success && built.session, built.diagnostic);
+            auto frame = submit(*built.session);
+            built.session.reset();
+            require(frame->wait().status == FrameStatus::failed &&
+                        frame->capture().status == GeometryStatus::failure,
+                    "Packet variant nonfinite failure must not publish an image");
+        }
+    }
+    auto bad = configuration(FrameExecution::wavefront);
+    for (const auto events : {0u, 3u, 5u}) {
+        bad.packet_events = events;
+        const auto built = build_frame_session(base(true), bad);
+        require(built.status == GeometryStatus::failure && !built.session,
+                "Invalid packet fusion factor accepted");
+    }
+    for (const auto layout : {FramePacketLayout::hot_cold, FramePacketLayout::split_trace}) {
+        bad = configuration(FrameExecution::wavefront);
+        bad.packet_layout = layout;
+        require(build_frame_session(base(false), bad).status == GeometryStatus::failure,
+                "Scalar transport must reject packet layout overrides");
+        bad.execution = FrameExecution::megakernel;
+        require(build_frame_session(base(true), bad).status == GeometryStatus::failure,
+                "Megakernel must reject packet layout overrides");
+    }
+    bad = configuration(FrameExecution::wavefront);
+    bad.packet_events = 2;
+    require(build_frame_session(base(false), bad).status == GeometryStatus::failure,
+            "Scalar transport must reject packet fusion overrides");
+    bad.execution = FrameExecution::megakernel;
+    require(build_frame_session(base(true), bad).status == GeometryStatus::failure,
+            "Megakernel must reject packet fusion overrides");
+    bad.execution = FrameExecution::wavefront;
+    bad.packet_layout = FramePacketLayout::split_trace;
+    require(build_frame_session(base(true), bad).status == GeometryStatus::failure,
+            "Split trace must reject fusion");
+}
 void lifetime() {
     const auto scene = diffuse(true);
     auto config = configuration(FrameExecution::wavefront);
@@ -423,6 +611,8 @@ int main() {
                         IntersectionProfile::compensated);
         scheduling_case(medium(true), "Compensated media/null boundary chain",
                         IntersectionProfile::compensated);
+        packet_scheduling_variants();
+        packet_visibility_policy_cases();
         lifetime();
         invalid_and_async_failure();
 #else

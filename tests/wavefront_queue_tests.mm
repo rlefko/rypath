@@ -41,7 +41,7 @@ int run(const std::filesystem::path &path) {
     }
     auto queue = [device newCommandQueue];
     require(queue != nil && arguments != nil, "Queue fault test command resources");
-    const wf::Config config{4, 2, 0, render_wire::pbrt_model, 32, 0, {0, 0}};
+    const wf::Config config{4, 2, 0, render_wire::pbrt_model, 32, 0, 1, 0};
     const std::array<wf::Counters, 7> cases{{
         {2, 2, 0, 4, 2, 0, 7, 2}, // Valid two-owner continuation clears its range.
         {2, 3, 0, 4, 1, 0, 7, 0}, // Output exceeds physical capacity.

@@ -27,7 +27,29 @@ struct PacketPTState {
     uint count, crossings;
     bool complete;
 };
-static_assert(alignof(PacketPTState) <= 16, "Packet PT state alignment");
+// Hot tracing/publication state. The full frozen Vertex lives in a separate cold pool.
+struct PacketPTHot {
+    float3 preceding_position;
+    uint preceding_type;
+    wire::Sample sample;
+    Wavelengths lambda;
+    float4 radiance, beta;
+    float3 ray_origin, ray_direction;
+    float pdf, ray_min_distance, ray_max_distance;
+    rypath_packet_roulette::EtaScale roulette_eta;
+    ulong index;
+    uint count, crossings;
+    bool complete;
+};
+struct PacketPTHit {
+    SurfaceHit hit;
+    uint ready;
+};
+
+static_assert(alignof(PacketPTState) <= 16 && alignof(PacketPTHot) <= 16 &&
+                  alignof(PacketPTHit) <= 16 &&
+                  sizeof(PacketPTHot) + sizeof(Vertex) == sizeof(PacketPTState),
+              "Packet PT split-state ABI/alignment");
 inline void packet_pt_initialize(thread PacketPTState &state, const thread wire::Sample &sample,
                                  const thread Wavelengths &lambda, ray incoming, float pdf,
                                  ulong index, constant wire::Parameters &p) {
@@ -59,13 +81,31 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
     }
 }
 
+inline SurfaceHit packet_pt_trace(thread Resources &r, thread wire::Sample &sample,
+                                  const thread Wavelengths &lambda, ray incoming) {
+    const constant auto &p = *r.alpha.parameters;
+    MixedIntersector closest;
+    closest.set_triangle_cull_mode(triangle_cull_mode::none);
+    r.alpha.sample = &sample;
+    r.alpha.incoming = incoming;
+    sample.wavelength = lambda.lambda[0];
+    return p.instance_count == 0 ? SurfaceHit{intersection_type::none, 0, 0, 0, 0, float2(0), true}
+           : (native_triangle_hint_mode & 2u)
+               ? trace_packet_seeded_closest(incoming, r.scene, all_visible, r.intersection_table,
+                                             r.alpha, alpha_enabled)
+           : alpha_enabled
+               ? trace_masked_surface(incoming, r.scene, all_visible, r.alpha)
+               : trace_surface(closest, incoming, r.scene, all_visible, r.intersection_table);
+}
+
 // One traced/shaded event, including at most one transparent boundary. The
 // numerical body deliberately mirrors random_walk as an independent initial
 // execution control. Preserve sampled and represented-density checks, exact local
 // pairs, offsets, material streams and eta roulette when maintaining either path.
 [[clang::noinline]] inline void
 packet_pt_step(thread Resources &r, thread PacketPTState &state,
-               thread const rypath_replay::ReplayState *replay = nullptr) {
+               thread const rypath_replay::ReplayState *replay = nullptr,
+               thread const SurfaceHit *pretraced = nullptr) {
     if (state.complete)
         return;
     const constant auto &p = *r.alpha.parameters;
@@ -81,8 +121,7 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
     const Mode mode = Mode::Radiance;
     ray incoming(state.ray_origin, state.ray_direction, state.ray_min_distance,
                  state.ray_max_distance);
-    MixedIntersector closest;
-    closest.set_triangle_cull_mode(triangle_cull_mode::none);
+
     r.alpha.sample = &sample;
     sample.wavelength = lambda.lambda[0];
     const uint old_count = count;
@@ -98,15 +137,7 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        r.alpha.incoming = incoming;
-        const auto hit =
-            p.instance_count == 0 ? SurfaceHit{intersection_type::none, 0, 0, 0, 0, float2(0), true}
-            : (native_triangle_hint_mode & 2u)
-                ? trace_packet_seeded_closest(incoming, r.scene, all_visible, r.intersection_table,
-                                              r.alpha, alpha_enabled)
-            : alpha_enabled
-                ? trace_masked_surface(incoming, r.scene, all_visible, r.alpha)
-                : trace_surface(closest, incoming, r.scene, all_visible, r.intersection_table);
+        const auto hit = pretraced ? *pretraced : packet_pt_trace(r, sample, lambda, incoming);
         if (!hit.valid) {
             sample.status = wire::invalid_hit;
             break;

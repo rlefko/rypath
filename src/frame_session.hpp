@@ -8,6 +8,7 @@ namespace rypath {
 // evaluates reused candidates and emits one reservoir-weighted raw estimate.
 // Footprints keep a fixed budget even when sample_index exceeds it; output is unclamped.
 enum class FrameExecution { megakernel, wavefront };
+enum class FramePacketLayout { packed, hot_cold, split_trace };
 enum class FrameEstimator { independent, area_replay };
 struct FrameConfig {
     bool profile_stages = false;
@@ -26,6 +27,9 @@ struct FrameConfig {
     // Rounds per asynchronous command, never a path-depth or boundary limit.
     std::uint32_t quantum = 8;
     std::uint32_t group_width = 32;
+    // Semantic packet events per state publication; scalar scheduling is unchanged.
+    std::uint32_t packet_events = 1;
+    FramePacketLayout packet_layout = FramePacketLayout::packed;
     FrameEstimator estimator = FrameEstimator::independent;
     // Importance proxy only: 1 + .1*L1(XYZ)/(target_scale+L1(XYZ)).
     // Bounded contrast controls history weights without changing raw radiance.
