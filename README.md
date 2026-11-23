@@ -1,10 +1,16 @@
 # rypath
 
 rypath is a C++20 spectral path tracer being developed for Apple Silicon through
-Metal. The first goal is progressive offline rendering; a native macOS application
-and interactive rendering follow later.
+Metal. Progressive offline rendering and an experimental native macOS viewer
+are implemented; image-quality and interactive-performance qualification remain
+open.
 
-**Current state: progressive Metal rendering and a strict PBRT spectral profile.**
+**Current state: progressive Metal rendering, a strict PBRT spectral profile, and
+an experimental [native viewer](docs/viewer.md).** The viewer offers camera controls,
+raw/reconstructed comparison and paired linear-RGB captures. MetalFX remains its
+default; signed temporal reconstruction is explicit, and viewer quality remains
+unqualified.
+
 Render the built-in demo or PBRT files containing supported sampled spectra or
 linear sRGB colors. Diffuse reflectance supports blackbody, built-in and file spectra,
 typed texture graphs, and PNG/JPEG/EXR/Radiance HDR imagemaps.
@@ -106,10 +112,15 @@ accepts `--gltf-scene INDEX`. Camera and lighting remain caller-owned.
 sample batches across compatible builds and supported Metal devices. Broader PBRT
 rendering, remaining surface models and heterogeneous media follow this bounded profile. Scene compatibility, numerical
 correctness, and performance each need separate evidence. The [PBRT profile](docs/pbrt-profile.md) distinguishes checked scene structure
-from rendering conformance. There are no target-device performance claims yet.
+from rendering conformance. Measured M4 Max traversal and scheduling results are
+recorded in [frame rendering](docs/frame-rendering.md) and
+[wavefront execution](docs/wavefront-rendering.md); complete-pipeline qualification
+remains open.
 Ray-tracing API flags describe device capabilities; geometry validation runs
 through CTest, while the CLI smoke test exercises integer compute.
 
+- [Native viewer: launch, controls and output modes](docs/viewer.md)
+- [Frame reconstruction and its limitations](docs/reconstruction.md)
 - [Architecture and product goals](docs/architecture.md)
 - [Metal execution and validation](docs/metal-execution.md)
 - [Native geometry and reference checks](docs/geometry.md)
