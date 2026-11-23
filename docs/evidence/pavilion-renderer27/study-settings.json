@@ -1,0 +1,251 @@
+{
+  "scope": "Portable statistical settings excerpt, not the complete execution protocol or launch authorization",
+  "full_protocol_sha256": "08aeebaf5b34442a18d07c6cb9de2db91d1d9991fadd8b7fe2ae8e6fff022369",
+  "resolution": [
+    320,
+    170
+  ],
+  "scenes": {
+    "day": {
+      "budgets": [
+        64,
+        256
+      ],
+      "primary_spp": 256,
+      "iso": 500
+    },
+    "night": {
+      "budgets": [
+        64,
+        512
+      ],
+      "primary_spp": 512,
+      "iso": 250
+    }
+  },
+  "seed_ids": {
+    "candidate": [
+      1024,
+      1025,
+      1026,
+      1027,
+      1028,
+      1029,
+      1030,
+      1031,
+      1032,
+      1033,
+      1034,
+      1035,
+      1036,
+      1037,
+      1038,
+      1039,
+      1040,
+      1041,
+      1042,
+      1043,
+      1044,
+      1045,
+      1046,
+      1047,
+      1048,
+      1049,
+      1050,
+      1051,
+      1052,
+      1053,
+      1054,
+      1055,
+      1056,
+      1057,
+      1058,
+      1059,
+      1060,
+      1061,
+      1062,
+      1063,
+      1064,
+      1065,
+      1066,
+      1067,
+      1068,
+      1069,
+      1070,
+      1071,
+      1072,
+      1073,
+      1074,
+      1075,
+      1076,
+      1077,
+      1078,
+      1079,
+      1080,
+      1081,
+      1082,
+      1083,
+      1084,
+      1085,
+      1086,
+      1087
+    ],
+    "reference": [
+      2048,
+      2049,
+      2050,
+      2051,
+      2052,
+      2053,
+      2054,
+      2055,
+      2056,
+      2057,
+      2058,
+      2059,
+      2060,
+      2061,
+      2062,
+      2063,
+      2064,
+      2065,
+      2066,
+      2067,
+      2068,
+      2069,
+      2070,
+      2071,
+      2072,
+      2073,
+      2074,
+      2075,
+      2076,
+      2077,
+      2078,
+      2079,
+      2080,
+      2081,
+      2082,
+      2083,
+      2084,
+      2085,
+      2086,
+      2087,
+      2088,
+      2089,
+      2090,
+      2091,
+      2092,
+      2093,
+      2094,
+      2095,
+      2096,
+      2097,
+      2098,
+      2099,
+      2100,
+      2101,
+      2102,
+      2103,
+      2104,
+      2105,
+      2106,
+      2107,
+      2108,
+      2109,
+      2110,
+      2111
+    ]
+  },
+  "contracts": {
+    "candidate": [
+      3,
+      12,
+      27,
+      9,
+      2
+    ],
+    "reference": "modified-pbrt-v4"
+  },
+  "bootstrap": {
+    "draws": 20000,
+    "seed": 1380798800,
+    "unit": "complete image replicate",
+    "backend_resampling": "independent",
+    "planes_and_regions": "joint within each backend",
+    "recompute": [
+      "means",
+      "leave-one-out residuals",
+      "tail ranks",
+      "reference epsilon"
+    ],
+    "confidence": 0.95,
+    "bounds": "one-sided simultaneous maximum-centered log-ratio bootstrap error across all 48 primary statistics"
+  },
+  "epsilon": "1e-12 * max(1, mean_pixel(square(reference ensemble mean luminance))) per scene, plane, region",
+  "variance": "mean of unbiased per-pixel luminance sample variances",
+  "tail": {
+    "positive_residual": "replicate minus same-backend leave-one-out pixel mean",
+    "fraction": 0.001,
+    "count": "max(1,ceil(fraction*region_pixels))",
+    "metric": "sum largest positive squared residuals divided by all region pixels, averaged over replicates"
+  },
+  "mean_gate": "unclamped RGB regional means: 5 combined standard errors + 2e-5 * max(1,abs(reference))",
+  "maximum_ratio": 1.25,
+  "reference_policy": {
+    "kind": "modified-pbrt-diagnostic",
+    "stock_verified": false,
+    "description": "Root must freeze exact consistent target model, modifications, source and artifact identity before outcomes. This is not stock PBRT ground truth."
+  },
+  "pbrt_revision": "b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f",
+  "scene_revision": "30cf4a0346ae5a80a2d7a530a3ef7d0fa4f70572",
+  "regions": {
+    "full": [
+      0,
+      0,
+      320,
+      170
+    ],
+    "wall": [
+      8,
+      55,
+      65,
+      85
+    ],
+    "soffit": [
+      90,
+      42,
+      180,
+      64
+    ],
+    "floor": [
+      85,
+      93,
+      230,
+      104
+    ],
+    "pool": [
+      80,
+      115,
+      235,
+      160
+    ],
+    "glass": [
+      220,
+      60,
+      265,
+      92
+    ]
+  },
+  "luminance_coefficients": [
+    0.2126,
+    0.7152,
+    0.0722
+  ],
+  "planes": [
+    "raw",
+    "clamped"
+  ],
+  "replicates": 64,
+  "material_seed": "corresponding sampler seed for each arm; explicit authored sampler seed and material/hash seed must match the frozen ID"
+}

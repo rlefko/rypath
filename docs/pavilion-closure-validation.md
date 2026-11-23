@@ -1,5 +1,10 @@
 # Pavilion correctness and performance closure
 
+This is the historical investigation record. The
+[renderer27 follow-up record](pavilion-convergence-follow-up.md) contains the final
+PR #51 quality/performance results and deferred work; pending statements below
+describe their historical revisions.
+
 This continues [PR #51](https://github.com/rlefko/rypath/pull/51) after published
 revision `3a18a02` (renderer 20). The earlier
 [transport study](transport-regression-validation.md) remains historical evidence,

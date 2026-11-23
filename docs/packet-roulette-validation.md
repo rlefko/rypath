@@ -90,7 +90,7 @@ diagnostic duration is not a rypath performance result.
 
 ## Qualification status
 
-The local renderer-27 implementation passed independent source review and 17
+The renderer-27 implementation at `2cba19f4` passed independent source review and 17
 focused Release tests on M4 Max with Metal API validation. These cover the
 shared roulette helper, actual sampled eta, packet scattering, native transport,
 dielectrics, full-context densities, checkpoint contracts and raw output codecs.
@@ -112,8 +112,16 @@ capture object linked to each version's libraries. Shallow PT and two BDPT
 fixtures across all four samplers produce identical complete typed streams:
 2,048 packets, 42 splats and all Film fields per arm, 221,117 bytes each.
 
-Fresh scene quality, performance qualification and current-revision CI remain
-pending. The retained renderer-26 CI and quality results do not qualify renderer27.
-The fixed 64-run clamped-only reference control reuses the original population
-for diagnosis and cannot replace fresh quality admission. The separate specular
-texture-footprint policy gap remains open, with no measured variance attribution yet.
+All 230 mandatory Debug tests and all eight jobs in
+[implementation CI](https://github.com/rlefko/rypath/actions/runs/45003602662) pass.
+Fresh scene and full-size image audits completed; all 48 performance captures,
+48 same-arm audits and six 64-spp timing gates pass. The new 64-replicate-per-arm
+quality study also completed, but fails its unchanged statistical criteria:
+36/36 raw-mean safeguards pass and 0/48 simultaneous noise bounds pass.
+
+The fixed clamped-only control above remains causal evidence about the original
+population; it does not substitute for the failed fresh study. The investigation
+is deferred at the maintainer's request so PR #51 can be reviewed for its
+implemented fixes. See the [follow-up record](pavilion-convergence-follow-up.md)
+for exact results, retained evidence, the unresolved texture-footprint and bias
+questions, and the next bounded work. Deferral does not establish quality parity.

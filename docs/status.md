@@ -1,65 +1,53 @@
 # Project status
 
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
-[PR #51](https://github.com/rlefko/rypath/pull/51) remains a draft while transport,
-performance and image-quality closure continue. It is not completed PBRT parity.
+[PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
+sampling and performance fixes. The remaining Pavilion convergence investigation
+is explicitly deferred to follow-up at the maintainer's request; its failed
+quality qualification remains recorded. This is not completed PBRT parity.
 
 The selected scene slice supports spectral packet transport, native geometry,
 PT/BDPT connections and splats, raw FLOAT EXR output and separately accumulated
 authored film clamping. See the [model record](pavilion-validation.md),
-[architecture](architecture.md) and [closure evidence](pavilion-closure-validation.md)
-for scope and historical validation.
+[architecture](architecture.md) and [closure history](pavilion-closure-validation.md).
 
-## Published renderer 26
+## Renderer 27 evidence
 
-Revision `9db2b5e` passes all **228 mandatory Debug tests**, **13 focused Release
-tests**, the separate CLI raw-output test and **12 independent decoder tests**.
-All eight jobs in [CI run 44954199191](https://github.com/rlefko/rypath/actions/runs/44954199191)
-pass, including the Foundation Gate. Its generated-path check covers 37 fixtures:
-313/313 canonical strategy records agree, versus 33/313 for the inconsistent-density
-control. These are bounded correctness checks, not an unbiasedness proof.
+Implementation revision `2cba19f4` passes **230 mandatory Debug tests**, **17 focused
+Release tests with Metal API validation**, the separate CLI raw-output check and
+**12 independent decoder tests**. All eight jobs in its
+[CI run](https://github.com/rlefko/rypath/actions/runs/45003602662) pass. These
+results identify the measured implementation revision; later documentation-only
+commits have their own publication checks.
 
-The fixed daytime 64-spp pilot measures 6.47094 seconds in render/accumulation
-versus frozen fast-v5's 7.09821 seconds, about **8.8% faster**. All five measured
-pairs and twelve image controls pass. This is a daytime pilot, not the complete
-48-capture performance acceptance or time to a shared quality target. O1 remains
-in use; the rejected O2 compilation timeout is retained in the closure history.
+Packet PT now uses eta-compensated outer roulette; BDPT keeps its existing walk.
+Contracts are **3/12/27/9/2**. The 1,008-byte Vertex uses a 1,024-byte slot.
+All 37 generated-path fixtures pass: 313/313 canonical strategy records agree,
+versus 33/313 for the inconsistent-density control. Selected shallow PT and BDPT
+captures match renderer26 exactly. See [roulette validation](packet-roulette-validation.md).
 
-The fresh day/night study completed all 384 native jobs and 256 records, retaining
-64 runs per renderer per scene. All **36 raw-mean safeguards pass**; **0/48**
-simultaneous variance/tail upper bounds pass. One shared bootstrap uncertainty
-margin is driven by sparse raw outliers, so this does not mean 48 independent
-regressions. Descriptive full-image clamped variance ratios are 1.048 by day and
-0.960 by night. Day pool and glass clamped tail ratios are 4.59 and 3.49.
-The failed result and all original samples remain retained.
+The completed performance study passes all six 64-spp gates, with **48 captures
+and 48 same-arm output audits**. At 320×170, mean render/accumulation time is
+**47.9% lower by day** and **17.7% lower by night** than the frozen fast renderer14
+baseline. This compares rypath revisions, not PBRT or time to equal image quality.
+Both **1600×850 day-256/night-512** images and all four modified-reference raw/clamped
+companions are complete, with finite/count/provenance audits and retained previews.
 
-## Current work
+The fresh quality study completed **384 native captures and 256 records**, using
+64 runs per renderer and scene. All **36 raw RGB mean safeguards pass**, but
+**0/48 simultaneous variance/tail bounds pass**. The common uncertainty margin
+multiplies point ratios by 251.9; 42/48 point ratios are at most 1.25. Raw pool/glass
+and two night-tail excesses remain. Passing the permissive mean safeguards does
+not establish equal converged images, and the current margin's driver is unresolved.
 
-Exact GPU replays traced selected extreme contributions through smooth water,
-a submerged coated surface, water again and the environment. The observed
-throughput and MIS weight do not show an unexplained amplification. A controlled
-modified-PBRT replay then confirmed that outer roulette amplified one raw
-contribution by about 6.64 times while the authored clamp reduced both versions
-to essentially the same value. The subsequent 64-run reference control disables
-only outer roulette: the day pool variance ratio falls from 1.323 to 0.998 and
-the tail-energy ratio from 4.594 to 0.972. All renders and replay controls pass.
-This accounts for the observed pool gap in the fixed population; other regions,
-night-time behavior and fresh quality admission remain separate.
+## Deferred follow-up
 
-The local renderer-27 candidate adds eta-compensated outer roulette to packet PT
-and reserves the existing unused continuation variate. BDPT keeps its existing
-walk. Contracts are **3/12/27/9/2**; the Vertex remains 1,008 bytes in a 1,024-byte
-slot. All 17 focused Release tests pass with Metal API validation, including
-native analytic energy, later dispersion and exact scheduling/checkpoint tests.
-The separate CLI check and 12 decoder tests pass; selected shallow PT and BDPT
-captures match renderer26 exactly. Current CI and fresh scene qualification
-remain pending. See [roulette validation](packet-roulette-validation.md) for
-the estimator, numerical fallbacks and measured scope.
-
-The specular texture-footprint policy difference remains open and has no measured
-variance attribution yet. Fresh candidate quality, complete performance acceptance
-and final **1600×850 day-256/night-512** renders remain outstanding. No parity,
-convergence or time-to-quality claim follows from the diagnostic replays.
+The [Pavilion investigation record](pavilion-convergence-follow-up.md) preserves
+exact metrics, consumed seeds, source/model identities, images, artifact locations
+and a concrete restart sequence in [issue #52](https://github.com/rlefko/rypath/issues/52).
+Raw bias versus variance, per-sample clamping's
+effect on the limiting image, secondary specular texture footprints, and time to
+a shared quality target remain open. No further Pavilion study is running.
 
 Full pinned-corpus coverage and offline MVP acceptance remain unestablished.
 Unsupported geometry/media receive explicit diagnostics; broader materials,

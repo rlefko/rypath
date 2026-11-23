@@ -155,14 +155,19 @@ clarifies the work; completion is recorded in [status](status.md).
     Renderer 21 corrects a coating MIS proposal-measure error, with reduced
     physical and scalar/packet regression evidence. Buffered accelerated hashing
     reduces measured identity cost; opt-in timing separates host and GPU phases.
-    See the [closure record](pavilion-closure-validation.md). Whole-region sampling,
-    held-out scene quality and final performance comparisons remain required.
+    See the [closure record](pavilion-closure-validation.md). Whole-region sampling
+    and held-out scene quality remain acceptance requirements.
     Renderer26's completed fresh study passes all 36 raw-mean safeguards but none
     of the 48 simultaneous variance/tail bounds. Exact outlier replays now identify
     a measured interaction between reference roulette and authored clamping;
-    [packet PT roulette](packet-roulette-validation.md) is the current estimator
-    follow-up, with native numerical checks passing and fresh scene quality and
-    performance qualification pending.
+    [packet PT roulette](packet-roulette-validation.md) adds eta-compensated
+    continuation. Renderer27 passes native checks, final image audits and all six
+    controlled timing gates; its fresh study completes with 36/36 raw-mean safeguards
+    and 0/48 simultaneous noise bounds passing. At the maintainer's request,
+    further Pavilion investigation is deferred from PR #51 to the
+    [documented follow-up](pavilion-convergence-follow-up.md). Raw bias versus
+    variance, clamped expectations and specular texture footprints remain open;
+    quality acceptance is not waived or recorded as passed.
     Remaining process cost and time to a shared quality target are open.
     Modified-PBRT night comparisons isolate the importance correction as a major
     cause of the brightness difference; the floor BDPT/PT gap remains open.
