@@ -244,6 +244,16 @@ else()
     target_sources(rypath_reconstruction PRIVATE src/reconstruction_stub.cpp)
 endif()
 
+if(RYPATH_ENABLE_METAL)
+    add_library(rypath_camera_motion STATIC src/metal_camera_medium.mm)
+    target_link_libraries(rypath_camera_motion PUBLIC rypath_reconstruction
+        PRIVATE "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_camera_motion PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    target_compile_options(rypath_camera_motion PRIVATE -fobjc-arc)
+    rypath_configure_host_target(rypath_camera_motion)
+endif()
+
 add_executable(rypath src/main.cpp)
 set_target_properties(rypath PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
 target_compile_definitions(rypath PRIVATE RYPATH_VERSION="${PROJECT_VERSION}")
@@ -259,6 +269,27 @@ target_link_libraries(rypath_frame_benchmark PRIVATE rypath_reconstruction rypat
 target_compile_definitions(rypath_frame_benchmark PRIVATE
     RYPATH_BUILD_DESCRIPTION="${PROJECT_VERSION} ${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION} $<CONFIG> source=${rypath_source_digest} flags=${rypath_flags_digest}")
 rypath_configure_host_target(rypath_frame_benchmark)
+
+if(RYPATH_ENABLE_METAL)
+    find_library(RYPATH_APPKIT_FRAMEWORK AppKit REQUIRED)
+    find_library(RYPATH_QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+    add_executable(rypath_viewer src/viewer.mm src/viewer_options.cpp)
+    set_target_properties(rypath_viewer PROPERTIES OUTPUT_NAME rypath-viewer
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
+        MACOSX_BUNDLE TRUE MACOSX_BUNDLE_GUI_IDENTIFIER "dev.rypath.viewer"
+        MACOSX_BUNDLE_BUNDLE_NAME "rypath" MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        LINK_DEPENDS "${rypath_metal_library}"
+        OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
+    add_custom_command(TARGET rypath_viewer POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${rypath_metal_library}"
+            "$<TARGET_FILE_DIR:rypath_viewer>/rypath.metallib" VERBATIM)
+    target_compile_options(rypath_viewer PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
+    target_link_libraries(rypath_viewer PRIVATE rypath_camera_motion rypath_pbrt_render
+        "${RYPATH_APPKIT_FRAMEWORK}" "${RYPATH_QUARTZCORE_FRAMEWORK}"
+        "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    rypath_configure_host_target(rypath_viewer)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
