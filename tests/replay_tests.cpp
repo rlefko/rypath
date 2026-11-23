@@ -78,6 +78,8 @@ void payload_and_domains() {
         case 4:
             changed.seed_high ^= 0x80000000u;
             break;
+        default:
+            throw std::runtime_error("Unexpected fresh identity field");
         }
         require(!equal(state, rr::fresh(changed)), "Fresh identity retains all high words");
     }
@@ -106,6 +108,8 @@ void explicit_mutations() {
             case 4:
                 mutated.wavelength ^= 0xffffffffu;
                 break;
+            default:
+                throw std::runtime_error("Unexpected explicit replay coordinate");
             }
             require(array(rr::tail_words(mutated, address)) == expected,
                     "Explicit coordinate mutation preserves entire tail identity");

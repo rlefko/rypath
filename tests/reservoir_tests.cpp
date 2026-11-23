@@ -34,8 +34,12 @@ struct Outcome {
     long double probability = 0, exact_weight = 0;
     float returned_weight = 0;
 };
-long double update(reservoir::State &state, float weight, long double target,
-                   long double selector) {
+struct Candidate {
+    float weight;
+    long double target;
+};
+long double update(reservoir::State &state, Candidate candidate, long double selector) {
+    const auto [weight, target] = candidate;
     const long double score = static_cast<long double>(weight) * static_cast<float>(target);
     const long double ideal_new = score / (static_cast<long double>(state.score_sum) + score);
     const bool want_new = selector < ideal_new;
@@ -89,9 +93,9 @@ std::vector<Outcome> fresh_pool() {
             const long double p_new = target_a[j] / (target_a[i] + target_a[j]);
             for (unsigned choose_new = 0; choose_new < 2; ++choose_new) {
                 reservoir::State state;
-                update(state, 1, target_a[i], .375L);
+                update(state, {1, target_a[i]}, .375L);
                 const auto actual_p =
-                    update(state, 1, target_a[j], choose_new ? p_new / 2 : (1 + p_new) / 2);
+                    update(state, {1, target_a[j]}, choose_new ? p_new / 2 : (1 + p_new) / 2);
                 const unsigned value = choose_new ? j : i;
                 const auto weight = finish(state, 2, choose_new);
                 outcomes.push_back({value, (choose_new ? actual_p : 1 - actual_p) / 9,
@@ -131,11 +135,11 @@ std::vector<Outcome> reuse_pool(const std::vector<Outcome> &old, bool duplicate)
             for (unsigned second_import = 0; second_import < imported_count; ++second_import)
                 for (unsigned choose_fresh = 0; choose_fresh < 2; ++choose_fresh) {
                     reservoir::State state;
-                    update(state, source.returned_weight, target_b[source.value], .375L);
+                    update(state, {source.returned_weight, target_b[source.value]}, .375L);
                     if (duplicate)
-                        update(state, source.returned_weight, target_b[source.value],
+                        update(state, {source.returned_weight, target_b[source.value]},
                                second_import ? .25L : .75L);
-                    const auto actual_p = update(state, 1, target_b[fresh],
+                    const auto actual_p = update(state, {1, target_b[fresh]},
                                                  choose_fresh ? p_fresh / 2 : (1 + p_fresh) / 2);
                     const unsigned selected =
                         choose_fresh ? imported_count : (duplicate && second_import ? 1 : 0);
@@ -161,9 +165,9 @@ void black_paths() {
             const auto p_new = target[j] / (target[i] + target[j]);
             for (unsigned choose_new = 0; choose_new < 2; ++choose_new) {
                 reservoir::State state;
-                update(state, 1, target[i], .375L);
+                update(state, {1, target[i]}, .375L);
                 const auto actual_p =
-                    update(state, 1, target[j], choose_new ? p_new / 2 : (1 + p_new) / 2);
+                    update(state, {1, target[j]}, choose_new ? p_new / 2 : (1 + p_new) / 2);
                 const auto selected = choose_new ? j : i;
                 const auto weight = finish(state, 2, choose_new);
                 correct += (choose_new ? actual_p : 1 - actual_p) * f[selected] * weight / 4;
@@ -174,9 +178,9 @@ void black_paths() {
             if (i || j) {
                 reservoir::State skipped;
                 if (i)
-                    update(skipped, 1, target[i], .375L);
+                    update(skipped, {1, target[i]}, .375L);
                 if (j)
-                    update(skipped, 1, target[j], .375L);
+                    update(skipped, {1, target[j]}, .375L);
                 const auto weight = reservoir::finalize(skipped);
                 require(weight.status == reservoir::Status::ok, "Black-skip control setup");
                 skipped_control += 2 * weight.value / 4;
@@ -516,7 +520,7 @@ void contracts() {
                 "Invalid support floor rejected");
     }
     reservoir::State undecided;
-    update(undecided, 1, 1, .375L);
+    update(undecided, {1, 1}, .375L);
     auto pending = reservoir::prepare_update(undecided, 1, 1);
     require(reservoir::commit_update(undecided, pending).status == reservoir::Status::incomplete &&
                 reservoir::finalize(undecided).status == reservoir::Status::incomplete,
@@ -529,7 +533,7 @@ void contracts() {
             "A committed preparation cannot be replayed against changed state");
     for (const unsigned invalid_bits : {0u, 23u, 278u}) {
         reservoir::State state;
-        update(state, 1, 1, .375L);
+        update(state, {1, 1}, .375L);
         auto malformed_selector = reservoir::prepare_update(state, 1, 1);
         malformed_selector.rare_probability.bit_count = invalid_bits;
         require(reservoir::feed_random_word(malformed_selector, 0) ==
