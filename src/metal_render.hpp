@@ -77,7 +77,7 @@ struct RenderBuildResult {
     double pipeline_seconds = 0;
     // Zero preserves the default packet workspace policy for synthetic sources.
     std::uint32_t packet_lane_capacity = 0;
-    ShadowTraversalSelection shadow_traversal;
+    ShadowTraversalSelection shadow_traversal{};
 };
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path = {});

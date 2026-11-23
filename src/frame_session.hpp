@@ -128,7 +128,7 @@ struct FrameSessionBuildResult {
     MetalDeviceInfo device;
     std::string diagnostic;
     std::unique_ptr<FrameSession> session;
-    ShadowTraversalSelection shadow_traversal;
+    ShadowTraversalSelection shadow_traversal{};
 };
 // PT only. Callers explicitly copy/override authored BDPT before building.
 FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &,
