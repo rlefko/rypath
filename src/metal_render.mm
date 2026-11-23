@@ -4,6 +4,8 @@
 #include "analytic.hpp"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "frame_session.hpp"
+#include "frame_wire.h"
 #include "native_hint_budget.hpp"
 #include "render_timings.hpp"
 
@@ -30,6 +32,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <new>
 #include <numbers>
 #include <ranges>
@@ -1749,6 +1752,77 @@ struct MetalRenderScene::Impl {
         return upload_graph(scene);
     }
 
+    void encode(id<MTLComputeCommandEncoder> encoder, const wire::Parameters &p,
+                const wire::TextureParameters &texture_p, id<MTLBuffer> output,
+                NSUInteger group_width, id<MTLBuffer> frame_graph_nodes = nil,
+                id<MTLBuffer> frame_surface_transforms = nil) {
+        const auto group_count = (p.lane_count + group_width - 1) / group_width;
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBytes:&p length:sizeof(p) atIndex:0];
+        [encoder setBuffer:output offset:0 atIndex:1];
+        if (p.instance_count != 0 || p.packet_transport) {
+            if (empty_packet_structure != nil)
+                [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:2];
+            else
+                MetalGeometryAccess::bind(*geometry, encoder, 2);
+            [encoder setBuffer:instances offset:0 atIndex:3];
+            [encoder setBuffer:positions offset:0 atIndex:4];
+            [encoder setBuffer:triangles offset:0 atIndex:5];
+            [encoder setBuffer:materials offset:0 atIndex:6];
+            [encoder setBuffer:knots offset:0 atIndex:8];
+            [encoder setBuffer:area_emissions offset:0 atIndex:9];
+            [encoder setBuffer:emitters offset:0 atIndex:10];
+            [encoder setBuffer:normals offset:0 atIndex:11];
+            [encoder setBuffer:patches offset:0 atIndex:13];
+            if (p.packet_transport) {
+                if (empty_packet_structure != nil)
+                    [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:14];
+                else
+                    MetalGeometryAccess::bind_hint(*geometry, encoder, 14);
+            } else
+                [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
+            [encoder setBuffer:texture_uvs offset:0 atIndex:15];
+            [encoder setBuffer:texture_frames offset:0 atIndex:16];
+            [encoder setBuffer:image_textures offset:0 atIndex:17];
+            [encoder setBuffer:image_levels offset:0 atIndex:18];
+            [encoder setBuffer:image_texels offset:0 atIndex:19];
+            [encoder setBuffer:image_transfer offset:0 atIndex:20];
+            [encoder setBuffer:image_spectra offset:0 atIndex:21];
+            [encoder setBytes:&texture_p length:sizeof(texture_p) atIndex:22];
+            [encoder setBuffer:frame_graph_nodes != nil ? frame_graph_nodes : graph_nodes
+                        offset:0
+                       atIndex:23];
+            [encoder setBuffer:graph_knots offset:0 atIndex:24];
+            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:25];
+            [encoder setBuffer:surface_vertices offset:0 atIndex:26];
+            [encoder setBuffer:frame_surface_transforms != nil ? frame_surface_transforms
+                                                               : surface_transforms
+                        offset:0
+                       atIndex:27];
+            [encoder setBuffer:environment_cdf offset:0 atIndex:28];
+            [encoder setBuffer:illuminant offset:0 atIndex:29];
+            [encoder setBuffer:material_data offset:0 atIndex:30];
+        }
+        if (p.instance_count == 0 && texture_p.texture_count != 0) {
+            [encoder setBuffer:image_textures offset:0 atIndex:17];
+            [encoder setBuffer:image_levels offset:0 atIndex:18];
+            [encoder setBuffer:image_texels offset:0 atIndex:19];
+            [encoder setBuffer:image_transfer offset:0 atIndex:20];
+            [encoder setBuffer:image_spectra offset:0 atIndex:21];
+            [encoder setBytes:&texture_p length:sizeof(texture_p) atIndex:22];
+            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:25];
+            [encoder setBuffer:illuminant offset:0 atIndex:29];
+        }
+        [encoder setBuffer:environment offset:0 atIndex:7];
+        [encoder setBuffer:sampling_tables offset:0 atIndex:12];
+        // The sky pipeline may retain this argument even when runtime medium
+        // and light counts are zero. upload_auxiliary_data supplies a sentinel.
+        if (p.instance_count == 0)
+            [encoder setBuffer:material_data offset:0 atIndex:30];
+        [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
+    }
+
     RenderSamplesResult sample(const RenderRequest &request, RenderTimings *timings = nullptr) {
         RenderTimingScope setup(timings, RenderTimingPhase::dispatch_setup);
         RenderSamplesResult result;
@@ -1899,65 +1973,7 @@ struct MetalRenderScene::Impl {
             result.diagnostic = "Metal render compute encoder creation failed";
             return result;
         }
-        [encoder setComputePipelineState:pipeline];
-        [encoder setBytes:&p length:sizeof(p) atIndex:0];
-        [encoder setBuffer:output offset:0 atIndex:1];
-        if (p.instance_count != 0 || p.packet_transport) {
-            if (empty_packet_structure != nil)
-                [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:2];
-            else
-                MetalGeometryAccess::bind(*geometry, encoder, 2);
-            [encoder setBuffer:instances offset:0 atIndex:3];
-            [encoder setBuffer:positions offset:0 atIndex:4];
-            [encoder setBuffer:triangles offset:0 atIndex:5];
-            [encoder setBuffer:materials offset:0 atIndex:6];
-            [encoder setBuffer:knots offset:0 atIndex:8];
-            [encoder setBuffer:area_emissions offset:0 atIndex:9];
-            [encoder setBuffer:emitters offset:0 atIndex:10];
-            [encoder setBuffer:normals offset:0 atIndex:11];
-            [encoder setBuffer:patches offset:0 atIndex:13];
-            if (p.packet_transport) {
-                if (empty_packet_structure != nil)
-                    [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:14];
-                else
-                    MetalGeometryAccess::bind_hint(*geometry, encoder, 14);
-            } else
-                [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
-            [encoder setBuffer:texture_uvs offset:0 atIndex:15];
-            [encoder setBuffer:texture_frames offset:0 atIndex:16];
-            [encoder setBuffer:image_textures offset:0 atIndex:17];
-            [encoder setBuffer:image_levels offset:0 atIndex:18];
-            [encoder setBuffer:image_texels offset:0 atIndex:19];
-            [encoder setBuffer:image_transfer offset:0 atIndex:20];
-            [encoder setBuffer:image_spectra offset:0 atIndex:21];
-            [encoder setBytes:&texture_p length:sizeof(texture_p) atIndex:22];
-            [encoder setBuffer:graph_nodes offset:0 atIndex:23];
-            [encoder setBuffer:graph_knots offset:0 atIndex:24];
-            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:25];
-            [encoder setBuffer:surface_vertices offset:0 atIndex:26];
-            [encoder setBuffer:surface_transforms offset:0 atIndex:27];
-            [encoder setBuffer:environment_cdf offset:0 atIndex:28];
-            [encoder setBuffer:illuminant offset:0 atIndex:29];
-            [encoder setBuffer:material_data offset:0 atIndex:30];
-        }
-        if (p.instance_count == 0 && texture_p.texture_count != 0) {
-            [encoder setBuffer:image_textures offset:0 atIndex:17];
-            [encoder setBuffer:image_levels offset:0 atIndex:18];
-            [encoder setBuffer:image_texels offset:0 atIndex:19];
-            [encoder setBuffer:image_transfer offset:0 atIndex:20];
-            [encoder setBuffer:image_spectra offset:0 atIndex:21];
-            [encoder setBytes:&texture_p length:sizeof(texture_p) atIndex:22];
-            [encoder setBytes:&graph_parameters length:sizeof(graph_parameters) atIndex:25];
-            [encoder setBuffer:illuminant offset:0 atIndex:29];
-        }
-        [encoder setBuffer:environment offset:0 atIndex:7];
-        [encoder setBuffer:sampling_tables offset:0 atIndex:12];
-        // The sky pipeline may retain this argument even when runtime medium
-        // and light counts are zero. upload_auxiliary_data supplies a sentinel.
-        if (p.instance_count == 0)
-            [encoder setBuffer:material_data offset:0 atIndex:30];
-        [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
+        encode(encoder, p, texture_p, output, group_width);
         [encoder endEncoding];
         setup.close();
         result.diagnostic = render_timed(timings, RenderTimingPhase::dispatch_wait, [&] {
@@ -2118,6 +2134,521 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request, Rende
             return {.diagnostic = "Metal render scene is moved-from", .samples = {}};
         return impl_->sample(request, &timings);
     }
+}
+
+struct Frame::Impl {
+    // The completion block retains this lease without retaining the command
+    // buffer itself, so completion safety does not depend on breaking a cycle.
+    struct Retention {
+        std::shared_ptr<MetalRenderScene> renderer;
+        id<MTLBuffer> raw = nil, status = nil, scratch = nil;
+        id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
+    };
+    std::shared_ptr<Retention> retention;
+    id<MTLDevice> device = nil;
+    id<MTLCommandQueue> queue = nil;
+    id<MTLCommandBuffer> command = nil;
+    id<MTLBuffer> raw = nil, status = nil, scratch = nil;
+    FrameInfo info;
+    mutable std::mutex capture_mutex;
+};
+struct FrameSession::Impl {
+    std::shared_ptr<MetalRenderScene> renderer;
+    FrameConfig config;
+    RenderScene camera_scene;
+    bool supports_camera_medium = false;
+    id<MTLComputePipelineState> initialize = nil, resolve = nil;
+    id<MTLBuffer> cie = nil;
+    struct Slot {
+        std::weak_ptr<Frame::Impl::Retention> active;
+        id<MTLBuffer> raw = nil, scratch = nil, status = nil;
+        id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
+        std::optional<wire::Point> rebased_origin;
+    };
+    std::array<Slot, 2> slots;
+    std::size_t tile_count = 0, scratch_bytes = 0;
+
+    std::string prepare(std::unique_ptr<MetalRenderScene> owner, const RenderScene &scene,
+                        const FrameConfig &settings, const std::filesystem::path &library_path) {
+        renderer = std::move(owner);
+        config = settings;
+        supports_camera_medium = scene.model == RenderModel::pbrt && scene.volume_transport &&
+                                 scene.spectral_transport == SpectralTransport::scalar;
+        camera_scene.model = scene.model;
+        camera_scene.camera = scene.camera;
+        camera_scene.raster_camera = scene.raster_camera;
+        camera_scene.perspective_lens = scene.perspective_lens;
+        camera_scene.filter = scene.filter;
+        auto &r = *renderer->impl_;
+        std::string error;
+        auto library = metal::load_library(r.device, library_path, error);
+        if (library == nil)
+            return error;
+        initialize = metal::load_pipeline(r.device, library, @"rypath_frame_initialize", error);
+        if (initialize == nil)
+            return error;
+        resolve = metal::load_pipeline(r.device, library, @"rypath_frame_resolve", error);
+        if (resolve == nil)
+            return error;
+        auto handshake = metal::load_pipeline(r.device, library, @"rypath_frame_contract", error);
+        if (handshake == nil)
+            return error;
+        auto check = [r.device newBufferWithLength:sizeof(std::uint32_t)
+                                           options:MTLResourceStorageModeShared];
+        if (check == nil)
+            return "Frame contract allocation failed";
+        *static_cast<std::uint32_t *>(check.contents) = 0;
+        auto command = [r.queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        if (command == nil || encoder == nil)
+            return "Frame contract encoder creation failed";
+        [encoder setComputePipelineState:handshake];
+        [encoder setBuffer:check offset:0 atIndex:0];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        error = metal::complete(command, "frame contract");
+        if (!error.empty())
+            return error;
+        if (*static_cast<const std::uint32_t *>(check.contents) != frame_wire::contract)
+            return "Metal frame shader contract mismatch; rebuild the metallib";
+        std::vector<wire::Point> table;
+        table.reserve(471);
+        for (unsigned i = 0; i < 471; ++i)
+            table.push_back(pack(scene.model == RenderModel::pbrt ? pbrt_cie_xyz(360 + i)
+                                                                  : wavelength_xyz(360 + i)));
+        cie = upload(r.device, table);
+        if (cie == nil)
+            return "Frame sensor table allocation failed";
+        const auto stride =
+            r.parameters.packet_transport ? r.parameters.packet_lane_bytes : sizeof(wire::Sample);
+        tile_count = std::min<std::size_t>(
+            render_tile_capacity,
+            r.parameters.packet_transport ? r.packet_payload_bytes / stride : render_tile_capacity);
+        tile_count = std::min<std::size_t>(tile_count, std::uint64_t(config.width) * config.height);
+        if (!tile_count)
+            return "Frame transport workspace has no lanes";
+        const auto group = metal::group_width(r.device, r.pipeline);
+        // Include rounded dispatch lanes and one untouched scalar sentinel slot.
+        scratch_bytes = r.parameters.packet_transport
+                            ? tile_count * stride + 64
+                            : ((tile_count + group - 1) / group * group + 1) * stride;
+        const std::uint64_t raw_bytes =
+            std::uint64_t(config.width) * config.height * sizeof(wire::Point);
+        const auto budget = std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30);
+        // Include two captures as well as both persistent output/scratch/status slots.
+        const auto total = 2 * (2 * raw_bytes + scratch_bytes + sizeof(frame_wire::Status) +
+                                r.graph_nodes.length + r.surface_transforms.length) +
+                           cie.length;
+        if (raw_bytes > r.device.maxBufferLength || scratch_bytes > r.device.maxBufferLength ||
+            total > budget ||
+            (r.device.recommendedMaxWorkingSetSize &&
+             total > r.device.recommendedMaxWorkingSetSize))
+            return "Frame slots exceed the transient or device memory budget";
+        return {};
+    }
+    std::string rebase_camera(Slot &slot, wire::Point origin, std::uint64_t &uploaded) {
+        auto &r = *renderer->impl_;
+        if (slot.rebased_origin && slot.rebased_origin->x == origin.x &&
+            slot.rebased_origin->y == origin.y && slot.rebased_origin->z == origin.z)
+            return {};
+        // A slot is available only after its previous frame and GPU lease are
+        // gone. Rewrite that slot's shared upload buffers from immutable originals.
+        if (r.graph_parameters.node_count && slot.graph_nodes == nil)
+            slot.graph_nodes = [r.device newBufferWithLength:r.graph_nodes.length
+                                                     options:MTLResourceStorageModeShared];
+        if (r.surface_transforms != nil && slot.surface_transforms == nil)
+            slot.surface_transforms = [r.device newBufferWithLength:r.surface_transforms.length
+                                                            options:MTLResourceStorageModeShared];
+        if ((r.graph_parameters.node_count && slot.graph_nodes == nil) ||
+            (r.surface_transforms != nil && slot.surface_transforms == nil))
+            return "Camera mapping rebase buffer allocation failed";
+        const std::array<double, 3> delta{double(origin.x) - r.parameters.origin.x,
+                                          double(origin.y) - r.parameters.origin.y,
+                                          double(origin.z) - r.parameters.origin.z};
+        // Do not retain the old cache key if validation fails after a partial write.
+        slot.rebased_origin.reset();
+        if (slot.graph_nodes != nil) {
+            std::memcpy(slot.graph_nodes.contents, r.graph_nodes.contents, r.graph_nodes.length);
+            auto *nodes = static_cast<texture_graph_wire::Node *>(slot.graph_nodes.contents);
+            for (std::size_t n = 0; n < r.graph_parameters.node_count; ++n) {
+                auto &m = nodes[n].mapping.texture_from_render;
+                for (unsigned row = 0; row < 3; ++row) {
+                    double t = m[row * 4 + 3];
+                    for (unsigned axis = 0; axis < 3; ++axis)
+                        t += double(m[row * 4 + axis]) * delta[axis];
+                    m[row * 4 + 3] = static_cast<float>(t);
+                    if (!std::isfinite(m[row * 4 + 3]))
+                        return "Camera texture graph rebase exceeds the finite domain";
+                }
+            }
+            uploaded += slot.graph_nodes.length;
+        }
+        if (slot.surface_transforms != nil) {
+            std::memcpy(slot.surface_transforms.contents, r.surface_transforms.contents,
+                        r.surface_transforms.length);
+            auto *transforms =
+                static_cast<wire::SurfaceTransform *>(slot.surface_transforms.contents);
+            for (std::size_t n = 0;
+                 n < r.surface_transforms.length / sizeof(wire::SurfaceTransform); ++n) {
+                auto &t = transforms[n].definition_translation;
+                t = {static_cast<float>(double(t.x) - delta[0]),
+                     static_cast<float>(double(t.y) - delta[1]),
+                     static_cast<float>(double(t.z) - delta[2])};
+                if (!finite(t))
+                    return "Camera surface translation rebase exceeds the finite domain";
+            }
+            uploaded += slot.surface_transforms.length;
+        }
+        slot.rebased_origin = origin;
+        return {};
+    }
+};
+Frame::Frame(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Frame::~Frame() = default;
+Frame::Frame(Frame &&) noexcept = default;
+Frame &Frame::operator=(Frame &&) noexcept = default;
+FrameInfo Frame::poll() const {
+    if (!impl_)
+        return {.status = FrameStatus::failed, .diagnostic = "Frame is moved-from"};
+    auto info = impl_->info;
+    const auto command = impl_->command;
+    if (command.status == MTLCommandBufferStatusError) {
+        info.status = FrameStatus::failed;
+        info.diagnostic = "Metal frame command failed";
+        if (command.error)
+            info.diagnostic += ": " + std::string(command.error.localizedDescription.UTF8String);
+    } else if (command.status == MTLCommandBufferStatusCompleted) {
+        frame_wire::Status status{};
+        std::memcpy(&status, impl_->status.contents, sizeof(status));
+        info.completed_samples = status.completed;
+        info.gpu_time_valid = std::isfinite(command.GPUStartTime) &&
+                              std::isfinite(command.GPUEndTime) && command.GPUStartTime > 0 &&
+                              command.GPUEndTime >= command.GPUStartTime &&
+                              std::isfinite(command.GPUEndTime - command.GPUStartTime);
+        if (info.gpu_time_valid)
+            info.gpu_seconds = command.GPUEndTime - command.GPUStartTime;
+        if (status.failure || status.completed != std::uint64_t(info.width) * info.height) {
+            info.status = FrameStatus::failed;
+            info.diagnostic = "GPU frame validation failed: invalid, missing, or non-finite sample";
+        } else
+            info.status = FrameStatus::complete;
+    }
+    return info;
+}
+FrameInfo Frame::wait() const {
+    if (impl_)
+        [impl_->command waitUntilCompleted];
+    return poll();
+}
+FrameCapture Frame::capture() const {
+    @autoreleasepool {
+        if (!impl_)
+            return {.diagnostic = "Frame is moved-from"};
+        std::lock_guard capture_lock(impl_->capture_mutex);
+        const auto info = wait();
+        FrameCapture result;
+        result.width = info.width;
+        result.height = info.height;
+        if (info.status != FrameStatus::complete) {
+            result.diagnostic = info.diagnostic;
+            return result;
+        }
+        auto staging = [impl_->device newBufferWithLength:impl_->raw.length
+                                                  options:MTLResourceStorageModeShared];
+        if (staging == nil) {
+            result.diagnostic = "Frame capture allocation failed";
+            return result;
+        }
+        auto command = [impl_->queue commandBuffer];
+        auto encoder = [command blitCommandEncoder];
+        if (command == nil || encoder == nil) {
+            result.diagnostic = "Frame capture encoder creation failed";
+            return result;
+        }
+        [encoder copyFromBuffer:impl_->raw
+                   sourceOffset:0
+                       toBuffer:staging
+              destinationOffset:0
+                           size:impl_->raw.length];
+        [encoder endEncoding];
+        result.diagnostic = metal::complete(command, "frame capture");
+        if (!result.diagnostic.empty())
+            return result;
+        result.raw_xyz.resize(std::size_t(info.width) * info.height);
+        static_assert(sizeof(result.raw_xyz[0]) == sizeof(wire::Point));
+        std::memcpy(result.raw_xyz.data(), staging.contents, staging.length);
+        result.status = GeometryStatus::success;
+        return result;
+    }
+}
+FrameSession::FrameSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+FrameSession::~FrameSession() = default;
+FrameSession::FrameSession(FrameSession &&) noexcept = default;
+FrameSession &FrameSession::operator=(FrameSession &&) noexcept = default;
+FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
+    @autoreleasepool {
+        FrameSubmitResult result;
+        if (!impl_) {
+            result.diagnostic = "Frame session is moved-from";
+            return result;
+        }
+        auto slot = std::find_if(impl_->slots.begin(), impl_->slots.end(),
+                                 [](const auto &s) { return s.active.expired(); });
+        if (slot == impl_->slots.end()) {
+            result.busy = true;
+            result.diagnostic = "Both frame slots are retained";
+            return result;
+        }
+        auto &r = *impl_->renderer->impl_;
+        auto p = r.parameters;
+        auto texture = r.texture_parameters;
+        if (request.camera && request.camera->camera_medium) {
+            const auto medium = *request.camera->camera_medium;
+            if (medium != no_medium && !impl_->supports_camera_medium) {
+                result.diagnostic = "Camera medium overrides require a scalar PBRT volume session";
+                return result;
+            }
+            if (medium != no_medium && medium >= p.medium_count) {
+                result.diagnostic = "Frame camera medium index is outside the scene media";
+                return result;
+            }
+            p.camera_medium = medium;
+        }
+        auto camera_scene = impl_->camera_scene;
+        if (request.camera) {
+            camera_scene.camera = request.camera->camera;
+            camera_scene.raster_camera = request.camera->raster_camera;
+            camera_scene.perspective_lens = request.camera->perspective_lens;
+        }
+        if (camera_scene.model == RenderModel::pbrt && !camera_scene.raster_camera) {
+            result.diagnostic = "PBRT frame camera requires raster coefficients";
+            return result;
+        }
+        if (camera_scene.model == RenderModel::demo &&
+            (!(camera_scene.camera.vertical_fov_degrees > 0) ||
+             !(camera_scene.camera.vertical_fov_degrees < 180))) {
+            result.diagnostic =
+                "Demo frame camera field of view must be between zero and 180 degrees";
+            return result;
+        }
+        const auto camera = camera_parameters(camera_scene);
+        if (!finite(camera.origin) || !finite(camera.forward) || !finite(camera.right) ||
+            !finite(camera.up) || !std::isfinite(camera.film_scale) ||
+            !std::isfinite(camera.lens_radius) || camera.lens_radius < 0) {
+            result.diagnostic = "Invalid frame camera";
+            return result;
+        }
+        if (p.packet_transport &&
+            (!finite(camera.camera_normal) || !std::isfinite(camera.camera_image_area) ||
+             !(camera.camera_image_area > 0) || !std::isfinite(camera.camera_plane_depth) ||
+             !(camera.camera_plane_depth > 0))) {
+            result.diagnostic = "Frame packet camera projection is invalid";
+            return result;
+        }
+        p.origin = camera.origin;
+        p.forward = camera.forward;
+        p.right = camera.right;
+        p.up = camera.up;
+        p.film_scale = camera.film_scale;
+        p.lens_radius = camera.lens_radius;
+        p.focal_distance = camera.focal_distance;
+        p.lens_x = camera.lens_x;
+        p.lens_y = camera.lens_y;
+        p.camera_normal = camera.camera_normal;
+        p.camera_plane_depth = camera.camera_plane_depth;
+        p.camera_image_area = camera.camera_image_area;
+        const auto &c = impl_->config;
+        if (camera_scene.model == RenderModel::pbrt) {
+            result.diagnostic = validate_raster_support(*camera_scene.raster_camera,
+                                                        camera_scene.filter, c.width, c.height);
+            if (result.diagnostic.empty() && camera_scene.perspective_lens)
+                result.diagnostic = validate_lens_support(*camera_scene.raster_camera,
+                                                          *camera_scene.perspective_lens,
+                                                          camera_scene.filter, c.width, c.height);
+            if (!result.diagnostic.empty())
+                return result;
+        }
+        if (texture.texture_count || r.graph_parameters.node_count) {
+            if (request.camera) {
+                if (!request.camera->texture_camera) {
+                    result.diagnostic = "Textured camera snapshots require texture camera matrices";
+                    return result;
+                }
+                const auto &tc = *request.camera->texture_camera;
+                if (!std::ranges::all_of(tc.world_from_camera,
+                                         [](float v) { return std::isfinite(v); }) ||
+                    !std::ranges::all_of(tc.camera_from_world,
+                                         [](float v) { return std::isfinite(v); })) {
+                    result.diagnostic = "Texture camera matrices must be finite";
+                    return result;
+                }
+                for (unsigned row = 0; row < 3; ++row)
+                    for (unsigned col = 0; col < 3; ++col) {
+                        double ab = 0, ba = 0;
+                        for (unsigned k = 0; k < 3; ++k) {
+                            ab += double(tc.world_from_camera[row * 3 + k]) *
+                                  tc.camera_from_world[k * 3 + col];
+                            ba += double(tc.camera_from_world[row * 3 + k]) *
+                                  tc.world_from_camera[k * 3 + col];
+                        }
+                        if (std::abs(ab - (row == col ? 1 : 0)) > 32 * FLT_EPSILON ||
+                            std::abs(ba - (row == col ? 1 : 0)) > 32 * FLT_EPSILON) {
+                            result.diagnostic = "Texture camera matrices must be inverse pairs";
+                            return result;
+                        }
+                    }
+                std::ranges::copy(tc.world_from_camera, texture.world_from_camera);
+                std::ranges::copy(tc.camera_from_world, texture.camera_from_world);
+            }
+            TextureCameraDifferentials differentials;
+            result.diagnostic = prepare_texture_camera_differentials(
+                unpack(p.forward), unpack(p.right), unpack(p.up), c.width, c.height, differentials);
+            if (!result.diagnostic.empty())
+                return result;
+            texture.minimum_dx = pack(differentials.minimum_dx);
+            texture.minimum_dy = pack(differentials.minimum_dy);
+            texture.spp_scale =
+                static_cast<float>(std::max(.125, 1. / std::sqrt(double(c.footprint_samples))));
+        }
+        id<MTLBuffer> frame_graph_nodes = nil, frame_surface_transforms = nil;
+        std::uint64_t camera_upload_bytes = 0;
+        if (p.origin.x != r.parameters.origin.x || p.origin.y != r.parameters.origin.y ||
+            p.origin.z != r.parameters.origin.z) {
+            result.diagnostic = impl_->rebase_camera(*slot, p.origin, camera_upload_bytes);
+            if (!result.diagnostic.empty())
+                return result;
+            frame_graph_nodes = slot->graph_nodes;
+            frame_surface_transforms = slot->surface_transforms;
+        }
+        p.width = c.width;
+        p.height = c.height;
+        p.sample_low = static_cast<wire::Word>(request.sample_index);
+        p.sample_high = static_cast<wire::Word>(request.sample_index >> 32);
+        p.seed_low = static_cast<wire::Word>(c.seed);
+        p.seed_high = static_cast<wire::Word>(c.seed >> 32);
+        p.material_seed = c.material_seed;
+        p.sampler_kind = wire::independent_sampler;
+        p.emergency_limit = render_emergency_limit;
+        p.boundary_limit = medium_boundary_limit;
+        auto frame = std::make_shared<Frame::Impl>();
+        frame->device = r.device;
+        frame->queue = r.queue;
+        frame->info = {.width = c.width,
+                       .height = c.height,
+                       .sample_index = request.sample_index,
+                       .epoch = request.epoch,
+                       .camera_upload_bytes = camera_upload_bytes};
+        if (slot->raw == nil)
+            slot->raw =
+                [r.device newBufferWithLength:std::size_t(c.width) * c.height * sizeof(wire::Point)
+                                      options:MTLResourceStorageModePrivate];
+        if (slot->scratch == nil)
+            slot->scratch = [r.device newBufferWithLength:impl_->scratch_bytes
+                                                  options:MTLResourceStorageModePrivate];
+        if (slot->status == nil)
+            slot->status = [r.device newBufferWithLength:sizeof(frame_wire::Status)
+                                                 options:MTLResourceStorageModeShared];
+        frame->raw = slot->raw;
+        frame->scratch = slot->scratch;
+        frame->status = slot->status;
+        if (frame->raw == nil || frame->scratch == nil || frame->status == nil) {
+            result.diagnostic = "Frame slot allocation failed";
+            return result;
+        }
+        frame->retention = std::make_shared<Frame::Impl::Retention>();
+        frame->retention->renderer = impl_->renderer;
+        frame->retention->raw = frame->raw;
+        frame->retention->status = frame->status;
+        frame->retention->scratch = frame->scratch;
+        frame->retention->graph_nodes = frame_graph_nodes;
+        frame->retention->surface_transforms = frame_surface_transforms;
+        std::memset(frame->status.contents, 0, sizeof(frame_wire::Status));
+        frame->command = [r.queue commandBuffer];
+        auto encoder = [frame->command computeCommandEncoder];
+        if (frame->command == nil || encoder == nil) {
+            result.diagnostic = "Frame command creation failed";
+            return result;
+        }
+        const auto pixels = std::uint64_t(c.width) * c.height;
+        const auto group = metal::group_width(r.device, r.pipeline);
+        for (std::uint64_t begin = 0; begin < pixels; begin += impl_->tile_count) {
+            p.pixel_begin = static_cast<wire::Word>(begin);
+            p.pixel_count = p.lane_count =
+                static_cast<wire::Word>(std::min<std::uint64_t>(pixels - begin, impl_->tile_count));
+            frame_wire::Parameters f{
+                p.lane_count,
+                p.pixel_begin,
+                p.sample_low,
+                p.sample_high,
+                p.packet_transport ? p.packet_lane_bytes
+                                   : static_cast<wire::Word>(sizeof(wire::Sample)),
+                p.packet_transport,
+                p.model,
+                static_cast<wire::Word>(p.packet_transport
+                                            ? p.lane_count * p.packet_lane_bytes + 64
+                                            : ((p.lane_count + group - 1) / group * group + 1) *
+                                                  sizeof(wire::Sample))};
+            [encoder setComputePipelineState:impl_->initialize];
+            [encoder setBytes:&f length:sizeof(f) atIndex:0];
+            [encoder setBuffer:frame->scratch offset:0 atIndex:1];
+            [encoder dispatchThreads:MTLSizeMake(p.lane_count, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            r.encode(encoder, p, texture, frame->scratch, group, frame_graph_nodes,
+                     frame_surface_transforms);
+            [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            [encoder setComputePipelineState:impl_->resolve];
+            [encoder setBytes:&f length:sizeof(f) atIndex:0];
+            [encoder setBuffer:frame->scratch offset:0 atIndex:1];
+            [encoder setBuffer:frame->raw offset:0 atIndex:2];
+            [encoder setBuffer:frame->status offset:0 atIndex:3];
+            [encoder setBuffer:impl_->cie offset:0 atIndex:4];
+            [encoder dispatchThreads:MTLSizeMake(p.lane_count, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        }
+        [encoder endEncoding];
+        // Releasing a handle before completion cannot release its scene or buffers.
+        const auto retained = frame->retention;
+        [frame->command addCompletedHandler:^(id<MTLCommandBuffer>) {
+          (void)retained;
+        }];
+        slot->active = retained;
+        [frame->command commit];
+        result.frame = std::unique_ptr<Frame>(new Frame(std::move(frame)));
+        result.status = GeometryStatus::success;
+        return result;
+    }
+}
+FrameSessionBuildResult build_frame_session(const RenderScene &scene, const FrameConfig &config,
+                                            const std::filesystem::path &library_path) {
+    FrameSessionBuildResult result;
+    const auto pixels = std::uint64_t(config.width) * config.height;
+    if (!pixels || pixels > max_index || !config.footprint_samples ||
+        !config.transient_byte_limit) {
+        result.diagnostic = "Invalid frame dimensions, footprint budget, or memory budget";
+        return result;
+    }
+    if (scene.integrator == IntegratorKind::bdpt || std::isfinite(scene.max_component_value)) {
+        result.diagnostic =
+            "Live frame sessions require explicit PT and unclamped raw scene overrides";
+        return result;
+    }
+    auto built = build_metal_renderer(scene, library_path);
+    result.device = built.device;
+    result.status = built.status;
+    result.diagnostic = built.diagnostic;
+    if (built.status != GeometryStatus::success)
+        return result;
+    auto impl = std::make_unique<FrameSession::Impl>();
+    result.diagnostic = impl->prepare(std::move(built.scene), scene, config, library_path);
+    if (!result.diagnostic.empty()) {
+        result.status = GeometryStatus::failure;
+        return result;
+    }
+    result.session = std::unique_ptr<FrameSession>(new FrameSession(std::move(impl)));
+    result.status = GeometryStatus::success;
+    return result;
 }
 
 namespace {

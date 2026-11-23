@@ -48,3 +48,31 @@ ShadingNormalProbeResult probe_shading_normal(const std::vector<shading_normal_p
 }
 
 } // namespace rypath
+
+#include "frame_session.hpp"
+namespace rypath {
+struct Frame::Impl {};
+struct FrameSession::Impl {};
+Frame::Frame(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Frame::~Frame() = default;
+Frame::Frame(Frame &&) noexcept = default;
+Frame &Frame::operator=(Frame &&) noexcept = default;
+FrameInfo Frame::poll() const {
+    return {.status = FrameStatus::failed, .diagnostic = "Metal backend was not built"};
+}
+FrameInfo Frame::wait() const { return poll(); }
+FrameCapture Frame::capture() const {
+    return {.status = GeometryStatus::not_built, .diagnostic = "Metal backend was not built"};
+}
+FrameSession::FrameSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+FrameSession::~FrameSession() = default;
+FrameSession::FrameSession(FrameSession &&) noexcept = default;
+FrameSession &FrameSession::operator=(FrameSession &&) noexcept = default;
+FrameSubmitResult FrameSession::submit(const FrameRequest &) {
+    return {.status = GeometryStatus::not_built, .diagnostic = "Metal backend was not built"};
+}
+FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &,
+                                            const std::filesystem::path &) {
+    return {.status = GeometryStatus::not_built, .diagnostic = "Metal backend was not built"};
+}
+} // namespace rypath

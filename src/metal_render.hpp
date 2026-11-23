@@ -50,6 +50,7 @@ class MetalRenderScene {
     RenderSamplesResult sample(const RenderRequest &request, RenderTimings &timings);
 
   private:
+    friend class FrameSession;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     explicit MetalRenderScene(std::unique_ptr<Impl> impl);
