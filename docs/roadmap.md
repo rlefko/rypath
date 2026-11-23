@@ -212,9 +212,9 @@ viewer and measured M4 Max qualification. Offline acceptance above remains open;
 interactive work does not imply that those quality and compatibility gates pass.
 
 Resident native frames, bounded wavefront execution and opt-in full-replay Area
-reuse with corrected MCMC mutations and retained MetalFX reconstruction are
-implemented. The native viewer and complete-pipeline quality/performance
-qualification remain subsequent boundaries.
+reuse with corrected MCMC mutations, retained MetalFX reconstruction and a
+signed-float temporal fallback are implemented. The native viewer and
+complete-pipeline quality/performance qualification remain subsequent boundaries.
 
 Broader conformance includes full OBJ non-polygon geometry, additional mesh
 formats, PBRT materials/cameras, curves, motion, and heterogeneous media.
