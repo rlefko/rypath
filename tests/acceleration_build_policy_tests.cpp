@@ -17,6 +17,8 @@ int main() try {
             throw std::runtime_error("Acceleration build policy mapping");
     }
     if (parse_acceleration_build_policy("fast") ||
+        // Intentionally exercise rejection of a value outside the declared enum cases.
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
         valid_acceleration_build_policy(static_cast<AccelerationBuildPolicy>(99)) ||
         FrameConfig{}.acceleration_build_policy != policies[0] ||
         RenderBuildOptions{}.acceleration_build_policy != policies[0] ||
