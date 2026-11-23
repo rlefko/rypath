@@ -2,6 +2,7 @@
 #include "frame_benchmark_motion.hpp"
 #include "metal_frame_access.hpp"
 #include "metal_reconstruction_access.hpp"
+#include "metalfx_conditioning.hpp"
 #include "pbrt_render.hpp"
 #include "render_identity.hpp"
 #include "resource_limits.hpp"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <bit>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -140,6 +142,8 @@ void help() {
            "  --replay-list FILE [--replay-spatial 0..5] --resource-profile NAME\n"
            "  --variance-policy paired|center|conservative --variance-prefilter on|off\n"
            "  --strict-spatial-segments on|off --save-online-mean on|off\n"
+           "  --metalfx-conditioning on|off --metalfx-guide-policy primary|appearance\n"
+           "  --metalfx-exposure X (positive half-float display hint, default1)\n"
            "Native diagnostic captures only; output directory must be fresh, artifact root capped "
            "at 8 GiB.\n";
 }
@@ -153,6 +157,9 @@ struct Options {
     std::set<std::uint64_t> captures;
     std::uint32_t replay_spatial = 5;
     std::string capture_mode = "final";
+    bool metalfx_conditioning = false;
+    MetalFXGuidePolicy metalfx_guide_policy = MetalFXGuidePolicy::primary_surface;
+    float metalfx_exposure = 1;
     SpatialVariancePolicy spatial_variance_policy = SpatialVariancePolicy::paired;
     bool variance_prefilter = false, strict_spatial_segments = false, save_online_mean = false;
     bool variance_policy_explicit = false, variance_prefilter_explicit = false,
@@ -175,7 +182,18 @@ Options parse(int argc, char **argv) {
             o.replay_list = value;
         else if (key == "--roi-file")
             o.roi_file = value;
-        else if (key == "--variance-policy") {
+        else if (key == "--metalfx-conditioning")
+            o.metalfx_conditioning = on_off(value);
+        else if (key == "--metalfx-guide-policy") {
+            require(value == "primary" || value == "appearance",
+                    "MetalFX guide policy must be primary or appearance");
+            o.metalfx_guide_policy = value == "primary" ? MetalFXGuidePolicy::primary_surface
+                                                        : MetalFXGuidePolicy::appearance;
+        } else if (key == "--metalfx-exposure") {
+            o.metalfx_exposure = finite_float(value);
+            require(o.metalfx_exposure >= 0x1p-24f && o.metalfx_exposure <= 65504.f,
+                    "MetalFX exposure must be positive finite half-float metadata");
+        } else if (key == "--variance-policy") {
             o.spatial_variance_policy = variance_policy(value);
             o.variance_policy_explicit = true;
         } else if (key == "--variance-prefilter") {
@@ -250,6 +268,10 @@ Options parse(int argc, char **argv) {
     require(o.replay_list.empty() ||
                 (!o.reference_samples && !o.motion_offset && !o.reference_offset),
             "Replay cannot combine reference or motion options");
+    require((!o.reference_samples && o.replay_list.empty()) ||
+                (!seen.contains("--metalfx-conditioning") &&
+                 !seen.contains("--metalfx-guide-policy") && !seen.contains("--metalfx-exposure")),
+            "MetalFX comparator options require diagnostic fanout");
     require(o.replay_spatial <= 5, "Replay spatial count exceeds five");
     require(!o.variance_prefilter || o.spatial_variance_policy == SpatialVariancePolicy::center,
             "--variance-prefilter on requires --variance-policy center");
@@ -404,6 +426,10 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
         @"strict_spatial_segments" : @(config.strict_spatial_segments),
         @"temporal_wire_version" : @(temporal_denoiser_wire::version),
         @"signed_configuration_applicable" : @(config.mode == ReconstructionMode::temporal),
+        @"metalfx_guide_policy" : config.metalfx_guide_policy == MetalFXGuidePolicy::appearance
+            ? @"appearance"
+            : @"primary",
+        @"exposure" : @(snapshot.info.exposure),
         @"history_limit" : @64,
         @"full_replay_inputs" : @(o.capture_mode == "replay" && prefix.starts_with("temporal-")),
         @"scene" : ns(fs::absolute(o.scene).string()),
@@ -515,6 +541,8 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
     arms[1].config.spatial_iterations = 0;
     arms[2].name = "metalfx";
     arms[2].config.mode = ReconstructionMode::metalfx;
+    arms[2].config.metalfx_guide_policy = o.metalfx_guide_policy;
+    std::unique_ptr<MetalFXConditioningComparator> conditioning;
     for (auto &arm : arms) {
         arm.config.capture_diagnostics = true;
         if (arm.config.mode == ReconstructionMode::temporal) {
@@ -544,18 +572,34 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                 for (unsigned c = 0; c < 3; ++c)
                     mean[p][c] += (double(rgb[c]) - mean[p][c]) / (frame + 1);
             }
+            std::vector<std::array<float, 3>> temporal_mean;
+            bool temporal_reset = true;
+            double temporal_wall = 0;
             for (auto &arm : arms) {
+                const auto arm_start = std::chrono::steady_clock::now();
                 if (!arm.stream) {
                     auto built = build_reconstruction_stream(*raw, arm.config);
                     require(built.stream != nullptr, built.diagnostic);
                     arm.stream = std::move(built.stream);
                 }
-                auto submitted = arm.stream->submit(*raw);
+                auto submitted = arm.stream->submit(
+                    *raw, ReconstructionSubmitOptions{
+                              .exposure = arm.config.mode == ReconstructionMode::metalfx
+                                              ? o.metalfx_exposure
+                                              : 1.f});
                 require(submitted.frame != nullptr, submitted.diagnostic);
                 auto info = submitted.frame->wait();
                 require(info.status == ReconstructionStatus::complete, info.diagnostic);
                 auto result = submitted.frame->capture();
                 require(result.status == GeometryStatus::success, result.diagnostic);
+                const double arm_wall =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - arm_start)
+                        .count();
+                if (o.metalfx_conditioning && arm.name == "temporal0") {
+                    temporal_mean = result.linear_rgb;
+                    temporal_reset = info.history_reset;
+                    temporal_wall = arm_wall;
+                }
                 auto hash = digest_hex(
                     sha256({reinterpret_cast<const std::uint8_t *>(result.linear_rgb.data()),
                             result.linear_rgb.size() * sizeof(result.linear_rgb[0])}));
@@ -570,6 +614,15 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                     @"offset" : @(pose.offset),
                     @"epoch" : @(pose.epoch),
                     @"reset_history" : @(info.history_reset),
+                    @"metalfx_guide_policy" :
+                                arm.config.metalfx_guide_policy == MetalFXGuidePolicy::appearance
+                        ? @"appearance"
+                        : @"primary",
+                    @"exposure" : @(info.exposure),
+                    @"directional_approximation" : @(info.counters.directional_approximation),
+                    @"appearance_replacement" : @(info.counters.appearance_replacement),
+                    @"appearance_bounded" : @(info.counters.appearance_bounded),
+                    @"appearance_fallback" : @(info.counters.appearance_fallback),
                     @"output_RGB_sha256" : ns(hash),
                     @"same_input_raw_XYZ_sha256" : ns(raw_hash),
                     @"regions" : region_means(result.linear_rgb, regions, o),
@@ -582,9 +635,93 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                         arm.config.spatial_variance_policy, arm.config.variance_prefilter,
                         arm.config.strict_spatial_segments, arm.config.spatial_iterations)
                 }];
-                if (o.captures.contains(frame)) {
+                if (o.captures.contains(frame) ||
+                    (o.metalfx_conditioning && arm.name == "metalfx")) {
+                    const auto snapshot_start = std::chrono::steady_clock::now();
                     auto snapshot =
                         MetalReconstructionStreamProbe::capture_diagnostics(*arm.stream);
+                    require(snapshot.diagnostic.empty(), snapshot.diagnostic);
+                    const double snapshot_wall =
+                        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                      snapshot_start)
+                            .count();
+                    if (o.metalfx_conditioning && arm.name == "metalfx") {
+                        auto lease = MetalFrameAccess::acquire(*raw);
+                        require(lease.lease != nullptr, lease.diagnostic);
+                        double creation_wall = 0;
+                        if (!conditioning) {
+                            const auto create_start = std::chrono::steady_clock::now();
+                            std::string diagnostic;
+                            conditioning = MetalFXConditioningComparator::create(
+                                *lease.lease, diagnostic, arm.config.near_plane);
+                            require(conditioning != nullptr, diagnostic);
+                            creation_wall = std::chrono::duration<double>(
+                                                std::chrono::steady_clock::now() - create_start)
+                                                .count();
+                        }
+                        auto conditioned = conditioning->run(*lease.lease, snapshot, temporal_mean,
+                                                             o.metalfx_exposure,
+                                                             temporal_reset || info.history_reset);
+                        require(conditioned.status == GeometryStatus::success,
+                                conditioned.diagnostic);
+                        const auto conditioned_hash = digest_hex(sha256(
+                            {reinterpret_cast<const std::uint8_t *>(conditioned.linear_rgb.data()),
+                             conditioned.linear_rgb.size() * sizeof(conditioned.linear_rgb[0])}));
+                        const auto rgb_json = [](const std::array<double, 3> &v) {
+                            return @[ @(v[0]), @(v[1]), @(v[2]) ];
+                        };
+                        NSDictionary *audit = @{
+                            @"signed_mean_RGB" : rgb_json(conditioned.audit.signed_mean_rgb),
+                            @"rectified_mean_RGB" : rgb_json(conditioned.audit.rectified_mean_rgb),
+                            @"actual_half_input_mean_RGB" :
+                                rgb_json(conditioned.audit.input_half_mean_rgb),
+                            @"negative_pixels" : @(conditioned.audit.negative_pixels),
+                            @"high_pixels" : @(conditioned.audit.high_pixels)
+                        };
+                        NSDictionary *record = @{
+                            @"frame" : @(frame),
+                            @"arm" : @"metalfx-conditioned",
+                            @"phase" : ns(pose.phase),
+                            @"offset" : @(pose.offset),
+                            @"epoch" : @(pose.epoch),
+                            @"reset_history" : @(conditioned.history_reset),
+                            @"same_input_raw_XYZ_sha256" : ns(raw_hash),
+                            @"output_RGB_sha256" : ns(conditioned_hash),
+                            @"regions" : region_means(conditioned.linear_rgb, regions, o),
+                            @"raw_regions" : region_means(raw_rgb, regions, o),
+                            @"conditioned_source" : @"temporal0 pre-spatial signed mean",
+                            @"spatial_iterations" : @0,
+                            @"metalfx_guide_policy" :
+                                        o.metalfx_guide_policy == MetalFXGuidePolicy::appearance
+                                ? @"appearance"
+                                : @"primary",
+                            @"exposure" : @(conditioned.exposure),
+                            @"clipping_audit" : audit,
+                            @"comparator_wall_seconds" : @(conditioned.wall_seconds),
+                            @"comparator_gpu_seconds" : @(conditioned.gpu_seconds),
+                            @"comparator_gpu_time_valid" : @(conditioned.gpu_time_valid),
+                            @"comparator_creation_wall_seconds" : @(creation_wall),
+                            @"upstream_temporal0_wall_seconds" : @(temporal_wall),
+                            @"fresh_metalfx_arm_wall_seconds" : @(arm_wall),
+                            @"fresh_guide_snapshot_wall_seconds" : @(snapshot_wall),
+                            @"performance_claim" : @NO,
+                            @"timing_scope" :
+                                @"diagnostic CPU uploads, MetalFX and readback; upstream temporal, "
+                                @"fresh baseline, guide capture and creation listed separately",
+                            @"approximation" : @"double temporal history plus nonnegative half "
+                                               @"boundary; no signed-fidelity repair"
+                        };
+                        [series addObject:record];
+                        if (o.captures.contains(frame)) {
+                            const auto prefix = "metalfx-conditioned-" + std::to_string(frame);
+                            save_rgb(out, prefix + "-RGB", conditioned.linear_rgb, o,
+                                     "experimental temporal-mean conditioned MetalFX output");
+                            out.json(prefix + ".json", record);
+                            [captures addObject:ns(prefix + ".json")];
+                        }
+                    }
+                    if (!o.captures.contains(frame))
+                        continue;
                     std::string prefix = arm.name + "-" + std::to_string(frame);
                     save_snapshot(out, snapshot, prefix, frame, o, info.history_reset, arm.config);
                     save_rgb(out, prefix + "-RGB", result.linear_rgb, o,
@@ -962,6 +1099,15 @@ int main(int argc, char **argv) {
                         options.replay_list.empty() ? 5u : options.replay_spatial),
                     @"signed_configuration_applicable" : @(options.reference_samples == 0),
                     @"save_online_mean" : @(options.save_online_mean),
+                    @"metalfx_conditioning" : @(options.metalfx_conditioning),
+                    @"metalfx_guide_policy" :
+                                options.metalfx_guide_policy == MetalFXGuidePolicy::appearance
+                        ? @"appearance"
+                        : @"primary",
+                    @"metalfx_exposure" : @(options.metalfx_exposure),
+                    @"conditioning_approximation" :
+                        @"optional double temporal history; nonnegative half boundary is not a "
+                        @"signed-fidelity repair",
                     @"metric_payload_deduplication" :
                         @"within-case SHA256 and byte length; descriptor path resolves aliases",
                     @"reference_offset" : options.reference_offset

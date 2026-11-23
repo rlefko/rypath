@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-#include "geometry.hpp"
+#include "metal_geometry.hpp"
 #include <array>
 #include <cstdint>
 #include <memory>

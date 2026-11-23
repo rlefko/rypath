@@ -72,3 +72,29 @@ compensation to disguise a failure.
 The diagnostic addition changes observation and resource usage only. It does not
 change transport, raw accumulation, denoiser weights, or the viewer default.
 The repair and scene-quality qualification remain subsequent work.
+
+## Experimental MetalFX comparisons
+
+The default remains fresh clamped-half MetalFX input and primary-surface guides.
+`--metalfx-guide-policy appearance` selects the bounded appearance-guide experiment;
+`--metalfx-exposure X` supplies a positive half-float display hint without changing
+input/output brightness. Both settings appear in configuration, frame series and
+capture metadata. The policy's approximation counters remain visible.
+
+`--metalfx-conditioning on` adds `metalfx-conditioned`, an independent MetalFX
+history fed by the same frame's zero-spatial signed temporal output. The adapter
+rectifies and quantizes that mean only at the MetalFX boundary. It reports signed,
+rectified and actual half-input RGB means plus negative/high pixel counts. This
+can reduce clipping of individual noisy samples; it does not establish signed
+color fidelity. Upstream temporal history followed by neural temporal history can
+add lag or ghosting. Either upstream or fresh-guide reset resets this comparator.
+No transport frame is generated for the additional arm.
+
+The comparator copies the actual quantized fresh MetalFX guides every frame,
+then uploads its own private inputs and reads back output synchronously. Reported
+wall time includes those CPU staging and readback costs; command GPU time includes
+uploads, denoising and readback. Upstream temporal-only work, fresh MetalFX baseline,
+guide snapshot and comparator creation costs are reported separately. These
+instrumented values are not rendered FPS or a production GPU-only benchmark.
+The adapter remains confined to diagnostic/test executables. Replay/reference
+runs reject these comparator options. Quality and GPU validation are pending.

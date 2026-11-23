@@ -33,6 +33,13 @@ def main():
             (["--reference-samples", "1024"], "seed"),
             (["--reference-samples", "2"], "Reference samples"),
             (["--motion-offset", "nan"], "finite"),
+            (["--metalfx-conditioning", "maybe"], "on or off"),
+            (["--metalfx-guide-policy", "other"], "policy"),
+            (["--metalfx-exposure", "0"], "exposure"),
+            (["--metalfx-exposure", "65505"], "exposure"),
+            (["--metalfx-exposure", "nan"], "finite"),
+            (["--reference-samples", "1024", "--seed", "99", "--metalfx-conditioning", "on"], "fanout"),
+            (["--replay-list", "list.json", "--metalfx-guide-policy", "primary"], "fanout"),
             (["--unknown", "1"], "Unknown"),
             (["--seed"], "missing"),
         ]
