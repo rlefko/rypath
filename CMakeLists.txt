@@ -204,7 +204,8 @@ if(RYPATH_ENABLE_METAL)
     find_library(RYPATH_IMAGEIO_FRAMEWORK ImageIO REQUIRED)
 
     target_sources(rypath_metal_backend PRIVATE
-        src/metal_backend.mm src/metal_geometry.mm src/metal_render.mm src/image_output.mm)
+        src/metal_backend.mm src/metal_geometry.mm src/metal_render.mm src/image_output.mm
+        src/metal_gpu_capture.mm)
     set_target_properties(rypath_metal_backend PROPERTIES
         OBJCXX_STANDARD 20
         OBJCXX_STANDARD_REQUIRED YES
@@ -223,7 +224,7 @@ if(RYPATH_ENABLE_METAL)
 else()
     target_sources(rypath_metal_backend PRIVATE
         src/metal_backend_stub.cpp src/metal_geometry_stub.cpp
-        src/metal_render_stub.cpp src/image_output_stub.cpp)
+        src/metal_render_stub.cpp src/image_output_stub.cpp src/gpu_capture_stub.cpp)
 endif()
 
 

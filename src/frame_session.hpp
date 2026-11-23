@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "gpu_diagnostics.hpp"
 #include "metal_render.hpp"
 
 namespace rypath {
@@ -9,6 +10,7 @@ namespace rypath {
 enum class FrameExecution { megakernel, wavefront };
 enum class FrameEstimator { independent, area_replay };
 struct FrameConfig {
+    bool profile_stages = false;
     std::uint32_t width = 0, height = 0;
     std::uint64_t seed = 1;
     std::int32_t material_seed = 0;
@@ -45,6 +47,7 @@ struct FrameRequest {
 };
 enum class FrameStatus { pending, complete, failed };
 struct FrameInfo {
+    GPUStageDiagnostics gpu_stages;
     std::uint32_t width = 0, height = 0;
     std::uint64_t sample_index = 0, epoch = 0;
     FrameStatus status = FrameStatus::pending;

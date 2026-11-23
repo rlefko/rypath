@@ -18,7 +18,14 @@ help_text = invoke(["--help"], 0).stdout
 assert "--intersections native|compensated" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--reconstructed-capture" in help_text
+assert "--profile-stages" in help_text
+assert "--capture-frame" in help_text and "--capture-path" in help_text
 for args in (
+    ["--demo", "--output", "x.json", "--capture-frame", "0"],
+    ["--demo", "--output", "x.json", "--capture-path", "x.gputrace"],
+    ["--demo", "--output", "x.json", "--capture-frame", "-1", "--capture-path", "x.gputrace"],
+    ["--demo", "--output", "x.json", "--frames", "1", "--warmup", "0", "--capture-frame", "1", "--capture-path", "x.gputrace"],
+    ["--demo", "--output", "x.json", "--capture-frame", "0", "--capture-path", "x.json"],
     [], ["--demo"], ["--demo", "--scene", "x", "--output", "x.json"],
     ["--demo", "--demo", "--output", "x.json"],
     ["--demo", "--output", "x.json", "--width", "0"],
@@ -42,6 +49,7 @@ for option, values in (
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
     ("--target-scale", ("0", "-1", "nan", "inf", "1e-45", "1e100", "1e-6x")),
     ("--intersections", ("invalid",)),
+    ("--motion-offset", ("0", "nan", "inf", "1e100", "1x")),
     ("--capacity", ("0", "65537", "-1")),
     ("--quantum", ("0", "1025", "-1")),
     ("--group-width", ("0", "257", "-1")),
@@ -75,6 +83,8 @@ for key in ("--output-width", "--output-height"):
         invoke(["--demo", "--output", "x.json", "--reconstruction", "metalfx", key, value])
 
 invoke(["--demo", "--output", "x.json", "--estimator", "area-replay", "--execution", "megakernel"])
+for frames in ("4", "7", "9"):
+    invoke(["--demo", "--output", "x.json", "--motion-offset", ".1", "--frames", frames])
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
@@ -121,6 +131,11 @@ with tempfile.TemporaryDirectory() as directory:
     assert Path(str(locked_capture) + ".pending").read_text() == "keep reconstructed pending"
     for path, content in original.items():
         assert path.read_bytes() == content
+    trace = root / "existing.gputrace"
+    trace.mkdir()
+    invoke(["--demo", "--output", str(root / "trace-report.json"),
+            "--capture-frame", "0", "--capture-path", str(trace)])
+    assert trace.is_dir() and not (root / "trace-report.json").exists()
     # Startup failures retain a complete JSON report without GPU work.
     malformed = root / "broken.pbrt"
     malformed.write_text('ThisIsNotPBRT\n')
@@ -171,6 +186,14 @@ with tempfile.TemporaryDirectory() as directory:
         assert "reconstruction mode " + mode in selected["provenance"]
         assert selected["frames"] == [] and selected["pipeline_summary"]["GPU"]["count"] == 0
         assert selected["pipeline_summary"]["cpu_wall"]["count"] == 0
+    destination = root / "profile-options.json"
+    trace = root / "fresh.gputrace"
+    invoke(["--scene", str(malformed), "--output", str(destination),
+            "--profile-stages", "--capture-frame", "0", "--capture-path", str(trace)])
+    settings = json.loads(destination.read_text())["settings"]
+    assert settings["profile_stages"] is True
+    assert settings["capture_frame"] == 0 and settings["capture_path"] == str(trace)
+    assert not trace.exists()
     destination = root / "upscale.json"
     invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",
             "--reconstruction", "metalfx", "--output-width", "34", "--output-height", "18"])

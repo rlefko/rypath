@@ -8,6 +8,7 @@
 
 namespace rypath {
 class MetalFrameLease;
+class MetalGPUStages;
 struct TemporalDenoiserInputs {
     // Signed, unexposed RGBA32Float (alpha one), native resolution.
     id<MTLTexture> color = nil;
@@ -44,7 +45,8 @@ class TemporalDenoiser {
     // 64 KiB overhead each, and two 64 KiB buffer allowances. Excludes caller
     // inputs/output and Metal pipeline objects. UINT64_MAX means invalid extent.
     static std::uint64_t owned_resource_bytes(std::uint32_t width, std::uint32_t height);
-    std::string encode(id<MTLCommandBuffer>, const TemporalDenoiserInputs &);
+    std::string encode(id<MTLCommandBuffer>, const TemporalDenoiserInputs &,
+                       MetalGPUStages *stages = nullptr);
     // Empty means clean GPU arithmetic/counts and committed history; otherwise
     // invalidates history. Never publish output before successful completion.
     std::string complete(bool command_succeeded);

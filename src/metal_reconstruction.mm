@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "metal_execution.hpp"
 #include "metal_frame_access.hpp"
+#include "metal_gpu_diagnostics.hpp"
 #include "metal_reconstruction_access.hpp"
 #include "metalfx_denoiser.hpp"
 #include "reconstruction.hpp"
@@ -351,7 +352,12 @@ struct ReconstructionStream::Impl {
             }
             return false;
         }
+        std::shared_ptr<MetalGPUStages> stages;
         void timing(id<MTLCommandBuffer> command) {
+            if (stages) {
+                std::lock_guard lock(frame->mutex);
+                stages->resolve(command, frame->info.gpu_stages);
+            }
             const bool valid = command.status == MTLCommandBufferStatusCompleted &&
                                command.GPUStartTime > 0 && std::isfinite(command.GPUStartTime) &&
                                std::isfinite(command.GPUEndTime) &&
@@ -372,6 +378,7 @@ struct ReconstructionStream::Impl {
                     frame->info.status = ReconstructionStatus::failed;
                     frame->info.diagnostic = std::move(error);
                     frame->info.gpu_time_valid = false;
+                    invalidate_gpu_stages(frame->info.gpu_stages, "invalid: reconstruction failed");
                 } else {
                     state->previous = current;
                     state->previous_lens_radius = source->parameters().lens_radius;
@@ -448,6 +455,8 @@ struct ReconstructionStream::Impl {
             for (unsigned i = 0; i < textures.size(); ++i)
                 [s.argument_encoder setTexture:textures[i] atIndex:i + 4];
             auto command = [s.queue commandBuffer];
+            command.label = @"rypath reconstruction guides and color";
+            stages = s.config.profile_stages ? std::make_shared<MetalGPUStages>(s.device) : nullptr;
             auto encoder = [command computeCommandEncoder];
             if (command == nil || encoder == nil) {
                 error = "Reconstruction command creation failed";
@@ -459,13 +468,34 @@ struct ReconstructionStream::Impl {
                 [encoder endEncoding];
                 return nil;
             }
-            [encoder useResource:s.configuration usage:MTLResourceUsageRead];
-            [encoder useResource:source->raw_xyz() usage:MTLResourceUsageRead];
-            [encoder useResource:s.nodes usage:MTLResourceUsageRead];
-            [encoder useResource:s.counters usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+            const auto use_resource = [&](id<MTLResource> resource, MTLResourceUsage usage) {
+                if (stages)
+                    stages->use_resource(encoder, resource, usage);
+                else
+                    [encoder useResource:resource usage:usage];
+            };
+            use_resource(s.configuration, MTLResourceUsageRead);
+            use_resource(source->raw_xyz(), MTLResourceUsageRead);
+            use_resource(s.nodes, MTLResourceUsageRead);
+            use_resource(s.counters, MTLResourceUsageRead | MTLResourceUsageWrite);
             for (auto input : textures)
-                [encoder useResource:input usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-            const auto dispatch = [&](const MetalFramePipeline &pipeline, NSUInteger count) {
+                use_resource(input, MTLResourceUsageRead | MTLResourceUsageWrite);
+            encoder.label = @"reconstruction guides and color";
+            const auto dispatch = [&](const MetalFramePipeline &pipeline, NSUInteger count,
+                                      const char *label) {
+                if (!error.empty())
+                    return;
+                if (stages && !stages->begin(command, encoder, label)) {
+                    error = "Profiling reconstruction encoder allocation failed";
+                    return;
+                }
+                if (stages && stages->splits_encoders()) {
+                    error = source->bind_guides(
+                        encoder, s.surface && &pipeline == s.surface.get() ? *s.surface : *s.color,
+                        s.arguments);
+                    if (!error.empty())
+                        return;
+                }
                 [encoder setComputePipelineState:pipeline.pipeline()];
                 [encoder setBuffer:s.arguments offset:0 atIndex:1];
                 [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
@@ -474,9 +504,11 @@ struct ReconstructionStream::Impl {
                                                           metal::group_width(s.device,
                                                                              pipeline.pipeline())),
                                                       1, 1)];
+                if (stages)
+                    stages->end(encoder);
                 [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
             };
-            dispatch(*s.reset, 1);
+            dispatch(*s.reset, 1, "reconstruction.reset");
             const auto pixels = std::uint64_t(s.width) * s.height;
             if (s.surface) {
                 error = source->bind_guides(encoder, *s.surface, s.arguments);
@@ -484,9 +516,13 @@ struct ReconstructionStream::Impl {
                     [encoder endEncoding];
                     return nil;
                 }
-                dispatch(*s.surface, pixels);
+                dispatch(*s.surface, pixels, "reconstruction.surface");
             }
-            dispatch(*s.color, pixels);
+            dispatch(*s.color, pixels, "reconstruction.color");
+            if (!error.empty()) {
+                [encoder endEncoding];
+                return nil;
+            }
             [encoder endEncoding];
             if (!s.denoiser && !s.temporal) {
                 auto blit = [command blitCommandEncoder];
@@ -539,6 +575,10 @@ struct ReconstructionStream::Impl {
             // establishes visibility; no ordering of a still-pending source is assumed.
             @autoreleasepool {
                 auto second = [state->queue commandBuffer];
+                second.label = @"rypath temporal reconstruction";
+                stages = state->config.profile_stages
+                             ? std::make_shared<MetalGPUStages>(state->device)
+                             : nullptr;
                 if (second == nil) {
                     finish("Temporal reconstruction command creation failed");
                     return;
@@ -574,9 +614,16 @@ struct ReconstructionStream::Impl {
                                                      .previous_depth = state->previous_depth,
                                                      .identity = state->identity,
                                                      .output = inputs.output,
-                                                     .reset_history = frame->info.history_reset});
+                                                     .reset_history = frame->info.history_reset},
+                                                    stages.get());
                 } else {
                     error = state->denoiser->encode(second, inputs);
+                    if (stages) {
+                        std::lock_guard lock(frame->mutex);
+                        frame->info.gpu_stages.requested = true;
+                        invalidate_gpu_stages(frame->info.gpu_stages,
+                                              "unavailable: opaque MetalFX dispatch stages");
+                    }
                 }
                 if (!error.empty()) {
                     finish(std::move(error));
