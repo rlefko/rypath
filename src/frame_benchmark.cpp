@@ -57,11 +57,16 @@ struct Options {
     std::uint32_t width = 1920, height = 1080;
     std::uint64_t frames = 120, warmup = 8, seed = 1;
     std::int32_t material_seed = 0;
+    rypath::IntersectionProfile intersection_profile = rypath::IntersectionProfile::native;
 };
+const char *profile_name(rypath::IntersectionProfile profile) {
+    return profile == rypath::IntersectionProfile::native ? "native" : "compensated";
+}
 const char *usage =
     "Usage: rypath-frame-benchmark (--scene SCENE.pbrt | --demo) --output REPORT.json\n"
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
-    "  [--seed 1] [--material-seed 0] [--capture FLOAT.exr] [--preview IMAGE.png]\n"
+    "  [--seed 1] [--material-seed 0] [--intersections native|compensated (default: native)]\n"
+    "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
     "Fresh output paths required. Serial resident-scene, one new sample/pixel/frame baseline.\n";
 std::string parse(int argc, char **argv, Options &o) {
     std::set<std::string_view> seen;
@@ -84,7 +89,14 @@ std::string parse(int argc, char **argv, Options &o) {
             o.capture = value;
         else if (key == "--preview")
             o.preview = value;
-        else if (key == "--width") {
+        else if (key == "--intersections") {
+            if (value == "native")
+                o.intersection_profile = rypath::IntersectionProfile::native;
+            else if (value == "compensated")
+                o.intersection_profile = rypath::IntersectionProfile::compensated;
+            else
+                return "invalid intersections profile: " + std::string(value);
+        } else if (key == "--width") {
             if (!integer(value, o.width) || !o.width)
                 return "invalid width";
         } else if (key == "--height") {
@@ -302,6 +314,7 @@ struct Report {
             << ",\"architecture\":" << quote(architecture) << ",\"registry_id\":" << registry_id
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
             << ",\"seed\":" << options.seed << ",\"material_seed\":" << options.material_seed
+            << ",\"intersection_profile\":" << quote(profile_name(options.intersection_profile))
             << ",\"integrator\":" << quote(integrator) << ",\"max_depth\":" << max_depth
             << ",\"sampler\":\"independent\",\"samples_per_pixel_per_frame\":1,\"footprint_"
                "samples\":1,"
@@ -492,6 +505,7 @@ int run(const Options &options) {
         config.seed = options.seed;
         config.material_seed = options.material_seed;
         config.footprint_samples = 1;
+        config.intersection_profile = options.intersection_profile;
         auto built = rypath::build_frame_session(scene, config);
         report.startup_seconds = seconds(start);
         report.device = built.device.name;
@@ -576,6 +590,8 @@ int run(const Options &options) {
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.footprint_samples", "1"},
                     {"rypath.frame.integrator", report.integrator},
+                    {"rypath.frame.intersection_profile",
+                     profile_name(options.intersection_profile)},
                     {"rypath.frame.spectral_mode",
                      scene.spectral_transport == rypath::SpectralTransport::packet ? "packet"
                                                                                    : "scalar"},
