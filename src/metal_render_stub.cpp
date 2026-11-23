@@ -62,17 +62,24 @@ FrameInfo Frame::poll() const {
 }
 FrameInfo Frame::wait() const { return poll(); }
 FrameCapture Frame::capture() const {
-    return {.status = GeometryStatus::not_built, .diagnostic = "Metal backend was not built"};
+    return {.status = GeometryStatus::not_built,
+            .diagnostic = "Metal backend was not built",
+            .raw_xyz = {}};
 }
 FrameSession::FrameSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 FrameSession::~FrameSession() = default;
 FrameSession::FrameSession(FrameSession &&) noexcept = default;
 FrameSession &FrameSession::operator=(FrameSession &&) noexcept = default;
 FrameSubmitResult FrameSession::submit(const FrameRequest &) {
-    return {.status = GeometryStatus::not_built, .diagnostic = "Metal backend was not built"};
+    return {.status = GeometryStatus::not_built,
+            .diagnostic = "Metal backend was not built",
+            .frame = {}};
 }
 FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &,
                                             const std::filesystem::path &) {
-    return {.status = GeometryStatus::not_built, .diagnostic = "Metal backend was not built"};
+    return {.status = GeometryStatus::not_built,
+            .device = {},
+            .diagnostic = "Metal backend was not built",
+            .session = {}};
 }
 } // namespace rypath
