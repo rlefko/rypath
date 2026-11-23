@@ -23,7 +23,7 @@ struct ReconstructionCounters {
 };
 struct ReconstructionInfo {
     ReconstructionStatus status = ReconstructionStatus::pending;
-    FrameInfo source;
+    FrameInfo source{};
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
     std::uint32_t width = 0, height = 0;
     bool history_reset = true;
@@ -31,7 +31,7 @@ struct ReconstructionInfo {
     double gpu_seconds = 0;
     bool gpu_time_valid = false;
     std::uint64_t command_count = 0;
-    ReconstructionCounters counters;
+    ReconstructionCounters counters{};
     // Signed temporal fallback only; accepted+rejected equals the input pixels.
     std::uint32_t history_accepted = 0, history_rejected = 0;
     std::string diagnostic;
@@ -43,7 +43,7 @@ struct ReconstructionCapture {
     // Unexposed linear RGB from separate presentation storage. Temporal mode
     // preserves signed float32 values; raw_rgb/MetalFX use clamped half inputs.
     // Raw XYZ is unchanged by every reconstruction mode.
-    std::vector<std::array<float, 3>> linear_rgb;
+    std::vector<std::array<float, 3>> linear_rgb{};
 };
 class ReconstructionStream;
 class MetalReconstructedFrameLease;
@@ -72,7 +72,7 @@ struct ReconstructionSubmitResult {
     FrameStatus source_status = FrameStatus::failed;
     bool busy = false;
     std::string diagnostic;
-    std::unique_ptr<ReconstructedFrame> frame;
+    std::unique_ptr<ReconstructedFrame> frame{};
 };
 struct ReconstructionBuildResult;
 // Externally serialize submit(). One submission may be pending, while two result
@@ -97,7 +97,7 @@ struct ReconstructionBuildResult {
     GeometryStatus status = GeometryStatus::failure;
     FrameStatus source_status = FrameStatus::failed;
     std::string diagnostic;
-    std::unique_ptr<ReconstructionStream> stream;
+    std::unique_ptr<ReconstructionStream> stream{};
 };
 ReconstructionBuildResult build_reconstruction_stream(const Frame &,
                                                       const ReconstructionConfig & = {});
