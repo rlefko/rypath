@@ -98,14 +98,33 @@ inline SurfaceHit packet_pt_trace(thread Resources &r, thread wire::Sample &samp
                : trace_surface(closest, incoming, r.scene, all_visible, r.intersection_table);
 }
 
+// The common numerical body is force-inlined into two distinct noinline entry
+// functions. The ordinary event keeps the original three-argument interface;
+// pretraced shading cannot retain a nullable-hit branch or event-trace fallback.
+struct PacketTraceEvent {};
+struct PacketPretracedEvent {
+    thread const SurfaceHit &hit;
+};
+[[clang::always_inline]] inline SurfaceHit
+packet_event_hit(thread Resources &r, thread wire::Sample &sample, const thread Wavelengths &lambda,
+                 ray incoming, const thread PacketTraceEvent &) {
+    return packet_pt_trace(r, sample, lambda, incoming);
+}
+[[clang::always_inline]] inline SurfaceHit
+packet_event_hit(thread Resources &, thread wire::Sample &, const thread Wavelengths &, ray,
+                 const thread PacketPretracedEvent &source) {
+    return source.hit;
+}
+
 // One traced/shaded event, including at most one transparent boundary. The
 // numerical body deliberately mirrors random_walk as an independent initial
 // execution control. Preserve sampled and represented-density checks, exact local
 // pairs, offsets, material streams and eta roulette when maintaining either path.
-[[clang::noinline]] inline void
-packet_pt_step(thread Resources &r, thread PacketPTState &state,
-               thread const rypath_replay::ReplayState *replay = nullptr,
-               thread const SurfaceHit *pretraced = nullptr) {
+template <typename HitSource>
+[[clang::always_inline]] inline void
+packet_pt_event_body(thread Resources &r, thread PacketPTState &state,
+                     thread const rypath_replay::ReplayState *replay,
+                     const thread HitSource &hit_source) {
     if (state.complete)
         return;
     const constant auto &p = *r.alpha.parameters;
@@ -137,7 +156,7 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        const auto hit = pretraced ? *pretraced : packet_pt_trace(r, sample, lambda, incoming);
+        const auto hit = packet_event_hit(r, sample, lambda, incoming, hit_source);
         if (!hit.valid) {
             sample.status = wire::invalid_hit;
             break;
@@ -441,6 +460,19 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
         state.preceding_type = state.latest.type;
         state.latest = current;
     }
+}
+[[clang::noinline]] inline void
+packet_pt_step(thread Resources &r, thread PacketPTState &state,
+               thread const rypath_replay::ReplayState *replay = nullptr) {
+    const PacketTraceEvent source{};
+    packet_pt_event_body(r, state, replay, source);
+}
+[[clang::noinline]] inline void
+packet_pt_step_pretraced(thread Resources &r, thread PacketPTState &state,
+                         thread const rypath_replay::ReplayState *replay,
+                         thread const SurfaceHit &hit) {
+    const PacketPretracedEvent source{hit};
+    packet_pt_event_body(r, state, replay, source);
 }
 inline storage::Result packet_pt_result(const thread PacketPTState &state,
                                         constant wire::Parameters &p) {

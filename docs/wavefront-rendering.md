@@ -252,3 +252,83 @@ cutoff. This bounded evidence establishes neither general bit identity nor a
 speedup, and does not replace a matched Release performance/quality study.
 Receipts, exact commands, per-policy images, decoder script, hashes and the ABI
 probe are retained outside Git under `.cache/validation/packet-schedule-001/`.
+
+### Compile-time packet-policy specialization
+
+The first runtime-policy experiment remains retained in history and frozen
+artifacts. Its paired screen is separate from the specialization below; no
+policy is promoted by changing the implementation mechanism.
+
+Apple's [function-specialization guide](https://developer.apple.com/documentation/metal/using-function-specialization-to-build-pipeline-variants)
+describes pipeline variants with function constants; its
+[unspecialized function lookup](https://developer.apple.com/documentation/metal/mtllibrary/makefunction(name:))
+provides function-constant metadata for capability checks. Our seven-policy
+adaptation does not establish register occupancy or a speedup.
+
+Session construction specializes wavefront-only Metal function constants 23
+(layout) and 24 (events), retaining the scene's material, intersection and opaque
+visibility constants. All seven supported policies share kernel source but get
+separate specialized pipelines. The packed/one-event branch has a single call
+to the original three-argument, non-inlined packet-step interface, with direct
+packed state access and no runtime event loop or nullable hit source. The
+numerical event body is force-inlined into the ordinary and pretraced step
+functions; prepared scattering, random draws and contribution order are unchanged.
+The split function receives a non-null hit reference and has no event-trace
+fallback. Its ready flag is checked only against the original event eligibility;
+complete, zero-throughput and invalid-ray states still reach their original
+termination/failure handling without requiring a hit.
+
+Wire contract 6 preserves the buffer layouts and rejects older libraries before
+loading policy pipelines. The host verifies specialization constants on the
+actual selected packet entry; effective report settings remain null until a
+session builds successfully. Reset checks runtime config against compiled
+policy constants. The queue test covers all 49 compiled/requested-policy pairs
+and requires a mismatch to fail before issuing or completing owners. A matched
+performance comparison against both the frozen pre-packet implementation and
+the retained runtime-policy experiment remains separate; no speedup is established
+by this implementation mechanism or the correctness checks below.
+
+The existing packet-scattering GPU probe also exercises the production split-hit
+guard through a private shared shader helper, without adding a renderer/host
+test API. Its fixed outcome table includes eligible missing and
+corrupt hit flags, a valid hit, complete/depth/zero-throughput exits, invalid ray
+and throughput inputs, and stale/sentinel hit flags. This isolates the new guard
+branches; the full frame controls separately validate original completion,
+arithmetic failure and raw-image behavior.
+
+#### Specialization correctness checks
+
+On November 23, 2026, source digest
+`2cdb69d00f1e06818117816833d168281da6ea5078f49d13967d92bf457114f8`
+passes the packet-scattering, expanded frame and queue checks on M4 Max in Debug,
+Release and ASan/UBSan with Metal API validation. The 14 ready-guard cases and
+49 compiled/requested-policy pairs pass, as do the alpha, procedural and
+compensated-profile image controls. The thread-reference pretraced wrapper
+compiles on the validated Metal toolchain. Strict LLVM 18 portable syntax and
+focused clang-tidy checks pass, along with CLI/motion/diagnostics tests.
+
+The initial Debug frame attempt timed out at 300.04 s; a contemporaneous process
+snapshot showed its Metal compiler service at 99.2% CPU while the test waited.
+That failed attempt remains retained. The frame-test bound is now 900 s, and
+fixture/policy progress is logged before pipeline creation. The retry passes in
+49.27 s; this cache-dependent duration is not a renderer-performance measurement.
+Release's three focused GPU checks pass in 28.93 s and ASan/UBSan's in 16.57 s.
+No numerical comparison or failure check was relaxed.
+
+All seven policies complete three 64×64 frames for each of independent and
+Area-one replay, with temporal reconstruction (42 complete pipeline frames).
+Independent OpenEXR/NumPy decoding finds every final raw and reconstructed image
+bit-identical to its same-estimator packed/one-event control. An additional
+nine-frame control combines split tracing, opaque-auto shadows, fast-all native
+AS builds, cached guides and profiling on/off: final raw and reconstructed
+images agree bit for bit with query/packed controls, and profiled stage samples
+are complete and finite. The cache correctly misses twice while previous-camera
+validity changes, then hits; an initial harness expectation of a frame-one hit
+was corrected with its failed audit retained. The host explicitly rejects the
+frozen contract-5 metallib, whose SHA-256 remains unchanged.
+
+Evidence, exact commands, images, decode hashes and failed attempts are retained
+outside Git under `.cache/validation/packet-specialization-001/`. The fresh
+Release executable and metallib are frozen separately as
+`core-speed-001/frozen-packet-specialized`; earlier frozen builds are unchanged.
+These are bounded correctness controls, not occupancy or speedup measurements.

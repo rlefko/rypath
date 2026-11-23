@@ -252,6 +252,8 @@ RenderScene medium(bool boundaries) {
 }
 FrameCapture scheduling_case(const RenderScene &scene, std::string_view label,
                              IntersectionProfile profile = IntersectionProfile::native) {
+    std::cerr << "Wavefront control fixture=" << label << " profile=" << static_cast<int>(profile)
+              << std::endl;
     auto mega = configuration(FrameExecution::megakernel);
     mega.intersection_profile = profile;
     auto reference = build_frame_session(scene, mega);
@@ -355,6 +357,8 @@ void packet_visibility_policy_cases() {
             control.capacity = 17;
             control.quantum = 1;
             control.intersection_profile = profile;
+            std::cerr << "Visibility baseline fixture=" << scene_index
+                      << " profile=" << static_cast<int>(profile) << std::endl;
             auto baseline = build_frame_session(scene, control);
             require(baseline.status == GeometryStatus::success && baseline.session,
                     baseline.diagnostic);
@@ -371,6 +375,10 @@ void packet_visibility_policy_cases() {
                     auto config = control;
                     config.packet_layout = layout;
                     config.packet_events = events;
+                    std::cerr << "Visibility policy fixture=" << scene_index
+                              << " profile=" << static_cast<int>(profile)
+                              << " layout=" << static_cast<int>(layout) << " events=" << events
+                              << std::endl;
                     auto built = build_frame_session(scene, config);
                     require(built.status == GeometryStatus::success && built.session,
                             built.diagnostic);
@@ -403,7 +411,9 @@ void packet_scheduling_variants() {
                                             fixture("coated-path.pbrt"),
                                             packet_history(false, 4),
                                             packet_history(true, 4)};
+    unsigned scene_index = 0;
     for (const auto &scene : scenes) {
+        std::cerr << "Packet policy baseline fixture=" << scene_index << std::endl;
         auto control = configuration(FrameExecution::wavefront);
         control.capacity = 17;
         control.quantum = 1;
@@ -421,6 +431,9 @@ void packet_scheduling_variants() {
                     config.packet_layout = layout;
                     config.packet_events = events;
                     config.capacity = capacity;
+                    std::cerr << "Packet policy fixture=" << scene_index
+                              << " layout=" << static_cast<int>(layout) << " events=" << events
+                              << " capacity=" << capacity << std::endl;
                     auto built = build_frame_session(scene, config);
                     require(built.status == GeometryStatus::success && built.session,
                             built.diagnostic);
@@ -440,6 +453,7 @@ void packet_scheduling_variants() {
                 }
             }
         }
+        ++scene_index;
     }
     for (const auto layout :
          {FramePacketLayout::packed, FramePacketLayout::hot_cold, FramePacketLayout::split_trace}) {

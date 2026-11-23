@@ -15,6 +15,99 @@ void metal_error(const char *operation, NSError *error) {
     std::cerr << operation << ": "
               << (error ? error.description.UTF8String : "Metal returned no NSError") << '\n';
 }
+bool split_ready(id<MTLDevice> device, id<MTLLibrary> library) {
+    struct Case {
+        const char *name = nullptr;
+        unsigned complete = 0, count = 1, capacity = 4, ready = 0;
+        std::array<float, 4> beta{1, 1, 1, 1};
+        std::array<float, 3> origin{0, 0, 0}, direction{0, 0, 1};
+        bool needs_hit = false, valid = false;
+    };
+    const std::array<Case, 14> cases{{
+        {.name = "eligible missing hit", .needs_hit = true},
+        {.name = "eligible corrupt ready", .ready = 2, .needs_hit = true},
+        {.name = "eligible accepted hit", .ready = 1, .needs_hit = true, .valid = true},
+        {.name = "already complete", .complete = 1, .valid = true},
+        {.name = "capacity reached", .count = 4, .valid = true},
+        {.name = "zero throughput", .beta = {0, 0, 0, 0}, .valid = true},
+        {.name = "invalid origin", .origin = {NAN, 0, 0}, .valid = true},
+        {.name = "invalid direction", .direction = {0, 0, INFINITY}, .valid = true},
+        {.name = "nonfinite throughput", .beta = {NAN, 1, 1, 1}, .valid = true},
+        {.name = "negative-only terminal throughput", .beta = {-1, 0, 0, 0}, .valid = true},
+        {.name = "mixed-sign invalid throughput", .beta = {-1, 1, 0, 0}, .valid = true},
+        {.name = "complete state with stale hit", .complete = 1, .ready = 1},
+        {.name = "zero throughput with corrupt ready", .ready = 2, .beta = {0, 0, 0, 0}},
+        {.name = "eligible sentinel ready", .ready = UINT32_MAX, .needs_hit = true},
+    }};
+    constexpr unsigned count = cases.size();
+    std::array<std::uint32_t, count * 16> input{};
+    for (unsigned i = 0; i < count; ++i) {
+        auto *row = input.data() + 16 * i;
+        const auto &c = cases[i];
+        row[0] = c.complete;
+        row[1] = c.count;
+        row[2] = c.capacity;
+        row[3] = c.ready;
+        for (unsigned lane = 0; lane < 4; ++lane)
+            row[4 + lane] = std::bit_cast<std::uint32_t>(c.beta[lane]);
+        for (unsigned axis = 0; axis < 3; ++axis) {
+            row[8 + axis] = std::bit_cast<std::uint32_t>(c.origin[axis]);
+            row[11 + axis] = std::bit_cast<std::uint32_t>(c.direction[axis]);
+        }
+    }
+    std::array<std::uint32_t, count * 2 + 2> initial{};
+    initial.fill(UINT32_MAX);
+    initial[count * 2] = 0x13572468u;
+    initial[count * 2 + 1] = 0x24681357u;
+    NSError *error = nil;
+    auto function = [library newFunctionWithName:@"packet_split_ready_probe"];
+    auto pipeline =
+        function ? [device newComputePipelineStateWithFunction:function error:&error] : nil;
+    auto source = [device newBufferWithBytes:input.data()
+                                      length:sizeof(input)
+                                     options:MTLResourceStorageModeShared];
+    auto output = [device newBufferWithBytes:initial.data()
+                                      length:sizeof(initial)
+                                     options:MTLResourceStorageModeShared];
+    auto queue = [device newCommandQueue];
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    if (!pipeline || !source || !output || !queue || !command || !encoder) {
+        metal_error("Packet split-ready probe setup", error);
+        return false;
+    }
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:output offset:0 atIndex:0];
+    [encoder setBuffer:source offset:0 atIndex:1];
+    [encoder setBytes:&count length:sizeof(count) atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(
+                                  std::min<NSUInteger>(32, pipeline.maxTotalThreadsPerThreadgroup),
+                                  1, 1)];
+    [encoder endEncoding];
+    [command commit];
+    [command waitUntilCompleted];
+    if (command.status != MTLCommandBufferStatusCompleted) {
+        metal_error("Packet split-ready probe execution", command.error);
+        return false;
+    }
+    const auto *values = static_cast<const std::uint32_t *>(output.contents);
+    if (!values || values[count * 2] != initial[count * 2] ||
+        values[count * 2 + 1] != initial[count * 2 + 1]) {
+        std::cerr << "Packet split-ready probe output/guard failure\n";
+        return false;
+    }
+    for (unsigned i = 0; i < count; ++i) {
+        if (values[2 * i] != unsigned(cases[i].needs_hit) ||
+            values[2 * i + 1] != unsigned(cases[i].valid)) {
+            std::cerr << "Packet split-ready case " << cases[i].name << " expected "
+                      << cases[i].needs_hit << ',' << cases[i].valid << " observed "
+                      << values[2 * i] << ',' << values[2 * i + 1] << '\n';
+            return false;
+        }
+    }
+    return true;
+}
 bool outer_roulette(id<MTLDevice> device, id<MTLLibrary> library, id<MTLBuffer> table) {
     constexpr unsigned count = 48, words = 16;
     std::array<float, count * words + 1> initial{};
@@ -683,9 +776,9 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-        if (!outer_roulette(device, library, table_buffer) || !diffuse_map(device, library) ||
-            !directional_pdf_validity(device, library) || !coating_schedule(device, library) ||
-            !coating_moments(device, library))
+        if (!split_ready(device, library) || !outer_roulette(device, library, table_buffer) ||
+            !diffuse_map(device, library) || !directional_pdf_validity(device, library) ||
+            !coating_schedule(device, library) || !coating_moments(device, library))
             return 1;
         std::cout << "1024 packet GPU cases passed, max errors " << worst[0] << ' ' << worst[1]
                   << ' ' << worst[2] << ' ' << worst[3] << ' ' << worst[4] << ' ' << worst[5] << ' '

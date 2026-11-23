@@ -2606,9 +2606,35 @@ struct FrameSession::Impl {
             !alignment_valid(contract.hit_bytes, contract.hit_alignment) || contract.reserved[0] ||
             contract.reserved[1])
             return "Metal wavefront shader contract mismatch; rebuild the metallib";
+        // Verify the actual selected packet entry before reporting any policy
+        // as effective. Older/unrelated libraries must not silently ignore the
+        // requested specialization, even if their resource sizes happen to fit.
+        if (r.parameters.packet_transport) {
+            auto declaration = [library newFunctionWithName:shade_entry];
+            bool has_layout = false, has_events = false;
+            for (MTLFunctionConstant *value in declaration.functionConstantsDictionary.allValues) {
+                has_layout |= value.index == wavefront_wire::packet_layout_constant &&
+                              value.type == MTLDataTypeUInt;
+                has_events |= value.index == wavefront_wire::packet_events_constant &&
+                              value.type == MTLDataTypeUInt;
+            }
+            if (!has_layout || !has_events)
+                return "Metal wavefront packet specialization capability missing; rebuild the "
+                       "metallib";
+        }
+        MTLFunctionConstantValues *policy_constants = [r.function_constants copy];
+        if (policy_constants == nil)
+            return "Wavefront policy specialization constants allocation failed";
+        const std::uint32_t packet_layout = static_cast<std::uint32_t>(config.packet_layout);
+        [policy_constants setConstantValue:&packet_layout
+                                      type:MTLDataTypeUInt
+                                   atIndex:wavefront_wire::packet_layout_constant];
+        [policy_constants setConstantValue:&config.packet_events
+                                      type:MTLDataTypeUInt
+                                   atIndex:wavefront_wire::packet_events_constant];
         const auto load = [&](NSString *name, id<MTLFunction> intersection = nil) {
             return metal::load_pipeline(r.device, library, name, error, intersection,
-                                        r.function_constants);
+                                        policy_constants);
         };
         wavefront->reset = load(@"rypath_wavefront_reset");
         if (wavefront->reset == nil)
@@ -2657,7 +2683,8 @@ struct FrameSession::Impl {
               wavefront->prepare_refill, wavefront->refill, wavefront->advance})
             if (pipeline != nil && config.group_width > metal::group_width(r.device, pipeline))
                 return "Wavefront group width exceeds a pipeline or device limit";
-        auto function = metal::load_function(library, @"rypath_wavefront_reset", error);
+        auto function =
+            metal::load_function(library, @"rypath_wavefront_reset", error, policy_constants);
         if (function == nil)
             return error;
         wavefront->argument_encoder = [function newArgumentEncoderWithBufferIndex:1];

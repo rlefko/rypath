@@ -1,7 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "../src/packet_spectrum_shared.h"
 #include "layered_rng_oracles.h"
+#include "packet_event_gate.h"
 #include "packet_scattering.h"
+// Real production guard, with inputs supplied by an independent host case table.
+// Only the test driver selects this probe; the renderer never calls it.
+kernel void packet_split_ready_probe(device uint2 *output [[buffer(0)]],
+                                     const device uint *input [[buffer(1)]],
+                                     constant uint &count [[buffer(2)]],
+                                     uint tid [[thread_position_in_grid]]) {
+    if (tid >= count)
+        return;
+    const device uint *row = input + 16 * tid;
+    const float4 beta = as_type<float4>(uint4(row[4], row[5], row[6], row[7]));
+    const float3 origin = as_type<float3>(uint3(row[8], row[9], row[10]));
+    const float3 direction = as_type<float3>(uint3(row[11], row[12], row[13]));
+    const bool needs_hit =
+        rypath_packet_event::needs_hit(row[0] != 0, row[1], row[2], beta, origin, direction);
+    output[tid] = uint2(needs_hit, rypath_packet_event::ready_valid(needs_hit, row[3]));
+}
+
 // The same shared RR helper used by random_walk, plus actual sampled-eta producers.
 kernel void packet_outer_roulette_probe(device float4 *output [[buffer(0)]],
                                         const device uint *table [[buffer(1)]],

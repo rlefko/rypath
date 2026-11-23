@@ -160,6 +160,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
     endif()
     if(shader STREQUAL "render" OR shader STREQUAL "packet_scattering_probe")
         list(APPEND shader_dependencies
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_event_gate.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/shading_normal_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/shading_normal_probe_wire.h")
     endif()

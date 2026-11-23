@@ -3,7 +3,23 @@
 // Included after render.metal's scalar and packet definitions, never compiled separately.
 #include "../src/wavefront_wire.h"
 #include "frame_sensor.h"
+#include "packet_event_gate.h"
 namespace wf = rypath::wavefront_wire;
+// Optional defaults keep standalone queue probes on the packed/one-event path.
+// Session pipelines always provide both values after the contract-6 handshake.
+constant uint rypath_wavefront_packet_layout [[function_constant(wf::packet_layout_constant)]];
+constant uint rypath_wavefront_packet_events [[function_constant(wf::packet_events_constant)]];
+inline uint wavefront_packet_layout() {
+    return is_function_constant_defined(rypath_wavefront_packet_layout)
+               ? rypath_wavefront_packet_layout
+               : 0u;
+}
+inline uint wavefront_packet_events() {
+    return is_function_constant_defined(rypath_wavefront_packet_events)
+               ? rypath_wavefront_packet_events
+               : 1u;
+}
+
 struct WavefrontArguments {
     device const wf::Config *config [[id(wf::config_id)]];
     device uchar *scalar_state [[id(wf::scalar_state_id)]];
@@ -35,7 +51,9 @@ inline bool wavefront_config_valid(constant WavefrontArguments &a) {
            c.group_width > 0 && c.replay_enabled <= 1 &&
            (c.packet_events == 1 || c.packet_events == 2 || c.packet_events == 4) &&
            c.packet_layout <= 2 && (c.packet_layout != 2 || c.packet_events == 1) &&
-           (c.packet || (c.packet_events == 1 && c.packet_layout == 0));
+           (c.packet || (c.packet_events == 1 && c.packet_layout == 0)) &&
+           c.packet_layout == wavefront_packet_layout() &&
+           c.packet_events == wavefront_packet_events();
 }
 inline void wavefront_dispatch(device wf::DispatchArguments *args, uint count, uint group) {
     // Division plus remainder avoids the count+group-1 overflow.
@@ -51,7 +69,7 @@ inline device rypath_bdpt::PacketPTState &wavefront_packet(constant WavefrontArg
     return reinterpret_cast<device rypath_bdpt::PacketPTState *>(a.packet_state)[slot];
 }
 inline rypath_bdpt::PacketPTState wavefront_load_packet(constant WavefrontArguments &a, uint slot) {
-    if (!a.config->packet_layout)
+    if (wavefront_packet_layout() == 0)
         return wavefront_packet(a, slot);
     const auto hot = a.packet_hot[slot];
     rypath_bdpt::PacketPTState state;
@@ -76,7 +94,7 @@ inline rypath_bdpt::PacketPTState wavefront_load_packet(constant WavefrontArgume
 }
 inline void wavefront_store_packet(constant WavefrontArguments &a, uint slot,
                                    const thread rypath_bdpt::PacketPTState &state) {
-    if (!a.config->packet_layout) {
+    if (wavefront_packet_layout() == 0) {
         wavefront_packet(a, slot) = state;
         return;
     }
@@ -391,12 +409,18 @@ kernel void rypath_wavefront_shade_scalar(RYPATH_WAVEFRONT_PARAMETERS(MixedInter
     }
 }
 
+inline bool wavefront_packet_event_needs_hit(bool complete, uint count, float4 beta, ray incoming,
+                                             uint capacity) {
+    return rypath_packet_event::needs_hit(complete, count, capacity, beta, incoming.origin,
+                                          incoming.direction);
+}
+
 kernel void
 rypath_wavefront_trace_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
     uint slot;
     if (!wavefront_slot(a, lane, slot))
         return;
-    if (!wavefront_parameters(a, p) || !a.config->packet || a.config->packet_layout != 2)
+    if (!wavefront_parameters(a, p) || !a.config->packet || wavefront_packet_layout() != 2)
         return;
     auto state = a.packet_hot[slot];
     const GraphResources graph{
@@ -417,9 +441,8 @@ rypath_wavefront_trace_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
         alpha,           knots,        emissions, emitters, environment,
         environment_cdf, light_images, &tables,   scene,    intersection_table};
     rypath_bdpt::PacketPTHit traced{};
-    if (!state.complete && state.count < p.max_depth + 2 && rypath_bdpt::nonzero(state.beta) &&
-        all(isfinite(incoming.origin)) && all(isfinite(incoming.direction)) &&
-        rypath_bdpt::finite_nonnegative(state.beta)) {
+    if (wavefront_packet_event_needs_hit(state.complete, state.count, state.beta, incoming,
+                                         p.max_depth + 2)) {
         traced.hit = rypath_bdpt::packet_pt_trace(resources, state.sample, state.lambda, incoming);
         traced.ready = 1;
     }
@@ -462,12 +485,28 @@ rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
             return;
         }
     }
-    rypath_bdpt::PacketPTHit traced{};
-    if (a.config->packet_layout == 2)
-        traced = a.packet_hit[slot];
-    for (uint event = 0; event < a.config->packet_events && !state.complete; ++event)
-        rypath_bdpt::packet_pt_step(resources, state, a.config->replay_enabled ? &replay : nullptr,
-                                    traced.ready ? &traced.hit : nullptr);
+    if (wavefront_packet_layout() == 2) {
+        const auto traced = a.packet_hit[slot];
+        const bool needs_hit = wavefront_packet_event_needs_hit(
+            state.complete, state.count, state.beta, incoming, p.max_depth + 2);
+        // Trace intentionally emits no hit for complete/zero-beta/invalid-ray
+        // states. The event body's original early exits still handle them.
+        if (!rypath_packet_event::ready_valid(needs_hit, traced.ready)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        rypath_bdpt::packet_pt_step_pretraced(
+            resources, state, a.config->replay_enabled ? &replay : nullptr, traced.hit);
+    } else if (wavefront_packet_events() == 1) {
+        // Specialization folds this into the original single-event control:
+        // direct packed load/store, no hit temporary, dynamic loop or hit arg.
+        rypath_bdpt::packet_pt_step(resources, state, a.config->replay_enabled ? &replay : nullptr);
+    } else {
+#pragma unroll
+        for (uint event = 0; event < wavefront_packet_events() && !state.complete; ++event)
+            rypath_bdpt::packet_pt_step(resources, state,
+                                        a.config->replay_enabled ? &replay : nullptr);
+    }
     wavefront_store_packet(a, slot, state);
     if (state.complete) {
         const auto result = rypath_bdpt::packet_pt_result(state, p);

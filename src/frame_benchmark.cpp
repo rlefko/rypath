@@ -1031,9 +1031,6 @@ int run(const Options &options) {
         }
         report.integrator = scene.volume_transport ? "volpath" : "path";
         report.max_depth = scene.max_depth;
-        report.packet_controls_effective =
-            scene.spectral_transport == rypath::SpectralTransport::packet &&
-            options.execution == rypath::FrameExecution::wavefront;
         report.provenance.push_back("effective exposure " + std::to_string(scene.exposure));
         report.provenance.push_back(
             "effective spectral transport " +
@@ -1074,6 +1071,10 @@ int run(const Options &options) {
         config.packet_events = options.packet_events;
         config.packet_layout = options.packet_layout;
         auto built = rypath::build_frame_session(scene, config);
+        report.packet_controls_effective =
+            built.status == rypath::GeometryStatus::success && built.session &&
+            scene.spectral_transport == rypath::SpectralTransport::packet &&
+            options.execution == rypath::FrameExecution::wavefront;
         report.acceleration_build = built.acceleration_build;
         report.startup_seconds = seconds(start);
         report.device = built.device.name;
