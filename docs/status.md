@@ -10,6 +10,14 @@ jobs (26,240 frames and 1,980 EXRs) and 108 native timing runs (3,024 frames) at
 historical source `0ef51ba`. Pavilion day/night stress performance was not measured
 in this snapshot; broader stress coverage remains open.
 
+The [core execution follow-up](core-performance.md) enables exact guide reuse.
+At `54fa952`, native static complete-pipeline p95 falls **4.5–29.5%** across the
+six scenes versus frozen `b8dc9cc`, with matching final raw/reconstructed captures.
+Only defocus meets p95 ≤50 ms in all three seeds; none meets p95 ≤33.33 ms in all
+three. Query shadows, default AS builds and packed one-event execution remain the
+defaults after the alternative policies miss their adoption gates. Moving frames
+regenerate guides; this does not remove the coated scene's shading cost.
+
 The [viewer](viewer.md) defaults to independent sampling and signed temporal
 [reconstruction](reconstruction.md). Independent/temporal has lower post-cap
 physical MSE than Area-one/temporal in all six static fixtures. Opt-in

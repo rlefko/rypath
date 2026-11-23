@@ -6,6 +6,61 @@ This follow-up targets execution cost after the
 temporal reconstruction model remain separate and unchanged. Area/MCMC estimator
 tuning is deferred; its earlier quality and speed failures remain open.
 
+## Final static configuration
+
+Exact guide reuse is enabled by default. Packed one-event execution, query
+shadows and the existing native AS build policy remain the defaults; the other
+policies remain explicit experiments. Simple SIMD counter aggregation is retained
+under its mechanical-change exemption, without claiming a meaningful speedup.
+
+The full-stack comparison uses clean Release source `54fa952` against the frozen
+`b8dc9cc` executable, with stage instrumentation disabled in both. The baseline
+includes the diagnostic infrastructure; this is not a new timing measurement of
+`4b1cc65`. Native 1920×1080, one fresh independent sample and signed temporal
+reconstruction are unchanged. The selected arm omits cache/packet/shadow/AS
+controls and exercises its actual defaults.
+
+All 36 runs complete (5,760 frames including warmup). The 36 final raw and
+reconstructed image pairs are bit-identical; per-frame sample totals, logical
+counters and history decisions agree. The table uses medians across the three
+seeds. Reduction is the median paired p95 ratio; FPS is the median of each run's
+measured-frame count divided by measured wall time, not a reciprocal median.
+
+| Scene | Baseline median, ms | Selected median, ms | Selected p95, ms | Paired p95 reduction | Selected FPS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| cornell | 73.695 | 70.334 | 72.224 | 4.52% | 14.19 |
+| many-lights | 53.578 | 50.251 | 51.593 | 5.51% | 19.88 |
+| glass | 106.702 | 89.697 | 91.140 | 15.92% | 11.16 |
+| defocus | 46.753 | 33.182 | 33.826 | 29.52% | 30.12 |
+| media | 144.659 | 128.728 | 130.905 | 11.12% | 7.77 |
+| coated | 347.977 | 315.482 | 318.130 | 9.64% | 3.19 |
+
+Every individual seed/scene improves p95; the defocus target passes the 10% gate
+and no other scene approaches the 3% regression limit. No static confirmation is
+triggered. Only defocus passes p95 ≤50 ms in all three seeds; no scene passes
+p95 ≤33.33 ms in all three. Its median throughput reaches 30.12 FPS, but that does
+not establish a 30 FPS tail guarantee. The 20–30 FPS objective remains unmet
+across the suite, especially for coated transport. Sustained results are separate.
+
+## Sustained final controls
+
+Seed 42001 uses 64 warmup frames, followed by 1,100 measured frames per Cornell
+arm and 256 per coated arm. These counts were declared before execution from the
+previous timing budget with margin. Each of the four runs exceeds both 240
+measured frames and 60 measured seconds. The four final raw/reconstructed image
+pairs are bit-identical, with matching per-frame accounting and history decisions.
+
+| Scene | Arm | Measured frames | Measured seconds | Median, ms | p95, ms | FPS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| cornell | baseline | 1100 | 81.053 | 73.709 | 75.258 | 13.57 |
+| cornell | selected | 1100 | 77.383 | 70.311 | 71.870 | 14.22 |
+| coated | baseline | 256 | 88.409 | 348.282 | 352.150 | 2.90 |
+| coated | selected | 256 | 80.225 | 315.650 | 318.265 | 3.19 |
+
+Sustained p95 falls 4.50% for Cornell and 9.62% for coated, consistent with the
+three-seed static comparison. Neither scene reaches 20 rendered FPS. These
+stationary controls do not establish sustained moving-camera performance.
+
 ## Measured stages
 
 Opt-in [stage diagnostics](frame-rendering.md#opt-in-gpu-diagnostics) on the M4 Max
@@ -94,13 +149,44 @@ alone do not establish reconstruction quality. Sustained final Cornell and
 coated controls must each include at least 240 measured frames and 60 measured
 seconds.
 
+Complete-pipeline wall time includes serial resident raw rendering and
+reconstruction, including CPU gaps between submissions. It excludes process
+startup, capture/output and viewer presentation. These are rendered-frame
+measurements, not display or frame-interpolation rates.
+
 The retained experiment plans, commands, reports, frozen binaries, independent
 decoder audits and diagnostic tables live outside Git under
 `.cache/validation/core-speed-001/` in the durable checkout. Component correctness
 receipts remain in their respective worktrees. Component static and phased motion
-qualification select exact guide reuse as the default. Fresh combined-stack and
-sustained qualification remain in progress; the component results below do not
-establish the final stack's performance.
+qualification select exact guide reuse as the default. The fresh combined-stack
+static and sustained results are reported above. Across the component screens,
+rejected candidates, qualification and sole motion confirmation, the retained
+record contains 340 runs and 39,832 frames (25,464 measured), with 340 exact final
+image comparisons (170 raw and 170 reconstructed). The final selected-versus-baseline
+studies account for 40 runs and 8,728 total frames. Component gains are not
+multiplied into the final result.
+
+For one defocus arm, after a supported Release build, use fresh output paths:
+
+```sh
+MTL_DEBUG_LAYER=0 MTL_SHADER_VALIDATION=0 MTL_CAPTURE_ENABLED=0 \
+build/release/rypath-frame-benchmark \
+  --scene tests/fixtures/pbrt-render/sampling-defaults/lens-texture.pbrt \
+  --output defocus-41001-on.json \
+  --width 1920 --height 1080 --frames 96 --warmup 64 \
+  --seed 41001 --material-seed 0 --execution wavefront --intersections native \
+  --capacity 65536 --quantum 8 --group-width 32 \
+  --estimator independent --target-scale 1 --reconstruction temporal \
+  --guide-cache on --capture defocus-41001-on-raw.exr \
+  --reconstructed-capture defocus-41001-on-reconstructed.exr
+```
+
+Use cache off/on in the same executable for the component comparison. Repeat
+with the other declared seeds and alternate arm order; motion adds
+`--motion-offset 0.1` and requires separate phase summaries. The final combined
+comparison uses separately frozen executables and omits `--guide-cache` to
+exercise their actual defaults. Disable Metal API/shader validation and capture
+instrumentation for timing, and retain the report's source/flags fingerprints.
 
 ## Exact guide-cache static qualification
 
@@ -149,6 +235,10 @@ confirmation-only and combined medians pass in every scene/phase. All 60 final
 image pairs across the initial and confirmation studies are bit-identical, with
 matching accounting and history decisions across 9,600 frames. The initial tail
 regressions remain part of the record; no further confirmation is used.
+The confirmation also contains an individual many-light translation ratio of
+1.0351. It remains in the retained seed records; the predeclared decision uses
+confirmation and combined medians, rather than requiring every individual tail
+to pass.
 
 The following values are median paired complete-pipeline p95 ratios, cache on /
 off. Combined values use the ordinary median of all six seed ratios within each
@@ -341,3 +431,31 @@ sentinels. Allocation granularity and residency can add costs. Split trace adds
 two 48-byte-per-slot hit pools; the original full prepared vertex is retained
 in every layout. The guide cache reuses its existing eight surface textures
 instead of allocating a second guide set.
+
+## Integrated correctness checks
+
+Clean source `54fa952` passes 14 focused tests in both Release and ASan/UBSan,
+with Metal API validation and no skips. Each preset covers packet scattering,
+wavefront frames/queues; raw, temporal, signed and guide reconstruction; the
+temporal denoiser; opaque shadows, native intersection characterization and AS
+build policies; benchmark CLI options, viewer options and camera reconstruction.
+The three groups take 27.04 / 122.71 / 1.20 seconds in Release and
+63.44 / 112.03 / 8.96 seconds with sanitizers. These are correctness-test durations.
+
+A separate three-frame 64² Release smoke omits cache and packet controls. It
+reports cache on, packed-one execution, native query traversal and default AS
+builds, with cache hits `[false, false, true]`, complete sample totals and finite
+FLOAT raw/reconstructed captures verified by an independent decoder. The source
+fingerprint includes both shader-body include files and agrees with the compile
+definition and embedded executable description. Frozen Release artifacts retain
+their exact source manifest and binary/metallib hashes.
+
+Earlier packet implementation `040b941` also passes its three scheduling checks
+in Debug, Release and ASan/UBSan (15.47 / 18.30 / 17.30 seconds). Its 14 policy
+controls cover 42 frames; three combined feature arms add nine frames, with exact
+final raw/reconstructed image controls. Contract eight rejects the retained older
+library. The initial overstrict refill capability-check failure remains recorded;
+the corrected check requires the constants each selected entry actually uses.
+Independent source and numerical-summary reviews report no remaining findings.
+See the PR validation summaries for mandatory full Debug publication and hosted
+CI results; the focused counts above remain tied to their measured source.

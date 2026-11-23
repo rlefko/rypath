@@ -219,10 +219,16 @@ over Area-one/temporal. MetalFX remains an explicit integration with documented
 guide and input limitations. The original qualification's four audited sustained
 controls also miss 20 FPS.
 
+The [core execution study](core-performance.md) enables exact guide reuse after
+static and phased motion controls. Fresh static p95 improves 4.5–29.5% across six
+fixtures, while the suite target remains unmet. Query shadows, default native AS
+builds and packed one-event execution remain selected; the other policies retain
+their opt-in experiments and measured limits.
+
 The next interactive work should improve importance sampling, replay/reconnection
-efficiency and guide/filter cost, then demonstrate quality per unit time against
-the independent control. The current adaptation does not reproduce the papers'
-optimized reconnection implementations, and completed studies do not imply
+efficiency, guide generation during motion and filtering, then demonstrate quality
+per unit time against the independent control. The current adaptation does not
+reproduce the papers' optimized reconnection implementations, and completed studies do not imply
 universal quality or performance acceptance.
 
 Broader conformance includes full OBJ non-polygon geometry, additional mesh

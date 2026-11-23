@@ -63,6 +63,12 @@ misses its native-1080p performance target. Four audited sustained runs also mis
 20 FPS. Pavilion stress performance remains unmeasured in this snapshot.
 Offline accumulation and checkpoints remain separate.
 
+The [core execution study](core-performance.md) enables exact surface-guide reuse
+when complete resolved inputs match. Fresh color and reconstruction still run;
+movement invalidates reuse. Static p95 improves across the six fixtures, while the
+suite's target remains open. Native query shadows, default AS builds and packed
+one-event scheduling retain their defaults; alternative policies remain opt-in.
+
 ## PBRT preflight boundary
 
 The portable reader owns source records, decoded tokens, authored numeric lexemes,
