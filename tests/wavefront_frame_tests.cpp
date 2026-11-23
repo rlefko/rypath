@@ -151,7 +151,8 @@ RenderScene fixture(std::string_view name) {
     const auto checked = pbrt::check(path);
     require(checked.exit_code() == 0, pbrt::report(checked));
     auto translated = pbrt::translate(checked, {path, 1, 1});
-    require(translated.exit_code() == 0 && translated.scene, "Owned fixture translation");
+    if (translated.exit_code() != 0 || !translated.scene)
+        throw std::runtime_error("Owned fixture translation");
     auto scene = std::move(*translated.scene);
     scene.integrator = IntegratorKind::path;
     scene.max_component_value = std::numeric_limits<double>::infinity();
