@@ -84,3 +84,23 @@ compensation to disguise a failure.
 The diagnostic addition changes observation and resource usage only. It does not
 change transport, raw accumulation, denoiser weights, or the viewer default.
 The repair and scene-quality qualification remain subsequent work.
+
+## Validation record
+
+On 2026-11-23, the diagnostic implementation through `045ee6e` was checked on
+Apple M4 Max (128 GiB), macOS 26.6 / 25G5065a, Apple Clang 21.0.0:
+
+- Debug and Release diagnostic builds succeeded. The full Debug suite passed
+  261/261 tests at `92ead0b` (documentation-only changes after `045ee6e`). The CLI
+  covers help and 14 failures before device acquisition.
+- The raw, MetalFX, signed reconstruction and temporal adapter tests passed with
+  `MTL_DEBUG_LAYER=1`. Opt-in snapshots preserve raw XYZ and exactly match outputs
+  from streams without diagnostics; reset and history isolation are exercised.
+- A four-frame, 128×128 Release capture and cold-start replay of `multibounce.pbrt`
+  passed with API validation. All four replayed RGBA output hashes and history
+  counts matched; independently compared RGB payloads were byte-identical.
+- Apple Clang's static analyzer completed for the reconstruction stream, temporal
+  adapter and diagnostic driver. Independent source review found no blockers.
+
+These checks establish the diagnostic contract, not denoiser scene quality or
+real-time performance. Large native-resolution qualification remains separate.
