@@ -41,6 +41,7 @@ struct RenderSamplesResult {
 struct RenderBuildOptions {
     IntersectionProfile intersection_profile = IntersectionProfile::compensated;
     ShadowTraversal shadow_traversal = ShadowTraversal::query;
+    AccelerationBuildPolicy acceleration_build_policy = AccelerationBuildPolicy::default_build;
 };
 struct RenderBuildResult;
 // Synchronous operations require external serialization, including sample().
@@ -78,6 +79,7 @@ struct RenderBuildResult {
     // Zero preserves the default packet workspace policy for synthetic sources.
     std::uint32_t packet_lane_capacity = 0;
     ShadowTraversalSelection shadow_traversal{};
+    AccelerationBuildInfo acceleration_build;
 };
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path = {});

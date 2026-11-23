@@ -82,6 +82,58 @@ See the
 [regression record](transport-regression-validation.md) for the numerical policy,
 measured coverage and limits.
 
+## Optional acceleration build policies
+
+`AccelerationBuildPolicy` exposes `default_build`, `fast_blas`, `fast_tlas` and
+`fast_all` through geometry/render build options and resident `FrameConfig`.
+The benchmark selects them with `--as-build default|fast-blas|fast-tlas|fast-all`.
+The default preserves existing descriptors. Fast policies are experimental and
+require the native intersection profile, the macOS 26 SDK and runtime, Apple GPU
+family 9 support and compute ray tracing. An unsupported explicit request fails
+with a diagnostic; it never silently selects the default. Compensated/offline
+builds retain their existing default behavior. Older SDKs compile the default
+path without referencing the new preference symbol.
+
+Selected BLAS and/or TLAS descriptors receive Metal's
+[`preferFastIntersection`](https://developer.apple.com/documentation/metal/mtlaccelerationstructureusage/preferfastintersection)
+usage before sizing, and the same descriptors are used for construction. This
+also covers a resident empty-scene TLAS. Scratch sizing and existing allocation
+budgets use the selected descriptor. Apple's preference may increase build time;
+no renderer speedup or equal native edge behavior is established by enabling it.
+
+Build results and benchmark JSON record requested/effective policy and capability
+support (`null` before evaluation), actual applied BLAS/TLAS counts, and successful
+retained AS sizes from [`MTLAccelerationStructure.size`](https://developer.apple.com/documentation/metal/mtlaccelerationstructure/size).
+Host build wall time sums
+intervals from sizing through allocation and GPU completion, including waits;
+it excludes geometry preparation and pipeline construction. Resource counts and
+sizes publish only on successful creation. A successful frame session also
+records `MTLDevice.currentAllocatedSize` at creation: this is device-wide Metal
+allocation accounting, including other owners, and is neither process RSS nor
+session-exclusive memory. Transient scratch, driver overhead and unrelated
+allocations must not be inferred from the retained-AS sum.
+
+Portable checks cover defaults, enum mapping and CLI metadata. The dedicated
+Metal check compares all four policies against an independent closest-hit and
+occlusion oracle on ordinary mixed triangle/patch geometry with affine instances,
+checks resident-session propagation and applied-level telemetry, and verifies
+explicit rejection when the requested capability/profile is unsupported. These
+bounded correctness checks do not replace scene-specific build/memory and
+complete-pipeline measurements.
+
+On 2026-11-23, the dedicated Debug check passed with Metal API validation in
+0.52 seconds on M4 Max, macOS 26.6 and Xcode 26.6, for the uncommitted policy
+implementation based on `4b1cc65`. All four policies applied their requested
+levels and completed resident frames. This small fixture retained 1,216 BLAS
+bytes and 1,216 TLAS bytes under each policy. The duration is a correctness-test
+duration, not a build or rendering performance result. Real older-SDK/runtime
+execution remains unmeasured; the legacy guard branch passes strict warning
+compilation against installed headers with the SDK-version macro reduced.
+The expanded test also passes under API validation in 9.21 seconds: scalar and
+packet empty scenes under all four policies each retain one 448-byte TLAS and
+zero BLAS allocations, apply the requested TLAS preference, and complete every
+sample. These measurements precede stack integration.
+
 ## Explicit native triangle profile
 
 `GeometryBuildOptions` and `RenderBuildOptions` accept

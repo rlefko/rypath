@@ -15,6 +15,7 @@
 #include "environment_sampling.hpp"
 #include "gaussian_filter.hpp"
 #include "light_sampling.hpp"
+#include "metal_acceleration_build.hpp"
 #include "metal_execution.hpp"
 #include "metal_frame_access.hpp"
 #include "metal_geometry_access.hpp"
@@ -410,8 +411,15 @@ std::string sample_error(wire::Word status) {
 // instance-count guard skips traversal. Bind a built empty IAS rather than nil.
 id<MTLAccelerationStructure> build_empty_packet_structure(id<MTLDevice> device,
                                                           id<MTLCommandQueue> queue,
-                                                          std::string &diagnostic) {
+                                                          std::string &diagnostic,
+                                                          AccelerationBuildInfo &info) {
+    const auto start = std::chrono::steady_clock::now();
     auto descriptor = [MTLInstanceAccelerationStructureDescriptor descriptor];
+    const bool fast = acceleration_fast_tlas(info.requested);
+    if (!metal::prefer_fast_intersection(descriptor, fast)) {
+        diagnostic = "Fast acceleration builds require the macOS 26 SDK and runtime";
+        return nil;
+    }
     descriptor.instanceCount = 0;
     descriptor.instancedAccelerationStructures = @[];
     descriptor.instanceDescriptorStride = sizeof(MTLAccelerationStructureInstanceDescriptor);
@@ -448,6 +456,9 @@ id<MTLAccelerationStructure> build_empty_packet_structure(id<MTLDevice> device,
                     scratchBufferOffset:0];
     [encoder endEncoding];
     diagnostic = metal::complete(command, "Metal empty packet acceleration structure build");
+    if (diagnostic.empty() &&
+        !metal::record_acceleration_build(info, structure, false, fast, start))
+        diagnostic = "Acceleration structure byte count overflow";
     return diagnostic.empty() ? structure : nil;
 }
 
@@ -456,6 +467,7 @@ id<MTLAccelerationStructure> build_empty_packet_structure(id<MTLDevice> device,
 struct MetalRenderScene::Impl {
     std::unique_ptr<MetalGeometryScene> geometry;
     id<MTLAccelerationStructure> empty_packet_structure = nil;
+    AccelerationBuildInfo acceleration_build;
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> pipeline = nil;
@@ -2421,6 +2433,11 @@ struct FrameSession::Impl {
     std::shared_ptr<FrameAreaPrograms> area;
     std::shared_ptr<FrameAreaHistory> history;
     std::size_t state_bytes = 0, slot_bytes = 0;
+    AccelerationBuildInfo acceleration_build_info() const {
+        auto info = renderer->impl_->acceleration_build;
+        info.device_allocated_bytes = renderer->impl_->device.currentAllocatedSize;
+        return info;
+    }
     struct Slot {
         std::weak_ptr<Frame::Impl::Retention> active;
         id<MTLBuffer> raw = nil, scratch = nil, status = nil;
@@ -2489,7 +2506,8 @@ struct FrameSession::Impl {
         // Scalar sky previously avoided all geometry arguments. The generic
         // wavefront signatures require valid storage even on a synthetic miss.
         if (!r.parameters.instance_count && r.empty_packet_structure == nil) {
-            r.empty_packet_structure = build_empty_packet_structure(r.device, r.queue, error);
+            r.empty_packet_structure =
+                build_empty_packet_structure(r.device, r.queue, error, r.acceleration_build);
             if (r.empty_packet_structure == nil)
                 return error;
         }
@@ -3742,6 +3760,7 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
                                             const std::filesystem::path &library_path) {
     FrameSessionBuildResult result;
     result.shadow_traversal.requested = config.shadow_traversal;
+    result.acceleration_build.requested = config.acceleration_build_policy;
     const auto pixels = std::uint64_t(config.width) * config.height;
     if (!pixels || pixels > max_index || !config.footprint_samples ||
         !config.transient_byte_limit) {
@@ -3791,12 +3810,17 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     }
     auto built = build_metal_renderer(
         scene, library_path,
-        RenderBuildOptions{config.intersection_profile, config.shadow_traversal});
+        RenderBuildOptions{.intersection_profile = config.intersection_profile,
+                           .shadow_traversal = config.shadow_traversal,
+                           .acceleration_build_policy = config.acceleration_build_policy});
     result.device = built.device;
+    result.acceleration_build.supported = built.acceleration_build.supported;
     result.status = built.status;
     result.diagnostic = built.diagnostic;
-    if (built.status != GeometryStatus::success)
+    if (built.status != GeometryStatus::success) {
+        result.acceleration_build = built.acceleration_build;
         return result;
+    }
     auto impl = std::make_unique<FrameSession::Impl>();
     result.diagnostic = impl->prepare(std::move(built.scene), scene, config, library_path);
     if (!result.diagnostic.empty()) {
@@ -3804,6 +3828,7 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         return result;
     }
     result.shadow_traversal = built.shadow_traversal;
+    result.acceleration_build = impl->acceleration_build_info();
     result.session = std::unique_ptr<FrameSession>(new FrameSession(std::move(impl)));
     result.status = GeometryStatus::success;
     return result;
@@ -3837,6 +3862,16 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
     @autoreleasepool {
         RenderBuildResult result;
         result.shadow_traversal.requested = options.shadow_traversal;
+        result.acceleration_build.requested = options.acceleration_build_policy;
+        if (!valid_acceleration_build_policy(options.acceleration_build_policy) ||
+            (options.acceleration_build_policy != AccelerationBuildPolicy::default_build &&
+             options.intersection_profile != IntersectionProfile::native)) {
+            result.diagnostic = "Fast acceleration build policies require the native intersection "
+                                "profile and a valid policy";
+            result.acceleration_build.supported = false;
+            result.acceleration_build.diagnostic = result.diagnostic;
+            return result;
+        }
         std::optional<std::size_t> growth_estimate;
         try {
             result.diagnostic = validate_render_scene(scene);
@@ -3968,10 +4003,13 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 return result;
             }
         }
-        auto built = build_metal_geometry_with_hints(geometry_data, library_path, hint_eligible,
-                                                     {options.intersection_profile});
+        auto built = build_metal_geometry_with_hints(
+            geometry_data, library_path, hint_eligible,
+            {options.intersection_profile, options.acceleration_build_policy});
         result.device = std::move(built.device);
+        result.acceleration_build.supported = built.acceleration_build.supported;
         if (built.status != GeometryStatus::success) {
+            result.acceleration_build = built.acceleration_build;
             result.status = built.status;
             result.diagnostic = std::move(built.diagnostic);
             return result;
@@ -3979,6 +4017,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
 
         auto impl = std::make_unique<MetalRenderScene::Impl>();
         impl->geometry = std::move(built.scene);
+        impl->acceleration_build = built.acceleration_build;
         if (hint_eligible && !MetalGeometryAccess::has_hint(*impl->geometry)) {
             result.diagnostic = "Required native triangle hint acceleration structure is missing";
             return result;
@@ -4162,8 +4201,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         }
 
         if (impl->parameters.packet_transport && impl->parameters.instance_count == 0) {
-            impl->empty_packet_structure =
-                build_empty_packet_structure(impl->device, impl->queue, result.diagnostic);
+            impl->empty_packet_structure = build_empty_packet_structure(
+                impl->device, impl->queue, result.diagnostic, impl->acceleration_build);
             if (impl->empty_packet_structure == nil)
                 return result;
             // The generic packet kernel retains the full binding layout even
@@ -4212,6 +4251,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 impl->device.maxBufferLength);
         }
         result.shadow_traversal = shadow_selection;
+        result.acceleration_build = impl->acceleration_build;
         result.scene.reset(new MetalRenderScene(std::move(impl)));
         result.status = GeometryStatus::success;
         return result;

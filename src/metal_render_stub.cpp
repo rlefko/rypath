@@ -44,6 +44,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        RenderBuildOptions options, RenderTimings *) {
     auto result = build_metal_renderer(scene, library);
     result.shadow_traversal.requested = options.shadow_traversal;
+    result.acceleration_build.requested = options.acceleration_build_policy;
+    result.acceleration_build.diagnostic = result.diagnostic;
     return result;
 }
 
@@ -85,11 +87,12 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &) {
 }
 FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &config,
                                             const std::filesystem::path &) {
-    FrameSessionBuildResult result{.status = GeometryStatus::not_built,
-                                   .device = {},
-                                   .diagnostic = "Metal backend was not built",
-                                   .session = {}};
+    FrameSessionBuildResult result;
+    result.status = GeometryStatus::not_built;
+    result.diagnostic = "Metal backend was not built";
     result.shadow_traversal.requested = config.shadow_traversal;
+    result.acceleration_build.requested = config.acceleration_build_policy;
+    result.acceleration_build.diagnostic = result.diagnostic;
     return result;
 }
 } // namespace rypath
