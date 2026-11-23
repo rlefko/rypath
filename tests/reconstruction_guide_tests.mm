@@ -18,9 +18,10 @@ namespace {
 using namespace rypath;
 namespace gw = reconstruction_guide_wire;
 namespace rc = reconstruction;
+std::string case_context;
 void need(bool x, const std::string &why) {
     if (!x)
-        throw std::runtime_error(why);
+        throw std::runtime_error(case_context.empty() ? why : case_context + ": " + why);
 }
 void close(double actual, double expected, double tolerance, const std::string &label) {
     need(std::isfinite(actual) && std::abs(actual - expected) <= tolerance,
@@ -484,8 +485,12 @@ void appearance_cases(const std::string &library) {
     const auto cam = camera(r);
     const auto prepare = [](RenderScene &scene) {
         const std::array<double, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-        scene.instance_texture_frames.resize(scene.geometry.instances.size());
+        // Validation requires no frame entries for untextured diffuse instances.
+        // Rebuild after geometry/material changes instead of retaining old tables.
+        scene.instance_texture_frames.assign(scene.geometry.instances.size(), {});
         for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+            if (!instance_uses_texture_context(scene, i))
+                continue;
             auto &xf = scene.instance_surface_transforms[i];
             xf.shape = xf.placement = identity;
             need(prepare_texture_triangle_frames(scene.geometry.meshes[i], xf.shape, xf.placement,
@@ -511,6 +516,7 @@ void appearance_cases(const std::string &library) {
     scene.materials.push_back(target);
     plane(scene, 3);
     plane(scene, -3, 1);
+    case_context = "appearance/mirror reflected high-chroma plane";
     prepare(scene);
     auto cfg = config(cam, cam);
     cfg.flags = gw::appearance_guides;
@@ -549,6 +555,7 @@ void appearance_cases(const std::string &library) {
         point.x *= .005f;
         point.y *= .005f;
     }
+    case_context = "appearance/mirror small reflected feature";
     prepare(scene);
     const auto feature = guide(scene, cfg, library);
     need(feature.counters.failure == 0 && feature.counters.appearance_replacement == 1 &&
@@ -570,6 +577,7 @@ void appearance_cases(const std::string &library) {
     plane(scene, 3);
     plane(scene, -3, 1);
     plane(scene, 6, 2);
+    case_context = "appearance/thin sheet front normal incidence";
     prepare(scene);
     const auto glass = guide(scene, cfg, library);
     need(glass.counters.failure == 0 && glass.counters.appearance_replacement == pixels,
@@ -608,6 +616,7 @@ void appearance_cases(const std::string &library) {
     for (auto &triangle : backside.geometry.meshes[0].triangles)
         std::swap(triangle[1], triangle[2]); // +Z normal: negative incidence.
     enlarge(backside);
+    case_context = "appearance/thin sheet backside oblique primary";
     prepare(backside);
     auto oblique_cfg = config(oblique_camera, oblique_camera);
     oblique_cfg.flags = gw::appearance_guides;
@@ -621,6 +630,7 @@ void appearance_cases(const std::string &library) {
               "Independent backside oblique primary thin-sheet Fresnel blend");
     // A solid dielectric really is exiting the denser medium here and must TIR.
     backside.materials[0].scattering = ScatteringKind::dielectric;
+    case_context = "appearance/solid dielectric backside total internal reflection";
     const auto solid_backside = guide(backside, oblique_cfg, library);
     need(solid_backside.counters.failure == 0, "Backside solid dielectric guide validity");
     for (unsigned c = 0; c < 3; ++c)
@@ -638,6 +648,7 @@ void appearance_cases(const std::string &library) {
     plane(secondary, -3, 1); // -Z normal, reflected incoming ray travels toward -Z.
     plane(secondary, -6, 2);
     enlarge(secondary);
+    case_context = "appearance/thin sheet backside oblique secondary";
     prepare(secondary);
     const auto secondary_backside = guide(secondary, oblique_cfg, library);
     need(secondary_backside.counters.failure == 0 &&
@@ -664,6 +675,9 @@ void appearance_cases(const std::string &library) {
         for (auto &triangle : coating_scene.geometry.meshes[0].triangles)
             std::swap(triangle[1], triangle[2]);
         enlarge(coating_scene);
+        case_context = family == ScatteringKind::coated_diffuse
+                           ? "appearance/coated diffuse backside oblique"
+                           : "appearance/coated conductor backside oblique";
         prepare(coating_scene);
         const auto coated_backside = guide(coating_scene, oblique_cfg, library);
         need(coated_backside.counters.failure == 0 &&
@@ -681,6 +695,7 @@ void appearance_cases(const std::string &library) {
                   .002, "Independent backside coating exterior-Fresnel specular oracle");
         }
     }
+    case_context = "appearance/reject signed temporal policy combination";
     auto forbidden = cfg;
     forbidden.flags |= gw::signed_temporal;
     need((guide(scene, forbidden, library).counters.failure & gw::invalid_config) != 0,
@@ -931,10 +946,15 @@ int main(int argc, char **argv) {
                 return 77;
 #endif
             need(device.device.compute_ray_tracing, "Guide tests require compute ray tracing");
+            case_context = "general guides";
             cases(argv[1]);
+            case_context = "appearance guides";
             appearance_cases(argv[1]);
+            case_context = "continuity alignment";
             continuity_alignment(argv[1]);
+            case_context = "transformed spatial guides";
             transformed_spatial_guides(argv[1]);
+            case_context = "color counter sizes";
             counter_sizes(argv[1]);
             std::cout << "Reconstruction guide native validation passed\n";
             return 0;
