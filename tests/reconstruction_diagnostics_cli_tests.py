@@ -33,6 +33,11 @@ def main():
             (["--reference-samples", "1024"], "seed"),
             (["--reference-samples", "2"], "Reference samples"),
             (["--motion-offset", "nan"], "finite"),
+            (["--variance-policy", "other"], "variance policy"),
+            (["--variance-prefilter", "on"], "requires"),
+            (["--variance-policy", "conservative", "--variance-prefilter", "on"], "requires"),
+            (["--strict-spatial-segments", "true"], "on or off"),
+            (["--save-online-mean", "on", "--motion-offset", "0.1"], "static"),
             (["--unknown", "1"], "Unknown"),
             (["--seed"], "missing"),
         ]

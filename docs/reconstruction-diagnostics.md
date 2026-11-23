@@ -14,7 +14,8 @@ Snapshots own their CPU bytes; they do not expose mutable GPU resources. The
 ordinary pipeline performs no snapshot dispatches or readbacks.
 
 The current raw frame is one fresh estimate, not a progressive sample average.
-The separate static `raw-online-mean` is an average over the recorded frames.
+The static online-mean summary averages the recorded frames; its full
+`raw-online-mean` plane requires `--save-online-mean on` (off by default).
 MetalFX receives clamped half RGB; the signed stream receives unclipped float RGB.
 Guide and variance fields retain their actual half/float/integer representation.
 Source identities, sample indices, resets and input/output hashes accompany results.
@@ -42,6 +43,15 @@ is a JSON object with a `snapshots` array naming ordered `temporal-0.json`,
 transport frame to acquire the device and pipelines, then filters captured
 inputs directly. Matching-settings replay must reproduce captured output exactly;
 `--replay-spatial 0..5` can instead identify a deliberate spatial-pass ablation.
+Schema 2 also requires the actual spatial position, geometric normal and connected
+group textures. Schema 1 cannot supply these fields and must be recaptured.
+
+`--variance-policy paired|center|conservative`, `--variance-prefilter on|off`, and
+`--strict-spatial-segments on|off` select explicit signed-filter experiments.
+Defaults retain paired variance, no prefilter and no expensive raster-segment
+checks. The prefilter requires center variance. Replay records every setting;
+changing a recorded setting requires its explicit option and marks the result
+as an ablation. Temporal-only and MetalFX outputs remain separate arms.
 
 Default `--capture-mode final` records per-frame hashes and region means, and
 retains final full-resolution RGB planes plus diagnostic metadata. Internal
@@ -50,6 +60,8 @@ replay. An optional ROI file has `{"regions":{"name":[x0,y0,x1,y1]}}`, using
 exclusive upper coordinates. Default whole-image means are not feature-quality
 gates. Both modes enforce a shared 8 GiB artifact-root limit; an individual
 internal snapshot is limited to 1 GiB. No historical artifacts are deleted.
+Identical RGB planes within a case share a payload; consumers must follow each
+descriptor's `path` and verify its hash instead of deriving a filename.
 
 Independent references require explicit seeds disjoint from candidate seeds.
 `--reference-samples 1024` renders a static raw reference batch;
