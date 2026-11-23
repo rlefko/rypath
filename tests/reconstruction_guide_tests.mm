@@ -514,8 +514,11 @@ void transformed_spatial_guides(const std::string &library) {
         mesh.positions = {{-16, -16, 0}, {16, -16, 0}, {0, 16, 0}};
         mesh.triangles = {{0, 1, 2}};
         scene.geometry.meshes.push_back(mesh);
+        // Local z is zero on every vertex. Keep its world-x coefficient zero
+        // so the inverse is dyadic, avoiding unrelated native inverse-transform
+        // cancellation at large origins without changing the tested world plane.
         GeometryTransform transform{
-            {2, .25f, .5f, origin.x + .25f, 0, .5f, 0, origin.y + .125f, 1, 0, 1, origin.z + 4.f}};
+            {2, .25f, 0, origin.x + .25f, 0, .5f, 0, origin.y + .125f, 1, 0, 1, origin.z + 4.f}};
         scene.geometry.instances.push_back({0, transform});
         scene.instance_materials.push_back(0);
         scene.instance_emissions.push_back(no_area_emission);
