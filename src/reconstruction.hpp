@@ -2,6 +2,7 @@
 #pragma once
 #include "frame_session.hpp"
 #include "gpu_diagnostics.hpp"
+#include "spatial_variance_policy.hpp"
 
 namespace rypath {
 enum class ReconstructionMode { raw_rgb, metalfx, temporal };
@@ -21,7 +22,12 @@ struct ReconstructionConfig {
     // Native signed-color fallback. Zero spatial passes selects temporal only.
     std::uint32_t history_limit = 64, spatial_iterations = 5;
     MetalFXGuidePolicy metalfx_guide_policy = MetalFXGuidePolicy::primary_surface;
-    bool cache_surface_guides = true; // Reuse guides when resolved inputs match.
+    SpatialVariancePolicy spatial_variance_policy = SpatialVariancePolicy::paired;
+    bool strict_spatial_segments = false; // Expensive raster-gap experiment.
+    bool variance_prefilter = false;      // Optional geometry-aware 3x3 guidance proxy.
+    bool cache_surface_guides = true;     // Reuse guides when resolved inputs match.
+    // Explicit diagnostic work/storage; excludes this stream from timing claims.
+    bool capture_diagnostics = false;
 };
 enum class ReconstructionStatus { pending, complete, failed };
 struct ReconstructionCounters {

@@ -120,6 +120,7 @@ struct ReconstructionStream::Impl {
     // copy this under mutex, rather than the default inputs.exposure texture.
     id<MTLTexture> last_exposure = nil;
     ReconstructionConfig config;
+    std::weak_ptr<ReconstructedFrame::Impl> last_completed;
     std::uint32_t width = 0, height = 0, model = 0;
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
@@ -127,6 +128,7 @@ struct ReconstructionStream::Impl {
     std::unique_ptr<MetalFXDenoiser> denoiser;
     std::unique_ptr<TemporalDenoiser> temporal;
     id<MTLTexture> previous_depth = nil, identity = nil;
+    id<MTLTexture> spatial_position = nil, spatial_normal = nil, spatial_group = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
     id<MTLBuffer> configuration = nil, nodes = nil, counters = nil, arguments = nil;
     MetalFXDenoiserInputs inputs;
@@ -197,7 +199,8 @@ struct ReconstructionStream::Impl {
         if (actual.version != gw::contract || actual.config_bytes != sizeof(gw::Config) ||
             actual.node_bytes != sizeof(gw::SpectralNode) ||
             actual.counters_bytes != sizeof(gw::Counters) || actual.nodes != gw::node_count ||
-            actual.argument_count != 13 || actual.reserved[0] || actual.reserved[1])
+            actual.argument_count != gw::continuity_id + 1 || actual.reserved[0] ||
+            actual.reserved[1])
             return "Reconstruction guide shader ABI mismatch; rebuild the metallib";
         auto build = lease.create_guide_pipeline(@"rypath_reconstruction_guide_reset");
         if (!build.pipeline)
@@ -211,6 +214,17 @@ struct ReconstructionStream::Impl {
         if (argument_encoder == nil)
             return "Reconstruction guide argument encoder is unavailable";
         const bool signed_color = config.mode == ReconstructionMode::temporal;
+        if (signed_color) {
+            if (static_cast<unsigned>(config.spatial_variance_policy) > 2u ||
+                (config.variance_prefilter &&
+                 config.spatial_variance_policy != SpatialVariancePolicy::center))
+                return "Variance prefilter requires center policy; variance policy must be valid";
+            if (config.history_limit == 0 || config.history_limit > 64 ||
+                config.spatial_iterations > 5)
+                return "Temporal reconstruction settings exceed supported limits";
+            if (auto error = lease.prepare_reconstruction_groups(); !error.empty())
+                return error;
+        }
         const auto pixel_bytes = signed_color ? 16u : 8u;
         const auto row =
             (std::uint64_t(config.output_width) * pixel_bytes + 255) & ~std::uint64_t(255);
@@ -218,16 +232,19 @@ struct ReconstructionStream::Impl {
         // This bounds stream-owned resources, including two simultaneous captures.
         // MetalFX does not expose its internal allocation sizes; those are excluded.
         const auto temporal_bytes =
-            signed_color ? TemporalDenoiser::owned_resource_bytes(width, height) : 0;
+            signed_color
+                ? TemporalDenoiser::owned_resource_bytes(width, height, config.capture_diagnostics)
+                : 0;
         if (temporal_bytes == UINT64_MAX)
             return "Temporal reconstruction resource size is unrepresentable";
         const auto padded_pixels = [](std::uint32_t w, std::uint32_t h) {
             return ((std::uint64_t(w) + 63) / 64 * 64) * ((std::uint64_t(h) + 63) / 64 * 64);
         };
         const auto owned_bytes =
-            (62 + (signed_color ? 8 : 0)) * padded_pixels(width, height) +
+            (62 + (signed_color ? 44 : 0)) * padded_pixels(width, height) +
             2ull * pixel_bytes * padded_pixels(config.output_width, config.output_height) +
-            2 * capture_bytes + 18 * 65536ull + temporal_bytes + sizeof(gw::Config) +
+            2 * capture_bytes + (signed_color ? 21 : 18) * 65536ull + temporal_bytes +
+            (signed_color ? lease.reconstruction_groups().allocatedSize : 0) + sizeof(gw::Config) +
             sizeof(gw::Counters) + sizeof(gw::SpectralNode) * gw::node_count +
             argument_encoder.encodedLength + 2;
         if (capture_bytes > device.maxBufferLength || owned_bytes > (8ull << 30) ||
@@ -247,11 +264,15 @@ struct ReconstructionStream::Impl {
                 return fx.diagnostic;
             denoiser = std::move(fx.denoiser);
         } else if (signed_color) {
-            auto built =
-                TemporalDenoiser::create(lease, {.width = width,
-                                                 .height = height,
-                                                 .history_limit = config.history_limit,
-                                                 .spatial_iterations = config.spatial_iterations});
+            auto built = TemporalDenoiser::create(
+                lease, {.width = width,
+                        .height = height,
+                        .history_limit = config.history_limit,
+                        .spatial_iterations = config.spatial_iterations,
+                        .variance_prefilter = config.variance_prefilter,
+                        .spatial_variance_policy = config.spatial_variance_policy,
+                        .strict_spatial_segments = config.strict_spatial_segments,
+                        .capture_diagnostics = config.capture_diagnostics});
             if (!built.denoiser)
                 return built.diagnostic;
             temporal = std::move(built.denoiser);
@@ -291,11 +312,20 @@ struct ReconstructionStream::Impl {
             input_texture({MTLPixelFormatR32Float, MTLTextureUsageShaderRead, width, height});
         identity =
             input_texture({MTLPixelFormatRGBA32Uint, MTLTextureUsageShaderRead, width, height});
+        if (signed_color) {
+            spatial_position = input_texture(
+                {MTLPixelFormatRGBA32Float, MTLTextureUsageShaderRead, width, height});
+            spatial_normal = input_texture(
+                {MTLPixelFormatRGBA32Float, MTLTextureUsageShaderRead, width, height});
+            spatial_group =
+                input_texture({MTLPixelFormatR32Uint, MTLTextureUsageShaderRead, width, height});
+        }
         inputs.exposure = texture(device, requirements.exposure, MTLStorageModeShared);
         if (inputs.color == nil || inputs.depth == nil || inputs.motion == nil ||
             inputs.diffuse_albedo == nil || inputs.specular_albedo == nil || inputs.normal == nil ||
             inputs.roughness == nil || inputs.exposure == nil || previous_depth == nil ||
-            identity == nil)
+            identity == nil ||
+            (signed_color && (!spatial_position || !spatial_normal || !spatial_group)))
             return "Reconstruction guide texture allocation failed";
         const std::uint16_t exposure = 0x3c00;
         [inputs.exposure replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
@@ -387,6 +417,7 @@ struct ReconstructionStream::Impl {
                 std::lock_guard state_lock(state->mutex);
                 std::lock_guard frame_lock(frame->mutex);
                 state->pending = false;
+                state->last_completed.reset();
                 if (!error.empty()) {
                     state->previous_valid = false;
                     state->guide_key.reset();
@@ -415,6 +446,7 @@ struct ReconstructionStream::Impl {
                     state->epoch = frame->info.source.epoch;
                     state->last_exposure = exposure;
                     frame->info.status = ReconstructionStatus::complete;
+                    state->last_completed = frame;
                     frame->info.gpu_time_valid = all_times_valid;
                     frame->info.gpu_seconds = all_times_valid ? gpu_seconds : 0;
                 }
@@ -472,12 +504,16 @@ struct ReconstructionStream::Impl {
                                                        s.counters};
             for (unsigned i = 0; i < buffers.size(); ++i)
                 [s.argument_encoder setBuffer:buffers[i] offset:0 atIndex:i];
-            const std::array<id<MTLTexture>, 9> textures{
+            const std::array<id<MTLTexture>, 12> textures{
                 s.inputs.color,          s.inputs.depth,           s.inputs.motion,
                 s.inputs.diffuse_albedo, s.inputs.specular_albedo, s.inputs.normal,
-                s.inputs.roughness,      s.previous_depth,         s.identity};
+                s.inputs.roughness,      s.previous_depth,         s.identity,
+                s.spatial_position,      s.spatial_normal,         s.spatial_group};
             for (unsigned i = 0; i < textures.size(); ++i)
                 [s.argument_encoder setTexture:textures[i] atIndex:i + 4];
+            [s.argument_encoder setBuffer:s.temporal ? source->reconstruction_groups() : nil
+                                   offset:0
+                                  atIndex:gw::continuity_id];
             auto command = [s.queue commandBuffer];
             command.label = @"rypath reconstruction guides and color";
             stages = s.config.profile_stages ? std::make_shared<MetalGPUStages>(s.device) : nullptr;
@@ -501,9 +537,12 @@ struct ReconstructionStream::Impl {
             use_resource(s.configuration, MTLResourceUsageRead);
             use_resource(source->raw_xyz(), MTLResourceUsageRead);
             use_resource(s.nodes, MTLResourceUsageRead);
+            if (s.temporal)
+                use_resource(source->reconstruction_groups(), MTLResourceUsageRead);
             use_resource(s.counters, MTLResourceUsageRead | MTLResourceUsageWrite);
             for (auto input : textures)
-                use_resource(input, MTLResourceUsageRead | MTLResourceUsageWrite);
+                if (input)
+                    use_resource(input, MTLResourceUsageRead | MTLResourceUsageWrite);
             encoder.label = @"reconstruction guides and color";
             const auto dispatch = [&](const MetalFramePipeline &pipeline, NSUInteger count,
                                       const char *label) {
@@ -656,6 +695,9 @@ struct ReconstructionStream::Impl {
                                                      .normal = inputs.normal,
                                                      .previous_depth = state->previous_depth,
                                                      .identity = state->identity,
+                                                     .spatial_position = state->spatial_position,
+                                                     .spatial_normal = state->spatial_normal,
+                                                     .spatial_group = state->spatial_group,
                                                      .output = inputs.output,
                                                      .reset_history = frame->info.history_reset},
                                                     stages.get());
@@ -923,6 +965,7 @@ ReconstructionStream::submit(const Frame &source, const ReconstructionSubmitOpti
         {
             std::lock_guard lock(impl_->mutex);
             impl_->pending = true;
+            impl_->last_completed.reset();
             if (reset)
                 impl_->previous_valid = false;
             slot->active = frame->output;
@@ -953,11 +996,12 @@ MetalReconstructionStreamProbe::capture_guides(const ReconstructionStream &strea
         result.diagnostic = "Surface guide snapshot requires a successful completed job";
         return result;
     }
-    const std::array<id<MTLTexture>, 8> textures{
-        s.inputs.depth,  s.inputs.motion,    s.inputs.diffuse_albedo, s.inputs.specular_albedo,
-        s.inputs.normal, s.inputs.roughness, s.previous_depth,        s.identity};
-    constexpr std::array<unsigned, 8> pixel_bytes{4, 4, 8, 8, 8, 2, 4, 16};
-    std::array<id<MTLBuffer>, 8> staging{};
+    const std::array<id<MTLTexture>, 11> textures{
+        s.inputs.depth,     s.inputs.motion,    s.inputs.diffuse_albedo, s.inputs.specular_albedo,
+        s.inputs.normal,    s.inputs.roughness, s.previous_depth,        s.identity,
+        s.spatial_position, s.spatial_normal,   s.spatial_group};
+    constexpr std::array<unsigned, 11> pixel_bytes{4, 4, 8, 8, 8, 2, 4, 16, 16, 16, 4};
+    std::array<id<MTLBuffer>, 11> staging{};
     auto command = [s.queue commandBuffer];
     auto blit = [command blitCommandEncoder];
     if (command == nil || blit == nil) {
@@ -965,6 +1009,8 @@ MetalReconstructionStreamProbe::capture_guides(const ReconstructionStream &strea
         return result;
     }
     for (unsigned i = 0; i < textures.size(); ++i) {
+        if (!textures[i])
+            continue;
         const auto row = (std::uint64_t(s.width) * pixel_bytes[i] + 255) & ~255ull;
         staging[i] = [s.device newBufferWithLength:row * s.height
                                            options:MTLResourceStorageModeShared];
@@ -988,12 +1034,142 @@ MetalReconstructionStreamProbe::capture_guides(const ReconstructionStream &strea
     if (!result.diagnostic.empty())
         return result;
     for (unsigned i = 0; i < textures.size(); ++i) {
+        if (!textures[i])
+            continue;
         const auto bytes = std::size_t(s.width) * pixel_bytes[i];
         const auto row = (bytes + 255) & ~std::size_t(255);
         result.textures[i].resize(bytes * s.height);
         for (unsigned y = 0; y < s.height; ++y)
             std::memcpy(result.textures[i].data() + y * bytes,
                         static_cast<const std::byte *>(staging[i].contents) + y * row, bytes);
+    }
+    return result;
+}
+MetalReconstructionSnapshot
+MetalReconstructionStreamProbe::capture_diagnostics(const ReconstructionStream &stream) {
+    MetalReconstructionSnapshot result;
+    if (!stream.impl_) {
+        result.diagnostic = "Reconstruction stream is moved-from";
+        return result;
+    }
+    auto &s = *stream.impl_;
+    std::lock_guard lock(s.mutex);
+    auto frame = s.last_completed.lock();
+    if (!s.config.capture_diagnostics || s.pending || !frame) {
+        result.diagnostic =
+            "Diagnostic snapshot requires opt-in and a retained last successful output";
+        return result;
+    }
+    {
+        std::lock_guard frame_lock(frame->mutex);
+        result.info = frame->info;
+    }
+    std::vector<NamedMetalTexture> textures{{"input.color", s.inputs.color},
+                                            {"output", frame->output->texture}};
+    if (s.surface) {
+        const std::array<NamedMetalTexture, 6> guides{
+            {{"input.depth", s.inputs.depth},
+             {"input.motion", s.inputs.motion},
+             {"input.diffuse_albedo", s.inputs.diffuse_albedo},
+             {"input.specular_albedo", s.inputs.specular_albedo},
+             {"input.normal", s.inputs.normal},
+             {"input.roughness", s.inputs.roughness}}};
+        textures.insert(textures.end(), guides.begin(), guides.end());
+    }
+    if (s.denoiser)
+        textures.push_back({"input.exposure", s.last_exposure});
+    if (s.temporal) {
+        textures.push_back({"input.previous_depth", s.previous_depth});
+        textures.push_back({"input.identity", s.identity});
+        textures.push_back({"input.spatial_position", s.spatial_position});
+        textures.push_back({"input.spatial_normal", s.spatial_normal});
+        textures.push_back({"input.spatial_group", s.spatial_group});
+        auto temporal = s.temporal->diagnostic_textures();
+        if (temporal.empty()) {
+            result.diagnostic = "Temporal diagnostic history is unavailable";
+            return result;
+        }
+        textures.insert(textures.end(), temporal.begin(), temporal.end());
+    }
+    const auto pixel_bytes = [](MTLPixelFormat format) -> std::uint32_t {
+        switch (format) {
+        case MTLPixelFormatR16Float:
+            return 2;
+        case MTLPixelFormatR32Float:
+        case MTLPixelFormatR32Uint:
+        case MTLPixelFormatRG16Float:
+            return 4;
+        case MTLPixelFormatRGBA16Float:
+            return 8;
+        case MTLPixelFormatRGBA32Float:
+        case MTLPixelFormatRGBA32Uint:
+            return 16;
+        default:
+            return 0;
+        }
+    };
+    std::uint64_t total = 0;
+    for (const auto &entry : textures) {
+        const auto texture = entry.texture;
+        const auto bytes = pixel_bytes(texture.pixelFormat);
+        if (!texture || !bytes || texture.width > reconstruction_dimension_limit ||
+            texture.height > reconstruction_dimension_limit) {
+            result.diagnostic = "Invalid diagnostic texture format or extent";
+            return result;
+        }
+        total += std::uint64_t(texture.width) * texture.height * bytes;
+    }
+    // An explicit snapshot is intentionally bounded even on very large devices.
+    // Stream allocations have their own conservative resource accounting.
+    if (total > (1ull << 30)) {
+        result.diagnostic = "Diagnostic snapshot exceeds the 1 GiB readback limit";
+        return result;
+    }
+    try {
+        for (const auto &entry : textures) {
+            const auto texture = entry.texture;
+            const auto bytes = std::size_t(texture.width) * pixel_bytes(texture.pixelFormat);
+            const auto row = (bytes + 255) & ~std::size_t(255);
+            auto staging = [s.device newBufferWithLength:row * texture.height
+                                                 options:MTLResourceStorageModeShared];
+            auto command = [s.queue commandBuffer];
+            auto blit = [command blitCommandEncoder];
+            if (!staging || !command || !blit) {
+                if (blit)
+                    [blit endEncoding];
+                result.textures.clear();
+                result.diagnostic = "Diagnostic snapshot staging allocation failed";
+                return result;
+            }
+            [blit copyFromTexture:texture
+                             sourceSlice:0
+                             sourceLevel:0
+                            sourceOrigin:MTLOriginMake(0, 0, 0)
+                              sourceSize:MTLSizeMake(texture.width, texture.height, 1)
+                                toBuffer:staging
+                       destinationOffset:0
+                  destinationBytesPerRow:row
+                destinationBytesPerImage:row * texture.height];
+            [blit endEncoding];
+            result.diagnostic = metal::complete(command, "diagnostic snapshot");
+            if (!result.diagnostic.empty()) {
+                result.textures.clear();
+                return result;
+            }
+            MetalReconstructionTextureSnapshot snapshot;
+            snapshot.name = entry.name;
+            snapshot.width = std::uint32_t(texture.width);
+            snapshot.height = std::uint32_t(texture.height);
+            snapshot.format = texture.pixelFormat;
+            snapshot.bytes.resize(bytes * texture.height);
+            for (std::size_t y = 0; y < texture.height; ++y)
+                std::memcpy(snapshot.bytes.data() + y * bytes,
+                            static_cast<const std::byte *>(staging.contents) + y * row, bytes);
+            result.textures.push_back(std::move(snapshot));
+        }
+    } catch (const std::bad_alloc &) {
+        result.textures.clear();
+        result.diagnostic = "Diagnostic snapshot host allocation failed";
     }
     return result;
 }

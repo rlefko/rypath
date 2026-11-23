@@ -18,6 +18,10 @@ struct ReconstructionGuideArguments {
     texture2d<float, access::write> roughness [[id(gw::roughness_id)]];
     texture2d<float, access::write> previous_depth [[id(gw::previous_depth_id)]];
     texture2d<uint, access::write> identity [[id(gw::identity_id)]];
+    texture2d<float, access::write> spatial_position [[id(gw::spatial_position_id)]];
+    texture2d<float, access::write> spatial_normal [[id(gw::spatial_normal_id)]];
+    texture2d<uint, access::write> spatial_group [[id(gw::spatial_group_id)]];
+    device const uint *continuity [[id(gw::continuity_id)]];
 };
 inline void reconstruction_guide_fail(constant ReconstructionGuideArguments &a, uint flag) {
     atomic_fetch_or_explicit(&a.counters->failure, flag, memory_order_relaxed);
@@ -423,7 +427,7 @@ kernel void rypath_reconstruction_guide_contract(device gw::Contract *out [[buff
             sizeof(gw::SpectralNode),
             sizeof(gw::Counters),
             gw::node_count,
-            gw::identity_id + 1,
+            gw::continuity_id + 1,
             {0, 0}};
 }
 kernel void rypath_reconstruction_guide_reset(constant ReconstructionGuideArguments &a
@@ -571,6 +575,8 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
     }
     float3 diffuse(0), specular(0), normal(0);
     uint4 identity(0xffffffffu);
+    float3 geometric_normal(0);
+    uint spatial_group = 0xffffffffu;
     float roughness = 1;
     if (background) {
         reconstruction_guide_count(a, &a.counters->background);
@@ -614,6 +620,9 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
         }
         const device auto &m = materials[material];
         identity = uint4(hit.instance_id, hit.primitive_id, kind, material);
+        geometric_normal = point.geometric_normal;
+        if ((a.config->flags & gw::signed_temporal) && kind == wire::triangle_primitive)
+            spatial_group = a.continuity[instance.triangle_begin + hit.primitive_id];
         if (m.scattering == 10 || instance.invisible_emitter) {
             reconstruction_guide_fail(a, gw::invalid_hit);
             return;
@@ -786,6 +795,9 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
     if (a.config->flags & gw::signed_temporal) {
         a.previous_depth.write(float4(previous_depth, 0, 0, 0), pixel);
         a.identity.write(identity, pixel);
+        a.spatial_position.write(float4(relative, 0), pixel);
+        a.spatial_normal.write(float4(geometric_normal, 0), pixel);
+        a.spatial_group.write(uint4(spatial_group, 0, 0, 0), pixel);
     }
 }
 #undef RYPATH_RECONSTRUCTION_GUIDE_PARAMETERS
