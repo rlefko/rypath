@@ -14,7 +14,7 @@ def invoke(args, expected=1):
     assert result.returncode == expected, (args, result.returncode, result.stdout, result.stderr)
     return result
 
-invoke(["--help"], 0)
+assert "--intersections native|compensated" in invoke(["--help"], 0).stdout
 for args in (
     [], ["--demo"], ["--demo", "--scene", "x", "--output", "x.json"],
     ["--demo", "--demo", "--output", "x.json"],
@@ -27,6 +27,9 @@ for args in (
     ["--demo", "--output", "x.json", "--capture", "x.png"],
     ["--demo", "--output", "x.json", "--preview", "x.exr"],
     ["--demo", "--output", "x.json", "--unknown", "1"],
+    ["--demo", "--output", "x.json", "--intersections"],
+    ["--demo", "--output", "x.json", "--intersections", "fast"],
+    ["--demo", "--output", "x.json", "--intersections", "native", "--intersections", "compensated"],
 ):
     invoke(args)
 
@@ -68,4 +71,12 @@ with tempfile.TemporaryDirectory() as directory:
         }
     assert data["summary"]["missing_GPU_timestamps"] == 0
     assert data["capture_in_frame_timing"] is False
+    assert data["settings"]["intersection_profile"] == "native"
+    # A malformed input stops before GPU setup while preserving parsed profile settings.
+    for profile in ("native", "compensated"):
+        selected = root / f"{profile}.json"
+        invoke(["--scene", str(malformed), "--output", str(selected), "--intersections", profile])
+        selected_data = json.loads(selected.read_text())
+        assert selected_data["settings"]["intersection_profile"] == profile
+        assert selected_data["completed_frames"] == 0
 print("frame benchmark CLI checks passed")

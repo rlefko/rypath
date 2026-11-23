@@ -83,19 +83,27 @@ id<MTLLibrary> load_library(id<MTLDevice> device, const std::filesystem::path &l
     return library;
 }
 
+id<MTLFunction> load_function(id<MTLLibrary> library, NSString *name, std::string &diagnostic,
+                              MTLFunctionConstantValues *constants) {
+    NSError *error = nil;
+    if (constants == nil)
+        constants = [[MTLFunctionConstantValues alloc] init];
+    id<MTLFunction> function = [library newFunctionWithName:name
+                                             constantValues:constants
+                                                      error:&error];
+    if (function == nil)
+        diagnostic = with_error("Metal library function lookup failed for " + utf8(name), error);
+    return function;
+}
+
 id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> library,
                                           NSString *name, std::string &diagnostic,
                                           id<MTLFunction> intersection,
                                           MTLFunctionConstantValues *constants) {
-    NSError *error = nil;
-    id<MTLFunction> function = constants ? [library newFunctionWithName:name
-                                                         constantValues:constants
-                                                                  error:&error]
-                                         : [library newFunctionWithName:name];
-    if (function == nil) {
-        diagnostic = with_error("Metal library function lookup failed for " + utf8(name), error);
+    id<MTLFunction> function = load_function(library, name, diagnostic, constants);
+    if (function == nil)
         return nil;
-    }
+    NSError *error = nil;
 
     id<MTLComputePipelineState> pipeline;
     if (intersection == nil) {
@@ -118,11 +126,7 @@ id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> l
 }
 
 id<MTLFunction> load_patch_intersection(id<MTLLibrary> library, std::string &diagnostic) {
-    id<MTLFunction> function = [library newFunctionWithName:@"rypath_patch_intersection"];
-    if (function == nil) {
-        diagnostic = "Metal patch intersection function lookup failed";
-    }
-    return function;
+    return load_function(library, @"rypath_patch_intersection", diagnostic);
 }
 
 id<MTLIntersectionFunctionTable> make_intersection_table(id<MTLComputePipelineState> pipeline,

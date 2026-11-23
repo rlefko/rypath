@@ -82,6 +82,52 @@ See the
 [regression record](transport-regression-validation.md) for the numerical policy,
 measured coverage and limits.
 
+## Explicit native triangle profile
+
+`GeometryBuildOptions` and `RenderBuildOptions` accept
+`IntersectionProfile::native`; omitted options retain `compensated`. The native
+profile makes Metal triangle BLAS/TLAS intersection distances and barycentrics
+authoritative for every triangle placement. It does not use the opaque-hint
+eligibility exclusions for alpha, mix/glTF, null surfaces, invisible emitters or
+medium interfaces. Triangle culling remains disabled at traversal; material
+visibility applies through the existing callback using native barycentrics.
+Source/primitive ordinals, affine instances and authored winding retain their
+existing mapping. Bilinear patches and analytic primitives keep their procedural
+predicates in the same primary TLAS, competing with accepted native triangles.
+Accepted binary32 distances bound traversal; predicates retain the original ray
+interval, including finite visibility endpoints.
+
+This is a distinct numerical profile. Hardware near-edge false candidates,
+missing neighbors, rounded distance ties and endpoint inclusion can differ from
+the compensated profile. There is no compensated revalidation or recovery query
+in native mode. Failure to build or specialize native resources fails the build;
+it never selects the other profile. The existing offline progressive driver
+continues to use compensated traversal. Native render sessions require a separate
+version-1 shader handshake that executes function constant 21 and verifies that
+the native specialization is active; the offline checkpoint contract is unchanged.
+Consumers must keep accumulated samples from different profiles separate.
+
+`metal.native_intersection_profile` supplies independent ordinary triangle and
+occlusion checks across affine transforms, winding, two-sided rays, zero-area
+slots and finite segment bounds. It also checks alpha rejection/invalidity,
+procedural patch/analytic composition, scalar and packet glTF coverage and mix
+shape alpha, null/invisible passthrough and a scalar Beer–Lambert slab. The slab
+uses 16,384 analog free-flight paths over four predefined seeds and compares the
+mean to `exp(-0.5)` with a predefined Hoeffding bound (false rejection probability
+`1e-9`) plus `4e-5` numerical allowance; individual paths must remain zero or one.
+The existing unsupported packet-medium diagnostic remains covered. Captured edge
+witnesses print native and independent-oracle results as characterization,
+without requiring native results to equal compensated results.
+
+On 2026-11-22, this test passed in 74.18 seconds on an M4 Max 40-core GPU,
+macOS 26.6 and Xcode 26.6, for the uncommitted implementation based on `aaf3996`.
+The slab mean was 0.605469 against 0.606531 expected, within the predefined
+0.0256052 tolerance. The native profile selected primitive 556 where the Day-ray
+oracle selects 601, and primitive 0 where the missing-neighbor oracle selects 1.
+See the [native-profile validation record](transport-regression-validation.md#opt-in-native-intersection-profile)
+for commands, repetitions and scope. This is separate from older inherited
+measurements and does not establish default-profile regression coverage.
+
 Input validity does not guarantee that the resulting bounds, inverse transforms,
 or hit parameters are representable in Metal's float32 arithmetic. For example,
 a finite nonzero direction can produce a hit parameter above float32's maximum.

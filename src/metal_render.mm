@@ -47,17 +47,26 @@ namespace wire = render_wire;
 // Execute the contract in the actual loaded library. A matching entry-point
 // name alone cannot establish compatibility with a stale/custom metallib.
 bool verify_shader_contract(id<MTLDevice> device, id<MTLCommandQueue> queue, id<MTLLibrary> library,
-                            std::string &diagnostic) {
-    auto pipeline =
-        metal::load_pipeline(device, library, @"rypath_checkpoint_contract", diagnostic);
+                            std::string &diagnostic, bool native = false) {
+    MTLFunctionConstantValues *constants = nil;
+    if (native) {
+        constants = [[MTLFunctionConstantValues alloc] init];
+        [constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
+    }
+    auto pipeline = metal::load_pipeline(device, library,
+                                         native ? @"rypath_native_intersection_contract"
+                                                : @"rypath_checkpoint_contract",
+                                         diagnostic, nil, constants);
     if (pipeline == nil) {
         diagnostic =
             "Metal shader compatibility handshake unavailable; rebuild the metallib: " + diagnostic;
         return false;
     }
-    constexpr std::array<std::uint32_t, 4> expected{
-        checkpoint_contract::renderer, checkpoint_contract::sampling,
-        checkpoint_contract::accumulation, checkpoint_contract::identity};
+    const std::array<std::uint32_t, 4> expected =
+        native ? std::array<std::uint32_t, 4>{1u, 1u, 0u, 0u}
+               : std::array<std::uint32_t, 4>{
+                     checkpoint_contract::renderer, checkpoint_contract::sampling,
+                     checkpoint_contract::accumulation, checkpoint_contract::identity};
     auto buffer = [device newBufferWithLength:sizeof(expected)
                                       options:MTLResourceStorageModeShared];
     if (buffer == nil) {
@@ -2634,7 +2643,8 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
             "Live frame sessions require explicit PT and unclamped raw scene overrides";
         return result;
     }
-    auto built = build_metal_renderer(scene, library_path);
+    auto built =
+        build_metal_renderer(scene, library_path, RenderBuildOptions{config.intersection_profile});
     result.device = built.device;
     result.status = built.status;
     result.diagnostic = built.diagnostic;
@@ -2671,6 +2681,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path,
                                        RenderTimings *timings) {
+    return build_metal_renderer(scene, library_path, RenderBuildOptions{}, timings);
+}
+RenderBuildResult build_metal_renderer(const RenderScene &scene,
+                                       const std::filesystem::path &library_path,
+                                       RenderBuildOptions options, RenderTimings *timings) {
     @autoreleasepool {
         RenderBuildResult result;
         std::optional<std::size_t> growth_estimate;
@@ -2772,9 +2787,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                     ++opaque_triangle_sources;
             }
         }
-        const bool hint_eligible = parameters.packet_transport && !hint_passthrough &&
-                                   !hint_complex_material && !hint_medium_boundary &&
-                                   opaque_triangle_sources != 0;
+        const bool hint_eligible =
+            options.intersection_profile == IntersectionProfile::compensated &&
+            parameters.packet_transport && !hint_passthrough && !hint_complex_material &&
+            !hint_medium_boundary && opaque_triangle_sources != 0;
         if (hint_eligible) {
             std::size_t base_estimate = 0;
             result.diagnostic = validate_render_preparation_budget(scene, &base_estimate);
@@ -2796,7 +2812,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
                 return result;
             }
         }
-        auto built = build_metal_geometry_with_hints(geometry_data, library_path, hint_eligible);
+        auto built = build_metal_geometry_with_hints(geometry_data, library_path, hint_eligible,
+                                                     {options.intersection_profile});
         result.device = std::move(built.device);
         if (built.status != GeometryStatus::success) {
             result.status = built.status;
@@ -2830,6 +2847,10 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             return result;
         }
         if (!verify_shader_contract(impl->device, impl->queue, library, result.diagnostic)) {
+            return result;
+        }
+        if (options.intersection_profile == IntersectionProfile::native &&
+            !verify_shader_contract(impl->device, impl->queue, library, result.diagnostic, true)) {
             return result;
         }
         NSString *entry = impl->parameters.packet_transport
@@ -2878,6 +2899,9 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
         for (NSUInteger i = 0; i < std::size(features); ++i)
             [constants setConstantValue:&features[i] type:MTLDataTypeBool atIndex:i];
+        const bool native = options.intersection_profile == IntersectionProfile::native;
+        if (native)
+            [constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
         if (impl->parameters.packet_transport) {
             // Scan every material, including children reached through mix nodes.
             const ScatteringKind families[] = {ScatteringKind::thin_dielectric,

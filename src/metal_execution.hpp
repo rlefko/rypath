@@ -11,6 +11,11 @@ namespace rypath::metal {
 MetalDeviceInfo inspect_device(id<MTLDevice> device);
 id<MTLLibrary> load_library(id<MTLDevice> device, const std::filesystem::path &path,
                             std::string &diagnostic);
+// Always specialize optional function constants, including when no values are
+// supplied. Bare function lookup may return an unspecialized function that Metal
+// API validation rejects at pipeline creation. Empty values retain shader defaults.
+id<MTLFunction> load_function(id<MTLLibrary> library, NSString *name, std::string &diagnostic,
+                              MTLFunctionConstantValues *constants = nil);
 id<MTLComputePipelineState> load_pipeline(id<MTLDevice> device, id<MTLLibrary> library,
                                           NSString *name, std::string &diagnostic,
                                           id<MTLFunction> intersection = nil,
