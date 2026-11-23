@@ -36,6 +36,7 @@ for args in (
 for option, values in (
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
+    ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
     ("--target-scale", ("0", "-1", "nan", "inf", "1e-45", "1e100", "1e-6x")),
     ("--intersections", ("invalid",)),
     ("--capacity", ("0", "65537", "-1")),
@@ -111,7 +112,14 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 2
+    assert settings["area_contract"] == 3
+    assert settings["mutation_steps"] == 1 and settings["effective_mutation_steps"] == 1
     assert settings["area_target"] == "bounded-l1-contrast-0.1-v1"
     assert settings["target_scale"] == 0.125 and settings["fresh_paths_per_pixel_per_frame"] == 1
+    for count in (0, 1, 2, 4):
+        destination = root / f"area-mutations-{count}.json"
+        invoke(["--scene", str(malformed), "--output", str(destination),
+                "--estimator", "area-replay", "--mutations", str(count)])
+        settings = json.loads(destination.read_text())["settings"]
+        assert settings["mutation_steps"] == count and settings["effective_mutation_steps"] == count
 print("frame benchmark CLI checks passed")

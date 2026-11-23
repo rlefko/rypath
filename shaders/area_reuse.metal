@@ -2,8 +2,10 @@
 #pragma once
 // Included by render.metal; the leaf evaluator remains the complete PT estimator.
 #include "../src/area_wire.h"
+#include "../src/mutation_shared.h"
 namespace aw = rypath::area_wire;
 namespace reservoir = rypath_reservoir;
+namespace mutation = rypath_mutation;
 struct AreaArguments {
     device const aw::Config *config [[id(aw::config_id)]];
     device rypath_replay::ReplayState *replay [[id(aw::replay_id)]];
@@ -13,21 +15,24 @@ struct AreaArguments {
     device const aw::History *history_source [[id(aw::history_source_id)]];
     device aw::History *history_destination [[id(aw::history_destination_id)]];
     device wire::Point *raw_xyz [[id(aw::raw_xyz_id)]];
-    device atomic_uint *failure [[id(aw::failure_id)]];
+    device aw::Counters *counters [[id(aw::failure_id)]];
 };
 inline void area_fail(constant AreaArguments &a, uint failure) {
-    atomic_fetch_or_explicit(a.failure, failure, memory_order_relaxed);
+    atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
 }
 inline bool area_failed(constant AreaArguments &a) {
-    return atomic_load_explicit(a.failure, memory_order_relaxed) != 0;
+    return atomic_load_explicit(&a.counters->failure, memory_order_relaxed) != 0;
 }
 inline bool area_config(constant AreaArguments &a) {
     const auto c = *a.config;
     const bool schedule = (c.phase == aw::fresh && c.candidate == 0) ||
                           (c.phase == aw::temporal && c.candidate == 1 && c.history_used == 1) ||
-                          (c.phase == aw::spatial && c.candidate <= 4);
+                          (c.phase == aw::spatial && c.candidate <= 4) ||
+                          (c.phase == aw::mutation && c.candidate < c.mutation_steps);
     if (c.pixel_count == 0 || c.width == 0 || c.height == 0 ||
-        ulong(c.width) * c.height != c.pixel_count || c.history_used > 1 || c.reserved != 0 ||
+        ulong(c.width) * c.height != c.pixel_count || c.history_used > 1 ||
+        !mutation::valid_step_count(c.mutation_steps) ||
+        ulong(c.pixel_count) * c.mutation_steps > 0xfffffffful ||
         !reservoir::positive_normal(c.target_scale) || !schedule) {
         area_fail(a, aw::invalid_config);
         return false;
@@ -138,12 +143,16 @@ kernel void rypath_area_contract(device aw::Contract *out [[buffer(0)]]) {
             sizeof(aw::Temporal),
             sizeof(aw::Accumulator),
             sizeof(rypath_replay::ReplayState),
-            {0, 0}};
+            sizeof(aw::Counters),
+            0};
 }
 kernel void rypath_area_reset(constant AreaArguments &a [[buffer(1)]],
                               uint lane [[thread_position_in_grid]]) {
     if (lane == 0) {
-        atomic_store_explicit(a.failure, 0u, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->failure, 0u, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->mutations, 0u, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->accepted, 0u, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->reserved, 0u, memory_order_relaxed);
         (void)area_config(a);
     }
 }
@@ -152,6 +161,10 @@ kernel void rypath_area_prepare(constant wire::Parameters &p [[buffer(0)]],
                                 uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a))
         return;
+    if (a.config->phase == aw::mutation) {
+        area_fail(a, aw::invalid_config);
+        return;
+    }
     if (p.width != a.config->width || p.height != a.config->height || p.pixel_begin != 0 ||
         p.pixel_count != a.config->pixel_count || p.sampler_kind != wire::independent_sampler) {
         area_fail(a, aw::invalid_config);
@@ -182,6 +195,10 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
                               uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a))
         return;
+    if (a.config->phase == aw::mutation) {
+        area_fail(a, aw::invalid_config);
+        return;
+    }
     const auto payload = a.replay[pixel];
     if (!rypath_replay::valid(payload)) {
         area_fail(a, aw::invalid_payload);
@@ -289,4 +306,120 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
     }
     a.history_destination[pixel] = {accumulator.payload, weight, 1, {0, 0}};
     a.raw_xyz[pixel] = {weighted.x, weighted.y, weighted.z};
+}
+
+// The source cache always belongs to the CURRENT destination evaluation. Each
+// configured step proposes independently, fully replays that proposal, then
+// finalizes its actual represented acceptance probability before the next step.
+inline mutation::MutationIdentity area_mutation_identity(constant AreaArguments &a, uint pixel) {
+    return {pixel, a.config->serial_low, a.config->serial_high, a.config->seed_low,
+            a.config->seed_high};
+}
+inline bool area_mutation_source(constant AreaArguments &a, const thread aw::Temporal &source) {
+    const auto target = reservoir::bounded_target_xyz(source.xyz.x, source.xyz.y, source.xyz.z,
+                                                      a.config->target_scale);
+    if (!rypath_replay::valid(source.payload) || !reservoir::positive_normal(source.weight) ||
+        !reservoir::positive_normal(source.target) || source.reserved[0] != 0 ||
+        source.reserved[1] != 0 || source.reserved[2] != 0 ||
+        target.status != reservoir::Status::ok || target.value != source.target) {
+        area_fail(a, aw::invalid_mutation);
+        return false;
+    }
+    return true;
+}
+inline mutation::ProposalResult
+area_mutation_proposal(constant AreaArguments &a, uint pixel,
+                       const thread rypath_replay::ReplayState &source) {
+    const auto identity = area_mutation_identity(a, pixel);
+    const auto entropy =
+        mutation::decision_words(identity, a.config->candidate, mutation::Entropy::proposal);
+    if (entropy.status != mutation::Status::ok) {
+        area_fail(a, aw::invalid_mutation);
+        return {source, mutation::Block::film, entropy.status};
+    }
+    const auto proposal = mutation::propose(source, entropy.value);
+    if (proposal.status != mutation::Status::ok)
+        area_fail(a, aw::invalid_mutation);
+    return proposal;
+}
+kernel void rypath_area_mutation_prepare(constant wire::Parameters &p [[buffer(0)]],
+                                         constant AreaArguments &a [[buffer(1)]],
+                                         uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= a.config->pixel_count || !area_config(a))
+        return;
+    if (a.config->phase != aw::mutation || p.width != a.config->width ||
+        p.height != a.config->height || p.pixel_begin != 0 ||
+        p.pixel_count != a.config->pixel_count || p.sampler_kind != wire::independent_sampler) {
+        area_fail(a, aw::invalid_config);
+        return;
+    }
+    const auto source = a.temporal[pixel];
+    if (!area_mutation_source(a, source))
+        return;
+    const auto proposal = area_mutation_proposal(a, pixel, source.payload);
+    if (proposal.status != mutation::Status::ok)
+        return;
+    a.replay[pixel] = proposal.payload;
+}
+kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
+                                        uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= a.config->pixel_count || !area_config(a))
+        return;
+    if (a.config->phase != aw::mutation) {
+        area_fail(a, aw::invalid_config);
+        return;
+    }
+    const auto source = a.temporal[pixel];
+    if (!area_mutation_source(a, source))
+        return;
+    const auto proposal = area_mutation_proposal(a, pixel, source.payload);
+    const auto evaluated = a.replay[pixel];
+    if (proposal.status != mutation::Status::ok ||
+        !area_same_payload(proposal.payload, evaluated)) {
+        area_fail(a, aw::invalid_mutation);
+        return;
+    }
+    const auto xyz = a.leaf_xyz[pixel];
+    const auto target = reservoir::bounded_target_xyz(xyz.x, xyz.y, xyz.z, a.config->target_scale);
+    if (target.status != reservoir::Status::ok) {
+        area_fail(a, aw::invalid_mutation);
+        return;
+    }
+    auto pending = mutation::prepare_acceptance(source.weight, source.target, target.value);
+    if (pending.status != mutation::Status::ok) {
+        area_fail(a, aw::invalid_mutation);
+        return;
+    }
+    const auto identity = area_mutation_identity(a, pixel);
+    for (uint ordinal = 0; !pending.decision.complete && ordinal < reservoir::maximum_random_words;
+         ++ordinal) {
+        const auto entropy = mutation::acceptance_word(identity, a.config->candidate, ordinal);
+        if (entropy.status != mutation::Status::ok ||
+            mutation::feed_random_word(pending, entropy.value) != mutation::Status::ok) {
+            area_fail(a, aw::invalid_mutation);
+            return;
+        }
+    }
+    const auto result = mutation::finalize_acceptance(pending);
+    if (result.status != mutation::Status::ok) {
+        area_fail(a, aw::invalid_mutation);
+        return;
+    }
+    // Counts are diagnostics, never an acceptance/stopping criterion. Valid
+    // dispatches attempt exactly pixel_count*mutation_steps; configuration
+    // validation proves this product fits the shared 32-bit counters.
+    const uint maximum = a.config->pixel_count * a.config->mutation_steps;
+    if (atomic_fetch_add_explicit(&a.counters->mutations, 1u, memory_order_relaxed) >= maximum) {
+        area_fail(a, aw::invalid_mutation);
+        return;
+    }
+    if (result.accepted) {
+        if (atomic_fetch_add_explicit(&a.counters->accepted, 1u, memory_order_relaxed) >= maximum) {
+            area_fail(a, aw::invalid_mutation);
+            return;
+        }
+        a.temporal[pixel] = {proposal.payload, result.weight, xyz, target.value, {0, 0, 0}};
+    }
+    // Rejection retains the exact old payload/UCW/XYZ/target. The host always
+    // launches every configured step, including after rejections/equal targets.
 }

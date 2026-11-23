@@ -1641,3 +1641,50 @@ target_compile_options(rypath_bounded_target_tests PRIVATE
     "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
 add_test(NAME render.bounded_target COMMAND rypath_bounded_target_tests)
 set_tests_properties(render.bounded_target PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_mutation_tests mutation_tests.cpp)
+target_include_directories(rypath_mutation_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_mutation_tests)
+target_compile_options(rypath_mutation_tests PRIVATE
+    "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+add_test(NAME render.mutation_weights COMMAND rypath_mutation_tests)
+set_tests_properties(render.mutation_weights PROPERTIES TIMEOUT 30)
+
+add_executable(rypath_mutation_frame_tests mutation_frame_tests.cpp)
+target_link_libraries(rypath_mutation_frame_tests PRIVATE rypath_metal_backend)
+target_compile_definitions(rypath_mutation_frame_tests PRIVATE
+    RYPATH_TEST_MUTATION_METAL=$<BOOL:${RYPATH_ENABLE_METAL}>)
+set_target_properties(rypath_mutation_frame_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+rypath_configure_host_target(rypath_mutation_frame_tests)
+if(RYPATH_ENABLE_METAL)
+    add_test(NAME metal.mutation_frame COMMAND rypath_mutation_frame_tests)
+    set_tests_properties(metal.mutation_frame PROPERTIES TIMEOUT 300 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_mutation_frame_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.mutation_frame PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+else()
+    add_test(NAME frame.mutation_unavailable COMMAND rypath_mutation_frame_tests)
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_mutation_math_probe mutation_math_probe.mm)
+    target_link_libraries(rypath_mutation_math_probe PRIVATE "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_mutation_math_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_mutation_math_probe PRIVATE -fobjc-arc)
+    target_compile_options(rypath_mutation_math_probe PRIVATE
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+    rypath_configure_host_target(rypath_mutation_math_probe)
+    add_dependencies(rypath_mutation_math_probe rypath_mutation_math_shader)
+    add_test(NAME metal.mutation_math COMMAND rypath_mutation_math_probe "${rypath_mutation_math_library}")
+    set_tests_properties(metal.mutation_math PROPERTIES TIMEOUT 60 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_mutation_math_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.mutation_math PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()

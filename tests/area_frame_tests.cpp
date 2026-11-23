@@ -30,6 +30,7 @@ FrameConfig config(FrameEstimator estimator = FrameEstimator::area_replay) {
     result.seed = 19317;
     result.material_seed = -11;
     result.estimator = estimator;
+    result.mutation_steps = 0; // Keep the PR4 replay controls separate from mutation qualification.
     return result;
 }
 RenderScene sky(bool packet = false, float radiance = 1) {
