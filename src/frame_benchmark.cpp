@@ -127,7 +127,7 @@ const char *usage =
     "  [--profile-stages] [--capture-frame N --capture-path FRAME.gputrace]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
     "  [--reconstruction none|raw-rgb|metalfx|temporal (default: none)]\n"
-    "  [--guide-cache on|off (default: off)]\n"
+    "  [--guide-cache on|off (default: on for temporal/metalfx, off otherwise)]\n"
     "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
     "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
 std::string parse(int argc, char **argv, Options &o) {
@@ -279,6 +279,9 @@ std::string parse(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if (!seen.contains("--guide-cache"))
+        o.guide_cache = o.reconstruction == rypath::ReconstructionMode::temporal ||
+                        o.reconstruction == rypath::ReconstructionMode::metalfx;
     if (o.guide_cache &&
         (!o.reconstruction || o.reconstruction == rypath::ReconstructionMode::raw_rgb))
         return "guide cache requires temporal or metalfx reconstruction";

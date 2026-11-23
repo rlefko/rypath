@@ -98,11 +98,14 @@ checks. This changes execution only; pixel arithmetic, texture writes, temporal
 recurrences and the raw estimator are unchanged. Surface-guide approximation and
 pass-through counters retain their existing per-event accounting.
 
-## Optional exact surface-guide reuse
+## Exact surface-guide reuse
 
 `ReconstructionConfig::cache_surface_guides` and benchmark `--guide-cache on|off`
-select a stream-local surface-guide cache. The default remains **off** pending
-hardware qualification. This changes execution only: fresh XYZ-to-RGB conversion
+select a stream-local surface-guide cache. The API default is **on** after the
+[static and phased motion qualification](core-performance.md). The benchmark
+defaults on for temporal/MetalFX and off for none/raw-RGB; explicit on/off wins
+regardless of option order. Explicit on requires a surface-guide mode. The viewer
+uses the API default for temporal/MetalFX. This changes execution only: fresh XYZ-to-RGB conversion
 and all selected temporal/spatial passes still execute every frame. Raw XYZ,
 sampling, reconstruction settings, and temporal recurrence are unchanged.
 

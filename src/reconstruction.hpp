@@ -13,7 +13,7 @@ struct ReconstructionConfig {
     double near_plane = .001; // Guides only; raw transport has no new cutoff.
     // Native signed-color fallback. Zero spatial passes selects temporal only.
     std::uint32_t history_limit = 64, spatial_iterations = 5;
-    bool cache_surface_guides = false; // Opt-in until hardware qualification.
+    bool cache_surface_guides = true; // Reuse guides when resolved inputs match.
 };
 enum class ReconstructionStatus { pending, complete, failed };
 struct ReconstructionCounters {

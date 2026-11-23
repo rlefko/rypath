@@ -149,13 +149,13 @@ also passes Release (27.10 s) and ASan/UBSan (.82 s) with API validation. A bund
 Release application check exercises translation, rotation, Home reset, raw/MetalFX
 switching, exposure, paired capture under Pictures/rypath, and Escape termination.
 
-The signed-temporal extension and measured default selection pass Debug/Release
+The signed-temporal extension and measured default selection passed Debug/Release
 viewer builds and portable option tests (0.24/0.31 s), focused LLVM 18 analysis and
-formatting. A current Release application check at native 1920×1080 exercises
-raw/temporal toggling, translation and rotation, Home reset, exposure, window zoom,
-paired capture and Escape termination. Resizing preserves internal dimensions.
-Two three-frame 128² runs with Metal API validation also complete: independent
-sampling and explicit Area-one, both with temporal reconstruction.
+formatting. A Release application check for that extension at native 1920×1080
+exercised raw/temporal toggling, translation and rotation, Home reset, exposure,
+window zoom, paired capture and Escape termination. Resizing preserved internal
+dimensions. Two three-frame 128² runs with Metal API validation also completed:
+independent sampling and explicit Area-one, both with temporal reconstruction.
 
 An independent OpenEXR/NumPy decoder verifies all four native-1080p FLOAT captures
 and paired sample/epoch/mode metadata. Temporal values remain signed (observed

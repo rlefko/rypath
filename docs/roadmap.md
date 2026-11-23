@@ -216,7 +216,8 @@ The viewer defaults to independent sampling plus signed temporal reconstruction.
 Full-replay Area reuse with one corrected MCMC step remains opt-in, with
 zero/two/four-step ablations; the six static fixtures favor independent/temporal
 over Area-one/temporal. MetalFX remains an explicit integration with documented
-guide and input limitations. Four audited sustained controls also miss 20 FPS.
+guide and input limitations. The original qualification's four audited sustained
+controls also miss 20 FPS.
 
 The next interactive work should improve importance sampling, replay/reconnection
 efficiency and guide/filter cost, then demonstrate quality per unit time against

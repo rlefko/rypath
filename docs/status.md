@@ -19,8 +19,9 @@ This is a correctness baseline, not the published optimized reconnection method.
 MetalFX remains explicit; its measured limitations apply to our integration,
 not to the framework generally.
 
-Across three seeds, native complete-pipeline throughput spans 2.93–21.97 FPS for
-independent sampling and 0.48–6.66 FPS for Area-one. Only 2/90 primary runs meet
+In that historical qualification, three-seed native complete-pipeline throughput
+spans 2.93–21.97 FPS for independent sampling and 0.48–6.66 FPS for Area-one.
+Only 2/90 primary runs meet
 p95 ≤50 ms (two defocus/independent seeds); none meet approximately 33.33 ms,
 and no scene/arm passes all three seeds. Four audited sustained runs add 1,784
 frames and meet their duration requirements; none reaches 20 FPS. Next optimization
