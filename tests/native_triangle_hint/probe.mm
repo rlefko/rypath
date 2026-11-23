@@ -188,17 +188,15 @@ id<MTLComputePipelineState> pipeline(id<MTLDevice> device, id<MTLLibrary> librar
                                      int mode = -1) {
     NSError *error = nil;
     NSString *entry = [NSString stringWithUTF8String:name];
-    id<MTLFunction> function;
-    if (mode < 0)
-        function = [library newFunctionWithName:entry];
-    else {
-        MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
+    MTLFunctionConstantValues *constants = nil;
+    if (mode >= 0) {
+        constants = [[MTLFunctionConstantValues alloc] init];
         const unsigned value = static_cast<unsigned>(mode);
         [constants setConstantValue:&value type:MTLDataTypeUInt atIndex:19];
-        function = [library newFunctionWithName:entry constantValues:constants error:&error];
     }
-    need(function != nil, std::string("Function ") + name + ": " +
-                              (error ? error.localizedDescription.UTF8String : "missing"));
+    std::string diagnostic;
+    auto function = metal::load_function(library, entry, diagnostic, constants);
+    need(function != nil, std::string("Function ") + name + ": " + diagnostic);
     auto p = [device newComputePipelineStateWithFunction:function error:&error];
     need(p != nil, std::string("Pipeline ") + name + ": " +
                        (error ? error.localizedDescription.UTF8String : "missing"));

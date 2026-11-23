@@ -63,6 +63,29 @@ Callers provide matching texture camera transforms and explicitly identify the
 camera medium after a boundary crossing. Non-vacuum camera overrides require
 scalar PBRT volume transport. Failed submissions leave the session usable.
 
+Live sessions default to `IntersectionProfile::native` in `FrameConfig`.
+The benchmark exposes `--intersections native|compensated`, defaulting to
+`native`; select `compensated` explicitly for a comparison baseline. This option
+is immutable for a session. The existing offline renderer builders continue to
+default to compensated intersections.
+
+Native mode uses authoritative hardware triangle distances and barycentrics
+while retaining alpha callbacks and procedural patch/analytic composition.
+Near-edge candidate coverage, rounded distances and endpoint inclusion can differ
+from compensated mode; native mode does not recover misses with a compensated
+query. Both profiles retain unclamped raw samples and the same sampling policy.
+See the [intersection profile and measured witnesses](geometry.md#explicit-native-triangle-profile).
+Changing profiles requires a new session and separate sample history.
+
+The selected profile is recorded as `settings.intersection_profile` in JSON and
+`rypath.frame.intersection_profile` in EXR metadata. Canonical `source_identity`
+continues to identify the owned scene and sampling settings; it does not encode
+this numerical execution choice. Compare or group results using both source
+identity and intersection profile. Frame validation compares each profile's GPU
+image against the direct sample kernel built with that same profile, including
+empty geometry, demo geometry, scalar and packet paths; it does not require
+native and compensated images to agree at numerical edge cases.
+
 ## Initial M4 Max evidence
 
 On 2026-11-22, implementation `1c1d7bb` passed the frame-session tests in Release

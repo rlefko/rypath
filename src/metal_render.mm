@@ -2643,7 +2643,8 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
             "Live frame sessions require explicit PT and unclamped raw scene overrides";
         return result;
     }
-    auto built = build_metal_renderer(scene, library_path);
+    auto built =
+        build_metal_renderer(scene, library_path, RenderBuildOptions{config.intersection_profile});
     result.device = built.device;
     result.status = built.status;
     result.diagnostic = built.diagnostic;
