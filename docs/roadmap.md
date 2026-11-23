@@ -203,10 +203,14 @@ per-asset licenses before opt-in downloads.
 The foundation audit merged in PR #12, tightening availability checks, repository
 guards, and project agent guidance. Large-corpus acquisition remains separately scoped.
 
-## After the offline MVP
+## Interactive pipeline
 
-Build the native accessible macOS application, then camera/scene interaction,
-progressive refinement, and separately identified denoising or temporal previews.
+The current development direction is the [golden pipeline](golden-pipeline.md),
+with eight compatible review boundaries from persistent GPU frames through
+native traversal, wavefront transport, Area ReSTIR/MCMC, reconstruction, a native
+viewer and measured M4 Max qualification. Offline acceptance above remains open;
+interactive work does not imply that those quality and compatibility gates pass.
+
 Broader conformance includes full OBJ non-polygon geometry, additional mesh
 formats, PBRT materials/cameras, curves, motion, and heterogeneous media.
 

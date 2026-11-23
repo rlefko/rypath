@@ -1,5 +1,11 @@
 # Project status
 
+The [golden pipeline](golden-pipeline.md) is the current development direction:
+resident frames, native triangle traversal, wavefront PT, Area ReSTIR with MCMC,
+and separate reconstruction in a native viewer. The first stage adds a
+[frame session and headless benchmark](frame-rendering.md). Native 1080p at
+20–30 rendered FPS remains a target; the complete pipeline is not yet available.
+
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
 sampling and performance fixes. The remaining Pavilion convergence investigation
