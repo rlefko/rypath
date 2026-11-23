@@ -40,6 +40,11 @@ def main():
             (["--metalfx-exposure", "nan"], "finite"),
             (["--reference-samples", "1024", "--seed", "99", "--metalfx-conditioning", "on"], "fanout"),
             (["--replay-list", "list.json", "--metalfx-guide-policy", "primary"], "fanout"),
+            (["--variance-policy", "other"], "variance policy"),
+            (["--variance-prefilter", "on"], "requires"),
+            (["--variance-policy", "conservative", "--variance-prefilter", "on"], "requires"),
+            (["--strict-spatial-segments", "true"], "on or off"),
+            (["--save-online-mean", "on", "--motion-offset", "0.1"], "static"),
             (["--unknown", "1"], "Unknown"),
             (["--seed"], "missing"),
         ]

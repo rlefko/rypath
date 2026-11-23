@@ -60,12 +60,17 @@ static float temporal_denoiser_geometry(uint4 a, uint4 b, uint ga, uint gb, floa
                 !temporal_denoiser_normal(gnb))
                 return 0.f;
             const float3 delta = pb - pa;
+            // Finite endpoints can overflow subtraction. Reject unsupported
+            // pairs before Inf*0 can make a plane residual NaN and fail open.
+            if (!all(isfinite(delta)))
+                return 0.f;
             const float3 an = normalize(gna), bn = normalize(gnb);
             const float3 magnitude = max(abs(pa), abs(pb));
             const float scale = max(magnitude.x, max(magnitude.y, magnitude.z));
             const float tolerance = max(0x1p-126f, 32.f * 0x1p-23f * scale);
-            if (dot(an, bn) < .99999f || abs(dot(delta, an)) > tolerance ||
-                abs(dot(delta, bn)) > tolerance)
+            const float residual_a = dot(delta, an), residual_b = dot(delta, bn);
+            if (!isfinite(residual_a) || !isfinite(residual_b) || dot(an, bn) < .99999f ||
+                abs(residual_a) > tolerance || abs(residual_b) > tolerance)
                 return 0.f;
         }
     }
