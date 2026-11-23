@@ -489,10 +489,17 @@ the mean gates because inverse-square point sources can give heavy-tailed volume
 estimators. The test records cold/warm/warm observations per seed rather than
 treating correlated pixels or history frames as independent samples.
 
-These are mean smoke checks and arithmetic/lifetime evidence. Release, sanitizer,
-longer convergence and time-to-quality qualification remain separate; passing a
-small mean study does not establish a visual or performance benefit. MCMC is not
-yet integrated here.
+The focused Release suite also passed with Metal API validation: area frame
+26.97 s, arithmetic probe 0.23 s and bounded-target oracle 0.21 s. The same three
+checks passed under ASan/UBSan in 9.69 s (frame 8.69 s, probe 0.29 s, oracle
+0.71 s). These runs used implementation `c918492`, before documentation and
+parent-history restacking. Portable arithmetic oracles explicitly disable fast
+math and contraction.
+
+These are mean smoke checks and arithmetic/lifetime evidence. Longer
+convergence and time-to-quality qualification remain separate; passing a small
+mean study does not establish a visual or performance benefit. MCMC is not yet
+integrated here.
 
 ## Primary references
 
