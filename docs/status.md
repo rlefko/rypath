@@ -3,11 +3,13 @@
 The [golden pipeline](golden-pipeline.md) is the current development direction:
 resident frames, native triangle traversal, wavefront PT, Area ReSTIR with MCMC,
 and separate reconstruction in a native viewer. Persistent
-[frame sessions and the headless benchmark](frame-rendering.md) now support
-native triangle traversal, with the compensated profile available for comparison.
-The recorded native 1080p megakernel baselines are 86.1–86.6 ms for Cornell and
-196.6–199.4 ms for the coated packet scene. These precede wavefront and reconstruction;
-20–30 rendered FPS remains a target and the complete pipeline is not yet available.
+[frame sessions and the headless benchmark](frame-rendering.md) support native
+triangle traversal and [wavefront execution](wavefront-rendering.md), with
+matched megakernel and compensated-profile controls. The retained native
+megakernel baselines are 86.1–86.6 ms for Cornell and 196.6–199.4 ms for the coated
+packet scene; subsequent wavefront measurements are reported separately.
+Native 1080p at 20–30 rendered FPS remains a target; the complete pipeline is not
+available yet.
 
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,

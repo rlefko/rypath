@@ -54,6 +54,10 @@ template <typename T> bool integer(std::string_view value, T &result) {
 struct Options {
     fs::path scene, output, capture, preview;
     bool demo = false;
+    rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
+    std::uint32_t capacity = rypath::FrameConfig{}.capacity;
+    std::uint32_t quantum = rypath::FrameConfig{}.quantum;
+    std::uint32_t group_width = rypath::FrameConfig{}.group_width;
     std::uint32_t width = 1920, height = 1080;
     std::uint64_t frames = 120, warmup = 8, seed = 1;
     std::int32_t material_seed = 0;
@@ -62,10 +66,15 @@ struct Options {
 const char *profile_name(rypath::IntersectionProfile profile) {
     return profile == rypath::IntersectionProfile::native ? "native" : "compensated";
 }
+const char *execution_name(rypath::FrameExecution execution) {
+    return execution == rypath::FrameExecution::wavefront ? "wavefront" : "megakernel";
+}
 const char *usage =
     "Usage: rypath-frame-benchmark (--scene SCENE.pbrt | --demo) --output REPORT.json\n"
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
     "  [--seed 1] [--material-seed 0] [--intersections native|compensated (default: native)]\n"
+    "  [--execution wavefront|megakernel (default: wavefront)]\n"
+    "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
     "Fresh output paths required. Serial resident-scene, one new sample/pixel/frame baseline.\n";
 std::string parse(int argc, char **argv, Options &o) {
@@ -89,7 +98,23 @@ std::string parse(int argc, char **argv, Options &o) {
             o.capture = value;
         else if (key == "--preview")
             o.preview = value;
-        else if (key == "--intersections") {
+        else if (key == "--execution") {
+            if (value == "wavefront")
+                o.execution = rypath::FrameExecution::wavefront;
+            else if (value == "megakernel")
+                o.execution = rypath::FrameExecution::megakernel;
+            else
+                return "invalid execution mode: " + std::string(value);
+        } else if (key == "--capacity") {
+            if (!integer(value, o.capacity) || !o.capacity || o.capacity > 65536)
+                return "capacity must be in [1,65536]";
+        } else if (key == "--quantum") {
+            if (!integer(value, o.quantum) || !o.quantum || o.quantum > 1024)
+                return "quantum must be in [1,1024]";
+        } else if (key == "--group-width") {
+            if (!integer(value, o.group_width) || !o.group_width || o.group_width > 256)
+                return "group width must be in [1,256]";
+        } else if (key == "--intersections") {
             if (value == "native")
                 o.intersection_profile = rypath::IntersectionProfile::native;
             else if (value == "compensated")
@@ -286,7 +311,8 @@ std::vector<std::string> overrides(rypath::pbrt::Result &checked, const Options 
     return provenance;
 }
 struct Observation : rypath::FrameStatisticsSample {
-    std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0;
+    std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0,
+                  command_count = 0;
     std::string diagnostic;
 };
 struct Report {
@@ -314,6 +340,13 @@ struct Report {
             << ",\"architecture\":" << quote(architecture) << ",\"registry_id\":" << registry_id
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
             << ",\"seed\":" << options.seed << ",\"material_seed\":" << options.material_seed
+            << ",\"execution\":" << quote(execution_name(options.execution))
+            << ",\"capacity\":" << options.capacity << ",\"effective_capacity\":"
+            << (options.execution == rypath::FrameExecution::wavefront
+                    ? std::to_string(std::min<std::uint64_t>(
+                          options.capacity, std::uint64_t(options.width) * options.height))
+                    : "null")
+            << ",\"quantum\":" << options.quantum << ",\"group_width\":" << options.group_width
             << ",\"intersection_profile\":" << quote(profile_name(options.intersection_profile))
             << ",\"integrator\":" << quote(integrator) << ",\"max_depth\":" << max_depth
             << ",\"sampler\":\"independent\",\"samples_per_pixel_per_frame\":1,\"footprint_"
@@ -356,6 +389,7 @@ struct Report {
                 << ",\"complete\":" << (f.complete ? "true" : "false")
                 << ",\"completed_samples\":" << f.completed_samples
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
+                << ",\"command_count\":" << f.command_count
                 << ",\"cpu_wall_seconds\":" << f.cpu_seconds << ",\"gpu_seconds\":";
             if (f.gpu_seconds)
                 out << *f.gpu_seconds;
@@ -506,6 +540,10 @@ int run(const Options &options) {
         config.material_seed = options.material_seed;
         config.footprint_samples = 1;
         config.intersection_profile = options.intersection_profile;
+        config.execution = options.execution;
+        config.capacity = options.capacity;
+        config.quantum = options.quantum;
+        config.group_width = options.group_width;
         auto built = rypath::build_frame_session(scene, config);
         report.startup_seconds = seconds(start);
         report.device = built.device.name;
@@ -543,6 +581,7 @@ int run(const Options &options) {
                         info.completed_samples == std::uint64_t(options.width) * options.height;
                     observation.completed_samples = info.completed_samples;
                     observation.camera_upload_bytes = info.camera_upload_bytes;
+                    observation.command_count = info.command_count;
                     observation.diagnostic = info.diagnostic;
                     if (info.gpu_time_valid && std::isfinite(info.gpu_seconds) &&
                         info.gpu_seconds >= 0)
@@ -589,6 +628,16 @@ int run(const Options &options) {
                     {"rypath.frame.seed", std::to_string(options.seed)},
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.footprint_samples", "1"},
+                    {"rypath.frame.execution", execution_name(options.execution)},
+                    {"rypath.frame.capacity", std::to_string(options.capacity)},
+                    {"rypath.frame.effective_capacity",
+                     options.execution == rypath::FrameExecution::wavefront
+                         ? std::to_string(std::min<std::uint64_t>(
+                               options.capacity, std::uint64_t(options.width) * options.height))
+                         : "not-applicable"},
+                    {"rypath.frame.quantum", std::to_string(options.quantum)},
+                    {"rypath.frame.group_width", std::to_string(options.group_width)},
+                    {"rypath.frame.command_count", std::to_string(frame_info.command_count)},
                     {"rypath.frame.integrator", report.integrator},
                     {"rypath.frame.intersections", profile_name(options.intersection_profile)},
                     {"rypath.frame.spectral_mode",

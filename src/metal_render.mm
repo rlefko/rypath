@@ -8,6 +8,7 @@
 #include "frame_wire.h"
 #include "native_hint_budget.hpp"
 #include "render_timings.hpp"
+#include "wavefront_wire.h"
 
 #include "environment_sampling.hpp"
 #include "gaussian_filter.hpp"
@@ -29,6 +30,7 @@
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -452,6 +454,7 @@ struct MetalRenderScene::Impl {
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> pipeline = nil;
+    MTLFunctionConstantValues *function_constants = nil;
     id<MTLIntersectionFunctionTable> intersection_table = nil;
     id<MTLBuffer> instances = nil;
     id<MTLBuffer> positions = nil;
@@ -1761,15 +1764,14 @@ struct MetalRenderScene::Impl {
         return upload_graph(scene);
     }
 
-    void encode(id<MTLComputeCommandEncoder> encoder, const wire::Parameters &p,
-                const wire::TextureParameters &texture_p, id<MTLBuffer> output,
-                NSUInteger group_width, id<MTLBuffer> frame_graph_nodes = nil,
-                id<MTLBuffer> frame_surface_transforms = nil) {
-        const auto group_count = (p.lane_count + group_width - 1) / group_width;
-        [encoder setComputePipelineState:pipeline];
+    void bind(id<MTLComputeCommandEncoder> encoder, const wire::Parameters &p,
+              const wire::TextureParameters &texture_p, id<MTLBuffer> output,
+              id<MTLBuffer> frame_graph_nodes = nil, id<MTLBuffer> frame_surface_transforms = nil,
+              bool full_geometry = false,
+              id<MTLIntersectionFunctionTable> frame_intersection_table = nil) {
         [encoder setBytes:&p length:sizeof(p) atIndex:0];
         [encoder setBuffer:output offset:0 atIndex:1];
-        if (p.instance_count != 0 || p.packet_transport) {
+        if (p.instance_count != 0 || p.packet_transport || full_geometry) {
             if (empty_packet_structure != nil)
                 [encoder setAccelerationStructure:empty_packet_structure atBufferIndex:2];
             else
@@ -1789,7 +1791,10 @@ struct MetalRenderScene::Impl {
                 else
                     MetalGeometryAccess::bind_hint(*geometry, encoder, 14);
             } else
-                [encoder setIntersectionFunctionTable:intersection_table atBufferIndex:14];
+                [encoder setIntersectionFunctionTable:frame_intersection_table != nil
+                                                          ? frame_intersection_table
+                                                          : intersection_table
+                                        atBufferIndex:14];
             [encoder setBuffer:texture_uvs offset:0 atIndex:15];
             [encoder setBuffer:texture_frames offset:0 atIndex:16];
             [encoder setBuffer:image_textures offset:0 atIndex:17];
@@ -1828,6 +1833,14 @@ struct MetalRenderScene::Impl {
         // and light counts are zero. upload_auxiliary_data supplies a sentinel.
         if (p.instance_count == 0)
             [encoder setBuffer:material_data offset:0 atIndex:30];
+    }
+    void encode(id<MTLComputeCommandEncoder> encoder, const wire::Parameters &p,
+                const wire::TextureParameters &texture_p, id<MTLBuffer> output,
+                NSUInteger group_width, id<MTLBuffer> frame_graph_nodes = nil,
+                id<MTLBuffer> frame_surface_transforms = nil) {
+        [encoder setComputePipelineState:pipeline];
+        bind(encoder, p, texture_p, output, frame_graph_nodes, frame_surface_transforms);
+        const auto group_count = (p.lane_count + group_width - 1) / group_width;
         [encoder dispatchThreadgroups:MTLSizeMake(group_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(group_width, 1, 1)];
     }
@@ -2145,6 +2158,20 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request, Rende
     }
 }
 
+struct FrameWavefrontBuffers {
+    id<MTLBuffer> config = nil, scalar_state = nil, packet_state = nil;
+    id<MTLBuffer> queue[2]{nil, nil};
+    id<MTLBuffer> free_slots = nil, counters = nil, done = nil;
+    id<MTLBuffer> current_dispatch = nil, refill_dispatch = nil;
+    id<MTLBuffer> arguments[2]{nil, nil};
+};
+struct FrameWavefrontPrograms {
+    id<MTLComputePipelineState> reset = nil, initialize = nil, trace = nil, shade = nil;
+    id<MTLComputePipelineState> prepare_refill = nil, refill = nil, advance = nil;
+    id<MTLIntersectionFunctionTable> trace_table = nil, shade_table = nil;
+    id<MTLArgumentEncoder> argument_encoder = nil;
+    wavefront_wire::Contract contract{};
+};
 struct Frame::Impl {
     // The completion block retains this lease without retaining the command
     // buffer itself, so completion safety does not depend on breaking a cycle.
@@ -2152,14 +2179,15 @@ struct Frame::Impl {
         std::shared_ptr<MetalRenderScene> renderer;
         id<MTLBuffer> raw = nil, status = nil, scratch = nil;
         id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
+        std::shared_ptr<FrameWavefrontBuffers> wavefront;
     };
     std::shared_ptr<Retention> retention;
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
-    id<MTLCommandBuffer> command = nil;
     id<MTLBuffer> raw = nil, status = nil, scratch = nil;
     FrameInfo info;
-    mutable std::mutex capture_mutex;
+    mutable std::mutex info_mutex, capture_mutex;
+    mutable std::condition_variable completed;
 };
 struct FrameSession::Impl {
     std::shared_ptr<MetalRenderScene> renderer;
@@ -2168,11 +2196,14 @@ struct FrameSession::Impl {
     bool supports_camera_medium = false;
     id<MTLComputePipelineState> initialize = nil, resolve = nil;
     id<MTLBuffer> cie = nil;
+    std::shared_ptr<FrameWavefrontPrograms> wavefront;
+    std::size_t state_bytes = 0, slot_bytes = 0;
     struct Slot {
         std::weak_ptr<Frame::Impl::Retention> active;
         id<MTLBuffer> raw = nil, scratch = nil, status = nil;
         id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
         std::optional<wire::Point> rebased_origin;
+        std::shared_ptr<FrameWavefrontBuffers> wavefront;
     };
     std::array<Slot, 2> slots;
     std::size_t tile_count = 0, scratch_bytes = 0;
@@ -2228,6 +2259,8 @@ struct FrameSession::Impl {
         cie = upload(r.device, table);
         if (cie == nil)
             return "Frame sensor table allocation failed";
+        if (config.execution == FrameExecution::wavefront)
+            return prepare_wavefront(library);
         const auto stride =
             r.parameters.packet_transport ? r.parameters.packet_lane_bytes : sizeof(wire::Sample);
         tile_count = std::min<std::size_t>(
@@ -2253,6 +2286,194 @@ struct FrameSession::Impl {
             (r.device.recommendedMaxWorkingSetSize &&
              total > r.device.recommendedMaxWorkingSetSize))
             return "Frame slots exceed the transient or device memory budget";
+        return {};
+    }
+    std::string prepare_wavefront(id<MTLLibrary> library) {
+        auto &r = *renderer->impl_;
+        wavefront = std::make_shared<FrameWavefrontPrograms>();
+        std::string error;
+        auto handshake =
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract", error);
+        if (handshake == nil)
+            return error;
+        auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
+                                           options:MTLResourceStorageModeShared];
+        if (check == nil)
+            return "Wavefront contract allocation failed";
+        std::memset(check.contents, 0, check.length);
+        auto command = [r.queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        if (command == nil || encoder == nil)
+            return "Wavefront contract encoder creation failed";
+        [encoder setComputePipelineState:handshake];
+        [encoder setBuffer:check offset:0 atIndex:0];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        error = metal::complete(command, "wavefront contract");
+        if (!error.empty())
+            return error;
+        auto &contract = wavefront->contract;
+        std::memcpy(&contract, check.contents, sizeof(contract));
+        const auto alignment_valid = [](std::uint32_t size, std::uint32_t alignment) {
+            return size && alignment && alignment <= 16 && !(alignment & (alignment - 1)) &&
+                   size % alignment == 0;
+        };
+        if (contract.version != wavefront_wire::contract ||
+            contract.config_bytes != sizeof(wavefront_wire::Config) ||
+            contract.counters_bytes != sizeof(wavefront_wire::Counters) ||
+            contract.dispatch_bytes != sizeof(wavefront_wire::DispatchArguments) ||
+            !alignment_valid(contract.scalar_bytes, contract.scalar_alignment) ||
+            !alignment_valid(contract.packet_bytes, contract.packet_alignment))
+            return "Metal wavefront shader contract mismatch; rebuild the metallib";
+        const auto load = [&](NSString *name, id<MTLFunction> intersection = nil) {
+            return metal::load_pipeline(r.device, library, name, error, intersection,
+                                        r.function_constants);
+        };
+        wavefront->reset = load(@"rypath_wavefront_reset");
+        if (wavefront->reset == nil)
+            return error;
+        wavefront->initialize = load(@"rypath_wavefront_initialize");
+        if (wavefront->initialize == nil)
+            return error;
+        wavefront->prepare_refill = load(@"rypath_wavefront_prepare_refill");
+        if (wavefront->prepare_refill == nil)
+            return error;
+        wavefront->refill = load(@"rypath_wavefront_refill");
+        if (wavefront->refill == nil)
+            return error;
+        wavefront->advance = load(@"rypath_wavefront_advance");
+        if (wavefront->advance == nil)
+            return error;
+        auto intersection = metal::load_patch_intersection(library, error);
+        if (intersection == nil)
+            return error;
+        if (!r.parameters.packet_transport) {
+            wavefront->trace = load(@"rypath_wavefront_trace_scalar", intersection);
+            if (wavefront->trace == nil)
+                return error;
+            wavefront->trace_table =
+                metal::make_intersection_table(wavefront->trace, intersection, error);
+            if (wavefront->trace_table == nil)
+                return error;
+        }
+        wavefront->shade = load(r.parameters.packet_transport ? @"rypath_wavefront_shade_packet"
+                                                              : @"rypath_wavefront_shade_scalar",
+                                intersection);
+        if (wavefront->shade == nil)
+            return error;
+        if (!r.parameters.packet_transport) {
+            wavefront->shade_table =
+                metal::make_intersection_table(wavefront->shade, intersection, error);
+            if (wavefront->shade_table == nil)
+                return error;
+        }
+        for (auto pipeline :
+             {wavefront->reset, wavefront->initialize, wavefront->trace, wavefront->shade,
+              wavefront->prepare_refill, wavefront->refill, wavefront->advance})
+            if (pipeline != nil && config.group_width > metal::group_width(r.device, pipeline))
+                return "Wavefront group width exceeds a pipeline or device limit";
+        auto function = metal::load_function(library, @"rypath_wavefront_reset", error);
+        if (function == nil)
+            return error;
+        wavefront->argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
+        if (wavefront->argument_encoder == nil)
+            return "Wavefront argument encoder creation failed";
+        // Scalar sky previously avoided all geometry arguments. The generic
+        // wavefront signatures require valid storage even on a synthetic miss.
+        if (!r.parameters.instance_count && r.empty_packet_structure == nil) {
+            r.empty_packet_structure = build_empty_packet_structure(r.device, r.queue, error);
+            if (r.empty_packet_structure == nil)
+                return error;
+        }
+        if (!r.parameters.instance_count) {
+            auto sentinel = [r.device newBufferWithLength:2048
+                                                  options:MTLResourceStorageModeShared];
+            if (sentinel == nil)
+                return "Wavefront empty-scene sentinel allocation failed";
+            std::memset(sentinel.contents, 0, sentinel.length);
+            for (auto *buffer :
+                 {&r.instances,       &r.positions,    &r.triangles,        &r.patches,
+                  &r.materials,       &r.knots,        &r.area_emissions,   &r.emitters,
+                  &r.normals,         &r.texture_uvs,  &r.texture_frames,   &r.image_textures,
+                  &r.image_levels,    &r.image_texels, &r.image_transfer,   &r.image_spectra,
+                  &r.graph_nodes,     &r.graph_knots,  &r.surface_vertices, &r.surface_transforms,
+                  &r.environment_cdf, &r.illuminant,   &r.material_data})
+                if (*buffer == nil)
+                    *buffer = sentinel;
+        }
+        config.capacity =
+            std::min<std::uint64_t>(config.capacity, std::uint64_t(config.width) * config.height);
+        state_bytes = r.parameters.packet_transport ? contract.packet_bytes : contract.scalar_bytes;
+        const std::uint64_t state_allocation = std::uint64_t(config.capacity) * state_bytes;
+        const std::uint64_t raw_bytes =
+            std::uint64_t(config.width) * config.height * sizeof(wire::Point);
+        const std::uint64_t done_bytes =
+            std::uint64_t(config.width) * config.height * sizeof(std::uint32_t);
+        const auto argument_bytes = wavefront->argument_encoder.encodedLength;
+        slot_bytes = 2 * raw_bytes + done_bytes + state_allocation + 16 +
+                     3 * std::uint64_t(config.capacity) * sizeof(std::uint32_t) +
+                     sizeof(wavefront_wire::Config) + sizeof(wavefront_wire::Counters) +
+                     2 * sizeof(wavefront_wire::DispatchArguments) + 2 * argument_bytes +
+                     r.graph_nodes.length + r.surface_transforms.length;
+        const std::uint64_t total = 2 * std::uint64_t(slot_bytes) + cie.length;
+        if (state_allocation > r.device.maxBufferLength || raw_bytes > r.device.maxBufferLength ||
+            done_bytes > r.device.maxBufferLength || argument_bytes > r.device.maxBufferLength ||
+            total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
+            (r.device.recommendedMaxWorkingSetSize &&
+             total > r.device.recommendedMaxWorkingSetSize))
+            return "Wavefront slots exceed the transient or device memory budget";
+        return {};
+    }
+    std::string allocate_wavefront(Slot &slot, id<MTLBuffer> raw) {
+        auto &r = *renderer->impl_;
+        if (!slot.wavefront)
+            slot.wavefront = std::make_shared<FrameWavefrontBuffers>();
+        auto &b = *slot.wavefront;
+        const auto allocate = [&](id<MTLBuffer> __strong &buffer, std::size_t bytes,
+                                  bool shared = false) {
+            if (buffer == nil)
+                buffer = [r.device newBufferWithLength:bytes
+                                               options:shared ? MTLResourceStorageModeShared
+                                                              : MTLResourceStorageModePrivate];
+            return buffer != nil;
+        };
+        const auto state_allocation = std::size_t(config.capacity) * state_bytes;
+        if (!allocate(b.config, sizeof(wavefront_wire::Config), true) ||
+            !allocate(b.scalar_state, r.parameters.packet_transport ? 16 : state_allocation) ||
+            !allocate(b.packet_state, r.parameters.packet_transport ? state_allocation : 16) ||
+            !allocate(b.queue[0], std::size_t(config.capacity) * 4) ||
+            !allocate(b.queue[1], std::size_t(config.capacity) * 4) ||
+            !allocate(b.free_slots, std::size_t(config.capacity) * 4) ||
+            !allocate(b.counters, sizeof(wavefront_wire::Counters), true) ||
+            !allocate(b.done, std::size_t(config.width) * config.height * 4) ||
+            !allocate(b.current_dispatch, sizeof(wavefront_wire::DispatchArguments)) ||
+            !allocate(b.refill_dispatch, sizeof(wavefront_wire::DispatchArguments)) ||
+            !allocate(b.arguments[0], wavefront->argument_encoder.encodedLength, true) ||
+            !allocate(b.arguments[1], wavefront->argument_encoder.encodedLength, true))
+            return "Wavefront slot allocation failed";
+        const wavefront_wire::Config cfg{
+            config.width * config.height, config.capacity,    r.parameters.packet_transport,
+            r.parameters.model,           config.group_width, {0, 0, 0}};
+        std::memcpy(b.config.contents, &cfg, sizeof(cfg));
+        std::memset(b.counters.contents, 0, b.counters.length);
+        for (unsigned variant = 0; variant < 2; ++variant) {
+            auto encoder = wavefront->argument_encoder;
+            [encoder setArgumentBuffer:b.arguments[variant] offset:0];
+            const std::array<id<MTLBuffer>, 12> resources{b.config,
+                                                          b.scalar_state,
+                                                          b.packet_state,
+                                                          b.queue[variant],
+                                                          b.queue[variant ^ 1],
+                                                          b.free_slots,
+                                                          b.counters,
+                                                          raw,
+                                                          cie,
+                                                          b.done,
+                                                          b.current_dispatch,
+                                                          b.refill_dispatch};
+            for (NSUInteger index = 0; index < resources.size(); ++index)
+                [encoder setBuffer:resources[index] offset:0 atIndex:index];
+        }
         return {};
     }
     std::string rebase_camera(Slot &slot, wire::Point origin, std::uint64_t &uploaded) {
@@ -2311,6 +2532,157 @@ struct FrameSession::Impl {
         slot.rebased_origin = origin;
         return {};
     }
+    struct Runner : std::enable_shared_from_this<Runner> {
+        std::shared_ptr<Frame::Impl> frame;
+        std::shared_ptr<FrameWavefrontPrograms> programs;
+        MetalRenderScene::Impl *renderer = nullptr; // retained by frame's resource lease
+        FrameConfig config;
+        wire::Parameters parameters{};
+        wire::TextureParameters texture{};
+        id<MTLBuffer> cie = nil;
+        unsigned variant = 0;
+        bool first = true, all_gpu_times_valid = true;
+        double gpu_seconds = 0;
+
+        void fail(std::string diagnostic) {
+            {
+                std::lock_guard lock(frame->info_mutex);
+                frame->info.status = FrameStatus::failed;
+                frame->info.diagnostic = std::move(diagnostic);
+                frame->info.gpu_time_valid = false;
+            }
+            frame->completed.notify_all();
+        }
+        void finished(id<MTLCommandBuffer> command) {
+            if (command.status != MTLCommandBufferStatusCompleted) {
+                std::string diagnostic = "Metal wavefront command failed";
+                if (command.error)
+                    diagnostic += ": " + std::string(command.error.localizedDescription.UTF8String);
+                fail(std::move(diagnostic));
+                return;
+            }
+            const bool time_valid = std::isfinite(command.GPUStartTime) &&
+                                    std::isfinite(command.GPUEndTime) && command.GPUStartTime > 0 &&
+                                    command.GPUEndTime >= command.GPUStartTime &&
+                                    std::isfinite(command.GPUEndTime - command.GPUStartTime);
+            all_gpu_times_valid &= time_valid;
+            if (time_valid)
+                gpu_seconds += command.GPUEndTime - command.GPUStartTime;
+            all_gpu_times_valid &= std::isfinite(gpu_seconds);
+            wavefront_wire::Counters counters{};
+            const auto &buffers = *frame->retention->wavefront;
+            std::memcpy(&counters, buffers.counters.contents, sizeof(counters));
+            const auto pixels = std::uint64_t(config.width) * config.height;
+            if (counters.failure || counters.completed > pixels || counters.next_pixel > pixels ||
+                counters.current > config.capacity || counters.out || counters.free ||
+                counters.next_pixel < counters.completed ||
+                counters.current != counters.next_pixel - counters.completed) {
+                fail("GPU wavefront validation failed: sticky failure or invalid queue/sample "
+                     "accounting (flags " +
+                     std::to_string(counters.failure) + ")");
+                return;
+            }
+            {
+                std::lock_guard lock(frame->info_mutex);
+                frame->info.completed_samples = counters.completed;
+                if (counters.completed == pixels) {
+                    frame->info.status = FrameStatus::complete;
+                    frame->info.gpu_time_valid = all_gpu_times_valid;
+                    frame->info.gpu_seconds = all_gpu_times_valid ? gpu_seconds : 0;
+                }
+            }
+            if (counters.completed == pixels) {
+                frame->completed.notify_all();
+                return;
+            }
+            if (!counters.current) {
+                fail("GPU wavefront made no progress with unfinished pixels");
+                return;
+            }
+            launch();
+        }
+        void launch() {
+            @autoreleasepool {
+                auto &r = *renderer;
+                auto &b = *frame->retention->wavefront;
+                auto command = [r.queue commandBuffer];
+                auto encoder = [command computeCommandEncoder];
+                if (command == nil || encoder == nil) {
+                    fail("Wavefront command creation failed");
+                    return;
+                }
+                const auto read_write = MTLResourceUsageRead | MTLResourceUsageWrite;
+                for (auto buffer :
+                     {b.scalar_state, b.packet_state, b.queue[0], b.queue[1], b.free_slots,
+                      b.counters, b.done, b.current_dispatch, b.refill_dispatch, frame->raw})
+                    [encoder useResource:buffer usage:read_write];
+                [encoder useResource:b.config usage:MTLResourceUsageRead];
+                [encoder useResource:cie usage:MTLResourceUsageRead];
+                const auto barrier = [&] {
+                    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                };
+                const auto generic = [&](id<MTLComputePipelineState> pipeline, NSUInteger count,
+                                         bool indirect) {
+                    [encoder setComputePipelineState:pipeline];
+                    [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
+                    [encoder setBuffer:b.arguments[variant] offset:0 atIndex:1];
+                    [encoder setBuffer:r.environment offset:0 atIndex:7];
+                    [encoder setBuffer:r.sampling_tables offset:0 atIndex:12];
+                    if (indirect)
+                        [encoder
+                            dispatchThreadgroupsWithIndirectBuffer:b.refill_dispatch
+                                              indirectBufferOffset:0
+                                             threadsPerThreadgroup:MTLSizeMake(config.group_width,
+                                                                               1, 1)];
+                    else
+                        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+                            threadsPerThreadgroup:MTLSizeMake(count == 1 ? 1 : config.group_width,
+                                                              1, 1)];
+                    barrier();
+                };
+                const auto full = [&](id<MTLComputePipelineState> pipeline,
+                                      id<MTLIntersectionFunctionTable> table) {
+                    [encoder setComputePipelineState:pipeline];
+                    r.bind(encoder, parameters, texture, b.arguments[variant],
+                           frame->retention->graph_nodes, frame->retention->surface_transforms,
+                           true, table);
+                    [encoder dispatchThreadgroupsWithIndirectBuffer:b.current_dispatch
+                                               indirectBufferOffset:0
+                                              threadsPerThreadgroup:MTLSizeMake(config.group_width,
+                                                                                1, 1)];
+                    barrier();
+                };
+                if (first) {
+                    generic(programs->reset, std::uint64_t(config.width) * config.height, false);
+                    generic(programs->initialize, config.capacity, false);
+                    first = false;
+                }
+                for (std::uint32_t round = 0; round < config.quantum; ++round) {
+                    if (!parameters.packet_transport)
+                        full(programs->trace, programs->trace_table);
+                    full(programs->shade, programs->shade_table);
+                    generic(programs->prepare_refill, 1, false);
+                    generic(programs->refill, 0, true);
+                    generic(programs->advance, 1, false);
+                    variant ^= 1;
+                }
+                [encoder endEncoding];
+                {
+                    std::lock_guard lock(frame->info_mutex);
+                    ++frame->info.command_count;
+                }
+                // No command is retained by the runner or frame. The handler
+                // owns the runner/lease until it resumes or completes the work.
+                const auto self = shared_from_this();
+                [command addCompletedHandler:^(id<MTLCommandBuffer> finished_command) {
+                  @autoreleasepool {
+                      self->finished(finished_command);
+                  }
+                }];
+                [command commit];
+            }
+        }
+    };
 };
 Frame::Frame(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Frame::~Frame() = default;
@@ -2319,35 +2691,15 @@ Frame &Frame::operator=(Frame &&) noexcept = default;
 FrameInfo Frame::poll() const {
     if (!impl_)
         return {.status = FrameStatus::failed, .diagnostic = "Frame is moved-from"};
-    auto info = impl_->info;
-    const auto command = impl_->command;
-    if (command.status == MTLCommandBufferStatusError) {
-        info.status = FrameStatus::failed;
-        info.diagnostic = "Metal frame command failed";
-        if (command.error)
-            info.diagnostic += ": " + std::string(command.error.localizedDescription.UTF8String);
-    } else if (command.status == MTLCommandBufferStatusCompleted) {
-        frame_wire::Status status{};
-        std::memcpy(&status, impl_->status.contents, sizeof(status));
-        info.completed_samples = status.completed;
-        info.gpu_time_valid = std::isfinite(command.GPUStartTime) &&
-                              std::isfinite(command.GPUEndTime) && command.GPUStartTime > 0 &&
-                              command.GPUEndTime >= command.GPUStartTime &&
-                              std::isfinite(command.GPUEndTime - command.GPUStartTime);
-        if (info.gpu_time_valid)
-            info.gpu_seconds = command.GPUEndTime - command.GPUStartTime;
-        if (status.failure || status.completed != std::uint64_t(info.width) * info.height) {
-            info.status = FrameStatus::failed;
-            info.diagnostic = "GPU frame validation failed: invalid, missing, or non-finite sample";
-        } else
-            info.status = FrameStatus::complete;
-    }
-    return info;
+    std::lock_guard lock(impl_->info_mutex);
+    return impl_->info;
 }
 FrameInfo Frame::wait() const {
-    if (impl_)
-        [impl_->command waitUntilCompleted];
-    return poll();
+    if (!impl_)
+        return poll();
+    std::unique_lock lock(impl_->info_mutex);
+    impl_->completed.wait(lock, [&] { return impl_->info.status != FrameStatus::pending; });
+    return impl_->info;
 }
 FrameCapture Frame::capture() const {
     @autoreleasepool {
@@ -2551,16 +2903,17 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
             slot->raw =
                 [r.device newBufferWithLength:std::size_t(c.width) * c.height * sizeof(wire::Point)
                                       options:MTLResourceStorageModePrivate];
-        if (slot->scratch == nil)
+        if (c.execution == FrameExecution::megakernel && slot->scratch == nil)
             slot->scratch = [r.device newBufferWithLength:impl_->scratch_bytes
                                                   options:MTLResourceStorageModePrivate];
-        if (slot->status == nil)
+        if (c.execution == FrameExecution::megakernel && slot->status == nil)
             slot->status = [r.device newBufferWithLength:sizeof(frame_wire::Status)
                                                  options:MTLResourceStorageModeShared];
         frame->raw = slot->raw;
         frame->scratch = slot->scratch;
         frame->status = slot->status;
-        if (frame->raw == nil || frame->scratch == nil || frame->status == nil) {
+        if (frame->raw == nil || (c.execution == FrameExecution::megakernel &&
+                                  (frame->scratch == nil || frame->status == nil))) {
             result.diagnostic = "Frame slot allocation failed";
             return result;
         }
@@ -2571,10 +2924,38 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         frame->retention->scratch = frame->scratch;
         frame->retention->graph_nodes = frame_graph_nodes;
         frame->retention->surface_transforms = frame_surface_transforms;
+        if (c.execution == FrameExecution::wavefront) {
+            result.diagnostic = impl_->allocate_wavefront(*slot, frame->raw);
+            if (!result.diagnostic.empty())
+                return result;
+            frame->retention->wavefront = slot->wavefront;
+            p.pixel_begin = 0;
+            p.pixel_count = p.lane_count = c.width * c.height;
+            auto runner = std::make_shared<Impl::Runner>();
+            runner->frame = frame;
+            runner->programs = impl_->wavefront;
+            runner->renderer = &r;
+            runner->config = c;
+            runner->parameters = p;
+            runner->texture = texture;
+            runner->cie = impl_->cie;
+            slot->active = frame->retention;
+            runner->launch();
+            {
+                std::lock_guard lock(frame->info_mutex);
+                if (!frame->info.command_count && frame->info.status == FrameStatus::failed) {
+                    result.diagnostic = frame->info.diagnostic;
+                    return result;
+                }
+            }
+            result.frame = std::unique_ptr<Frame>(new Frame(std::move(frame)));
+            result.status = GeometryStatus::success;
+            return result;
+        }
         std::memset(frame->status.contents, 0, sizeof(frame_wire::Status));
-        frame->command = [r.queue commandBuffer];
-        auto encoder = [frame->command computeCommandEncoder];
-        if (frame->command == nil || encoder == nil) {
+        auto command = [r.queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        if (command == nil || encoder == nil) {
             result.diagnostic = "Frame command creation failed";
             return result;
         }
@@ -2617,13 +2998,41 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
             [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
         }
         [encoder endEncoding];
-        // Releasing a handle before completion cannot release its scene or buffers.
-        const auto retained = frame->retention;
-        [frame->command addCompletedHandler:^(id<MTLCommandBuffer>) {
-          (void)retained;
+        // The callback owns the frame/lease, and the frame owns no command.
+        frame->info.command_count = 1;
+        [command addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+          {
+              std::lock_guard lock(frame->info_mutex);
+              auto &info = frame->info;
+              if (finished.status != MTLCommandBufferStatusCompleted) {
+                  info.status = FrameStatus::failed;
+                  info.diagnostic = "Metal frame command failed";
+                  if (finished.error)
+                      info.diagnostic +=
+                          ": " + std::string(finished.error.localizedDescription.UTF8String);
+              } else {
+                  frame_wire::Status status{};
+                  std::memcpy(&status, frame->status.contents, sizeof(status));
+                  info.completed_samples = status.completed;
+                  info.gpu_time_valid =
+                      std::isfinite(finished.GPUStartTime) && std::isfinite(finished.GPUEndTime) &&
+                      finished.GPUStartTime > 0 && finished.GPUEndTime >= finished.GPUStartTime &&
+                      std::isfinite(finished.GPUEndTime - finished.GPUStartTime);
+                  if (info.gpu_time_valid)
+                      info.gpu_seconds = finished.GPUEndTime - finished.GPUStartTime;
+                  info.status =
+                      status.failure || status.completed != std::uint64_t(info.width) * info.height
+                          ? FrameStatus::failed
+                          : FrameStatus::complete;
+                  if (info.status == FrameStatus::failed)
+                      info.diagnostic =
+                          "GPU frame validation failed: invalid, missing, or non-finite sample";
+              }
+          }
+          frame->completed.notify_all();
         }];
-        slot->active = retained;
-        [frame->command commit];
+        slot->active = frame->retention;
+        [command commit];
         result.frame = std::unique_ptr<Frame>(new Frame(std::move(frame)));
         result.status = GeometryStatus::success;
         return result;
@@ -2636,6 +3045,18 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     if (!pixels || pixels > max_index || !config.footprint_samples ||
         !config.transient_byte_limit) {
         result.diagnostic = "Invalid frame dimensions, footprint budget, or memory budget";
+        return result;
+    }
+    if (config.execution != FrameExecution::megakernel &&
+        config.execution != FrameExecution::wavefront) {
+        result.diagnostic = "Invalid frame execution mode";
+        return result;
+    }
+    if (config.execution == FrameExecution::wavefront &&
+        (!config.capacity || config.capacity > wavefront_wire::default_capacity ||
+         !config.quantum || config.quantum > 1024 || !config.group_width ||
+         config.group_width > 256)) {
+        result.diagnostic = "Invalid wavefront capacity, quantum, or group width";
         return result;
     }
     if (scene.integrator == IntegratorKind::bdpt || std::isfinite(scene.max_component_value)) {
@@ -2923,6 +3344,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
             const bool bidirectional = impl->parameters.bidirectional != 0;
             [constants setConstantValue:&bidirectional type:MTLDataTypeBool atIndex:20];
         }
+        impl->function_constants = [constants copy];
         RenderTimingScope pipeline_timing(timings, RenderTimingPhase::pipeline);
         const auto pipeline_start = std::chrono::steady_clock::now();
         impl->pipeline = metal::load_pipeline(impl->device, library, entry, result.diagnostic,

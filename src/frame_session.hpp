@@ -5,6 +5,7 @@
 namespace rypath {
 // Live frames contain one independent absolute sample per pixel. Footprints use
 // this fixed budget even when sample_index exceeds it. Raw output is unclamped.
+enum class FrameExecution { megakernel, wavefront };
 struct FrameConfig {
     std::uint32_t width = 0, height = 0;
     std::uint64_t seed = 1;
@@ -14,6 +15,11 @@ struct FrameConfig {
     // Immutable numerical profile for this session; offline builders retain
     // their separate compensated default.
     IntersectionProfile intersection_profile = IntersectionProfile::native;
+    FrameExecution execution = FrameExecution::wavefront;
+    std::uint32_t capacity = 65536;
+    // Rounds per asynchronous command, never a path-depth or boundary limit.
+    std::uint32_t quantum = 8;
+    std::uint32_t group_width = 32;
 };
 struct FrameCamera {
     RenderCamera camera;
@@ -37,6 +43,7 @@ struct FrameInfo {
     double gpu_seconds = 0;
     bool gpu_time_valid = false;
     std::uint64_t completed_samples = 0;
+    std::uint64_t command_count = 0;
     // Camera translation may upload rebased graph/surface records. Repeated
     // origins in the same free slot reuse those records without uploading.
     std::uint64_t camera_upload_bytes = 0;

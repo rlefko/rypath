@@ -734,6 +734,73 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
                                                   from.point.shading_normal, light.uv, light.point);
 }
 
+// PT connections depend on wavelength values and each vertex's frozen Prepared
+// BSDF, never on lambda.pdf or the current termination mask. A rolling walk may
+// evaluate them before a later dispersive event, retain all four radiance lanes,
+// and apply only the FINAL wavelength PDFs at sensor resolution.
+inline float4 packet_pt_connection_weight(thread wire::Sample &sample, float4 value,
+                                          float sampled_pdf, float alternative_pdf) {
+    if (!isfinite(sampled_pdf) || sampled_pdf < 0 || !isfinite(alternative_pdf) ||
+        alternative_pdf < 0 || !finite_nonnegative(value)) {
+        sample.status = wire::invalid_arithmetic;
+        return 0;
+    }
+    if (nonzero(value)) {
+        const float weight = alternative_pdf > 0 ? power_weight(sampled_pdf, alternative_pdf) : 1;
+        if (!(weight >= 0 && weight <= 1) || !isfinite(weight)) {
+            sample.status = wire::invalid_arithmetic;
+            return 0;
+        }
+        value *= weight;
+    }
+    return value;
+}
+inline float4 packet_pt_endpoint(thread Resources &r, thread wire::Sample &sample,
+                                 const thread Wavelengths &lambda, const thread Vertex &pt,
+                                 const thread Vertex &previous, const thread Vertex &before,
+                                 uint t) {
+    float4 radiance;
+    if (!endpoint_emission(r, pt, previous, lambda, radiance)) {
+        sample.status = wire::invalid_arithmetic;
+        return 0;
+    }
+    float sampled_pdf = 0, alternative_pdf = 0;
+    if (t > 2 && !previous.delta) {
+        sampled_pdf = represented_scattering_pdf(previous, before, pt, Mode::Radiance);
+        alternative_pdf = direct_pdf(r, previous, pt);
+    }
+    return packet_pt_connection_weight(sample, pt.beta * radiance, sampled_pdf, alternative_pdf);
+}
+inline float4 packet_pt_direct(thread Resources &r, thread wire::Sample &sample,
+                               const thread Wavelengths &lambda, ulong index,
+                               const thread Vertex &pt, const thread Vertex &before, uint t) {
+    if (pt.type != surface_vertex || !pt.connectible)
+        return 0;
+    const constant auto &p = *r.alpha.parameters;
+    Vertex sampled{};
+    float3 direction;
+    float sampled_pdf = 0;
+    if (!sample_li(r, pt, lambda, uniforms4(p, random(r, sample, index, 133 + t - 2)), sampled,
+                   direction, sampled_pdf) ||
+        !isfinite(sampled_pdf) || sampled_pdf < 0) {
+        sample.status = wire::invalid_arithmetic;
+        return 0;
+    }
+    if (!(sampled_pdf > 0) || !nonzero(sampled.beta))
+        return 0;
+    const float4 value = pt.beta * f(pt, direction, Mode::Radiance) * sampled.beta *
+                         abs(dot(pt.point.shading_normal, direction));
+    if (nonzero(value) && !visible(r, pt, sampled, sample))
+        return 0;
+    float alternative_pdf = 0;
+    if (!sampled.delta_light) {
+        alternative_pdf = represented_scattering_pdf(pt, before, sampled, Mode::Radiance);
+        // Keep SampleLi's ratio and recompute only its represented-geometry MIS proxy.
+        sampled_pdf = direct_pdf(r, pt, sampled);
+    }
+    return packet_pt_connection_weight(sample, value, sampled_pdf, alternative_pdf);
+}
+
 [[clang::noinline]] inline float4 camera_connection(thread Resources &r,
                                                     thread wire::Sample &sample,
                                                     const thread Wavelengths &lambda, ulong index,
@@ -741,6 +808,15 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
                                                     uint s, uint t) {
     const constant auto &p = *r.alpha.parameters;
     const Vertex pt = path_vertex(camera, t - 1);
+    if (!packet_bidirectional_enabled(p)) {
+        const Vertex previous = path_vertex(camera, t - 2);
+        const Vertex before = t > 2 ? path_vertex(camera, t - 3) : Vertex{};
+        if (s == 0)
+            return packet_pt_endpoint(r, sample, lambda, pt, previous, before, t);
+        if (s == 1)
+            return packet_pt_direct(r, sample, lambda, index, pt, previous, t);
+        return 0;
+    }
     if (s != 0 && pt.type != surface_vertex)
         return 0;
     Vertex sampled{};
@@ -860,4 +936,5 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
     splat.reserved = 0;
     return true;
 }
+#include "packet_pt_step.h"
 } // namespace rypath_bdpt

@@ -33,6 +33,16 @@ for args in (
 ):
     invoke(args)
 
+for option, values in (
+    ("--execution", ("invalid",)),
+    ("--intersections", ("invalid",)),
+    ("--capacity", ("0", "65537", "-1")),
+    ("--quantum", ("0", "1025", "-1")),
+    ("--group-width", ("0", "257", "-1")),
+):
+    for value in values:
+        invoke(["--demo", "--output", "x.json", option, value])
+
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
     scene = root / "scene.pbrt"
@@ -71,6 +81,17 @@ with tempfile.TemporaryDirectory() as directory:
         }
     assert data["summary"]["missing_GPU_timestamps"] == 0
     assert data["capture_in_frame_timing"] is False
+    assert data["settings"]["execution"] == "wavefront"
+    for execution in ("wavefront", "megakernel"):
+        destination = root / (execution + ".json")
+        invoke(["--scene", str(malformed), "--output", str(destination),
+                "--execution", execution, "--capacity", "17", "--quantum", "1",
+                "--group-width", "64", "--intersections", "compensated"])
+        settings = json.loads(destination.read_text())["settings"]
+        assert settings["execution"] == execution
+        assert (settings["capacity"], settings["quantum"], settings["group_width"]) == (17, 1, 64)
+        assert settings["effective_capacity"] == (17 if execution == "wavefront" else None)
+        assert settings["intersection_profile"] == "compensated"
     assert data["settings"]["intersection_profile"] == "native"
     # A malformed input stops before GPU setup while preserving parsed profile settings.
     for profile in ("native", "compensated"):

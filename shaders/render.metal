@@ -2215,6 +2215,8 @@ medium_direct(float3 point, float3 wo, float g, uint medium, uint4 light_words,
     return {result, isfinite(result) && result >= 0 ? wire::success : wire::invalid_arithmetic};
 }
 
+#include "scalar_transport.h"
+
 kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                               device wire::Sample *output [[buffer(1)]],
                               const device float *environment [[buffer(7)]],
@@ -2229,143 +2231,25 @@ kernel void rypath_render_sky(constant wire::Parameters &p [[buffer(0)]],
                               const device float *illuminant [[buffer(29)]],
                               const device uint *material_data [[buffer(30)]],
                               uint lane [[thread_position_in_grid]]) {
-    if (lane >= p.lane_count) {
+    if (lane >= p.lane_count)
         return;
-    }
-    ulong index = 0;
-    wire::Sample sample = begin_sample(p, tables, lane, index);
-    const rypath_image_light::Images light_images{image_textures, image_levels,  image_texels,
-                                                  image_transfer, image_spectra, illuminant,
-                                                  &texture_p};
-    const ray camera_ray = primary_ray(p, sample);
-    if (p.model == wire::pbrt_model &&
-        (!all(isfinite(camera_ray.origin)) || !all(isfinite(camera_ray.direction)))) {
-        sample.status = wire::invalid_arithmetic;
-        output[lane] = sample;
-        return;
-    }
-    // With no geometry a non-vacuum camera medium occupies all space. Its
-    // endpoint is infinity; positive extinction never reaches the environment.
-    if (media_enabled && p.camera_medium != 0xffffffffu) {
-        const auto m = medium_record(material_data, p, p.camera_medium);
-        if (m == nullptr) {
-            sample.status = wire::invalid_hit;
-            output[lane] = sample;
-            return;
-        }
-        const uint wavelength = dense_index(sample.wavelength);
-        const float a = m->sigma_a[wavelength], s = m->sigma_s[wavelength], total = a + s;
-        if (total > 0) {
-            float throughput = 1;
-            uint draw = 0;
-            ray incoming = primary_ray(p, sample);
-            const auto segment = rypath_medium::segment(a, s, m->emission[wavelength], INFINITY);
-            if (!segment.valid)
-                sample.status = wire::invalid_arithmetic;
-            while (sample.status == wire::success) {
-                if (sample.scatterings < p.max_depth)
-                    sample.radiance += throughput * segment.emission;
-                if (sample.scatterings >= p.max_depth || s == 0)
-                    break;
-                if (sample.scatterings >= p.emergency_limit) {
-                    sample.status = wire::emergency_depth;
-                    break;
-                }
-                const auto flight_words = medium_words(p, sample, draw);
-                const float distance = rypath_medium::flight(total, u01(flight_words.x));
-                const float3 point = fma(float3(distance), incoming.direction, incoming.origin);
-                if (!isfinite(distance) || !all(isfinite(point))) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                throughput *= s / total;
-                const auto chosen = rypath_light_sampling::sample(
-                    p, material_data, {point, float3(0)}, u01(flight_words.y));
-                if (chosen.pmf > 0) {
-                    float3 direction(0);
-                    float radiance = 0, distance_to_light = 0;
-                    if (chosen.light >= p.emitter_count &&
-                        chosen.light < p.emitter_count + p.positional_count) {
-                        const auto light =
-                            positional_record(material_data, p, chosen.light - p.emitter_count);
-                        if (!light) {
-                            sample.status = wire::invalid_hit;
-                            break;
-                        }
-                        float distance_squared;
-                        float intensity = light->intensity[wavelength];
-                        if (intensity != 0) {
-                            if (!point_direction(point, unpack(light->position), direction,
-                                                 distance_squared,
-                                                 light->kind != wire::point_light) ||
-                                !positional_intensity(*light, direction, light_images,
-                                                      sample.wavelength, intensity)) {
-                                sample.status = wire::invalid_arithmetic;
-                                break;
-                            }
-                            radiance = intensity / distance_squared;
-                            distance_to_light = sqrt(distance_squared);
-                        }
-                    } else if (chosen.light >= p.emitter_count + p.positional_count &&
-                               chosen.light <
-                                   p.emitter_count + p.positional_count + p.distant_count) {
-                        const auto light = distant_record(
-                            material_data, p, chosen.light - p.emitter_count - p.positional_count);
-                        if (!light) {
-                            sample.status = wire::invalid_hit;
-                            break;
-                        }
-                        direction = unpack(light->direction);
-                        radiance = light->radiance[wavelength];
-                        distance_to_light = 2 * p.distant_scene_radius;
-                    }
-                    // An infinite environment cannot cross a medium with
-                    // positive extinction; its selected sample contributes zero.
-                    if (radiance > 0) {
-                        const float tr = exp(-total * distance_to_light);
-                        sample.radiance +=
-                            throughput *
-                            rypath_medium::phase(-incoming.direction, direction, m->g) *
-                            (radiance / chosen.pmf) * tr;
-                    }
-                    if (!isfinite(sample.radiance) || sample.radiance < 0) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                }
-                const auto phase_words = medium_words(p, sample, draw);
-                const float3 wi = rypath_medium::phase_sample(
-                    -incoming.direction, m->g, float2(u01(phase_words.x), u01(phase_words.y)));
-                ++sample.scatterings;
-                if (sample.scatterings >= 3) {
-                    if (phase_words.z >= 0xc0000000u)
-                        break;
-                    throughput /= .75f;
-                }
-                if (!all(isfinite(wi)) || !isfinite(throughput)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                incoming = ray(point, wi);
-            }
-            if (!isfinite(sample.radiance) || sample.radiance < 0)
-                sample.status = wire::invalid_arithmetic;
-            output[lane] = sample;
-            return;
-        }
-    }
-    if (environment_image_enabled) {
-        const rypath_image_light::Images images{image_textures, image_levels,  image_texels,
-                                                image_transfer, image_spectra, illuminant,
-                                                &texture_p};
-        sample.radiance = rypath_image_light::environment_radiance(
-            images, graph_p, primary_ray(p, sample).direction, sample.wavelength);
-    } else {
-        sample.radiance = sky_radiance(environment, p, sample.wavelength);
-    }
-    if (!isfinite(sample.radiance) || sample.radiance < 0)
-        sample.status = wire::invalid_arithmetic;
-    output[lane] = sample;
+    rypath_scalar::ScalarResources resources{};
+    resources.p = &p;
+    resources.tables = &tables;
+    resources.environment = environment;
+    resources.image_textures = image_textures;
+    resources.image_levels = image_levels;
+    resources.image_texels = image_texels;
+    resources.image_transfer = image_transfer;
+    resources.image_spectra = image_spectra;
+    resources.texture_p = &texture_p;
+    resources.graph_p = &graph_p;
+    resources.illuminant = illuminant;
+    resources.material_data = material_data;
+    auto state = rypath_scalar::scalar_init(resources, lane);
+    while (!state.finished)
+        rypath_scalar::scalar_sky_step(resources, state);
+    output[lane] = state.sample;
 }
 
 kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
@@ -2401,596 +2285,44 @@ kernel void rypath_render_paths(constant wire::Parameters &p [[buffer(0)]],
                                 const device float *illuminant [[buffer(29)]],
                                 const device uint *material_data [[buffer(30)]],
                                 uint lane [[thread_position_in_grid]]) {
-    if (lane >= p.lane_count) {
+    if (lane >= p.lane_count)
         return;
+    const rypath_scalar::ScalarResources resources{&p,
+                                                   scene,
+                                                   instances,
+                                                   positions,
+                                                   triangles,
+                                                   materials,
+                                                   environment,
+                                                   knots,
+                                                   emissions,
+                                                   emitters,
+                                                   normals,
+                                                   &tables,
+                                                   patches,
+                                                   intersection_table,
+                                                   texture_uvs,
+                                                   texture_frames,
+                                                   image_textures,
+                                                   image_levels,
+                                                   image_texels,
+                                                   image_transfer,
+                                                   image_spectra,
+                                                   &texture_p,
+                                                   graph_nodes,
+                                                   graph_knots,
+                                                   &graph_p,
+                                                   surface_vertices,
+                                                   surface_transforms,
+                                                   environment_cdf,
+                                                   illuminant,
+                                                   material_data};
+    auto state = rypath_scalar::scalar_init(resources, lane);
+    while (!state.finished) {
+        rypath_scalar::scalar_trace(resources, state);
+        rypath_scalar::scalar_shade(resources, state);
     }
-    ulong index = 0;
-    wire::Sample sample = begin_sample(p, tables, lane, index);
-    ray incoming = primary_ray(p, sample);
-    const float3 primary_direction = incoming.direction;
-    const GraphResources graph{
-        graph_nodes,
-        graph_knots,
-        &graph_p,
-        {image_textures, image_levels, image_texels, image_transfer, image_spectra, &texture_p}};
-    SurfaceAlpha alpha{
-        materials, material_data, instances,      positions,        triangles,          patches,
-        normals,   texture_uvs,   texture_frames, surface_vertices, surface_transforms, &p,
-        &sample,   graph,         incoming};
-    const rypath_image_light::Images light_images{image_textures, image_levels,  image_texels,
-                                                  image_transfer, image_spectra, illuminant,
-                                                  &texture_p};
-    MixedIntersector closest;
-    closest.set_triangle_cull_mode(triangle_cull_mode::none);
-    MixedIntersector shadow;
-    shadow.set_triangle_cull_mode(triangle_cull_mode::none);
-    shadow.accept_any_intersection(true);
-    float throughput = 1.0f;
-    float escape_weight = 1.0f;
-    float previous_bsdf_pdf = 0.0f;
-    bool previous_delta = false;
-    rypath_light_sampling::Context previous_light_context{incoming.origin, float3(0)};
-    const float E = sky_radiance(environment, p, sample.wavelength);
-    uint current_medium = p.camera_medium;
-    uint medium_draw = 0;
-    uint boundary_crossings = 0;
-
-    while (true) {
-        if (!all(isfinite(incoming.origin)) || !all(isfinite(incoming.direction)) ||
-            !isfinite(throughput) || !isfinite(sample.radiance)) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        alpha.incoming = incoming;
-        const auto hit = alpha_enabled ? trace_masked_surface(incoming, scene, all_visible, alpha)
-                                       : trace_surface(closest, incoming, scene, all_visible,
-                                                       intersection_table);
-        if (!hit.valid) {
-            sample.status = wire::invalid_hit;
-            break;
-        }
-        if (media_enabled && current_medium != 0xffffffffu) {
-            const auto m = medium_record(material_data, p, current_medium);
-            if (m == nullptr) {
-                sample.status = wire::invalid_hit;
-                break;
-            }
-            if (medium_draw >= rypath::sampling_contract::medium_block_limit - 3) {
-                sample.status = wire::boundary_exhaustion;
-                break;
-            }
-            const uint wavelength = dense_index(sample.wavelength);
-            const float a = m->sigma_a[wavelength], s = m->sigma_s[wavelength], total = a + s;
-            const float ray_length = length(incoming.direction);
-            const float distance =
-                hit.type == intersection_type::none ? INFINITY : hit.distance * ray_length;
-            const auto segment = rypath_medium::segment(
-                a, s, sample.scatterings < p.max_depth ? m->emission[wavelength] : 0, distance);
-            if (!segment.valid || !(ray_length > 0) || !isfinite(ray_length)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            sample.radiance += throughput * segment.emission;
-            if (total > 0) {
-                const auto flight_words = medium_words(p, sample, medium_draw);
-                const float flight = rypath_medium::flight(total, u01(flight_words.x));
-                if (flight < distance || isinf(distance)) {
-                    if (!isfinite(flight)) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    if (sample.scatterings >= p.max_depth || s == 0)
-                        break;
-                    if (sample.scatterings >= p.emergency_limit) {
-                        sample.status = wire::emergency_depth;
-                        break;
-                    }
-                    const float3 direction = incoming.direction / ray_length;
-                    const float3 position = fma(float3(flight), direction, incoming.origin);
-                    if (!all(isfinite(position))) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    throughput *= s / total;
-                    const auto light_words = medium_words(p, sample, medium_draw);
-                    const auto phase_words = medium_words(p, sample, medium_draw);
-                    const auto direct =
-                        medium_direct(position, -direction, m->g, current_medium, light_words,
-                                      scene, intersection_table, alpha, materials, material_data,
-                                      emissions, emitters, light_images, environment_cdf);
-                    if (direct.status != wire::success) {
-                        sample.status = direct.status;
-                        break;
-                    }
-                    sample.radiance += throughput * direct.value;
-                    const float3 wi = rypath_medium::phase_sample(
-                        -direction, m->g, float2(u01(phase_words.x), u01(phase_words.y)));
-                    previous_bsdf_pdf = rypath_medium::phase(-direction, wi, m->g);
-                    if (!all(isfinite(wi)) || !(previous_bsdf_pdf > 0) ||
-                        !isfinite(previous_bsdf_pdf)) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    ++sample.scatterings;
-                    if (sample.scatterings >= 3) {
-                        if (phase_words.z >= 0xc0000000u)
-                            break;
-                        throughput /= .75f;
-                    }
-                    previous_delta = false;
-                    previous_light_context = {position, float3(0)};
-                    escape_weight = 1;
-                    incoming = ray(position, wi);
-                    boundary_crossings = 0;
-                    continue;
-                }
-            }
-        }
-        if (hit.type == intersection_type::none) {
-            const float Le = environment_image_enabled
-                                 ? rypath_image_light::environment_radiance(
-                                       light_images, graph_p, incoming.direction, sample.wavelength)
-                                 : E;
-            if (p.model == wire::pbrt_model && sample.scatterings != 0u && !previous_delta) {
-                const float pdf = rypath_scalar_light::environment_pdf(
-                    p, material_data, previous_light_context, graph_p, environment_cdf,
-                    incoming.direction);
-                escape_weight = power_weight(previous_bsdf_pdf, pdf);
-            }
-            sample.radiance += throughput * escape_weight * Le;
-            break;
-        }
-        const uint bounce = sample.scatterings;
-        const bool procedural_hit = hit.type == intersection_type::bounding_box;
-        if (!hit.valid || (!procedural_hit && hit.type != intersection_type::triangle) ||
-            hit.instance_id >= p.instance_count || !isfinite(hit.distance)) {
-            sample.status = wire::invalid_hit;
-            break;
-        }
-
-        const device wire::Instance &instance = instances[hit.instance_id];
-        const uint kind = hit.primitive_kind;
-        const uint hit_count = primitive_count(instance, kind);
-        if (hit.geometry_id != 0 || hit.primitive_id >= hit_count ||
-            instance.material >= p.material_count) {
-            sample.status = wire::invalid_hit;
-            break;
-        }
-        const float2 hit_uv = hit.coordinates;
-        if (!all(isfinite(hit_uv))) {
-            sample.status = wire::invalid_hit;
-            break;
-        }
-        SurfacePoint point;
-        if (media_enabled && materials[instance.material].scattering == 10u) {
-            if (boundary_crossings++ >= p.boundary_limit) {
-                sample.status = wire::boundary_exhaustion;
-                break;
-            }
-            if (!surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles,
-                               patches, normals, p.normal_count, PointSource::native_hit, point,
-                               material_data)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            current_medium = outgoing_medium(instance, current_medium, point.geometric_normal,
-                                             incoming.direction);
-            float3 origin;
-            if (!spawn_boundary(incoming, hit.distance, point, incoming.direction, origin)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            incoming = ray(origin, incoming.direction);
-            continue;
-        }
-        const bool emissive = instance.emission != wire::no_emission;
-        if (emissive) {
-            if (instance.emission >= p.emission_count || p.emitter_count == 0u) {
-                sample.status = wire::invalid_hit;
-                break;
-            }
-            if (!surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles,
-                               patches, normals, p.normal_count, PointSource::native_hit, point,
-                               material_data)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            const device wire::AreaEmission &emission = emissions[instance.emission];
-            float Le;
-            if (!area_radiance(emission, instance, hit.primitive_id, kind, hit_uv, point, alpha,
-                               light_images, Le)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            if (Le > 0.0f && (emission.two_sided != 0u ||
-                              dot(point.geometric_normal, -incoming.direction) >= 0.0f)) {
-                float weight = 1.0f;
-                if (bounce != 0u && !previous_delta) {
-                    const uint light_id =
-                        instance.emitter_begin +
-                        (kind == wire::triangle_primitive ? hit.primitive_id
-                         : kind == wire::patch_primitive
-                             ? instance.triangle_count + hit.primitive_id
-                             : instance.triangle_count + instance.patch_count + hit.primitive_id);
-                    if (light_id >= p.emitter_count) {
-                        sample.status = wire::invalid_hit;
-                        break;
-                    }
-                    const auto emitter = emitters[light_id];
-                    const float pdf =
-                        rypath_light_sampling::pmf(p, material_data, previous_light_context,
-                                                   light_id) *
-                        rypath_light_geometry::pdf(alpha, emitter, previous_light_context.position,
-                                                   previous_light_context.normal, hit_uv, point);
-                    weight = power_weight(previous_bsdf_pdf, pdf);
-                }
-                if (!isfinite(weight)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                sample.radiance += throughput * (weight * Le);
-            }
-        }
-        // Emission at this endpoint has already contributed at authored depth.
-        if (p.model == wire::pbrt_model && bounce >= p.max_depth) {
-            break;
-        }
-        const device wire::Material &root_material = materials[instance.material];
-        const bool root_framed = root_material.scattering != 0;
-        const bool context_material = root_framed || root_material.kind == wire::image_material ||
-                                      root_material.kind == wire::graph_material ||
-                                      root_material.bump_root != 0xffffffffu ||
-                                      root_material.normal_map != 0xffffffffu;
-        if (context_material && !emissive &&
-            !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
-                           normals, p.normal_count, PointSource::native_hit, point,
-                           material_data)) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        graph_wire::Context texture_context{};
-        float3 geometric_dpdu(0), geometric_dpdv(0);
-        if ((root_framed || root_material.kind == wire::graph_material ||
-             root_material.bump_root != 0xffffffffu || root_material.normal_map != 0xffffffffu) &&
-            !surface_texture_context(instance, hit.primitive_id, kind, hit_uv, point, positions,
-                                     triangles, patches, texture_uvs, texture_frames, texture_p, p,
-                                     sample, primary_direction, true, texture_context,
-                                     geometric_dpdu, geometric_dpdv)) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        uint material_index = instance.material;
-        for (uint depth = 0; depth <= 64; ++depth) {
-            const device auto &node = materials[material_index];
-            if (!surface_materials_enabled || node.scattering != 9)
-                break;
-            auto aux = material_auxiliary(node, material_data, p.material_data_words);
-            float amount;
-            if (aux == nullptr || depth == 64 ||
-                !parameter_value(aux->mix_amount_root, aux->mix_amount, graph, texture_context,
-                                 sample.wavelength, amount)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            const float selector =
-                alpha_uniform(point.position, -incoming.direction, as_type<float>(material_index));
-            material_index = amount <= 0         ? aux->first_material
-                             : amount >= 1       ? aux->second_material
-                             : selector < amount ? aux->second_material
-                                                 : aux->first_material;
-            if (material_index >= p.material_count) {
-                sample.status = wire::invalid_hit;
-                break;
-            }
-        }
-        if (sample.status != wire::success)
-            break;
-        const device wire::Material &material = materials[material_index];
-        const bool dielectric = dielectric_enabled && material.scattering == 2u;
-        const bool microfacet = (conductor_enabled || dielectric_enabled ||
-                                 surface_materials_enabled || gltf_enabled) &&
-                                material.scattering != 0;
-        const uint4 material_random =
-            philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
-                         rypath::sampling_contract::material_local_block(bounce)),
-                   uint2(p.seed_low ^ material_index,
-                         p.seed_high ^ rypath::sampling_contract::material_stream_v1));
-        float rho = NAN;
-        if (microfacet && material.scattering != 4 && material.scattering != 5) {
-            rho = 1.0f;
-        } else if (p.model == wire::demo_model && material.kind == wire::sampled_material) {
-            rho = demo_reflectance(material, p, sample.wavelength);
-        } else if (p.model == wire::pbrt_model && material.kind == wire::sampled_material &&
-                   material.knot_count >= 2 && material.knot_begin <= p.knot_count &&
-                   material.knot_count <= p.knot_count - material.knot_begin) {
-            rho = pbrt_reflectance(knots + material.knot_begin, material.knot_count,
-                                   sample.wavelength);
-        } else if (p.model == wire::pbrt_model && material.kind == wire::constant_material) {
-            rho = material.scalar_value;
-        } else if (p.model == wire::pbrt_model && material.kind == wire::blackbody_material) {
-            rho = blackbody_reflectance(material.scalar_value, sample.wavelength);
-        } else if (p.model == wire::pbrt_model && material.kind == wire::rgb_sigmoid_material) {
-            rho = sigmoid_reflectance(material, sample.wavelength);
-        } else if (p.model == wire::pbrt_model && material.kind == wire::image_material &&
-                   material.image_texture < texture_p.texture_count) {
-            rho = image_reflectance(instance, hit.primitive_id, kind, hit_uv, point, positions,
-                                    triangles, patches, texture_uvs, texture_frames,
-                                    image_textures[material.image_texture], image_levels,
-                                    image_texels, image_transfer, image_spectra, texture_p, p,
-                                    sample, primary_direction);
-        } else if (p.model == wire::pbrt_model && material.kind == wire::graph_material) {
-            if (!graph.evaluate(material.texture_root, texture_context, sample.wavelength, rho)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            if (material.scattering != 4)
-                rho = clamp(rho, 0.0f, 1.0f);
-        } else {
-            sample.status = wire::invalid_hit;
-            break;
-        }
-        if (!isfinite(rho) || (material.scattering != 4 && !(rho >= 0.0f && rho <= 1.0f))) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        if (rho == 0.0f && material.scattering == 0) {
-            break;
-        }
-        const bool detail = surface_detail_enabled && (material.bump_root != 0xffffffffu ||
-                                                       material.normal_map != 0xffffffffu);
-        rypath_surface_detail::Frame shading_frame;
-        if ((detail || microfacet) &&
-            !apply_surface_detail(
-                hit.instance_id, instance, hit.primitive_id, kind, hit_uv, triangles, patches,
-                texture_uvs, surface_vertices, surface_transforms, material, graph, texture_context,
-                sample.wavelength, point, shading_frame, microfacet,
-                material_auxiliary(material, material_data, p.material_data_words),
-                incoming.direction)) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        const bool authored_normals =
-            instance.normal_begin != wire::no_normals || detail || microfacet;
-        if (!authored_normals && bounce >= p.emergency_limit) {
-            sample.status = wire::emergency_depth;
-            break;
-        }
-        if (!emissive && !context_material &&
-            !surface_point(hit_uv, kind, instance, hit.primitive_id, positions, triangles, patches,
-                           normals, p.normal_count, PointSource::native_hit, point,
-                           material_data)) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        const float incident_cosine = dot(point.shading_normal, incoming.direction);
-        if (authored_normals && !microfacet && incident_cosine == 0.0f) {
-            break;
-        }
-        if (bounce >= p.emergency_limit) {
-            sample.status = wire::emergency_depth;
-            break;
-        }
-        const float3 n = incident_cosine > 0.0f ? -point.shading_normal : point.shading_normal;
-        rypath_scattering::Prepared scattering{};
-        ScatteringFrame frame{};
-        float3 wo(0);
-        if (microfacet) {
-            if (!prepare_scattering(
-                    material, material_auxiliary(material, material_data, p.material_data_words),
-                    rho, knots, p, graph, texture_context, sample.wavelength, material_data,
-                    image_spectra, scattering) ||
-                !scattering_frame(shading_frame, frame)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            wo = frame.local(-incoming.direction);
-            if (wo.z == 0)
-                break;
-        }
-        bool delta = microfacet && rypath_scattering::delta_only(scattering);
-        const bool both_hemispheres = microfacet && rypath_scattering::both_hemispheres(scattering);
-        const bool directional_offset = authored_normals || procedural_hit;
-        const float3 area_reference =
-            directional_offset ? point.position : spawn_origin(incoming, hit.distance, point, n);
-        if (!all(isfinite(area_reference))) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        const uint4 light_words = draw_words(p, tables, sample, index, 2 + 2 * bounce);
-        const uint4 bsdf_words = draw_words(p, tables, sample, index, 1 + 2 * bounce);
-        const rypath_light_sampling::Context light_context{
-            point.position, microfacet ? frame.z : point.shading_normal};
-        if (p.model == wire::demo_model) {
-            float3 light_direction;
-            float light_pdf = 1.0f / (4.0f * pi);
-            float light_radiance = E;
-            const float2 light_u(sample_uniform(p, light_words.x),
-                                 sample_uniform(p, light_words.y));
-            if (environment_image_enabled) {
-                if (!rypath_image_light::sample_environment(graph_p, environment_cdf, light_u,
-                                                            light_direction, light_pdf)) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                light_radiance = rypath_image_light::environment_radiance(
-                    light_images, graph_p, light_direction, sample.wavelength);
-            } else {
-                light_direction = sphere(light_u.x, light_u.y);
-            }
-            if (!isfinite(light_radiance) || light_radiance < 0) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            const float3 local_light = microfacet ? frame.local(light_direction) : float3(0);
-            const float light_cosine = both_hemispheres ? abs(local_light.z)
-                                       : microfacet ? (wo.z > 0 ? local_light.z : -local_light.z)
-                                                    : dot(n, light_direction);
-            if (!delta && light_radiance > 0.0f && light_cosine > 0.0f) {
-                const float3 origin = directional_offset ? spawn_toward(incoming, hit.distance,
-                                                                        point, light_direction)
-                                                         : area_reference;
-                if (!all(isfinite(origin))) {
-                    sample.status = wire::invalid_arithmetic;
-                    break;
-                }
-                const auto visibility = connection_transmission(
-                    shadow, ray(origin, light_direction), scene, intersection_table, alpha,
-                    materials, material_data,
-                    outgoing_medium(instance, current_medium, point.geometric_normal,
-                                    light_direction));
-                if (visibility.status != wire::success) {
-                    sample.status = visibility.status;
-                    break;
-                }
-                if (visibility.value > 0) {
-                    float factor;
-                    if (microfacet) {
-                        const auto evaluated =
-                            evaluate_scattering(scattering, wo, local_light, material_random.y);
-                        factor = evaluated.valid
-                                     ? scattering_direct(evaluated.f * light_cosine, evaluated.pdf,
-                                                         light_pdf, false)
-                                     : NAN;
-                    } else {
-                        factor = environment_image_enabled
-                                     ? (light_cosine / pi) / light_pdf *
-                                           power_weight(light_pdf, light_cosine / pi)
-                                     : (4.0f * light_cosine) * light_weight(light_cosine);
-                    }
-                    if (!isfinite(factor)) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    sample.radiance += throughput * (microfacet ? 1.0f : rho) * factor *
-                                       light_radiance * visibility.value;
-                }
-            }
-        } else if (!delta) {
-            const auto light = rypath_scalar_light::sample(
-                alpha, emissions, emitters, light_images, environment_cdf, light_context,
-                sample_uniform(p, light_words.x),
-                float2(sample_uniform(p, light_words.y), sample_uniform(p, light_words.z)));
-            if (!light.valid) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            if (light.pdf > 0 && light.radiance > 0) {
-                const float3 local = microfacet ? frame.local(light.direction) : float3(0);
-                const float cosine = both_hemispheres ? abs(local.z)
-                                     : microfacet     ? (wo.z > 0 ? local.z : -local.z)
-                                                      : dot(n, light.direction);
-                if (cosine > 0) {
-                    float f_cos = rho * cosine / pi;
-                    float bsdf_pdf = cosine / pi;
-                    if (microfacet) {
-                        const auto evaluated =
-                            evaluate_scattering(scattering, wo, local, material_random.z);
-                        if (!evaluated.valid) {
-                            sample.status = wire::invalid_arithmetic;
-                            break;
-                        }
-                        f_cos = evaluated.f * cosine;
-                        bsdf_pdf = evaluated.pdf;
-                    }
-                    const float factor =
-                        scattering_direct(f_cos, bsdf_pdf, light.pdf,
-                                          rypath_scalar_light::delta(light) || light.invisible);
-                    const float3 origin = directional_offset ? spawn_toward(incoming, hit.distance,
-                                                                            point, light.direction)
-                                                             : area_reference;
-                    const auto connection = rypath_scalar_light::connection(light, origin);
-                    if (!isfinite(factor) || !all(isfinite(connection.direction)) ||
-                        !(dot(connection.direction, light.direction) > 0)) {
-                        sample.status = wire::invalid_arithmetic;
-                        break;
-                    }
-                    const auto visibility = connection_transmission(
-                        shadow, connection, scene, intersection_table, alpha, materials,
-                        material_data,
-                        outgoing_medium(instance, current_medium, point.geometric_normal,
-                                        light.direction),
-                        light.kind == rypath_scalar_light::distant, light.endpoint);
-                    if (visibility.status != wire::success) {
-                        sample.status = visibility.status;
-                        break;
-                    }
-                    sample.radiance += throughput * factor * light.radiance * visibility.value;
-                }
-            }
-        }
-        float3 wi;
-        float continuation_pdf = 0;
-        float continuation_cosine = 0;
-        if (microfacet) {
-            const float lobe =
-                (dielectric || material.scattering == 11)
-                    ? sample_uniform(p, dielectric_lobe_word(p, tables, sample, index, bounce))
-                    : u01(material_random.x);
-            const auto local_continuation = sample_scattering(
-                scattering, wo, lobe,
-                float2(sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y)),
-                material_random.w);
-            const auto resolved = resolve_scattering_continuation(local_continuation, frame);
-            const auto continuation = resolved.sample;
-            if (!continuation.valid) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-            if (!continuation.accepted)
-                break;
-            wi = continuation.wi;
-            throughput *= continuation.weight;
-            continuation_pdf = continuation.pdf;
-            continuation_cosine = resolved.cosine;
-            delta = continuation.delta;
-        } else {
-            wi = hemisphere(n, sample_uniform(p, bsdf_words.x), sample_uniform(p, bsdf_words.y));
-            throughput *= rho;
-        }
-        // Transmission can amplify radiance throughput. Detect overflow before
-        // roulette can terminate the path and hide the invalid multiplication.
-        if (!isfinite(throughput) || throughput < 0.0f) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        ++sample.scatterings;
-        if (sample.scatterings >= 3) {
-            if (decision_word(p, bsdf_words.z) >= 0xc0000000u) {
-                break;
-            }
-            throughput /= 0.75f;
-            if (!isfinite(throughput)) {
-                sample.status = wire::invalid_arithmetic;
-                break;
-            }
-        }
-        const float cosine = microfacet ? continuation_cosine : dot(n, wi);
-        if (!(cosine > 0.0f)) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        previous_bsdf_pdf = microfacet ? continuation_pdf : cosine / pi;
-        previous_delta = delta;
-        previous_light_context = light_context;
-        escape_weight = delta        ? 1.0f
-                        : microfacet ? power_weight(previous_bsdf_pdf, 1.0f / (4.0f * pi))
-                                     : bsdf_weight(cosine);
-        const float3 origin =
-            directional_offset ? spawn_toward(incoming, hit.distance, point, wi) : area_reference;
-        if (!all(isfinite(origin))) {
-            sample.status = wire::invalid_arithmetic;
-            break;
-        }
-        incoming = ray(origin, wi);
-        if (media_enabled)
-            current_medium = outgoing_medium(instance, current_medium, point.geometric_normal, wi);
-        boundary_crossings = 0;
-    }
-
-    if (sample.status == wire::success && (!isfinite(sample.radiance) || sample.radiance < 0.0f)) {
-        sample.status = wire::invalid_arithmetic;
-    }
-    output[lane] = sample;
+    output[lane] = state.sample;
 }
 
 // Tests the shared algorithms without geometry, camera normalization, or film conversion.
@@ -3168,3 +2500,5 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     }
     *reinterpret_cast<device packet_storage::Result *>(workspace) = result;
 }
+
+#include "wavefront.metal"
