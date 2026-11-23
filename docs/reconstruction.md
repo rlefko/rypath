@@ -288,8 +288,17 @@ oblique-plane triangulation invariance, disconnected close-layer and
 strict-mode visible-gap rejection, curved-surface oracle comparisons, lazy
 multi-mesh metadata alignment, finite HDR Gaussian guidance, plus portable
 indexed-topology checks. Noise-free narrow HDR and transient-signal fixtures are
-synthetic filter checks; they do not establish physical caustic/reflection quality. These are added
-checks awaiting execution; historical results below do not validate this repair.
+synthetic filter checks; they do not establish physical caustic/reflection quality.
+
+On 2026-11-23, the current signed implementation through `2497261` passed the
+focused Debug camera, raw, MetalFX, signed, guide and temporal-filter tests on
+M4 Max with Metal API validation. The transformed-guide fixture uses an exact
+dyadic inverse while retaining the same world-space plane and numerical tolerance.
+Finite extreme positions that overflow a plane residual are rejected explicitly.
+The exposure oracle retains the production variance floor; exact exposure
+homogeneity is not claimed for that fixed floor. Independent review found no
+remaining source blocker. Native scene-quality qualification remains separate;
+paired variance is still the default pending that evidence.
 
 ## Headless measurement and capture
 
