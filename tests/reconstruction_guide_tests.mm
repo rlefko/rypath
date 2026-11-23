@@ -499,8 +499,8 @@ void appearance_cases(const std::string &library) {
                  "Appearance fixture texture context");
         }
     };
-    const auto fresnel = [](double cosine) {
-        const std::complex<double> eta(.3, 3);
+    const auto fresnel = [](double cosine, double n = .3, double k = 3.) {
+        const std::complex<double> eta(n, k);
         const auto eta2 = eta * eta;
         const auto root = std::sqrt(eta2 - (1 - cosine * cosine));
         return .5 * (std::norm((cosine - root) / (cosine + root)) +
@@ -508,10 +508,12 @@ void appearance_cases(const std::string &library) {
     };
     auto scene = base(r);
     scene.materials[0].scattering = ScatteringKind::conductor;
+    scene.materials[0].constant = 0;
     scene.materials[0].eta = {{{360, .3f}, {830, .3f}}, true};
     scene.materials[0].k = {{{360, 3.f}, {830, 3.f}}, true};
     auto target = base(r).materials.front();
     target.kind = SpectralMaterialKind::sampled;
+    target.constant = 0;
     target.knots = {{360, .02f}, {430, .9f}, {470, .9f}, {500, .02f}, {830, .02f}};
     scene.materials.push_back(target);
     plane(scene, 3);
@@ -568,6 +570,7 @@ void appearance_cases(const std::string &library) {
     // incidence eta1.5 gives F=.04, thin-sheet F=2*.04/1.04.
     scene = base(r);
     scene.materials[0].scattering = ScatteringKind::thin_dielectric;
+    scene.materials[0].constant = 0;
     scene.materials[0].eta = {{{360, 1.5f}, {830, 1.5f}}, true};
     auto dark = base(r).materials.front(), light = dark;
     dark.constant = .2f;
@@ -641,6 +644,7 @@ void appearance_cases(const std::string &library) {
     auto secondary = base(oblique);
     auto mirror = secondary.materials.front();
     mirror.scattering = ScatteringKind::conductor;
+    mirror.constant = 0;
     mirror.eta = {{{360, .3f}, {830, .3f}}, true};
     mirror.k = {{{360, 3.f}, {830, 3.f}}, true};
     secondary.materials = {mirror, sheet, light};
@@ -665,9 +669,11 @@ void appearance_cases(const std::string &library) {
         auto coating_scene = base(oblique);
         auto &coating = coating_scene.materials[0];
         coating.scattering = family;
-        coating.constant = .6f;
-        coating.surface.interface_eta = {{{360, 1.5f}, {830, 1.5f}}, true};
-        if (family == ScatteringKind::coated_conductor) {
+        coating.constant = family == ScatteringKind::coated_diffuse ? .6f : 0.f;
+        if (family == ScatteringKind::coated_diffuse)
+            coating.eta = {{{360, 1.5f}, {830, 1.5f}}, true};
+        else {
+            coating.surface.interface_eta = {{{360, 1.5f}, {830, 1.5f}}, true};
             coating.eta = {{{360, .3f}, {830, .3f}}, true};
             coating.k = {{{360, 3.f}, {830, 3.f}}, true};
         }
@@ -690,7 +696,7 @@ void appearance_cases(const std::string &library) {
                   "Independent backside coating exterior-Fresnel substrate oracle");
             close(coated_backside.texture[4][4 * center + c],
                   interface_fresnel + (family == ScatteringKind::coated_conductor
-                                           ? attenuation * fresnel(cosine)
+                                           ? attenuation * fresnel(cosine, .3 / 1.5, 3. / 1.5)
                                            : 0),
                   .002, "Independent backside coating exterior-Fresnel specular oracle");
         }
