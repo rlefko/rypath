@@ -10,7 +10,9 @@ independent choices; compare execution modes using the same intersection profile
 
 A bounded pool holds up to 65,536 active paths. GPU queues carry pool indices;
 finished paths publish their owner contribution and release their slot for the
-next pixel. Camera randomness depends on the pixel and absolute sample index,
+next pixel. A single GPU dispatch reserves each refill's contiguous pixel range;
+lanes then initialize distinct owners without competing in a compare-exchange
+loop. Camera randomness depends on the pixel and absolute sample index,
 not its slot, queue order or command buffer. The primary texture footprint uses
 the session's fixed sample budget.
 
@@ -64,9 +66,48 @@ actual queue-advance kernel. It checks visible failure, unchanged completion
 counts and untouched guard storage. These checks supplement ordinary queue
 execution; they are not a throughput measurement.
 
-Hardware results and performance qualification are pending for this integration.
-The retained [resident-frame baseline](frame-rendering.md) predates wavefront
-execution and must not be presented as its measured performance.
+Focused Release and ASan/UBSan frame and queue checks passed with Metal API
+validation after the range allocator change. The queue probe also checks full,
+partial, exhausted and zero-free reservations, extra empty rounds, invalid
+accounting and clearing the published range at the next dispatch boundary.
+
+## M4 Max measurements
+
+The November 23, 2026 resident comparison used the 40-core M4 Max, macOS 26.6
+and Xcode 26.6, native 1920×1080, one fresh sample per pixel, native intersections,
+three seeds and four warmup plus 32 measured frames per run. Both modes used the
+same source, default capacity 65,536, quantum eight and group width 32. Other
+GPU tests and CPU compilation were paused. All 432 frames completed with valid
+GPU timestamps. CPU wall time includes completion-handler gaps.
+
+| Scene | Execution | Median range (ms) | p95 range (ms) |
+| --- | --- | ---: | ---: |
+| Cornell | Megakernel | 93.63–94.05 | 96.19–97.16 |
+| Cornell | Wavefront | 49.40–50.33 | 50.82–51.50 |
+| Coated packet | Megakernel | 211.84–214.64 | 216.09–216.97 |
+| Coated packet | Wavefront | 389.00–391.20 | 392.89–394.87 |
+
+Wavefront improves Cornell by about 1.88× but makes the coated packet case about
+1.83× slower. Both miss the complete-pipeline target: these measurements contain
+no reuse, mutation, guide generation or denoising, and Cornell's p95 exceeds
+50 ms even here. Packet state traffic and shading remain tuning work. The
+retained earlier [native megakernel measurements](frame-rendering.md) are faster
+than this build's megakernel controls and remain a separate regression reference.
+
+An independent OpenEXR 3.4.4 / NumPy 2.4.5 decoder checked all four FLOAT captures,
+dimensions, finite values and sample/profile/execution metadata. The matched
+seed-one, sample-35 RGB values are exactly equal between modes for both scenes
+(6,220,800 values per scene). This verifies those sample controls, not convergence
+or equal-quality rendering time.
+
+The retained measurement source is `0e1010414ea2781ff9eb5a86cc1286eae8b29539`;
+manifest SHA-256 is
+`8c610dbafe9f13787d1cff3b3f1d8652d517424878fa9fe44fcd8f42455cf592`.
+The executable and metallib are retained with the reports and captures. An earlier
+incomplete study is retained separately: its per-lane CAS allocator measured
+3.090 s for Cornell wavefront versus 93.99 ms for the matched megakernel. The run
+was stopped for investigation; replacing contended allocation with one range
+reservation produced the measurements above.
 
 The execution structure follows the motivation in
 [Megakernels Considered Harmful](https://research.nvidia.com/sites/default/files/pubs/2013-07_Megakernels-Considered-Harmful/laine2013hpg_paper.pdf).
