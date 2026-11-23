@@ -590,8 +590,7 @@ int run(const Options &options) {
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.footprint_samples", "1"},
                     {"rypath.frame.integrator", report.integrator},
-                    {"rypath.frame.intersection_profile",
-                     profile_name(options.intersection_profile)},
+                    {"rypath.frame.intersections", profile_name(options.intersection_profile)},
                     {"rypath.frame.spectral_mode",
                      scene.spectral_transport == rypath::SpectralTransport::packet ? "packet"
                                                                                    : "scalar"},
