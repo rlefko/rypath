@@ -32,6 +32,7 @@ foreach(shader IN ITEMS frame smoke geometry analytic_probe packet_scattering_pr
     if(shader STREQUAL "frame")
         list(APPEND shader_options -fno-fast-math)
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/frame_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/frame_sensor.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/render_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h")
     endif()
@@ -88,11 +89,16 @@ foreach(shader IN ITEMS frame smoke geometry analytic_probe packet_scattering_pr
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_emission_sampling.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_geometry_sampling.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scalar_lighting.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scalar_transport.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/wavefront.metal"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/frame_sensor.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/wavefront_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/offset_rounding_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_transport.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_pt_step.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_walk.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/dielectric.h"
