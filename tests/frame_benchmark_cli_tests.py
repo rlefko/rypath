@@ -17,6 +17,7 @@ def invoke(args, expected=1):
 help_text = invoke(["--help"], 0).stdout
 assert "--intersections native|compensated" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
+assert "--guide-cache on|off" in help_text
 assert "--reconstructed-capture" in help_text
 assert "--profile-stages" in help_text
 assert "--capture-frame" in help_text and "--capture-path" in help_text
@@ -58,6 +59,10 @@ for option, values in (
         invoke(["--demo", "--output", "x.json", option, value])
 
 for extra in (
+    ["--guide-cache"],
+    ["--guide-cache", "invalid"],
+    ["--guide-cache", "on"],
+    ["--reconstruction", "raw-rgb", "--guide-cache", "on"],
     ["--reconstruction"],
     ["--reconstruction", "invalid"],
     ["--reconstruction", "none", "--reconstruction", "raw-rgb"],
@@ -180,6 +185,7 @@ with tempfile.TemporaryDirectory() as directory:
         selected = json.loads(destination.read_text())
         settings = selected["settings"]
         assert settings["reconstruction"] == mode
+        assert settings["guide_cache"] is False
         assert (settings["internal_width"], settings["internal_height"]) == (17, 9)
         assert (settings["output_width"], settings["output_height"]) == (17, 9)
         assert settings["output_pixels_per_input_pixel"] == 1
@@ -194,6 +200,11 @@ with tempfile.TemporaryDirectory() as directory:
     assert settings["profile_stages"] is True
     assert settings["capture_frame"] == 0 and settings["capture_path"] == str(trace)
     assert not trace.exists()
+    destination = root / "guide-cache.json"
+    invoke(["--scene", str(malformed), "--output", str(destination),
+            "--reconstruction", "temporal", "--guide-cache", "on", "--profile-stages"])
+    assert json.loads(destination.read_text())["settings"]["guide_cache"] is True
+    assert json.loads(destination.read_text())["settings"]["profile_stages"] is True
     destination = root / "upscale.json"
     invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",
             "--reconstruction", "metalfx", "--output-width", "34", "--output-height", "18"])

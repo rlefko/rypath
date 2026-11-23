@@ -51,6 +51,8 @@ class MetalFrameLease {
     const FrameInfo &info() const;
     const render_wire::Parameters &parameters() const;
     const render_wire::TextureParameters &texture_parameters() const;
+    // The exact full-film pinhole parameter copy used by bind_guides().
+    render_wire::Parameters guide_parameters() const;
     const FrameCamera &camera() const;
     IntersectionProfile intersection_profile() const;
     // Scene-specialized pipelines are reusable across leases from this session;

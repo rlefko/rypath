@@ -2,6 +2,7 @@
 #pragma once
 #include "reconstruction.hpp"
 #import <Metal/Metal.h>
+#include <cstddef>
 namespace rypath {
 // Pins a completed output slot. Its texture is read-only to consumers and never
 // aliases a reconstruction input. Attach retention before committing GPU work.
@@ -31,5 +32,14 @@ struct MetalReconstructedFrameAcquireResult {
 };
 struct MetalReconstructedFrameAccess {
     static MetalReconstructedFrameAcquireResult acquire(const ReconstructedFrame &);
+};
+// Explicit diagnostic readback, externally serialized with submit(). Copies
+// surface guides only after completion; never exposes stream-owned textures.
+struct MetalReconstructionGuideSnapshot {
+    std::string diagnostic;
+    std::array<std::vector<std::byte>, 8> textures;
+};
+struct MetalReconstructionStreamProbe {
+    static MetalReconstructionGuideSnapshot capture_guides(const ReconstructionStream &);
 };
 } // namespace rypath

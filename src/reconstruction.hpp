@@ -13,6 +13,7 @@ struct ReconstructionConfig {
     double near_plane = .001; // Guides only; raw transport has no new cutoff.
     // Native signed-color fallback. Zero spatial passes selects temporal only.
     std::uint32_t history_limit = 64, spatial_iterations = 5;
+    bool cache_surface_guides = false; // Opt-in until hardware qualification.
 };
 enum class ReconstructionStatus { pending, complete, failed };
 struct ReconstructionCounters {
@@ -30,6 +31,9 @@ struct ReconstructionInfo {
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
     std::uint32_t width = 0, height = 0;
     bool history_reset = true;
+    bool guide_cache_hit = false;
+    // Surface pixel lanes dispatched this job; zero on hits and in color-only mode.
+    std::uint64_t generated_surface_pixels = 0;
     bool defocus_approximation = false; // Reconstruction uses pinhole guides for lens rendering.
     double gpu_seconds = 0;
     bool gpu_time_valid = false;
@@ -93,6 +97,7 @@ class ReconstructionStream {
     struct Impl;
     std::shared_ptr<Impl> impl_;
     explicit ReconstructionStream(std::shared_ptr<Impl>);
+    friend struct MetalReconstructionStreamProbe;
     friend ReconstructionBuildResult build_reconstruction_stream(const Frame &,
                                                                  const ReconstructionConfig &);
 };
