@@ -4,7 +4,7 @@
 namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 1, default_capacity = 65536 };
+enum : Word { contract = 2, default_capacity = 65536 };
 enum Failure : Word {
     invalid_config = 1u,
     queue_overflow = 2u,
@@ -39,7 +39,7 @@ using Counter = Word;
 // Separate dispatch boundaries/barriers publish producer writes. Atomic counters
 // reserve queue slots only; they are not a substitute for that synchronization.
 struct Counters {
-    Counter current, out, free, next_pixel, completed, failure, rounds, reserved;
+    Counter current, out, free, next_pixel, completed, failure, rounds, refill_begin;
 };
 struct DispatchArguments {
     Word x, y, z;

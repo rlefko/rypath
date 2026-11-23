@@ -145,7 +145,7 @@ kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
     atomic_store_explicit(&a.counters->failure, valid ? 0u : wf::invalid_config,
                           memory_order_relaxed);
     atomic_store_explicit(&a.counters->rounds, 0u, memory_order_relaxed);
-    atomic_store_explicit(&a.counters->reserved, 0u, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->refill_begin, 0u, memory_order_relaxed);
     wavefront_dispatch(a.current_dispatch, count, a.config->group_width);
     wavefront_dispatch(a.refill_dispatch, 0, a.config->group_width);
 }
@@ -334,25 +334,29 @@ kernel void rypath_wavefront_prepare_refill(constant WavefrontArguments &a [[buf
                                             uint lane [[thread_position_in_grid]]) {
     if (lane != 0)
         return;
-    uint count = atomic_load_explicit(&a.counters->free, memory_order_relaxed);
-    if (count > a.config->capacity) {
+    const uint free = atomic_load_explicit(&a.counters->free, memory_order_relaxed);
+    const uint out = atomic_load_explicit(&a.counters->out, memory_order_relaxed);
+    const uint current = atomic_load_explicit(&a.counters->current, memory_order_relaxed);
+    const uint next = atomic_load_explicit(&a.counters->next_pixel, memory_order_relaxed);
+    const uint completed = atomic_load_explicit(&a.counters->completed, memory_order_relaxed);
+    if (!wavefront_config_valid(a))
+        wavefront_fail(a, wf::invalid_config);
+    if (free > a.config->capacity || out > a.config->capacity || current > a.config->capacity ||
+        free + out != current || next > a.config->pixel_count || completed > next ||
+        out != next - completed)
         wavefront_fail(a, wf::invalid_counters);
-        count = 0;
+    if (wavefront_failed(a)) {
+        wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);
+        return;
     }
-    wavefront_dispatch(a.refill_dispatch, wavefront_failed(a) ? 0u : count, a.config->group_width);
-}
-inline bool wavefront_claim_pixel(constant WavefrontArguments &a, thread uint &pixel) {
-    uint next = atomic_load_explicit(&a.counters->next_pixel, memory_order_relaxed);
-    while (next < a.config->pixel_count) {
-        uint expected = next;
-        if (atomic_compare_exchange_weak_explicit(&a.counters->next_pixel, &expected, next + 1,
-                                                  memory_order_relaxed, memory_order_relaxed)) {
-            pixel = next;
-            return true;
-        }
-        next = expected;
-    }
-    return false;
+    // The previous dispatch has finished producing the free list. Reserve one
+    // contiguous owner range here; lane i owns begin+i without a global CAS
+    // retry loop. Queue order changes only slot ownership, never sample identity.
+    const uint count = min(free, a.config->pixel_count - next);
+    atomic_store_explicit(&a.counters->refill_begin, next, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->free, count, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->next_pixel, next + count, memory_order_relaxed);
+    wavefront_dispatch(a.refill_dispatch, count, a.config->group_width);
 }
 kernel void rypath_wavefront_refill(constant wire::Parameters &p [[buffer(0)]],
                                     constant WavefrontArguments &a [[buffer(1)]],
@@ -362,7 +366,10 @@ kernel void rypath_wavefront_refill(constant wire::Parameters &p [[buffer(0)]],
     if (wavefront_failed(a))
         return;
     const uint count = atomic_load_explicit(&a.counters->free, memory_order_relaxed);
-    if (count > a.config->capacity) {
+    const uint begin = atomic_load_explicit(&a.counters->refill_begin, memory_order_relaxed);
+    const uint next = atomic_load_explicit(&a.counters->next_pixel, memory_order_relaxed);
+    if (count > a.config->capacity || begin > a.config->pixel_count ||
+        count > a.config->pixel_count - begin || next != begin + count) {
         wavefront_fail(a, wf::invalid_counters);
         return;
     }
@@ -373,9 +380,7 @@ kernel void rypath_wavefront_refill(constant wire::Parameters &p [[buffer(0)]],
         wavefront_fail(a, wf::invalid_slot);
         return;
     }
-    uint pixel;
-    if (!wavefront_claim_pixel(a, pixel))
-        return;
+    const uint pixel = begin + lane;
     wavefront_initialize_owner(a, p, tables, environment, slot, pixel);
     wavefront_append(a, &a.counters->out, a.queue_out, slot);
 }
@@ -396,6 +401,7 @@ kernel void rypath_wavefront_advance(constant WavefrontArguments &a [[buffer(1)]
     atomic_store_explicit(&a.counters->current, count, memory_order_relaxed);
     atomic_store_explicit(&a.counters->out, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->free, 0u, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->refill_begin, 0u, memory_order_relaxed);
     atomic_fetch_add_explicit(&a.counters->rounds, 1u, memory_order_relaxed);
     wavefront_dispatch(a.current_dispatch, count, a.config->group_width);
     wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);

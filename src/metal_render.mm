@@ -2575,7 +2575,7 @@ struct FrameSession::Impl {
             const auto pixels = std::uint64_t(config.width) * config.height;
             if (counters.failure || counters.completed > pixels || counters.next_pixel > pixels ||
                 counters.current > config.capacity || counters.out || counters.free ||
-                counters.next_pixel < counters.completed ||
+                counters.refill_begin || counters.next_pixel < counters.completed ||
                 counters.current != counters.next_pixel - counters.completed) {
                 fail("GPU wavefront validation failed: sticky failure or invalid queue/sample "
                      "accounting (flags " +
