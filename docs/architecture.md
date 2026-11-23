@@ -2,7 +2,8 @@
 
 ## Implemented execution foundation
 
-The current program is a C++20 command-line executable. CMake, Ninja, and CTest
+The offline interface is a C++20 command-line executable; a separate experimental
+[native macOS viewer](viewer.md) consumes completed GPU frames. CMake, Ninja, and CTest
 provide the build and test contract. It accepts `--help`, `--version`,
 `--metal-info`, `--metal-smoke-test`, `--render-demo`, `--check-pbrt SCENE`,
 `--render-pbrt SCENE --output IMAGE.{png,exr}`, `--check-obj MODEL.obj`, and
@@ -50,9 +51,12 @@ correctness baseline for an Area-domain GRIS adaptation, not the paper's optimiz
 reconnection implementation. [Fixed MCMC mutations](mcmc-mutations.md) use
 symmetric integer proposals, complete replay and actual forward/reverse acceptance
 weight correction before spatial reuse. Separate [reconstruction](reconstruction.md)
-generates pinhole surface guides and converts raw XYZ into presentation RGB before
-MetalFX denoising/upscaling. Retained output leases and checked completion govern
-history and downstream GPU consumption. Offline accumulation and checkpoints
+generates pinhole surface guides and converts raw XYZ into separate RGB storage
+for MetalFX denoising/upscaling or signed temporal/spatial reconstruction. The
+AppKit viewer presents these retained outputs through a CAMetalLayer, with camera
+controls and explicit raw/reconstructed comparison. Retained output leases and
+checked completion govern history and downstream GPU consumption. Viewer quality
+and sustained performance remain unqualified. Offline accumulation and checkpoints
 remain separate.
 
 ## PBRT preflight boundary

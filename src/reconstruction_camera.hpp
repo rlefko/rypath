@@ -75,8 +75,8 @@ class Camera {
 };
 
 struct CameraBuildResult {
-    std::optional<Camera> camera;
-    std::string diagnostic;
+    std::optional<Camera> camera{};
+    std::string diagnostic{};
 };
 
 struct Motion {

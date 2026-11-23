@@ -8,7 +8,14 @@ time. Upscaled and interpolated display rates are reported separately.
 
 The pipeline is native Metal traversal, wavefront spectral PT, Area ReSTIR
 temporal reuse, one weight-corrected MCMC mutation, spatial reuse, and separate
-denoising/presentation. The complete current surface and homogeneous-media
+denoising/presentation. This is the experimental candidate, selected in the viewer
+with `--estimator area-replay --mutations 1 --mode temporal`. The viewer defaults
+to independent sampling and signed temporal reconstruction because the current
+full-replay reuse implementation increases both cost and denoised error in the
+audited static fixtures. The candidate remains the optimization objective; its
+implementation does not establish its performance or quality benefit.
+
+The complete current surface and homogeneous-media
 profile remains the transport target. The live renderer explicitly overrides
 BDPT with PT; the offline renderer retains BDPT, authored film clamping,
 compensated intersections and checkpoint behavior. Native triangle results have
