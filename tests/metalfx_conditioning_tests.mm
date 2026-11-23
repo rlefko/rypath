@@ -26,6 +26,7 @@ int run(bool strict) {
     probe.denoiser.reset();
     RenderScene scene;
     scene.model = RenderModel::pbrt;
+    scene.raster_camera = RasterCamera{{}, {-.4f, .4f, 1}, {.8f, 0, 0}, {0, -.8f, 0}};
     scene.environment.fill(.5f);
     scene.max_depth = 1;
     scene.materials = {{.kind = SpectralMaterialKind::constant, .constant = .5f}};
