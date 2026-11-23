@@ -120,6 +120,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_transport.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_pt_step.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_pt_event_body.inc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_shade_body.inc"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_walk.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/dielectric.h"

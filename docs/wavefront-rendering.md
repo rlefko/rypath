@@ -385,3 +385,36 @@ failed/rejected experiments stay in their own records. Clean Release artifacts
 and source/file provenance are frozen separately as
 `core-speed-001/frozen-packet-restored`; qualification against the original
 frozen workload remains required before claiming the default regression fixed.
+
+### Contract-8 fixed-entry experiment
+
+The contract-7 restoration retained the original ordinary event and packed1 shade
+body. Its measured default control matched the pre-packet control, while the six
+shared-entry alternatives remained slower. Those results and frozen artifacts
+remain retained; they do not establish a benefit for an experimental policy.
+
+Contract 8 replaces the shared experimental shade entry with seven named entries.
+A single `packet_shade_body.inc` expands literal layout, event-count, and hit-source
+paths: packed policies access the packed pool directly, separated policies call
+unconditional hot/cold accessors, and split trace calls only the pretraced event.
+Every shade pipeline receives the original scene constants. Producer pipelines
+retain constants 23/24 and immutable configuration checks; the host still verifies
+opaque-shadow constant 22 on the actual selected shade entry. Contract 8 rejects
+older libraries before loading this entry map. No policy defaults change.
+
+Source expansion checks retain the original `f0d8494` ordinary event's 2,733 body
+tokens and the packed1 kernel's 409 tokens. Both shared body includes participate
+in shader dependencies and the actual source fingerprint. This checks source
+structure and numerical ordering, not generated code, occupancy, or performance.
+Fresh validation evidence is retained outside Git under
+`.cache/validation/packet-fixed-001/`; performance qualification remains separate.
+
+The three focused GPU tests (`packet_scattering`, `wavefront_frame`, and
+`wavefront_queue`) pass in Debug, Release, and ASan/UBSan with Metal API validation.
+Seven-policy independent and Area controls (42 complete frames) retain bit-exact
+raw and reconstructed captures within each estimator. Three combined control
+arms retain exact captures with opaque traversal, fast-all AS builds, guide reuse,
+and stage profiling; profiled stages are complete and finite. The new host rejects
+the frozen contract-7 library. Reflection records layout 23 on refill and both
+23/24 on reset, initialize, and prepare-refill. An initial overly strict refill
+capability check failed visibly; its log remains retained with the corrected runs.
