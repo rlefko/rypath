@@ -501,6 +501,18 @@ convergence and time-to-quality qualification remain separate; passing a small
 mean study does not establish a visual or performance benefit. MCMC is not yet
 integrated here.
 
+A subsequent compiler-boundary fix keeps acceleration-structure and sampler
+resources out of the non-inlined MIS recurrence. The inline wrapper computes the
+same four reverse densities in the same order; the recurrence receives only
+vertices, densities and path buffers. This follows an Xcode 16.4 hosted pipeline
+compilation failure after the replay-resource layout expanded; source inspection
+identifies that boundary as a candidate cause, not a proven driver diagnosis.
+Current-source M4 Max checks pass 16 Debug, 16 Release and four focused
+ASan/UBSan tests with Metal API validation, including exact canonical
+partition/finalizer/full-context controls, packet/PT/BDPT and Area integration.
+The hosted environment must separately verify compilation. These correctness
+runs are not performance measurements.
+
 ## Primary references
 
 - Lin et al., [Generalized Resampled Importance Sampling: Foundations of ReSTIR](https://graphics.cs.utah.edu/research/projects/gris/sig22_GRIS.pdf),

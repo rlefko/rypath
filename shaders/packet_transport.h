@@ -653,22 +653,12 @@ inline float log_add(float a, float b) {
 }
 // The balance heuristic is evaluated in log space so legitimate long-path PDF
 // ratios cannot overflow. Zero densities at delta events retain PBRT's remap.
-[[clang::noinline]] inline float mis_weight(const thread Resources &r, device uchar *light,
-                                            device uchar *camera, const thread Vertex &sampled,
-                                            uint s, uint t) {
-    if (s + t == 2)
-        return 1;
-    const Vertex pt = t == 1 ? sampled : path_vertex(camera, t - 1);
-    const Vertex qs = s == 1 ? sampled : s > 1 ? path_vertex(light, s - 1) : Vertex{};
-    const Vertex pt_minus = t > 1 ? path_vertex(camera, t - 2) : Vertex{};
-    const Vertex qs_minus = s > 1 ? path_vertex(light, s - 2) : Vertex{};
-    const float p_reverse = s > 0 ? vertex_pdf(r, qs, qs_minus, pt, Mode::Importance)
-                                  : light_origin_pdf(r, pt, pt_minus);
-    const float p_minus_reverse = t > 1 ? (s > 0 ? vertex_pdf(r, pt, qs, pt_minus, Mode::Importance)
-                                                 : light_direction_pdf(r, pt, pt_minus))
-                                        : 0;
-    const float q_reverse = s > 0 ? vertex_pdf(r, pt, pt_minus, qs, Mode::Radiance) : 0;
-    const float q_minus_reverse = s > 1 ? vertex_pdf(r, qs, pt, qs_minus, Mode::Radiance) : 0;
+// Keep opaque acceleration structures and sampler resources out of this
+// non-inlined boundary; the recurrence only consumes vertices and densities.
+[[clang::noinline]] inline float mis_weight_recurrence(const thread Vertex &qs, float p_reverse,
+                                                       float p_minus_reverse, float q_reverse,
+                                                       float q_minus_reverse, device uchar *light,
+                                                       device uchar *camera, uint s, uint t) {
     float sum_log = -INFINITY, ratio_log = 0;
     for (int i = int(t) - 1; i > 0; --i) {
         const auto v = path_vertex(camera, uint(i));
@@ -697,6 +687,24 @@ inline float log_add(float a, float b) {
             sum_log = log_add(sum_log, ratio_log);
     }
     return exp(-log_add(0, sum_log));
+}
+inline float mis_weight(const thread Resources &r, device uchar *light, device uchar *camera,
+                        const thread Vertex &sampled, uint s, uint t) {
+    if (s + t == 2)
+        return 1;
+    const Vertex pt = t == 1 ? sampled : path_vertex(camera, t - 1);
+    const Vertex qs = s == 1 ? sampled : s > 1 ? path_vertex(light, s - 1) : Vertex{};
+    const Vertex pt_minus = t > 1 ? path_vertex(camera, t - 2) : Vertex{};
+    const Vertex qs_minus = s > 1 ? path_vertex(light, s - 2) : Vertex{};
+    const float p_reverse = s > 0 ? vertex_pdf(r, qs, qs_minus, pt, Mode::Importance)
+                                  : light_origin_pdf(r, pt, pt_minus);
+    const float p_minus_reverse = t > 1 ? (s > 0 ? vertex_pdf(r, pt, qs, pt_minus, Mode::Importance)
+                                                 : light_direction_pdf(r, pt, pt_minus))
+                                        : 0;
+    const float q_reverse = s > 0 ? vertex_pdf(r, pt, pt_minus, qs, Mode::Radiance) : 0;
+    const float q_minus_reverse = s > 1 ? vertex_pdf(r, qs, pt, qs_minus, Mode::Radiance) : 0;
+    return mis_weight_recurrence(qs, p_reverse, p_minus_reverse, q_reverse, q_minus_reverse, light,
+                                 camera, s, t);
 }
 inline float4 uniforms4(constant wire::Parameters &p, uint4 words) {
     return float4(sample_uniform(p, words.x), sample_uniform(p, words.y),
