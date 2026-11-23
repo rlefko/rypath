@@ -36,6 +36,9 @@ struct RenderSamplesResult {
     std::vector<PacketSample> packet_samples;
     std::vector<PacketSplat> packet_splats;
 };
+struct RenderBuildOptions {
+    IntersectionProfile intersection_profile = IntersectionProfile::compensated;
+};
 struct RenderBuildResult;
 // Synchronous operations require external serialization, including sample().
 // The owner reuses its output buffer and retains no caller-owned scene storage.
@@ -51,6 +54,9 @@ class MetalRenderScene {
 
   private:
     friend class FrameSession;
+    friend RenderBuildResult build_metal_renderer(const RenderScene &,
+                                                  const std::filesystem::path &, RenderBuildOptions,
+                                                  RenderTimings *);
     struct Impl;
     std::unique_ptr<Impl> impl_;
     explicit MetalRenderScene(std::unique_ptr<Impl> impl);
@@ -73,6 +79,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path,
                                        RenderTimings *timings);
+
+RenderBuildResult build_metal_renderer(const RenderScene &scene,
+                                       const std::filesystem::path &library_path,
+                                       RenderBuildOptions options,
+                                       RenderTimings *timings = nullptr);
 
 // Fixed-input native numerical validation; no scene/AS or transport state changes.
 struct ShadingNormalProbeResult {

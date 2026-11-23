@@ -11,6 +11,9 @@ struct FrameConfig {
     std::int32_t material_seed = 0;
     std::uint64_t footprint_samples = 1;
     std::uint64_t transient_byte_limit = 8ull * 1024 * 1024 * 1024;
+    // Immutable numerical profile for this session; offline builders retain
+    // their separate compensated default.
+    IntersectionProfile intersection_profile = IntersectionProfile::native;
 };
 struct FrameCamera {
     RenderCamera camera;

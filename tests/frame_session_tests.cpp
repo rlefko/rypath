@@ -41,7 +41,7 @@ void compare(const RenderScene &scene, const FrameConfig &config, std::uint64_t 
     require(capture.width == config.width && capture.height == config.height &&
                 capture.raw_xyz.size() == pixels,
             "Capture dimensions/accounting");
-    auto built = build_metal_renderer(scene);
+    auto built = build_metal_renderer(scene, {}, RenderBuildOptions{config.intersection_profile});
     require(built.status == GeometryStatus::success && built.scene, built.diagnostic);
     const auto tile =
         std::min(render_tile_capacity, built.packet_lane_capacity != 0 ? built.packet_lane_capacity
@@ -97,6 +97,28 @@ void reference_case(const RenderScene &scene, const FrameConfig &config, std::ui
             "Invalid GPU timing");
     compare(scene, config, index, frame->capture());
 }
+void intersection_profiles() {
+    require(FrameConfig{}.intersection_profile == IntersectionProfile::native,
+            "Live frame default must use native triangle intersections");
+    // Match each frame to the direct sample kernel using the same profile.
+    // Native/compensated edge results are intentionally not compared to each other.
+    for (const auto profile : {IntersectionProfile::native, IntersectionProfile::compensated}) {
+        const FrameConfig config{
+            .width = 17, .height = 9, .seed = 19317, .intersection_profile = profile};
+        reference_case(make_demo_scene(), config, 3);
+        for (const bool packet : {false, true}) {
+            auto scene = sky(packet);
+            // Sky also covers the zero-geometry specialization and its handshake.
+            reference_case(scene, config, 3);
+            scene.materials = {{.kind = SpectralMaterialKind::constant, .constant = .5f}};
+            scene.instance_materials = {0};
+            scene.geometry.meshes = {{.positions = {{-4, -4, 2}, {4, -4, 2}, {-4, 4, 2}, {4, 4, 2}},
+                                      .triangles = {{0, 1, 2}, {2, 1, 3}}}};
+            scene.geometry.instances = {{}};
+            reference_case(scene, config, 3);
+        }
+    }
+}
 void lifetime_and_camera() {
     auto scene = sky();
     const FrameConfig config{.width = 17, .height = 9, .seed = 19317};
@@ -144,9 +166,13 @@ void lifetime_and_camera() {
 }
 void invalid_cases() {
     auto scene = sky();
-    for (const auto config : {FrameConfig{}, FrameConfig{.width = UINT32_MAX, .height = 2},
-                              FrameConfig{.width = 1, .height = 1, .footprint_samples = 0},
-                              FrameConfig{.width = 1, .height = 1, .transient_byte_limit = 1}}) {
+    for (const auto config :
+         {FrameConfig{}, FrameConfig{.width = UINT32_MAX, .height = 2},
+          FrameConfig{.width = 1, .height = 1, .footprint_samples = 0},
+          FrameConfig{.width = 1, .height = 1, .transient_byte_limit = 1},
+          FrameConfig{.width = 1,
+                      .height = 1,
+                      .intersection_profile = static_cast<IntersectionProfile>(99)}}) {
         auto built = build_frame_session(scene, config);
         require(built.status == GeometryStatus::failure && !built.session &&
                     !built.diagnostic.empty(),
@@ -342,7 +368,7 @@ void fixed_footprint_high_index() {
     auto frame = submit(*built.session, index);
     const auto capture = frame->capture();
     compare(coarse, config, index, capture, 2e-4, .001);
-    auto legacy = build_metal_renderer(scene);
+    auto legacy = build_metal_renderer(scene, {}, RenderBuildOptions{config.intersection_profile});
     require(legacy.status == GeometryStatus::success, legacy.diagnostic);
     auto samples = legacy.scene->sample({.width = 8,
                                          .height = 8,
@@ -466,6 +492,7 @@ int main() {
         packet.max_depth = 64;
         reference_case(packet, {.width = 137, .height = 67}, 3);
         reference_case(make_demo_scene(), {.width = 17, .height = 9}, 0);
+        intersection_profiles();
         lifetime_and_camera();
         invalid_cases();
         textured_and_media();

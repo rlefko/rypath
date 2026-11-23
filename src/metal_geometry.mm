@@ -636,8 +636,24 @@ GeometryOcclusionResult MetalGeometryScene::occlusion(std::span<const GeometryRa
 GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry,
                                                     const std::filesystem::path &library_path,
                                                     bool build_hints) {
+    return build_metal_geometry_with_hints(geometry, library_path, build_hints, {});
+}
+
+GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry,
+                                                    const std::filesystem::path &library_path,
+                                                    bool build_hints,
+                                                    GeometryBuildOptions options) {
     @autoreleasepool {
         GeometryBuildResult result;
+        const bool native = options.intersection_profile == IntersectionProfile::native;
+        if (options.intersection_profile != IntersectionProfile::compensated && !native) {
+            result.diagnostic = "Unknown intersection profile";
+            return result;
+        }
+        if (native && build_hints) {
+            result.diagnostic = "Native intersection profile does not accept compensated hints";
+            return result;
+        }
         result.diagnostic = validate_geometry(geometry);
         if (!result.diagnostic.empty()) {
             return result;
@@ -708,8 +724,44 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
             if (intersection == nil) {
                 return result;
             }
-            impl->closest = metal::load_pipeline(device, library, @"rypath_closest_hits",
-                                                 result.diagnostic, intersection);
+            MTLFunctionConstantValues *profile_constants = nil;
+            if (native) {
+                profile_constants = [[MTLFunctionConstantValues alloc] init];
+                [profile_constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
+                // Require an explicit library contract before binding a native TLAS.
+                auto contract =
+                    metal::load_pipeline(device, library, @"rypath_native_intersection_contract",
+                                         result.diagnostic, nil, profile_constants);
+                if (contract == nil)
+                    return result;
+                auto queue = [device newCommandQueue];
+                auto value = [device newBufferWithLength:4 * sizeof(Word)
+                                                 options:MTLResourceStorageModeShared];
+                auto command = [queue commandBuffer];
+                auto encoder = [command computeCommandEncoder];
+                if (queue == nil || value == nil || command == nil || encoder == nil) {
+                    result.diagnostic = "Native intersection handshake allocation failed";
+                    return result;
+                }
+                std::memset(value.contents, 0, 4 * sizeof(Word));
+                [encoder setComputePipelineState:contract];
+                [encoder setBuffer:value offset:0 atIndex:0];
+                [encoder dispatchThreads:MTLSizeMake(1, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [encoder endEncoding];
+                result.diagnostic = metal::complete(command, "native intersection handshake");
+                if (!result.diagnostic.empty())
+                    return result;
+                std::array<Word, 4> version{};
+                std::memcpy(version.data(), value.contents, sizeof(version));
+                if (version != std::array<Word, 4>{1u, 1u, 0u, 0u}) {
+                    result.diagnostic = "Native intersection shader contract mismatch";
+                    return result;
+                }
+            }
+            impl->closest =
+                metal::load_pipeline(device, library, @"rypath_closest_hits", result.diagnostic,
+                                     intersection, profile_constants);
             if (impl->closest == nil) {
                 return result;
             }
@@ -718,8 +770,9 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
             if (impl->closest_table == nil) {
                 return result;
             }
-            impl->occlusion = metal::load_pipeline(device, library, @"rypath_occlusion",
-                                                   result.diagnostic, intersection);
+            impl->occlusion =
+                metal::load_pipeline(device, library, @"rypath_occlusion", result.diagnostic,
+                                     intersection, profile_constants);
             if (impl->occlusion == nil) {
                 return result;
             }
@@ -748,9 +801,22 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
                     // Release each completed build's descriptors and command resources.
                     @autoreleasepool {
                         id<MTLBuffer> records = nil;
-                        id<MTLAccelerationStructure> structure =
-                            build_mesh(device, impl->queue, mesh, kind, result.diagnostic,
-                                       build_hints ? &records : nullptr);
+                        id<MTLAccelerationStructure> structure = nil;
+                        if (native && kind == PrimitiveKind::triangle) {
+                            // Reuse the tagged source records, without building a procedural BLAS.
+                            auto descriptor = triangle_descriptor(device, mesh, result.diagnostic);
+                            if (descriptor != nil) {
+                                records = ((MTLAccelerationStructureBoundingBoxGeometryDescriptor *)
+                                               descriptor)
+                                              .primitiveDataBuffer;
+                                structure = build_hint_mesh(device, impl->queue, mesh, records,
+                                                            impl->hint_stats, result.diagnostic);
+                            }
+                        } else {
+                            structure =
+                                build_mesh(device, impl->queue, mesh, kind, result.diagnostic,
+                                           build_hints ? &records : nullptr);
+                        }
                         if (structure && records && build_hints) {
                             auto native = build_hint_mesh(device, impl->queue, mesh, records,
                                                           impl->hint_stats, result.diagnostic);
@@ -877,6 +943,11 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
 GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
                                          const std::filesystem::path &library) {
     return build_metal_geometry_with_hints(geometry, library, false);
+}
+GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
+                                         const std::filesystem::path &library,
+                                         GeometryBuildOptions options) {
+    return build_metal_geometry_with_hints(geometry, library, false, options);
 }
 bool MetalGeometryAccess::has_hint(const MetalGeometryScene &scene) {
     return scene.impl_ && scene.impl_->hint_instances != nil;
