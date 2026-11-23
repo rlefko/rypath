@@ -78,7 +78,7 @@ See the [intersection profile and measured witnesses](geometry.md#explicit-nativ
 Changing profiles requires a new session and separate sample history.
 
 The selected profile is recorded as `settings.intersection_profile` in JSON and
-`rypath.frame.intersection_profile` in EXR metadata. Canonical `source_identity`
+`rypath.frame.intersections` in EXR metadata. Canonical `source_identity`
 continues to identify the owned scene and sampling settings; it does not encode
 this numerical execution choice. Compare or group results using both source
 identity and intersection profile. Frame validation compares each profile's GPU
