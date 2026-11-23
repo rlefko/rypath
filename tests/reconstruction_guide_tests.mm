@@ -502,6 +502,53 @@ void counter_sizes(const std::string &library) {
              "Nonfinite color contributes no success counters in a partial group");
     }
 }
+void transformed_spatial_guides(const std::string &library) {
+    // A nonuniform scale plus shear maps local z=0 to the plane with normal
+    // (-.5,.25,1). Test both a local origin and a large exactly represented
+    // camera/instance translation; expected guides remain camera-relative.
+    for (const GeometryPoint origin : {GeometryPoint{0, 0, 0}, GeometryPoint{4096, -8192, 16384}}) {
+        auto r = raster();
+        r.origin = origin;
+        auto scene = base(r);
+        GeometryMesh mesh;
+        mesh.positions = {{-16, -16, 0}, {16, -16, 0}, {0, 16, 0}};
+        mesh.triangles = {{0, 1, 2}};
+        scene.geometry.meshes.push_back(mesh);
+        GeometryTransform transform{
+            {2, .25f, .5f, origin.x + .25f, 0, .5f, 0, origin.y + .125f, 1, 0, 1, origin.z + 4.f}};
+        scene.geometry.instances.push_back({0, transform});
+        scene.instance_materials.push_back(0);
+        scene.instance_emissions.push_back(no_area_emission);
+        scene.instance_surface_transforms.emplace_back();
+        const auto now = camera(r);
+        auto cfg = config(now, now);
+        cfg.flags |= gw::signed_temporal;
+        const auto out = guide(scene, cfg, library);
+        need(out.counters.failure == 0 && out.counters.completed == pixels &&
+                 out.counters.background == 0,
+             "Transformed/rebased triangle guides complete");
+        constexpr std::array<double, 3> plane_normal{-.5, .25, 1};
+        const double normal_length = std::sqrt(1.3125);
+        // n dot (.25,.125,4) = 3.90625. Use authored raster basis directly,
+        // independent of shader transforms, CPU Camera rays and hit helpers.
+        for (unsigned p = 0; p < pixels; ++p) {
+            const double u = (double(p % width) + .5) / width,
+                         v = (double(p / width) + .5) / height;
+            const std::array<double, 3> ray{double(r.corner.x) + u * r.dx.x + v * r.dy.x,
+                                            double(r.corner.y) + u * r.dx.y + v * r.dy.y,
+                                            double(r.corner.z) + u * r.dx.z + v * r.dy.z};
+            const double parameter = 3.90625 / (-.5 * ray[0] + .25 * ray[1] + ray[2]);
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                close(out.texture[9][4 * p + axis], ray[axis] * parameter, 2e-4,
+                      "Independent transformed/rebased camera-relative position");
+                close(out.texture[10][4 * p + axis], plane_normal[axis] / normal_length, 2e-6,
+                      "Independent inverse-transpose geometric normal");
+            }
+            close(out.texture[9][4 * p + 3], 0, 0, "Spatial position padding");
+            close(out.texture[10][4 * p + 3], 0, 0, "Geometric normal padding");
+        }
+    }
+}
 void continuity_alignment(const std::string &library) {
     auto r = raster();
     auto scene = base(r);
@@ -671,6 +718,7 @@ int main(int argc, char **argv) {
             need(device.device.compute_ray_tracing, "Guide tests require compute ray tracing");
             cases(argv[1]);
             continuity_alignment(argv[1]);
+            transformed_spatial_guides(argv[1]);
             counter_sizes(argv[1]);
             std::cout << "Reconstruction guide native validation passed\n";
             return 0;

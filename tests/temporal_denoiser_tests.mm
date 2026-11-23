@@ -468,6 +468,25 @@ void continuity_and_halo(MetalFrameLease &lease) {
     for (unsigned p = 0; p < pixels; ++p)
         for (unsigned c = 0; c < 3; ++c)
             near(output[p][c], layers.color[p][c], "Dilated taps cannot jump gap", 0, 0);
+    // Both positions are finite, but their x displacement overflows float32.
+    // Inf*zero in either plane dot product must reject support rather than
+    // letting NaN comparisons admit these separated same-group planes.
+    Fixture extreme(lease.device());
+    auto extreme_filter = adapter(lease, 5);
+    for (unsigned p = 0; p < pixels; ++p) {
+        const bool right = p % width >= width / 2;
+        extreme.identity[p][1] = right ? 1u : 0u;
+        extreme.group[p] = 0;
+        extreme.position[p] = right ? Color{3e38f, 0, 1e37f, 0} : Color{-3e38f, 0, 0, 0};
+        extreme.color[p] = right ? Color{100000.f, -50000.f, 25000.f, 1} : Color{0, 0, 0, 1};
+    }
+    require(execute(*extreme_filter, extreme, lease.queue()).empty(),
+            "Finite extreme-position planes execute without unsupported blending");
+    auto extreme_output = extreme.capture();
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            near(extreme_output[p][c], extreme.color[p][c],
+                 "Nonfinite displacement rejects separated same-group planes", 0, 0);
     Fixture impulse(lease.device());
     auto halo = adapter(lease, 5, 64, false, false, SpatialVariancePolicy::center);
     for (unsigned frame = 0; frame < 70; ++frame) {
