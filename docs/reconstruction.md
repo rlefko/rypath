@@ -1,5 +1,9 @@
 # Frame reconstruction
 
+The [diagnostic capture and replay tool](reconstruction-diagnostics.md) provides
+identical-frame comparisons and explicit input/history/pass inspection before
+changing reconstruction algorithms.
+
 Reconstruction consumes a completed GPU frame without changing its spectral XYZ
 buffer, sample count, estimator, or history. `ReconstructionMode::raw_rgb` converts
 that frame into separate unexposed linear RGB presentation storage.

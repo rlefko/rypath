@@ -139,7 +139,8 @@ void unchanged(const Frame &source, const FrameCapture &before) {
                 before.raw_xyz == after.raw_xyz,
             "Reconstruction modified raw XYZ");
 }
-void raw_oracle(const FrameCapture &raw, const ReconstructionCapture &rgb, RenderModel model) {
+void raw_oracle(const FrameCapture &raw, const ReconstructionCapture &rgb, RenderModel model,
+                bool signed_input = false) {
     require(raw.raw_xyz.size() == rgb.linear_rgb.size(), "Raw RGB oracle dimensions");
     // Independent double implementation of the documented unexposed matrices;
     // deliberately do not call production linear_rgb() or guide shader helpers.
@@ -160,6 +161,12 @@ void raw_oracle(const FrameCapture &raw, const ReconstructionCapture &rgb, Rende
                 const double term = matrix[c][k] * raw.raw_xyz[i][k];
                 expected += term;
                 magnitude += std::abs(term);
+            }
+            if (signed_input) {
+                require(std::abs(double(rgb.linear_rgb[i][c]) - expected) <=
+                            32 * std::numeric_limits<float>::epsilon() * magnitude,
+                        "Signed diagnostic input differs from independent XYZ oracle");
+                continue;
             }
             const auto half = static_cast<_Float16>(std::clamp(expected, 0., 65504.));
             const float quantized = static_cast<float>(half);
@@ -743,6 +750,102 @@ void surface_cache_pair(ReconstructionMode mode) {
     step(false);
     step(true);
 }
+const MetalReconstructionTextureSnapshot &
+diagnostic_texture(const MetalReconstructionSnapshot &snapshot, std::string_view name) {
+    const auto found = std::find_if(snapshot.textures.begin(), snapshot.textures.end(),
+                                    [&](const auto &texture) { return texture.name == name; });
+    require(found != snapshot.textures.end(), "Missing diagnostic texture " + std::string(name));
+    return *found;
+}
+void diagnostic_capture(ReconstructionMode mode) {
+    auto owner = session(plane());
+    std::unique_ptr<ReconstructionStream> traced, control, isolated;
+    for (unsigned index = 0; index < 5; ++index) {
+        auto input = source(*owner, index);
+        source_complete(*input);
+        const auto raw = input->capture();
+        if (!traced) {
+            auto result =
+                build_reconstruction_stream(*input, {.mode = mode, .capture_diagnostics = true});
+            require(result.status == GeometryStatus::success && result.stream, result.diagnostic);
+            traced = std::move(result.stream);
+            control = stream(*input, mode);
+            if (mode == ReconstructionMode::temporal) {
+                auto independent = build_reconstruction_stream(
+                    *input, {.mode = mode, .capture_diagnostics = true});
+                require(independent.status == GeometryStatus::success && independent.stream,
+                        independent.diagnostic);
+                isolated = std::move(independent.stream);
+            }
+            require(
+                !MetalReconstructionStreamProbe::capture_diagnostics(*traced).diagnostic.empty(),
+                "Uninitialized diagnostic history was exposed");
+        }
+        // All consumers hold this exact raw frame. Reset only the third stream.
+        auto a = submit(*traced, *input), b = submit(*control, *input);
+        std::unique_ptr<ReconstructedFrame> c;
+        if (isolated)
+            c = submit(*isolated, *input, index == 3);
+        complete(*a, mode);
+        complete(*b, mode);
+        if (c)
+            complete(*c, mode);
+        require(capture(*a).linear_rgb == capture(*b).linear_rgb,
+                "Diagnostic observation changed reconstructed output");
+        auto snapshot = MetalReconstructionStreamProbe::capture_diagnostics(*traced);
+        require(snapshot.diagnostic.empty(), snapshot.diagnostic);
+        require(snapshot.info.source.sample_index == index,
+                "Diagnostic source-frame identity is stale");
+        const auto &color = diagnostic_texture(snapshot, "input.color");
+        require(color.width == side && color.height == side &&
+                    color.format == (mode == ReconstructionMode::temporal
+                                         ? MTLPixelFormatRGBA32Float
+                                         : MTLPixelFormatRGBA16Float),
+                "Diagnostic input format mismatch");
+        ReconstructionCapture converted;
+        converted.linear_rgb.resize(std::size_t(side) * side);
+        for (std::size_t pixel = 0; pixel < converted.linear_rgb.size(); ++pixel)
+            for (unsigned channel = 0; channel < 3; ++channel) {
+                if (mode == ReconstructionMode::temporal) {
+                    float value = 0;
+                    std::memcpy(&value, color.bytes.data() + (pixel * 4 + channel) * 4, 4);
+                    converted.linear_rgb[pixel][channel] = value;
+                } else {
+                    _Float16 value = 0;
+                    std::memcpy(&value, color.bytes.data() + (pixel * 4 + channel) * 2, 2);
+                    converted.linear_rgb[pixel][channel] = float(value);
+                }
+            }
+        raw_oracle(raw, converted, RenderModel::pbrt, mode == ReconstructionMode::temporal);
+        require(!MetalReconstructionStreamProbe::capture_diagnostics(*control).diagnostic.empty(),
+                "Diagnostics silently enabled for an ordinary stream");
+        if (mode == ReconstructionMode::temporal) {
+            require(diagnostic_texture(snapshot, "temporal.mean").bytes ==
+                        diagnostic_texture(snapshot, "spatial.0.mean").bytes,
+                    "Initial spatial mean differs from saved pre-spatial history");
+            require(diagnostic_texture(snapshot, "spatial.5.mean").bytes ==
+                        diagnostic_texture(snapshot, "output").bytes,
+                    "Final pass snapshot differs from output");
+            const auto independent = MetalReconstructionStreamProbe::capture_diagnostics(*isolated);
+            require(independent.diagnostic.empty(), independent.diagnostic);
+            const auto &count = diagnostic_texture(snapshot, "temporal.count");
+            const auto &other = diagnostic_texture(independent, "temporal.count");
+            for (std::size_t pixel = 0; pixel < std::size_t(side) * side; ++pixel) {
+                std::uint32_t value = 0, separate = 0;
+                std::memcpy(&value, count.bytes.data() + pixel * 4, 4);
+                std::memcpy(&separate, other.bytes.data() + pixel * 4, 4);
+                require(value == index + 1 && separate == (index < 3 ? index + 1 : index - 2),
+                        "Diagnostic fanout shares temporal history or reset state");
+            }
+        }
+        unchanged(*input, raw);
+        // A snapshot owns its bytes; dropping output handles cannot mutate it.
+        const auto saved = diagnostic_texture(snapshot, "output").bytes;
+        a.reset();
+        require(diagnostic_texture(snapshot, "output").bytes == saved,
+                "Diagnostic snapshot borrowed expired output storage");
+    }
+}
 int availability(ReconstructionMode mode) {
     const auto device = query_metal_device();
     if (device.status == MetalStatus::no_device) {
@@ -796,6 +899,7 @@ int main(int argc, char **argv) {
                                   : ReconstructionMode::metalfx;
             if (const auto unavailable = availability(mode))
                 return unavailable;
+            diagnostic_capture(mode);
             surface_cache_pair(mode);
             lifecycle(mode);
             camera_case(mode, false, false);

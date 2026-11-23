@@ -2,6 +2,7 @@
 #pragma once
 #include "spatial_variance_policy.hpp"
 // Internal Objective-C++ adapter. Raw Monte Carlo XYZ is never modified.
+#include "metal_texture_snapshot.hpp"
 #import <Metal/Metal.h>
 #include <cstdint>
 #include <memory>
@@ -34,6 +35,7 @@ struct TemporalDenoiserConfig {
     bool variance_prefilter = false; // Optional 3x3 geometry-aware guidance only.
     SpatialVariancePolicy spatial_variance_policy = SpatialVariancePolicy::paired;
     bool strict_spatial_segments = false; // Explicit raster-gap experiment.
+    bool capture_diagnostics = false;
 };
 struct TemporalDenoiserCreateResult;
 // Externally serialized. Encode only one pending command; call complete after
@@ -51,13 +53,17 @@ class TemporalDenoiser {
     // Conservative pre-allocation estimate: 16 textures at padded 64x64 extents,
     // 64 KiB overhead each, and two 64 KiB buffer allowances. Excludes caller
     // inputs/output and Metal pipeline objects. UINT64_MAX means invalid extent.
-    static std::uint64_t owned_resource_bytes(std::uint32_t width, std::uint32_t height);
+    static std::uint64_t owned_resource_bytes(std::uint32_t width, std::uint32_t height,
+                                              bool capture_diagnostics = false);
     std::string encode(id<MTLCommandBuffer>, const TemporalDenoiserInputs &,
                        MetalGPUStages *stages = nullptr);
     // Empty means clean GPU arithmetic/counts and committed history; otherwise
     // invalidates history. Never publish output before successful completion.
     std::string complete(bool command_succeeded);
     TemporalDenoiserStats stats() const;
+    // Empty unless opt-in and the last command completed successfully. Borrowed
+    // until the next encode; caller must serialize and finish readback first.
+    std::vector<NamedMetalTexture> diagnostic_textures() const;
 
   private:
     struct Impl;

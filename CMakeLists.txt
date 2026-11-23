@@ -301,6 +301,8 @@ target_compile_definitions(rypath_pipeline_qualification PRIVATE
     RYPATH_BUILD_DESCRIPTION="${PROJECT_VERSION} ${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION} $<CONFIG> source=${rypath_source_digest} flags=${rypath_flags_digest}")
 rypath_configure_host_target(rypath_pipeline_qualification)
 
+include(cmake/ReconstructionQualification.cmake)
+
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)

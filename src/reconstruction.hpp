@@ -18,6 +18,8 @@ struct ReconstructionConfig {
     bool strict_spatial_segments = false; // Expensive raster-gap experiment.
     bool variance_prefilter = false;      // Optional geometry-aware 3x3 guidance proxy.
     bool cache_surface_guides = true;     // Reuse guides when resolved inputs match.
+    // Explicit diagnostic work/storage; excludes this stream from timing claims.
+    bool capture_diagnostics = false;
 };
 enum class ReconstructionStatus { pending, complete, failed };
 struct ReconstructionCounters {
