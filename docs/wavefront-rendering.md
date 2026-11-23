@@ -253,7 +253,7 @@ speedup, and does not replace a matched Release performance/quality study.
 Receipts, exact commands, per-policy images, decoder script, hashes and the ABI
 probe are retained outside Git under `.cache/validation/packet-schedule-001/`.
 
-### Compile-time packet-policy specialization
+### Contract-6 specialization experiment
 
 The first runtime-policy experiment remains retained in history and frozen
 artifacts. Its paired screen is separate from the specialization below; no
@@ -332,3 +332,56 @@ outside Git under `.cache/validation/packet-specialization-001/`. The fresh
 Release executable and metallib are frozen separately as
 `core-speed-001/frozen-packet-specialized`; earlier frozen builds are unchanged.
 These are bounded correctness controls, not occupancy or speedup measurements.
+
+### Literal ordinary-path restoration
+
+The runtime-policy and contract-6 specialization experiments remain retained in
+Git and frozen artifacts; the lead's matched screens rejected them for an
+introduced default-path regression despite exact image controls. The current
+repair restores ordinary packed/one-event source structure before another
+matched performance comparison. No policy, workload or acceptance bound changes.
+
+The original `packet_pt_step` body is stored once in the private, intentionally
+unguarded `packet_pt_event_body.inc`. Ordinary and pretraced noinline functions
+include it with a compile-time hit-source selector. The ordinary expansion keeps
+`f0d8494`'s exact signature, numerical body, intersector declaration/set-cull
+placement and inline event trace statements. The split expansion substitutes only
+hit acquisition and omits the event intersector; it has no event-trace fallback.
+The template/always-inline wrapper experiment is removed.
+
+`rypath_wavefront_shade_packet` again contains the original direct packed-state
+load, single step call and packed-state publication. A separate experimental
+entry handles the other six policies. The host selects the ordinary entry only
+for packed/one-event and supplies its original scene constant set. Opaque-shadow
+constant 22 is verified on the actual selected entry; policy constants 23/24 are
+verified on the experimental entry and reset producer, with runtime policy
+consistency still checked before owners are issued. Wire contract 7 rejects
+older entry-routing libraries without changing resource sizes or state layouts.
+
+The body include is both an explicit Metal rebuild dependency and an input to
+the actual `BuildProvenance.cmake` source fingerprint (`shaders/*`, with no
+extension filter). An independent full-source manifest, including the `.inc`,
+agrees with CMake's embedded digest. Token receipts compare 2,733 ordinary-body
+tokens, 32 signature tokens and 409 default-kernel tokens with `f0d8494`; all
+agree. These checks establish source parity, not binary identity, register
+occupancy or restored throughput. Build/GPU and paired image evidence for this
+repair is recorded separately under `.cache/validation/packet-restoration-001/`.
+
+At source digest
+`653422fa55d2c91df9ad670d06af038e0c5b7640a353e69cb2e204f50dd61d72`,
+packet-scattering, expanded wavefront-frame and queue checks pass under Metal API
+validation in Debug (303.46 s), Release (28.27 s) and ASan/UBSan (17.14 s) on
+M4 Max. Debug's cold frame check completes in 299.02 s under the retained 900 s
+bound. These are test durations, not rendering-throughput measurements. Both
+frozen contract-6 and contract-5 libraries are explicitly rejected, with their
+file hashes unchanged.
+
+The same 14 policy controls complete 42 pipeline frames, and the combined
+split/opaque-auto/fast-all/cached-guide/profiling control completes nine more.
+Independent decoding again finds final raw and reconstructed images bit-identical
+to the corresponding packed/one-event controls; profiled stage samples remain
+complete and finite. No attempt failed in this restoration validation. The prior
+failed/rejected experiments stay in their own records. Clean Release artifacts
+and source/file provenance are frozen separately as
+`core-speed-001/frozen-packet-restored`; qualification against the original
+frozen workload remains required before claiming the default regression fixed.

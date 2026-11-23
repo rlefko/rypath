@@ -455,6 +455,60 @@ rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
     uint slot;
     if (!wavefront_slot(a, lane, slot))
         return;
+    auto state = wavefront_packet(a, slot);
+    const GraphResources graph{
+        graph_nodes,
+        graph_knots,
+        &graph_p,
+        {image_textures, image_levels, image_texels, image_transfer, image_spectra, &texture_p}};
+    const ray incoming(state.ray_origin, state.ray_direction, state.ray_min_distance,
+                       state.ray_max_distance);
+    SurfaceAlpha alpha{
+        materials,     material_data, instances,      positions,        triangles,          patches,
+        normals,       texture_uvs,   texture_frames, surface_vertices, surface_transforms, &p,
+        &state.sample, graph,         incoming};
+    const rypath_image_light::Images light_images{image_textures, image_levels,  image_texels,
+                                                  image_transfer, image_spectra, illuminant,
+                                                  &texture_p};
+    rypath_bdpt::Resources resources{
+        alpha,           knots,        emissions, emitters, environment,
+        environment_cdf, light_images, &tables,   scene,    intersection_table};
+    rypath_replay::ReplayState replay{};
+    if (a.config->replay_enabled) {
+        if (state.sample.pixel >= a.config->pixel_count) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        replay = a.replay_input[state.sample.pixel];
+        if (!rypath_replay::valid(replay)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+    }
+    rypath_bdpt::packet_pt_step(resources, state, a.config->replay_enabled ? &replay : nullptr);
+    wavefront_packet(a, slot) = state;
+    if (state.complete) {
+        const auto result = rypath_bdpt::packet_pt_result(state, p);
+        const uint pixel = result.pixel;
+        float3 value;
+        if (pixel >= a.config->pixel_count ||
+            !rypath_frame_sensor::packet(result, pixel, p.sample_low, p.sample_high, a.cie,
+                                         value)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        wavefront_publish(a, pixel, value);
+        wavefront_append(a, &a.counters->free, a.free_slots, slot);
+    } else {
+        wavefront_append(a, &a.counters->out, a.queue_out, slot);
+    }
+}
+
+kernel void rypath_wavefront_shade_packet_experimental(
+    RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+    uint slot;
+    if (!wavefront_slot(a, lane, slot))
+        return;
     auto state = wavefront_load_packet(a, slot);
     const GraphResources graph{
         graph_nodes,

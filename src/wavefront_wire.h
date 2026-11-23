@@ -5,7 +5,7 @@ namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 6,
+    contract = 7,
     default_capacity = 65536,
     packet_layout_constant = 23,
     packet_events_constant = 24

@@ -2562,8 +2562,12 @@ struct FrameSession::Impl {
     }
     std::string prepare_wavefront(id<MTLLibrary> library) {
         auto &r = *renderer->impl_;
-        NSString *shade_entry = r.parameters.packet_transport ? @"rypath_wavefront_shade_packet"
-                                                              : @"rypath_wavefront_shade_scalar";
+        const bool ordinary_packet = r.parameters.packet_transport &&
+                                     config.packet_layout == FramePacketLayout::packed &&
+                                     config.packet_events == 1;
+        NSString *shade_entry = !r.parameters.packet_transport ? @"rypath_wavefront_shade_scalar"
+                                : ordinary_packet              ? @"rypath_wavefront_shade_packet"
+                                                  : @"rypath_wavefront_shade_packet_experimental";
         std::string error;
         if (r.opaque_shadows &&
             !metal::verify_opaque_shadow_capability(library, shade_entry, error))
@@ -2610,17 +2614,23 @@ struct FrameSession::Impl {
         // as effective. Older/unrelated libraries must not silently ignore the
         // requested specialization, even if their resource sizes happen to fit.
         if (r.parameters.packet_transport) {
-            auto declaration = [library newFunctionWithName:shade_entry];
-            bool has_layout = false, has_events = false;
-            for (MTLFunctionConstant *value in declaration.functionConstantsDictionary.allValues) {
-                has_layout |= value.index == wavefront_wire::packet_layout_constant &&
-                              value.type == MTLDataTypeUInt;
-                has_events |= value.index == wavefront_wire::packet_events_constant &&
-                              value.type == MTLDataTypeUInt;
+            // The literal ordinary entry deliberately does not reference policy
+            // constants. Verify the experimental entry and reset producer instead.
+            for (NSString *entry :
+                 @[ @"rypath_wavefront_shade_packet_experimental", @"rypath_wavefront_reset" ]) {
+                auto declaration = [library newFunctionWithName:entry];
+                bool has_layout = false, has_events = false;
+                for (MTLFunctionConstant *value in declaration.functionConstantsDictionary
+                         .allValues) {
+                    has_layout |= value.index == wavefront_wire::packet_layout_constant &&
+                                  value.type == MTLDataTypeUInt;
+                    has_events |= value.index == wavefront_wire::packet_events_constant &&
+                                  value.type == MTLDataTypeUInt;
+                }
+                if (!has_layout || !has_events)
+                    return "Metal wavefront packet specialization capability missing; rebuild the "
+                           "metallib";
             }
-            if (!has_layout || !has_events)
-                return "Metal wavefront packet specialization capability missing; rebuild the "
-                       "metallib";
         }
         MTLFunctionConstantValues *policy_constants = [r.function_constants copy];
         if (policy_constants == nil)
@@ -2669,7 +2679,12 @@ struct FrameSession::Impl {
                     return error;
             }
         }
-        wavefront->shade = load(shade_entry, intersection);
+        // Keep the ordinary packet entry's original scene specialization set;
+        // its body is isolated from the experimental policy call graph.
+        wavefront->shade = ordinary_packet
+                               ? metal::load_pipeline(r.device, library, shade_entry, error,
+                                                      intersection, r.function_constants)
+                               : load(shade_entry, intersection);
         if (wavefront->shade == nil)
             return error;
         if (!r.parameters.packet_transport) {
