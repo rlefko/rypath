@@ -11,6 +11,13 @@
 #include "triangle_candidate.h"
 #include "triangle_traversal_bounds.h"
 
+// Undefined in existing probes/custom compensated kernels: preserve that contract.
+constant bool rypath_native_intersections [[function_constant(21)]];
+inline bool native_intersections_enabled() {
+    return is_function_constant_defined(rypath_native_intersections) ? rypath_native_intersections
+                                                                     : false;
+}
+
 using MixedIntersector =
     metal::raytracing::intersector<metal::raytracing::triangle_data, metal::raytracing::instancing,
                                    metal::raytracing::world_space_data>;
@@ -133,9 +140,10 @@ struct TraceSurfaceSeed {
     float cap = INFINITY;
 };
 
-// Never commit native rounded hit distances. After accepting a triangle, a
-// conservative world-box exit cap may restart traversal while retaining the
-// precise closest hit. Candidate predicates always use the original ray bounds.
+// Compensated mode never commits native rounded hit distances: a conservative
+// world-box exit cap may restart traversal while retaining the precise closest
+// hit. Native mode commits accepted hardware/procedural binary32 distances.
+// Candidate predicates always use the original ray bounds.
 template <typename Alpha>
 inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
                                           metal::raytracing::instance_acceleration_structure scene,
@@ -157,10 +165,11 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
     intersection_params parameters;
     parameters.force_opacity(forced_opacity::non_opaque);
     parameters.accept_any_intersection(false);
+    parameters.set_triangle_cull_mode(triangle_cull_mode::none);
     float starting_max = min(ray.max_distance, initial_traversal_max);
     if (isnan(initial_traversal_max) || starting_max < ray.min_distance)
         return invalid_hit();
-    if (any_hit && initial_seed != nullptr)
+    if ((any_hit || native_intersections_enabled()) && initial_seed != nullptr)
         return invalid_hit();
     SurfaceHit best{
         intersection_type::none, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0, {0, 0}, true};
@@ -214,43 +223,75 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
         uint primitive_kind = 0;
         bool found = false;
         if (kind == intersection_type::triangle) {
-            auto record = static_cast<const device rypath::geometry_wire::Triangle *>(
-                query.get_candidate_primitive_data());
-            if (!record) {
-                query.abort();
-                return invalid_hit();
-            }
-            const auto reused =
-                reuse_current_triangle(best, distance, instance, geometry, primitive, alpha);
-            if (reused.matched) {
-                if (!reused.valid) {
+            if (native_intersections_enabled()) {
+                // The hardware predicate and binary32 result define this profile.
+                // Do not validate or replace it with the compensated predicate.
+                auto record = static_cast<const device rypath::geometry_wire::ProceduralRecord *>(
+                    query.get_candidate_primitive_data());
+                if (!record || (record->kind != rypath::geometry_wire::triangle &&
+                                record->kind != rypath::geometry_wire::miss)) {
                     query.abort();
                     return invalid_hit();
                 }
-                continue;
+                if (record->kind == rypath::geometry_wire::miss)
+                    continue;
+                const float native_t = query.get_candidate_triangle_distance();
+                uv = query.get_candidate_triangle_barycentric_coord();
+                if (!isfinite(native_t) || native_t < ray.min_distance ||
+                    native_t > ray.max_distance || !all(isfinite(uv))) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                const auto accepted = alpha(instance, geometry, primitive, kind, uv, native_t);
+                if (!accepted.valid) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                if (!accepted.accepted)
+                    continue;
+                t = BilinearNumber(native_t);
+                candidate_distance = triangle_extended::pair_from_bits(as_type<uint>(native_t));
+                primitive_kind = rypath::geometry_wire::triangle;
+                found = true;
+            } else {
+                auto record = static_cast<const device rypath::geometry_wire::Triangle *>(
+                    query.get_candidate_primitive_data());
+                if (!record) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                const auto reused =
+                    reuse_current_triangle(best, distance, instance, geometry, primitive, alpha);
+                if (reused.matched) {
+                    if (!reused.valid) {
+                        query.abort();
+                        return invalid_hit();
+                    }
+                    continue;
+                }
+                auto hit = precise_triangle_candidate(
+                    *record, query.get_candidate_object_to_world_transform(), ray.origin,
+                    ray.direction, ray.min_distance, ray.max_distance);
+                if (!hit.valid) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                if (!hit.hit)
+                    continue;
+                auto accepted = alpha(instance, geometry, primitive, kind, hit.uv, hit.t.high);
+                if (!accepted.valid) {
+                    query.abort();
+                    return invalid_hit();
+                }
+                if (!accepted.accepted)
+                    continue;
+                t = hit.t;
+                candidate_distance = hit.distance;
+                triangle_record = record;
+                uv = hit.uv;
+                primitive_kind = rypath::geometry_wire::triangle;
+                found = true;
             }
-            auto hit = precise_triangle_candidate(
-                *record, query.get_candidate_object_to_world_transform(), ray.origin, ray.direction,
-                ray.min_distance, ray.max_distance);
-            if (!hit.valid) {
-                query.abort();
-                return invalid_hit();
-            }
-            if (!hit.hit)
-                continue;
-            auto accepted = alpha(instance, geometry, primitive, kind, hit.uv, hit.t.high);
-            if (!accepted.valid) {
-                query.abort();
-                return invalid_hit();
-            }
-            if (!accepted.accepted)
-                continue;
-            t = hit.t;
-            candidate_distance = hit.distance;
-            triangle_record = record;
-            uv = hit.uv;
-            primitive_kind = rypath::geometry_wire::triangle;
-            found = true;
         } else if (kind == intersection_type::bounding_box) {
             auto record = static_cast<const device rypath::geometry_wire::ProceduralRecord *>(
                 query.get_candidate_primitive_data());
@@ -352,7 +393,14 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
                 distance = candidate_distance;
                 best = {surface_kind, instance, geometry, primitive,
                         t.high,       uv,       true,     primitive_kind};
-                if (triangle_record != nullptr) {
+                if (native_intersections_enabled()) {
+                    // Hardware distances also bound later procedural/native traversal.
+                    // Predicates retain the caller's original finite segment endpoints.
+                    if (kind == intersection_type::triangle)
+                        query.commit_triangle_intersection();
+                    else
+                        query.commit_bounding_box_intersection(t.high);
+                } else if (triangle_record != nullptr) {
                     const auto cap = triangle_pruning_cap(
                         *triangle_record, query.get_candidate_object_to_world_transform(),
                         ray.origin, ray.direction, distance, ray.min_distance, traversal_max);

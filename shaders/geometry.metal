@@ -13,6 +13,14 @@ using rypath::geometry_wire::Ray;
 using rypath::geometry_wire::Word;
 namespace wire = rypath::geometry_wire;
 
+// Separate opt-in contract: offline checkpoint compatibility is unchanged.
+kernel void rypath_native_intersection_contract(device uint *result [[buffer(0)]]) {
+    result[0] = 1u;
+    result[1] = native_intersections_enabled() ? 1u : 0u;
+    result[2] = 0u;
+    result[3] = 0u;
+}
+
 struct PatchAcceptance {
     bool accept [[accept_intersection]];
     float distance [[distance]];
