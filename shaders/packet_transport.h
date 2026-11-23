@@ -40,7 +40,6 @@ struct Resources {
     const device sobol::Tables *tables;
     instance_acceleration_structure scene;
     instance_acceleration_structure intersection_table;
-    thread const rypath_replay::ReplayState *replay = nullptr;
 };
 inline device Vertex &path_vertex(device uchar *path, uint i) {
     return *reinterpret_cast<device Vertex *>(path + i * storage::vertex_bytes);
@@ -77,9 +76,10 @@ inline float3 offset(const thread Vertex &v, float3 direction) {
 inline float2 uniform2(constant wire::Parameters &p, uint2 words) {
     return float2(sample_uniform(p, words.x), sample_uniform(p, words.y));
 }
+// Replay is caller-local sampler state, never part of the opaque-AS aggregate.
 inline uint4 random(const thread Resources &r, const thread wire::Sample &sample, ulong index,
-                    uint block) {
-    return draw_words(*r.alpha.parameters, *r.tables, sample, index, block, r.replay);
+                    uint block, thread const rypath_replay::ReplayState *replay = nullptr) {
+    return draw_words(*r.alpha.parameters, *r.tables, sample, index, block, replay);
 }
 inline float4 environment_radiance(const thread Resources &r, float3 direction,
                                    const thread Wavelengths &lambda) {
@@ -653,12 +653,22 @@ inline float log_add(float a, float b) {
 }
 // The balance heuristic is evaluated in log space so legitimate long-path PDF
 // ratios cannot overflow. Zero densities at delta events retain PBRT's remap.
-// Keep opaque acceleration structures and sampler resources out of this
-// non-inlined boundary; the recurrence only consumes vertices and densities.
-[[clang::noinline]] inline float mis_weight_recurrence(const thread Vertex &qs, float p_reverse,
-                                                       float p_minus_reverse, float q_reverse,
-                                                       float q_minus_reverse, device uchar *light,
-                                                       device uchar *camera, uint s, uint t) {
+[[clang::noinline]] inline float mis_weight(const thread Resources &r, device uchar *light,
+                                            device uchar *camera, const thread Vertex &sampled,
+                                            uint s, uint t) {
+    if (s + t == 2)
+        return 1;
+    const Vertex pt = t == 1 ? sampled : path_vertex(camera, t - 1);
+    const Vertex qs = s == 1 ? sampled : s > 1 ? path_vertex(light, s - 1) : Vertex{};
+    const Vertex pt_minus = t > 1 ? path_vertex(camera, t - 2) : Vertex{};
+    const Vertex qs_minus = s > 1 ? path_vertex(light, s - 2) : Vertex{};
+    const float p_reverse = s > 0 ? vertex_pdf(r, qs, qs_minus, pt, Mode::Importance)
+                                  : light_origin_pdf(r, pt, pt_minus);
+    const float p_minus_reverse = t > 1 ? (s > 0 ? vertex_pdf(r, pt, qs, pt_minus, Mode::Importance)
+                                                 : light_direction_pdf(r, pt, pt_minus))
+                                        : 0;
+    const float q_reverse = s > 0 ? vertex_pdf(r, pt, pt_minus, qs, Mode::Radiance) : 0;
+    const float q_minus_reverse = s > 1 ? vertex_pdf(r, qs, pt, qs_minus, Mode::Radiance) : 0;
     float sum_log = -INFINITY, ratio_log = 0;
     for (int i = int(t) - 1; i > 0; --i) {
         const auto v = path_vertex(camera, uint(i));
@@ -687,24 +697,6 @@ inline float log_add(float a, float b) {
             sum_log = log_add(sum_log, ratio_log);
     }
     return exp(-log_add(0, sum_log));
-}
-inline float mis_weight(const thread Resources &r, device uchar *light, device uchar *camera,
-                        const thread Vertex &sampled, uint s, uint t) {
-    if (s + t == 2)
-        return 1;
-    const Vertex pt = t == 1 ? sampled : path_vertex(camera, t - 1);
-    const Vertex qs = s == 1 ? sampled : s > 1 ? path_vertex(light, s - 1) : Vertex{};
-    const Vertex pt_minus = t > 1 ? path_vertex(camera, t - 2) : Vertex{};
-    const Vertex qs_minus = s > 1 ? path_vertex(light, s - 2) : Vertex{};
-    const float p_reverse = s > 0 ? vertex_pdf(r, qs, qs_minus, pt, Mode::Importance)
-                                  : light_origin_pdf(r, pt, pt_minus);
-    const float p_minus_reverse = t > 1 ? (s > 0 ? vertex_pdf(r, pt, qs, pt_minus, Mode::Importance)
-                                                 : light_direction_pdf(r, pt, pt_minus))
-                                        : 0;
-    const float q_reverse = s > 0 ? vertex_pdf(r, pt, pt_minus, qs, Mode::Radiance) : 0;
-    const float q_minus_reverse = s > 1 ? vertex_pdf(r, qs, pt, qs_minus, Mode::Radiance) : 0;
-    return mis_weight_recurrence(qs, p_reverse, p_minus_reverse, q_reverse, q_minus_reverse, light,
-                                 camera, s, t);
 }
 inline float4 uniforms4(constant wire::Parameters &p, uint4 words) {
     return float4(sample_uniform(p, words.x), sample_uniform(p, words.y),
@@ -782,15 +774,16 @@ inline float4 packet_pt_endpoint(thread Resources &r, thread wire::Sample &sampl
 }
 inline float4 packet_pt_direct(thread Resources &r, thread wire::Sample &sample,
                                const thread Wavelengths &lambda, ulong index,
-                               const thread Vertex &pt, const thread Vertex &before, uint t) {
+                               const thread Vertex &pt, const thread Vertex &before, uint t,
+                               thread const rypath_replay::ReplayState *replay = nullptr) {
     if (pt.type != surface_vertex || !pt.connectible)
         return 0;
     const constant auto &p = *r.alpha.parameters;
     Vertex sampled{};
     float3 direction;
     float sampled_pdf = 0;
-    if (!sample_li(r, pt, lambda, uniforms4(p, random(r, sample, index, 133 + t - 2)), sampled,
-                   direction, sampled_pdf) ||
+    if (!sample_li(r, pt, lambda, uniforms4(p, random(r, sample, index, 133 + t - 2, replay)),
+                   sampled, direction, sampled_pdf) ||
         !isfinite(sampled_pdf) || sampled_pdf < 0) {
         sample.status = wire::invalid_arithmetic;
         return 0;

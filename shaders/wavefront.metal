@@ -362,9 +362,8 @@ rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
             wavefront_fail(a, wf::invalid_sample);
             return;
         }
-        resources.replay = &replay;
     }
-    rypath_bdpt::packet_pt_step(resources, state);
+    rypath_bdpt::packet_pt_step(resources, state, a.config->replay_enabled ? &replay : nullptr);
     wavefront_packet(a, slot) = state;
     if (state.complete) {
         const auto result = rypath_bdpt::packet_pt_result(state, p);
