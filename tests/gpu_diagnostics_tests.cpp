@@ -22,7 +22,8 @@ int main() {
     require(!d.complete && !d.stages[0].valid && !d.stages[1].valid);
     add_gpu_stage(d, "refill", 100, 200);
     require(!d.stages.back().valid && d.stages.back().seconds == 0);
-    GPUStageDiagnostics unavailable{.requested = true};
+    GPUStageDiagnostics unavailable;
+    unavailable.requested = true;
     invalidate_gpu_stages(unavailable, "unavailable");
     add_gpu_stage(unavailable, "later stage", 1, 10);
     require(!unavailable.stages[0].valid && !unavailable.complete);
