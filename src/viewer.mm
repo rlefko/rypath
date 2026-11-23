@@ -327,6 +327,7 @@ class ViewerState {
     std::unique_ptr<Frame> pending_raw, latest_raw;
     std::unique_ptr<ReconstructedFrame> pending_image, latest_image;
     ReconstructionMode pipeline_mode;
+    const ReconstructionMode comparison_denoiser;
     std::set<unsigned short> keys;
     Vec translation{};
     double yaw = 0, pitch = 0, speed = 1, ev = 0, latest_pipeline_seconds = 0;
@@ -347,7 +348,9 @@ class ViewerState {
 
     ViewerState(viewer::Options settings, RenderScene source)
         : options(std::move(settings)), scene(std::move(source)),
-          pipeline_mode(options.reconstruction), ev(options.exposure_ev) {
+          pipeline_mode(options.reconstruction),
+          comparison_denoiser(viewer::preferred_denoiser(options.reconstruction)),
+          ev(options.exposure_ev) {
         scene.integrator = scene.volume_transport ? IntegratorKind::volpath : IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
         authored = {.camera = scene.camera,
@@ -386,7 +389,15 @@ class ViewerState {
         return options.estimator == FrameEstimator::area_replay ? "area-replay" : "independent";
     }
     static const char *mode_name(ReconstructionMode mode) {
-        return mode == ReconstructionMode::metalfx ? "MetalFX" : "Raw RGB";
+        switch (mode) {
+        case ReconstructionMode::metalfx:
+            return "MetalFX";
+        case ReconstructionMode::temporal:
+            return "Signed Temporal";
+        case ReconstructionMode::raw_rgb:
+            return "Raw RGB";
+        }
+        return "Unknown";
     }
     void close() {
         closing = true;
@@ -404,9 +415,8 @@ class ViewerState {
         }
     }
     void toggle() {
-        options.reconstruction = options.reconstruction == ReconstructionMode::metalfx
-                                     ? ReconstructionMode::raw_rgb
-                                     : ReconstructionMode::metalfx;
+        options.reconstruction =
+            viewer::toggle_comparison(options.reconstruction, comparison_denoiser);
         if (paused) {
             paused = false;
             reconstruction.reset();
@@ -514,8 +524,9 @@ class ViewerState {
                 c.media_approximation;
             details = [NSString
                 localizedStringWithFormat:
-                    NSLocalizedString(@" | Guide approximations %llu%@ | Clipped %u/%u",
-                                      @"Viewer guide approximation and RGB clipping counters"),
+                    NSLocalizedString(
+                        @" | Guide approximations %llu%@ | Input <0/>65504 %u/%u",
+                        @"Viewer guide approximations and observed input RGB range counts"),
                     static_cast<unsigned long long>(approximations),
                     info.defocus_approximation ? @"+DOF" : @"", c.color_negative, c.color_high];
         }
@@ -528,8 +539,9 @@ class ViewerState {
                                                                    @"Viewer technical diagnostic"),
                                                  native(diagnostic)];
         NSString *mode_title =
-            mode == ReconstructionMode::metalfx
-                ? @"MetalFX"
+            mode == ReconstructionMode::metalfx ? @"MetalFX"
+            : mode == ReconstructionMode::temporal
+                ? NSLocalizedString(@"Signed Temporal", @"Signed temporal RGB reconstruction mode")
                 : NSLocalizedString(@"Raw RGB", @"Unfiltered linear RGB preview mode");
         window.title = [NSString
             localizedStringWithFormat:
@@ -579,6 +591,9 @@ class ViewerState {
         auto acquired = MetalReconstructedFrameAccess::acquire(*latest_image);
         if (!acquired.lease)
             throw std::runtime_error(acquired.diagnostic);
+        if (acquired.lease->output_texture().pixelFormat == MTLPixelFormatRGBA32Float &&
+            !acquired.lease->device().supports32BitFloatFiltering)
+            throw std::runtime_error("Signed temporal display requires float32 texture filtering");
         if (display_pipeline == nil)
             prepare_display(acquired.lease->device());
         const auto backing = [view convertRectToBacking:view.bounds].size;
@@ -682,11 +697,28 @@ class ViewerState {
         auto failure = write_exr(film, directory / "raw.exr", ExrPrecision::float32, metadata);
         if (!failure.empty())
             throw std::runtime_error(failure);
-        metadata[0].second = info.mode == ReconstructionMode::metalfx ? "denoised-linear-rgb"
-                                                                      : "raw-rgb-preview-clamped";
-        failure = write_rgb(
-            directory / (info.mode == ReconstructionMode::metalfx ? "denoised.exr" : "raw-rgb.exr"),
-            image, metadata);
+        const char *image_name = "raw-rgb.exr";
+        const char *reconstruction_name = "raw-rgb";
+        const char *format = "RGBA16Float";
+        switch (info.mode) {
+        case ReconstructionMode::temporal:
+            metadata[0].second = "temporal-denoised-linear-rgb";
+            image_name = "temporal.exr";
+            reconstruction_name = "temporal";
+            format = "RGBA32Float";
+            break;
+        case ReconstructionMode::metalfx:
+            metadata[0].second = "metalfx-denoised-linear-rgb";
+            image_name = "denoised.exr";
+            reconstruction_name = "metalfx";
+            break;
+        case ReconstructionMode::raw_rgb:
+            metadata[0].second = "raw-rgb-preview-clamped";
+            break;
+        }
+        metadata.emplace_back("rypath.reconstruction", reconstruction_name);
+        metadata.emplace_back("rypath.presentation_format", format);
+        failure = write_rgb(directory / image_name, image, metadata);
         if (!failure.empty())
             throw std::runtime_error(failure);
         diagnostic = "Saved " + directory.string();
@@ -898,7 +930,8 @@ class ViewerState {
     alert.messageText = NSLocalizedString(@"rypath controls", @"Viewer controls dialog title");
     alert.informativeText = NSLocalizedString(
         @"WASD / QE: move\nShift: move faster\nDrag mouse / arrows: rotate\nHome: authored "
-        @"pose\nR: raw RGB / MetalFX\n+ / −: display exposure EV\nCmd+S: fresh raw + reconstructed "
+        @"pose\nR: raw RGB / selected denoiser\n+ / −: display exposure EV\nCmd+S: fresh raw + "
+        @"reconstructed "
         @"FLOAT EXRs\nEsc: close\n\nOne fresh path per pixel per completed render frame. The title "
         @"reports completed pipeline FPS; display redraws are not render frames.",
         @"Viewer keyboard and mouse controls, with pipeline FPS explanation");

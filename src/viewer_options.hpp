@@ -15,4 +15,8 @@ struct Options {
 // Parsing never opens scenes, creates capture directories, or initializes Metal.
 std::string parse_options(int argc, char **argv, Options &);
 const char *usage();
+// R compares raw output with the selected denoiser; an initially raw viewer
+// uses signed temporal reconstruction as its explicit comparison preference.
+ReconstructionMode preferred_denoiser(ReconstructionMode selected);
+ReconstructionMode toggle_comparison(ReconstructionMode current, ReconstructionMode preferred);
 } // namespace rypath::viewer

@@ -17,16 +17,25 @@ Opening `build/release/rypath-viewer.app` without arguments selects the built-in
 scene. `--demo` selects it explicitly. `--width`/`--height` choose the fixed internal
 resolution (default 1920×1080); resizing the window letterboxes that image.
 `--estimator independent` selects the unreused control. Area accepts
-`--mutations 0|1|2|4`. `--reconstruction raw-rgb` selects the explicit unfiltered
-color-conversion control. MetalFX unavailability or failure pauses with a visible
-diagnostic; it never silently switches output modes. `--frames N` exits after N
+`--mutations 0|1|2|4`. `--mode temporal|metalfx|raw` selects reconstruction,
+with MetalFX remaining the default until quality measurements select a default.
+`--reconstruction temporal|metalfx|raw-rgb` retains the existing option spelling.
+Temporal display checks the device's float32 filtering capability (available on
+the tested M4 Max). Temporal mode preserves signed RGB in RGBA32Float storage and
+uses separate pre-spatial temporal history plus spatial filtering. It is an
+approximate reconstruction; it does not change raw Monte Carlo accumulation.
+Raw selects the explicit unfiltered color-conversion control. Requested denoiser
+unavailability or failure pauses with a visible diagnostic; it never silently
+switches output modes. `--frames N` exits after N
 completed pipeline frames and returns failure on a rendering/reconstruction error.
 
 ## Controls and output
 
 - WASD / QE move; Shift increases speed.
 - Drag the mouse or use arrow keys to rotate; Home restores the authored camera.
-- R switches raw-RGB / MetalFX for subsequent frames.
+- R compares raw RGB with the selected denoiser for subsequent frames. Temporal
+  and MetalFX selections are remembered across toggles. An initially raw viewer
+  uses temporal as its comparison denoiser.
 - Plus/minus changes display exposure in EV; this never edits raw radiance.
 - Cmd+S saves a fresh directory containing paired raw and reconstructed FLOAT EXRs.
 - Escape closes the viewer; the View menu provides fullscreen.
@@ -34,9 +43,14 @@ completed pipeline frames and returns failure on a rendering/reconstruction erro
 Capture directories are created only on request under `Pictures/rypath` by default.
 `--capture-dir` selects a different parent. The raw EXR contains the unexposed
 linear-RGB conversion of retained raw XYZ. The reconstructed EXR directly stores the separate presentation RGB, with
-mode, sample, epoch, estimator and mutation metadata. Display tone mapping and EV
-are not baked into either capture. The display applies a simple Reinhard map and
-one sRGB transfer, and explicitly tags the layer with the sRGB color space for
+mode, sample, epoch, estimator and mutation metadata. Temporal captures are
+`temporal.exr`, tagged as signed temporal denoised RGB from RGBA32Float storage;
+MetalFX uses `denoised.exr`, and raw preview uses `raw-rgb.exr`. All are FLOAT EXRs.
+Temporal captures preserve negative and high finite RGB values. MetalFX and raw
+preview retain their presentation range clamps. Display tone mapping and EV are
+not baked into either capture. The display clamps negatives for presentation,
+applies an exposure-dependent Reinhard map without overflowing finite HDR through
+an exposure multiplication, and performs one sRGB transfer, and explicitly tags the layer with the sRGB color space for
 color matching on wide-gamut displays.
 
 PBRT preflight and translation remain mandatory. The viewer logs authored
@@ -56,7 +70,8 @@ retained output slots apply backpressure. Redraws and exposure edits do not coun
 as new rendered frames.
 
 The title reports completed pipeline FPS, dimensions, mode, estimator, mutation
-count and guide approximation/clamp counts. Completion-to-completion FPS includes
+count, guide approximation counts, and observed input RGB counts below zero or
+above 65,504. These input counts do not imply that temporal RGB was clamped. Completion-to-completion FPS includes
 polling, camera classification, guide/reconstruction work and intervening
 presentation delays. It is not a display-refresh or interpolation rate. Explicit
 captures can stall interaction and are not steady-state performance measurements.
@@ -91,6 +106,11 @@ functional checks, not 1080p performance measurements. The same classifier suite
 also passes Release (27.10 s) and ASan/UBSan (.82 s) with API validation. A bundled
 Release application check exercises translation, rotation, Home reset, raw/MetalFX
 switching, exposure, paired capture under Pictures/rypath, and Escape termination.
+
+The temporal option, comparison toggle, and signed-HDR presentation changes have
+source coverage in the portable option tests. Their build and native viewer
+runtime checks remain pending on the updated reconstruction parent; earlier
+viewer checks above do not validate this extension.
 
 The initial interactive image check exposes strong spectral background noise and
 widespread per-sample negative RGB clipping in MetalFX input. This is a failed

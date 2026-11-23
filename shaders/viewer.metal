@@ -14,9 +14,11 @@ fragment float4 rypath_viewer_fragment(ViewerVertex in [[stage_in]],
                                        texture2d<float> image [[texture(0)]],
                                        constant float &exposure_ev [[buffer(0)]]) {
     constexpr sampler filtering(coord::normalized, address::clamp_to_edge, filter::linear);
-    const float3 linear =
-        max(image.sample(filtering, in.uv).rgb, float3(0)) * exp2(clamp(exposure_ev, -24.f, 24.f));
-    const float3 mapped = linear / (1 + linear);
+    // Clamp negatives only for display. Divide by an EV-dependent white level
+    // instead of multiplying finite signed HDR by exposure into infinity.
+    const float3 linear = max(image.sample(filtering, in.uv).rgb, float3(0));
+    const float white = exp2(-clamp(exposure_ev, -24.f, 24.f));
+    const float3 mapped = linear / (linear + white);
     const float3 encoded = select(1.055f * pow(mapped, float3(1.f / 2.4f)) - .055f, 12.92f * mapped,
                                   mapped <= .0031308f);
     // Target BGRA8Unorm: this is the only sRGB transfer, after tone mapping.

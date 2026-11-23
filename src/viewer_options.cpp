@@ -22,18 +22,27 @@ bool real(std::string_view text, double &output) {
 const char *usage() {
     return "Usage: rypath-viewer (--scene SCENE.pbrt | --demo) [options]\n"
            "  --width 1920 --height 1080  fixed internal resolution\n"
-           "  --reconstruction metalfx|raw-rgb  (default: metalfx, native resolution)\n"
+           "  --mode temporal|metalfx|raw  (default: metalfx, native resolution)\n"
+           "  --reconstruction temporal|metalfx|raw-rgb  alternate option spelling\n"
            "  --estimator area-replay|independent  (default: area-replay)\n"
            "  --mutations 0|1|2|4  (default: 1; independent uses zero)\n"
            "  --frames N  exit after N completed pipeline frames; omitted means unlimited\n"
            "  --seed 1 --exposure 0 --near-plane .001 --capture-dir DIR (default: "
            "Pictures/rypath)\n"
            "  WASD/QE move; Shift moves faster; drag mouse/arrows rotate; Home resets\n"
-           "  R toggles raw/MetalFX; +/- changes display EV; Cmd+S saves fresh EXRs\n"
+           "  R toggles raw/selected denoiser; +/- changes display EV; Cmd+S saves fresh EXRs\n"
            "  Esc closes; fullscreen is available from the View menu\n"
            "One fresh path/pixel/frame; area replay adds corrected evaluations.\n";
 }
+ReconstructionMode preferred_denoiser(ReconstructionMode selected) {
+    return selected == ReconstructionMode::raw_rgb ? ReconstructionMode::temporal : selected;
+}
+ReconstructionMode toggle_comparison(ReconstructionMode current, ReconstructionMode preferred) {
+    return current == ReconstructionMode::raw_rgb ? preferred_denoiser(preferred)
+                                                  : ReconstructionMode::raw_rgb;
+}
 std::string parse_options(int argc, char **argv, Options &o) {
+    bool mode_seen = false;
     std::set<std::string_view> seen;
     for (int i = 1; i < argc; ++i) {
         const std::string_view key = argv[i];
@@ -73,13 +82,20 @@ std::string parse_options(int argc, char **argv, Options &o) {
                 (o.mutation_steps != 0 && o.mutation_steps != 1 && o.mutation_steps != 2 &&
                  o.mutation_steps != 4))
                 return "mutations must be 0, 1, 2, or 4";
-        } else if (key == "--reconstruction") {
+        } else if (key == "--mode" || key == "--reconstruction") {
+            if (mode_seen)
+                return "choose reconstruction mode only once";
+            mode_seen = true;
             if (value == "metalfx")
                 o.reconstruction = ReconstructionMode::metalfx;
-            else if (value == "raw-rgb")
+            else if (value == "temporal")
+                o.reconstruction = ReconstructionMode::temporal;
+            else if ((key == "--mode" && value == "raw") ||
+                     (key == "--reconstruction" && value == "raw-rgb"))
                 o.reconstruction = ReconstructionMode::raw_rgb;
             else
-                return "reconstruction must be metalfx or raw-rgb";
+                return key == "--mode" ? "mode must be temporal, metalfx, or raw"
+                                       : "reconstruction must be temporal, metalfx, or raw-rgb";
         } else if (key == "--estimator") {
             if (value == "area-replay")
                 o.estimator = FrameEstimator::area_replay;

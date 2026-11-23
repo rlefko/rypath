@@ -67,10 +67,39 @@ void defaults_and_modes() {
     rejected({"--demo", "--scene", "scene.pbrt"}, "scene/demo are mutually exclusive");
     rejected({"--scene", "scene.pbrt", "--demo"}, "source XOR is independent of option order");
     rejected({"--demo", "--estimator", "bdpt"}, "unknown estimator");
-    rejected({"--demo", "--reconstruction", "none"},
-             "viewer reconstruction has two supported modes");
+    rejected({"--demo", "--reconstruction", "none"}, "unknown reconstruction mode");
     for (const auto value : {"3", "5", "-1", "4294967296", "1x"})
         rejected({"--demo", "--mutations", value}, "unsupported or malformed mutation count");
+}
+void denoiser_selection_and_comparison() {
+    const std::array<std::pair<const char *, ReconstructionMode>, 3> modes{
+        {{"temporal", ReconstructionMode::temporal},
+         {"metalfx", ReconstructionMode::metalfx},
+         {"raw", ReconstructionMode::raw_rgb}}};
+    for (const auto &[name, mode] : modes) {
+        const auto selected = accepted({"--demo", "--mode", name});
+        require(selected.reconstruction == mode, "Explicit mode preserved");
+        const auto preferred = viewer::preferred_denoiser(mode);
+        require(
+            preferred ==
+                (mode == ReconstructionMode::raw_rgb ? ReconstructionMode::temporal : mode),
+            "Initially raw comparison explicitly selects temporal; denoiser selections persist");
+        const auto once = viewer::toggle_comparison(mode, preferred);
+        require(once ==
+                    (mode == ReconstructionMode::raw_rgb ? preferred : ReconstructionMode::raw_rgb),
+                "R compares raw with the selected denoiser");
+        require(viewer::toggle_comparison(once, preferred) == mode,
+                "Repeated R restores the selected mode");
+    }
+    require(accepted({"--demo", "--reconstruction", "temporal"}).reconstruction ==
+                ReconstructionMode::temporal,
+            "Existing reconstruction option accepts temporal");
+    rejected({"--demo", "--mode", "none"}, "Unknown mode");
+    rejected({"--demo", "--mode", "raw-rgb"}, "Mode spelling uses raw");
+    rejected({"--demo", "--mode", "temporal", "--reconstruction", "metalfx"},
+             "Aliases cannot select conflicting modes");
+    rejected({"--demo", "--reconstruction", "raw-rgb", "--mode", "temporal"},
+             "Alias conflict independent of order");
 }
 void integer_boundaries() {
     const auto maximum = accepted({"--demo", "--width", "16384", "--height", "16384"});
@@ -115,7 +144,9 @@ void syntax_and_help() {
     const std::string usage = viewer::usage();
     require(usage.find("--scene") != std::string::npos &&
                 usage.find("--demo") != std::string::npos &&
-                usage.find("--frames") != std::string::npos,
+                usage.find("--frames") != std::string::npos &&
+                usage.find("--mode temporal|metalfx|raw") != std::string::npos &&
+                usage.find("raw/selected denoiser") != std::string::npos,
             "Help describes source selection and the finite frame limit");
     rejected({"--demo", "--demo"}, "duplicate flag");
     rejected({"--demo", "--width", "1", "--width", "2"}, "duplicate valued option");
@@ -148,6 +179,7 @@ void paths_are_only_parsed() {
 int main() {
     try {
         defaults_and_modes();
+        denoiser_selection_and_comparison();
         integer_boundaries();
         real_boundaries();
         syntax_and_help();
