@@ -83,7 +83,9 @@ const char *estimator_name(rypath::FrameEstimator estimator) {
 const char *reconstruction_name(const std::optional<rypath::ReconstructionMode> &mode) {
     if (!mode)
         return "none";
-    return *mode == rypath::ReconstructionMode::metalfx ? "metalfx" : "raw-rgb";
+    return *mode == rypath::ReconstructionMode::metalfx    ? "metalfx"
+           : *mode == rypath::ReconstructionMode::temporal ? "temporal"
+                                                           : "raw-rgb";
 }
 std::string precise_float(float value) {
     std::ostringstream out;
@@ -101,7 +103,7 @@ const char *usage =
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
-    "  [--reconstruction none|raw-rgb|metalfx (default: none)]\n"
+    "  [--reconstruction none|raw-rgb|metalfx|temporal (default: none)]\n"
     "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
     "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
 std::string parse(int argc, char **argv, Options &o) {
@@ -140,6 +142,8 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.reconstruction = rypath::ReconstructionMode::raw_rgb;
             else if (value == "metalfx")
                 o.reconstruction = rypath::ReconstructionMode::metalfx;
+            else if (value == "temporal")
+                o.reconstruction = rypath::ReconstructionMode::temporal;
             else
                 return "invalid reconstruction mode: " + std::string(value);
         } else if (key == "--estimator") {
@@ -218,6 +222,9 @@ std::string parse(int argc, char **argv, Options &o) {
     if (o.reconstruction == rypath::ReconstructionMode::raw_rgb &&
         (o.output_width != o.width || o.output_height != o.height))
         return "raw-rgb output dimensions must equal input dimensions";
+    if (o.reconstruction == rypath::ReconstructionMode::temporal &&
+        (o.output_width != o.width || o.output_height != o.height))
+        return "temporal output dimensions must equal input dimensions";
     if (o.reconstruction == rypath::ReconstructionMode::metalfx &&
         (o.output_width < o.width || o.output_height < o.height))
         return "metalfx does not support downscaling";
@@ -642,7 +649,11 @@ struct Report {
                     << (f.reconstruction && f.reconstruction->defocus_approximation ? "true"
                                                                                     : "false")
                     << ",\"width\":" << options.output_width
-                    << ",\"height\":" << options.output_height << ",\"counters\":";
+                    << ",\"height\":" << options.output_height << ",\"history_accepted\":"
+                    << (f.reconstruction ? f.reconstruction->history_accepted : 0)
+                    << ",\"history_rejected\":"
+                    << (f.reconstruction ? f.reconstruction->history_rejected : 0)
+                    << ",\"counters\":";
                 write_counters(out, f.reconstruction ? f.reconstruction->counters
                                                      : rypath::ReconstructionCounters{});
                 out << ",\"diagnostic\":"
@@ -1045,6 +1056,8 @@ int run(const Options &options) {
                     {"rypath.output.kind",
                      *options.reconstruction == rypath::ReconstructionMode::metalfx
                          ? "metalfx-denoised-linear-rgb"
+                     : *options.reconstruction == rypath::ReconstructionMode::temporal
+                         ? "temporal-denoised-linear-rgb"
                          : "raw-rgb-color-conversion"},
                     {"rypath.recon.mode", reconstruction_name(options.reconstruction)},
                     {"rypath.output.space", "linear-srgb"},

@@ -85,9 +85,14 @@ void source_complete(const Frame &frame) {
             info.diagnostic.empty() ? "Source completion/accounting failed" : info.diagnostic);
 }
 std::unique_ptr<ReconstructionStream> stream(const Frame &frame, ReconstructionMode mode,
-                                             double near = .001, std::uint32_t output = side) {
-    auto result = build_reconstruction_stream(
-        frame, {.mode = mode, .output_width = output, .output_height = output, .near_plane = near});
+                                             double near = .001, std::uint32_t output = side,
+                                             std::uint32_t spatial_iterations = 5) {
+    auto result = build_reconstruction_stream(frame, {.mode = mode,
+                                                      .output_width = output,
+                                                      .output_height = output,
+                                                      .near_plane = near,
+                                                      .history_limit = 64,
+                                                      .spatial_iterations = spatial_iterations});
     require(result.status == GeometryStatus::success && result.stream &&
                 result.source_status == FrameStatus::complete,
             result.diagnostic);
@@ -111,6 +116,10 @@ ReconstructionInfo complete(const ReconstructedFrame &frame, ReconstructionMode 
             "Reconstruction identity/counter/command contract");
     require(!info.gpu_time_valid || (std::isfinite(info.gpu_seconds) && info.gpu_seconds >= 0),
             "Invalid reconstruction GPU timing");
+    if (mode == ReconstructionMode::temporal)
+        require(std::uint64_t(info.history_accepted) + info.history_rejected ==
+                    std::uint64_t(side) * side,
+                "Temporal accepted/rejected history accounts for every pixel");
     return info;
 }
 ReconstructionCapture capture(const ReconstructedFrame &frame, std::uint32_t output = side) {
@@ -263,6 +272,10 @@ void lifecycle(ReconstructionMode mode) {
             consumer.diagnostic);
     // A separate same-device queue is valid because acquisition requires output
     // completion. Retention, rather than accidental queue order, pins storage.
+    require(consumer.lease->output_texture().pixelFormat == (mode == ReconstructionMode::temporal
+                                                                 ? MTLPixelFormatRGBA32Float
+                                                                 : MTLPixelFormatRGBA16Float),
+            "Reconstruction output storage format");
     auto consumer_queue = [consumer.lease->device() newCommandQueue];
     auto command = [consumer_queue commandBuffer];
     auto staging = [consumer.lease->device() newBufferWithLength:256
@@ -294,12 +307,16 @@ void lifecycle(ReconstructionMode mode) {
     [command waitUntilCompleted];
     require(command.status == MTLCommandBufferStatusCompleted,
             "Retained GPU output consumer failed");
-    const auto *values = static_cast<const _Float16 *>(staging.contents);
+    const auto *values = staging.contents;
     if (!values)
         throw std::runtime_error("GPU output readback storage is unavailable");
-    for (unsigned c = 0; c < 3; ++c)
-        require(std::isfinite(float(values[c])) && float(values[c]) == expected_a.linear_rgb[0][c],
+    for (unsigned c = 0; c < 3; ++c) {
+        const float value = mode == ReconstructionMode::temporal
+                                ? static_cast<const float *>(values)[c]
+                                : float(static_cast<const _Float16 *>(values)[c]);
+        require(std::isfinite(value) && value == expected_a.linear_rgb[0][c],
                 "Retained cross-queue GPU output changed");
+    }
     require(capture(*b).linear_rgb == expected.linear_rgb,
             "Output changed after frame session/reconstruction stream destruction");
     ReconstructedFrame moved(std::move(*b));
@@ -340,12 +357,21 @@ void camera_case(ReconstructionMode mode, bool rotate, bool defocus) {
     const auto info = complete(*result, mode);
     require(info.history_reset == (mode == ReconstructionMode::raw_rgb || defocus),
             "Smooth camera/lens history reset policy");
-    require(info.defocus_approximation == (mode == ReconstructionMode::metalfx && defocus),
+    require(info.defocus_approximation == (mode != ReconstructionMode::raw_rgb && defocus),
             "Pinhole-guide defocus approximation not reported correctly");
     const auto rgb = capture(*result);
     if (mode == ReconstructionMode::raw_rgb)
         raw_oracle(raw, rgb, scene.model);
     unchanged(*changed, raw);
+    if (mode == ReconstructionMode::temporal && defocus) {
+        result.reset();
+        original.reset();
+        auto restored = source(*owner, 2, 7, snapshot(scene));
+        source_complete(*restored);
+        auto back = submit(*recon, *restored);
+        require(complete(*back, mode).history_reset,
+                "Previous lens approximation must invalidate changed-camera history");
+    }
 }
 void near_plane(ReconstructionMode mode) {
     const auto scene = plane();
@@ -356,7 +382,7 @@ void near_plane(ReconstructionMode mode) {
     auto recon = stream(*original, mode, 3); // Plane is two units in front of this camera.
     auto result = submit(*recon, *original);
     const auto info = result->wait();
-    if (mode == ReconstructionMode::metalfx) {
+    if (mode != ReconstructionMode::raw_rgb) {
         require(info.status == ReconstructionStatus::failed && info.counters.failure != 0 &&
                     !info.diagnostic.empty() && result->capture().status == GeometryStatus::failure,
                 "Near-plane guide failure was silently denoised or hidden");
@@ -399,7 +425,7 @@ void approximations(ReconstructionMode mode) {
         auto recon = stream(*original, mode);
         auto result = submit(*recon, *original);
         const auto info = complete(*result, mode);
-        if (mode == ReconstructionMode::metalfx)
+        if (mode != ReconstructionMode::raw_rgb)
             require(medium ? info.counters.media_approximation > 0
                            : info.counters.transmission_approximation > 0,
                     "Material/media guide approximation was not reported");
@@ -407,6 +433,108 @@ void approximations(ReconstructionMode mode) {
         if (mode == ReconstructionMode::raw_rgb)
             raw_oracle(raw, rgb, scene.model);
         unchanged(*original, raw);
+        if (mode == ReconstructionMode::temporal) {
+            result.reset();
+            auto repeated = submit(*recon, *original);
+            require(!complete(*repeated, mode).history_reset,
+                    "Static approximate guides may retain same-pixel history");
+            repeated.reset();
+            auto moved_camera = snapshot(scene);
+            if (!moved_camera.raster_camera)
+                throw std::runtime_error("Approximation fixture raster camera missing");
+            moved_camera.raster_camera->origin.x = .125f;
+            auto moved = source(*owner, 1, 7, moved_camera);
+            source_complete(*moved);
+            auto output = submit(*recon, *moved);
+            require(complete(*output, mode).history_reset,
+                    "Moving current media/transmission approximation must reset history");
+            output.reset();
+            moved.reset();
+            if (medium) {
+                // The view matrix stays fixed, but the resolved source medium
+                // changes. This is a distinct invalidation input.
+                auto vacuum = moved_camera;
+                vacuum.camera_medium = no_medium;
+                auto relabeled = source(*owner, 2, 7, vacuum);
+                source_complete(*relabeled);
+                auto next = submit(*recon, *relabeled);
+                require(complete(*next, mode).history_reset,
+                        "Resolved camera-medium changes must invalidate history");
+            }
+        }
+    }
+}
+void mixed_approximation_resets() {
+    constexpr auto mode = ReconstructionMode::temporal;
+    for (const bool transmit : {false, true}) {
+        auto scene = plane();
+        const auto diffuse = scene.materials.front();
+        auto dielectric = diffuse;
+        dielectric.constant = 0;
+        dielectric.scattering = ScatteringKind::dielectric;
+        dielectric.eta.knots = {{360, 1.5f}, {830, 1.5f}};
+        dielectric.eta.extend_endpoints = true;
+        scene.materials.push_back(dielectric);
+        scene.materials.push_back(diffuse);
+        // Endpoint amounts make the selected child deterministic. Both children
+        // have valid independent payloads; neither is an unsupported null mix.
+        auto &root = scene.materials.front();
+        root.constant = 0;
+        root.scattering = ScatteringKind::mix;
+        root.surface.first_material = 1;
+        root.surface.second_material = 2;
+        root.surface.mix_amount = transmit ? 0.f : 1.f;
+        scene.max_depth = 2;
+        auto owner = session(scene);
+        auto original = source(*owner);
+        source_complete(*original);
+        const auto before = original->capture();
+        auto recon = stream(*original, mode);
+        auto initial = submit(*recon, *original);
+        const auto first = complete(*initial, mode);
+        require(first.counters.mix_fallback == side * side &&
+                    (transmit ? first.counters.transmission_approximation == side * side
+                              : first.counters.transmission_approximation == 0),
+                "Mix fallback must report the selected child's transmission independently");
+        unchanged(*original, before);
+        initial.reset();
+        auto repeated = submit(*recon, *original);
+        require(!complete(*repeated, mode).history_reset,
+                "Static mixed surfaces may retain same-pixel history");
+        repeated.reset();
+        auto pose = snapshot(scene);
+        if (!pose.raster_camera)
+            throw std::runtime_error("Mixed fixture raster camera missing");
+        pose.raster_camera->origin.x = .125f;
+        auto moved = source(*owner, 1, 7, pose);
+        source_complete(*moved);
+        const auto moved_raw = moved->capture();
+        auto output = submit(*recon, *moved);
+        const auto current = complete(*output, mode);
+        require(current.history_reset && current.counters.mix_fallback == side * side &&
+                    (transmit ? current.counters.transmission_approximation == side * side
+                              : current.counters.transmission_approximation == 0),
+                "Moving mixed opaque/transmissive guide approximation must reset history");
+        unchanged(*moved, moved_raw);
+        output.reset();
+        original.reset();
+        // The same scene, epoch and source medium now see only sky: the plane
+        // lies behind the camera. Current approximation counters must be zero,
+        // so only the previous mixed surface can justify this camera reset.
+        pose.raster_camera->origin.z = 3;
+        auto sky = source(*owner, 2, 7, pose);
+        source_complete(*sky);
+        const auto sky_raw = sky->capture();
+        auto background = submit(*recon, *sky);
+        const auto previous_only = complete(*background, mode);
+        require(previous_only.history_reset && previous_only.counters.background == side * side &&
+                    previous_only.counters.mix_fallback == 0 &&
+                    previous_only.counters.transmission_approximation == 0 &&
+                    previous_only.counters.media_approximation == 0 &&
+                    !previous_only.defocus_approximation,
+                "Previous-only mix/transmission approximation must reset a clean sky view");
+        capture(*background);
+        unchanged(*sky, sky_raw);
     }
 }
 void dimensions(ReconstructionMode mode) {
@@ -417,18 +545,72 @@ void dimensions(ReconstructionMode mode) {
     require(invalid.status == GeometryStatus::failure && !invalid.stream &&
                 !invalid.diagnostic.empty(),
             "Invalid near plane accepted");
-    if (mode == ReconstructionMode::raw_rgb) {
+    if (mode != ReconstructionMode::metalfx) {
         auto upscaled = build_reconstruction_stream(
             *original, {.mode = mode, .output_width = 256, .output_height = 256});
         require(upscaled.status == GeometryStatus::failure && !upscaled.stream &&
                     !upscaled.diagnostic.empty(),
-                "Raw RGB mode silently upscaled");
+                "Native-resolution reconstruction mode silently upscaled");
     } else {
         auto upscaled = stream(*original, mode, .001, 256);
         auto result = submit(*upscaled, *original);
         complete(*result, mode, 256);
         capture(*result, 256);
     }
+}
+void temporal_recurrence() {
+    auto scene = plane();
+    scene.geometry = {};
+    scene.instance_materials.clear();
+    scene.instance_surface_transforms.clear();
+    scene.environment.fill(.01f);
+    for (unsigned wavelength = 430; wavelength <= 470; ++wavelength)
+        scene.environment[wavelength - 360] = 1;
+    auto owner = session(scene);
+    std::unique_ptr<ReconstructionStream> recon;
+    std::vector<std::array<double, 3>> mean(std::size_t(side) * side);
+    bool negative_input = false, negative_output = false, distinct_samples = false;
+    constexpr std::array<std::array<double, 3>, 3> matrix{
+        {{3.240444291419, -1.537133830545, -.498529890988},
+         {-.969266752560, 1.876012242980, .041556048487},
+         {.055643519672, -.204026238798, 1.057226873771}}};
+    // Four fixed, distinct high absolute samples; no seed selection or retries.
+    // Sky has zero motion and stable identity, so temporal-only history is an
+    // independently computed same-pixel running average of signed raw RGB.
+    for (unsigned n = 1; n <= 4; ++n) {
+        auto input = source(*owner, (1ull << 32) + 19 + n);
+        source_complete(*input);
+        const auto raw = input->capture();
+        if (!recon)
+            recon = stream(*input, ReconstructionMode::temporal, .001, side, 0);
+        auto output = submit(*recon, *input);
+        const auto info = complete(*output, ReconstructionMode::temporal);
+        require(info.history_reset == (n == 1) &&
+                    info.history_accepted == (n == 1 ? 0u : side * side) &&
+                    info.history_rejected == (n == 1 ? side * side : 0u),
+                "Static temporal-only history recurrence/telemetry contract");
+        const auto rgb = capture(*output);
+        for (std::size_t i = 0; i < mean.size(); ++i)
+            for (unsigned c = 0; c < 3; ++c) {
+                double value = 0, magnitude = 0;
+                for (unsigned k = 0; k < 3; ++k) {
+                    const double term = matrix[c][k] * raw.raw_xyz[i][k];
+                    value += term;
+                    magnitude += std::abs(term);
+                }
+                negative_input |= value < -1e-4;
+                distinct_samples |= n > 1 && std::abs(value - mean[i][c]) > .01;
+                mean[i][c] += (value - mean[i][c]) / n;
+                negative_output |= rgb.linear_rgb[i][c] < -1e-4f;
+                const double tolerance = 2e-4 + 64 * std::numeric_limits<float>::epsilon() *
+                                                    (magnitude + std::abs(mean[i][c]));
+                require(std::abs(double(rgb.linear_rgb[i][c]) - mean[i][c]) <= tolerance,
+                        "Temporal-only signed RGB differs from independent double recurrence");
+            }
+        unchanged(*input, raw);
+    }
+    require(negative_input && negative_output && distinct_samples,
+            "Signed recurrence requires negative values and genuinely varying sample frames");
 }
 int availability(ReconstructionMode mode) {
     const auto device = query_metal_device();
@@ -470,14 +652,17 @@ int availability(ReconstructionMode mode) {
 
 int main(int argc, char **argv) {
     if (argc != 2 ||
-        (std::string_view(argv[1]) != "--raw" && std::string_view(argv[1]) != "--metalfx")) {
-        std::cerr << "Usage: reconstruction_stream_tests --raw|--metalfx\n";
+        (std::string_view(argv[1]) != "--raw" && std::string_view(argv[1]) != "--metalfx" &&
+         std::string_view(argv[1]) != "--temporal")) {
+        std::cerr << "Usage: reconstruction_stream_tests --raw|--metalfx|--temporal\n";
         return 1;
     }
     @autoreleasepool {
         try {
             const auto mode = std::string_view(argv[1]) == "--raw" ? ReconstructionMode::raw_rgb
-                                                                   : ReconstructionMode::metalfx;
+                              : std::string_view(argv[1]) == "--temporal"
+                                  ? ReconstructionMode::temporal
+                                  : ReconstructionMode::metalfx;
             if (const auto unavailable = availability(mode))
                 return unavailable;
             lifecycle(mode);
@@ -487,6 +672,10 @@ int main(int argc, char **argv) {
             near_plane(mode);
             approximations(mode);
             dimensions(mode);
+            if (mode == ReconstructionMode::temporal) {
+                mixed_approximation_resets();
+                temporal_recurrence();
+            }
             std::cout << "Reconstruction stream " << argv[1]
                       << " qualification passed; image quality remains unqualified\n";
             return 0;

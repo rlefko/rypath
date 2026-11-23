@@ -1735,14 +1735,34 @@ if(RYPATH_ENABLE_METAL)
     endif()
     add_test(NAME metal.reconstruction_raw COMMAND rypath_reconstruction_stream_tests --raw)
     add_test(NAME metal.reconstruction_temporal COMMAND rypath_reconstruction_stream_tests --metalfx)
+    add_test(NAME metal.reconstruction_signed COMMAND rypath_reconstruction_stream_tests --temporal)
     add_test(NAME metal.reconstruction_guides COMMAND rypath_reconstruction_guide_tests "${rypath_metal_library}")
-    set_tests_properties(metal.reconstruction_raw metal.reconstruction_temporal
+    set_tests_properties(metal.reconstruction_raw metal.reconstruction_temporal metal.reconstruction_signed
         metal.reconstruction_guides PROPERTIES TIMEOUT 240 ENVIRONMENT "MTL_DEBUG_LAYER=1")
     if(RYPATH_ALLOW_NO_METAL_DEVICE OR RYPATH_ALLOW_NO_METAL_RAY_TRACING)
-        set_tests_properties(metal.reconstruction_raw metal.reconstruction_temporal
+        set_tests_properties(metal.reconstruction_raw metal.reconstruction_temporal metal.reconstruction_signed
             metal.reconstruction_guides PROPERTIES SKIP_RETURN_CODE 77)
     endif()
     if(RYPATH_ALLOW_NO_METALFX_DENOISER)
         set_tests_properties(metal.reconstruction_temporal PROPERTIES SKIP_RETURN_CODE 77)
     endif()
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_temporal_denoiser_tests temporal_denoiser_tests.mm)
+    target_link_libraries(rypath_temporal_denoiser_tests PRIVATE rypath_reconstruction
+        "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_temporal_denoiser_tests PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_temporal_denoiser_tests PRIVATE -fobjc-arc)
+    rypath_configure_host_target(rypath_temporal_denoiser_tests)
+    add_test(NAME metal.temporal_denoiser COMMAND rypath_temporal_denoiser_tests)
+    set_tests_properties(metal.temporal_denoiser PROPERTIES TIMEOUT 240 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_temporal_denoiser_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.temporal_denoiser PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
 endif()

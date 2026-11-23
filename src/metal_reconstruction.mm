@@ -7,6 +7,7 @@
 #include "reconstruction_camera.hpp"
 #include "reconstruction_guide_wire.h"
 #include "rgb_spectrum.hpp"
+#include "temporal_denoiser.hpp"
 #import <Foundation/Foundation.h>
 #include <algorithm>
 #include <bit>
@@ -108,12 +109,17 @@ struct ReconstructionStream::Impl {
     std::uint64_t epoch = 0;
     std::optional<reconstruction::Camera> previous;
     float previous_lens_radius = 0, previous_focal_distance = 0;
+    std::uint32_t previous_camera_medium = UINT32_MAX;
+    bool previous_approximation = false;
+    std::optional<FrameCamera> previous_frame_camera;
     ReconstructionConfig config;
     std::uint32_t width = 0, height = 0, model = 0;
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
     std::unique_ptr<MetalFramePipeline> reset, surface, color;
     std::unique_ptr<MetalFXDenoiser> denoiser;
+    std::unique_ptr<TemporalDenoiser> temporal;
+    id<MTLTexture> previous_depth = nil, identity = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
     id<MTLBuffer> configuration = nil, nodes = nil, counters = nil, arguments = nil;
     MetalFXDenoiserInputs inputs;
@@ -139,14 +145,15 @@ struct ReconstructionStream::Impl {
             config.output_height > reconstruction_dimension_limit)
             return "Reconstruction dimensions exceed the supported 16384-pixel limit";
         if (config.mode != ReconstructionMode::raw_rgb &&
-            config.mode != ReconstructionMode::metalfx)
+            config.mode != ReconstructionMode::metalfx &&
+            config.mode != ReconstructionMode::temporal)
             return "Invalid reconstruction mode";
         if (!std::isfinite(config.near_plane) || !(config.near_plane > 0) ||
             !std::isnormal(float(config.near_plane)))
             return "Reconstruction near plane must pack to a positive normal float";
-        if (config.mode == ReconstructionMode::raw_rgb &&
+        if (config.mode != ReconstructionMode::metalfx &&
             (config.output_width != width || config.output_height != height))
-            return "Raw RGB reconstruction preserves input dimensions";
+            return "Raw RGB and temporal reconstruction preserve input dimensions";
         const auto output_pixels = std::uint64_t(config.output_width) * config.output_height;
         if (!output_pixels || output_pixels > UINT32_MAX)
             return "Invalid reconstruction output dimensions";
@@ -177,7 +184,7 @@ struct ReconstructionStream::Impl {
         if (actual.version != gw::contract || actual.config_bytes != sizeof(gw::Config) ||
             actual.node_bytes != sizeof(gw::SpectralNode) ||
             actual.counters_bytes != sizeof(gw::Counters) || actual.nodes != gw::node_count ||
-            actual.argument_count != 11 || actual.reserved[0] || actual.reserved[1])
+            actual.argument_count != 13 || actual.reserved[0] || actual.reserved[1])
             return "Reconstruction guide shader ABI mismatch; rebuild the metallib";
         auto build = lease.create_guide_pipeline(@"rypath_reconstruction_guide_reset");
         if (!build.pipeline)
@@ -190,29 +197,51 @@ struct ReconstructionStream::Impl {
         argument_encoder = color->argument_encoder();
         if (argument_encoder == nil)
             return "Reconstruction guide argument encoder is unavailable";
-        const auto pixels = std::uint64_t(width) * height;
-        const auto row = (std::uint64_t(config.output_width) * 8 + 255) & ~std::uint64_t(255);
+        const bool signed_color = config.mode == ReconstructionMode::temporal;
+        const auto pixel_bytes = signed_color ? 16u : 8u;
+        const auto row =
+            (std::uint64_t(config.output_width) * pixel_bytes + 255) & ~std::uint64_t(255);
         const auto capture_bytes = row * config.output_height;
         // This bounds stream-owned resources, including two simultaneous captures.
         // MetalFX does not expose its internal allocation sizes; those are excluded.
-        const auto owned_bytes = 42 * pixels + 16 * output_pixels + 2 * capture_bytes +
-                                 sizeof(gw::Config) + sizeof(gw::Counters) +
-                                 sizeof(gw::SpectralNode) * gw::node_count +
-                                 argument_encoder.encodedLength + 2;
+        const auto temporal_bytes =
+            signed_color ? TemporalDenoiser::owned_resource_bytes(width, height) : 0;
+        if (temporal_bytes == UINT64_MAX)
+            return "Temporal reconstruction resource size is unrepresentable";
+        const auto padded_pixels = [](std::uint32_t w, std::uint32_t h) {
+            return ((std::uint64_t(w) + 63) / 64 * 64) * ((std::uint64_t(h) + 63) / 64 * 64);
+        };
+        const auto owned_bytes =
+            (62 + (signed_color ? 8 : 0)) * padded_pixels(width, height) +
+            2ull * pixel_bytes * padded_pixels(config.output_width, config.output_height) +
+            2 * capture_bytes + 16 * 65536ull + temporal_bytes + sizeof(gw::Config) +
+            sizeof(gw::Counters) + sizeof(gw::SpectralNode) * gw::node_count +
+            argument_encoder.encodedLength + 2;
         if (capture_bytes > device.maxBufferLength || owned_bytes > (8ull << 30) ||
             (device.recommendedMaxWorkingSetSize &&
              owned_bytes > device.recommendedMaxWorkingSetSize))
             return "Reconstruction textures/captures exceed the owned-resource memory budget";
-        if (config.mode == ReconstructionMode::metalfx) {
+        if (config.mode != ReconstructionMode::raw_rgb) {
             build = lease.create_guide_pipeline(@"rypath_reconstruction_guide_surface");
             if (!build.pipeline)
                 return build.diagnostic;
             surface = std::move(build.pipeline);
+        }
+        if (config.mode == ReconstructionMode::metalfx) {
             auto fx = MetalFXDenoiser::create(
                 device, {width, height, config.output_width, config.output_height});
             if (!fx.denoiser)
                 return fx.diagnostic;
             denoiser = std::move(fx.denoiser);
+        } else if (signed_color) {
+            auto built =
+                TemporalDenoiser::create(lease, {.width = width,
+                                                 .height = height,
+                                                 .history_limit = config.history_limit,
+                                                 .spatial_iterations = config.spatial_iterations});
+            if (!built.denoiser)
+                return built.diagnostic;
+            temporal = std::move(built.denoiser);
         }
         MetalFXDenoiserRequirements requirements;
         if (denoiser)
@@ -228,6 +257,10 @@ struct ReconstructionStream::Impl {
             requirements.exposure = {MTLPixelFormatR16Float, MTLTextureUsageShaderRead, 1, 1};
             requirements.output = {MTLPixelFormatRGBA16Float, read_write, config.output_width,
                                    config.output_height};
+            if (signed_color) {
+                requirements.color.format = MTLPixelFormatRGBA32Float;
+                requirements.output.format = MTLPixelFormatRGBA32Float;
+            }
         }
         requirements.output.usage |= MTLTextureUsageShaderRead;
         const auto input_texture = [&](MetalFXTextureRequirement required) {
@@ -241,10 +274,15 @@ struct ReconstructionStream::Impl {
         inputs.specular_albedo = input_texture(requirements.specular_albedo);
         inputs.normal = input_texture(requirements.normal);
         inputs.roughness = input_texture(requirements.roughness);
+        previous_depth =
+            input_texture({MTLPixelFormatR32Float, MTLTextureUsageShaderRead, width, height});
+        identity =
+            input_texture({MTLPixelFormatRGBA32Uint, MTLTextureUsageShaderRead, width, height});
         inputs.exposure = texture(device, requirements.exposure, MTLStorageModeShared);
         if (inputs.color == nil || inputs.depth == nil || inputs.motion == nil ||
             inputs.diffuse_albedo == nil || inputs.specular_albedo == nil || inputs.normal == nil ||
-            inputs.roughness == nil || inputs.exposure == nil)
+            inputs.roughness == nil || inputs.exposure == nil || previous_depth == nil ||
+            identity == nil)
             return "Reconstruction guide texture allocation failed";
         const std::uint16_t exposure = 0x3c00;
         [inputs.exposure replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
@@ -277,6 +315,42 @@ struct ReconstructionStream::Impl {
         std::optional<reconstruction::Camera> current;
         bool all_times_valid = true;
         double gpu_seconds = 0;
+        bool camera_changed() const {
+            const auto prior = state->previous_frame_camera;
+            if (!prior)
+                return true;
+            const auto &a = *prior;
+            const auto &b = source->camera();
+            const auto same = [](GeometryPoint x, GeometryPoint y) {
+                return x.x == y.x && x.y == y.y && x.z == y.z;
+            };
+            if (a.raster_camera.has_value() != b.raster_camera.has_value() ||
+                a.perspective_lens.has_value() != b.perspective_lens.has_value())
+                return true;
+            if (a.raster_camera) {
+                if (!b.raster_camera)
+                    return true;
+                const auto &x = *a.raster_camera;
+                const auto &y = *b.raster_camera;
+                if (!same(x.origin, y.origin) || !same(x.corner, y.corner) || !same(x.dx, y.dx) ||
+                    !same(x.dy, y.dy))
+                    return true;
+            } else if (!same(a.camera.origin, b.camera.origin) ||
+                       !same(a.camera.target, b.camera.target) || !same(a.camera.up, b.camera.up) ||
+                       a.camera.vertical_fov_degrees != b.camera.vertical_fov_degrees) {
+                return true;
+            }
+            if (a.perspective_lens) {
+                if (!b.perspective_lens)
+                    return true;
+                const auto &x = *a.perspective_lens;
+                const auto &y = *b.perspective_lens;
+                if (x.radius != y.radius || x.focal_distance != y.focal_distance ||
+                    !same(x.camera_x, y.camera_x) || !same(x.camera_y, y.camera_y))
+                    return true;
+            }
+            return false;
+        }
         void timing(id<MTLCommandBuffer> command) {
             const bool valid = command.status == MTLCommandBufferStatusCompleted &&
                                command.GPUStartTime > 0 && std::isfinite(command.GPUStartTime) &&
@@ -302,7 +376,14 @@ struct ReconstructionStream::Impl {
                     state->previous = current;
                     state->previous_lens_radius = source->parameters().lens_radius;
                     state->previous_focal_distance = source->parameters().focal_distance;
-                    state->previous_valid = state->config.mode == ReconstructionMode::metalfx;
+                    state->previous_camera_medium = source->parameters().camera_medium;
+                    state->previous_frame_camera = source->camera();
+                    state->previous_approximation =
+                        frame->info.defocus_approximation ||
+                        frame->info.counters.media_approximation ||
+                        frame->info.counters.transmission_approximation ||
+                        frame->info.counters.mix_fallback;
+                    state->previous_valid = state->config.mode != ReconstructionMode::raw_rgb;
                     state->epoch_known = true;
                     state->epoch = frame->info.source.epoch;
                     frame->info.status = ReconstructionStatus::complete;
@@ -351,6 +432,8 @@ struct ReconstructionStream::Impl {
             std::ranges::copy(matrix, cfg.xyz_to_rgb);
             cfg.spectral_nodes = gw::node_count;
             cfg.flags = source->parameters().medium_count ? gw::media_scene : 0;
+            if (s.temporal)
+                cfg.flags |= gw::signed_temporal;
             std::memcpy(s.configuration.contents, &cfg, sizeof(cfg));
             std::memset(s.counters.contents, 0, s.counters.length);
             [s.argument_encoder setArgumentBuffer:s.arguments offset:0];
@@ -358,10 +441,10 @@ struct ReconstructionStream::Impl {
                                                        s.counters};
             for (unsigned i = 0; i < buffers.size(); ++i)
                 [s.argument_encoder setBuffer:buffers[i] offset:0 atIndex:i];
-            const std::array<id<MTLTexture>, 7> textures{
+            const std::array<id<MTLTexture>, 9> textures{
                 s.inputs.color,          s.inputs.depth,           s.inputs.motion,
                 s.inputs.diffuse_albedo, s.inputs.specular_albedo, s.inputs.normal,
-                s.inputs.roughness};
+                s.inputs.roughness,      s.previous_depth,         s.identity};
             for (unsigned i = 0; i < textures.size(); ++i)
                 [s.argument_encoder setTexture:textures[i] atIndex:i + 4];
             auto command = [s.queue commandBuffer];
@@ -405,7 +488,7 @@ struct ReconstructionStream::Impl {
             }
             dispatch(*s.color, pixels);
             [encoder endEncoding];
-            if (!s.denoiser) {
+            if (!s.denoiser && !s.temporal) {
                 auto blit = [command blitCommandEncoder];
                 if (blit == nil) {
                     error = "RGB output blit encoder creation failed";
@@ -448,16 +531,16 @@ struct ReconstructionStream::Impl {
                        std::to_string(counters.completed) + ")");
                 return;
             }
-            if (!state->denoiser) {
+            if (!state->denoiser && !state->temporal) {
                 finish();
                 return;
             }
-            // Only validated guide contents may reach MetalFX. Producer completion
+            // Only validated guide contents may reach a temporal filter. Producer completion
             // establishes visibility; no ordering of a still-pending source is assumed.
             @autoreleasepool {
                 auto second = [state->queue commandBuffer];
                 if (second == nil) {
-                    finish("MetalFX command creation failed");
+                    finish("Temporal reconstruction command creation failed");
                     return;
                 }
                 if (!current) {
@@ -472,7 +555,29 @@ struct ReconstructionStream::Impl {
                 inputs.jitter_x = inputs.jitter_y = 0;
                 inputs.depth_reversed = true;
                 inputs.reset_history = frame->info.history_reset;
-                error = state->denoiser->encode(second, inputs);
+                if (state->temporal) {
+                    const bool approximate = frame->info.defocus_approximation ||
+                                             counters.media_approximation ||
+                                             counters.transmission_approximation ||
+                                             counters.mix_fallback || state->previous_approximation;
+                    if (approximate && camera_changed()) {
+                        std::lock_guard lock(frame->mutex);
+                        frame->info.history_reset = true;
+                    }
+                    error = state->temporal->encode(second,
+                                                    {.color = inputs.color,
+                                                     .depth = inputs.depth,
+                                                     .motion = inputs.motion,
+                                                     .diffuse_albedo = inputs.diffuse_albedo,
+                                                     .specular_albedo = inputs.specular_albedo,
+                                                     .normal = inputs.normal,
+                                                     .previous_depth = state->previous_depth,
+                                                     .identity = state->identity,
+                                                     .output = inputs.output,
+                                                     .reset_history = frame->info.history_reset});
+                } else {
+                    error = state->denoiser->encode(second, inputs);
+                }
                 if (!error.empty()) {
                     finish(std::move(error));
                     return;
@@ -485,7 +590,17 @@ struct ReconstructionStream::Impl {
                 [second addCompletedHandler:^(id<MTLCommandBuffer> completed) {
                   @autoreleasepool {
                       self->timing(completed);
-                      self->finish(command_error(completed));
+                      auto error = command_error(completed);
+                      if (self->state->temporal) {
+                          const auto diagnostic = self->state->temporal->complete(error.empty());
+                          if (error.empty())
+                              error = diagnostic;
+                          const auto stats = self->state->temporal->stats();
+                          std::lock_guard lock(self->frame->mutex);
+                          self->frame->info.history_accepted = stats.history_accepted;
+                          self->frame->info.history_rejected = stats.history_rejected;
+                      }
+                      self->finish(std::move(error));
                   }
                 }];
                 [second commit];
@@ -531,7 +646,9 @@ ReconstructionCapture ReconstructedFrame::capture() const {
             result.diagnostic = info.diagnostic;
             return result;
         }
-        const std::size_t pitch = (std::size_t(info.width) * 8 + 255) & ~std::size_t(255);
+        const bool float32 = info.mode == ReconstructionMode::temporal;
+        const std::size_t pixel_bytes = float32 ? 16 : 8;
+        const std::size_t pitch = (std::size_t(info.width) * pixel_bytes + 255) & ~std::size_t(255);
         const auto lease = impl_->output;
         auto staging = [lease->device newBufferWithLength:pitch * info.height
                                                   options:MTLResourceStorageModeShared];
@@ -563,9 +680,14 @@ ReconstructionCapture ReconstructedFrame::capture() const {
         for (std::size_t y = 0; y < info.height; ++y)
             for (std::size_t x = 0; x < info.width; ++x)
                 for (unsigned c = 0; c < 3; ++c) {
-                    std::uint16_t bits;
-                    std::memcpy(&bits, bytes + y * pitch + x * 8 + std::size_t(c) * 2, 2);
-                    const auto value = decode_half(bits);
+                    float value;
+                    if (float32) {
+                        std::memcpy(&value, bytes + y * pitch + x * 16 + std::size_t(c) * 4, 4);
+                    } else {
+                        std::uint16_t bits;
+                        std::memcpy(&bits, bytes + y * pitch + x * 8 + std::size_t(c) * 2, 2);
+                        value = decode_half(bits);
+                    }
                     if (!std::isfinite(value)) {
                         result.diagnostic = "Reconstruction capture contains nonfinite RGB";
                         result.linear_rgb.clear();
@@ -647,7 +769,8 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
             reset = reset_history || !impl_->previous_valid || !impl_->epoch_known ||
                     impl_->epoch != acquired.info.epoch ||
                     impl_->previous_lens_radius != acquired.lease->parameters().lens_radius ||
-                    impl_->previous_focal_distance != acquired.lease->parameters().focal_distance;
+                    impl_->previous_focal_distance != acquired.lease->parameters().focal_distance ||
+                    impl_->previous_camera_medium != acquired.lease->parameters().camera_medium;
             previous = reset ? camera.camera : impl_->previous;
         }
         auto frame = std::make_shared<ReconstructedFrame::Impl>();
@@ -660,7 +783,7 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
                        .width = impl_->config.output_width,
                        .height = impl_->config.output_height,
                        .history_reset = reset,
-                       .defocus_approximation = impl_->config.mode == ReconstructionMode::metalfx &&
+                       .defocus_approximation = impl_->config.mode != ReconstructionMode::raw_rgb &&
                                                 acquired.lease->parameters().lens_radius > 0};
         auto job = std::make_shared<Impl::Job>();
         job->state = impl_;

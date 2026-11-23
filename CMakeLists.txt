@@ -233,7 +233,8 @@ target_link_libraries(rypath_reconstruction PUBLIC rypath_metal_backend)
 rypath_configure_host_target(rypath_reconstruction)
 if(RYPATH_ENABLE_METAL)
     find_library(RYPATH_METALFX_FRAMEWORK MetalFX REQUIRED)
-    target_sources(rypath_reconstruction PRIVATE src/metalfx_denoiser.mm src/metal_reconstruction.mm)
+    target_sources(rypath_reconstruction PRIVATE src/metalfx_denoiser.mm src/metal_reconstruction.mm
+        src/temporal_denoiser.mm)
     set_target_properties(rypath_reconstruction PROPERTIES OBJCXX_STANDARD 20
         OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO)
     target_compile_options(rypath_reconstruction PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")

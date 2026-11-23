@@ -3,12 +3,14 @@
 #include "frame_session.hpp"
 
 namespace rypath {
-enum class ReconstructionMode { raw_rgb, metalfx };
+enum class ReconstructionMode { raw_rgb, metalfx, temporal };
 inline constexpr std::uint32_t reconstruction_dimension_limit = 16384;
 struct ReconstructionConfig {
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
     std::uint32_t output_width = 0, output_height = 0; // Zero preserves input dimensions.
     double near_plane = .001; // Guides only; raw transport has no new cutoff.
+    // Native signed-color fallback. Zero spatial passes selects temporal only.
+    std::uint32_t history_limit = 64, spatial_iterations = 5;
 };
 enum class ReconstructionStatus { pending, complete, failed };
 struct ReconstructionCounters {
@@ -25,19 +27,22 @@ struct ReconstructionInfo {
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
     std::uint32_t width = 0, height = 0;
     bool history_reset = true;
-    bool defocus_approximation = false; // MetalFX uses pinhole guides for a finite-lens raw frame.
+    bool defocus_approximation = false; // Reconstruction uses pinhole guides for lens rendering.
     double gpu_seconds = 0;
     bool gpu_time_valid = false;
     std::uint64_t command_count = 0;
     ReconstructionCounters counters;
+    // Signed temporal fallback only; accepted+rejected equals the input pixels.
+    std::uint32_t history_accepted = 0, history_rejected = 0;
     std::string diagnostic;
 };
 struct ReconstructionCapture {
     GeometryStatus status = GeometryStatus::failure;
     std::string diagnostic;
     std::uint32_t width = 0, height = 0;
-    // Unexposed linear RGB decoded from the separate RGBA16F output.
-    // Presentation clamps/approximations are reported; raw XYZ is unchanged.
+    // Unexposed linear RGB from separate presentation storage. Temporal mode
+    // preserves signed float32 values; raw_rgb/MetalFX use clamped half inputs.
+    // Raw XYZ is unchanged by every reconstruction mode.
     std::vector<std::array<float, 3>> linear_rgb;
 };
 class ReconstructionStream;

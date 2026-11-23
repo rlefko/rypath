@@ -16,6 +16,8 @@ struct ReconstructionGuideArguments {
     texture2d<float, access::write> specular [[id(gw::specular_id)]];
     texture2d<float, access::write> normal [[id(gw::normal_id)]];
     texture2d<float, access::write> roughness [[id(gw::roughness_id)]];
+    texture2d<float, access::write> previous_depth [[id(gw::previous_depth_id)]];
+    texture2d<uint, access::write> identity [[id(gw::identity_id)]];
 };
 inline void reconstruction_guide_fail(constant ReconstructionGuideArguments &a, uint flag) {
     atomic_fetch_or_explicit(&a.counters->failure, flag, memory_order_relaxed);
@@ -24,8 +26,9 @@ inline bool reconstruction_guide_valid(constant ReconstructionGuideArguments &a)
     const auto c = *a.config;
     if (c.width == 0 || c.height == 0 || ulong(c.width) * c.height > 0xfffffffful ||
         c.previous_valid > 1 || (c.model != wire::demo_model && c.model != wire::pbrt_model) ||
-        c.spectral_nodes != gw::node_count || (c.flags & ~uint(gw::media_scene)) != 0 ||
-        c.reserved[0] != 0 || c.reserved[1] != 0) {
+        c.spectral_nodes != gw::node_count ||
+        (c.flags & ~uint(gw::media_scene | gw::signed_temporal)) != 0 || c.reserved[0] != 0 ||
+        c.reserved[1] != 0) {
         reconstruction_guide_fail(a, gw::invalid_config);
         return false;
     }
@@ -56,8 +59,8 @@ inline bool reconstruction_guide_project(device const float *world_to_view,
     return all(isfinite(pixel)) && isfinite(depth) && (background || (depth > 0 && depth <= 1));
 }
 inline bool reconstruction_guide_motion(constant ReconstructionGuideArguments &a, float3 relative,
-                                        bool background, thread float &depth,
-                                        thread float2 &motion) {
+                                        bool background, thread float &depth, thread float2 &motion,
+                                        thread float &previous_depth) {
     const auto c = a.config;
     const uint2 dimensions(c->width, c->height);
     const float3 current_offset(c->current_camera_to_matrix_origin[0],
@@ -72,17 +75,18 @@ inline bool reconstruction_guide_motion(constant ReconstructionGuideArguments &a
                                       dimensions, current, depth))
         return false;
     motion = 0;
+    previous_depth = depth;
     if (c->previous_valid) {
         float2 previous;
-        float ignored;
         if (reconstruction_guide_project(c->previous_world_to_view, c->previous_view_to_clip,
                                          background ? relative : relative + previous_offset,
-                                         background, dimensions, previous, ignored)) {
+                                         background, dimensions, previous, previous_depth)) {
             motion = previous - current;
         } else {
             // Explicitly force an off-raster previous lookup. Zero motion here
             // would incorrectly claim correspondence to a visible old pixel.
             motion = -float2(dimensions) - current;
+            previous_depth = 0;
             reconstruction_guide_count(a, &a.counters->invalid_previous);
         }
     }
@@ -295,7 +299,7 @@ kernel void rypath_reconstruction_guide_contract(device gw::Contract *out [[buff
             sizeof(gw::SpectralNode),
             sizeof(gw::Counters),
             gw::node_count,
-            gw::roughness_id + 1,
+            gw::identity_id + 1,
             {0, 0}};
 }
 kernel void rypath_reconstruction_guide_reset(constant ReconstructionGuideArguments &a
@@ -326,8 +330,9 @@ kernel void rypath_reconstruction_guide_color(constant ReconstructionGuideArgume
         reconstruction_guide_count(a, &a.counters->color_negative);
     if (any(color > float3(65504)))
         reconstruction_guide_count(a, &a.counters->color_high);
-    a.color.write(float4(clamp(color, float3(0), float3(65504)), 1),
-                  uint2(lane % a.config->width, lane / a.config->width));
+    const auto converted =
+        (a.config->flags & gw::signed_temporal) ? color : clamp(color, float3(0), float3(65504));
+    a.color.write(float4(converted, 1), uint2(lane % a.config->width, lane / a.config->width));
     reconstruction_guide_count(a, &a.counters->completed);
 }
 
@@ -417,14 +422,15 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
         reconstruction_guide_count(a, &a.counters->media_approximation);
     const bool background = hit.type == intersection_type::none;
     const float3 relative = background ? incoming.direction : incoming.direction * hit.distance;
-    float depth;
+    float depth, previous_depth;
     float2 motion;
     if ((!background && (!isfinite(hit.distance) || hit.distance < 0)) ||
-        !reconstruction_guide_motion(a, relative, background, depth, motion)) {
+        !reconstruction_guide_motion(a, relative, background, depth, motion, previous_depth)) {
         reconstruction_guide_fail(a, gw::invalid_projection);
         return;
     }
     float3 diffuse(0), specular(0), normal(0);
+    uint4 identity(0xffffffffu);
     float roughness = 1;
     if (background) {
         reconstruction_guide_count(a, &a.counters->background);
@@ -467,6 +473,7 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
             return;
         }
         const device auto &m = materials[material];
+        identity = uint4(hit.instance_id, hit.primitive_id, kind, material);
         if (m.scattering == 10 || instance.invisible_emitter) {
             reconstruction_guide_fail(a, gw::invalid_hit);
             return;
@@ -493,6 +500,9 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
         }
         if (mixed || m.bump_root != 0xffffffffu)
             reconstruction_guide_count(a, &a.counters->normal_approximation);
+        // A neutral material guide does not remove transmitted correspondence.
+        if (m.scattering == 2 || m.scattering == 3 || m.scattering == 4)
+            reconstruction_guide_count(a, &a.counters->transmission_approximation);
         const bool fallback = mixed || m.scattering == 7 || m.scattering == 8;
         if (fallback) {
             // A neutral demodulation guide makes no claim to reproduce these
@@ -531,8 +541,6 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
             }
             if (m.scattering == 5 || m.scattering == 6)
                 reconstruction_guide_count(a, &a.counters->layered_approximation);
-            if (m.scattering == 2 || m.scattering == 3 || m.scattering == 4)
-                reconstruction_guide_count(a, &a.counters->transmission_approximation);
         }
         if (!all(isfinite(diffuse)) || !all(isfinite(specular)) || !isfinite(roughness)) {
             reconstruction_guide_fail(a, gw::invalid_value);
@@ -554,5 +562,9 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
     a.specular.write(float4(specular, 1), pixel);
     a.normal.write(float4(normal, background ? 0.f : 1.f), pixel);
     a.roughness.write(float4(roughness, 0, 0, 0), pixel);
+    if (a.config->flags & gw::signed_temporal) {
+        a.previous_depth.write(float4(previous_depth, 0, 0, 0), pixel);
+        a.identity.write(identity, pixel);
+    }
 }
 #undef RYPATH_RECONSTRUCTION_GUIDE_PARAMETERS

@@ -16,7 +16,7 @@ def invoke(args, expected=1):
 
 help_text = invoke(["--help"], 0).stdout
 assert "--intersections native|compensated" in help_text
-assert "--reconstruction none|raw-rgb|metalfx" in help_text
+assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--reconstructed-capture" in help_text
 for args in (
     [], ["--demo"], ["--demo", "--scene", "x", "--output", "x.json"],
@@ -60,6 +60,8 @@ for extra in (
     ["--reconstruction", "raw-rgb", "--reconstructed-capture", "image.png"],
     ["--reconstruction", "raw-rgb", "--output-width", "1921"],
     ["--reconstruction", "raw-rgb", "--output-height", "1079"],
+    ["--reconstruction", "temporal", "--output-width", "1921"],
+    ["--reconstruction", "temporal", "--output-height", "1079"],
     ["--reconstruction", "metalfx", "--output-width", "1919"],
     ["--reconstruction", "metalfx", "--output-height", "1079"],
     ["--reconstruction", "raw-rgb", "--width", "16385"],
@@ -155,7 +157,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert data["pipeline_summary"]["frames_per_second"] is None
     assert data["reconstruction_startup_seconds"] == 0
     assert "startup GPU probe" in data["pipeline_GPU_scope"]
-    for mode in ("none", "raw-rgb", "metalfx"):
+    for mode in ("none", "raw-rgb", "metalfx", "temporal"):
         destination = root / ("reconstruction-" + mode + ".json")
         extra = [] if mode == "none" else ["--output-width", "17", "--output-height", "9"]
         invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",

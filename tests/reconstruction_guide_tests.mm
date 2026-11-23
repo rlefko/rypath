@@ -132,7 +132,8 @@ float half(unsigned short h) {
 }
 struct Captured {
     gw::Counters counters{};
-    std::array<std::vector<float>, 7> texture;
+    std::array<std::vector<float>, 9> texture;
+    std::vector<std::uint32_t> identity;
     FrameCapture raw_before, raw_after;
 };
 Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &library,
@@ -182,7 +183,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     std::memcpy(&actual, contract.contents, sizeof(actual));
     need(actual.version == gw::contract && actual.config_bytes == 368 &&
              actual.counters_bytes == 64 && actual.node_bytes == 16 && actual.nodes == 16 &&
-             actual.argument_count == 11,
+             actual.argument_count == 13,
          "Native reconstruction guide contract");
     const auto spectral = nodes();
     auto config_buffer = [device newBufferWithBytes:&cfg
@@ -199,15 +200,25 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
                                          options:MTLResourceStorageModeShared];
     need(config_buffer != nil && node_buffer != nil && counters != nil && arguments != nil,
          "Guide input buffers");
-    const std::array<MTLPixelFormat, 7> format{MTLPixelFormatRGBA16Float, MTLPixelFormatR32Float,
-                                               MTLPixelFormatRG16Float,   MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatRGBA16Float, MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatR16Float};
-    const std::array<unsigned, 7> channels{4, 1, 2, 4, 4, 4, 1};
-    std::array<id<MTLTexture>, 7> texture{};
-    std::array<id<MTLBuffer>, 7> readback{};
-    std::array<NSUInteger, 7> row_bytes{};
-    for (unsigned i = 0; i < 7; ++i) {
+    const bool signed_color = (cfg.flags & gw::signed_temporal) != 0;
+    const std::array<MTLPixelFormat, 9> format{signed_color ? MTLPixelFormatRGBA32Float
+                                                            : MTLPixelFormatRGBA16Float,
+                                               MTLPixelFormatR32Float,
+                                               MTLPixelFormatRG16Float,
+                                               MTLPixelFormatRGBA16Float,
+                                               MTLPixelFormatRGBA16Float,
+                                               MTLPixelFormatRGBA16Float,
+                                               MTLPixelFormatR16Float,
+                                               MTLPixelFormatR32Float,
+                                               MTLPixelFormatRGBA32Uint};
+    const std::array<unsigned, 9> channels{4, 1, 2, 4, 4, 4, 1, 1, 4};
+    const auto component_bytes = [&](unsigned i) {
+        return i == 1 || i >= 7 || (i == 0 && signed_color) ? 4u : 2u;
+    };
+    std::array<id<MTLTexture>, 9> texture{};
+    std::array<id<MTLBuffer>, 9> readback{};
+    std::array<NSUInteger, 9> row_bytes{};
+    for (unsigned i = 0; i < 9; ++i) {
         auto d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format[i]
                                                                     width:width
                                                                    height:height
@@ -215,7 +226,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
         d.storageMode = MTLStorageModePrivate;
         d.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
         texture[i] = [device newTextureWithDescriptor:d];
-        row_bytes[i] = (width * channels[i] * (i == 1 ? 4 : 2) + 255) & ~NSUInteger(255);
+        row_bytes[i] = (width * channels[i] * component_bytes(i) + 255) & ~NSUInteger(255);
         readback[i] = [device newBufferWithLength:row_bytes[i] * height
                                           options:MTLResourceStorageModeShared];
         need(texture[i] != nil && readback[i] != nil, "Guide texture/readback allocation");
@@ -226,7 +237,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     [argument_encoder setBuffer:lease.raw_xyz() offset:0 atIndex:gw::raw_xyz_id];
     [argument_encoder setBuffer:node_buffer offset:0 atIndex:gw::nodes_id];
     [argument_encoder setBuffer:counters offset:0 atIndex:gw::counters_id];
-    for (unsigned i = 0; i < 7; ++i)
+    for (unsigned i = 0; i < 9; ++i)
         [argument_encoder setTexture:texture[i] atIndex:gw::color_id + i];
     const auto resources = [&](id<MTLComputeCommandEncoder> e) {
         for (auto b : {config_buffer, node_buffer, lease.raw_xyz()})
@@ -239,7 +250,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     need(command != nil, "Guide command");
     auto initialize = [command blitCommandEncoder];
     need(initialize != nil, "Initialize guide outputs for explicit failure cases");
-    for (unsigned i = 0; i < 7; ++i)
+    for (unsigned i = 0; i < 9; ++i)
         [initialize copyFromBuffer:readback[i]
                       sourceOffset:0
                  sourceBytesPerRow:row_bytes[i]
@@ -283,7 +294,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     [encoder endEncoding];
     auto blit = [command blitCommandEncoder];
     need(blit != nil, "Guide readback encoder");
-    for (unsigned i = 0; i < 7; ++i)
+    for (unsigned i = 0; i < 9; ++i)
         [blit copyFromTexture:texture[i]
                          sourceSlice:0
                          sourceLevel:0
@@ -301,12 +312,16 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     need(command.status == MTLCommandBufferStatusCompleted,
          "Guide execution: " + error(command.error));
     std::memcpy(&out.counters, counters.contents, sizeof(out.counters));
-    for (unsigned i = 0; i < 7; ++i) {
+    out.identity.resize(std::size_t(pixels) * 4);
+    for (unsigned i = 0; i < 9; ++i) {
         out.texture[i].resize(std::size_t(pixels) * channels[i]);
         const auto *bytes = static_cast<const unsigned char *>(readback[i].contents);
         for (std::size_t y = 0; y < height; ++y)
             for (std::size_t x = 0; x < std::size_t(width) * channels[i]; ++x) {
-                if (i == 1) {
+                if (i == 8) {
+                    std::memcpy(&out.identity[y * width * 4 + x], bytes + y * row_bytes[i] + x * 4,
+                                4);
+                } else if (component_bytes(i) == 4) {
                     float value;
                     std::memcpy(&value, bytes + y * row_bytes[i] + x * 4, 4);
                     out.texture[i][y * width * channels[i] + x] = value;
@@ -329,8 +344,16 @@ void color_check(const Captured &out, const gw::Config &cfg) {
             double rgb = 0;
             for (unsigned k = 0; k < 3; ++k)
                 rgb += cfg.xyz_to_rgb[c * 4 + k] * double(out.raw_before.raw_xyz[i][k]);
-            const auto expected = std::clamp(rgb, 0., 65504.);
-            close(out.texture[0][4 * i + c], expected, .001 + std::abs(expected) * .001,
+            const bool signed_color = (cfg.flags & gw::signed_temporal) != 0;
+            const auto expected = signed_color ? rgb : std::clamp(rgb, 0., 65504.);
+            double magnitude = 0;
+            for (unsigned k = 0; k < 3; ++k)
+                magnitude +=
+                    std::abs(cfg.xyz_to_rgb[c * 4 + k] * double(out.raw_before.raw_xyz[i][k]));
+            const double tolerance =
+                signed_color ? 32 * std::numeric_limits<float>::epsilon() * magnitude + 1e-6
+                             : .001 + std::abs(expected) * .001;
+            close(out.texture[0][4 * i + c], expected, tolerance,
                   "Raw XYZ guide-only RGB conversion/half packing");
         }
         close(out.texture[0][4 * i + 3], 1, 0, "Opaque color alpha");
@@ -354,10 +377,15 @@ struct SurfaceOracle {
     rc::Point normal;
     rc::Point plane_point;
     std::array<double, 3> diffuse;
+    bool signed_guides = false;
+    unsigned kind = render_wire::triangle_primitive;
+    unsigned material = 0;
 };
 void surface_checks(const Captured &out, const rc::Camera &current, const rc::Camera &previous,
                     const SurfaceOracle &expected) {
-    const auto &[normal, plane_point, diffuse] = expected;
+    const auto &normal = expected.normal;
+    const auto &plane_point = expected.plane_point;
+    const auto &diffuse = expected.diffuse;
     need(out.counters.failure == 0 && out.counters.completed == pixels &&
              out.counters.background == 0,
          "Complete surface/color guide accounting");
@@ -370,6 +398,25 @@ void surface_checks(const Captured &out, const rc::Camera &current, const rc::Ca
         if (!movement.pixels)
             throw std::runtime_error("Independent plane motion oracle");
         close(out.texture[1][i], projected.depth, 1e-6, "Analytic plane reversed depth");
+        if (expected.signed_guides) {
+            const auto old_projection = previous.project(point);
+            need(old_projection.status == rc::ProjectionStatus::valid,
+                 "Independent previous-depth plane projection");
+            close(out.texture[7][i], old_projection.depth, 1e-6,
+                  "Expected previous projected surface depth");
+            need(out.identity[4 * std::size_t(i)] == 0 &&
+                     out.identity[4 * i + 2] == expected.kind &&
+                     out.identity[4 * i + 3] == expected.material,
+                 "Surface identity source/kind/resolved material");
+            if (expected.kind == render_wire::triangle_primitive &&
+                std::abs(point[0] - point[1]) > 1e-5)
+                need(out.identity[4 * i + 1] == (point[1] < point[0] ? 0u : 1u),
+                     "Independent plane triangle half-space identity");
+            else
+                need(out.identity[4 * i + 1] <=
+                         (expected.kind == render_wire::triangle_primitive ? 1u : 0u),
+                     "Surface primitive identity range");
+        }
         for (unsigned axis = 0; axis < 3; ++axis) {
             close(out.texture[5][4 * i + axis], normal[axis], .002, "World-space geometric normal");
             close(out.texture[3][4 * i + axis], diffuse[axis], .001, "Node-weighted diffuse guide");
@@ -420,10 +467,42 @@ void cases(const std::string &library) {
     surface_checks(flat, current, old_camera,
                    {.normal = {0, 0, -1}, .plane_point = {0, 0, 3}, .diffuse = {.37, .37, .37}});
     color_check(flat, cfg);
+    // Keep the legacy half/clamp path above, and independently qualify signed
+    // float conversion plus the extra temporal correspondence attachments.
+    for (const auto pose : {RasterPose{}, RasterPose{.origin_x = .3f}, RasterPose{.yaw = .2f},
+                            RasterPose{.origin_x = .3f, .yaw = .2f}}) {
+        const auto r = raster(pose);
+        const auto now = camera(r);
+        auto signed_scene = base(r);
+        signed_scene.materials.push_back(signed_scene.materials.front());
+        plane(signed_scene, 3, 1);
+        auto signed_cfg = config(now, old_camera);
+        signed_cfg.flags |= gw::signed_temporal;
+        const auto out = guide(signed_scene, signed_cfg, library);
+        surface_checks(out, now, old_camera,
+                       {.normal = {0, 0, -1},
+                        .plane_point = {0, 0, 3},
+                        .diffuse = {.37, .37, .37},
+                        .signed_guides = true,
+                        .material = 1});
+        color_check(out, signed_cfg);
+    }
+    auto blue = base(original);
+    blue.environment.fill(0);
+    for (unsigned wavelength = 430; wavelength <= 470; ++wavelength)
+        blue.environment[wavelength - 360] = 1;
+    auto signed_cfg = config(old_camera, old_camera);
+    signed_cfg.flags |= gw::signed_temporal;
+    const auto signed_blue = guide(blue, signed_cfg, library);
+    color_check(signed_blue, signed_cfg);
+    need(signed_blue.counters.color_negative > 0 &&
+             std::ranges::any_of(signed_blue.texture[0], [](float x) { return x < 0; }),
+         "Signed spectral color must retain an actual negative RGB witness");
     // Background correspondence ignores camera translation but retains rotation.
     for (const auto source : {raster({.origin_x = .7f}), moved}) {
         const auto now = camera(source);
-        const auto c = config(now, old_camera);
+        auto c = config(now, old_camera);
+        c.flags |= gw::signed_temporal;
         const auto out = guide(base(source), c, library);
         need(out.counters.failure == 0 && out.counters.completed == pixels &&
                  out.counters.background == pixels,
@@ -436,6 +515,9 @@ void cases(const std::string &library) {
             if (!motion.pixels)
                 throw std::runtime_error("Background CPU projection");
             close(out.texture[1][i], 0, 0, "Infinite background zero depth");
+            close(out.texture[7][i], 0, 0, "Infinite background previous depth");
+            for (unsigned component = 0; component < 4; ++component)
+                need(out.identity[4 * i + component] == UINT32_MAX, "Sky identity sentinel");
             close(out.texture[5][4 * i + 3], 0, 0, "Background normal invalid alpha");
             for (unsigned axis = 0; axis < 2; ++axis)
                 close(out.texture[2][2 * i + axis], (*motion.pixels)[axis],
