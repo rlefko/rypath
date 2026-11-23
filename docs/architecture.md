@@ -41,6 +41,14 @@ all film planes resumable without floating-point atomics. The
 [Pavilion record](pavilion-validation.md) defines estimator choices, film clamping,
 resource budgets, reflected analytic orientation and validation.
 
+The interactive [frame session](frame-rendering.md) keeps scene resources and raw
+XYZ on the GPU, with native triangle traversal and bounded
+[wavefront queues](wavefront-rendering.md). Opt-in [Area reuse](area-reuse.md)
+uses normalized contribution weights over a finite replay domain, with fresh
+input, complete destination replay and separate published history banks. It is a
+correctness baseline for an Area-domain GRIS adaptation, not the paper's optimized
+reconnection implementation. Offline accumulation and checkpoints remain separate.
+
 ## PBRT preflight boundary
 
 The portable reader owns source records, decoded tokens, authored numeric lexemes,
