@@ -106,11 +106,10 @@ Tone mapping and display exposure are separate consumers.
 
 ## Validation boundary
 
-On the M4 Max with macOS 26.6, Xcode 26.6 and SDK 26.5, integrated Debug tests with
-Metal API validation passed for raw RGB (20.73 s), MetalFX streams (9.45 s), actual
-scene guides (0.62 s), and the adapter (0.46 s). These measurements cover the
-`1139b5d` implementation with the subsequently committed integration fixtures;
-they are correctness-test durations, not performance measurements.
+At implementation revision `c8b94b1`, five focused tests pass in each of Debug,
+Release and ASan/UBSan with Metal API validation on M4 Max, macOS 26.6, Xcode 26.6
+and SDK 26.5. Total test durations are 53.00 s, 37.89 s and 43.21 s respectively;
+these are correctness-test durations, not frame-performance measurements.
 
 The stream fixtures check an independent XYZ/matrix/half-conversion oracle,
 unchanged raw XYZ, pending/busy behavior, two retained outputs, cross-queue GPU
@@ -123,6 +122,14 @@ near-plane failure and counter overflow. They do not exhaust every material's
 approximate guide mapping. Adapter tests also reject aliases and oversized
 textures. Portable camera and benchmark CLI tests and focused LLVM 18 static
 analysis pass.
+
+A separate Release benchmark smoke executes six 128² frames each for raw RGB,
+native MetalFX, 128²-to-256² MetalFX, and Area replay with one mutation plus
+MetalFX. All 24 requested pipeline frames complete under API validation.
+Independent OpenEXR 3.4.4/NumPy 2.4.5 decoding verifies finite FLOAT RGB, dimensions,
+output-kind metadata and guide pixel accounting. The raw-RGB capture agrees with
+an independent clamp/half-conversion oracle within two half ULPs and a float
+arithmetic allowance. This validates direct-RGB publication, not denoising quality.
 
 Reconstruction image quality, sustained complete-pipeline timing, and fallback
 qualification remain separate gates. No denoised FPS or quality improvement is

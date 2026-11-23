@@ -15,7 +15,13 @@ Opt-in [Area-domain path reuse](area-reuse.md) now replays film, lens, wavelengt
 and complete indirect transport. Bounded importance contrast limits reuse-induced
 weights. [Corrected MCMC mutations](mcmc-mutations.md) run before spatial reuse,
 with a one-step default and zero/two/four-step ablations. Debug, Release and
-sanitizer arithmetic/lifetime checks and small mean studies pass; visual improvement and time to image quality remain unqualified.
+sanitizer arithmetic/lifetime checks and small mean studies pass; visual improvement
+and time to image quality remain unqualified.
+
+Separate [MetalFX reconstruction](reconstruction.md) consumes completed raw frames,
+with native denoising, explicit upscaling, guide approximation counters, retained
+GPU outputs and direct linear-RGB captures. Integrated guide/stream/lifetime tests
+pass; reconstruction quality and complete-pipeline timing remain to be qualified.
 
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
