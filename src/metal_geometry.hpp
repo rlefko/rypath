@@ -49,6 +49,10 @@ class MetalGeometryScene {
     explicit MetalGeometryScene(std::unique_ptr<Impl> impl);
     friend GeometryBuildResult build_metal_geometry(const GeometryData &,
                                                     const std::filesystem::path &);
+    friend // Native adapters may request supplementary opaque triangles; public queries
+           // retain procedural traversal and the original source/primitive identities.
+        GeometryBuildResult
+        build_metal_geometry_with_hints(const GeometryData &, const std::filesystem::path &, bool);
     friend struct MetalGeometryAccess;
 };
 
@@ -58,6 +62,11 @@ struct GeometryBuildResult {
     std::string diagnostic;
     std::unique_ptr<MetalGeometryScene> scene;
 };
+
+// Native adapters may request supplementary opaque triangles; public queries
+// retain procedural traversal and the original source/primitive identities.
+GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &,
+                                                    const std::filesystem::path &, bool);
 
 // An empty path uses the same executable-relative library as the compute check.
 GeometryBuildResult build_metal_geometry(const GeometryData &geometry,

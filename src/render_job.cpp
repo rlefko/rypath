@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "render_job.hpp"
+#include "render_timings.hpp"
 
 #include "render_identity.hpp"
 #include <cmath>
@@ -92,6 +93,14 @@ RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &s
                                const CheckpointOptions &options, const std::filesystem::path &image,
                                std::span<const std::filesystem::path> inputs, std::string build,
                                const std::function<void(std::uint64_t)> &progress) {
+    return run_render_job(scene, settings, options, image, inputs, std::move(build), progress,
+                          nullptr);
+}
+RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &settings,
+                               const CheckpointOptions &options, const std::filesystem::path &image,
+                               std::span<const std::filesystem::path> inputs, std::string build,
+                               const std::function<void(std::uint64_t)> &progress,
+                               RenderTimings *timings) {
     RenderJobResult job;
     job.render.diagnostic = validate_checkpoint_paths(options, image, inputs);
     if (!job.render.diagnostic.empty())
@@ -102,10 +111,12 @@ RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &s
     RenderCheckpoint checkpoint;
     checkpoint.settings = settings;
     if (enabled) {
-        checkpoint.identity = render_identity(scene, settings);
+        checkpoint.identity = render_timed(timings, RenderTimingPhase::identity,
+                                           [&] { return render_identity(scene, settings); });
         job.identity = digest_hex(checkpoint.identity);
     }
     if (!options.resume.empty()) {
+        RenderTimingScope resume_timing(timings, RenderTimingPhase::resume);
         auto loaded = read_checkpoint(options.resume);
         if (!loaded.value) {
             job.render.diagnostic = loaded.diagnostic;
@@ -151,10 +162,13 @@ RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &s
     control.initial_film = options.resume.empty() ? nullptr : &checkpoint.film;
     control.cancelled = [] { return requested_signal.load(std::memory_order_relaxed) != 0; };
     control.progress = progress;
+    control.timings = timings;
     const auto save = [&](const Film &film) -> std::string {
         // Keep the persistent snapshot separate from the driver's current Film.
-        checkpoint.film = film;
-        const auto diagnostic = write_checkpoint(checkpoint, destination);
+        render_timed(timings, RenderTimingPhase::checkpoint_copy, [&] { checkpoint.film = film; });
+        const auto diagnostic = render_timed(timings, RenderTimingPhase::checkpoint_write, [&] {
+            return write_checkpoint(checkpoint, destination);
+        });
         if (diagnostic.empty()) {
             saved = true;
             saved_count = film.pixels.front().count;

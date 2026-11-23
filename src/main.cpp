@@ -8,6 +8,7 @@
 #include "pbrt.hpp"
 #include "pbrt_render.hpp"
 #include "render_job.hpp"
+#include "render_timings.hpp"
 #include "resource_limits.hpp"
 #include "stl.hpp"
 
@@ -197,7 +198,7 @@ int import_stl(int argc, char *argv[]) {
     return status;
 }
 
-template <typename Integer> bool parse_unsigned(std::string_view value, Integer &result) {
+template <typename Integer> bool parse_integer(std::string_view value, Integer &result) {
     const auto *end = value.data() + value.size();
     const auto parsed = std::from_chars(value.data(), end, result);
     return parsed.ec == std::errc{} && parsed.ptr == end;
@@ -268,7 +269,7 @@ bool checkpoint_option(std::string_view option, std::string_view value,
         (option == "--checkpoint" ? options.output : options.resume) = value;
     } else if (option == "--checkpoint-interval") {
         options.interval_supplied = true;
-        if (!parse_unsigned(value, options.interval_seconds) || options.interval_seconds == 0)
+        if (!parse_integer(value, options.interval_seconds) || options.interval_seconds == 0)
             diagnostic = "--checkpoint-interval must be a positive unsigned integer";
     } else {
         return false;
@@ -308,7 +309,8 @@ std::string render_sampler_description(const rypath::RenderSettings &settings,
                                                    !packet && scene.perspective_lens.has_value());
     if (packet)
         description +=
-            "; packet fixed dimension allocation [0,920); keyed material-local Philox streams";
+            "; packet fixed dimension allocation [0,920); keyed material-local Philox streams; "
+            "independent coating hash/PCG domains";
     return description;
 }
 
@@ -326,6 +328,12 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                       {"rypath.scene", std::move(scene)},
                       {"rypath.sampler", render_sampler_description(settings, render_scene)},
                       {"rypath.seed", seed},
+                      {"rypath.materialSeed", std::to_string(settings.material_seed)},
+                      {"rypath.lightSampler",
+                       render_scene.integrator == rypath::IntegratorKind::bdpt         ? "power"
+                       : render_scene.light_sampler == rypath::LightSamplerKind::bvh   ? "bvh"
+                       : render_scene.light_sampler == rypath::LightSamplerKind::power ? "power"
+                                                                                       : "uniform"},
                       {"rypath.samplesPerPixel", std::to_string(settings.samples)},
                       {"rypath.batchSize", std::to_string(settings.batch_size)},
                       {"rypath.exposure", exposure.str()},
@@ -417,15 +425,15 @@ int render_demo(int argc, char *argv[]) {
         } else if (option == "--output") {
             output = value;
         } else if (option == "--width") {
-            valid = parse_unsigned(value, settings.width);
+            valid = parse_integer(value, settings.width);
         } else if (option == "--height") {
-            valid = parse_unsigned(value, settings.height);
+            valid = parse_integer(value, settings.height);
         } else if (option == "--samples") {
-            valid = parse_unsigned(value, settings.samples);
+            valid = parse_integer(value, settings.samples);
         } else if (option == "--batch-size") {
-            valid = parse_unsigned(value, settings.batch_size);
+            valid = parse_integer(value, settings.batch_size);
         } else if (option == "--seed") {
-            valid = parse_unsigned(value, settings.seed);
+            valid = parse_integer(value, settings.seed);
         } else {
             return argument_error();
         }
@@ -465,80 +473,128 @@ int render_demo(int argc, char *argv[]) {
     return finish_job(job, settings, output, rypath::ExrPrecision::float32, metadata);
 }
 
-int render_pbrt(int argc, char *argv[]) {
+int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr,
+                rypath::RenderTimingsOutput *timing_output = nullptr) {
+    using Phase = rypath::RenderTimingPhase;
+    const auto finish = [&](int code) {
+        if (timings)
+            timings->begin_destruction();
+        return code;
+    };
+    const auto fail = [&](std::string_view message, int code = 1) {
+        if (timings)
+            timings->failure(std::string(message));
+        return finish(render_error(message, code));
+    };
     if (argc < 3 || std::string_view{argv[2]}.starts_with("--")) {
-        return argument_error();
+        return finish(argument_error());
     }
     const std::filesystem::path entry = argv[2];
     rypath::CheckpointOptions checkpoints;
-    std::filesystem::path output, raw_output;
+    std::filesystem::path output, raw_output, timing_path;
     std::uint64_t batch_size = 8;
+    std::int32_t material_seed = 0;
     auto resource_profile = rypath::ResourceProfile::standard;
     std::set<std::string_view> seen;
     for (int index = 3; index < argc; index += 2) {
         const std::string_view option = argv[index];
         if (!seen.insert(option).second) {
-            return render_error("duplicate option " + std::string{option});
+            return fail("duplicate option " + std::string{option});
         }
         if (index + 1 == argc || std::string_view{argv[index + 1]}.starts_with("--")) {
-            return render_error("missing value for " + std::string{option});
+            return fail("missing value for " + std::string{option});
         }
         std::string diagnostic;
         if (checkpoint_option(option, argv[index + 1], checkpoints, diagnostic)) {
             if (!diagnostic.empty())
-                return render_error(diagnostic);
+                return fail(diagnostic);
         } else if (option == "--output") {
             output = argv[index + 1];
         } else if (option == "--raw-output") {
             raw_output = argv[index + 1];
+        } else if (option == "--timings") {
+            timing_path = argv[index + 1];
+        } else if (option == "--material-seed") {
+            if (!parse_integer(std::string_view{argv[index + 1]}, material_seed))
+                return fail("--material-seed must be a signed 32-bit integer");
         } else if (option == "--resource-profile") {
             const auto parsed = rypath::parse_resource_profile(argv[index + 1]);
             if (!parsed)
-                return render_error("--resource-profile requires standard or large");
+                return fail("--resource-profile requires standard or large");
             resource_profile = *parsed;
         } else if (option == "--batch-size") {
-            if (!parse_unsigned(std::string_view{argv[index + 1]}, batch_size) || batch_size == 0) {
-                return render_error("--batch-size must be a positive unsigned integer");
+            if (!parse_integer(std::string_view{argv[index + 1]}, batch_size) || batch_size == 0) {
+                return fail("--batch-size must be a positive unsigned integer");
             }
         } else {
-            return argument_error();
+            return finish(argument_error());
         }
     }
     if (output.empty()) {
-        return render_error("--render-pbrt requires --output IMAGE.{png,exr}");
+        return fail("--render-pbrt requires --output IMAGE.{png,exr}");
     }
     if (output.extension() != ".png" && output.extension() != ".exr") {
-        return render_error("--render-pbrt output must have the .png or .exr extension");
+        return fail("--render-pbrt output must have the .png or .exr extension");
     }
     if (const auto diagnostic = rypath::validate_checkpoint_paths(checkpoints, output, {});
         !diagnostic.empty())
-        return render_error(diagnostic);
+        return fail(diagnostic);
     if (!raw_output.empty() && raw_output.extension() != ".exr")
-        return render_error("--raw-output requires a .exr path");
+        return fail("--raw-output requires a .exr path");
+    if (timings && timing_path.empty())
+        return fail("--timings requires a fresh nonempty output path");
+    const auto reserve_timings = [&](const std::vector<std::filesystem::path> &inputs) {
+        if (!timings)
+            return std::string{};
+        auto protected_paths = inputs;
+        for (const auto &path : {output, raw_output, checkpoints.output, checkpoints.resume})
+            if (!path.empty())
+                protected_paths.push_back(path);
+        return timing_output->reserve(timing_path, protected_paths);
+    };
     const auto resources = rypath::resource_limits(resource_profile);
     rypath::pbrt::RenderTranslation translated;
     std::vector<std::filesystem::path> inputs{entry};
     {
-        const auto checked = rypath::pbrt::check(entry, resources.pbrt);
+        rypath::RenderTimingScope preflight(timings, Phase::preflight_overhead);
+        const auto checked = rypath::render_timed(
+            timings, Phase::pbrt_check, [&] { return rypath::pbrt::check(entry, resources.pbrt); });
         if (checked.exit_code() != 0) {
+            if (timings) {
+                for (const auto &dependency : checked.document.dependencies)
+                    inputs.push_back(dependency.resolved_path);
+                const auto timing_error = reserve_timings(inputs);
+                if (!timing_error.empty())
+                    std::cerr << "Timings: " << timing_error << '\n';
+                timings->failure("PBRT preflight failed; see diagnostic output");
+            }
             std::cout << rypath::pbrt::report(checked);
-            return checked.exit_code();
+            return finish(checked.exit_code());
         }
         for (const auto &dependency : checked.document.dependencies)
             inputs.push_back(dependency.resolved_path);
-        translated = rypath::pbrt::translate(checked, rypath::pbrt::Location{entry.string()},
-                                             resources.pbrt);
+        if (const auto timing_error = reserve_timings(inputs); !timing_error.empty())
+            return fail(timing_error);
+        translated = rypath::render_timed(timings, Phase::pbrt_translate, [&] {
+            return rypath::pbrt::translate(checked, rypath::pbrt::Location{entry.string()},
+                                           resources.pbrt);
+        });
+        if (timings)
+            timings->transition(Phase::document_cleanup);
     }
+    rypath::RenderTimingScope post_translation(timings, Phase::post_translation);
     for (const auto &diagnostic : translated.diagnostics) {
         std::cerr << rypath::pbrt::format_diagnostic(diagnostic);
     }
     if (translated.exit_code() != 0) {
         std::cout << "Rendering was not attempted.\n";
-        return translated.exit_code();
+        if (timings)
+            timings->failure("PBRT translation failed; see diagnostic output");
+        return finish(translated.exit_code());
     }
     auto owned_scene = std::move(translated.scene);
     if (!owned_scene.has_value()) {
-        return render_error("PBRT translation returned no render scene");
+        return fail("PBRT translation returned no render scene");
     }
     const auto &scene = owned_scene.value();
     if (!raw_output.empty()) {
@@ -547,17 +603,18 @@ int render_pbrt(int argc, char *argv[]) {
         if (const auto diagnostic =
                 rypath::validate_checkpoint_paths(checkpoints, raw_output, protected_paths);
             !diagnostic.empty())
-            return render_error(diagnostic);
+            return fail(diagnostic);
         rypath::CheckpointOptions raw_guard;
         raw_guard.output = raw_output;
         if (const auto diagnostic = rypath::validate_checkpoint_paths(raw_guard, output, inputs);
             !diagnostic.empty())
-            return render_error("raw output must not alias the primary output or scene inputs");
+            return fail("raw output must not alias the primary output or scene inputs");
     }
     translated.settings.batch_size = batch_size;
+    translated.settings.material_seed = material_seed;
     const auto &settings = translated.settings;
     if (const auto diagnostic = rypath::validate_render_settings(settings); !diagnostic.empty()) {
-        return render_error(diagnostic);
+        return fail(diagnostic);
     }
     const auto precision =
         translated.save_fp16 ? rypath::ExrPrecision::half : rypath::ExrPrecision::float32;
@@ -569,16 +626,19 @@ int render_pbrt(int argc, char *argv[]) {
               << "Render profile: pbrt-spectral-v1\n"
               << "Resource profile: " << rypath::resource_profile_name(resource_profile) << '\n'
               << "Sampler: " << render_sampler_description(settings, scene) << '\n'
-              << (scene.spectral_transport == rypath::SpectralTransport::packet
-                      ? "Light sampling: uniform emitter selection with reciprocal endpoint PDFs "
-                        "(differs from PBRT)\n"
-                      : "Light sampling: separate environment and uniform triangle area (differs "
-                        "from PBRT)\n")
+              << "Light sampling: "
+              << (scene.integrator == rypath::IntegratorKind::bdpt ||
+                          scene.light_sampler == rypath::LightSamplerKind::power
+                      ? "power"
+                  : scene.light_sampler == rypath::LightSamplerKind::bvh ? "bvh"
+                                                                         : "uniform")
+              << "; matched forward and reverse probabilities\n"
               << "Color: calibrated CIE 1931 XYZ / sRGB\n"
               << "Resolution: " << settings.width << 'x' << settings.height << '\n'
               << "Samples per pixel: " << settings.samples << '\n'
               << "Batch size: " << settings.batch_size << '\n'
               << "Seed: " << seed << '\n'
+              << "Material seed: " << settings.material_seed << '\n'
               << "Finite path maxdepth: " << scene.max_depth << '\n'
               << "Output override: " << output.string() << " (Film.filename overridden; "
               << output_description(output, precision)
@@ -595,12 +655,37 @@ int render_pbrt(int argc, char *argv[]) {
         std::cout << item << '\n';
     }
     std::cout << std::flush;
-    const auto job = rypath::run_render_job(scene, settings, checkpoints, output, inputs,
-                                            RYPATH_BUILD_DESCRIPTION, [&](std::uint64_t count) {
-                                                std::cout
-                                                    << "Committed samples per pixel: " << count
-                                                    << '/' << settings.samples << std::endl;
-                                            });
+    if (timings) {
+        timings->provenance("scene", entry.string());
+        timings->provenance("width", std::to_string(settings.width));
+        timings->provenance("height", std::to_string(settings.height));
+        timings->provenance("samples", std::to_string(settings.samples));
+        timings->provenance("batch", std::to_string(settings.batch_size));
+        timings->provenance("seed", std::to_string(settings.seed));
+        timings->provenance("material_seed", std::to_string(settings.material_seed));
+        timings->provenance("sampler", render_sampler_description(settings, scene));
+    }
+    post_translation.close();
+    const auto job = rypath::render_timed(timings, Phase::render_job, [&] {
+        return rypath::run_render_job(
+            scene, settings, checkpoints, output, inputs, RYPATH_BUILD_DESCRIPTION,
+            [&](std::uint64_t count) {
+                std::cout << "Committed samples per pixel: " << count << '/' << settings.samples
+                          << std::endl;
+            },
+            timings);
+    });
+    if (timings) {
+        timings->provenance("device", job.render.device.name);
+        timings->provenance("architecture", job.render.device.architecture);
+        timings->provenance("registry_id", std::to_string(job.render.device.registry_id));
+        timings->provenance("identity", job.identity);
+        if (job.render.completion == rypath::RenderCompletion::cancelled)
+            timings->cancelled();
+        if (!job.render.diagnostic.empty())
+            timings->failure(job.render.diagnostic);
+    }
+    rypath::RenderTimingScope output_metadata(timings, Phase::output_metadata);
     auto metadata =
         render_metadata(settings, entry.string(), "pbrt-spectral-v1", scene,
                         output.extension() == ".exr" ? "Film.filename; batch size"
@@ -612,10 +697,21 @@ int render_pbrt(int argc, char *argv[]) {
         translation_provenance += item;
     }
     metadata.emplace_back("rypath.sceneTranslation", std::move(translation_provenance));
-    const int status = finish_job(job, settings, output, precision, metadata);
+    output_metadata.close();
+    const int status = rypath::render_timed(timings, Phase::primary_output, [&] {
+        return finish_job(job, settings, output, precision, metadata);
+    });
+    if (timings && status != 0 && job.render.status == rypath::GeometryStatus::success &&
+        job.render.completion == rypath::RenderCompletion::complete)
+        timings->failure("Primary image output failed; see diagnostic output");
+    if (status == 0)
+        std::cout << "Preparation seconds: " << job.render.preparation_seconds << '\n'
+                  << "Pipeline seconds: " << job.render.pipeline_seconds << '\n'
+                  << "Render and accumulation seconds: " << job.render.render_seconds << '\n';
     if (status != 0 || raw_output.empty())
-        return status;
-    auto raw = job.render.film;
+        return finish(status);
+    auto raw = rypath::render_timed(timings, Phase::raw_film_copy, [&] { return job.render.film; });
+    rypath::RenderTimingScope raw_metadata(timings, Phase::output_metadata);
     raw.compatibility_output = false;
     raw.exposure = 1;
     std::erase_if(metadata, [](const auto &item) {
@@ -630,12 +726,16 @@ int render_pbrt(int argc, char *argv[]) {
         metadata.emplace_back("rypath.checkpointProvenance",
                               rypath::checkpoint_provenance(job.segments));
     }
-    if (const auto diagnostic =
-            rypath::write_exr(raw, raw_output, rypath::ExrPrecision::float32, metadata);
+    raw_metadata.close();
+    if (const auto diagnostic = rypath::render_timed(
+            timings, Phase::raw_output,
+            [&] {
+                return rypath::write_exr(raw, raw_output, rypath::ExrPrecision::float32, metadata);
+            });
         !diagnostic.empty())
-        return render_error(diagnostic);
+        return fail(diagnostic);
     std::cout << "Raw output: " << raw_output.string() << " (EXR FLOAT; unexposed; unclamped)\n";
-    return 0;
+    return finish(0);
 }
 
 } // namespace
@@ -652,7 +752,9 @@ int main(int argc, char *argv[]) {
                      "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
                      "              [--stl-colors auto|viscam|magics]\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
-                     "           [--resource-profile standard|large] [--raw-output PATH.exr]\n"
+                     "           [--resource-profile standard|large] [--raw-output PATH.exr] "
+                     "[--timings PATH.json]\n"
+                     "           [--material-seed 0]\n"
                      "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
                      "              [--samples 128] [--batch-size 8] [--seed 1]\n"
                      "       Render options: [--checkpoint PATH] [--resume PATH]\n"
@@ -675,7 +777,47 @@ int main(int argc, char *argv[]) {
             !std::string_view{argv[4]}.starts_with("--"))
             return import_obj({.source = argv[2], .output = argv[4]});
         if (argc > 1 && std::string_view{argv[1]} == "--render-pbrt") {
-            return render_pbrt(argc, argv);
+            bool capture_timings = false;
+            for (int i = 3; i < argc; i += 2)
+                capture_timings = capture_timings || std::string_view{argv[i]} == "--timings";
+            if (!capture_timings)
+                return render_pbrt(argc, argv);
+            rypath::RenderTimings timings;
+            rypath::RenderTimingsOutput report;
+            int status = 1;
+            {
+                rypath::RenderTimingScope command(&timings, rypath::RenderTimingPhase::command);
+                try {
+                    status = render_pbrt(argc, argv, &timings, &report);
+                } catch (const std::exception &error) {
+                    timings.failure(error.what());
+                    status = render_error(error.what());
+                }
+            }
+            timings.finish();
+            if (report.reserved()) {
+                try {
+                    if (const auto diagnostic =
+                            report.publish(timings, status, RYPATH_BUILD_DESCRIPTION);
+                        !diagnostic.empty()) {
+                        std::cerr << "Timings: " << diagnostic << '\n';
+                        if (status == 0)
+                            status = 1;
+                    }
+                } catch (const std::exception &error) {
+                    std::cerr << "Timings: " << error.what() << '\n';
+                    if (status == 0)
+                        status = 1;
+                }
+            } else if (status == 0) {
+                status = render_error("timings output was not safely reserved");
+            }
+            if (!timings.valid()) {
+                std::cerr << "Timings: collector accounting failed\n";
+                if (status == 0)
+                    status = 1;
+            }
+            return status;
         }
         if ((argc == 3 || argc == 5) && std::string_view{argv[1]} == "--check-pbrt" &&
             !std::string_view{argv[2]}.starts_with("--")) {

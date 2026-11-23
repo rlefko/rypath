@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "implementation_revision": "2cba19f4ed4a875a2044b2cc23bf8dde433c7b50",
+  "quality_accepted": false,
+  "scope": "Historical evidence index for the explicitly deferred Pavilion investigation; not a new launch plan or quality approval",
+  "artifacts": {
+    "quality_protocol": {
+      "path": ".cache/pavilion-closure/packet-roulette-integration-027-001/quality-inputs-001/protocol.json",
+      "sha256": "08aeebaf5b34442a18d07c6cb9de2db91d1d9991fadd8b7fe2ae8e6fff022369",
+      "bytes": 9114
+    },
+    "quality_plan": {
+      "path": ".cache/pavilion-closure/packet-roulette-integration-027-001/quality-inputs-001/plan.json",
+      "sha256": "19623a0b7abb1cb00c35bb0d009f07fa316a6fde15ecc0e59a4c8a21f75115b4",
+      "bytes": 2649
+    },
+    "quality_model_review": {
+      "path": ".cache/pavilion-closure/packet-roulette-integration-027-001/ROOT-quality-model-review-001.json",
+      "sha256": "39c4119e64a0c68b28d07703269612497ed3d6fb7ae498fb5e0477a02035ad96",
+      "bytes": 7898
+    },
+    "quality_execution": {
+      "path": ".cache/pavilion-closure/quality-v2-supervision-027-prep-001/runtime-attempt-001/execution.json",
+      "sha256": "f4a8bfe32487ce1e33f47665aee333ad84e991f2dbb65c790cbe765f37d84f5c",
+      "bytes": 22083319
+    },
+    "quality_analysis": {
+      "path": ".cache/pavilion-closure/quality-v2-supervision-027-prep-001/runtime-attempt-001/quality/analysis-execution.json",
+      "sha256": "aec08c477fbce3706c717b2ae67e4db6f1c5b3ba3ff9068ab51f216109cf57ce",
+      "bytes": 75680
+    },
+    "quality_metrics": {
+      "path": ".cache/pavilion-closure/quality-v2-supervision-027-prep-001/runtime-attempt-001/quality/quality-metrics-v2.json",
+      "sha256": "3b23e593c162a77cb0400e68a34d7ce513881deee5d4351d5d1f233eb6e857bf",
+      "bytes": 20855
+    },
+    "quality_review": {
+      "path": ".cache/pavilion-closure/quality-results-review-027-001/results-001/review.json",
+      "sha256": "31c741ded87f1144e2304a1a04cb7fa4f9fb72dc0b87186ff2d14a328a701eb9",
+      "bytes": 147553
+    },
+    "release_provenance": {
+      "path": ".cache/pavilion-closure/final-release-roulette-027-prep-001/collect-attempt-001/final-release.json",
+      "sha256": "c5d2de8380c8048031cb1679198e69a2e6a157fdac3a8f50911e2a47d9d4a0ec",
+      "bytes": 723666
+    },
+    "candidate_model": {
+      "path": ".cache/pavilion-closure/final-model-bindings-027-prep-001/assembly-attempt-001/candidate-model.json",
+      "sha256": "a28441518c143e7a97417a8fd6d1b47f35c2388c5c7b51af45800f6b9218a5da",
+      "bytes": 5423
+    },
+    "reference_model": {
+      "path": ".cache/pavilion-closure/final-model-bindings-027-prep-001/assembly-attempt-001/reference-model.json",
+      "sha256": "b28b1effb557d21679e7dd6787d75b07490076ba907aea82910b3d4e1206af0e",
+      "bytes": 5425
+    },
+    "prestudy_seed_ledger": {
+      "path": ".cache/pavilion-closure/quality-v2-ledger-002/ledger-002.json",
+      "sha256": "8caf15ac066e1bdc22702f0c6c18a649930063720bbca016256174cca8f57d3d",
+      "bytes": 52316562
+    },
+    "performance_review": {
+      "path": ".cache/pavilion-closure/final-timing-roulette-027-prep-001/ROOT-results-review-001.json",
+      "sha256": "622b35eabd8e92a92c6b4b3631b78791940d379d3daba3007887fd67690dd4e7",
+      "bytes": 2728
+    },
+    "full_image_review": {
+      "path": ".cache/pavilion-closure/final-images-027-prep-001/ROOT-results-review-001.json",
+      "sha256": "a29fd2f2df5c9d57649bac43039cd8b47d66bbdb773063cf2231a41cfeaa9e3f",
+      "bytes": 1352
+    }
+  },
+  "candidate_binaries": {
+    "rypath": {
+      "path": "build/release/rypath",
+      "bytes": 12667784,
+      "sha256": "06e9adaa897eda6fecd71ca8403f59a4f9fbbf346e6b5e1ab75fc5d74ce14f23"
+    },
+    "rypath.metallib": {
+      "path": "build/release/rypath.metallib",
+      "bytes": 2594168,
+      "sha256": "132c927db2da5a24413daa811ae9ec79cfa3b907f0027567070bae0dfc5cbb40"
+    },
+    "rypath_pavilion_quality_metrics_v2": {
+      "path": "build/release/rypath_pavilion_quality_metrics_v2",
+      "bytes": 480736,
+      "sha256": "e58cf9130bb5ea318f8b7294725b7e395e3ca608522ee9fc184dfca77cb60cc3"
+    }
+  },
+  "reference_cli_sha256": "6dc1afe85407cfe312154ac7dce1dd6cde8e3ebf12618df98aaff4e0b6b5601a",
+  "reference_source_sha256": "84c026833810977829dbd21db199bd7092da273f737f317374c8b56aff0ab6b8",
+  "archive": {
+    "relative_to_checkout": "../rypath-evidence/pr51-2026-11-22-002",
+    "manifest_sha256": "81f4f68b59416bb5692b24fcbc3b9e9d254ca9bd12f32ef77ae5760573226509",
+    "file_count": 5658,
+    "bytes": 8536339473,
+    "scope": "Latest quality, prior renderer26 quality, RR controls, margin and footprint findings, final images/timing, selected inputs and model/build receipts, consumed seed ledger, exact current binaries and tracked source. Earlier investigation payloads remain in their original caches and are indexed by tracked historical validation records. This is not a complete portable toolchain or dependency archive."
+  },
+  "portable_files": {
+    "localization.json": {
+      "sha256": "8036230f7f276061f2318049b58eb8da5c81b7e2e0f4e76e79e338c32e13b581",
+      "bytes": 144401
+    },
+    "quality-metrics-v2.json": {
+      "sha256": "3b23e593c162a77cb0400e68a34d7ce513881deee5d4351d5d1f233eb6e857bf",
+      "bytes": 20855
+    },
+    "study-settings.json": {
+      "sha256": "8e455867133411522b0491732e4ceb1e73c3df9f5536f9ed710890a6ea415cd1",
+      "bytes": 4352
+    },
+    "ensemble-means.png": {
+      "sha256": "00314570bf6eda53759b814883055a16b9a347ba8adbe113c0ebbdba8a4f24ff",
+      "bytes": 309496
+    }
+  }
+}

@@ -56,19 +56,22 @@ void run() {
     const auto &day = success(result);
     require(day.integrator == IntegratorKind::volpath && day.volume_transport &&
                 day.spectral_transport == SpectralTransport::packet &&
-                day.max_component_value == 50 && day.exposure == 5,
+                day.max_component_value == 50 && day.exposure == 5 &&
+                day.light_sampler == LightSamplerKind::bvh,
             "Authored clamp and omitted volpath must select packet transport");
-    require(provenance(result).find("table-integral camera sample weight") != std::string::npos &&
-                provenance(result).find("unit sample weight") == std::string::npos &&
-                provenance(result).find("fixed dimension allocation [0,920)") !=
-                    std::string::npos &&
-                provenance(result).find("keyed material-local Philox streams") != std::string::npos,
-            "Packet Gaussian and sampler provenance must describe packet allocation and weights");
+    require(
+        provenance(result).find("table-integral camera sample weight") != std::string::npos &&
+            provenance(result).find("unit sample weight") == std::string::npos &&
+            provenance(result).find("fixed dimension allocation [0,920)") != std::string::npos &&
+            provenance(result).find("keyed material-local Philox streams") != std::string::npos &&
+            provenance(result).find("independent coating hash/PCG domains") != std::string::npos,
+        "Packet Gaussian and sampler provenance must describe packet allocation and weights");
     result = fixture.translate(options("", "Integrator \"bdpt\"") + world);
     const auto &night = success(result);
     require(night.integrator == IntegratorKind::bdpt && !night.volume_transport &&
                 night.spectral_transport == SpectralTransport::packet && night.max_depth == 5 &&
-                !std::isfinite(night.max_component_value),
+                !std::isfinite(night.max_component_value) &&
+                night.light_sampler == LightSamplerKind::power,
             "BDPT defaults and unclamped packet mode");
     for (unsigned depth : {0u, 64u}) {
         result = fixture.translate(options("", "Integrator \"bdpt\" \"integer maxdepth\" [" +
@@ -109,21 +112,27 @@ void run() {
     result = fixture.translate(options("", "Integrator \"bdpt\"") + lights);
     require(success(result).point_lights.size() == 1 &&
                 success(result).distant_lights.size() == 1 &&
-                provenance(result).find("Point lights: 1 (uniform combined light selection; "
+                provenance(result).find("Point lights: 1 (combined light selection; "
                                         "delta-position endpoint PDFs)") != std::string::npos &&
-                provenance(result).find("Distant lights: 1 (uniform combined light selection; "
+                provenance(result).find("Distant lights: 1 (combined light selection; "
                                         "delta-direction endpoint PDFs;") != std::string::npos &&
                 provenance(result).find("all-point direct evaluation") == std::string::npos &&
                 provenance(result).find("all-distant direct evaluation") == std::string::npos,
-            "Packet point/distant provenance must describe uniform combined light selection");
+            "Packet point/distant provenance must describe combined light selection");
     result = fixture.translate(options("", "Integrator \"path\"") + lights);
     success(result);
-    require(provenance(result).find("all-point direct evaluation; delta-position weights") !=
-                    std::string::npos &&
-                provenance(result).find("all-distant direct evaluation; delta-direction weights") !=
-                    std::string::npos &&
-                provenance(result).find("uniform combined light selection") == std::string::npos,
-            "Scalar point/distant provenance must retain all-light direct evaluation");
+    require(
+        provenance(result).find(
+            "Light selection: bvh; matched forward and reverse probabilities") !=
+                std::string::npos &&
+            provenance(result).find(
+                "Point lights: 1 (combined light selection; delta-position endpoint PDFs)") !=
+                std::string::npos &&
+            provenance(result).find(
+                "Distant lights: 1 (combined light selection; delta-direction endpoint PDFs;") !=
+                std::string::npos &&
+            provenance(result).find("all-point direct evaluation") == std::string::npos,
+        "Scalar point/distant provenance must describe combined matched light selection");
     const std::string fog = "MakeNamedMedium \"fog\" \"string type\" \"homogeneous\"\n";
     const std::string vacuum = "MakeNamedMedium \"vacuum\" \"string type\" \"homogeneous\" "
                                "\"rgb sigma_a\" [0 0 0] \"rgb sigma_s\" [0 0 0]\n";

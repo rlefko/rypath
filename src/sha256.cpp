@@ -4,6 +4,9 @@
 #include <bit>
 #include <limits>
 #include <stdexcept>
+#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2) && !defined(RYPATH_SHA256_FORCE_PORTABLE)
+#include <arm_neon.h>
+#endif
 // SHA-256 construction and constants: NIST FIPS 180-4, sections 4.2.2 and 6.2.
 // https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.180-4.pdf
 namespace rypath {
@@ -19,6 +22,35 @@ constexpr std::array<std::uint32_t, 64> constants{
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 }
 void Sha256::block(const std::uint8_t *bytes) {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_SHA2) && !defined(RYPATH_SHA256_FORCE_PORTABLE)
+    // ACLE SHA256H/H2 perform four FIPS 180-4 rounds; SU0/SU1 expand four
+    // schedule words. Only select this implementation when the compilation
+    // target guarantees SHA2 support, never merely because it is ARM64.
+    // https://arm-software.github.io/acle/neon_intrinsics/advsimd.html
+    auto abcd = vld1q_u32(state_.data());
+    auto efgh = vld1q_u32(state_.data() + 4);
+    const auto initial_abcd = abcd, initial_efgh = efgh;
+    std::array<uint32x4_t, 4> schedule{};
+    for (std::size_t i = 0; i < schedule.size(); ++i) {
+        auto input = vld1q_u8(bytes + 16 * i);
+        if constexpr (std::endian::native == std::endian::little)
+            input = vrev32q_u8(input);
+        schedule[i] = vreinterpretq_u32_u8(input);
+    }
+    for (std::size_t round = 0; round < 16; ++round) {
+        const auto slot = round % 4;
+        if (round >= 4)
+            schedule[slot] =
+                vsha256su1q_u32(vsha256su0q_u32(schedule[slot], schedule[(slot + 1) % 4]),
+                                schedule[(slot + 2) % 4], schedule[(slot + 3) % 4]);
+        const auto wk = vaddq_u32(schedule[slot], vld1q_u32(constants.data() + 4 * round));
+        const auto previous_abcd = abcd;
+        abcd = vsha256hq_u32(abcd, efgh, wk);
+        efgh = vsha256h2q_u32(efgh, previous_abcd, wk);
+    }
+    vst1q_u32(state_.data(), vaddq_u32(abcd, initial_abcd));
+    vst1q_u32(state_.data() + 4, vaddq_u32(efgh, initial_efgh));
+#else
     std::array<std::uint32_t, 64> w{};
     for (std::size_t i = 0; i < 16; ++i)
         for (std::size_t j = 0; j < 4; ++j)
@@ -52,6 +84,7 @@ void Sha256::block(const std::uint8_t *bytes) {
     state_[5] += f;
     state_[6] += g;
     state_[7] += h;
+#endif
 }
 void Sha256::update(std::span<const std::uint8_t> bytes) {
     if (finished_)
@@ -60,6 +93,11 @@ void Sha256::update(std::span<const std::uint8_t> bytes) {
         throw std::length_error("SHA256 bit length overflow");
     size_ += bytes.size();
     while (!bytes.empty()) {
+        if (used_ == 0 && bytes.size() >= buffer_.size()) {
+            block(bytes.data());
+            bytes = bytes.subspan(buffer_.size());
+            continue;
+        }
         const auto n = std::min(bytes.size(), buffer_.size() - used_);
         std::copy_n(bytes.begin(), n, buffer_.begin() + static_cast<std::ptrdiff_t>(used_));
         used_ += n;

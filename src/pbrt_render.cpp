@@ -750,9 +750,21 @@ void Translator::integrator(const Descriptor &descriptor) {
     if (boolean(descriptor, "regularize", false)) {
         unsupported(location(descriptor, "regularize"), "Path regularization is unsupported");
     }
-    if (string(descriptor, "lightsampler").value_or("bvh") != "bvh") {
+    const auto light_sampler = string(descriptor, "lightsampler");
+    const auto policy = light_sampler.value_or(name == "bdpt" ? "power" : "bvh");
+    if (name == "bdpt" && light_sampler) {
+        unsupported(
+            location(descriptor, "lightsampler"),
+            "BDPT uses its fixed power light sampler; lightsampler is a path/volpath parameter");
+    } else if (policy == "bvh") {
+        scene_.light_sampler = LightSamplerKind::bvh;
+    } else if (policy == "power") {
+        scene_.light_sampler = LightSamplerKind::power;
+    } else if (policy == "uniform") {
+        scene_.light_sampler = LightSamplerKind::uniform;
+    } else {
         unsupported(location(descriptor, "lightsampler"),
-                    "Only the bvh light sampler is supported");
+                    "Light sampler must be bvh, power, or uniform");
     }
 }
 
@@ -3504,13 +3516,20 @@ RenderTranslation Translator::run() {
         }
         if (scene_.spectral_transport == SpectralTransport::packet)
             result_.provenance.emplace_back("Packet sampling: fixed dimension allocation [0,920); "
-                                            "keyed material-local Philox streams");
+                                            "keyed material-local Philox streams; "
+                                            "independent coating hash/PCG domains");
+        result_.provenance.emplace_back(std::string("Light selection: ") +
+                                        (scene_.integrator == IntegratorKind::bdpt ||
+                                                 scene_.light_sampler == LightSamplerKind::power
+                                             ? "power"
+                                         : scene_.light_sampler == LightSamplerKind::bvh
+                                             ? "bvh"
+                                             : "uniform") +
+                                        "; matched forward and reverse probabilities");
         if (!scene_.point_lights.empty()) {
             result_.provenance.push_back(
                 "Point lights: " + std::to_string(scene_.point_lights.size()) +
-                (scene_.spectral_transport == SpectralTransport::packet
-                     ? " (uniform combined light selection; delta-position endpoint PDFs)"
-                     : " (all-point direct evaluation; delta-position weights)"));
+                " (combined light selection; delta-position endpoint PDFs)");
         }
         if (!scene_.spot_lights.empty()) {
             result_.provenance.push_back(
@@ -3531,11 +3550,8 @@ RenderTranslation Translator::run() {
         if (!scene_.distant_lights.empty()) {
             result_.provenance.push_back(
                 "Distant lights: " + std::to_string(scene_.distant_lights.size()) +
-                (scene_.spectral_transport == SpectralTransport::packet
-                     ? " (uniform combined light selection; delta-direction endpoint PDFs; finite "
-                       "2 * scene radius visibility)"
-                     : " (all-distant direct evaluation; delta-direction weights; finite 2 * scene "
-                       "radius visibility)"));
+                " (combined light selection; delta-direction endpoint PDFs; finite "
+                "2 * scene radius visibility)");
         }
         if (auto images = image_filter_provenance(scene_, image_formats_); !images.empty()) {
             result_.provenance.push_back(std::move(images));

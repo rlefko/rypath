@@ -146,6 +146,41 @@ void checks() {
     preparation_scene.preparation_byte_limit = 1;
     require(validate_render_scene(preparation_scene).find("preparation") != std::string::npos,
             "tiny preparation budget fails before native allocation");
+    // Native lighting CDFs share the retained-image budget even when the
+    // separate preparation limit is unlimited. A small fixture tests the exact
+    // boundary without allocating the 8192-square production ceiling.
+    auto map = std::make_shared<ImagePyramid>();
+    map->encoding = ImageEncoding::linear;
+    map->wrap = ImageWrap::clamp;
+    map->native_base = true;
+    map->levels = {{256, 256, 0}};
+    map->texels.resize(std::size_t{256} * 256, 0x00404040);
+    RenderScene mapped_scene;
+    mapped_scene.model = RenderModel::pbrt;
+    mapped_scene.spectral_transport = SpectralTransport::packet;
+    mapped_scene.raster_camera = RasterCamera{{}, {-.5f, -.5f, 1}, {1, 0, 0}, {0, 1, 0}};
+    mapped_scene.image_textures.push_back({map});
+    mapped_scene.environment_image = 0;
+    const std::size_t image_bytes =
+        map->texels.size() * sizeof(std::uint32_t) + sizeof(ImageMipLevel);
+    mapped_scene.image_limits.retained_bytes =
+        image_bytes + std::size_t{2} * 257 * 257 * sizeof(float);
+    if (const auto error = validate_render_scene(mapped_scene); !error.empty())
+        throw std::runtime_error("exact native environment table budget: " + error);
+    --mapped_scene.image_limits.retained_bytes;
+    require(validate_render_scene(mapped_scene).find("memory") != std::string::npos,
+            "both native environment CDFs charged to retained budget");
+    mapped_scene.environment_image = UINT32_MAX;
+    map->source_channels = 1;
+    mapped_scene.goniometric_lights.resize(2);
+    for (auto &light : mapped_scene.goniometric_lights)
+        light.image_texture = 0;
+    mapped_scene.image_limits.retained_bytes = image_bytes + (257 + 256 * 257) * sizeof(float);
+    if (const auto error = validate_render_scene(mapped_scene); !error.empty())
+        throw std::runtime_error("shared directional CDF charged once: " + error);
+    --mapped_scene.image_limits.retained_bytes;
+    require(validate_render_scene(mapped_scene).find("memory") != std::string::npos,
+            "native positional CDF charged to retained budget");
     const auto png = skinny_png(8192);
     require(decode_png(png).limit_exceeded, "standard dimension limit retained");
     const auto decoded = decode_png(png, large.pbrt.image);

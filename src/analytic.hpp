@@ -315,14 +315,18 @@ inline AnalyticIntersection intersect_analytic(const GeometryAnalytic &s, const 
                 continue;
             v = (s.radius - r) / (s.radius - double(s.inner_radius));
         } else {
-            if (z < s.z_min || z > s.z_max)
-                continue;
             if (s.kind == AnalyticKind::sphere) {
+                // Match active sphere clipping after radius reprojection.
+                if ((s.z_min > -s.radius && z < s.z_min) || (s.z_max < s.radius && z > s.z_max))
+                    continue;
                 const double t0 = std::acos(double(s.z_min) / s.radius),
                              t1 = std::acos(double(s.z_max) / s.radius);
                 v = (std::acos(std::clamp(z / s.radius, -1., 1.)) - t0) / (t1 - t0);
-            } else
+            } else {
+                if (z < s.z_min || z > s.z_max)
+                    continue;
                 v = (z - s.z_min) / (s.z_max - double(s.z_min));
+            }
         }
         return {true,
                 t,

@@ -39,11 +39,18 @@ They preserve raw accumulation separately from exposed, clamped sensor values.
 `--raw-output PATH.exr` additionally exports unexposed, unclamped FLOAT linear
 sRGB. Unclamped scalar path/volpath keep their existing transport and media rules.
 
-The packet light sampler selects uniformly among area primitives, positional and
-distant sources, and one environment slot. The scalar lighting descriptions below
-continue to describe the older separate environment/area/all-positional estimators.
-Different proposals can produce different means after nonlinear finite clamping;
-plausible appearance alone does not establish equivalence to PBRT.
+BDPT uses power-weighted selection. Path and volpath accept `lightsampler`
+`bvh` (the default), `power`, or `uniform`, with one combined inventory of area,
+positional, distant and environment lights. An authored `lightsampler` on BDPT
+is rejected because its policy is fixed. Forward samples and reverse MIS queries
+use the same light identities and probabilities across scalar and packet paths.
+See [sampling and convergence](sampling-convergence-validation.md) for the
+proposal contracts, numerical adaptations and measured limits. Different
+proposals can still produce different means after nonlinear finite clamping.
+
+`--material-seed` accepts a signed 32-bit integer, default zero, independently of
+the scene sampler seed. It controls PBRT's stochastic coated-material hash/PCG
+domains, appears in output metadata, and participates in checkpoint identity.
 
 ## Compatibility
 
@@ -61,7 +68,7 @@ diagnosed even when not placed in the image.
 | Film | Full frame, CIE 1931 sensor, sRGB, positive ISO/shutter duration, white balance zero, optional positive finite sensor-space contribution clamp |
 | Filter | Positive normal binary32 box radii defaulting to 0.5, triangle radii to 2, or tabulated Gaussian radii 1.5 and sigma 0.5 |
 | Sampler | Philox independent, PBRT interval Sobol, Halton, or ZSobol with pinned randomizations and versioned rypath transport dimensions |
-| Integrator | BDPT or finite film clamp selects four-wavelength vacuum transport at depth 0–64; otherwise path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling, 0–127 with Sobol/ZSobol (0–113 with dielectrics), or 0–124 with Halton (0–110 with dielectrics), default 5; regularization false; omitted or bvh light selection accepted, with rypath's explicitly different sampling distribution |
+| Integrator | BDPT or finite film clamp selects four-wavelength vacuum transport at depth 0–64; otherwise path for vacuum surface transport or volpath for homogeneous media; finite maxdepth 0–1024 with independent sampling, 0–127 with Sobol/ZSobol (0–113 with dielectrics), or 0–124 with Halton (0–110 with dielectrics), default 5; regularization false; path/volpath accept bvh (default), power or uniform light selection; BDPT uses fixed power selection |
 | Geometry | Native sphere/disk/open cylinder, checked inline triangles/bilinear meshes, Loop subdivision triangles, and PLY triangles/bilinear quads with supported vertex attributes and single-level instances, including affine geometry transforms; at least one placed primitive for scalar path; packet modes and volpath permit empty geometry |
 | Materials | Two-sided diffuse with optional bump or RGB normal mapping, omitted reflectance 0.5, linear sRGB triplets in [0,1], inline numeric spectra with values in [0,1], continuous blackbody spectra, or built-in/file spectra clamped after interpolation |
 | Conductors | Spectral complex-IOR Fresnel with anisotropic single-scattering GGX or smooth reflection; raw named/numeric/file eta/k, independent scalar roughness graphs, bump/normal mapping; see [conductor profile](#spectral-ggx-conductors) |
@@ -186,11 +193,10 @@ objects remain global rather than instanced. Nonempty endpoint medium names
 must resolve, but direct-light connections use the receiver's medium and crossed
 boundaries. A light's endpoint medium alone does not require `volpath`.
 
-At each eligible scattering vertex, rypath sums all point sources with
+At each eligible scattering vertex, a selected point source contributes
 `I(lambda) / distance_squared`, BSDF times receiver cosine or HG phase, and
-visibility/transmittance. Delta-position contributions have unit MIS weight;
-they do not change environment/area probabilities or consume new sampler
-dimensions. Delta-only surfaces have no point next-event estimate. Point lights
+visibility/transmittance, divided by its selection probability. Delta-position
+contributions have unit MIS weight; selection is shared with other light types. Delta-only surfaces have no point next-event estimate. Point lights
 have no visible geometry and add no camera-hit or escaped-ray emission.
 
 Finite shadow rays offset the receiver but end at the point's position, without
@@ -205,9 +211,8 @@ excess inputs are resource errors. Active connections require finite squared
 distance at least `FLT_MIN`, representable arithmetic and positive shadow progress.
 Coincident active sources and extreme-scale failures reject the pending batch;
 there is no distance epsilon, intensity clamp or partial sample acceptance.
-Zero intensity at the sampled wavelength skips connection arithmetic. The
-all-positional strategy can require 64 shadow queries per vertex and is not a claim
-of efficient many-light sampling. See [point-light validation](point-light-validation.md).
+Zero intensity at the sampled wavelength skips connection arithmetic. The combined light sampler chooses at most one direct-light source per vertex
+and divides its contribution by the selected source probability. See [point-light validation](point-light-validation.md).
 
 ## Spot lights
 
@@ -253,10 +258,10 @@ PBRT's power normalization is retained under affine distortion; requested power
 is not guaranteed to equal integrated world-space flux after nonuniform scale
 or shear.
 
-At every eligible surface or medium vertex, each spot contributes its angular
-intensity divided by squared world distance with the existing BSDF/cosine or
-HG phase and shadow transmission. Sources are enumerated with unit delta-position
-MIS weight, without new sampler dimensions or changes to environment/area PDFs.
+At an eligible surface or medium vertex, a selected spot contributes its angular
+intensity divided by squared world distance and selection probability, with the
+existing BSDF/cosine or HG phase and shadow transmission. Delta-position MIS
+weight is one; selection shares the combined inventory.
 Angular zero skips shadow traversal after safe direction evaluation. Spot lights
 have no camera-visible geometry, and delta-only surfaces receive no spot NEE.
 Geometry-free homogeneous media execute the same model in the sky kernel.
@@ -385,8 +390,8 @@ positive power. Other image consumers retain their established numerical policy.
 
 Projection records share the combined 64-source bound, finite endpoint visibility,
 alpha/null handling and delta-position estimator with point/spot/goniometric
-lights. Surface and homogeneous-medium vertices enumerate every source with
-unit MIS weight and no additional sampler dimensions. Geometry-free media bind
+lights. Surface and homogeneous-medium vertices sample the combined inventory,
+using reciprocal selection probability and unit delta-event MIS weight. Geometry-free media bind
 the same image resources. Projection lights have no camera-visible geometry.
 All effective records and owned images participate in scene identity. Projection
 support introduced renderer contract 8 and identity schema 7; see
@@ -651,13 +656,16 @@ storage. Other shape displacement remains unsupported.
 Infinite image lights require a square RGB PNG/JPEG/EXR/HDR in PBRT's equal-area
 octahedral projection and an orthonormal linear transform. Radiance uses native
 nearest sampling with octahedral seams and calibrated RGBIlluminant/D65 spectra.
-The proposal is 15/16 image-weighted sampling plus 1/16 uniform sphere sampling;
-its PDF uses actual quantized CDF intervals and includes the uniform component.
-The importance grid has at most 128 cells per axis; native texel mass is distributed
-by area overlap into those cells, independently of native radiance resolution.
-Black maps use a uniform CDF. BSDF escape and NEE use complementary power weights
-with this PDF. Portals, multiple environments, instanced
-emitters, and authored bilinear emission-sampling controls remain deferred.
+The full proposal is 15/16 native image-weighted sampling plus 1/16 uniform
+sphere sampling. Its PDF uses the actual binary32 CDF intervals. Both tables
+use the native map resolution, including the large profile's 8192-square ceiling,
+and count against retained-image and preparation budgets. Unidirectional NEE
+uses a separate compensated distribution with weights `max(texelMean - mean, 0)`;
+its omitted support is covered by BSDF/phase continuation. BDPT uses the full
+proposal for all strategies. Black or constant compensated maps fall back to
+uniform sampling. Constant non-image environments use continuation alone in
+unidirectional paths. Portals, multiple environments, instanced emitters, and
+authored bilinear emission-sampling controls remain deferred.
 
 The [core texture validation record](core-texture-validation.md) distinguishes
 pinned behavior, numerical adaptations, and measured evidence. APNG, PFM, BMP, TGA, QOI, CMYK/YCCK JPEG, ICC color management, wider color
@@ -710,9 +718,10 @@ preserving source identities and graphics state. Accepted patch parameters trave
 back from the intersection function in a ray payload; no second inverse-transform
 intersection is needed.
 
-Uniform square sampling of patch parameters uses the local differential-area
-Jacobian for both light and BSDF-hit MIS weights. This proposal differs from
-PBRT's optimized patch proposal while targeting the same integral. One-sided
+Rectangular patches use solid-angle incident sampling above the declared small-angle
+threshold. General patches use a bilinear proposal from corner Jacobians, divided
+by the local differential area. Emission sampling uses the corresponding area
+proposal; incident and emitted-ray PDFs remain separate. One-sided
 attributed patch emitters require a certified sign of geometric/shading-normal
 alignment across the complete patch; uncertain fields are diagnosed. Two-sided
 emission does not need that sidedness restriction. See the
@@ -772,18 +781,29 @@ renderers. See the [Sobol validation record](pbrt-sobol-validation.md), and
 
 `halton` defaults to 16 samples and `permutedigits`, supporting `none`,
 `permutedigits`, and `owen`; `fastowen` is invalid. Pixel samples use the pinned
-base-2/base-3 mapping with resolution capped at 128 per axis. Camera values
-ignore the seed; pinned Halton Owen also ignores it. Repeated seeds therefore
-cannot supply independent error bars for `none` or `owen`. Checked wide index
+base-2/base-3 mapping with resolution capped at 128 per axis. BDPT light emission,
+importance walks and splat-lens draws use a separate full-Film index to prevent
+repeating nonlocal light contributions across those tiles. This rypath adaptation
+interleaves absolute samples with a power-of-two tile-slot count, preserves the
+sampling densities and weights, and bounds the expanded signed index on the
+host. Images at most 128 pixels on both axes retain the original index. See the
+[sampling/convergence record](sampling-convergence-validation.md#halton-light-path-reuse-across-film-tiles).
+Camera values ignore the seed; pinned Halton Owen also ignores it. Repeated seeds
+therefore cannot supply independent error bars for `none` or `owen`. Checked wide index
 multiplication avoids the pinned CPU implementation's signed-int overflow at
 large indices; that extension is tested mathematically rather than against
 undefined upstream arithmetic.
 
-Halton retains floating variates directly. Dimensions 0/1 are camera, 2 is
-wavelength, and 3 is reserved. Eight transport dimensions begin at `4+8b`.
+Halton retains floating variates directly. In scalar transport, dimensions 0/1
+are camera, 2 is wavelength, and 3 is reserved. Eight transport dimensions begin
+at `4+8b`.
 The lens uses 998/999. Maximum depth is 124, or 110 with dielectric lobe
 choices at `884+b`; dimensions never wrap. Discrete emitter choices and
-roulette use scaled uniforms; area samples retain the declared midpoint grid.
+roulette use scaled uniforms; light selection and conditional geometry proposals
+use their versioned sampler dimensions.
+Packet transport retains its separate fixed 920-dimension allocation described
+in [architecture](architecture.md); the full-Film BDPT light index does not
+renumber those dimensions.
 
 `zsobol` defaults to 16 samples and `fastowen`, supporting all four Sobol
 randomizations. Following pinned PBRT, a positive non-power-of-two authored
@@ -961,9 +981,12 @@ explicit **compatibility approximation**: finite internal truncation and
 stochastic value/PDF estimates do not establish an uncapped unbiased layered
 solution. Diagnostics and `rypath.materialModel` EXR metadata record each
 coating's depth/sample settings. The outer path depth remains independent.
-The packet coated-diffuse path comparison passes its matched PBRT gates, while
-the coated BDPT comparison has a documented discrepancy; see the
-[Pavilion coating controls](pavilion-validation.md#coated-material-comparison-boundary).
+The earlier coated-BDPT discrepancy and controls remain in the historical
+[Pavilion record](pavilion-validation.md#coated-material-comparison-boundary).
+The follow-up targets the pinned implementation's finite approximation through
+its typed direction hashes and three PCG domains; current evidence is in the
+[sampling record](sampling-convergence-validation.md). This does not make the
+finite layered approximation a route-independent physical model.
 
 Mix selection hashes the world hit position, outgoing direction and stable
 material ID; it is independent of allocation addresses and execution order.
@@ -983,14 +1006,16 @@ first and then reconstructed with unbounded linear sRGB spectra. There is no
 albedo clamp; this is a documented spectral adaptation of RGB data, not a claim
 that legacy RGB measurements acquired spectral information.
 
-The `material-local-philox-v1` stream derives variable-length work from pixel,
-absolute sample index, bounce, seed and stable material ID, preserving all outer
-sampling dimensions. Layered continuation carries its joint-path throughput
-separately from the approximate directional MIS density. Directional densities
-use one fixed density-only random stream for both MIS techniques; transport and
-value estimates retain separate event streams. Delta classification determines
-whether direct-light proposals and subsequent-hit MIS apply. Complete batches
-still commit raw XYZ, independently of display conversion.
+Outer transport retains its fixed sampler dimensions. Coatings use the pinned
+PBRT typed float hashes and PCG streams separately for value, directional PDF,
+and joint-walk sampling, with the independent signed material seed. BDPT retains
+the exact ordered local directions for previously sampled edges so an extra
+world/frame round trip cannot change their hash. New connection directions are
+evaluated from their own geometry. No direction quantization is used.
+Layered continuation carries its joint-path throughput separately from the
+approximate directional MIS density. Delta classification controls direct-light
+proposals and subsequent-hit MIS. Complete batches commit raw XYZ independently
+of display conversion.
 
 See [surface material validation](surface-material-validation.md) for references,
 measured evidence, numerical limits and external-asset coverage. These additions
@@ -1232,15 +1257,17 @@ geometry for both native acceleration and shading, while preserving source
 instance/primitive ordering and effective orientation. The authored scene stays
 unchanged.
 
-In scalar transport, each scattering vertex draws one area sample separately
-from the existing environment sample. Real primitives occupy N of M=bit_ceil(N) equally likely
-slots; unused slots contribute zero. The area sample and BSDF-hit emission use
-complementary power weights including the exact 1/M selection probability.
-Triangle samples are uniform in area; patch samples are uniform in parameter
-space with reciprocal area density equal to the local Jacobian. These proposals
-differ from PBRT's BVH light selection and directional shape sampling. Finite visibility rays offset both endpoints and
-retain blockers before the light. Numerical limits, PDFs, and fixed validation
-criteria are recorded in [area-light validation](pbrt-area-validation.md).
+All PBRT transport modes select one combined light for a direct estimate.
+The source probability multiplies its conditional incident-direction PDF in
+both NEE and emissive-hit MIS. Triangles and rectangles use directional
+solid-angle proposals where stable; full similarity-transformed spheres use
+cone sampling outside their conservative boundary slab. General patches use
+corner-Jacobian importance. Clipped or affine curved shapes and inside/boundary
+sphere cases retain valid area/Jacobian fallbacks. BDPT emitted rays use separate
+area/direction proposals, including mapped goniometric/projection and spot
+importance. Finite visibility offsets both endpoints and retains blockers before
+the light. Numerical domains and proposal adaptations are recorded in
+[sampling validation](sampling-convergence-validation.md).
 
 Patch validation is bounded before expansion: at most 2,000,000 patch corners
 across placements, additionally capped by the configured PBRT total-value limit.

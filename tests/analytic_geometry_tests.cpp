@@ -22,7 +22,62 @@ GeometryAnalytic shape(AnalyticKind kind) {
     s.kind = kind;
     return s;
 }
+struct SphereClipCase {
+    GeometryAnalytic sphere;
+    GeometryRay ray;
+    bool hit;
+    double t;
+};
+std::vector<SphereClipCase> sphere_clip_cases(float radius) {
+    auto sphere = shape(AnalyticKind::sphere);
+    sphere.radius = radius;
+    sphere.z_min = -radius;
+    sphere.z_max = radius;
+    constexpr float distance = .35f;
+    std::vector<SphereClipCase> out;
+    for (float sign : {-1.f, 1.f}) {
+        out.push_back(
+            {sphere, {{0, 0, sign * distance}, {0, 0, -sign}}, true, double(distance) - radius});
+        out.push_back({sphere, {{0, 0, 0}, {0, 0, sign * 2}}, true, double(radius) / 2});
+        out.push_back({sphere,
+                       {{0, 0, sign * distance}, {0, 0, -sign}, distance},
+                       true,
+                       double(distance) + radius});
+    }
+    auto upper = sphere;
+    upper.z_min = 0;
+    out.push_back({upper, {{0, 0, -distance}, {0, 0, 1}}, true, double(distance) + radius});
+    out.push_back({upper, {{0, 0, distance}, {0, 0, -1}}, true, double(distance) - radius});
+    auto lower = sphere;
+    lower.z_max = 0;
+    out.push_back({lower, {{0, 0, distance}, {0, 0, -1}}, true, double(distance) + radius});
+    out.push_back({lower, {{0, 0, -distance}, {0, 0, 1}}, true, double(distance) - radius});
+    auto band = sphere;
+    band.z_min = -radius / 2;
+    band.z_max = radius / 2;
+    for (float sign : {-1.f, 1.f})
+        out.push_back({band, {{0, 0, sign * distance}, {0, 0, -sign}}, false, 0});
+    return out;
+}
+void portable_sphere_clipping() {
+    for (float radius : {.1f, .125f}) {
+        for (const auto &c : sphere_clip_cases(radius)) {
+            const auto hit = intersect_analytic(c.sphere, c.ray);
+            require(hit.hit == c.hit, "sphere active clipping decision at both full-sphere poles");
+            if (!hit.hit)
+                continue;
+            near(hit.t, c.t, 1e-12, "independent axial sphere distance");
+            require(std::isfinite(hit.uv[0]) && std::isfinite(hit.uv[1]), "finite pole UV");
+            const auto frame = evaluate_analytic(c.sphere, hit.uv);
+            for (const auto v :
+                 {frame.position, frame.normal, frame.dpdu, frame.dpdv, frame.dndu, frame.dndv})
+                require(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z),
+                        "finite pole surface frame");
+        }
+    }
+}
 void portable() {
+    portable_sphere_clipping();
     for (auto kind : {AnalyticKind::sphere, AnalyticKind::disk, AnalyticKind::cylinder}) {
         auto s = shape(kind);
         require(validate_analytic(s).empty(), "defaults validate");
@@ -154,7 +209,96 @@ GeometryPoint transform(GeometryPoint p, const GeometryTransform &xf, bool vecto
             m[4] * p.x + m[5] * p.y + m[6] * p.z + (vector ? 0 : m[7]),
             m[8] * p.x + m[9] * p.y + m[10] * p.z + (vector ? 0 : m[11])};
 }
+int native_sphere_clipping(const std::filesystem::path &library) {
+    for (float radius : {.1f, .125f}) {
+        const auto cases = sphere_clip_cases(radius);
+        // Reuse one AS for each of the four authored clipping policies.
+        for (unsigned first : {0u, 6u, 8u, 10u}) {
+            const unsigned count = first == 0 ? 6 : 2;
+            GeometryData data;
+            data.meshes.resize(1);
+            data.meshes[0].analytics = {cases[first].sphere};
+            data.instances = {{0, {}}};
+            auto built = build_metal_geometry(data, library);
+#ifdef RYPATH_ALLOW_NO_METAL_DEVICE
+            if (built.status == GeometryStatus::no_device) {
+                std::cerr << built.diagnostic << '\n';
+                return 77;
+            }
+#endif
+#ifdef RYPATH_ALLOW_NO_METAL_RAY_TRACING
+            if (built.status == GeometryStatus::no_ray_tracing) {
+                std::cerr << built.diagnostic << '\n';
+                return 77;
+            }
+#endif
+            require(built.status == GeometryStatus::success, built.diagnostic);
+            std::vector<GeometryRay> rays;
+            for (unsigned i = 0; i < count; ++i)
+                rays.push_back(cases[first + i].ray);
+            const auto hits = built.scene->closest_hits(rays);
+            const auto shadows = built.scene->occlusion(rays);
+            require(hits.status == GeometryStatus::success, hits.diagnostic);
+            require(shadows.status == GeometryStatus::success, shadows.diagnostic);
+            require(hits.guard_count > 0 && shadows.guard_count > 0, "sphere pole dispatch guards");
+            for (unsigned i = 0; i < count; ++i) {
+                const auto &c = cases[first + i];
+                const auto &hit = hits.hits[i];
+                require(hit.hit == c.hit && bool(shadows.occluded[i]) == c.hit,
+                        "native full sphere poles and active hemisphere/band clipping");
+                if (!c.hit)
+                    continue;
+                require(hit.kind == PrimitiveKind::analytic && hit.instance_index == 0 &&
+                            hit.primitive_index == 0,
+                        "sphere pole source identity");
+                near(hit.t, c.t,
+                     32 * std::numeric_limits<float>::epsilon() * std::max(1., std::abs(c.t)),
+                     "native independent axial sphere t");
+                for (float uv : hit.analytic_uv)
+                    require(std::isfinite(uv), "native finite pole UV");
+            }
+        }
+        // Original failed mixed fixture: translated full sphere must beat the
+        // farther triangle. The expected distance uses source binary32 values.
+        GeometryMesh sphere;
+        auto full = shape(AnalyticKind::sphere);
+        full.radius = radius;
+        full.z_min = -radius;
+        full.z_max = radius;
+        sphere.analytics = {full};
+        GeometryMesh farther;
+        farther.positions = {{-1, -1, .75f}, {1, -1, .75f}, {0, 1, .75f}};
+        farther.triangles = {{0, 1, 2}};
+        GeometryTransform translation;
+        translation.values[11] = .35f;
+        GeometryData data{{sphere, farther}, {{0, translation}, {1, {}}}};
+        auto built = build_metal_geometry(data, library);
+        require(built.status == GeometryStatus::success, built.diagnostic);
+        const std::array rays{GeometryRay{{0, 0, 0}, {0, 0, 1}, 0, 1},
+                              GeometryRay{{0, 0, .7f}, {0, 0, -1}, 0, 1},
+                              GeometryRay{{0, 0, .35f}, {0, 0, 2}, 0, 1}};
+        const std::array expected{double(.35f) - radius, double(.7f) - double(.35f) - radius,
+                                  double(radius) / 2};
+        const auto hits = built.scene->closest_hits(rays);
+        const auto shadows = built.scene->occlusion(rays);
+        require(hits.status == GeometryStatus::success, hits.diagnostic);
+        require(shadows.status == GeometryStatus::success, shadows.diagnostic);
+        require(hits.guard_count > 0 && shadows.guard_count > 0, "translated mixed pole guards");
+        for (std::size_t i = 0; i < rays.size(); ++i) {
+            require(hits.hits[i].hit && hits.hits[i].kind == PrimitiveKind::analytic &&
+                        hits.hits[i].instance_index == 0 && hits.hits[i].mesh_index == 0 &&
+                        hits.hits[i].primitive_index == 0 && shadows.occluded[i],
+                    "translated full sphere must precede farther triangle");
+            near(hits.hits[i].t, expected[i],
+                 32 * std::numeric_limits<float>::epsilon() * std::max(1., expected[i]),
+                 "translated full sphere independent t");
+        }
+    }
+    return 0;
+}
 int native(const std::filesystem::path &library) {
+    if (const int status = native_sphere_clipping(library); status != 0)
+        return status;
     const std::array transforms{GeometryTransform{},
                                 GeometryTransform{{-2, .5f, 0, 8, 0, 1, 0, -4, 0, 0, .5f, 2}}};
     for (auto kind : {AnalyticKind::sphere, AnalyticKind::disk, AnalyticKind::cylinder}) {

@@ -1,0 +1,5817 @@
+{
+  "schema": 1,
+  "scope": "Post-hoc descriptive localization from all64 retained replicates per arm and scene; no exclusions, causal attribution or new statistical acceptance",
+  "implementation_revision": "2cba19f4ed4a875a2044b2cc23bf8dde433c7b50",
+  "source_review_sha256": "31c741ded87f1144e2304a1a04cb7fa4f9fb72dc0b87186ff2d14a328a701eb9",
+  "metrics_sha256": "3b23e593c162a77cb0400e68a34d7ce513881deee5d4351d5d1f233eb6e857bf",
+  "localization": [
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "full",
+      "variance": 0.11685162648923711,
+      "tail": 0.11575974364999829,
+      "top_variance_seeds": [
+        {
+          "seed": 1026,
+          "fraction": 0.06680233575908162
+        },
+        {
+          "seed": 1051,
+          "fraction": 0.039256188177943005
+        },
+        {
+          "seed": 1044,
+          "fraction": 0.037058342127920224
+        },
+        {
+          "seed": 1032,
+          "fraction": 0.03679316959658982
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.03573279758822267
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1026,
+          "fraction": 0.06826208448777335
+        },
+        {
+          "seed": 1051,
+          "fraction": 0.039911932792679135
+        },
+        {
+          "seed": 1044,
+          "fraction": 0.03759304827029563
+        },
+        {
+          "seed": 1032,
+          "fraction": 0.03733775018280985
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.03630592586910765
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 295,
+          "y": 91,
+          "variance": 379.48276684313925,
+          "fraction_of_region_variance": 0.05969780964792379
+        },
+        {
+          "x": 297,
+          "y": 90,
+          "variance": 265.9528036062433,
+          "fraction_of_region_variance": 0.0418379995937468
+        },
+        {
+          "x": 296,
+          "y": 90,
+          "variance": 231.29582071354287,
+          "fraction_of_region_variance": 0.036385983985999876
+        },
+        {
+          "x": 296,
+          "y": 91,
+          "variance": 158.3046117378091,
+          "fraction_of_region_variance": 0.024903472314511153
+        },
+        {
+          "x": 103,
+          "y": 147,
+          "variance": 103.06750691090438,
+          "fraction_of_region_variance": 0.016213923123936134
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1068,
+          "x": 295,
+          "y": 91,
+          "replicate_luminance": 82.52072422027588,
+          "positive_LOO_residual": 78.3365515708174
+        },
+        {
+          "seed": 1026,
+          "x": 297,
+          "y": 90,
+          "replicate_luminance": 81.72107594451904,
+          "positive_LOO_residual": 77.78491808734356
+        },
+        {
+          "seed": 1058,
+          "x": 295,
+          "y": 91,
+          "replicate_luminance": 81.800168170166,
+          "positive_LOO_residual": 77.60455812308673
+        },
+        {
+          "seed": 1038,
+          "x": 296,
+          "y": 90,
+          "replicate_luminance": 78.85249139404297,
+          "positive_LOO_residual": 76.21425888134209
+        },
+        {
+          "seed": 1044,
+          "x": 236,
+          "y": 86,
+          "replicate_luminance": 75.77211119461059,
+          "positive_LOO_residual": 75.76788828285851
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "wall",
+      "variance": 8.371437837691203e-06,
+      "tail": 4.0464910950459855e-07,
+      "top_variance_seeds": [
+        {
+          "seed": 1077,
+          "fraction": 0.02112626162023542
+        },
+        {
+          "seed": 1029,
+          "fraction": 0.020314868911352757
+        },
+        {
+          "seed": 1058,
+          "fraction": 0.019732857356765755
+        },
+        {
+          "seed": 1037,
+          "fraction": 0.01893572080172373
+        },
+        {
+          "seed": 1081,
+          "fraction": 0.017683717520901848
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1077,
+          "fraction": 0.14603451697867556
+        },
+        {
+          "seed": 1029,
+          "fraction": 0.10360518642695962
+        },
+        {
+          "seed": 1058,
+          "fraction": 0.08253489957658736
+        },
+        {
+          "seed": 1068,
+          "fraction": 0.04282537220483476
+        },
+        {
+          "seed": 1055,
+          "fraction": 0.038261118315738155
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 43,
+          "y": 82,
+          "variance": 8.472828379941598e-05,
+          "fraction_of_region_variance": 0.0059187806129528545
+        },
+        {
+          "x": 18,
+          "y": 55,
+          "variance": 6.656384558948218e-05,
+          "fraction_of_region_variance": 0.004649885270086518
+        },
+        {
+          "x": 15,
+          "y": 84,
+          "variance": 5.6172254185186087e-05,
+          "fraction_of_region_variance": 0.003923970062278436
+        },
+        {
+          "x": 27,
+          "y": 77,
+          "variance": 3.890167465746489e-05,
+          "fraction_of_region_variance": 0.0027175161286058015
+        },
+        {
+          "x": 30,
+          "y": 78,
+          "variance": 3.625926374402615e-05,
+          "fraction_of_region_variance": 0.0025329278213182174
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1077,
+          "x": 43,
+          "y": 82,
+          "replicate_luminance": 0.12796510037183761,
+          "positive_LOO_residual": 0.06841689105338991
+        },
+        {
+          "seed": 1029,
+          "x": 18,
+          "y": 55,
+          "replicate_luminance": 0.11808134754747153,
+          "positive_LOO_residual": 0.05751795945014983
+        },
+        {
+          "seed": 1058,
+          "x": 15,
+          "y": 84,
+          "replicate_luminance": 0.10964890147298573,
+          "positive_LOO_residual": 0.05505210439313261
+        },
+        {
+          "seed": 1077,
+          "x": 27,
+          "y": 77,
+          "replicate_luminance": 0.11283335489332676,
+          "positive_LOO_residual": 0.04226391112386942
+        },
+        {
+          "seed": 1068,
+          "x": 30,
+          "y": 78,
+          "replicate_luminance": 0.11255715494006872,
+          "positive_LOO_residual": 0.041667490349627245
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "soffit",
+      "variance": 1.3786640507339573e-06,
+      "tail": 3.948782951129548e-08,
+      "top_variance_seeds": [
+        {
+          "seed": 1076,
+          "fraction": 0.017340569115360745
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.017011595860851995
+        },
+        {
+          "seed": 1033,
+          "fraction": 0.016897299802915607
+        },
+        {
+          "seed": 1039,
+          "fraction": 0.016829813844447428
+        },
+        {
+          "seed": 1081,
+          "fraction": 0.01674006860866644
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1039,
+          "fraction": 0.04822266128707473
+        },
+        {
+          "seed": 1043,
+          "fraction": 0.03532153852728184
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.0345649107705675
+        },
+        {
+          "seed": 1026,
+          "fraction": 0.02502482099137083
+        },
+        {
+          "seed": 1052,
+          "fraction": 0.02425331029925959
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 124,
+          "y": 60,
+          "variance": 1.4581749026646668e-05,
+          "fraction_of_region_variance": 0.005341779751569624
+        },
+        {
+          "x": 124,
+          "y": 59,
+          "variance": 1.1775225956295593e-05,
+          "fraction_of_region_variance": 0.004313656987824457
+        },
+        {
+          "x": 125,
+          "y": 59,
+          "variance": 1.090275411155347e-05,
+          "fraction_of_region_variance": 0.003994041527049389
+        },
+        {
+          "x": 128,
+          "y": 59,
+          "variance": 8.247018737935998e-06,
+          "fraction_of_region_variance": 0.0030211573127899827
+        },
+        {
+          "x": 124,
+          "y": 61,
+          "variance": 7.856891352528234e-06,
+          "fraction_of_region_variance": 0.0028782406733597102
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1039,
+          "x": 124,
+          "y": 60,
+          "replicate_luminance": 0.06928020022064446,
+          "positive_LOO_residual": 0.014437038401484706
+        },
+        {
+          "seed": 1043,
+          "x": 153,
+          "y": 45,
+          "replicate_luminance": 0.01727815750669688,
+          "positive_LOO_residual": 0.012413777904975828
+        },
+        {
+          "seed": 1079,
+          "x": 125,
+          "y": 59,
+          "replicate_luminance": 0.05523973526842892,
+          "positive_LOO_residual": 0.011881858617930665
+        },
+        {
+          "seed": 1026,
+          "x": 117,
+          "y": 44,
+          "replicate_luminance": 0.037724666785821315,
+          "positive_LOO_residual": 0.010178996889272499
+        },
+        {
+          "seed": 1052,
+          "x": 103,
+          "y": 47,
+          "replicate_luminance": 0.020108295780606567,
+          "positive_LOO_residual": 0.009578823655456424
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "floor",
+      "variance": 3.822620601388601e-06,
+      "tail": 2.72955049580374e-07,
+      "top_variance_seeds": [
+        {
+          "seed": 1031,
+          "fraction": 0.022846650358123107
+        },
+        {
+          "seed": 1032,
+          "fraction": 0.021480879861968546
+        },
+        {
+          "seed": 1085,
+          "fraction": 0.01900650022165504
+        },
+        {
+          "seed": 1057,
+          "fraction": 0.018095179466295377
+        },
+        {
+          "seed": 1048,
+          "fraction": 0.017729659809863487
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1031,
+          "fraction": 0.12708670202542388
+        },
+        {
+          "seed": 1032,
+          "fraction": 0.08218267790778615
+        },
+        {
+          "seed": 1057,
+          "fraction": 0.05083780465119308
+        },
+        {
+          "seed": 1048,
+          "fraction": 0.04167290423388213
+        },
+        {
+          "seed": 1085,
+          "fraction": 0.04079954716137227
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 91,
+          "y": 95,
+          "variance": 5.48755657674428e-05,
+          "fraction_of_region_variance": 0.009000302937562257
+        },
+        {
+          "x": 188,
+          "y": 99,
+          "variance": 3.548410893146416e-05,
+          "fraction_of_region_variance": 0.005819853069143463
+        },
+        {
+          "x": 161,
+          "y": 98,
+          "variance": 3.446040349144494e-05,
+          "fraction_of_region_variance": 0.005651952129077533
+        },
+        {
+          "x": 190,
+          "y": 99,
+          "variance": 2.3249669074640974e-05,
+          "fraction_of_region_variance": 0.0038132466051765093
+        },
+        {
+          "x": 229,
+          "y": 99,
+          "variance": 2.129534590645917e-05,
+          "fraction_of_region_variance": 0.003492712314449098
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1031,
+          "x": 91,
+          "y": 95,
+          "replicate_luminance": 0.09244038563594223,
+          "positive_LOO_residual": 0.05545689001507348
+        },
+        {
+          "seed": 1032,
+          "x": 188,
+          "y": 99,
+          "replicate_luminance": 0.07969586612582208,
+          "positive_LOO_residual": 0.043391158233583
+        },
+        {
+          "seed": 1057,
+          "x": 181,
+          "y": 99,
+          "replicate_luminance": 0.0755857409581542,
+          "positive_LOO_residual": 0.03235248285017553
+        },
+        {
+          "seed": 1048,
+          "x": 161,
+          "y": 98,
+          "replicate_luminance": 0.07613940719217062,
+          "positive_LOO_residual": 0.03227247885942223
+        },
+        {
+          "seed": 1085,
+          "x": 190,
+          "y": 99,
+          "replicate_luminance": 0.06443544368222356,
+          "positive_LOO_residual": 0.031258717718436614
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "pool",
+      "variance": 0.31434718093558456,
+      "tail": 0.3139953871766392,
+      "top_variance_seeds": [
+        {
+          "seed": 1029,
+          "fraction": 0.04516656885463071
+        },
+        {
+          "seed": 1081,
+          "fraction": 0.04467899388595301
+        },
+        {
+          "seed": 1051,
+          "fraction": 0.04425377677195809
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.040887901452484936
+        },
+        {
+          "seed": 1026,
+          "fraction": 0.039991748682591276
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1029,
+          "fraction": 0.04567574390870248
+        },
+        {
+          "seed": 1081,
+          "fraction": 0.04517979562907799
+        },
+        {
+          "seed": 1051,
+          "fraction": 0.04474720766687459
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.04132331393737241
+        },
+        {
+          "seed": 1026,
+          "fraction": 0.040411849124843545
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 103,
+          "y": 147,
+          "variance": 103.06750691090438,
+          "fraction_of_region_variance": 0.047007590320332006
+        },
+        {
+          "x": 147,
+          "y": 122,
+          "variance": 86.75802159499789,
+          "fraction_of_region_variance": 0.039569071362768174
+        },
+        {
+          "x": 88,
+          "y": 131,
+          "variance": 84.79862349384136,
+          "fraction_of_region_variance": 0.03867541839711312
+        },
+        {
+          "x": 211,
+          "y": 135,
+          "variance": 83.33259975366902,
+          "fraction_of_region_variance": 0.038006786299147714
+        },
+        {
+          "x": 199,
+          "y": 127,
+          "variance": 78.95010223885112,
+          "fraction_of_region_variance": 0.03600799294583107
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1064,
+          "x": 147,
+          "y": 122,
+          "replicate_luminance": 74.51853280029297,
+          "positive_LOO_residual": 74.51518860881075
+        },
+        {
+          "seed": 1032,
+          "x": 88,
+          "y": 131,
+          "replicate_luminance": 73.67519389343262,
+          "positive_LOO_residual": 73.6689334888804
+        },
+        {
+          "seed": 1050,
+          "x": 103,
+          "y": 147,
+          "replicate_luminance": 73.97161503295898,
+          "positive_LOO_residual": 73.41187514696499
+        },
+        {
+          "seed": 1051,
+          "x": 211,
+          "y": 135,
+          "replicate_luminance": 73.03374377746582,
+          "positive_LOO_residual": 73.02935216558129
+        },
+        {
+          "seed": 1086,
+          "x": 199,
+          "y": 127,
+          "replicate_luminance": 71.08867909584045,
+          "positive_LOO_residual": 71.08309524424668
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "glass",
+      "variance": 0.10780879886476531,
+      "tail": 0.10780377759247392,
+      "top_variance_seeds": [
+        {
+          "seed": 1044,
+          "fraction": 0.5688725929960515
+        },
+        {
+          "seed": 1083,
+          "fraction": 0.23393132564070163
+        },
+        {
+          "seed": 1066,
+          "fraction": 0.16125717060464517
+        },
+        {
+          "seed": 1059,
+          "fraction": 0.019378722961135738
+        },
+        {
+          "seed": 1042,
+          "fraction": 0.001345380842963522
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1044,
+          "fraction": 0.5778218120055071
+        },
+        {
+          "seed": 1083,
+          "fraction": 0.2374622581197662
+        },
+        {
+          "seed": 1066,
+          "fraction": 0.16361318784223391
+        },
+        {
+          "seed": 1059,
+          "fraction": 0.01943900465443247
+        },
+        {
+          "seed": 1042,
+          "fraction": 0.0011147402911183932
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 236,
+          "y": 86,
+          "variance": 89.69957942363312,
+          "fraction_of_region_variance": 0.5777949040864757
+        },
+        {
+          "x": 260,
+          "y": 88,
+          "variance": 36.86303663430773,
+          "fraction_of_region_variance": 0.2374512216591772
+        },
+        {
+          "x": 239,
+          "y": 88,
+          "variance": 25.398893972069033,
+          "fraction_of_region_variance": 0.16360557764920447
+        },
+        {
+          "x": 228,
+          "y": 89,
+          "variance": 3.017661467778724,
+          "fraction_of_region_variance": 0.019438100262499987
+        },
+        {
+          "x": 234,
+          "y": 85,
+          "variance": 0.1730530357300522,
+          "fraction_of_region_variance": 0.001114711605383234
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1044,
+          "x": 236,
+          "y": 86,
+          "replicate_luminance": 75.77211119461059,
+          "positive_LOO_residual": 75.76788828285851
+        },
+        {
+          "seed": 1083,
+          "x": 260,
+          "y": 88,
+          "replicate_luminance": 48.58450217094421,
+          "positive_LOO_residual": 48.57194650091247
+        },
+        {
+          "seed": 1066,
+          "x": 239,
+          "y": 88,
+          "replicate_luminance": 40.32211432495117,
+          "positive_LOO_residual": 40.317849683267816
+        },
+        {
+          "seed": 1059,
+          "x": 228,
+          "y": 89,
+          "replicate_luminance": 13.901956257820128,
+          "positive_LOO_residual": 13.897127896822578
+        },
+        {
+          "seed": 1042,
+          "x": 234,
+          "y": 85,
+          "replicate_luminance": 3.3360338298797605,
+          "positive_LOO_residual": 3.327926314384408
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "full",
+      "variance": 0.00011302711666781368,
+      "tail": 2.624619453291736e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 1053,
+          "fraction": 0.01819558520321644
+        },
+        {
+          "seed": 1059,
+          "fraction": 0.017216102972700216
+        },
+        {
+          "seed": 1064,
+          "fraction": 0.017054229909808465
+        },
+        {
+          "seed": 1048,
+          "fraction": 0.016814209288080938
+        },
+        {
+          "seed": 1057,
+          "fraction": 0.016760809860331877
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1053,
+          "fraction": 0.02785547792976903
+        },
+        {
+          "seed": 1059,
+          "fraction": 0.02103359332860894
+        },
+        {
+          "seed": 1047,
+          "fraction": 0.020892785077364515
+        },
+        {
+          "seed": 1056,
+          "fraction": 0.020870682235335
+        },
+        {
+          "seed": 1064,
+          "fraction": 0.020052119012067385
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 284,
+          "y": 76,
+          "variance": 0.038523321775058746,
+          "fraction_of_region_variance": 0.006265304452708345
+        },
+        {
+          "x": 279,
+          "y": 87,
+          "variance": 0.03524515340136426,
+          "fraction_of_region_variance": 0.005732154091782482
+        },
+        {
+          "x": 278,
+          "y": 83,
+          "variance": 0.0351194079545501,
+          "fraction_of_region_variance": 0.005711703272083371
+        },
+        {
+          "x": 285,
+          "y": 76,
+          "variance": 0.0350248146427382,
+          "fraction_of_region_variance": 0.005696318931627164
+        },
+        {
+          "x": 281,
+          "y": 83,
+          "variance": 0.029534694413290718,
+          "fraction_of_region_variance": 0.004803424104947618
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1040,
+          "x": 278,
+          "y": 83,
+          "replicate_luminance": 2.159315881538391,
+          "positive_LOO_residual": 0.7976703675684469
+        },
+        {
+          "seed": 1075,
+          "x": 288,
+          "y": 80,
+          "replicate_luminance": 2.1351366062402724,
+          "positive_LOO_residual": 0.7001133904998269
+        },
+        {
+          "seed": 1086,
+          "x": 284,
+          "y": 83,
+          "replicate_luminance": 2.2332671049118042,
+          "positive_LOO_residual": 0.678685584681754
+        },
+        {
+          "seed": 1048,
+          "x": 286,
+          "y": 87,
+          "replicate_luminance": 2.8203103652000427,
+          "positive_LOO_residual": 0.6664919779830513
+        },
+        {
+          "seed": 1053,
+          "x": 286,
+          "y": 86,
+          "replicate_luminance": 1.9626693801164627,
+          "positive_LOO_residual": 0.6546700541134862
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "wall",
+      "variance": 0.00020694422358855048,
+      "tail": 7.775794216948051e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 1037,
+          "fraction": 0.019157694712201745
+        },
+        {
+          "seed": 1029,
+          "fraction": 0.018687701818582
+        },
+        {
+          "seed": 1058,
+          "fraction": 0.017624573184316733
+        },
+        {
+          "seed": 1055,
+          "fraction": 0.017585930879690258
+        },
+        {
+          "seed": 1081,
+          "fraction": 0.01746454584860539
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1029,
+          "fraction": 0.08484525142196661
+        },
+        {
+          "seed": 1077,
+          "fraction": 0.05770272491553943
+        },
+        {
+          "seed": 1068,
+          "fraction": 0.05571535701048935
+        },
+        {
+          "seed": 1055,
+          "fraction": 0.049777321674175916
+        },
+        {
+          "seed": 1058,
+          "fraction": 0.04443975635545904
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 18,
+          "y": 55,
+          "variance": 0.0010000100641433562,
+          "fraction_of_region_variance": 0.002825888043457005
+        },
+        {
+          "x": 30,
+          "y": 78,
+          "variance": 0.0009064814860157874,
+          "fraction_of_region_variance": 0.0025615894127440824
+        },
+        {
+          "x": 43,
+          "y": 82,
+          "variance": 0.0007694703753229462,
+          "fraction_of_region_variance": 0.002174415249792698
+        },
+        {
+          "x": 23,
+          "y": 60,
+          "variance": 0.0006978586738333549,
+          "fraction_of_region_variance": 0.0019720506354081392
+        },
+        {
+          "x": 20,
+          "y": 80,
+          "variance": 0.000612020803122439,
+          "fraction_of_region_variance": 0.0017294848641070493
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1068,
+          "x": 30,
+          "y": 78,
+          "replicate_luminance": 0.5627857571601868,
+          "positive_LOO_residual": 0.20833743552196604
+        },
+        {
+          "seed": 1029,
+          "x": 18,
+          "y": 55,
+          "replicate_luminance": 0.5033322394609451,
+          "positive_LOO_residual": 0.20051529992719486
+        },
+        {
+          "seed": 1029,
+          "x": 23,
+          "y": 60,
+          "replicate_luminance": 0.4895612902581692,
+          "positive_LOO_residual": 0.1788727878191168
+        },
+        {
+          "seed": 1077,
+          "x": 43,
+          "y": 82,
+          "replicate_luminance": 0.47296269999146456,
+          "positive_LOO_residual": 0.1752216542012635
+        },
+        {
+          "seed": 1059,
+          "x": 20,
+          "y": 80,
+          "replicate_luminance": 0.5048618143200875,
+          "positive_LOO_residual": 0.16619030538442592
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "soffit",
+      "variance": 3.446660123478676e-05,
+      "tail": 9.871957386147855e-07,
+      "top_variance_seeds": [
+        {
+          "seed": 1076,
+          "fraction": 0.017340569402192873
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.017011595884483796
+        },
+        {
+          "seed": 1033,
+          "fraction": 0.016897299575500634
+        },
+        {
+          "seed": 1039,
+          "fraction": 0.016829813404677776
+        },
+        {
+          "seed": 1081,
+          "fraction": 0.01674006848612754
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1039,
+          "fraction": 0.048222647711020285
+        },
+        {
+          "seed": 1043,
+          "fraction": 0.03532153766022963
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.034564907649828655
+        },
+        {
+          "seed": 1026,
+          "fraction": 0.025024825078019088
+        },
+        {
+          "seed": 1052,
+          "fraction": 0.02425331464126764
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 124,
+          "y": 60,
+          "variance": 0.0003645436998661636,
+          "fraction_of_region_variance": 0.005341779378715255
+        },
+        {
+          "x": 124,
+          "y": 59,
+          "variance": 0.0002943806778010037,
+          "fraction_of_region_variance": 0.004313657415412598
+        },
+        {
+          "x": 125,
+          "y": 59,
+          "variance": 0.00027256881077353305,
+          "fraction_of_region_variance": 0.0039940409152744855
+        },
+        {
+          "x": 128,
+          "y": 59,
+          "variance": 0.00020617547919362923,
+          "fraction_of_region_variance": 0.00302115747318526
+        },
+        {
+          "x": 124,
+          "y": 61,
+          "variance": 0.00019642226353244757,
+          "fraction_of_region_variance": 0.002878240378981766
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1039,
+          "x": 124,
+          "y": 60,
+          "replicate_luminance": 0.3464009899377823,
+          "positive_LOO_residual": 0.07218518096679256
+        },
+        {
+          "seed": 1043,
+          "x": 153,
+          "y": 45,
+          "replicate_luminance": 0.08639078599363564,
+          "positive_LOO_residual": 0.06206888785208057
+        },
+        {
+          "seed": 1079,
+          "x": 125,
+          "y": 59,
+          "replicate_luminance": 0.2761986724898219,
+          "positive_LOO_residual": 0.05940928950867958
+        },
+        {
+          "seed": 1026,
+          "x": 117,
+          "y": 44,
+          "replicate_luminance": 0.18862334043085574,
+          "positive_LOO_residual": 0.05089499099178923
+        },
+        {
+          "seed": 1052,
+          "x": 103,
+          "y": 47,
+          "replicate_luminance": 0.10054148149639368,
+          "positive_LOO_residual": 0.04789412060068358
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "floor",
+      "variance": 9.50932626302269e-05,
+      "tail": 6.351623725865225e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 1032,
+          "fraction": 0.020570025771223348
+        },
+        {
+          "seed": 1085,
+          "fraction": 0.01909922866483496
+        },
+        {
+          "seed": 1031,
+          "fraction": 0.019087825714938556
+        },
+        {
+          "seed": 1057,
+          "fraction": 0.018184060567948024
+        },
+        {
+          "seed": 1048,
+          "fraction": 0.017817561086970173
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1031,
+          "fraction": 0.07767711567457601
+        },
+        {
+          "seed": 1032,
+          "fraction": 0.07280029085806086
+        },
+        {
+          "seed": 1057,
+          "fraction": 0.05461766958091368
+        },
+        {
+          "seed": 1048,
+          "fraction": 0.04477135525029385
+        },
+        {
+          "seed": 1085,
+          "fraction": 0.04383305458949157
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 161,
+          "y": 98,
+          "variance": 0.0008615101603777466,
+          "fraction_of_region_variance": 0.005680021350120636
+        },
+        {
+          "x": 91,
+          "y": 95,
+          "variance": 0.0007756013644795527,
+          "fraction_of_region_variance": 0.005113616196348637
+        },
+        {
+          "x": 188,
+          "y": 99,
+          "variance": 0.0007301478001720247,
+          "fraction_of_region_variance": 0.004813936369482013
+        },
+        {
+          "x": 190,
+          "y": 99,
+          "variance": 0.0005812417275470056,
+          "fraction_of_region_variance": 0.0038321839647258477
+        },
+        {
+          "x": 229,
+          "y": 99,
+          "variance": 0.0005323835859078887,
+          "fraction_of_region_variance": 0.0035100574241453864
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1031,
+          "x": 91,
+          "y": 95,
+          "replicate_luminance": 0.3817022599518299,
+          "positive_LOO_residual": 0.19678478167213137
+        },
+        {
+          "seed": 1032,
+          "x": 188,
+          "y": 99,
+          "replicate_luminance": 0.3739415719270706,
+          "positive_LOO_residual": 0.19241803223012935
+        },
+        {
+          "seed": 1057,
+          "x": 181,
+          "y": 99,
+          "replicate_luminance": 0.37792869787812233,
+          "positive_LOO_residual": 0.16176240750281584
+        },
+        {
+          "seed": 1048,
+          "x": 161,
+          "y": 98,
+          "replicate_luminance": 0.38069705778360363,
+          "positive_LOO_residual": 0.16136241663987674
+        },
+        {
+          "seed": 1085,
+          "x": 190,
+          "y": 99,
+          "replicate_luminance": 0.32217722138762467,
+          "positive_LOO_residual": 0.1562935907063976
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "pool",
+      "variance": 4.969702573614773e-05,
+      "tail": 8.771100310129589e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 1029,
+          "fraction": 0.020717529209528126
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.02067869093693859
+        },
+        {
+          "seed": 1028,
+          "fraction": 0.020316173293911995
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.0192544816552255
+        },
+        {
+          "seed": 1030,
+          "fraction": 0.01867835810212097
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1029,
+          "fraction": 0.0444249071684519
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.043809891337991916
+        },
+        {
+          "seed": 1028,
+          "fraction": 0.040326068534853245
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.03787921693467726
+        },
+        {
+          "seed": 1030,
+          "fraction": 0.03251437818883953
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 171,
+          "y": 121,
+          "variance": 0.0009905755087161602,
+          "fraction_of_region_variance": 0.002857675926828583
+        },
+        {
+          "x": 103,
+          "y": 147,
+          "variance": 0.000952876949875922,
+          "fraction_of_region_variance": 0.0027489207000680267
+        },
+        {
+          "x": 128,
+          "y": 121,
+          "variance": 0.0007359858773321593,
+          "fraction_of_region_variance": 0.0021232193867419553
+        },
+        {
+          "x": 162,
+          "y": 157,
+          "variance": 0.0007294658418730562,
+          "fraction_of_region_variance": 0.002104409969176508
+        },
+        {
+          "x": 178,
+          "y": 151,
+          "variance": 0.0007113091298681374,
+          "fraction_of_region_variance": 0.0020520303188113756
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1054,
+          "x": 128,
+          "y": 121,
+          "replicate_luminance": 0.25500901228487494,
+          "positive_LOO_residual": 0.20664207431720127
+        },
+        {
+          "seed": 1029,
+          "x": 104,
+          "y": 157,
+          "replicate_luminance": 0.30141573616564277,
+          "positive_LOO_residual": 0.20594540085041574
+        },
+        {
+          "seed": 1030,
+          "x": 154,
+          "y": 116,
+          "replicate_luminance": 0.22375674407035112,
+          "positive_LOO_residual": 0.20579429763987334
+        },
+        {
+          "seed": 1031,
+          "x": 178,
+          "y": 151,
+          "replicate_luminance": 0.23372092982232573,
+          "positive_LOO_residual": 0.2049132257801939
+        },
+        {
+          "seed": 1036,
+          "x": 162,
+          "y": 157,
+          "replicate_luminance": 0.2541478463768959,
+          "positive_LOO_residual": 0.20375875982042874
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "glass",
+      "variance": 0.0001318603530172736,
+      "tail": 6.3285466917264965e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 1044,
+          "fraction": 0.020820874702523272
+        },
+        {
+          "seed": 1059,
+          "fraction": 0.019642266152609014
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.019401380392756424
+        },
+        {
+          "seed": 1083,
+          "fraction": 0.0187955358560947
+        },
+        {
+          "seed": 1066,
+          "fraction": 0.018412520198725902
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1083,
+          "fraction": 0.08029357877526012
+        },
+        {
+          "seed": 1044,
+          "fraction": 0.0742257973629801
+        },
+        {
+          "seed": 1042,
+          "fraction": 0.07330014752935717
+        },
+        {
+          "seed": 1059,
+          "fraction": 0.07217774397736355
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.058452290501582335
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 260,
+          "y": 88,
+          "variance": 0.0008229874834445447,
+          "fraction_of_region_variance": 0.004334275410672606
+        },
+        {
+          "x": 234,
+          "y": 85,
+          "variance": 0.0007581663474942709,
+          "fraction_of_region_variance": 0.003992893966491664
+        },
+        {
+          "x": 243,
+          "y": 66,
+          "variance": 0.0007176723657500688,
+          "fraction_of_region_variance": 0.0037796318296004325
+        },
+        {
+          "x": 256,
+          "y": 82,
+          "variance": 0.0007095638763536676,
+          "fraction_of_region_variance": 0.003736928353647885
+        },
+        {
+          "x": 236,
+          "y": 86,
+          "variance": 0.000694075630825997,
+          "fraction_of_region_variance": 0.0036553592859579678
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1083,
+          "x": 260,
+          "y": 88,
+          "replicate_luminance": 0.27189194250851867,
+          "positive_LOO_residual": 0.2091135922960937
+        },
+        {
+          "seed": 1042,
+          "x": 234,
+          "y": 85,
+          "replicate_luminance": 0.24303283116072413,
+          "positive_LOO_residual": 0.20249525358788367
+        },
+        {
+          "seed": 1044,
+          "x": 236,
+          "y": 86,
+          "replicate_luminance": 0.22039857867360116,
+          "positive_LOO_residual": 0.19928402001052087
+        },
+        {
+          "seed": 1059,
+          "x": 228,
+          "y": 89,
+          "replicate_luminance": 0.21930779031515119,
+          "positive_LOO_residual": 0.19516598517178507
+        },
+        {
+          "seed": 1069,
+          "x": 225,
+          "y": 90,
+          "replicate_luminance": 0.20098715775907036,
+          "positive_LOO_residual": 0.17732539189788438
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "full",
+      "variance": 0.09863765320467635,
+      "tail": 0.0982594931462985,
+      "top_variance_seeds": [
+        {
+          "seed": 2103,
+          "fraction": 0.03997346208124481
+        },
+        {
+          "seed": 2094,
+          "fraction": 0.039972395172727666
+        },
+        {
+          "seed": 2073,
+          "fraction": 0.039454808802902405
+        },
+        {
+          "seed": 2079,
+          "fraction": 0.0392676774082285
+        },
+        {
+          "seed": 2091,
+          "fraction": 0.033954567860871795
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2103,
+          "fraction": 0.04046176260070735
+        },
+        {
+          "seed": 2094,
+          "fraction": 0.040454165015227084
+        },
+        {
+          "seed": 2073,
+          "fraction": 0.039926260363162804
+        },
+        {
+          "seed": 2079,
+          "fraction": 0.03973510752918443
+        },
+        {
+          "seed": 2091,
+          "fraction": 0.034315661766113795
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 297,
+          "y": 90,
+          "variance": 198.75574108202608,
+          "fraction_of_region_variance": 0.03704060328841721
+        },
+        {
+          "x": 296,
+          "y": 92,
+          "variance": 168.05184922956715,
+          "fraction_of_region_variance": 0.03131855132993799
+        },
+        {
+          "x": 295,
+          "y": 92,
+          "variance": 141.36727167617033,
+          "fraction_of_region_variance": 0.02634554855933395
+        },
+        {
+          "x": 295,
+          "y": 91,
+          "variance": 106.03291933524059,
+          "fraction_of_region_variance": 0.0197605527227941
+        },
+        {
+          "x": 296,
+          "y": 91,
+          "variance": 105.09669609541281,
+          "fraction_of_region_variance": 0.01958607588289469
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2111,
+          "x": 297,
+          "y": 90,
+          "replicate_luminance": 81.77373229980468,
+          "positive_LOO_residual": 80.1120840437757
+        },
+        {
+          "seed": 2097,
+          "x": 296,
+          "y": 92,
+          "replicate_luminance": 77.86222173500062,
+          "positive_LOO_residual": 76.7069605383841
+        },
+        {
+          "seed": 2103,
+          "x": 296,
+          "y": 91,
+          "replicate_luminance": 77.02653708190917,
+          "positive_LOO_residual": 76.2423035599033
+        },
+        {
+          "seed": 2086,
+          "x": 297,
+          "y": 90,
+          "replicate_luminance": 77.35558932037353,
+          "positive_LOO_residual": 75.62381181070278
+        },
+        {
+          "seed": 2100,
+          "x": 61,
+          "y": 168,
+          "replicate_luminance": 73.28797802429199,
+          "positive_LOO_residual": 73.26858042432109
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "wall",
+      "variance": 6.959639159777997e-06,
+      "tail": 5.282931585358148e-07,
+      "top_variance_seeds": [
+        {
+          "seed": 2092,
+          "fraction": 0.020010127142978083
+        },
+        {
+          "seed": 2105,
+          "fraction": 0.019390555644715167
+        },
+        {
+          "seed": 2108,
+          "fraction": 0.018813698374085433
+        },
+        {
+          "seed": 2094,
+          "fraction": 0.01803139669778889
+        },
+        {
+          "seed": 2091,
+          "fraction": 0.018002698411146538
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2092,
+          "fraction": 0.05821054088095722
+        },
+        {
+          "seed": 2108,
+          "fraction": 0.038415551047315644
+        },
+        {
+          "seed": 2054,
+          "fraction": 0.037100512670067344
+        },
+        {
+          "seed": 2105,
+          "fraction": 0.037009370579787204
+        },
+        {
+          "seed": 2110,
+          "fraction": 0.03698236238465374
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 17,
+          "y": 76,
+          "variance": 4.2636896718995265e-05,
+          "fraction_of_region_variance": 0.003582636564623552
+        },
+        {
+          "x": 21,
+          "y": 82,
+          "variance": 3.909708261611137e-05,
+          "fraction_of_region_variance": 0.0032851977636586586
+        },
+        {
+          "x": 13,
+          "y": 75,
+          "variance": 3.541130340200293e-05,
+          "fraction_of_region_variance": 0.002975494000070455
+        },
+        {
+          "x": 16,
+          "y": 81,
+          "variance": 3.496914360148938e-05,
+          "fraction_of_region_variance": 0.002938340783241221
+        },
+        {
+          "x": 23,
+          "y": 79,
+          "variance": 3.440578753841193e-05,
+          "fraction_of_region_variance": 0.0028910038477277023
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2085,
+          "x": 21,
+          "y": 82,
+          "replicate_luminance": 0.10864929872900247,
+          "positive_LOO_residual": 0.043616462135007465
+        },
+        {
+          "seed": 2103,
+          "x": 17,
+          "y": 76,
+          "replicate_luminance": 0.11754653927981853,
+          "positive_LOO_residual": 0.04323212835236437
+        },
+        {
+          "seed": 2092,
+          "x": 16,
+          "y": 81,
+          "replicate_luminance": 0.10909627005308865,
+          "positive_LOO_residual": 0.042824661416205605
+        },
+        {
+          "seed": 2091,
+          "x": 30,
+          "y": 83,
+          "replicate_luminance": 0.09996759232878685,
+          "positive_LOO_residual": 0.04231910762138785
+        },
+        {
+          "seed": 2095,
+          "x": 17,
+          "y": 74,
+          "replicate_luminance": 0.10996038830280304,
+          "positive_LOO_residual": 0.04177590464264865
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "soffit",
+      "variance": 8.739417241492747e-06,
+      "tail": 7.5041952101797415e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 2055,
+          "fraction": 0.8423675446991392
+        },
+        {
+          "seed": 2053,
+          "fraction": 0.0037416661043623515
+        },
+        {
+          "seed": 2059,
+          "fraction": 0.0026970480529421997
+        },
+        {
+          "seed": 2089,
+          "fraction": 0.002696870030658034
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.002684651231497809
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2055,
+          "fraction": 0.9938980847931148
+        },
+        {
+          "seed": 2053,
+          "fraction": 0.0014646690069341785
+        },
+        {
+          "seed": 2084,
+          "fraction": 0.0001598199450192913
+        },
+        {
+          "seed": 2049,
+          "fraction": 0.000140665738778887
+        },
+        {
+          "seed": 2063,
+          "fraction": 0.00012082541402590417
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 145,
+          "y": 43,
+          "variance": 0.014768949089744422,
+          "fraction_of_region_variance": 0.8534968626313764
+        },
+        {
+          "x": 167,
+          "y": 42,
+          "variance": 2.297497563483587e-05,
+          "fraction_of_region_variance": 0.0013277227448079765
+        },
+        {
+          "x": 124,
+          "y": 60,
+          "variance": 1.2747584559465168e-05,
+          "fraction_of_region_variance": 0.0007366823029532142
+        },
+        {
+          "x": 124,
+          "y": 61,
+          "variance": 1.2600791019035751e-05,
+          "fraction_of_region_variance": 0.0007281991112616631
+        },
+        {
+          "x": 124,
+          "y": 59,
+          "variance": 1.1948389743418674e-05,
+          "fraction_of_region_variance": 0.0006904968726980173
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2055,
+          "x": 145,
+          "y": 43,
+          "replicate_luminance": 0.977964666467905,
+          "positive_LOO_residual": 0.9721619933865232
+        },
+        {
+          "seed": 2053,
+          "x": 167,
+          "y": 42,
+          "replicate_luminance": 0.04235040803626179,
+          "positive_LOO_residual": 0.036860356399585445
+        },
+        {
+          "seed": 2084,
+          "x": 98,
+          "y": 46,
+          "replicate_luminance": 0.04713023714274167,
+          "positive_LOO_residual": 0.010988941218467461
+        },
+        {
+          "seed": 2049,
+          "x": 127,
+          "y": 59,
+          "replicate_luminance": 0.046373905724287026,
+          "positive_LOO_residual": 0.009291156924350386
+        },
+        {
+          "seed": 2052,
+          "x": 145,
+          "y": 47,
+          "replicate_luminance": 0.013238729815557598,
+          "positive_LOO_residual": 0.008967627806965603
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "floor",
+      "variance": 3.5247108602287725e-06,
+      "tail": 4.1870796381059083e-07,
+      "top_variance_seeds": [
+        {
+          "seed": 2081,
+          "fraction": 0.03320504515040362
+        },
+        {
+          "seed": 2061,
+          "fraction": 0.02887760534197696
+        },
+        {
+          "seed": 2110,
+          "fraction": 0.027832339938871402
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.022773808464548267
+        },
+        {
+          "seed": 2082,
+          "fraction": 0.0218147491872924
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2081,
+          "fraction": 0.16395610774055783
+        },
+        {
+          "seed": 2061,
+          "fraction": 0.12567716021773398
+        },
+        {
+          "seed": 2110,
+          "fraction": 0.11499378244387454
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.07189682847784967
+        },
+        {
+          "seed": 2082,
+          "fraction": 0.05892115036943852
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 207,
+          "y": 98,
+          "variance": 0.00011012127741739277,
+          "fraction_of_region_variance": 0.01958786294183107
+        },
+        {
+          "x": 119,
+          "y": 96,
+          "variance": 8.291505335902754e-05,
+          "fraction_of_region_variance": 0.014748545776991898
+        },
+        {
+          "x": 224,
+          "y": 95,
+          "variance": 4.754836303357043e-05,
+          "fraction_of_region_variance": 0.00845768265727457
+        },
+        {
+          "x": 226,
+          "y": 100,
+          "variance": 4.746299430205177e-05,
+          "fraction_of_region_variance": 0.0084424976625876
+        },
+        {
+          "x": 207,
+          "y": 100,
+          "variance": 4.401435728854296e-05,
+          "fraction_of_region_variance": 0.007829070078554988
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2081,
+          "x": 207,
+          "y": 98,
+          "replicate_luminance": 0.10532062970399857,
+          "positive_LOO_residual": 0.0832522555774403
+        },
+        {
+          "seed": 2061,
+          "x": 119,
+          "y": 96,
+          "replicate_luminance": 0.08949135081022978,
+          "positive_LOO_residual": 0.07199075225399187
+        },
+        {
+          "seed": 2110,
+          "x": 224,
+          "y": 95,
+          "replicate_luminance": 0.09296897541582584,
+          "positive_LOO_residual": 0.053125452556768586
+        },
+        {
+          "seed": 2087,
+          "x": 226,
+          "y": 100,
+          "replicate_luminance": 0.08032089315652846,
+          "positive_LOO_residual": 0.052777594270350184
+        },
+        {
+          "seed": 2082,
+          "x": 207,
+          "y": 100,
+          "replicate_luminance": 0.08724989537745714,
+          "positive_LOO_residual": 0.04944660508171433
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "pool",
+      "variance": 0.22325696627307037,
+      "tail": 0.22324533779295697,
+      "top_variance_seeds": [
+        {
+          "seed": 2073,
+          "fraction": 0.07702439785277383
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.05350496065698351
+        },
+        {
+          "seed": 2064,
+          "fraction": 0.05216890726287698
+        },
+        {
+          "seed": 2104,
+          "fraction": 0.051337729538524925
+        },
+        {
+          "seed": 2056,
+          "fraction": 0.048444307405746345
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2073,
+          "fraction": 0.07801793071388238
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.05411755227205475
+        },
+        {
+          "seed": 2064,
+          "fraction": 0.05276023099970918
+        },
+        {
+          "seed": 2104,
+          "fraction": 0.051915652096497004
+        },
+        {
+          "seed": 2056,
+          "fraction": 0.04898442879681315
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 178,
+          "y": 119,
+          "variance": 82.15486482628093,
+          "fraction_of_region_variance": 0.05275748139256152
+        },
+        {
+          "x": 150,
+          "y": 137,
+          "variance": 76.21415154447007,
+          "fraction_of_region_variance": 0.04894252690281329
+        },
+        {
+          "x": 117,
+          "y": 130,
+          "variance": 66.17326832792364,
+          "fraction_of_region_variance": 0.042494561702189244
+        },
+        {
+          "x": 192,
+          "y": 158,
+          "variance": 66.09335937458752,
+          "fraction_of_region_variance": 0.042443246480289194
+        },
+        {
+          "x": 217,
+          "y": 155,
+          "variance": 64.90833446647189,
+          "fraction_of_region_variance": 0.04168225771021659
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2064,
+          "x": 178,
+          "y": 119,
+          "replicate_luminance": 72.51511681365966,
+          "positive_LOO_residual": 72.51145614439068
+        },
+        {
+          "seed": 2056,
+          "x": 150,
+          "y": 137,
+          "replicate_luminance": 69.84468367156983,
+          "positive_LOO_residual": 69.84057277187394
+        },
+        {
+          "seed": 2107,
+          "x": 117,
+          "y": 130,
+          "replicate_luminance": 65.08145079574585,
+          "positive_LOO_residual": 65.07756212478638
+        },
+        {
+          "seed": 2062,
+          "x": 192,
+          "y": 158,
+          "replicate_luminance": 65.04424830169677,
+          "positive_LOO_residual": 65.03825706289167
+        },
+        {
+          "seed": 2079,
+          "x": 217,
+          "y": 155,
+          "replicate_luminance": 64.45963822784424,
+          "positive_LOO_residual": 64.45256614031065
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "glass",
+      "variance": 0.05200710756338895,
+      "tail": 0.05196057163449486,
+      "top_variance_seeds": [
+        {
+          "seed": 2109,
+          "fraction": 0.8306115396104258
+        },
+        {
+          "seed": 2055,
+          "fraction": 0.11903547793745
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.03314734987993696
+        },
+        {
+          "seed": 2104,
+          "fraction": 0.0010709095191013824
+        },
+        {
+          "seed": 2101,
+          "fraction": 0.00046679912653503587
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2109,
+          "fraction": 0.8445115368723721
+        },
+        {
+          "seed": 2055,
+          "fraction": 0.12079308964146768
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.03344147052193046
+        },
+        {
+          "seed": 2104,
+          "fraction": 0.0008195308209428683
+        },
+        {
+          "seed": 2101,
+          "fraction": 0.0004315598886369776
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 232,
+          "y": 90,
+          "variance": 62.49429366400753,
+          "fraction_of_region_variance": 0.834478537218263
+        },
+        {
+          "x": 231,
+          "y": 87,
+          "variance": 9.038130961644496,
+          "fraction_of_region_variance": 0.12068503957512436
+        },
+        {
+          "x": 253,
+          "y": 89,
+          "variance": 2.5021999063964047,
+          "fraction_of_region_variance": 0.03341156440527803
+        },
+        {
+          "x": 257,
+          "y": 88,
+          "variance": 0.7878796515574883,
+          "fraction_of_region_variance": 0.010520459078560399
+        },
+        {
+          "x": 228,
+          "y": 88,
+          "variance": 0.06132099746253679,
+          "fraction_of_region_variance": 0.0008188116588438789
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2109,
+          "x": 232,
+          "y": 90,
+          "replicate_luminance": 63.24233904647827,
+          "positive_LOO_residual": 63.195543575280105
+        },
+        {
+          "seed": 2055,
+          "x": 231,
+          "y": 87,
+          "replicate_luminance": 24.055465265274044,
+          "positive_LOO_residual": 24.050782442457763
+        },
+        {
+          "seed": 2090,
+          "x": 253,
+          "y": 89,
+          "replicate_luminance": 12.671125685882567,
+          "positive_LOO_residual": 12.654667830584808
+        },
+        {
+          "seed": 2109,
+          "x": 257,
+          "y": 88,
+          "replicate_luminance": 7.112445418548583,
+          "positive_LOO_residual": 7.100991740386245
+        },
+        {
+          "seed": 2104,
+          "x": 228,
+          "y": 88,
+          "replicate_luminance": 1.9854282071113585,
+          "positive_LOO_residual": 1.98100411820695
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "full",
+      "variance": 0.00010195121765686063,
+      "tail": 2.529605811550218e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 2062,
+          "fraction": 0.01827603267531468
+        },
+        {
+          "seed": 2055,
+          "fraction": 0.017657456233645903
+        },
+        {
+          "seed": 2089,
+          "fraction": 0.017078079225008775
+        },
+        {
+          "seed": 2069,
+          "fraction": 0.017024463436149027
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.01685356953792849
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2062,
+          "fraction": 0.02459957240766227
+        },
+        {
+          "seed": 2055,
+          "fraction": 0.0237029137855702
+        },
+        {
+          "seed": 2101,
+          "fraction": 0.021893559055985803
+        },
+        {
+          "seed": 2089,
+          "fraction": 0.021288107481883943
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.020481576035875738
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 285,
+          "y": 76,
+          "variance": 0.03752861422609034,
+          "fraction_of_region_variance": 0.006766611012132681
+        },
+        {
+          "x": 284,
+          "y": 76,
+          "variance": 0.036221848364205694,
+          "fraction_of_region_variance": 0.006530994098115099
+        },
+        {
+          "x": 276,
+          "y": 80,
+          "variance": 0.03408979986741762,
+          "fraction_of_region_variance": 0.006146574285812585
+        },
+        {
+          "x": 288,
+          "y": 83,
+          "variance": 0.032817472253250456,
+          "fraction_of_region_variance": 0.005917166773102491
+        },
+        {
+          "x": 285,
+          "y": 83,
+          "variance": 0.026775622120029846,
+          "fraction_of_region_variance": 0.004827788694849774
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2055,
+          "x": 276,
+          "y": 80,
+          "replicate_luminance": 2.994463584995269,
+          "positive_LOO_residual": 0.7394178744440981
+        },
+        {
+          "seed": 2099,
+          "x": 288,
+          "y": 83,
+          "replicate_luminance": 2.379215329170227,
+          "positive_LOO_residual": 0.6859373952475807
+        },
+        {
+          "seed": 2083,
+          "x": 279,
+          "y": 90,
+          "replicate_luminance": 1.427798956990242,
+          "positive_LOO_residual": 0.6140540968026436
+        },
+        {
+          "seed": 2101,
+          "x": 285,
+          "y": 76,
+          "replicate_luminance": 2.0333976485967638,
+          "positive_LOO_residual": 0.5962254411928244
+        },
+        {
+          "seed": 2064,
+          "x": 285,
+          "y": 83,
+          "replicate_luminance": 2.073153188562393,
+          "positive_LOO_residual": 0.5781394312869929
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "wall",
+      "variance": 0.00017230782059203466,
+      "tail": 1.1581768325033177e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 2105,
+          "fraction": 0.019578470221557818
+        },
+        {
+          "seed": 2092,
+          "fraction": 0.01953018129557979
+        },
+        {
+          "seed": 2108,
+          "fraction": 0.01899432676132661
+        },
+        {
+          "seed": 2094,
+          "fraction": 0.01815601958387114
+        },
+        {
+          "seed": 2091,
+          "fraction": 0.017752400782579773
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2092,
+          "fraction": 0.060196265450757534
+        },
+        {
+          "seed": 2108,
+          "fraction": 0.04380737804680142
+        },
+        {
+          "seed": 2054,
+          "fraction": 0.04230776445869573
+        },
+        {
+          "seed": 2105,
+          "fraction": 0.04220382726522656
+        },
+        {
+          "seed": 2110,
+          "fraction": 0.04217302255508809
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 17,
+          "y": 76,
+          "variance": 0.0009460943697910142,
+          "fraction_of_region_variance": 0.0032109486347183893
+        },
+        {
+          "x": 13,
+          "y": 75,
+          "variance": 0.0008852826723551028,
+          "fraction_of_region_variance": 0.0030045598820827727
+        },
+        {
+          "x": 23,
+          "y": 79,
+          "variance": 0.0008601446792421017,
+          "fraction_of_region_variance": 0.0029192440750733925
+        },
+        {
+          "x": 16,
+          "y": 81,
+          "variance": 0.0007830603099601816,
+          "fraction_of_region_variance": 0.002657627519466383
+        },
+        {
+          "x": 13,
+          "y": 77,
+          "variance": 0.0007515201960970611,
+          "fraction_of_region_variance": 0.0025505835619275383
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2048,
+          "x": 23,
+          "y": 79,
+          "replicate_luminance": 0.5482344257116318,
+          "positive_LOO_residual": 0.2039173687661452
+        },
+        {
+          "seed": 2092,
+          "x": 16,
+          "y": 81,
+          "replicate_luminance": 0.5313930853843689,
+          "positive_LOO_residual": 0.20003504334588856
+        },
+        {
+          "seed": 2103,
+          "x": 17,
+          "y": 76,
+          "replicate_luminance": 0.5691990438342094,
+          "positive_LOO_residual": 0.19762698817830218
+        },
+        {
+          "seed": 2091,
+          "x": 30,
+          "y": 83,
+          "replicate_luminance": 0.47962719624042505,
+          "positive_LOO_residual": 0.19138477230658604
+        },
+        {
+          "seed": 2092,
+          "x": 13,
+          "y": 77,
+          "replicate_luminance": 0.5281728422880172,
+          "positive_LOO_residual": 0.19048693691288665
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "soffit",
+      "variance": 3.2374016375295934e-05,
+      "tail": 1.4934655932469603e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 2055,
+          "fraction": 0.02599653675948398
+        },
+        {
+          "seed": 2053,
+          "fraction": 0.023857477174638812
+        },
+        {
+          "seed": 2059,
+          "fraction": 0.016960785510621426
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.01654846284759111
+        },
+        {
+          "seed": 2089,
+          "fraction": 0.016537935690984974
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2055,
+          "fraction": 0.2334948620395891
+        },
+        {
+          "seed": 2053,
+          "fraction": 0.1839875303426323
+        },
+        {
+          "seed": 2084,
+          "fraction": 0.020076120905755085
+        },
+        {
+          "seed": 2049,
+          "fraction": 0.017670031944726227
+        },
+        {
+          "seed": 2063,
+          "fraction": 0.015177742597322774
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 145,
+          "y": 43,
+          "variance": 0.000723126254089358,
+          "fraction_of_region_variance": 0.011281123590269131
+        },
+        {
+          "x": 167,
+          "y": 42,
+          "variance": 0.0005743743710830828,
+          "fraction_of_region_variance": 0.008960521389769188
+        },
+        {
+          "x": 124,
+          "y": 60,
+          "variance": 0.00031868962230073984,
+          "fraction_of_region_variance": 0.004971714131218051
+        },
+        {
+          "x": 124,
+          "y": 61,
+          "variance": 0.0003150197981981026,
+          "fraction_of_region_variance": 0.004914463078552932
+        },
+        {
+          "x": 124,
+          "y": 59,
+          "variance": 0.0002987097505850847,
+          "fraction_of_region_variance": 0.004660018350754552
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2055,
+          "x": 145,
+          "y": 43,
+          "replicate_luminance": 0.23742418922781947,
+          "positive_LOO_residual": 0.20841082383368817
+        },
+        {
+          "seed": 2053,
+          "x": 167,
+          "y": 42,
+          "replicate_luminance": 0.21175203670561313,
+          "positive_LOO_residual": 0.18430177850971324
+        },
+        {
+          "seed": 2084,
+          "x": 98,
+          "y": 46,
+          "replicate_luminance": 0.23565117984712122,
+          "positive_LOO_residual": 0.054944699519281305
+        },
+        {
+          "seed": 2049,
+          "x": 127,
+          "y": 59,
+          "replicate_luminance": 0.2318695323616266,
+          "positive_LOO_residual": 0.04645578815478179
+        },
+        {
+          "seed": 2052,
+          "x": 145,
+          "y": 47,
+          "replicate_luminance": 0.06619364947378636,
+          "positive_LOO_residual": 0.044838139425643866
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "floor",
+      "variance": 8.454689378810977e-05,
+      "tail": 6.896821288012361e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 2110,
+          "fraction": 0.02341270007998849
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.02134559386754047
+        },
+        {
+          "seed": 2082,
+          "fraction": 0.020096121926936723
+        },
+        {
+          "seed": 2061,
+          "fraction": 0.01939812011208974
+        },
+        {
+          "seed": 2102,
+          "fraction": 0.018971825946741367
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2110,
+          "fraction": 0.10499119578217526
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.07954937445742105
+        },
+        {
+          "seed": 2093,
+          "fraction": 0.05884547604906508
+        },
+        {
+          "seed": 2061,
+          "fraction": 0.05770380320032402
+        },
+        {
+          "seed": 2082,
+          "fraction": 0.056574347749280114
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 226,
+          "y": 100,
+          "variance": 0.0008612641783657045,
+          "fraction_of_region_variance": 0.00638672241050507
+        },
+        {
+          "x": 207,
+          "y": 100,
+          "variance": 0.0007389547450209358,
+          "fraction_of_region_variance": 0.005479734266122359
+        },
+        {
+          "x": 224,
+          "y": 95,
+          "variance": 0.0007132511264291042,
+          "fraction_of_region_variance": 0.005289128548370308
+        },
+        {
+          "x": 174,
+          "y": 95,
+          "variance": 0.0007064271120830968,
+          "fraction_of_region_variance": 0.0052385249281942615
+        },
+        {
+          "x": 185,
+          "y": 99,
+          "variance": 0.0006451583471341933,
+          "fraction_of_region_variance": 0.004784185128638619
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2087,
+          "x": 226,
+          "y": 100,
+          "replicate_luminance": 0.358662139070034,
+          "positive_LOO_residual": 0.2209456444129821
+        },
+        {
+          "seed": 2093,
+          "x": 174,
+          "y": 95,
+          "replicate_luminance": 0.43782490607798097,
+          "positive_LOO_residual": 0.20053825268253445
+        },
+        {
+          "seed": 2110,
+          "x": 224,
+          "y": 95,
+          "replicate_luminance": 0.3995386920034885,
+          "positive_LOO_residual": 0.20032107726775467
+        },
+        {
+          "seed": 2082,
+          "x": 207,
+          "y": 100,
+          "replicate_luminance": 0.3839377169519662,
+          "positive_LOO_residual": 0.19492126486485906
+        },
+        {
+          "seed": 2061,
+          "x": 119,
+          "y": 96,
+          "replicate_luminance": 0.27697689880132675,
+          "positive_LOO_residual": 0.18947390615094512
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "pool",
+      "variance": 4.554803103030515e-05,
+      "tail": 7.371936829857826e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 2072,
+          "fraction": 0.022885567281438268
+        },
+        {
+          "seed": 2052,
+          "fraction": 0.019030438530517668
+        },
+        {
+          "seed": 2107,
+          "fraction": 0.018931692041334356
+        },
+        {
+          "seed": 2102,
+          "fraction": 0.01891453058361401
+        },
+        {
+          "seed": 2073,
+          "fraction": 0.01827146403024038
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2072,
+          "fraction": 0.0573676030549701
+        },
+        {
+          "seed": 2052,
+          "fraction": 0.0397512423919111
+        },
+        {
+          "seed": 2107,
+          "fraction": 0.03543546299459691
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.03402098927138774
+        },
+        {
+          "seed": 2073,
+          "fraction": 0.03300492681694935
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 156,
+          "y": 157,
+          "variance": 0.0007444317916565463,
+          "fraction_of_region_variance": 0.0023432093521122163
+        },
+        {
+          "x": 101,
+          "y": 142,
+          "variance": 0.0007377551901689019,
+          "fraction_of_region_variance": 0.0023221937597886246
+        },
+        {
+          "x": 148,
+          "y": 154,
+          "variance": 0.0007368655039292947,
+          "fraction_of_region_variance": 0.0023193933405420823
+        },
+        {
+          "x": 195,
+          "y": 135,
+          "variance": 0.0007329773661635142,
+          "fraction_of_region_variance": 0.002307154850895094
+        },
+        {
+          "x": 142,
+          "y": 141,
+          "variance": 0.0007216449194000259,
+          "fraction_of_region_variance": 0.002271484295800409
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2073,
+          "x": 195,
+          "y": 135,
+          "replicate_luminance": 0.23664814805090426,
+          "positive_LOO_residual": 0.21019750549033697
+        },
+        {
+          "seed": 2090,
+          "x": 148,
+          "y": 154,
+          "replicate_luminance": 0.24570191158354282,
+          "positive_LOO_residual": 0.20964567984044846
+        },
+        {
+          "seed": 2081,
+          "x": 156,
+          "y": 157,
+          "replicate_luminance": 0.2470554856568575,
+          "positive_LOO_residual": 0.20664004424383475
+        },
+        {
+          "seed": 2070,
+          "x": 208,
+          "y": 131,
+          "replicate_luminance": 0.2232819340676069,
+          "positive_LOO_residual": 0.20540619806238994
+        },
+        {
+          "seed": 2063,
+          "x": 170,
+          "y": 122,
+          "replicate_luminance": 0.2226556124359369,
+          "positive_LOO_residual": 0.20491538473733267
+        }
+      ]
+    },
+    {
+      "scene": "day",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "glass",
+      "variance": 0.00011321325596643886,
+      "tail": 5.474404343414879e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 2109,
+          "fraction": 0.01996594503755904
+        },
+        {
+          "seed": 2056,
+          "fraction": 0.019348222804974655
+        },
+        {
+          "seed": 2101,
+          "fraction": 0.0191150334710347
+        },
+        {
+          "seed": 2104,
+          "fraction": 0.01908877866405183
+        },
+        {
+          "seed": 2092,
+          "fraction": 0.018101959606980193
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2109,
+          "fraction": 0.09960984505091834
+        },
+        {
+          "seed": 2056,
+          "fraction": 0.07775739632555163
+        },
+        {
+          "seed": 2055,
+          "fraction": 0.07329476815329562
+        },
+        {
+          "seed": 2104,
+          "fraction": 0.07216342701864706
+        },
+        {
+          "seed": 2090,
+          "fraction": 0.05805574247215926
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 257,
+          "y": 75,
+          "variance": 0.000741639130107313,
+          "fraction_of_region_variance": 0.004549177296325703
+        },
+        {
+          "x": 231,
+          "y": 87,
+          "variance": 0.0006442925664277227,
+          "fraction_of_region_variance": 0.003952058348054409
+        },
+        {
+          "x": 257,
+          "y": 88,
+          "variance": 0.0006270452455445266,
+          "fraction_of_region_variance": 0.0038462641451879453
+        },
+        {
+          "x": 257,
+          "y": 81,
+          "variance": 0.0006084646300850535,
+          "fraction_of_region_variance": 0.0037322915801376597
+        },
+        {
+          "x": 257,
+          "y": 68,
+          "variance": 0.0005982092404276675,
+          "fraction_of_region_variance": 0.0036693855333820046
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2055,
+          "x": 231,
+          "y": 87,
+          "replicate_luminance": 0.21075992795825005,
+          "positive_LOO_residual": 0.1873458138727701
+        },
+        {
+          "seed": 2056,
+          "x": 243,
+          "y": 88,
+          "replicate_luminance": 0.1970801155924797,
+          "positive_LOO_residual": 0.18731942696381482
+        },
+        {
+          "seed": 2109,
+          "x": 257,
+          "y": 88,
+          "replicate_luminance": 0.2437645825624466,
+          "positive_LOO_residual": 0.18649619182905863
+        },
+        {
+          "seed": 2104,
+          "x": 228,
+          "y": 88,
+          "replicate_luminance": 0.2063509721189737,
+          "positive_LOO_residual": 0.1842305275132081
+        },
+        {
+          "seed": 2090,
+          "x": 253,
+          "y": 89,
+          "replicate_luminance": 0.24648303341567515,
+          "positive_LOO_residual": 0.16419375679514234
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "full",
+      "variance": 0.006842453053228892,
+      "tail": 0.0064338260014273185,
+      "top_variance_seeds": [
+        {
+          "seed": 1072,
+          "fraction": 0.23130780434320525
+        },
+        {
+          "seed": 1065,
+          "fraction": 0.12326056494286759
+        },
+        {
+          "seed": 1045,
+          "fraction": 0.05382500745397539
+        },
+        {
+          "seed": 1034,
+          "fraction": 0.047395078245319786
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.03714160864049015
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1072,
+          "fraction": 0.24835464906505014
+        },
+        {
+          "seed": 1065,
+          "fraction": 0.1320500084915426
+        },
+        {
+          "seed": 1045,
+          "fraction": 0.05710784531388136
+        },
+        {
+          "seed": 1034,
+          "fraction": 0.0499905694432516
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.03911390125736238
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 222,
+          "y": 118,
+          "variance": 50.88650116689045,
+          "fraction_of_region_variance": 0.1367073499978133
+        },
+        {
+          "x": 64,
+          "y": 119,
+          "variance": 40.450411556536025,
+          "fraction_of_region_variance": 0.10867063844847323
+        },
+        {
+          "x": 72,
+          "y": 122,
+          "variance": 28.364141448723927,
+          "fraction_of_region_variance": 0.07620069219734754
+        },
+        {
+          "x": 69,
+          "y": 121,
+          "variance": 16.51769452828158,
+          "fraction_of_region_variance": 0.04437503454263807
+        },
+        {
+          "x": 13,
+          "y": 107,
+          "variance": 10.310981880211745,
+          "fraction_of_region_variance": 0.027700607752461727
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1072,
+          "x": 222,
+          "y": 118,
+          "replicate_luminance": 57.07152415370941,
+          "positive_LOO_residual": 57.0678175062419
+        },
+        {
+          "seed": 1065,
+          "x": 64,
+          "y": 119,
+          "replicate_luminance": 50.88339329338074,
+          "positive_LOO_residual": 50.88031923724748
+        },
+        {
+          "seed": 1072,
+          "x": 72,
+          "y": 122,
+          "replicate_luminance": 42.60733172399998,
+          "positive_LOO_residual": 42.60639663987894
+        },
+        {
+          "seed": 1034,
+          "x": 69,
+          "y": 121,
+          "replicate_luminance": 32.51439930896759,
+          "positive_LOO_residual": 32.51357323747381
+        },
+        {
+          "seed": 1045,
+          "x": 13,
+          "y": 107,
+          "replicate_luminance": 25.7466479536593,
+          "positive_LOO_residual": 25.68838283976747
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "wall",
+      "variance": 2.43348504789974e-06,
+      "tail": 5.698995409045244e-07,
+      "top_variance_seeds": [
+        {
+          "seed": 1070,
+          "fraction": 0.14697235365575065
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.0336887598780775
+        },
+        {
+          "seed": 1031,
+          "fraction": 0.02380105976557997
+        },
+        {
+          "seed": 1068,
+          "fraction": 0.018936017083938703
+        },
+        {
+          "seed": 1041,
+          "fraction": 0.01667606385362274
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1070,
+          "fraction": 0.5837978067201873
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.0937031437096579
+        },
+        {
+          "seed": 1031,
+          "fraction": 0.05202701749619703
+        },
+        {
+          "seed": 1068,
+          "fraction": 0.030865976172789217
+        },
+        {
+          "seed": 1071,
+          "fraction": 0.013890858109801098
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 52,
+          "y": 67,
+          "variance": 0.000569152421608938,
+          "fraction_of_region_variance": 0.1367740778776432
+        },
+        {
+          "x": 26,
+          "y": 78,
+          "variance": 9.214967015566944e-05,
+          "fraction_of_region_variance": 0.02214465876582108
+        },
+        {
+          "x": 54,
+          "y": 61,
+          "variance": 5.1948060946834586e-05,
+          "fraction_of_region_variance": 0.012483735224123887
+        },
+        {
+          "x": 25,
+          "y": 84,
+          "variance": 1.6600424584819597e-05,
+          "fraction_of_region_variance": 0.003989278932605708
+        },
+        {
+          "x": 24,
+          "y": 84,
+          "variance": 1.5835744970432344e-05,
+          "fraction_of_region_variance": 0.003805517351070155
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1070,
+          "x": 52,
+          "y": 67,
+          "replicate_luminance": 0.19551814383268357,
+          "positive_LOO_residual": 0.19060111748216493
+        },
+        {
+          "seed": 1050,
+          "x": 26,
+          "y": 78,
+          "replicate_luminance": 0.08053228075355291,
+          "positive_LOO_residual": 0.07611733002474176
+        },
+        {
+          "seed": 1031,
+          "x": 54,
+          "y": 61,
+          "replicate_luminance": 0.06127255972400308,
+          "positive_LOO_residual": 0.05646495892431398
+        },
+        {
+          "seed": 1068,
+          "x": 25,
+          "y": 84,
+          "replicate_luminance": 0.03470192417372018,
+          "positive_LOO_residual": 0.03131517040870995
+        },
+        {
+          "seed": 1068,
+          "x": 24,
+          "y": 84,
+          "replicate_luminance": 0.03414502505157143,
+          "positive_LOO_residual": 0.030732149951766975
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "soffit",
+      "variance": 0.00035648589689623743,
+      "tail": 0.0002622208337443844,
+      "top_variance_seeds": [
+        {
+          "seed": 1084,
+          "fraction": 0.04632837408300298
+        },
+        {
+          "seed": 1027,
+          "fraction": 0.04155095010664492
+        },
+        {
+          "seed": 1064,
+          "fraction": 0.03939204294932086
+        },
+        {
+          "seed": 1046,
+          "fraction": 0.03561265031928601
+        },
+        {
+          "seed": 1070,
+          "fraction": 0.03295562668913244
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1058,
+          "fraction": 0.040123299817198865
+        },
+        {
+          "seed": 1084,
+          "fraction": 0.04005391889040868
+        },
+        {
+          "seed": 1070,
+          "fraction": 0.039465029523480355
+        },
+        {
+          "seed": 1064,
+          "fraction": 0.03771323413330256
+        },
+        {
+          "seed": 1046,
+          "fraction": 0.03691439468994635
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 152,
+          "y": 62,
+          "variance": 0.07728687933362852,
+          "fraction_of_region_variance": 0.10949599347709431
+        },
+        {
+          "x": 153,
+          "y": 62,
+          "variance": 0.05128656107455364,
+          "fraction_of_region_variance": 0.07266010745032725
+        },
+        {
+          "x": 177,
+          "y": 58,
+          "variance": 0.041520467212471254,
+          "fraction_of_region_variance": 0.058824018336117445
+        },
+        {
+          "x": 151,
+          "y": 62,
+          "variance": 0.031233169912309885,
+          "fraction_of_region_variance": 0.04424951555133131
+        },
+        {
+          "x": 152,
+          "y": 63,
+          "variance": 0.026077542752949354,
+          "fraction_of_region_variance": 0.03694529363580055
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1058,
+          "x": 152,
+          "y": 62,
+          "replicate_luminance": 1.9678618240952492,
+          "positive_LOO_residual": 1.1504355347755408
+        },
+        {
+          "seed": 1031,
+          "x": 172,
+          "y": 58,
+          "replicate_luminance": 0.9652564466148615,
+          "positive_LOO_residual": 0.920323798338794
+        },
+        {
+          "seed": 1053,
+          "x": 155,
+          "y": 61,
+          "replicate_luminance": 0.9200418043494225,
+          "positive_LOO_residual": 0.8877901085498028
+        },
+        {
+          "seed": 1076,
+          "x": 156,
+          "y": 61,
+          "replicate_luminance": 0.8879236614942551,
+          "positive_LOO_residual": 0.8586122503326782
+        },
+        {
+          "seed": 1070,
+          "x": 154,
+          "y": 60,
+          "replicate_luminance": 0.8570882739782333,
+          "positive_LOO_residual": 0.848678348474152
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "floor",
+      "variance": 1.5107438495180036e-05,
+      "tail": 9.057476147435155e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 1082,
+          "fraction": 0.5038077263226409
+        },
+        {
+          "seed": 1063,
+          "fraction": 0.01689717542791292
+        },
+        {
+          "seed": 1074,
+          "fraction": 0.01633817826197202
+        },
+        {
+          "seed": 1087,
+          "fraction": 0.015319489092567
+        },
+        {
+          "seed": 1066,
+          "fraction": 0.014741943789518352
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1082,
+          "fraction": 0.8421246586739451
+        },
+        {
+          "seed": 1063,
+          "fraction": 0.01723366311466487
+        },
+        {
+          "seed": 1087,
+          "fraction": 0.010712294674231865
+        },
+        {
+          "seed": 1074,
+          "fraction": 0.010561374855777857
+        },
+        {
+          "seed": 1066,
+          "fraction": 0.009593492131790879
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 116,
+          "y": 103,
+          "variance": 0.012162269662619985,
+          "fraction_of_region_variance": 0.5047346338568317
+        },
+        {
+          "x": 110,
+          "y": 94,
+          "variance": 0.00022920700616293563,
+          "fraction_of_region_variance": 0.009512099101751732
+        },
+        {
+          "x": 130,
+          "y": 101,
+          "variance": 0.00015810538559997403,
+          "fraction_of_region_variance": 0.006561379259404233
+        },
+        {
+          "x": 104,
+          "y": 101,
+          "variance": 0.0001477568529234267,
+          "fraction_of_region_variance": 0.006131914776512035
+        },
+        {
+          "x": 120,
+          "y": 103,
+          "variance": 0.00012900964548750294,
+          "fraction_of_region_variance": 0.005353904985289342
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1082,
+          "x": 116,
+          "y": 103,
+          "replicate_luminance": 0.8950961340673267,
+          "positive_LOO_residual": 0.8821074359195922
+        },
+        {
+          "seed": 1063,
+          "x": 110,
+          "y": 94,
+          "replicate_luminance": 0.12354137852936983,
+          "positive_LOO_residual": 0.1210199818439279
+        },
+        {
+          "seed": 1087,
+          "x": 104,
+          "y": 101,
+          "replicate_luminance": 0.13619202950112522,
+          "positive_LOO_residual": 0.08990122798167258
+        },
+        {
+          "seed": 1066,
+          "x": 149,
+          "y": 98,
+          "replicate_luminance": 0.089257482355088,
+          "positive_LOO_residual": 0.08488424284969907
+        },
+        {
+          "seed": 1025,
+          "x": 161,
+          "y": 98,
+          "replicate_luminance": 0.0762136336479336,
+          "positive_LOO_residual": 0.07451323227383147
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "pool",
+      "variance": 0.011728257137225803,
+      "tail": 0.011703098908126354,
+      "top_variance_seeds": [
+        {
+          "seed": 1072,
+          "fraction": 0.6130454002106219
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.06766893837327612
+        },
+        {
+          "seed": 1060,
+          "fraction": 0.06766353694397924
+        },
+        {
+          "seed": 1024,
+          "fraction": 0.03343057828219528
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.03151079009381336
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1072,
+          "fraction": 0.6239923729165059
+        },
+        {
+          "seed": 1060,
+          "fraction": 0.06863912083015533
+        },
+        {
+          "seed": 1079,
+          "fraction": 0.068638267294146
+        },
+        {
+          "seed": 1024,
+          "fraction": 0.033779384180589164
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.03177969243534974
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 222,
+          "y": 118,
+          "variance": 50.88650116689045,
+          "fraction_of_region_variance": 0.6220494347532156
+        },
+        {
+          "x": 82,
+          "y": 118,
+          "variance": 5.595771056549418,
+          "fraction_of_region_variance": 0.06840411784883728
+        },
+        {
+          "x": 93,
+          "y": 116,
+          "variance": 5.581203761302669,
+          "fraction_of_region_variance": 0.06822604355474493
+        },
+        {
+          "x": 234,
+          "y": 121,
+          "variance": 2.7101881156177017,
+          "fraction_of_region_variance": 0.033130023616003576
+        },
+        {
+          "x": 227,
+          "y": 118,
+          "variance": 2.535159995281759,
+          "fraction_of_region_variance": 0.030990435693387042
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1072,
+          "x": 222,
+          "y": 118,
+          "replicate_luminance": 57.07152415370941,
+          "positive_LOO_residual": 57.0678175062419
+        },
+        {
+          "seed": 1060,
+          "x": 82,
+          "y": 118,
+          "replicate_luminance": 18.92684467768669,
+          "positive_LOO_residual": 18.918692496995938
+        },
+        {
+          "seed": 1079,
+          "x": 93,
+          "y": 116,
+          "replicate_luminance": 18.90227882180214,
+          "positive_LOO_residual": 18.89294750972288
+        },
+        {
+          "seed": 1024,
+          "x": 234,
+          "y": 121,
+          "replicate_luminance": 13.173081966394186,
+          "positive_LOO_residual": 13.170108711432794
+        },
+        {
+          "seed": 1050,
+          "x": 227,
+          "y": 118,
+          "replicate_luminance": 12.741113258624077,
+          "positive_LOO_residual": 12.737736324608418
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "raw",
+      "region": "glass",
+      "variance": 0.005751299306089992,
+      "tail": 0.002134735892148961,
+      "top_variance_seeds": [
+        {
+          "seed": 1085,
+          "fraction": 0.032785131879751656
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.02905774100882392
+        },
+        {
+          "seed": 1033,
+          "fraction": 0.0287557752963556
+        },
+        {
+          "seed": 1046,
+          "fraction": 0.02764402612782755
+        },
+        {
+          "seed": 1052,
+          "fraction": 0.025828155002493785
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1057,
+          "fraction": 0.03779074517925474
+        },
+        {
+          "seed": 1046,
+          "fraction": 0.03537800116962724
+        },
+        {
+          "seed": 1043,
+          "fraction": 0.034476845040617564
+        },
+        {
+          "seed": 1033,
+          "fraction": 0.033824878809000446
+        },
+        {
+          "seed": 1077,
+          "fraction": 0.031495887388824764
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 263,
+          "y": 68,
+          "variance": 0.8320004260607239,
+          "fraction_of_region_variance": 0.1004604425719032
+        },
+        {
+          "x": 259,
+          "y": 62,
+          "variance": 0.5760135169348024,
+          "fraction_of_region_variance": 0.06955113366065187
+        },
+        {
+          "x": 263,
+          "y": 67,
+          "variance": 0.5030865192606054,
+          "fraction_of_region_variance": 0.06074551501875075
+        },
+        {
+          "x": 260,
+          "y": 62,
+          "variance": 0.4097227595761995,
+          "fraction_of_region_variance": 0.049472246010367246
+        },
+        {
+          "x": 237,
+          "y": 71,
+          "variance": 0.2678089603958406,
+          "fraction_of_region_variance": 0.03233677032290826
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1057,
+          "x": 254,
+          "y": 74,
+          "replicate_luminance": 2.513517782449722,
+          "positive_LOO_residual": 2.3770144208631305
+        },
+        {
+          "seed": 1046,
+          "x": 254,
+          "y": 73,
+          "replicate_luminance": 2.440347372984886,
+          "positive_LOO_residual": 2.3389918450114613
+        },
+        {
+          "seed": 1043,
+          "x": 263,
+          "y": 67,
+          "replicate_luminance": 2.7118403975605965,
+          "positive_LOO_residual": 2.314717086387161
+        },
+        {
+          "seed": 1033,
+          "x": 263,
+          "y": 67,
+          "replicate_luminance": 2.582129712307453,
+          "positive_LOO_residual": 2.1829475013680946
+        },
+        {
+          "seed": 1056,
+          "x": 263,
+          "y": 68,
+          "replicate_luminance": 2.768727476668358,
+          "positive_LOO_residual": 2.1116044986685876
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "full",
+      "variance": 0.0001064152018101307,
+      "tail": 3.651709338358694e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 1085,
+          "fraction": 0.019516025137582462
+        },
+        {
+          "seed": 1075,
+          "fraction": 0.018318185150353043
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.01817512101877571
+        },
+        {
+          "seed": 1066,
+          "fraction": 0.018084933348944517
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.01789831026632661
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1066,
+          "fraction": 0.024165897824708325
+        },
+        {
+          "seed": 1046,
+          "fraction": 0.022419873539391216
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.021351805042910316
+        },
+        {
+          "seed": 1074,
+          "fraction": 0.020630497003531537
+        },
+        {
+          "seed": 1047,
+          "fraction": 0.020565327123779713
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 259,
+          "y": 62,
+          "variance": 0.22486808901114588,
+          "fraction_of_region_variance": 0.03884411726048385
+        },
+        {
+          "x": 260,
+          "y": 62,
+          "variance": 0.16358135312484895,
+          "fraction_of_region_variance": 0.028257336513831874
+        },
+        {
+          "x": 259,
+          "y": 61,
+          "variance": 0.07481721158647736,
+          "fraction_of_region_variance": 0.012924059401881195
+        },
+        {
+          "x": 234,
+          "y": 63,
+          "variance": 0.06618193962249432,
+          "fraction_of_region_variance": 0.011432387025332915
+        },
+        {
+          "x": 237,
+          "y": 70,
+          "variance": 0.06262634499254965,
+          "fraction_of_region_variance": 0.010818187227826426
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1066,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.656782162570952,
+          "positive_LOO_residual": 1.3177360357715964
+        },
+        {
+          "seed": 1074,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.442042767333982,
+          "positive_LOO_residual": 1.0995880787054682
+        },
+        {
+          "seed": 1076,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.229823651123047,
+          "positive_LOO_residual": 0.8840004050943593
+        },
+        {
+          "seed": 1082,
+          "x": 259,
+          "y": 61,
+          "replicate_luminance": 3.3001538600683213,
+          "positive_LOO_residual": 0.850878535336728
+        },
+        {
+          "seed": 1046,
+          "x": 234,
+          "y": 63,
+          "replicate_luminance": 1.6500412747621536,
+          "positive_LOO_residual": 0.7920017190021418
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "wall",
+      "variance": 1.2717606208057533e-05,
+      "tail": 1.075291630487196e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 1070,
+          "fraction": 0.020841504090903126
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.02062281682608263
+        },
+        {
+          "seed": 1031,
+          "fraction": 0.020093648746345776
+        },
+        {
+          "seed": 1041,
+          "fraction": 0.019899136843847892
+        },
+        {
+          "seed": 1084,
+          "fraction": 0.018705247813891886
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1050,
+          "fraction": 0.07460499026503035
+        },
+        {
+          "seed": 1070,
+          "fraction": 0.07246000828592677
+        },
+        {
+          "seed": 1031,
+          "fraction": 0.0722226909338969
+        },
+        {
+          "seed": 1071,
+          "fraction": 0.04601306441800063
+        },
+        {
+          "seed": 1064,
+          "fraction": 0.04533197155130281
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 26,
+          "y": 78,
+          "variance": 0.00014238803271239772,
+          "fraction_of_region_variance": 0.006547447218063005
+        },
+        {
+          "x": 54,
+          "y": 61,
+          "variance": 0.000140588531666011,
+          "fraction_of_region_variance": 0.0064647005300469945
+        },
+        {
+          "x": 52,
+          "y": 67,
+          "variance": 0.0001346419148299027,
+          "fraction_of_region_variance": 0.0061912564833895975
+        },
+        {
+          "x": 20,
+          "y": 71,
+          "variance": 8.632206404257753e-05,
+          "fraction_of_region_variance": 0.003969358571128147
+        },
+        {
+          "x": 27,
+          "y": 84,
+          "variance": 8.307522766762721e-05,
+          "fraction_of_region_variance": 0.003820058876584201
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1050,
+          "x": 26,
+          "y": 78,
+          "replicate_luminance": 0.10304017889611423,
+          "positive_LOO_residual": 0.09200280204000291
+        },
+        {
+          "seed": 1031,
+          "x": 54,
+          "y": 61,
+          "replicate_luminance": 0.10227011862918733,
+          "positive_LOO_residual": 0.09025111658980493
+        },
+        {
+          "seed": 1070,
+          "x": 52,
+          "y": 67,
+          "replicate_luminance": 0.10179690274670719,
+          "positive_LOO_residual": 0.08950433681356748
+        },
+        {
+          "seed": 1071,
+          "x": 20,
+          "y": 71,
+          "replicate_luminance": 0.0798112719014287,
+          "positive_LOO_residual": 0.07056155939045332
+        },
+        {
+          "seed": 1024,
+          "x": 27,
+          "y": 84,
+          "replicate_luminance": 0.07832059981971978,
+          "positive_LOO_residual": 0.06935173619474239
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "soffit",
+      "variance": 0.00019596137446779087,
+      "tail": 5.778485084772145e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 1058,
+          "fraction": 0.02536219784629149
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.024955634241621807
+        },
+        {
+          "seed": 1035,
+          "fraction": 0.02294485507633741
+        },
+        {
+          "seed": 1043,
+          "fraction": 0.02173009644438101
+        },
+        {
+          "seed": 1080,
+          "fraction": 0.02133420337396426
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1058,
+          "fraction": 0.05716772195682694
+        },
+        {
+          "seed": 1043,
+          "fraction": 0.03994218945103384
+        },
+        {
+          "seed": 1035,
+          "fraction": 0.03971009851709675
+        },
+        {
+          "seed": 1080,
+          "fraction": 0.03834583566031906
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.03118279324089788
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 152,
+          "y": 62,
+          "variance": 0.04481525559543845,
+          "fraction_of_region_variance": 0.11550218778529688
+        },
+        {
+          "x": 153,
+          "y": 62,
+          "variance": 0.036634825930323196,
+          "fraction_of_region_variance": 0.09441879752475515
+        },
+        {
+          "x": 152,
+          "y": 63,
+          "variance": 0.026802667894519874,
+          "fraction_of_region_variance": 0.06907841401700913
+        },
+        {
+          "x": 154,
+          "y": 62,
+          "variance": 0.021421649165890164,
+          "fraction_of_region_variance": 0.05520993491513718
+        },
+        {
+          "x": 159,
+          "y": 62,
+          "variance": 0.02104897265439859,
+          "fraction_of_region_variance": 0.05424943715959497
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1058,
+          "x": 152,
+          "y": 62,
+          "replicate_luminance": 1.4909862283349036,
+          "positive_LOO_residual": 0.6224309481120296
+        },
+        {
+          "seed": 1035,
+          "x": 154,
+          "y": 62,
+          "replicate_luminance": 0.6806629639923573,
+          "positive_LOO_residual": 0.48998062420041644
+        },
+        {
+          "seed": 1043,
+          "x": 152,
+          "y": 63,
+          "replicate_luminance": 0.9311625455617905,
+          "positive_LOO_residual": 0.4708289035660644
+        },
+        {
+          "seed": 1050,
+          "x": 152,
+          "y": 62,
+          "replicate_luminance": 1.322578473687172,
+          "positive_LOO_residual": 0.4513500545016356
+        },
+        {
+          "seed": 1032,
+          "x": 155,
+          "y": 62,
+          "replicate_luminance": 0.6177117216944694,
+          "positive_LOO_residual": 0.41992946248936497
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "floor",
+      "variance": 4.1364814073174654e-05,
+      "tail": 4.712723216286711e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 1049,
+          "fraction": 0.0205056211409933
+        },
+        {
+          "seed": 1087,
+          "fraction": 0.019966077956575134
+        },
+        {
+          "seed": 1052,
+          "fraction": 0.0198019879386943
+        },
+        {
+          "seed": 1063,
+          "fraction": 0.01901020776604581
+        },
+        {
+          "seed": 1058,
+          "fraction": 0.018629282145167302
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1063,
+          "fraction": 0.035393614865785294
+        },
+        {
+          "seed": 1041,
+          "fraction": 0.030543190986270865
+        },
+        {
+          "seed": 1028,
+          "fraction": 0.02941157413553794
+        },
+        {
+          "seed": 1049,
+          "fraction": 0.02580654999852674
+        },
+        {
+          "seed": 1042,
+          "fraction": 0.02468202743950056
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 130,
+          "y": 101,
+          "variance": 0.0009881586109221708,
+          "fraction_of_region_variance": 0.01497734712805881
+        },
+        {
+          "x": 123,
+          "y": 103,
+          "variance": 0.0007746895154210081,
+          "fraction_of_region_variance": 0.011741833406784901
+        },
+        {
+          "x": 125,
+          "y": 103,
+          "variance": 0.0007090301617625058,
+          "fraction_of_region_variance": 0.010746646074429789
+        },
+        {
+          "x": 125,
+          "y": 101,
+          "variance": 0.000696786316969627,
+          "fraction_of_region_variance": 0.010561068261700023
+        },
+        {
+          "x": 128,
+          "y": 101,
+          "variance": 0.0006943739371571744,
+          "fraction_of_region_variance": 0.010524504243073392
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1028,
+          "x": 160,
+          "y": 93,
+          "replicate_luminance": 0.13098722539246083,
+          "positive_LOO_residual": 0.09502663949288073
+        },
+        {
+          "seed": 1063,
+          "x": 110,
+          "y": 94,
+          "replicate_luminance": 0.10104420886933804,
+          "positive_LOO_residual": 0.09474071716039945
+        },
+        {
+          "seed": 1041,
+          "x": 148,
+          "y": 98,
+          "replicate_luminance": 0.10005698281228542,
+          "positive_LOO_residual": 0.0902445910530113
+        },
+        {
+          "seed": 1063,
+          "x": 103,
+          "y": 103,
+          "replicate_luminance": 0.1422538122182712,
+          "positive_LOO_residual": 0.08972832443757306
+        },
+        {
+          "seed": 1071,
+          "x": 103,
+          "y": 102,
+          "replicate_luminance": 0.19792868897132573,
+          "positive_LOO_residual": 0.08965959440495169
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "pool",
+      "variance": 4.1315523842420796e-05,
+      "tail": 1.156596660308691e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 1080,
+          "fraction": 0.023813829710813653
+        },
+        {
+          "seed": 1025,
+          "fraction": 0.022533436431197495
+        },
+        {
+          "seed": 1036,
+          "fraction": 0.022283823839418845
+        },
+        {
+          "seed": 1085,
+          "fraction": 0.020806249063020622
+        },
+        {
+          "seed": 1044,
+          "fraction": 0.018759798812714775
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1080,
+          "fraction": 0.05037745229272324
+        },
+        {
+          "seed": 1036,
+          "fraction": 0.0331994628296716
+        },
+        {
+          "seed": 1025,
+          "fraction": 0.028216104683776
+        },
+        {
+          "seed": 1060,
+          "fraction": 0.026609343581975232
+        },
+        {
+          "seed": 1085,
+          "fraction": 0.025254866034909416
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 153,
+          "y": 116,
+          "variance": 0.02149881764031269,
+          "fraction_of_region_variance": 0.07460313885424524
+        },
+        {
+          "x": 152,
+          "y": 116,
+          "variance": 0.00863119705013068,
+          "fraction_of_region_variance": 0.029951153723069838
+        },
+        {
+          "x": 153,
+          "y": 117,
+          "variance": 0.003474510987451233,
+          "fraction_of_region_variance": 0.012056915407356095
+        },
+        {
+          "x": 152,
+          "y": 117,
+          "variance": 0.003091549908508391,
+          "fraction_of_region_variance": 0.010728000532773771
+        },
+        {
+          "x": 159,
+          "y": 116,
+          "variance": 0.0023508802697699786,
+          "fraction_of_region_variance": 0.008157799658084096
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1080,
+          "x": 153,
+          "y": 116,
+          "replicate_luminance": 0.6175078887224197,
+          "positive_LOO_residual": 0.4514527092532496
+        },
+        {
+          "seed": 1036,
+          "x": 153,
+          "y": 116,
+          "replicate_luminance": 0.4888034806877375,
+          "positive_LOO_residual": 0.32070537410690575
+        },
+        {
+          "seed": 1050,
+          "x": 152,
+          "y": 116,
+          "replicate_luminance": 0.41300868002176283,
+          "positive_LOO_residual": 0.2663381015392818
+        },
+        {
+          "seed": 1025,
+          "x": 153,
+          "y": 116,
+          "replicate_luminance": 0.43344150841534135,
+          "positive_LOO_residual": 0.2644646403698684
+        },
+        {
+          "seed": 1085,
+          "x": 153,
+          "y": 116,
+          "replicate_luminance": 0.4333601205646992,
+          "positive_LOO_residual": 0.26438196064858116
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "candidate",
+      "plane": "clamped",
+      "region": "glass",
+      "variance": 0.0013617006205087958,
+      "tail": 0.00031137650533601797,
+      "top_variance_seeds": [
+        {
+          "seed": 1085,
+          "fraction": 0.026010927607374165
+        },
+        {
+          "seed": 1050,
+          "fraction": 0.024740729001588815
+        },
+        {
+          "seed": 1066,
+          "fraction": 0.024008558002084134
+        },
+        {
+          "seed": 1046,
+          "fraction": 0.023597022596792944
+        },
+        {
+          "seed": 1035,
+          "fraction": 0.02164245280167512
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 1066,
+          "fraction": 0.06399057195232018
+        },
+        {
+          "seed": 1074,
+          "fraction": 0.04975850742005915
+        },
+        {
+          "seed": 1046,
+          "fraction": 0.03905458918805414
+        },
+        {
+          "seed": 1069,
+          "fraction": 0.03796447128160231
+        },
+        {
+          "seed": 1076,
+          "fraction": 0.03051768143262239
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 259,
+          "y": 62,
+          "variance": 0.22486808901114588,
+          "fraction_of_region_variance": 0.11467894836405444
+        },
+        {
+          "x": 260,
+          "y": 62,
+          "variance": 0.16358135312484895,
+          "fraction_of_region_variance": 0.0834237424741795
+        },
+        {
+          "x": 259,
+          "y": 61,
+          "variance": 0.07481721158647736,
+          "fraction_of_region_variance": 0.03815552123023955
+        },
+        {
+          "x": 234,
+          "y": 63,
+          "variance": 0.06618193962249432,
+          "fraction_of_region_variance": 0.033751677572289064
+        },
+        {
+          "x": 237,
+          "y": 70,
+          "variance": 0.06262634499254965,
+          "fraction_of_region_variance": 0.03193838403311232
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 1066,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.656782162570952,
+          "positive_LOO_residual": 1.3177360357715964
+        },
+        {
+          "seed": 1074,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.442042767333982,
+          "positive_LOO_residual": 1.0995880787054682
+        },
+        {
+          "seed": 1076,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.229823651123047,
+          "positive_LOO_residual": 0.8840004050943593
+        },
+        {
+          "seed": 1082,
+          "x": 259,
+          "y": 61,
+          "replicate_luminance": 3.3001538600683213,
+          "positive_LOO_residual": 0.850878535336728
+        },
+        {
+          "seed": 1046,
+          "x": 234,
+          "y": 63,
+          "replicate_luminance": 1.6500412747621536,
+          "positive_LOO_residual": 0.7920017190021418
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "full",
+      "variance": 0.007144759704789308,
+      "tail": 0.006758656241937305,
+      "top_variance_seeds": [
+        {
+          "seed": 2071,
+          "fraction": 0.1070360275830959
+        },
+        {
+          "seed": 2098,
+          "fraction": 0.10390533863464553
+        },
+        {
+          "seed": 2054,
+          "fraction": 0.10198967666919287
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.05409755107898514
+        },
+        {
+          "seed": 2080,
+          "fraction": 0.04923095015351777
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2071,
+          "fraction": 0.11390155712967234
+        },
+        {
+          "seed": 2098,
+          "fraction": 0.11050967254828727
+        },
+        {
+          "seed": 2054,
+          "fraction": 0.10859541382812464
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.05720516640614544
+        },
+        {
+          "seed": 2080,
+          "fraction": 0.051980225232354085
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 63,
+          "y": 118,
+          "variance": 39.86116662113505,
+          "fraction_of_region_variance": 0.10255656785567921
+        },
+        {
+          "x": 86,
+          "y": 115,
+          "variance": 39.77386596197056,
+          "fraction_of_region_variance": 0.1023319568687368
+        },
+        {
+          "x": 68,
+          "y": 124,
+          "variance": 39.45583573145394,
+          "fraction_of_region_variance": 0.10151371466257816
+        },
+        {
+          "x": 31,
+          "y": 108,
+          "variance": 11.888896165726132,
+          "fraction_of_region_variance": 0.030588276503250453
+        },
+        {
+          "x": 125,
+          "y": 106,
+          "variance": 11.831399859642962,
+          "fraction_of_region_variance": 0.03044034747065804
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2071,
+          "x": 63,
+          "y": 118,
+          "replicate_luminance": 50.50951156044006,
+          "positive_LOO_residual": 50.508559721315265
+        },
+        {
+          "seed": 2098,
+          "x": 86,
+          "y": 115,
+          "replicate_luminance": 50.45425157623291,
+          "positive_LOO_residual": 50.453216080252396
+        },
+        {
+          "seed": 2054,
+          "x": 68,
+          "y": 124,
+          "replicate_luminance": 50.26271689109802,
+          "positive_LOO_residual": 50.246504089106
+        },
+        {
+          "seed": 2080,
+          "x": 31,
+          "y": 108,
+          "replicate_luminance": 27.596537184143067,
+          "positive_LOO_residual": 27.58401409163826
+        },
+        {
+          "seed": 2056,
+          "x": 125,
+          "y": 106,
+          "replicate_luminance": 27.556707289767267,
+          "positive_LOO_residual": 27.516911710271913
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "wall",
+      "variance": 2.9655033208329214e-06,
+      "tail": 1.7754633338116698e-07,
+      "top_variance_seeds": [
+        {
+          "seed": 2057,
+          "fraction": 0.02192339112757448
+        },
+        {
+          "seed": 2075,
+          "fraction": 0.02090283197804178
+        },
+        {
+          "seed": 2106,
+          "fraction": 0.019988786310321225
+        },
+        {
+          "seed": 2101,
+          "fraction": 0.019341372652393024
+        },
+        {
+          "seed": 2063,
+          "fraction": 0.01889971895405994
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2057,
+          "fraction": 0.11916509147541714
+        },
+        {
+          "seed": 2075,
+          "fraction": 0.08340534654558511
+        },
+        {
+          "seed": 2063,
+          "fraction": 0.06836817486808153
+        },
+        {
+          "seed": 2106,
+          "fraction": 0.05491704271514075
+        },
+        {
+          "seed": 2101,
+          "fraction": 0.051853382471353626
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 43,
+          "y": 81,
+          "variance": 3.786407465850905e-05,
+          "fraction_of_region_variance": 0.007466770838822434
+        },
+        {
+          "x": 12,
+          "y": 66,
+          "variance": 2.6315074696249546e-05,
+          "fraction_of_region_variance": 0.005189315575132749
+        },
+        {
+          "x": 53,
+          "y": 62,
+          "variance": 1.7920253072346585e-05,
+          "fraction_of_region_variance": 0.0035338622235376823
+        },
+        {
+          "x": 56,
+          "y": 69,
+          "variance": 1.1244328666675338e-05,
+          "fraction_of_region_variance": 0.002217374282817679
+        },
+        {
+          "x": 47,
+          "y": 84,
+          "variance": 1.1014220570451105e-05,
+          "fraction_of_region_variance": 0.0021719971162512185
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2057,
+          "x": 43,
+          "y": 81,
+          "replicate_luminance": 0.052322368504107,
+          "positive_LOO_residual": 0.04726869477333745
+        },
+        {
+          "seed": 2075,
+          "x": 12,
+          "y": 66,
+          "replicate_luminance": 0.04422203033920378,
+          "positive_LOO_residual": 0.039137111256385804
+        },
+        {
+          "seed": 2063,
+          "x": 53,
+          "y": 62,
+          "replicate_luminance": 0.036651467227004464,
+          "positive_LOO_residual": 0.03218836840059061
+        },
+        {
+          "seed": 2101,
+          "x": 47,
+          "y": 84,
+          "replicate_luminance": 0.02819473805185407,
+          "positive_LOO_residual": 0.02543444590656611
+        },
+        {
+          "seed": 2106,
+          "x": 56,
+          "y": 69,
+          "replicate_luminance": 0.02816140141952783,
+          "positive_LOO_residual": 0.02310577775689862
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "soffit",
+      "variance": 0.00047287151760870636,
+      "tail": 0.00033500593878987893,
+      "top_variance_seeds": [
+        {
+          "seed": 2088,
+          "fraction": 0.059074485893760874
+        },
+        {
+          "seed": 2100,
+          "fraction": 0.04397096014452375
+        },
+        {
+          "seed": 2098,
+          "fraction": 0.040952235747496145
+        },
+        {
+          "seed": 2069,
+          "fraction": 0.03904889405881066
+        },
+        {
+          "seed": 2073,
+          "fraction": 0.038941472472106775
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2088,
+          "fraction": 0.07442553235893848
+        },
+        {
+          "seed": 2069,
+          "fraction": 0.03451864623397181
+        },
+        {
+          "seed": 2100,
+          "fraction": 0.03282202423478655
+        },
+        {
+          "seed": 2073,
+          "fraction": 0.032235606948359564
+        },
+        {
+          "seed": 2098,
+          "fraction": 0.031168212681478884
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 152,
+          "y": 62,
+          "variance": 0.0708253374509188,
+          "fraction_of_region_variance": 0.07564501374675395
+        },
+        {
+          "x": 167,
+          "y": 58,
+          "variance": 0.06656904403156387,
+          "fraction_of_region_variance": 0.07109907883411845
+        },
+        {
+          "x": 153,
+          "y": 62,
+          "variance": 0.05566210793008398,
+          "fraction_of_region_variance": 0.05944992387028692
+        },
+        {
+          "x": 170,
+          "y": 58,
+          "variance": 0.03092570130798248,
+          "fraction_of_region_variance": 0.033030200557695934
+        },
+        {
+          "x": 152,
+          "y": 61,
+          "variance": 0.026489287986969954,
+          "fraction_of_region_variance": 0.028291888553367867
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2088,
+          "x": 167,
+          "y": 58,
+          "replicate_luminance": 1.6256373176813126,
+          "positive_LOO_residual": 1.5669141862466471
+        },
+        {
+          "seed": 2069,
+          "x": 156,
+          "y": 59,
+          "replicate_luminance": 0.9173742632091045,
+          "positive_LOO_residual": 0.8990970662683961
+        },
+        {
+          "seed": 2048,
+          "x": 156,
+          "y": 58,
+          "replicate_luminance": 0.8990744682312011,
+          "positive_LOO_residual": 0.8975325103841613
+        },
+        {
+          "seed": 2066,
+          "x": 173,
+          "y": 59,
+          "replicate_luminance": 0.9367704905033112,
+          "positive_LOO_residual": 0.8967722288679524
+        },
+        {
+          "seed": 2110,
+          "x": 156,
+          "y": 59,
+          "replicate_luminance": 0.9141736361920834,
+          "positive_LOO_residual": 0.8958456356479302
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "floor",
+      "variance": 0.0005551705336706782,
+      "tail": 0.0005469149271992622,
+      "top_variance_seeds": [
+        {
+          "seed": 2060,
+          "fraction": 0.9388479745778885
+        },
+        {
+          "seed": 2092,
+          "fraction": 0.021827820786208835
+        },
+        {
+          "seed": 2099,
+          "fraction": 0.003943764643030424
+        },
+        {
+          "seed": 2059,
+          "fraction": 0.003590063477991604
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.0013652156531897533
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2060,
+          "fraction": 0.9678987294862982
+        },
+        {
+          "seed": 2092,
+          "fraction": 0.02194270844795533
+        },
+        {
+          "seed": 2099,
+          "fraction": 0.003571281361687668
+        },
+        {
+          "seed": 2059,
+          "fraction": 0.0031509562146595227
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.0008792805884027044
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 108,
+          "y": 103,
+          "variance": 0.8443274570494014,
+          "fraction_of_region_variance": 0.9535068508427261
+        },
+        {
+          "x": 101,
+          "y": 102,
+          "variance": 0.019031684689627907,
+          "fraction_of_region_variance": 0.021492658545127784
+        },
+        {
+          "x": 117,
+          "y": 102,
+          "variance": 0.0031856723291173155,
+          "fraction_of_region_variance": 0.0035976093931240436
+        },
+        {
+          "x": 119,
+          "y": 102,
+          "variance": 0.0028843637612484072,
+          "fraction_of_region_variance": 0.00325733882477771
+        },
+        {
+          "x": 152,
+          "y": 96,
+          "variance": 0.0007925848916845393,
+          "fraction_of_region_variance": 0.0008950734904875069
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2060,
+          "x": 108,
+          "y": 103,
+          "replicate_luminance": 7.3612625791251665,
+          "positive_LOO_residual": 7.350945116746348
+        },
+        {
+          "seed": 2092,
+          "x": 101,
+          "y": 102,
+          "replicate_luminance": 1.1182867084860801,
+          "positive_LOO_residual": 1.1029752057267797
+        },
+        {
+          "seed": 2099,
+          "x": 117,
+          "y": 102,
+          "replicate_luminance": 0.5175788445875049,
+          "positive_LOO_residual": 0.44553043796625585
+        },
+        {
+          "seed": 2059,
+          "x": 119,
+          "y": 102,
+          "replicate_luminance": 0.5339266731895507,
+          "positive_LOO_residual": 0.41742667123397426
+        },
+        {
+          "seed": 2087,
+          "x": 152,
+          "y": 96,
+          "replicate_luminance": 0.23319931101202962,
+          "positive_LOO_residual": 0.219830861754827
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "pool",
+      "variance": 0.012484216275708804,
+      "tail": 0.012440917600184207,
+      "top_variance_seeds": [
+        {
+          "seed": 2098,
+          "fraction": 0.45035279351280866
+        },
+        {
+          "seed": 2100,
+          "fraction": 0.11379387560989106
+        },
+        {
+          "seed": 2080,
+          "fraction": 0.07341195097236214
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.07222026448145791
+        },
+        {
+          "seed": 2070,
+          "fraction": 0.05272143076288447
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2098,
+          "fraction": 0.45892045578452934
+        },
+        {
+          "seed": 2100,
+          "fraction": 0.11575170698169217
+        },
+        {
+          "seed": 2080,
+          "fraction": 0.07456759513072488
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.07335258088979657
+        },
+        {
+          "seed": 2070,
+          "fraction": 0.053464699006750264
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 86,
+          "y": 115,
+          "variance": 39.77386596197056,
+          "fraction_of_region_variance": 0.4567644655092543
+        },
+        {
+          "x": 92,
+          "y": 145,
+          "variance": 10.000809530324116,
+          "fraction_of_region_variance": 0.11484964584901099
+        },
+        {
+          "x": 115,
+          "y": 115,
+          "variance": 6.425716373453514,
+          "fraction_of_region_variance": 0.07379315120237169
+        },
+        {
+          "x": 116,
+          "y": 140,
+          "variance": 6.081008144436817,
+          "fraction_of_region_variance": 0.06983450986401152
+        },
+        {
+          "x": 96,
+          "y": 116,
+          "variance": 5.649114429037674,
+          "fraction_of_region_variance": 0.06487462735574046
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2098,
+          "x": 86,
+          "y": 115,
+          "replicate_luminance": 50.45425157623291,
+          "positive_LOO_residual": 50.453216080252396
+        },
+        {
+          "seed": 2100,
+          "x": 92,
+          "y": 145,
+          "replicate_luminance": 25.299985846710207,
+          "positive_LOO_residual": 25.29924503804299
+        },
+        {
+          "seed": 2080,
+          "x": 115,
+          "y": 115,
+          "replicate_luminance": 20.27982654218674,
+          "positive_LOO_residual": 20.27919738253255
+        },
+        {
+          "seed": 2068,
+          "x": 116,
+          "y": 140,
+          "replicate_luminance": 19.73036210784912,
+          "positive_LOO_residual": 19.727733147236957
+        },
+        {
+          "seed": 2070,
+          "x": 98,
+          "y": 137,
+          "replicate_luminance": 17.126260678547624,
+          "positive_LOO_residual": 17.124400243302517
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "raw",
+      "region": "glass",
+      "variance": 0.005884961803561793,
+      "tail": 0.002626147976341785,
+      "top_variance_seeds": [
+        {
+          "seed": 2108,
+          "fraction": 0.04257506127980556
+        },
+        {
+          "seed": 2110,
+          "fraction": 0.036967804394105484
+        },
+        {
+          "seed": 2111,
+          "fraction": 0.03399656274606724
+        },
+        {
+          "seed": 2089,
+          "fraction": 0.033206401055153136
+        },
+        {
+          "seed": 2096,
+          "fraction": 0.02885487684675757
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2108,
+          "fraction": 0.0687060412485989
+        },
+        {
+          "seed": 2110,
+          "fraction": 0.05497478779683343
+        },
+        {
+          "seed": 2111,
+          "fraction": 0.051627810560083066
+        },
+        {
+          "seed": 2089,
+          "fraction": 0.04771141699638964
+        },
+        {
+          "seed": 2096,
+          "fraction": 0.030622133294311987
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 263,
+          "y": 68,
+          "variance": 1.0167188409885461,
+          "fraction_of_region_variance": 0.11997609742499268
+        },
+        {
+          "x": 259,
+          "y": 62,
+          "variance": 0.44025844031198064,
+          "fraction_of_region_variance": 0.05195191374214001
+        },
+        {
+          "x": 254,
+          "y": 75,
+          "variance": 0.4144572336997425,
+          "fraction_of_region_variance": 0.04890728827303541
+        },
+        {
+          "x": 263,
+          "y": 67,
+          "variance": 0.36043910652219324,
+          "fraction_of_region_variance": 0.04253297530892431
+        },
+        {
+          "x": 254,
+          "y": 76,
+          "variance": 0.35154533422850215,
+          "fraction_of_region_variance": 0.04148348153722818
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2108,
+          "x": 252,
+          "y": 82,
+          "replicate_luminance": 3.862055526907742,
+          "positive_LOO_residual": 3.861514472493814
+        },
+        {
+          "seed": 2110,
+          "x": 254,
+          "y": 75,
+          "replicate_luminance": 3.6876973394632335,
+          "positive_LOO_residual": 3.4531491218569657
+        },
+        {
+          "seed": 2111,
+          "x": 263,
+          "y": 68,
+          "replicate_luminance": 3.974732259464264,
+          "positive_LOO_residual": 3.2693066239982334
+        },
+        {
+          "seed": 2089,
+          "x": 253,
+          "y": 69,
+          "replicate_luminance": 2.9228883035779,
+          "positive_LOO_residual": 2.9188508467735628
+        },
+        {
+          "seed": 2096,
+          "x": 263,
+          "y": 67,
+          "replicate_luminance": 2.7020360092401505,
+          "positive_LOO_residual": 2.433447783559865
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "full",
+      "variance": 0.00011119654121042893,
+      "tail": 3.604559577814016e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 2108,
+          "fraction": 0.01858200996871183
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.018492609309183995
+        },
+        {
+          "seed": 2058,
+          "fraction": 0.018312180483353802
+        },
+        {
+          "seed": 2055,
+          "fraction": 0.018153957653968274
+        },
+        {
+          "seed": 2069,
+          "fraction": 0.017851046837115185
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2089,
+          "fraction": 0.027076784708119406
+        },
+        {
+          "seed": 2069,
+          "fraction": 0.026781665706959487
+        },
+        {
+          "seed": 2082,
+          "fraction": 0.02174943607531274
+        },
+        {
+          "seed": 2108,
+          "fraction": 0.021173190687256527
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.020356781402790312
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 259,
+          "y": 62,
+          "variance": 0.17986056970476932,
+          "fraction_of_region_variance": 0.029733483042942467
+        },
+        {
+          "x": 260,
+          "y": 62,
+          "variance": 0.10253082430392538,
+          "fraction_of_region_variance": 0.016949787998691297
+        },
+        {
+          "x": 237,
+          "y": 70,
+          "variance": 0.0676809874172319,
+          "fraction_of_region_variance": 0.011188619579061108
+        },
+        {
+          "x": 259,
+          "y": 61,
+          "variance": 0.06408454730657549,
+          "fraction_of_region_variance": 0.010594077422207677
+        },
+        {
+          "x": 235,
+          "y": 63,
+          "variance": 0.062017368505707604,
+          "fraction_of_region_variance": 0.010252343678545986
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2089,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.318577659797668,
+          "positive_LOO_residual": 1.0743066633542386
+        },
+        {
+          "seed": 2069,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.021074505710601,
+          "positive_LOO_residual": 0.7720812369800749
+        },
+        {
+          "seed": 2107,
+          "x": 234,
+          "y": 63,
+          "replicate_luminance": 1.624815726518631,
+          "positive_LOO_residual": 0.7417040569813005
+        },
+        {
+          "seed": 2069,
+          "x": 152,
+          "y": 62,
+          "replicate_luminance": 1.5999063363909722,
+          "positive_LOO_residual": 0.7249371319902322
+        },
+        {
+          "seed": 2075,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 8.953337432289123,
+          "positive_LOO_residual": 0.7032689719169862
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "wall",
+      "variance": 1.8464308106828555e-05,
+      "tail": 1.0407669332243622e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 2075,
+          "fraction": 0.020982813271519914
+        },
+        {
+          "seed": 2057,
+          "fraction": 0.020143062241281613
+        },
+        {
+          "seed": 2106,
+          "fraction": 0.019786096807756816
+        },
+        {
+          "seed": 2063,
+          "fraction": 0.01897010720433782
+        },
+        {
+          "seed": 2101,
+          "fraction": 0.017818075558761817
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2057,
+          "fraction": 0.09348207735008773
+        },
+        {
+          "seed": 2075,
+          "fraction": 0.08892669191054782
+        },
+        {
+          "seed": 2063,
+          "fraction": 0.07289407252739982
+        },
+        {
+          "seed": 2106,
+          "fraction": 0.0545528427025715
+        },
+        {
+          "seed": 2050,
+          "fraction": 0.0267769771573499
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 43,
+          "y": 81,
+          "variance": 0.00017690267902165127,
+          "fraction_of_region_variance": 0.005602801820596246
+        },
+        {
+          "x": 12,
+          "y": 66,
+          "variance": 0.00016446921909204744,
+          "fraction_of_region_variance": 0.005209013482764637
+        },
+        {
+          "x": 53,
+          "y": 62,
+          "variance": 0.00011200158054113705,
+          "fraction_of_region_variance": 0.0035472761793999556
+        },
+        {
+          "x": 56,
+          "y": 69,
+          "variance": 7.027705195464549e-05,
+          "fraction_of_region_variance": 0.0022257910214544207
+        },
+        {
+          "x": 41,
+          "y": 59,
+          "variance": 6.101502381478248e-05,
+          "fraction_of_region_variance": 0.0019324471986732696
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2057,
+          "x": 43,
+          "y": 81,
+          "replicate_luminance": 0.11333523209393023,
+          "positive_LOO_residual": 0.1007010477867443
+        },
+        {
+          "seed": 2075,
+          "x": 12,
+          "y": 66,
+          "replicate_luminance": 0.11055507642179728,
+          "positive_LOO_residual": 0.09784277869047789
+        },
+        {
+          "seed": 2063,
+          "x": 53,
+          "y": 62,
+          "replicate_luminance": 0.09162866756096483,
+          "positive_LOO_residual": 0.08047092050513148
+        },
+        {
+          "seed": 2106,
+          "x": 56,
+          "y": 69,
+          "replicate_luminance": 0.07040350245311856,
+          "positive_LOO_residual": 0.05776444334708568
+        },
+        {
+          "seed": 2106,
+          "x": 41,
+          "y": 59,
+          "replicate_luminance": 0.06570925535783172,
+          "positive_LOO_residual": 0.0536369416309247
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "soffit",
+      "variance": 0.00019672690669395352,
+      "tail": 5.8041598076790494e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 2069,
+          "fraction": 0.039371016900860666
+        },
+        {
+          "seed": 2071,
+          "fraction": 0.02996890532732947
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.027939280811627897
+        },
+        {
+          "seed": 2063,
+          "fraction": 0.02515876057692733
+        },
+        {
+          "seed": 2091,
+          "fraction": 0.025080082308761235
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2069,
+          "fraction": 0.08545316332300741
+        },
+        {
+          "seed": 2071,
+          "fraction": 0.05161076070495771
+        },
+        {
+          "seed": 2054,
+          "fraction": 0.03983114419314828
+        },
+        {
+          "seed": 2068,
+          "fraction": 0.036830954567961205
+        },
+        {
+          "seed": 2079,
+          "fraction": 0.02466479615036961
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 152,
+          "y": 62,
+          "variance": 0.05486675090345068,
+          "fraction_of_region_variance": 0.14085760163645025
+        },
+        {
+          "x": 153,
+          "y": 62,
+          "variance": 0.030271223796282568,
+          "fraction_of_region_variance": 0.07771431536100738
+        },
+        {
+          "x": 154,
+          "y": 62,
+          "variance": 0.020345587374333115,
+          "fraction_of_region_variance": 0.05223255604248233
+        },
+        {
+          "x": 152,
+          "y": 63,
+          "variance": 0.019991587183956317,
+          "fraction_of_region_variance": 0.05132374301867
+        },
+        {
+          "x": 153,
+          "y": 63,
+          "variance": 0.019094313068893788,
+          "fraction_of_region_variance": 0.0490202007498635
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2069,
+          "x": 152,
+          "y": 62,
+          "replicate_luminance": 1.5999063363909722,
+          "positive_LOO_residual": 0.7249371319902322
+        },
+        {
+          "seed": 2071,
+          "x": 152,
+          "y": 62,
+          "replicate_luminance": 1.3997037700891495,
+          "positive_LOO_residual": 0.5215567471756821
+        },
+        {
+          "seed": 2054,
+          "x": 152,
+          "y": 62,
+          "replicate_luminance": 1.3405928142070769,
+          "positive_LOO_residual": 0.46150752215262425
+        },
+        {
+          "seed": 2068,
+          "x": 153,
+          "y": 62,
+          "replicate_luminance": 0.9824370739102363,
+          "positive_LOO_residual": 0.4512420458407155
+        },
+        {
+          "seed": 2067,
+          "x": 154,
+          "y": 62,
+          "replicate_luminance": 0.6263271535724401,
+          "positive_LOO_residual": 0.3938620668991416
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "floor",
+      "variance": 5.763275016376354e-05,
+      "tail": 6.721645952296257e-06,
+      "top_variance_seeds": [
+        {
+          "seed": 2108,
+          "fraction": 0.021957797501758407
+        },
+        {
+          "seed": 2092,
+          "fraction": 0.02131299802076689
+        },
+        {
+          "seed": 2059,
+          "fraction": 0.019675401083501465
+        },
+        {
+          "seed": 2072,
+          "fraction": 0.019473118778099253
+        },
+        {
+          "seed": 2074,
+          "fraction": 0.019366572626375134
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2108,
+          "fraction": 0.04402326987032628
+        },
+        {
+          "seed": 2092,
+          "fraction": 0.04388617535046639
+        },
+        {
+          "seed": 2099,
+          "fraction": 0.03439235300354516
+        },
+        {
+          "seed": 2050,
+          "fraction": 0.0334529586519273
+        },
+        {
+          "seed": 2096,
+          "fraction": 0.030891338372416793
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 125,
+          "y": 103,
+          "variance": 0.001344935090142844,
+          "fraction_of_region_variance": 0.014630908465352727
+        },
+        {
+          "x": 120,
+          "y": 103,
+          "variance": 0.0011521994532641285,
+          "fraction_of_region_variance": 0.01253422924131341
+        },
+        {
+          "x": 128,
+          "y": 102,
+          "variance": 0.0011245904468796765,
+          "fraction_of_region_variance": 0.012233884006669145
+        },
+        {
+          "x": 119,
+          "y": 102,
+          "variance": 0.0011074653001538533,
+          "fraction_of_region_variance": 0.012047587689443426
+        },
+        {
+          "x": 129,
+          "y": 101,
+          "variance": 0.0010261994729964486,
+          "fraction_of_region_variance": 0.011163535449885246
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2108,
+          "x": 175,
+          "y": 96,
+          "replicate_luminance": 0.15384802249521015,
+          "positive_LOO_residual": 0.14980096865646642
+        },
+        {
+          "seed": 2099,
+          "x": 117,
+          "y": 102,
+          "replicate_luminance": 0.3145582559607923,
+          "positive_LOO_residual": 0.1344372394936366
+        },
+        {
+          "seed": 2096,
+          "x": 119,
+          "y": 102,
+          "replicate_luminance": 0.4206195867650211,
+          "positive_LOO_residual": 0.13017689136789437
+        },
+        {
+          "seed": 2092,
+          "x": 195,
+          "y": 101,
+          "replicate_luminance": 0.1314627464056015,
+          "positive_LOO_residual": 0.12868606646440936
+        },
+        {
+          "seed": 2087,
+          "x": 152,
+          "y": 96,
+          "replicate_luminance": 0.15613417246043682,
+          "positive_LOO_residual": 0.1227130492940737
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "pool",
+      "variance": 4.1583619601812035e-05,
+      "tail": 1.1357892868388491e-05,
+      "top_variance_seeds": [
+        {
+          "seed": 2093,
+          "fraction": 0.02033437914859114
+        },
+        {
+          "seed": 2098,
+          "fraction": 0.019359015209646415
+        },
+        {
+          "seed": 2099,
+          "fraction": 0.019345097247340223
+        },
+        {
+          "seed": 2048,
+          "fraction": 0.01928986740200255
+        },
+        {
+          "seed": 2051,
+          "fraction": 0.019090372321411645
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2098,
+          "fraction": 0.02956755902636693
+        },
+        {
+          "seed": 2093,
+          "fraction": 0.026224744210552996
+        },
+        {
+          "seed": 2073,
+          "fraction": 0.025427011975364167
+        },
+        {
+          "seed": 2048,
+          "fraction": 0.024761965204349732
+        },
+        {
+          "seed": 2078,
+          "fraction": 0.024069932740911043
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 152,
+          "y": 116,
+          "variance": 0.012293519048387559,
+          "fraction_of_region_variance": 0.04238475891233613
+        },
+        {
+          "x": 153,
+          "y": 116,
+          "variance": 0.010179405050789328,
+          "fraction_of_region_variance": 0.03509586044895033
+        },
+        {
+          "x": 153,
+          "y": 117,
+          "variance": 0.003932488242092144,
+          "fraction_of_region_variance": 0.013558165518809178
+        },
+        {
+          "x": 154,
+          "y": 116,
+          "variance": 0.0033564549862461442,
+          "fraction_of_region_variance": 0.01157215723440968
+        },
+        {
+          "x": 152,
+          "y": 115,
+          "variance": 0.003265676280045962,
+          "fraction_of_region_variance": 0.011259176584888243
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2098,
+          "x": 152,
+          "y": 116,
+          "replicate_luminance": 0.4484733724981546,
+          "positive_LOO_residual": 0.3021122679685863
+        },
+        {
+          "seed": 2073,
+          "x": 152,
+          "y": 116,
+          "replicate_luminance": 0.4075970761060715,
+          "positive_LOO_residual": 0.26058714147504153
+        },
+        {
+          "seed": 2048,
+          "x": 152,
+          "y": 116,
+          "replicate_luminance": 0.3985250559806824,
+          "positive_LOO_residual": 0.25137112103020187
+        },
+        {
+          "seed": 2069,
+          "x": 153,
+          "y": 116,
+          "replicate_luminance": 0.4202853559851646,
+          "positive_LOO_residual": 0.24490949755669159
+        },
+        {
+          "seed": 2054,
+          "x": 153,
+          "y": 115,
+          "replicate_luminance": 0.26130751808956265,
+          "positive_LOO_residual": 0.23500621528048382
+        }
+      ]
+    },
+    {
+      "scene": "night",
+      "arm": "reference",
+      "plane": "clamped",
+      "region": "glass",
+      "variance": 0.0012198834000426034,
+      "tail": 0.00023768939332497938,
+      "top_variance_seeds": [
+        {
+          "seed": 2055,
+          "fraction": 0.024417535843627113
+        },
+        {
+          "seed": 2089,
+          "fraction": 0.024326497869935064
+        },
+        {
+          "seed": 2087,
+          "fraction": 0.022799103551221327
+        },
+        {
+          "seed": 2108,
+          "fraction": 0.02090414733967203
+        },
+        {
+          "seed": 2099,
+          "fraction": 0.020679589607124696
+        }
+      ],
+      "top_tail_seeds": [
+        {
+          "seed": 2089,
+          "fraction": 0.0629554305323788
+        },
+        {
+          "seed": 2075,
+          "fraction": 0.03421011559814207
+        },
+        {
+          "seed": 2069,
+          "fraction": 0.033778411788458106
+        },
+        {
+          "seed": 2107,
+          "fraction": 0.030365873687666464
+        },
+        {
+          "seed": 2050,
+          "fraction": 0.02859973126075565
+        }
+      ],
+      "top_variance_pixels": [
+        {
+          "x": 259,
+          "y": 62,
+          "variance": 0.17986056970476932,
+          "fraction_of_region_variance": 0.10238943607374908
+        },
+        {
+          "x": 260,
+          "y": 62,
+          "variance": 0.10253082430392538,
+          "fraction_of_region_variance": 0.058367841811507344
+        },
+        {
+          "x": 237,
+          "y": 70,
+          "variance": 0.0676809874172319,
+          "fraction_of_region_variance": 0.03852883456301609
+        },
+        {
+          "x": 259,
+          "y": 61,
+          "variance": 0.06408454730657549,
+          "fraction_of_region_variance": 0.03648148491096305
+        },
+        {
+          "x": 235,
+          "y": 63,
+          "variance": 0.062017368505707604,
+          "fraction_of_region_variance": 0.03530469962649578
+        }
+      ],
+      "top_positive_residuals": [
+        {
+          "seed": 2089,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.318577659797668,
+          "positive_LOO_residual": 1.0743066633542386
+        },
+        {
+          "seed": 2069,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 9.021074505710601,
+          "positive_LOO_residual": 0.7720812369800749
+        },
+        {
+          "seed": 2107,
+          "x": 234,
+          "y": 63,
+          "replicate_luminance": 1.624815726518631,
+          "positive_LOO_residual": 0.7417040569813005
+        },
+        {
+          "seed": 2075,
+          "x": 259,
+          "y": 62,
+          "replicate_luminance": 8.953337432289123,
+          "positive_LOO_residual": 0.7032689719169862
+        },
+        {
+          "seed": 2059,
+          "x": 237,
+          "y": 70,
+          "replicate_luminance": 1.7461178656101226,
+          "positive_LOO_residual": 0.6940365464794258
+        }
+      ]
+    }
+  ]
+}

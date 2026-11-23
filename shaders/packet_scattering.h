@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "../src/packet_roulette_shared.h"
 #include "packet_layered.h"
 #include "scattering.h"
 // Renderer specialization and all-family probes require distinct symbols.
@@ -142,14 +143,54 @@ inline rypath_scattering::Evaluation scalar_evaluate(const thread rypath_scatter
     }
     return {0, 0, false};
 }
+// PBRT v4 b0bdf461 SampleUniformDiskConcentric / SampleCosineHemisphere,
+// adapted for Metal; see third_party/pbrt/LICENSE.txt. Packet kind0 only.
+// pbrt is Copyright(c) 1998-2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
+inline float3 diffuse_concentric_cosine(float2 u) {
+    const float2 offset = 2 * u - float2(1);
+    if (offset.x == 0 && offset.y == 0)
+        return float3(0, 0, 1);
+    float radius, theta;
+    if (abs(offset.x) > abs(offset.y)) {
+        radius = offset.x;
+        theta = (M_PI_F / 4) * (offset.y / offset.x);
+    } else {
+        radius = offset.y;
+        theta = (M_PI_F / 2) - (M_PI_F / 4) * (offset.x / offset.y);
+    }
+    const float2 disk = radius * float2(cos(theta), sin(theta));
+    return float3(disk, sqrt(max(0.0f, 1 - dot(disk, disk))));
+}
+inline rypath_scattering::Sample diffuse_reflection_sample(float R, float3 wo, float uc, float2 u) {
+    rypath_scattering::Sample s = {float3(0), 0, 0, false, false, true};
+    // Specialize diffuse_sample for reflection, retaining its validation
+    // order, sum, R/sum PDF factor and early returns.
+    float sum = R + 0.0f;
+    if (!isfinite(R) || R < 0 || !isfinite(sum) || !all(isfinite(wo)) ||
+        !rypath_transmission::randoms(uc, u)) {
+        s.valid = false;
+        return s;
+    }
+    if (sum == 0 || wo.z == 0)
+        return s;
+    s.wi = diffuse_concentric_cosine(u);
+    if (wo.z < 0)
+        s.wi.z = -s.wi.z;
+    s.pdf = R / sum * abs(s.wi.z) / M_PI_F;
+    s.weight = sum;
+    s.accepted = s.pdf > 0;
+    return s;
+}
 inline rypath_scattering::Sample scalar_sample(const thread rypath_scattering::Prepared &p,
-                                               float3 wo, float uc, float2 u) {
+                                               float3 wo, float uc, float2 u,
+                                               thread float &sampled_eta) {
+    sampled_eta = 1;
     if (p.kind == 0)
-        return rypath_transmission::diffuse_sample(p.reflectance, 0, wo, uc, u);
+        return diffuse_reflection_sample(p.reflectance, wo, uc, u);
     if (has_conductor() && p.kind == 1)
         return rypath_conductor::sample(p.conductor, wo, u);
     if (has_dielectric() && p.kind == 2)
-        return rypath_dielectric::sample(p.dielectric, wo, uc, u);
+        return rypath_dielectric::sample(p.dielectric, wo, uc, u, sampled_eta);
     if (has_gltf() && p.kind == 11)
         return rypath_gltf::sample(p.gltf, wo, uc, u);
     if (has_surface()) {
@@ -165,6 +206,11 @@ inline rypath_scattering::Sample scalar_sample(const thread rypath_scattering::P
         }
     }
     return {float3(0), 0, 0, false, false, false};
+}
+inline rypath_scattering::Sample scalar_sample(const thread rypath_scattering::Prepared &p,
+                                               float3 wo, float uc, float2 u) {
+    float sampled_eta;
+    return scalar_sample(p, wo, uc, u, sampled_eta);
 }
 // Direction-shaping parameters must be shared. Dispersive refraction requires
 // wavelength termination before preparation; inactive lanes do not constrain it.
@@ -276,8 +322,10 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
                  TransportMode mode = TransportMode::Radiance) {
     (void)mode;
     auto q = proposal(p);
-    if (has_surface() && has_coated() && (q.kind == 5 || q.kind == 6))
-        return rypath_packet_layered::directional_pdf(layered(p), wo, wi).pdf;
+    if (has_surface() && has_coated() && (q.kind == 5 || q.kind == 6)) {
+        auto density = rypath_packet_layered::directional_pdf(layered(p), wo, wi);
+        return density.valid ? density.pdf : NAN;
+    }
     return scalar_evaluate(q, wo, wi).pdf;
 }
 [[clang::noinline]] inline Evaluation evaluate(const thread Prepared &p, float3 wo, float3 wi,
@@ -291,7 +339,8 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         auto a =
             rypath_packet_layered::evaluate(q, wo, wi, seed, mode == TransportMode::Importance);
         e.f = a.f;
-        e.valid = a.valid;
+        e.valid = a.valid && isfinite(e.pdf) && e.pdf >= 0 && isfinite(e.reverse_pdf) &&
+                  e.reverse_pdf >= 0;
         return e;
     }
     for (uint i = 0; i < 4; ++i)
@@ -322,7 +371,9 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         out.valid = a.valid;
         out.pdf_is_proportional = true;
     } else {
-        auto a = scalar_sample(q, wo, uc, u);
+        float sampled_eta;
+        auto a = scalar_sample(q, wo, uc, u, sampled_eta);
+        out.eta = sampled_eta;
         if (has_surface() && has_thin_dielectric() && q.kind == 3 && a.valid && wo.z != 0) {
             float R = 0, n = 0;
             for (uint i = 0; i < 4; ++i)
@@ -372,9 +423,7 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
         }
         out.accepted = out.valid && maximum(out.weight) > 0;
     }
-    out.transmission = wo.z * out.wi.z < 0;
-    if (out.transmission && q.kind == 2)
-        out.eta = wo.z > 0 ? q.dielectric.eta : 1 / q.dielectric.eta;
+    out.transmission = rypath_packet_roulette::opposite_hemispheres(wo.z, out.wi.z);
     if (has_fourier() && out.transmission && (q.kind == 7 || q.kind == 8) &&
         q.table[0] == RYPATH_TABLE_FOURIER) {
         float eta = tb_f(q.table, 4);
@@ -382,7 +431,9 @@ inline float pdf(const thread Prepared &p, float3 wo, float3 wi,
     }
     out.reverse_pdf = out.delta ? out.pdf : pdf(p, out.wi, wo, opposite(mode));
     out.connectible = !out.delta;
-    out.valid = out.valid && all(isfinite(out.weight)) && all(out.weight >= 0);
+    out.valid = out.valid && all(isfinite(out.weight)) && all(out.weight >= 0) &&
+                isfinite(out.pdf) && out.pdf >= 0 && isfinite(out.reverse_pdf) &&
+                out.reverse_pdf >= 0;
     out.accepted = out.accepted && out.valid && maximum(out.weight) > 0;
     return out;
 }

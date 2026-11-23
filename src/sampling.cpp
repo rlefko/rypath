@@ -106,6 +106,24 @@ std::string validate_sampler_range(const RenderSampler &sampler, std::uint64_t s
     return {};
 }
 
+std::string validate_halton_light_range(std::uint32_t width, std::uint32_t height,
+                                        std::uint64_t sample_begin, std::uint64_t sample_count) {
+    if (width == 0 || height == 0)
+        return "Halton light film dimensions must be positive";
+    if (sample_count == 0 ||
+        sample_begin > std::numeric_limits<std::uint64_t>::max() - (sample_count - 1))
+        return "Halton light range must be nonempty and fit the absolute sample indices";
+    const auto stride = std::uint64_t{qmc::base_scale(width, 2)} * qmc::base_scale(height, 3);
+    const auto limit = (std::uint64_t{INT64_MAX} - (stride - 1)) / stride;
+    const auto last_tile = qmc::halton_light_tile_count(width, height) - 1;
+    const auto slots = qmc::halton_light_tile_slots(width, height);
+    // Bound before multiplying: both the tile packing and final CRT index must
+    // remain within the signed upstream Halton capacity for every film owner.
+    if (limit < last_tile || sample_begin + sample_count - 1 > (limit - last_tile) / slots)
+        return "Halton light absolute sample range exceeds the signed 64-bit index capacity";
+    return {};
+}
+
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
 std::uint32_t sampler_max_depth(const RenderSampler &sampler, bool dielectrics) {

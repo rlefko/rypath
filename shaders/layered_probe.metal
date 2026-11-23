@@ -21,6 +21,7 @@ kernel void rypath_layered_probe(const device probe::Query *queries [[buffer(0)]
     p.g = q.g;
     p.max_depth = q.max_depth;
     p.samples = q.samples;
+    p.material_seed = q.material_seed;
     float3 o(q.ox, q.oy, q.oz), i(q.ix, q.iy, q.iz);
     float2 u(q.u, q.v);
     rypath_layered::Evaluation e{0, 0, false};

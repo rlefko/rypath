@@ -5,6 +5,7 @@
 #pragma once
 #include "../src/packet_spectrum_shared.h"
 #include "../src/packet_wire.h"
+#include "../src/shading_normal_shared.h"
 #include "packet_scattering.h"
 
 namespace rypath_bdpt {
@@ -21,6 +22,9 @@ struct Vertex {
     float2 uv;
     float pdf_fwd, pdf_rev;
     uint type, instance, primitive, kind, light, seed;
+    uint path_id, sampled_prev_id, sampled_next_id;
+    bool pair_valid;
+    float3 sampled_wo_local, sampled_wi_local;
     bool delta, connectible, delta_light;
 };
 static_assert(sizeof(Vertex) <= storage::vertex_bytes && alignof(Vertex) <= 16,
@@ -35,7 +39,7 @@ struct Resources {
     rypath_image_light::Images images;
     const device sobol::Tables *tables;
     instance_acceleration_structure scene;
-    MixedIntersectionTable intersection_table;
+    instance_acceleration_structure intersection_table;
 };
 inline device Vertex &path_vertex(device uchar *path, uint i) {
     return *reinterpret_cast<device Vertex *>(path + i * storage::vertex_bytes);
@@ -43,16 +47,19 @@ inline device Vertex &path_vertex(device uchar *path, uint i) {
 inline float remap_zero(float p) { return p == 0 ? 1 : p; }
 inline bool nonzero(float4 v) { return any(v > 0); }
 inline bool finite_nonnegative(float4 v) { return all(isfinite(v)) && all(v >= 0); }
-inline uint light_count(constant wire::Parameters &p) {
-    return p.emitter_count + p.positional_count + p.distant_count + 1;
-}
+inline uint light_count(constant wire::Parameters &p) { return p.light_count; }
 inline bool infinite(const thread Vertex &v) { return v.type == environment_vertex; }
 inline bool on_surface(const thread Vertex &v) { return any(v.point.geometric_normal != 0); }
 inline float convert_density(float pdf, const thread Vertex &from, const thread Vertex &to) {
+    // Preserve invalid evaluated densities before geometric support early-outs.
+    if (!isfinite(pdf) || pdf < 0)
+        return NAN;
     if (infinite(to))
         return pdf;
     const float3 d = to.point.position - from.point.position;
     const float d2 = dot(d, d);
+    if (!all(isfinite(d)) || !isfinite(d2))
+        return NAN;
     if (!(d2 > 0))
         return 0;
     if (on_surface(to))
@@ -84,15 +91,23 @@ inline float4 environment_radiance(const thread Resources &r, float3 direction,
     return value;
 }
 inline float environment_pdf(const thread Resources &r, float3 direction) {
-    return environment_image_enabled ? rypath_image_light::environment_pdf(
-                                           *r.alpha.graph.parameters, r.environment_cdf, direction)
-                                     : 1 / (4 * pi);
+    return environment_image_enabled
+               ? rypath_image_light::environment_pdf(
+                     *r.alpha.graph.parameters, r.environment_cdf, direction,
+                     !packet_bidirectional_enabled(*r.alpha.parameters))
+               : (packet_bidirectional_enabled(*r.alpha.parameters) ? 1 / (4 * pi) : 0);
 }
 inline bool sample_environment(const thread Resources &r, float2 u, thread float3 &direction,
                                thread float &pdf) {
     if (environment_image_enabled)
-        return rypath_image_light::sample_environment(*r.alpha.graph.parameters, r.environment_cdf,
-                                                      u, direction, pdf);
+        return rypath_image_light::sample_environment(
+            *r.alpha.graph.parameters, r.environment_cdf, u, direction, pdf,
+            !packet_bidirectional_enabled(*r.alpha.parameters));
+    if (!packet_bidirectional_enabled(*r.alpha.parameters)) {
+        direction = float3(0, 0, 1);
+        pdf = 0;
+        return true;
+    }
     direction = sphere(u.x, u.y);
     pdf = 1 / (4 * pi);
     return true;
@@ -141,6 +156,7 @@ inline bool camera_sample(constant wire::Parameters &p, const thread Vertex &ref
     }
     sampled = {};
     sampled.type = camera_vertex;
+    sampled.path_id = 0xffffffffu;
     sampled.connectible = true;
     sampled.point.position =
         unpack(p.origin) + p.lens_radius * (disk.x * unpack(p.lens_x) + disk.y * unpack(p.lens_y));
@@ -168,16 +184,13 @@ inline bool surface(const thread Resources &r, float2 uv, uint instance_id, uint
 }
 inline float2 sample_area_uv(const thread Resources &r, const thread wire::Emitter &emitter,
                              float2 u) {
-    if (emitter.kind == wire::triangle_primitive) {
-        const float root = sqrt(u.x);
-        return float2(1 - root, u.y * root);
-    }
-    if (emitter.kind == wire::patch_primitive)
-        return u;
-    const device auto &instance = r.alpha.instances[emitter.instance];
-    const device auto *shapes = reinterpret_cast<const device rypath::geometry_wire::Analytic *>(
-        r.alpha.material_data + instance.analytic_begin);
-    return sample_analytic_area(shapes[emitter.primitive], u).uv;
+    auto alpha = r.alpha;
+    return rypath_light_geometry::area_uv_sample(alpha, emitter, u);
+}
+inline float area_pdf(const thread Resources &r, const thread Vertex &v) {
+    auto alpha = r.alpha;
+    const wire::Emitter emitter{v.instance, v.primitive, v.kind};
+    return rypath_light_geometry::area_pdf(alpha, emitter, v.uv, v.point);
 }
 inline bool emitted(thread Resources &r, const thread Vertex &v, float3 direction,
                     const thread Wavelengths &lambda, thread float4 &radiance) {
@@ -240,13 +253,14 @@ inline float4 distant_radiance(const thread Resources &r, uint index,
 inline float light_origin_pdf(const thread Resources &r, const thread Vertex &v,
                               const thread Vertex &next) {
     const constant auto &p = *r.alpha.parameters;
-    const float selection = 1 / float(light_count(p));
+    const float selection = rypath_light_sampling::pmf(
+        p, r.alpha.material_data, {next.point.position, next.point.shading_normal}, v.light);
     if (infinite(v)) {
         if (v.delta_light)
             return 0;
         return selection * environment_pdf(r, -v.point.geometric_normal);
     }
-    return on_surface(v) ? selection / v.point.inverse_area_pdf : selection;
+    return on_surface(v) ? selection * area_pdf(r, v) : selection;
 }
 inline float light_direction_pdf(const thread Resources &r, const thread Vertex &v,
                                  const thread Vertex &next) {
@@ -261,6 +275,14 @@ inline float light_direction_pdf(const thread Resources &r, const thread Vertex 
         pdf = 1 / (pi * p.scene_radius * p.scene_radius);
     } else {
         pdf = 1 / (4 * pi);
+        if (!on_surface(v) && v.light >= p.emitter_count &&
+            v.light < p.emitter_count + p.positional_count) {
+            const auto light =
+                positional_record(r.alpha.material_data, p, v.light - p.emitter_count);
+            if (!light)
+                return NAN;
+            pdf = rypath_light_emission::pdf(*light, r.alpha.material_data, direction);
+        }
         if (on_surface(v)) {
             const device auto &instance = r.alpha.instances[v.instance];
             const bool two_sided = r.emissions[instance.emission].two_sided;
@@ -273,6 +295,28 @@ inline float light_direction_pdf(const thread Resources &r, const thread Vertex 
         pdf *= abs(dot(next.point.geometric_normal, direction));
     return pdf;
 }
+inline float3 local_direction(const thread Vertex &v, const thread Vertex &endpoint,
+                              float3 direction) {
+    if (v.pair_valid) {
+        if (endpoint.path_id == v.sampled_prev_id)
+            return v.sampled_wo_local;
+        if (endpoint.path_id == v.sampled_next_id)
+            return v.sampled_wi_local;
+    }
+    return v.frame.local(direction);
+}
+// Solid-angle proxy for the same represented path in PT's two strategies.
+inline float represented_scattering_pdf(const thread Vertex &v, const thread Vertex &previous,
+                                        const thread Vertex &next, Mode mode) {
+    const float3 before = infinite(previous) ? -previous.point.geometric_normal
+                                             : previous.point.position - v.point.position;
+    const float3 after =
+        infinite(next) ? -next.point.geometric_normal : next.point.position - v.point.position;
+    if (all(before == 0) || all(after == 0))
+        return 0;
+    return rypath_packet::pdf(v.bsdf, v.frame.local(normalize(before)),
+                              v.frame.local(normalize(after)), mode);
+}
 inline float vertex_pdf(const thread Resources &r, const thread Vertex &v,
                         const thread Vertex &previous, const thread Vertex &next, Mode mode) {
     if (v.type == light_vertex || infinite(v))
@@ -284,20 +328,36 @@ inline float vertex_pdf(const thread Resources &r, const thread Vertex &v,
     const float3 wi = normalize(delta);
     if (v.type == camera_vertex)
         return convert_density(camera_pdf(*r.alpha.parameters, v.point.position, wi), v, next);
-    const float3 before = infinite(previous) ? -previous.point.geometric_normal
-                                             : previous.point.position - v.point.position;
-    if (all(before == 0))
-        return 0;
-    const float3 wo = normalize(before);
-    const float pdf = rypath_packet::pdf(v.bsdf, v.frame.local(wo), v.frame.local(wi), mode);
+    // These densities are MIS proxies; sampled locals and joint weights are
+    // preserved separately and never replaced by this directional estimate.
+    const float pdf = represented_scattering_pdf(v, previous, next, mode);
     return convert_density(pdf, v, next);
 }
 inline float4 f(const thread Vertex &v, float3 direction, Mode mode) {
     if (v.type != surface_vertex)
         return 0;
-    const auto result = rypath_packet::evaluate(v.bsdf, v.frame.local(v.wo),
-                                                v.frame.local(direction), v.seed, mode);
+    const auto result =
+        rypath_packet::evaluate(v.bsdf, v.pair_valid ? v.sampled_wo_local : v.frame.local(v.wo),
+                                v.frame.local(direction), v.seed, mode);
     return result.valid ? result.f : float4(NAN);
+}
+// Connections and splats include the endpoint's incident cosine. Evaluate that
+// product with the importance adjoint, canceling the removable shading-normal
+// denominator before it can overflow. The BSDF and its PDFs remain unchanged.
+inline float4 importance_f_cos(const thread Vertex &v, float3 direction) {
+    if (v.type != surface_vertex)
+        return 0;
+    const float3 wo = v.pair_valid ? v.sampled_wo_local : v.frame.local(v.wo);
+    const float3 wi = v.frame.local(direction);
+    const auto result = rypath_packet::evaluate(v.bsdf, wo, wi, v.seed, Mode::Importance);
+    if (!result.valid)
+        return float4(NAN);
+    const auto correction = rypath_shading_normal::cosine_correction(
+        wo.z, wi.z, dot(v.wo, v.point.geometric_normal), dot(direction, v.point.geometric_normal));
+    float4 value;
+    for (uint lane = 0; lane < 4; ++lane)
+        value[lane] = rypath_shading_normal::apply(result.f[lane], correction);
+    return value;
 }
 
 // Each shadow segment excludes just its sampled endpoints. A nearer root of the
@@ -316,10 +376,22 @@ inline bool visible(thread Resources &r, const thread Vertex &a, const thread Ve
     closest.set_triangle_cull_mode(triangle_cull_mode::none);
     for (uint crossings = 0; crossings <= r.alpha.parameters->boundary_limit; ++crossings) {
         r.alpha.incoming = segment;
+        NativeTriangleHint opaque_hint{};
+        opaque_hint.valid = true;
+        if (!packet_visibility_passthrough && (native_triangle_hint_mode & 1u) != 0)
+            opaque_hint =
+                native_opaque_shadow_hint(segment, r.intersection_table, all_visible, r.alpha);
         const auto hit =
-            alpha_enabled
-                ? trace_masked_surface(segment, r.scene, all_visible, r.alpha)
-                : trace_surface(closest, segment, r.scene, all_visible, r.intersection_table);
+            !opaque_hint.valid      ? rypath_intersection_detail::invalid_hit()
+            : opaque_hint.available ? opaque_hint.surface
+            : packet_visibility_passthrough
+                ? (alpha_enabled ? trace_masked_surface(segment, r.scene, all_visible, r.alpha)
+                                 : trace_surface(closest, segment, r.scene, all_visible,
+                                                 r.intersection_table))
+                : (alpha_enabled
+                       ? trace_masked_surface(segment, r.scene, all_visible, r.alpha, true)
+                       : trace_shadow(closest, segment, r.scene, all_visible,
+                                      r.intersection_table));
         if (!hit.valid) {
             sample.status = wire::invalid_hit;
             return false;
@@ -354,10 +426,12 @@ inline bool visible(thread Resources &r, const thread Vertex &a, const thread Ve
     return false;
 }
 
-inline bool sample_light_point(thread Resources &r, uint selected, float2 u, thread Vertex &v) {
+inline bool sample_light_point(thread Resources &r, uint selected, float2 u, thread Vertex &v,
+                               bool sample_position = true) {
     const constant auto &p = *r.alpha.parameters;
     v = {};
     v.type = light_vertex;
+    v.path_id = 0xffffffffu;
     v.light = selected;
     v.instance = 0xffffffffu;
     v.connectible = true;
@@ -367,6 +441,8 @@ inline bool sample_light_point(thread Resources &r, uint selected, float2 u, thr
     v.instance = emitter.instance;
     v.primitive = emitter.primitive;
     v.kind = emitter.kind;
+    if (!sample_position)
+        return true;
     v.uv = sample_area_uv(r, emitter, u);
     return surface(r, v.uv, emitter.instance, emitter.primitive, emitter.kind,
                    PointSource::area_sample, v.point);
@@ -375,12 +451,25 @@ inline bool sample_li(thread Resources &r, const thread Vertex &reference,
                       const thread Wavelengths &lambda, float4 u, thread Vertex &v,
                       thread float3 &direction, thread float &pdf) {
     const constant auto &p = *r.alpha.parameters;
-    const uint count = light_count(p);
-    const uint selected = min(uint(u.x * count), count - 1);
-    if (!sample_light_point(r, selected, u.yz, v))
+    const auto choice = rypath_light_sampling::sample(
+        p, r.alpha.material_data, {reference.point.position, reference.point.shading_normal}, u.x);
+    const uint selected = choice.light;
+    if (!(choice.pmf > 0)) {
+        v = {};
+        v.beta = 0;
+        pdf = 0;
+        return true;
+    }
+    if (!sample_light_point(r, selected, u.yz, v, false))
         return false;
     float4 radiance;
     if (selected < p.emitter_count) {
+        const auto emitter = r.emitters[selected];
+        if (!rypath_light_geometry::sample(r.alpha, emitter, reference.point.position,
+                                           reference.point.shading_normal, u.yz, v.uv, v.point,
+                                           pdf))
+            return false;
+        pdf *= choice.pmf;
         if (v.point.inverse_area_pdf == 0) {
             v.beta = 0;
             pdf = 0;
@@ -394,8 +483,6 @@ inline bool sample_li(thread Resources &r, const thread Vertex &reference,
             return true;
         }
         direction = delta * rsqrt(d2);
-        const float cosine = abs(dot(v.point.geometric_normal, -direction));
-        pdf = cosine > 0 ? d2 / (v.point.inverse_area_pdf * cosine * count) : 0;
         if (!emitted(r, v, -direction, lambda, radiance))
             return false;
     } else if (selected < p.emitter_count + p.positional_count) {
@@ -414,7 +501,7 @@ inline bool sample_li(thread Resources &r, const thread Vertex &reference,
         }
         direction = delta * rsqrt(d2);
         radiance = positional_radiance(r, id, direction, lambda) / d2;
-        pdf = 1 / float(count);
+        pdf = choice.pmf;
     } else {
         v.type = environment_vertex;
         if (selected < p.emitter_count + p.positional_count + p.distant_count) {
@@ -424,14 +511,14 @@ inline bool sample_li(thread Resources &r, const thread Vertex &reference,
                 return false;
             direction = unpack(light->direction);
             radiance = distant_radiance(r, id, lambda);
-            pdf = 1 / float(count);
+            pdf = choice.pmf;
             v.delta_light = true;
             v.connectible = false;
         } else {
             if (!sample_environment(r, u.yz, direction, pdf))
                 return false;
             radiance = environment_radiance(r, direction, lambda);
-            pdf /= count;
+            pdf *= choice.pmf;
         }
         v.point.position = reference.point.position + 2 * p.scene_radius * direction;
         v.point.geometric_normal = -direction;
@@ -448,8 +535,11 @@ inline uint light_path(thread Resources &r, thread wire::Sample &sample, thread 
                        ulong index, device uchar *path) {
     const constant auto &p = *r.alpha.parameters;
     const auto a = random(r, sample, index, 2), b = random(r, sample, index, 3);
-    const uint count = light_count(p);
-    const uint selected = min(uint(sample_uniform(p, a.x) * count), count - 1);
+    const auto choice = rypath_light_sampling::sample(
+        p, r.alpha.material_data, {float3(0), float3(0)}, sample_uniform(p, a.x));
+    if (!(choice.pmf > 0))
+        return 0;
+    const uint selected = choice.light;
     Vertex v;
     if (!sample_light_point(r, selected, uniform2(p, a.yz), v)) {
         sample.status = wire::invalid_arithmetic;
@@ -472,7 +562,7 @@ inline uint light_path(thread Resources &r, thread wire::Sample &sample, thread 
         direction = hemisphere(sign * v.point.geometric_normal, u.x, u.y);
         cosine = abs(dot(direction, v.point.geometric_normal));
         pdf_direction = cosine / (two_sided ? 2 * pi : pi);
-        pdf_position = 1 / v.point.inverse_area_pdf;
+        pdf_position = area_pdf(r, v);
         if (!emitted(r, v, direction, lambda, radiance)) {
             sample.status = wire::invalid_arithmetic;
             return 0;
@@ -486,10 +576,13 @@ inline uint light_path(thread Resources &r, thread wire::Sample &sample, thread 
         }
         v.point.position = unpack(light->position);
         v.delta_light = true;
-        direction = sphere(sample_uniform(p, b.x), sample_uniform(p, b.y));
+        if (!rypath_light_emission::sample(*light, r.alpha.material_data, uniform2(p, b.xy),
+                                           direction, pdf_direction)) {
+            sample.status = wire::invalid_arithmetic;
+            return 0;
+        }
         radiance = positional_radiance(r, id, -direction, lambda);
         pdf_position = 1;
-        pdf_direction = 1 / (4 * pi);
     } else {
         v.type = environment_vertex;
         float3 outward;
@@ -530,7 +623,8 @@ inline uint light_path(thread Resources &r, thread wire::Sample &sample, thread 
     if (!(pdf_position > 0 && pdf_direction > 0) || !nonzero(radiance))
         return 0;
     v.beta = radiance;
-    v.pdf_fwd = pdf_position / count;
+    v.path_id = 0x80000000u;
+    v.pdf_fwd = pdf_position * choice.pmf;
     path_vertex(path, 0) = v;
     const float4 beta = radiance * (cosine / (v.pdf_fwd * pdf_direction));
     const ray incoming(offset(v, direction), direction);
@@ -544,7 +638,8 @@ inline uint light_path(thread Resources &r, thread wire::Sample &sample, thread 
                 first.pdf_fwd *= abs(dot(direction, first.point.geometric_normal));
             path_vertex(path, 1) = first;
         }
-        path_vertex(path, 0).pdf_fwd = v.delta_light ? 0 : environment_pdf(r, -direction) / count;
+        path_vertex(path, 0).pdf_fwd =
+            v.delta_light ? 0 : environment_pdf(r, -direction) * choice.pmf;
     }
     return n;
 }
@@ -622,7 +717,9 @@ inline bool endpoint_emission(thread Resources &r, const thread Vertex &v,
 }
 inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
                         const thread Vertex &light) {
-    const float selection = 1 / float(light_count(*r.alpha.parameters));
+    const float selection =
+        rypath_light_sampling::pmf(*r.alpha.parameters, r.alpha.material_data,
+                                   {from.point.position, from.point.shading_normal}, light.light);
     if (infinite(light))
         return environment_pdf(r, -light.point.geometric_normal) * selection;
     const float3 delta = light.point.position - from.point.position;
@@ -631,8 +728,10 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
         return 0;
     if (!on_surface(light))
         return 0;
-    const float cosine = abs(dot(light.point.geometric_normal, delta * rsqrt(d2)));
-    return cosine > 0 ? selection * d2 / (light.point.inverse_area_pdf * cosine) : 0;
+    auto alpha = r.alpha;
+    const wire::Emitter emitter{light.instance, light.primitive, light.kind};
+    return selection * rypath_light_geometry::pdf(alpha, emitter, from.point.position,
+                                                  from.point.shading_normal, light.uv, light.point);
 }
 
 [[clang::noinline]] inline float4 camera_connection(thread Resources &r,
@@ -655,15 +754,9 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
             return 0;
         }
         value = pt.beta * radiance;
-        if (!p.bidirectional && t > 2 && !previous.delta) {
+        if (!packet_bidirectional_enabled(p) && t > 2 && !previous.delta) {
             const Vertex before = path_vertex(camera, t - 3);
-            const float3 wi = infinite(pt) ? -pt.point.geometric_normal
-                                           : normalize(pt.point.position - previous.point.position);
-            const float3 wo = infinite(before)
-                                  ? -before.point.geometric_normal
-                                  : normalize(before.point.position - previous.point.position);
-            sampled_pdf = rypath_packet::pdf(previous.bsdf, previous.frame.local(wo),
-                                             previous.frame.local(wi), Mode::Radiance);
+            sampled_pdf = represented_scattering_pdf(previous, before, pt, Mode::Radiance);
             alternative_pdf = direct_pdf(r, previous, pt);
         }
     } else if (s == 1) {
@@ -675,15 +768,23 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
             sample.status = wire::invalid_arithmetic;
             return 0;
         }
+        if (!isfinite(sampled_pdf) || sampled_pdf < 0) {
+            sample.status = wire::invalid_arithmetic;
+            return 0;
+        }
         if (!(sampled_pdf > 0) || !nonzero(sampled.beta))
             return 0;
         value = pt.beta * f(pt, direction, Mode::Radiance) * sampled.beta *
                 abs(dot(pt.point.shading_normal, direction));
         if (nonzero(value) && !visible(r, pt, sampled, sample))
             return 0;
-        if (!p.bidirectional && !sampled.delta_light)
-            alternative_pdf = rypath_packet::pdf(pt.bsdf, pt.frame.local(pt.wo),
-                                                 pt.frame.local(direction), Mode::Radiance);
+        if (!packet_bidirectional_enabled(p) && !sampled.delta_light) {
+            const Vertex before = path_vertex(camera, t - 2);
+            alternative_pdf = represented_scattering_pdf(pt, before, sampled, Mode::Radiance);
+            // Retain SampleLi's actual ratio; only recompute its MIS proxy in
+            // the same represented-geometry convention as the escape route.
+            sampled_pdf = direct_pdf(r, pt, sampled);
+        }
     } else {
         const Vertex qs = path_vertex(light, s - 1);
         if (!pt.connectible || !qs.connectible)
@@ -693,18 +794,24 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
         if (!(d2 > 0))
             return 0;
         const float3 wi = delta * rsqrt(d2);
-        value =
-            pt.beta * f(pt, wi, Mode::Radiance) * qs.beta * f(qs, -wi, Mode::Importance) *
-            (abs(dot(pt.point.shading_normal, wi)) * abs(dot(qs.point.shading_normal, wi)) / d2);
+        value = pt.beta * f(pt, wi, Mode::Radiance) * qs.beta * importance_f_cos(qs, -wi) *
+                (abs(dot(pt.point.shading_normal, wi)) / d2);
         if (nonzero(value) && !visible(r, pt, qs, sample))
             return 0;
+    }
+    // A NaN alternative must not select the legal zero-support unit weight.
+    if (!packet_bidirectional_enabled(p) && (!isfinite(sampled_pdf) || sampled_pdf < 0 ||
+                                             !isfinite(alternative_pdf) || alternative_pdf < 0)) {
+        sample.status = wire::invalid_arithmetic;
+        return 0;
     }
     if (!finite_nonnegative(value)) {
         sample.status = wire::invalid_arithmetic;
         return 0;
     }
     if (nonzero(value)) {
-        const float weight = p.bidirectional       ? mis_weight(r, light, camera, sampled, s, t)
+        const float weight = packet_bidirectional_enabled(p)
+                                 ? mis_weight(r, light, camera, sampled, s, t)
                              : alternative_pdf > 0 ? power_weight(sampled_pdf, alternative_pdf)
                                                    : 1;
         if (!(weight >= 0 && weight <= 1) || !isfinite(weight)) {
@@ -731,8 +838,7 @@ inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
     float3 direction;
     if (!camera_sample(p, qs, uniform2(p, lens_words), sampled, raster, direction))
         return false;
-    float4 value = qs.beta * f(qs, direction, Mode::Importance) * sampled.beta *
-                   abs(dot(qs.point.shading_normal, direction));
+    float4 value = qs.beta * importance_f_cos(qs, direction) * sampled.beta;
     if (nonzero(value) && !visible(r, qs, sampled, sample))
         return false;
     if (!finite_nonnegative(value)) {

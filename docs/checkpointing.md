@@ -33,6 +33,81 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
+The current revision uses file format 3, identity 12, renderer 27,
+sampling 9 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
+across the full Film instead of repeating them every 128 pixels. Format 3 adds
+the signed 32-bit material seed after
+the sampler randomization in metadata. Earlier formats and contracts are rejected
+before decoding their payload. Light-selection policy and material seed both
+participate in identity; changing either rejects resume. The new proposals do not
+promise image identity with earlier rendering revisions.
+
+Renderer 15 adds the importance shading-normal adjoint; renderer 16 also
+revalidates native triangle candidates before selecting hits. Renderer 17 repairs
+an overstrict arithmetic-range guard in that validation. Renderer 18 addresses
+candidate coverage and intermediate range with native triangle boxes, symmetric
+compensated multiplication and an extended-exponent fallback. It retains exact
+represented-distance ordering while pruning through conservative world-box exits.
+Renderer 19 repairs full-sphere pole coverage: radius reprojection must not reject
+a pole against an inactive full-sphere clipping bound. Authored partial-sphere
+bounds remain active. Renderer 20 adds validated native opaque-triangle hints
+to eligible packet traversal. A native offer may recover a valid hit absent from
+the procedural candidate stream, so this is a numerical coverage change even
+where measured images are identical. It also changes the packet acceleration
+resource binding; the loaded shader handshake rejects both directions of an
+older host/library mismatch. Renderer 21 corrects the internal solid-angle
+proposal measure in layered directional-f MIS, preserving the forward
+throughput and joint sampling. Renderer 22 preserves invalid coating densities
+as failures through the packet adapter and MIS consumers. It also rounds ray
+origins to the next representable normal value or signed zero, avoiding
+subnormal coordinates outside the supported traversal domain. These changes affect
+batch validity and numerical paths, so renderer-21 checkpoints cannot resume
+under renderer 22. Renderer 23 derives MIS proxies from represented neighboring
+geometry and finalizes stored forward/reverse densities when the next endpoint
+is known. Actual sampled local directions and joint throughput remain separate.
+The new weighting convention rejects renderer-22 checkpoints; all earlier
+renderer contracts are also rejected.
+Renderer 24 skips evaluation and validation of unused canonical stored MIS
+densities in packet PT. BDPT still finalizes and validates both directions;
+all original sampled-density/area checks and the densities consumed by PT's
+emission/NEE MIS remain checked. This changes the numerical error domain:
+a PT path previously rejected solely by an unused stored-density query may now
+contribute. The physical target, sampling and raw accumulation layout are
+unchanged. Renderer-23 checkpoints are rejected explicitly.
+The checkpoint layout and raw accumulation
+remain unchanged; see the [regression record](transport-regression-validation.md).
+
+Renderer 25 reduces the opaque packet Vertex reservation from 2048 to 1024 bytes.
+The actual Vertex fields, Result/Splat prefixes, sampling and accumulation are
+unchanged; host and shader must agree on the new slot pitch. The renderer contract
+makes both directions of an old/new library mismatch fail the loaded-library
+handshake and rejects renderer-24 checkpoints and identities. This is an execution
+ABI change, not a change to the physical target or density policy. Numerical and
+performance qualification of the compact layout is separate from its definition.
+
+Renderer 26 / sampling 8 changes only generic packet diffuse kind0 continuation
+from the polar to the concentric cosine map. The input variates, dimensions,
+seed streams, cosine proposal density and intended physical target remain;
+realized directions, finite sample images and boundary rejections can change.
+Coating, diffuse transmission and scalar maps remain unchanged. Both PT and BDPT
+packet walks share the new map. Renderer25/sampling7 checkpoints and old/new
+host/library pairs are incompatible; file format, identity schema, accumulation
+layout and the compact Vertex slot pitch are unchanged. This contract definition
+does not establish full-quality or performance acceptance.
+
+Renderer 27 / sampling 9 adds compensated outer roulette to vacuum packet PT
+after the second scattering. It uses the previously unused fourth component of
+each existing camera continuation block, with the actual sampled relative eta
+for refraction compensation. It changes path termination, weights and finite
+sample images, including the expectation of the separate authored-clamped plane.
+BDPT retains its finite-depth walk without outer roulette. The numerical fallback
+continues without roulette when its compensation cannot be represented safely;
+it does not clamp raw throughput or add a path failure. Renderer26/sampling8
+checkpoints and old/new host/library pairs are incompatible. File format,
+identity schema, accumulation layout and Vertex slot pitch remain unchanged.
+See the [roulette validation record](packet-roulette-validation.md) for the
+estimator, evidence and remaining qualification work.
+
 ## Identity and compatible continuation
 
 Resume restores every raw binary64 XYZ sum, Neumaier compensation term and
@@ -50,6 +125,10 @@ object padding. Files are not reopened to construct identity. Changing an asset
 must produce the same effective owned data to remain compatible; inactive fields
 are conservatively included. Bitwise changes in translated data can reject a job
 even when two scenes appear visually equivalent.
+
+Buffered serialization and optional ARM SHA-256 instructions preserve this byte
+stream and digest. The portable implementation remains available on other
+targets. Timing reports are execution metadata and do not participate in identity.
 
 Static glTF identity includes material factors and image bindings, sampler policy,
 native image data, signed tangent frames and material-derived emission bindings.
@@ -130,10 +209,11 @@ precision policy, including existing shader `-fno-fast-math` settings.
 
 ## Format, limits and publication
 
-Version 2 uses explicit little-endian integers and IEEE binary64 bit patterns.
+Version 3 uses explicit little-endian integers and IEEE binary64 bit patterns.
 The 44-byte header contains the eight-byte `RYPCHK\r\n` magic, five uint32
 contract versions, and uint64 metadata/pixel-payload lengths. Metadata stores
-render settings, Film model/exposure, packet/output flags, clamp, filter, 32-byte
+render settings including the signed material seed, Film model/exposure,
+packet/output flags, clamp, filter, 32-byte
 identity and bounded provenance. Each pixel occupies 216 bytes: raw camera XYZ
 sums/corrections and uint64 count; raw splat, clamped camera and clamped splat
 XYZ sums/corrections; then reconstruction weight sum/correction. A trailing 32-byte SHA-256 covers all preceding bytes. The
@@ -177,8 +257,8 @@ filter identity; effective ZSobol sample count is the fixed target already
 included in identity. New QMC seeds use canonical signed 32-bit encoding.
 Earlier contracts are rejected explicitly; no automatic migration is attempted.
 
-Packet transport advances format/identity/renderer/sampling/accumulation to
-2/11/13/4/2. Every accumulation plane persists without output conversion;
+The original packet transport revision advanced
+format/identity/renderer/sampling/accumulation to 2/11/13/4/2. Every accumulation plane persists without output conversion;
 splats never increment destination counts. Canonical identity includes analytic
 geometry, integrator, spectral transport, film clamp and finite-clamp exposure.
 Resource profiles are execution limits and do not change effective scene identity.

@@ -1,5 +1,10 @@
 # Core PBRT texture validation
 
+This is the historical core-texture validation record. The later
+[sampling follow-up](sampling-convergence-validation.md) replaces the coarse
+environment bins and area-light proposals described below; the texture and
+image evaluation contracts remain applicable.
+
 This change extends the declared diffuse renderer with bounded PNG/JPEG inputs,
 typed texture graphs, alpha visibility, surface detail, PLY displacement, and
 image area/environment lights. It does not complete PBRT conformance or the

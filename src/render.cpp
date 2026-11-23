@@ -4,8 +4,10 @@
 #include "analytic.hpp"
 #include "bilinear.hpp"
 #include "bsdf_table.hpp"
+#include "environment_sampling.hpp"
 #include "gaussian_filter.hpp"
 #include "geometry_wire.h"
+#include "light_sampling.hpp"
 #include "packet_wire.h"
 #include "render_wire.h"
 #include "triangle_attributes.hpp"
@@ -25,6 +27,37 @@
 
 namespace rypath {
 namespace {
+
+// Account once per native directional-map distribution, matching upload deduplication.
+std::optional<std::size_t> directional_sampling_bytes(const RenderScene &scene) {
+    using Key = std::tuple<const ImagePyramid *, bool, float, float, float>;
+    std::set<Key> tables;
+    std::size_t total = 0;
+    const auto add = [&](std::uint32_t texture, bool projection, float inv_tan, float half_width,
+                         float half_height) {
+        if (texture >= scene.image_textures.size() || !scene.image_textures[texture].image ||
+            scene.image_textures[texture].image->levels.empty() || !std::isfinite(inv_tan) ||
+            !std::isfinite(half_width) || !std::isfinite(half_height))
+            return false;
+        const auto &image = *scene.image_textures[texture].image;
+        if (!tables.emplace(&image, projection, inv_tan, half_width, half_height).second)
+            return true;
+        const auto &level = image.levels.front();
+        const auto bytes = light_direction_sampling_bytes(level.width, level.height);
+        if (!bytes || *bytes > std::numeric_limits<std::size_t>::max() - total)
+            return false;
+        total += *bytes;
+        return true;
+    };
+    for (const auto &light : scene.goniometric_lights)
+        if (!add(light.image_texture, false, 0, 1, 1))
+            return std::nullopt;
+    for (const auto &light : scene.projection_lights)
+        if (!add(light.image_texture, true, light.inv_tan_half_fov, light.screen_half_width,
+                 light.screen_half_height))
+            return std::nullopt;
+    return total;
+}
 
 constexpr double wavelength_min = 360;
 constexpr double wavelength_max = 830;
@@ -603,14 +636,17 @@ std::string validate_image_textures(const RenderScene &scene) {
     std::set<const ImagePyramid *> checked;
     std::size_t remaining = scene.image_limits.retained_bytes;
     if (scene.environment_image != UINT32_MAX) {
-        const auto width = std::min<std::size_t>(
-            render_wire::environment_grid_limit,
-            scene.image_textures[scene.environment_image].image->levels.front().width);
-        const auto bytes = (width + 1) * (width + 1) * sizeof(float);
-        if (bytes > remaining)
+        const auto width =
+            scene.image_textures[scene.environment_image].image->levels.front().width;
+        const auto bytes = environment_sampling_bytes(width);
+        if (!bytes || *bytes > remaining)
             return "Environment sampling table exceeds the image memory budget";
-        remaining -= bytes;
+        remaining -= *bytes;
     }
+    const auto directional_bytes = directional_sampling_bytes(scene);
+    if (!directional_bytes || *directional_bytes > remaining)
+        return "Directional light sampling tables exceed the image memory budget";
+    remaining -= *directional_bytes;
     for (const auto &texture : scene.image_textures) {
         if (texture.filter != ImageFilter::point && texture.filter != ImageFilter::bilinear &&
             texture.filter != ImageFilter::trilinear && texture.filter != ImageFilter::ewa) {
@@ -1343,10 +1379,13 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
         (scene.spectral_transport == SpectralTransport::packet &&
          !charge(packet_wire::workspace_bytes + 64, 1)))
         return exceeded();
+    // Native triangle boxes retain tagged corners plus six floating-point bounds.
     const auto mesh = [&](const GeometryMesh &m) {
         return charge(m.positions.size(),
                       2 * sizeof(render_wire::Point) + sizeof(render_wire::SurfaceVertex)) &&
-               charge(m.triangles.size(), 2 * sizeof(render_wire::Triangle)) &&
+               charge(m.triangles.size(), 2 * sizeof(render_wire::Triangle) +
+                                              sizeof(geometry_wire::ProceduralRecord) +
+                                              6 * sizeof(float)) &&
                charge(m.patches.size(),
                       sizeof(render_wire::Patch) + sizeof(geometry_wire::Patch)) &&
                charge(m.analytics.size(), sizeof(geometry_wire::Analytic)) &&
@@ -1390,9 +1429,9 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
         const bool emitting =
             i < scene.instance_emissions.size() && scene.instance_emissions[i] != no_area_emission;
         if (emitting) {
-            if (!charge(m.triangles.size(), sizeof(render_wire::Emitter) + sizeof(float)) ||
-                !charge(m.patches.size(), sizeof(render_wire::Emitter) + sizeof(float)) ||
-                !charge(m.analytics.size(), sizeof(render_wire::Emitter) + sizeof(float)))
+            if (!charge(m.triangles.size(), sizeof(render_wire::Emitter) + sizeof(float) + 256) ||
+                !charge(m.patches.size(), sizeof(render_wire::Emitter) + sizeof(float) + 256) ||
+                !charge(m.analytics.size(), sizeof(render_wire::Emitter) + sizeof(float) + 256))
                 return exceeded();
             if (references[instance.mesh_index] > 1 &&
                 instance.transform.values != GeometryTransform{}.values && !mesh(m))
@@ -1410,6 +1449,26 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
             return exceeded();
     }
     std::set<const BsdfTable *> tables;
+    // Inventory, power alias table, light BVH, and bounded construction scratch.
+    // Area primitives are charged above; include fixed storage and each other source.
+    if (!charge(2, 256) || !charge(scene.point_lights.size(), 256) ||
+        !charge(scene.spot_lights.size(), 256) || !charge(scene.goniometric_lights.size(), 256) ||
+        !charge(scene.projection_lights.size(), 256) || !charge(scene.distant_lights.size(), 256))
+        return exceeded();
+    if (scene.environment_image != UINT32_MAX) {
+        if (scene.environment_image >= scene.image_textures.size() ||
+            !scene.image_textures[scene.environment_image].image ||
+            scene.image_textures[scene.environment_image].image->levels.empty())
+            return "Preparation budget requires a valid environment image";
+        const auto width =
+            scene.image_textures[scene.environment_image].image->levels.front().width;
+        const auto bytes = environment_sampling_bytes(width);
+        if (!bytes || !charge(*bytes, 1))
+            return exceeded();
+    }
+    const auto directional_bytes = directional_sampling_bytes(scene);
+    if (!directional_bytes || !charge(*directional_bytes, 1))
+        return exceeded();
     for (const auto &material : scene.materials) {
         if (!charge(1, sizeof(render_wire::Material) + sizeof(render_wire::MaterialAuxiliary)))
             return exceeded();
@@ -1594,6 +1653,10 @@ std::string validate_render_scene(const RenderScene &scene) {
     if (scene.integrator != IntegratorKind::path && scene.integrator != IntegratorKind::volpath &&
         scene.integrator != IntegratorKind::bdpt)
         return "Invalid transport integrator";
+    if (scene.light_sampler != LightSamplerKind::bvh &&
+        scene.light_sampler != LightSamplerKind::power &&
+        scene.light_sampler != LightSamplerKind::uniform)
+        return "Invalid light sampler";
     if (scene.spectral_transport != SpectralTransport::scalar &&
         scene.spectral_transport != SpectralTransport::packet)
         return "Invalid spectral transport mode";

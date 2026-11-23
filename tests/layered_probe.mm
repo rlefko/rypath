@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "layered_probe_wire.h"
 #include "layered_reference.hpp"
+#include "layered_schedule_corrected_oracles.h"
+#include "layered_schedule_oracles.h"
 #include "metal_execution.hpp"
 #include <array>
 #include <filesystem>
@@ -25,7 +27,7 @@ void close(double a, double b, double tolerance, const std::string &label) {
 }
 Q query() {
     return {1.5f, 0, 0, .3f, 3,   0,   0,   .6f, .2f, 0, 0,  0, 0,
-            1,    0, 0, 1,   .5f, .3f, .7f, 0,   16,  4, 17, 0};
+            1,    0, 0, 1,   .5f, .3f, .7f, 0,   16,  4, 17, 0, 17};
 }
 ref::P reference(Q q) {
     return {dielectric_reference::prepare(q.eta, q.ax, q.ay, false),
@@ -76,6 +78,37 @@ std::vector<R> dispatch(id<MTLDevice> device, id<MTLComputePipelineState> pipeli
     return {data, data + queries.size()};
 }
 std::vector<std::array<double, 8>> oracle(const std::string &, const std::vector<Q> &);
+void schedule_contract(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
+    std::vector<Q> queries;
+    for (const auto &fixture : layered_schedule_oracles::fixtures)
+        if (fixture.query.operation == 0)
+            queries.push_back(fixture.query);
+    const auto results = dispatch(device, pipeline, queries);
+    std::size_t n = 0;
+    for (const auto &fixture : layered_schedule_oracles::fixtures) {
+        if (fixture.query.operation != 0)
+            continue;
+        const auto &r = results[n++];
+        const auto e = layered_schedule_corrected::expected(
+            static_cast<std::size_t>(&fixture - layered_schedule_oracles::fixtures.data()));
+        const std::string label = std::string("Modified PBRT schedule ") + fixture.label;
+        require(r.valid && r.evaluation_valid, label + " numeric validity");
+        // Identical hash inputs and draw schedules; residual arithmetic differs
+        // across CPU/Metal transcendental and GGX implementations. This bound
+        // is far below the missing-draw regression witnesses, without requiring
+        // bitwise equality of floating BSDF values.
+        close(r.f, e[0], 5e-5 * std::max(1.f, std::abs(e[0])), label + " f");
+        close(r.pdf, e[1], 5e-5 * std::max(1.f, std::abs(e[1])), label + " PDF");
+        require(bool(r.accepted) == (e[3] > 0), label + " walk acceptance");
+        if (r.accepted) {
+            close(r.weight, e[2], 5e-5, label + " joint weight");
+            close(r.ix, e[4], 5e-5, label + " wi.x");
+            close(r.iy, e[5], 5e-5, label + " wi.y");
+            close(r.iz, e[6], 5e-5, label + " wi.z");
+        }
+    }
+    std::cout << "PASS " << n << " fixed modified-PBRT scalar schedule fixtures\n";
+}
 void points(id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
             const std::string &executable) {
     std::vector<Q> queries;
@@ -100,11 +133,19 @@ void points(id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
     q.albedo = .7;
     queries.push_back(q);
     q = query();
-    q.oz = -1;
-    q.iz = -1;
+    // PBRT hashes exact float bytes after its two-sided flip. Negate every
+    // component, including zero's sign: changing just z would hash -0 x/y on
+    // one side and +0 on the other, legitimately choosing unrelated walks.
+    q.ox = -q.ox;
+    q.oy = -q.oy;
+    q.oz = -q.oz;
+    q.ix = -q.ix;
+    q.iy = -q.iy;
+    q.iz = -q.iz;
+    require(std::signbit(q.ox) && std::signbit(q.oy) && std::signbit(q.ix) && std::signbit(q.iy),
+            "Two-sided fixture retains full signed-zero negation");
     queries.push_back(q);
-    q.oz = 1;
-    q.iz = 1;
+    q = query();
     queries.push_back(q);
     q.samples = 0;
     queries.push_back(q);
@@ -161,6 +202,14 @@ void points(id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
     close(r[5].weight, .9, 1e-6, "Diffuse throughput");
     close(r[6].f, r[7].f, 0, "Two-sided evaluation");
     close(r[6].weight, r[7].weight, 0, "Two-sided sampling");
+    if (!executable.empty()) {
+        auto z_only_flip = query();
+        z_only_flip.oz = z_only_flip.iz = -1;
+        const auto flips = oracle(executable, {queries[6], queries[7], z_only_flip});
+        close(flips[0][0], flips[1][0], 0, "Pinned full two-sided negation");
+        require(std::abs(flips[2][0] - flips[1][0]) > 1e-4,
+                "Pinned signed-zero hashes select different finite walks");
+    }
     close(r[0].conditional_pdf, 1, 1e-6, "Conditional transmission delta PDF");
     close(r[0].conditional_weight, .96 / 2.25, 1e-6, "Conditional transmission weight");
     close(r[0].pdf, .1 / (4 * ref::pi) + .9 / ref::pi, 1e-6, "PBRT approximate directional PDF");
@@ -183,8 +232,8 @@ void points(id<MTLDevice> device, id<MTLComputePipelineState> pipeline,
                  "PDFs, thin/diffuse, HG endpoints, two-sided and invalid inputs\n";
 }
 // Pinned executable consumes the same query scalar fields and emits upstream
-// f/PDF/weight/joint-PDF/direction/proportional-flag. Independent RNG implies
-// statistical comparisons, never per-seed equality for layered walks.
+// f/PDF/weight/joint-PDF/direction/proportional-flag. Ensemble comparisons
+// complement the fixed raw-local-input schedule fixtures above.
 std::vector<std::array<double, 8>> oracle(const std::string &executable,
                                           const std::vector<Q> &queries) {
     if (executable.empty())
@@ -208,17 +257,22 @@ std::vector<std::array<double, 8>> oracle(const std::string &executable,
               << q.base_ax << ' ' << q.base_ay << ' ' << q.reflectance << ' ' << q.thickness << ' '
               << q.albedo << ' ' << q.g << ' ' << q.ox << ' ' << q.oy << ' ' << q.oz << ' ' << q.ix
               << ' ' << q.iy << ' ' << q.iz << ' ' << q.uc << ' ' << q.u << ' ' << q.v << ' '
-              << q.conductor_base << ' ' << q.max_depth << ' ' << q.samples << ' ' << q.seed << ' '
-              << q.operation << '\n';
+              << q.conductor_base << ' ' << q.max_depth << ' ' << q.samples << ' '
+              << q.material_seed << ' ' << q.operation << '\n';
         require(bool(s), "Oracle input write");
     }
     std::ofstream(output).close();
     auto task = [[NSTask alloc] init];
-    task.executableURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:executable.c_str()]];
-    task.standardInput =
-        [NSFileHandle fileHandleForReadingAtPath:[NSString stringWithUTF8String:input.c_str()]];
-    task.standardOutput =
-        [NSFileHandle fileHandleForWritingAtPath:[NSString stringWithUTF8String:output.c_str()]];
+    auto executable_path = [NSString stringWithUTF8String:executable.c_str()];
+    if (executable_path == nil)
+        throw std::runtime_error("Oracle executable path is not UTF-8");
+    task.executableURL = [NSURL fileURLWithPath:executable_path];
+    auto input_path = [NSString stringWithUTF8String:input.c_str()];
+    auto output_path = [NSString stringWithUTF8String:output.c_str()];
+    if (input_path == nil || output_path == nil)
+        throw std::runtime_error("Oracle temporary path is not UTF-8");
+    task.standardInput = [NSFileHandle fileHandleForReadingAtPath:input_path];
+    task.standardOutput = [NSFileHandle fileHandleForWritingAtPath:output_path];
     NSError *error = nil;
     require([task launchAndReturnError:&error], "Oracle launch");
     [task waitUntilExit];
@@ -272,9 +326,9 @@ void mis_contract(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
         q.iy = -q.iy;
         q.iz = -q.iz;
         evaluations.push_back(q);
-        // Exercise a shader-equivalent orthonormal frame roundtrip, including
-        // normalization before traversal. A few direction ULPs must not choose
-        // an unrelated set of random numbers for the approximate MIS density.
+        // A reconstructed local direction may change a few ULPs. PBRT hashes
+        // those exact bits, so this is a new PDF query. The integrator must reuse
+        // the captured local pair for complementary MIS on the original edge.
         auto rounded = queries[n];
         float x = .6f * s.ix - .8f * s.iy;
         float y = .8f * s.ix + .6f * s.iy;
@@ -292,32 +346,40 @@ void mis_contract(id<MTLDevice> device, id<MTLComputePipelineState> pipeline) {
         rounded.iz = z;
         rounded.seed ^= 0xf0e1d2c3u;
         evaluations.push_back(rounded);
+        auto different_material_seed = queries[n];
+        different_material_seed.ix = s.ix;
+        different_material_seed.iy = s.iy;
+        different_material_seed.iz = s.iz;
+        different_material_seed.material_seed ^= 0x12345678;
+        evaluations.push_back(different_material_seed);
         sample_pdfs.push_back(s.sample_pdf);
     }
     require(!evaluations.empty(), "MIS accepted samples");
     auto results = dispatch(device, pipeline, evaluations);
-    bool varied_f = false;
-    for (unsigned n = 0; n < sample_pdfs.size(); ++n) {
-        auto a = results[4 * n], b = results[4 * n + 1], flipped = results[4 * n + 2],
-             rounded = results[4 * n + 3];
+    bool varied_f = false, varied_pdf = false, rounded_pdf_changed = false;
+    for (std::size_t n = 0; n < sample_pdfs.size(); ++n) {
+        auto a = results[5 * n], b = results[5 * n + 1], flipped = results[5 * n + 2],
+             rounded = results[5 * n + 3], material = results[5 * n + 4];
         require(a.evaluation_valid && b.evaluation_valid && flipped.evaluation_valid &&
-                    rounded.evaluation_valid,
+                    rounded.evaluation_valid && material.evaluation_valid,
                 "MIS evaluation arithmetic");
         close(a.pdf, sample_pdfs[n], 0, "Sample/evaluate directional PDF agreement");
         close(a.pdf, b.pdf, 0, "MIS PDF independent of event seed");
         close(a.pdf, flipped.pdf, 0, "MIS PDF canonical two-sided directions");
-        close(a.pdf, rounded.pdf, 3e-5 + 3e-4 * std::max(a.pdf, rounded.pdf),
-              "MIS PDF stable through rounded frame transform");
+        close(a.f, b.f, 0, "MIS value independent of event seed");
+        rounded_pdf_changed |= rounded.pdf != a.pdf;
         const double light_pdf = .37, bsdf_pdf = sample_pdfs[n];
         const double denominator = light_pdf * light_pdf + bsdf_pdf * bsdf_pdf;
         const double light_weight = light_pdf * light_pdf / denominator;
         const double bsdf_weight = double(b.pdf) * b.pdf / denominator;
         close(light_weight + bsdf_weight, 1, 2e-15, "Complementary directional MIS weights");
-        varied_f |= a.f != b.f;
+        varied_f |= a.f != material.f;
+        varied_pdf |= a.pdf != material.pdf;
     }
-    require(varied_f, "BSDF f estimator keeps its independent event seed");
-    std::cout << "PASS layered same-direction MIS PDF, event-seed and two-sided invariance, "
-                 "rounded frames, complementary weights and independently seeded f\n";
+    require(varied_f && varied_pdf, "Global material seed selects PBRT value/PDF streams");
+    require(rounded_pdf_changed, "Reconstructed ULP changes exercise a distinct PDF hash query");
+    std::cout << "PASS exact local-pair MIS, event-seed and two-sided invariance, "
+                 "new rounded-direction queries and global material-seed sensitivity\n";
 }
 void statistical(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, unsigned count,
                  const std::string &executable) {
@@ -395,6 +457,7 @@ void statistical(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, uns
             q.u = static_cast<float>(random.next());
             q.v = static_cast<float>(random.next());
             q.seed = n * 0x9e3779b9u + scenario;
+            q.material_seed = static_cast<int>(q.seed);
             queries.push_back(q);
         }
         auto results = dispatch(device, pipeline, queries);
@@ -443,6 +506,7 @@ void statistical(id<MTLDevice> device, id<MTLComputePipelineState> pipeline, uns
                 d.iy = static_cast<float>(sine * std::sin(phi));
                 d.iz = static_cast<float>(z);
                 d.seed = n;
+                d.material_seed = static_cast<int>(n);
                 density_queries.push_back(d);
             }
             const auto density_results = dispatch(device, pipeline, density_queries);
@@ -497,6 +561,7 @@ int main(int argc, char **argv) {
             auto pipeline =
                 rypath::metal::load_pipeline(device, library, @"rypath_layered_probe", diagnostic);
             require(pipeline != nil, diagnostic);
+            schedule_contract(device, pipeline);
             points(device, pipeline, upstream);
             mis_contract(device, pipeline);
             statistical(device, pipeline, extended ? 32768 : 8192, upstream);

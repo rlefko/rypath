@@ -1,40 +1,54 @@
 # Project status
 
-## Current milestone
+Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
+[PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
+sampling and performance fixes. The remaining Pavilion convergence investigation
+is explicitly deferred to follow-up at the maintainer's request; its failed
+quality qualification remains recorded. This is not completed PBRT parity.
 
-Sampling and PBRT defaults merged in
-[PR #49](https://github.com/rlefko/rypath/pull/49) at `46b20f4`.
+The selected scene slice supports spectral packet transport, native geometry,
+PT/BDPT connections and splats, raw FLOAT EXR output and separately accumulated
+authored film clamping. See the [model record](pavilion-validation.md),
+[architecture](architecture.md) and [closure history](pavilion-closure-validation.md).
 
-The current compatibility slice renders the pinned Barcelona Pavilion day and
-night scenes: native sphere/disk/open cylinder, four-wavelength vacuum transport,
-BDPT camera/light connections and splats, finite sensor-space film clamping,
-raw EXR export, and an explicit bounded large-scene profile. Checkpoint
-format/identity/renderer/sampling/accumulation contracts are 2/11/13/4/2.
-See the [Pavilion record](pavilion-validation.md) for model limitations, acquisition,
-acceptance targets and current validation. Unsupported media and geometry receive
-diagnostics rather than substitutions.
+## Renderer 27 evidence
 
-This remains selected-scene coverage. Curves, motion, heterogeneous media,
-additional camera/film models and broader material semantics remain on the
-[roadmap](roadmap.md). Offline MVP acceptance and full pinned-corpus coverage
-remain unestablished.
+Implementation revision `2cba19f4` passes **230 mandatory Debug tests**, **17 focused
+Release tests with Metal API validation**, the separate CLI raw-output check and
+**12 independent decoder tests**. All eight jobs in its
+[CI run](https://github.com/rlefko/rypath/actions/runs/45003602662) pass. These
+results identify the measured implementation revision; later documentation-only
+commits have their own publication checks.
 
-## Validation
+Packet PT now uses eta-compensated outer roulette; BDPT keeps its existing walk.
+Contracts are **3/12/27/9/2**. The 1,008-byte Vertex uses a 1,024-byte slot.
+All 37 generated-path fixtures pass: 313/313 canonical strategy records agree,
+versus 33/313 for the inconsistent-density control. Selected shallow PT and BDPT
+captures match renderer26 exactly. See [roulette validation](packet-roulette-validation.md).
 
-The Pavilion implementation completes both unchanged 1600×850 entry points:
-day at 256 spp and night at 512 spp, with verified PNG, raw FLOAT EXR and
-checkpoints. Local Debug, Release and ASan/UBSan pass 204 tests each; Metal API
-validation passes all 58 native tests. The packet comparison passes 150 gates,
-and 89 legacy reference images plus demo accumulation remain exact. See the
-[Pavilion record](pavilion-validation.md) for artifact hashes, compiler checks,
-checkpoint provenance and the remaining coated-BDPT comparison limitation.
+The completed performance study passes all six 64-spp gates, with **48 captures
+and 48 same-arm output audits**. At 320×170, mean render/accumulation time is
+**47.9% lower by day** and **17.7% lower by night** than the frozen fast renderer14
+baseline. This compares rypath revisions, not PBRT or time to equal image quality.
+Both **1600×850 day-256/night-512** images and all four modified-reference raw/clamped
+companions are complete, with finite/count/provenance audits and retained previews.
 
-Historical implementation `ba1982b` passed Debug, Release and ASan/UBSan checks (186 each),
-portable CTest (140), Python checks (186), all 270 pinned PBRT comparison gates,
-48 Metal tests with API validation, and exact legacy output comparisons for
-81 scenes plus the demo.
-See the [sampling record](sampling-defaults-validation.md) for the toolchain,
-GPU validation, tolerances and artifact hashes.
-The [mesh record](mesh-shape-validation.md) retains historical evidence for
-`ff81056`; earlier area-power, camera, lighting, material, media, texture, importer,
-HDR and checkpoint records likewise identify their own validation revisions.
+The fresh quality study completed **384 native captures and 256 records**, using
+64 runs per renderer and scene. All **36 raw RGB mean safeguards pass**, but
+**0/48 simultaneous variance/tail bounds pass**. The common uncertainty margin
+multiplies point ratios by 251.9; 42/48 point ratios are at most 1.25. Raw pool/glass
+and two night-tail excesses remain. Passing the permissive mean safeguards does
+not establish equal converged images, and the current margin's driver is unresolved.
+
+## Deferred follow-up
+
+The [Pavilion investigation record](pavilion-convergence-follow-up.md) preserves
+exact metrics, consumed seeds, source/model identities, images, artifact locations
+and a concrete restart sequence in [issue #52](https://github.com/rlefko/rypath/issues/52).
+Raw bias versus variance, per-sample clamping's
+effect on the limiting image, secondary specular texture footprints, and time to
+a shared quality target remain open. No further Pavilion study is running.
+
+Full pinned-corpus coverage and offline MVP acceptance remain unestablished.
+Unsupported geometry/media receive explicit diagnostics; broader materials,
+cameras, media and mesh support remain on the [roadmap](roadmap.md).

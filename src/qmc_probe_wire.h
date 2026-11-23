@@ -3,6 +3,7 @@
 #include "render_wire.h"
 namespace rypath {
 namespace qmc_probe {
+enum : render_wire::Word { halton_light = 4 };
 struct Query {
     render_wire::Word kind, width, height, x, y, sample_low, sample_high, dimension, mode, seed,
         exponent, log_spp;

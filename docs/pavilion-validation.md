@@ -1,5 +1,11 @@
 # Pavilion transport and compatibility
 
+This record describes the implementation merged in PR #50. The subsequent
+[sampling and convergence record](sampling-convergence-validation.md) supersedes
+its light-proposal, coating-randomness and checkpoint contracts; the measurements
+below remain historical evidence for that earlier revision.
+
+
 This slice adds native analytic surfaces, four-wavelength vacuum transport,
 bidirectional path tracing, finite RGB-film clamping, and bounded large-scene
 preparation. Its external acceptance targets are the unchanged Barcelona Pavilion

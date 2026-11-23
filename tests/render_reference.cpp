@@ -236,7 +236,8 @@ AnalyticMoments analytic_xyz(const SpectralMaterial *floor) {
 }
 
 ReferenceImage reference_image(const RenderScene &scene, const RenderSettings &settings) {
-    const auto &[width, height, samples, batch_size, seed, sampler] = settings;
+    const auto &[width, height, samples, batch_size, seed, sampler, material_seed] = settings;
+    (void)material_seed; // The independent demo reference has no coated materials.
     const auto mesh = triangles(scene);
     const auto &camera = scene.camera;
     const Vec origin = from_point(camera.origin);

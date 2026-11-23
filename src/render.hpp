@@ -214,6 +214,7 @@ struct SurfaceTransforms {
     bool authored_reverse = false;
 };
 enum class IntegratorKind : std::uint32_t { path, volpath, bdpt };
+enum class LightSamplerKind : std::uint32_t { bvh, power, uniform };
 enum class SpectralTransport : std::uint32_t { scalar, packet };
 struct RenderScene {
     GeometryData geometry;
@@ -255,6 +256,7 @@ struct RenderScene {
     // Empty means no authored transitions; equal sides retain the ray's medium.
     std::vector<MediumInterface> instance_media{};
     IntegratorKind integrator = IntegratorKind::path;
+    LightSamplerKind light_sampler = LightSamplerKind::bvh;
     SpectralTransport spectral_transport = SpectralTransport::scalar;
     double max_component_value = std::numeric_limits<double>::infinity();
     // Acceptance/resource policy does not change the radiometric scene identity.
@@ -269,6 +271,8 @@ struct RenderSettings {
     std::uint64_t batch_size = 8;
     std::uint64_t seed = 1;
     RenderSampler sampler{};
+    // PBRT's global stochastic-material seed is independent of its sampler seed.
+    std::int32_t material_seed = 0;
 };
 struct RenderSample {
     std::uint32_t pixel = 0;

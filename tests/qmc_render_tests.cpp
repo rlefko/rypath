@@ -246,11 +246,12 @@ void transport_calls() {
                         "QMC transport roulette dimension/termination mismatch");
             }
             require(terminated > 100, "QMC roulette did not exercise termination");
-            // Three live emitter slots and a fourth null slot, with a BSDF-azimuth
-            // subset that cannot hit any emitter through the continuation technique.
+            // Four actual finite sources, including one authored black source. Uniform
+            // selection has no padding; the away-azimuth subset isolates NEE.
             s = sky();
             s.environment.fill(0);
             s.max_depth = 1;
+            s.light_sampler = LightSamplerKind::uniform;
             s.raster_camera =
                 RasterCamera{{0, 0, -2}, {-.125f, -.125f, 2}, {.25f, 0, 0}, {0, .25f, 0}};
             s.materials = {{.kind = SpectralMaterialKind::constant, .constant = 0},
@@ -259,9 +260,9 @@ void transport_calls() {
                  {.positions = {{-1, -1, 0}, {-1, 1, 0}, {1, 1, 0}, {1, -1, 0}},
                   .triangles = {{0, 1, 2}, {0, 2, 3}}},
                  1);
-            for (unsigned light = 0; light < 3; ++light) {
+            for (unsigned light = 0; light < 4; ++light) {
                 const float y = 1.25f * static_cast<float>(light);
-                s.area_emissions.emplace_back().radiance.fill(float(light + 1));
+                s.area_emissions.emplace_back().radiance.fill(light == 3 ? 0.f : float(light + 1));
                 mesh(s,
                      {.positions = {{.25f, y - .5f, -1}, {1.5f, y - .5f, -1}, {.25f, y + .5f, -1}},
                       .triangles = {{0, 1, 2}}},
@@ -272,16 +273,16 @@ void transport_calls() {
             const auto emitted = sample(*native, request);
             std::array<unsigned, 4> observed{};
             for (const auto &value : emitted) {
-                const auto slot = unsigned(variate(kind, mode, value.sample, 7) * 4);
+                const auto slot = unsigned(variate(kind, mode, value.sample, 8, true, 0) * 4);
                 const auto azimuth = variate(kind, mode, value.sample, 4, true, 1);
                 if (azimuth < .2f || azimuth > .8f) {
                     require(slot == 3 ? value.radiance == 0 : value.radiance > 0,
-                            "QMC live/null emitter slot mismatch");
+                            "QMC uniform emitting/black source selection mismatch");
                     ++observed[slot];
                 }
             }
             require(std::ranges::all_of(observed, [](unsigned n) { return n > 20; }),
-                    "QMC emitter test missed a live/null slot");
+                    "QMC emitter test missed an authored emitting/black source");
             request.sample_begin = 113;
             request.sample_count = 257;
             for (const auto &value : sample(*native, request))
