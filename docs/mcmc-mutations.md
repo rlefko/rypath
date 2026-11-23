@@ -178,7 +178,11 @@ and does not bound raw path contributions or guarantee finite physical variance.
 Initial M4 Max Debug/API-validation runs in
 `.cache/validation/mcmc-001/gpu.log` passed `metal.mutation_frame` in 19.74 seconds
 and `metal.mutation_math` in 0.32 seconds. The same evidence directory records
-passing portable mutation and CLI tests. These are working-tree checks; the
-strengthened math-probe rerun still needs its own recorded result before being
-claimed as passed. No equal-time image-quality improvement, visual correlation
+passing portable mutation and CLI tests. The strengthened Debug arithmetic probe also passed in 0.31 seconds. Release
+with API validation passed the retained zero-step Area frame test (32.52 s),
+mutation frame test (7.16 s) and mutation math probe (0.31 s). ASan/UBSan passed
+the same checks in 8.88 s, 9.28 s and 0.28 s, respectively. These runs used the
+implementation committed as `6835be5`; parent restacking changed no renderer or
+test source. Logs are `final-probe-gpu.log`, `release-gpu.log` and `asan-gpu.log`
+in the same evidence directory. No equal-time image-quality improvement, visual correlation
 reduction, or performance benefit has been established for this adaptation.
