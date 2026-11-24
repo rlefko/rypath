@@ -110,7 +110,8 @@ inline ScalarResult target_xyz(float x, float y, float z, float epsilon) {
     return {target, Status::ok};
 }
 
-// Current full-replay policy: limit importance contrast, never radiance/UCWs.
+// Historical contract-3 policy: limit importance contrast, never radiance/UCWs.
+// Contract 4 uses reuse_mis_shared.h; retain this helper for baseline oracles.
 // Real formula: 1 + 0.1 * L1(XYZ)/(scale + L1(XYZ)). Dividing all terms by
 // their maximum keeps the denominator in [1,4] even for finite HDR XYZ whose
 // unscaled L1 sum would overflow. Tiny proxy terms may underflow or flush;

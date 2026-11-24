@@ -11,10 +11,13 @@ packet scene; subsequent wavefront measurements are reported separately.
 Native 1080p at 20–30 rendered FPS remains a target; the complete pipeline is not
 available yet.
 
-Opt-in [Area-domain path reuse](area-reuse.md) now replays film, lens, wavelength
-and complete indirect transport. Bounded importance contrast limits reuse-induced
-weights. Debug, Release and sanitizer arithmetic/lifetime checks and small mean
-studies pass; visual improvement and time to image quality remain unqualified.
+Opt-in [Area-domain path reuse](area-reuse.md) replays film, lens, wavelength
+and complete indirect transport. The [importance repair](restir-importance.md)
+replaces the bounded target with source-target MIS and adds final-selection
+marginalization. [MCMC mutations](mcmc-mutations.md) retain a one-step default and
+zero/two/four-step ablations. Earlier arithmetic/lifetime checks and small mean
+studies describe the historical estimator. Native validation of this adapted
+repair, visual improvement and time to image quality remain unqualified.
 
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
