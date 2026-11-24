@@ -18,6 +18,14 @@ zero/two/four-step ablations. Earlier arithmetic/lifetime checks and small mean
 studies describe the historical estimator. Native validation of this adapted
 repair, visual improvement and time to image quality remain unqualified.
 
+The [core execution follow-up](core-performance.md) enables exact guide reuse.
+At `54fa952`, native static complete-pipeline p95 falls **4.5–29.5%** across the
+six scenes versus frozen `b8dc9cc`, with matching final raw/reconstructed captures.
+Only defocus meets p95 ≤50 ms in all three seeds; none meets p95 ≤33.33 ms in all
+three. Query shadows, default AS builds and packed one-event execution remain the
+defaults after the alternative policies miss their adoption gates. Moving frames
+regenerate guides; this does not remove the coated scene's shading cost.
+
 At historical source `0ef51ba`, the following viewer comparison was measured.
 The [viewer](viewer.md) defaults to independent sampling and signed temporal
 [reconstruction](reconstruction.md). Independent/temporal has lower post-cap
@@ -28,8 +36,9 @@ This is a correctness baseline, not the published optimized reconnection method.
 MetalFX remains explicit; its measured limitations apply to our integration,
 not to the framework generally.
 
-Across three seeds, native complete-pipeline throughput spans 2.93–21.97 FPS for
-independent sampling and 0.48–6.66 FPS for Area-one. Only 2/90 primary runs meet
+In that historical qualification, three-seed native complete-pipeline throughput
+spans 2.93–21.97 FPS for independent sampling and 0.48–6.66 FPS for Area-one.
+Only 2/90 primary runs meet
 p95 ≤50 ms (two defocus/independent seeds); none meet approximately 33.33 ms,
 and no scene/arm passes all three seeds. Four audited sustained runs add 1,784
 frames and meet their duration requirements; none reaches 20 FPS. Next optimization

@@ -75,7 +75,9 @@ for extra in (
     ["--guide-cache"],
     ["--guide-cache", "invalid"],
     ["--guide-cache", "on"],
+    ["--reconstruction", "none", "--guide-cache", "on"],
     ["--reconstruction", "raw-rgb", "--guide-cache", "on"],
+    ["--reconstruction", "temporal", "--guide-cache", "off", "--guide-cache", "on"],
     ["--reconstruction"],
     ["--reconstruction", "invalid"],
     ["--reconstruction", "none", "--reconstruction", "raw-rgb"],
@@ -185,6 +187,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert settings["intersection_profile"] == "compensated"
     assert data["settings"]["intersection_profile"] == "native"
     assert data["settings"]["reconstruction"] == "none"
+    assert data["settings"]["guide_cache"] is False
     assert (data["settings"]["output_width"], data["settings"]["output_height"]) == (1920, 1080)
     assert data["pipeline_summary"]["completed_frames"] == 0
     assert data["pipeline_summary"]["frames_per_second"] is None
@@ -198,13 +201,24 @@ with tempfile.TemporaryDirectory() as directory:
         selected = json.loads(destination.read_text())
         settings = selected["settings"]
         assert settings["reconstruction"] == mode
-        assert settings["guide_cache"] is False
+        assert settings["guide_cache"] is (mode in ("metalfx", "temporal"))
         assert (settings["internal_width"], settings["internal_height"]) == (17, 9)
         assert (settings["output_width"], settings["output_height"]) == (17, 9)
         assert settings["output_pixels_per_input_pixel"] == 1
         assert "reconstruction mode " + mode in selected["provenance"]
         assert selected["frames"] == [] and selected["pipeline_summary"]["GPU"]["count"] == 0
         assert selected["pipeline_summary"]["cpu_wall"]["count"] == 0
+    for mode in ("none", "raw-rgb", "metalfx", "temporal"):
+        choices = ("off", "on") if mode in ("metalfx", "temporal") else ("off",)
+        for choice in choices:
+            destination = root / f"guide-cache-{mode}-{choice}.json"
+            # An explicit setting before the reconstruction option must win over
+            # mode-dependent defaults resolved after the complete argument list.
+            invoke(["--scene", str(malformed), "--output", str(destination),
+                    "--guide-cache", choice, "--reconstruction", mode])
+            settings = json.loads(destination.read_text())["settings"]
+            assert settings["reconstruction"] == mode
+            assert settings["guide_cache"] is (choice == "on")
     destination = root / "profile-options.json"
     trace = root / "fresh.gputrace"
     invoke(["--scene", str(malformed), "--output", str(destination),

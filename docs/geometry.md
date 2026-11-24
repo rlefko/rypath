@@ -94,6 +94,12 @@ with a diagnostic; it never silently selects the default. Compensated/offline
 builds retain their existing default behavior. Older SDKs compile the default
 path without referencing the new preference symbol.
 
+The retained six-scene screen advanced no fast policy to full qualification or
+default selection. `default_build` remains the default. The
+[build-policy screen](core-performance.md#native-build-policy-screen) records
+its settings, image controls and allocation/build tradeoffs; these small-structure
+results do not establish the policies' value for large geometry.
+
 Selected BLAS and/or TLAS descriptors receive Metal's
 [`preferFastIntersection`](https://developer.apple.com/documentation/metal/mtlaccelerationstructureusage/preferfastintersection)
 usage before sizing, and the same descriptors are used for construction. This
@@ -328,7 +334,12 @@ masks, offsets and finite segment bounds remain in place. Invalid rays/results
 fail visibly. Closest-hit traversal, surface IDs/ties, compensated traversal and
 its separate optional opaque hints retain their existing policies. This is an
 execution specialization of the native profile, with no sampling or estimator
-change. It remains opt-in pending qualification and measured performance.
+change. It remains opt-in.
+
+The declared Cornell target improved 4.09% in median paired complete-pipeline
+p95, below the 10% adoption requirement. Query remains the default. The
+[opaque-shadow qualification](core-performance.md#opaque-shadow-qualification)
+retains every scene/seed result, including the non-target tail regressions.
 
 Apple documents opaque triangle traversal and early any-intersection termination
 in the [Metal Shading Language specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
@@ -358,8 +369,10 @@ opaque intersector report a miss while the double oracle reports a hit. The
 fixture retains this ray as characterization with required query/intersector
 agreement. A separate grazing interior ray requires independent-oracle agreement.
 The final passing check does not imply that native traversal matches the double
-oracle at all numerical boundaries. Release/sanitizer checks and performance
-qualification remain outstanding for this specialization; `query` remains default.
+oracle at all numerical boundaries. These initial checks preceded the later
+integrated Release/sanitizer validation and measured policy comparison. See the
+[current qualification record](core-performance.md) for those results;
+`query` remains the default.
 
 The capability regression fixture is compiled from test-only Metal source. Its
 native handshake succeeds, while its legacy render/shade entries omit constant
