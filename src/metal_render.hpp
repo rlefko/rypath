@@ -4,6 +4,7 @@
 #include "metal_geometry.hpp"
 #include "render.hpp"
 #include "shading_normal_probe_wire.h"
+#include "shadow_traversal.hpp"
 
 namespace rypath {
 
@@ -39,6 +40,7 @@ struct RenderSamplesResult {
 };
 struct RenderBuildOptions {
     IntersectionProfile intersection_profile = IntersectionProfile::compensated;
+    ShadowTraversal shadow_traversal = ShadowTraversal::query;
 };
 struct RenderBuildResult;
 // Synchronous operations require external serialization, including sample().
@@ -75,6 +77,7 @@ struct RenderBuildResult {
     double pipeline_seconds = 0;
     // Zero preserves the default packet workspace policy for synthetic sources.
     std::uint32_t packet_lane_capacity = 0;
+    ShadowTraversalSelection shadow_traversal{};
 };
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
                                        const std::filesystem::path &library_path = {});

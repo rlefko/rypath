@@ -40,9 +40,11 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
 }
 
 RenderBuildResult build_metal_renderer(const RenderScene &scene,
-                                       const std::filesystem::path &library, RenderBuildOptions,
-                                       RenderTimings *) {
-    return build_metal_renderer(scene, library);
+                                       const std::filesystem::path &library,
+                                       RenderBuildOptions options, RenderTimings *) {
+    auto result = build_metal_renderer(scene, library);
+    result.shadow_traversal.requested = options.shadow_traversal;
+    return result;
 }
 
 ShadingNormalProbeResult probe_shading_normal(const std::vector<shading_normal_probe::Query> &,
@@ -81,11 +83,13 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &) {
             .diagnostic = "Metal backend was not built",
             .frame = {}};
 }
-FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &,
+FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &config,
                                             const std::filesystem::path &) {
-    return {.status = GeometryStatus::not_built,
-            .device = {},
-            .diagnostic = "Metal backend was not built",
-            .session = {}};
+    FrameSessionBuildResult result{.status = GeometryStatus::not_built,
+                                   .device = {},
+                                   .diagnostic = "Metal backend was not built",
+                                   .session = {}};
+    result.shadow_traversal.requested = config.shadow_traversal;
+    return result;
 }
 } // namespace rypath

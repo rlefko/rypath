@@ -250,3 +250,80 @@ and candidate generation. Manual queries intersect triangles from embedded
 vertices and solve bilinear/analytic box candidates from embedded records, retaining
 the matching primitive and coordinates with the selected distance. The portable
 references are independent test oracles.
+
+## Opt-in opaque Boolean shadows
+
+`ShadowTraversal::opaque_auto` specializes Boolean shadow visibility within the
+native intersection profile. `query` remains the default. The host checks the
+same prepared geometry used to build the primary acceleration structure, after
+world-space emitter baking. Eligibility requires triangle-only geometry with no
+retained zero-area/miss slots, nonopaque instances, shape alpha, mix/glTF
+materials, null/invisible surfaces, media records, medium interfaces or volume
+transport. These exclusions are conservative, including unused materials and
+meshes. Ineligible requests retain query traversal and report the reason.
+
+Opaque mode also requires bool function constant 22 in each actual unspecialized
+render entry and selected scalar/packet wavefront shade entry. Missing capability
+fails session construction with an explicit rebuild diagnostic, without publishing
+effective opaque execution. A native-profile handshake alone is insufficient:
+Metal can silently ignore specialization values for unknown constant indices.
+Query mode keeps accepting native-compatible libraries without this capability.
+
+The specialized helper uses `intersector<triangle_data, instancing>`, forced
+opaque geometry, disabled culling and acceptance of any intersection. It returns
+only Boolean occlusion plus validity. Existing ray-domain validation, visibility
+masks, offsets and finite segment bounds remain in place. Invalid rays/results
+fail visibly. Closest-hit traversal, surface IDs/ties, compensated traversal and
+its separate optional opaque hints retain their existing policies. This is an
+execution specialization of the native profile, with no sampling or estimator
+change. It remains opt-in pending qualification and measured performance.
+
+Apple documents opaque triangle traversal and early any-intersection termination
+in the [Metal Shading Language specification](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
+and recommends opaque intersectors in its
+[shader performance guidance](https://developer.apple.com/videos/play/tech-talks/111373/).
+Those platform recommendations are not a measured rypath speedup.
+
+`render.shadow_traversal` checks host eligibility and fallback reasons portably.
+`metal.opaque_shadows` compares the production helper with the native query and
+an independent double-precision brute-force oracle on ordinary affine,
+shared-edge/vertex, grazing and segment-endpoint rays. It checks invalid inputs
+and compares raw scalar/packet frames across megakernel and wavefront execution.
+These fixtures are bounded correctness checks; native near-edge limitations
+remain those of the selected intersection profile.
+
+Before the subsequent opaque-capability guard, the working tree based on
+`4b1cc65` passed Debug `metal.native_intersection_profile` in 72.47 s and `metal.opaque_shadows` in 16.87 s with Metal API
+validation on M4 Max, macOS 26.6, Xcode 26.6 and SDK 26.5. These are correctness
+test durations, not performance measurements. Raw XYZ matches the query control
+exactly for scalar/packet and megakernel/wavefront frames at sample indices 0, 1
+and 2^32+7. Portable host selection and benchmark CLI checks also pass.
+
+The initial probe identified a native-profile grazing shared-edge limitation:
+for the identity square at z=0, origin `(-.75,-.25,.001)` and direction
+`(.5,0,-.001)` reach its shared diagonal, but both the existing native query and
+opaque intersector report a miss while the double oracle reports a hit. The
+fixture retains this ray as characterization with required query/intersector
+agreement. A separate grazing interior ray requires independent-oracle agreement.
+The final passing check does not imply that native traversal matches the double
+oracle at all numerical boundaries. Release/sanitizer checks and performance
+qualification remain outstanding for this specialization; `query` remains default.
+
+The capability regression fixture is compiled from test-only Metal source. Its
+native handshake succeeds, while its legacy render/shade entries omit constant
+22; a mixed new-main/old-shade case also requires rejection. The normal current
+library still runs the raw controls. For local qualification,
+`rypath_opaque_shadow_tests CURRENT.metallib CAPABILITY_FIXTURE.metallib LEGACY_NATIVE.metallib`
+also checks that a frozen native-capable library remains accepted for query mode
+and fails construction for opaque mode. External binary fixtures are not tracked.
+After adding the capability guard, Debug `metal.opaque_shadows` passes in
+17.50 s under Metal API validation on the same M4 Max environment. The current
+scalar/packet render and wavefront shade entries expose the required capability;
+the native-capable/mixed fixture rejects missing shade capability. A separate
+run with the frozen native-capable, stage-diagnostics-only library exits 0:
+query session construction succeeds and opaque construction fails with the
+explicit missing-constant diagnostic, without publishing effective opaque mode.
+The normal raw-image controls pass in that run as well. Full pre-commit hooks and
+the portable CLI/selection checks pass. These results validate the capability
+guard; they do not extend the earlier native-profile numerical guarantees or
+establish a performance benefit.
