@@ -6,6 +6,7 @@
 #include "metalfx_denoiser.hpp"
 #include "reconstruction.hpp"
 #include "reconstruction_camera.hpp"
+#include "reconstruction_guide_cache.hpp"
 #include "reconstruction_guide_wire.h"
 #include "rgb_spectrum.hpp"
 #include "temporal_denoiser.hpp"
@@ -113,6 +114,8 @@ struct ReconstructionStream::Impl {
     std::uint32_t previous_camera_medium = UINT32_MAX;
     bool previous_approximation = false;
     std::optional<FrameCamera> previous_frame_camera;
+    std::optional<std::vector<std::uint32_t>> guide_key;
+    gw::Counters guide_counts{};
     ReconstructionConfig config;
     std::uint32_t width = 0, height = 0, model = 0;
     id<MTLDevice> device = nil;
@@ -314,6 +317,7 @@ struct ReconstructionStream::Impl {
         std::shared_ptr<ReconstructedFrame::Impl> frame;
         std::unique_ptr<MetalFrameLease> source;
         std::optional<reconstruction::Camera> current;
+        std::vector<std::uint32_t> guide_key;
         bool all_times_valid = true;
         double gpu_seconds = 0;
         bool camera_changed() const {
@@ -375,11 +379,17 @@ struct ReconstructionStream::Impl {
                 state->pending = false;
                 if (!error.empty()) {
                     state->previous_valid = false;
+                    state->guide_key.reset();
                     frame->info.status = ReconstructionStatus::failed;
                     frame->info.diagnostic = std::move(error);
                     frame->info.gpu_time_valid = false;
                     invalidate_gpu_stages(frame->info.gpu_stages, "invalid: reconstruction failed");
                 } else {
+                    if (state->config.cache_surface_guides && state->surface) {
+                        state->guide_key = std::move(guide_key);
+                        std::memcpy(&state->guide_counts, state->counters.contents,
+                                    sizeof(state->guide_counts));
+                    }
                     state->previous = current;
                     state->previous_lens_radius = source->parameters().lens_radius;
                     state->previous_focal_distance = source->parameters().focal_distance;
@@ -442,7 +452,7 @@ struct ReconstructionStream::Impl {
             if (s.temporal)
                 cfg.flags |= gw::signed_temporal;
             std::memcpy(s.configuration.contents, &cfg, sizeof(cfg));
-            std::memset(s.counters.contents, 0, s.counters.length);
+
             [s.argument_encoder setArgumentBuffer:s.arguments offset:0];
             const std::array<id<MTLBuffer>, 4> buffers{s.configuration, source->raw_xyz(), s.nodes,
                                                        s.counters};
@@ -508,9 +518,27 @@ struct ReconstructionStream::Impl {
                     stages->end(encoder);
                 [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
             };
-            dispatch(*s.reset, 1, "reconstruction.reset");
+            if (s.config.cache_surface_guides && s.surface)
+                guide_key = reconstruction::surface_guide_key(source->guide_parameters(),
+                                                              source->texture_parameters(), cfg);
+            const bool hit = s.config.cache_surface_guides && s.surface && s.guide_key &&
+                             *s.guide_key == guide_key;
+            frame->info.guide_cache_hit = hit;
+            frame->info.generated_surface_pixels =
+                s.surface && !hit ? std::uint64_t(s.width) * s.height : 0;
+            if (hit) {
+                // Seed logical surface counts, but every color conversion is fresh.
+                auto counts = s.guide_counts;
+                counts.failure = counts.completed = counts.color_negative = counts.color_high = 0;
+                std::memcpy(s.counters.contents, &counts, sizeof(counts));
+            } else {
+                // Invalidate before any overwrite; only whole-job success republishes.
+                s.guide_key.reset();
+                std::memset(s.counters.contents, 0, s.counters.length);
+                dispatch(*s.reset, 1, "reconstruction.reset");
+            }
             const auto pixels = std::uint64_t(s.width) * s.height;
-            if (s.surface) {
+            if (s.surface && !hit) {
                 error = source->bind_guides(encoder, *s.surface, s.arguments);
                 if (!error.empty()) {
                     [encoder endEncoding];
@@ -818,6 +846,8 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
                     impl_->previous_lens_radius != acquired.lease->parameters().lens_radius ||
                     impl_->previous_focal_distance != acquired.lease->parameters().focal_distance ||
                     impl_->previous_camera_medium != acquired.lease->parameters().camera_medium;
+            if (reset)
+                impl_->guide_key.reset();
             previous = reset ? camera.camera : impl_->previous;
         }
         auto frame = std::make_shared<ReconstructedFrame::Impl>();
@@ -844,6 +874,8 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
         }
         auto command = job->prepare(error, *previous, !reset);
         if (command == nil) {
+            impl_->guide_key.reset();
+            impl_->previous_valid = false;
             result.diagnostic = std::move(error);
             return result;
         }
@@ -866,6 +898,63 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &source, boo
         result.status = GeometryStatus::success;
         return result;
     }
+}
+MetalReconstructionGuideSnapshot
+MetalReconstructionStreamProbe::capture_guides(const ReconstructionStream &stream) {
+    MetalReconstructionGuideSnapshot result;
+    if (!stream.impl_) {
+        result.diagnostic = "Reconstruction stream is moved-from";
+        return result;
+    }
+    auto &s = *stream.impl_;
+    std::lock_guard lock(s.mutex);
+    if (s.pending || !s.previous_valid || !s.surface) {
+        result.diagnostic = "Surface guide snapshot requires a successful completed job";
+        return result;
+    }
+    const std::array<id<MTLTexture>, 8> textures{
+        s.inputs.depth,  s.inputs.motion,    s.inputs.diffuse_albedo, s.inputs.specular_albedo,
+        s.inputs.normal, s.inputs.roughness, s.previous_depth,        s.identity};
+    constexpr std::array<unsigned, 8> pixel_bytes{4, 4, 8, 8, 8, 2, 4, 16};
+    std::array<id<MTLBuffer>, 8> staging{};
+    auto command = [s.queue commandBuffer];
+    auto blit = [command blitCommandEncoder];
+    if (command == nil || blit == nil) {
+        result.diagnostic = "Surface guide readback encoder creation failed";
+        return result;
+    }
+    for (unsigned i = 0; i < textures.size(); ++i) {
+        const auto row = (std::uint64_t(s.width) * pixel_bytes[i] + 255) & ~255ull;
+        staging[i] = [s.device newBufferWithLength:row * s.height
+                                           options:MTLResourceStorageModeShared];
+        if (staging[i] == nil) {
+            [blit endEncoding];
+            result.diagnostic = "Surface guide readback allocation failed";
+            return result;
+        }
+        [blit copyFromTexture:textures[i]
+                         sourceSlice:0
+                         sourceLevel:0
+                        sourceOrigin:MTLOriginMake(0, 0, 0)
+                          sourceSize:MTLSizeMake(s.width, s.height, 1)
+                            toBuffer:staging[i]
+                   destinationOffset:0
+              destinationBytesPerRow:row
+            destinationBytesPerImage:row * s.height];
+    }
+    [blit endEncoding];
+    result.diagnostic = metal::complete(command, "surface guide readback");
+    if (!result.diagnostic.empty())
+        return result;
+    for (unsigned i = 0; i < textures.size(); ++i) {
+        const auto bytes = std::size_t(s.width) * pixel_bytes[i];
+        const auto row = (bytes + 255) & ~std::size_t(255);
+        result.textures[i].resize(bytes * s.height);
+        for (unsigned y = 0; y < s.height; ++y)
+            std::memcpy(result.textures[i].data() + y * bytes,
+                        static_cast<const std::byte *>(staging[i].contents) + y * row, bytes);
+    }
+    return result;
 }
 struct MetalReconstructedFrameLease::Impl {
     std::shared_ptr<ReconstructedFrame::Impl> frame;

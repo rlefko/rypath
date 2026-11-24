@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "reconstruction_camera.hpp"
+#include "reconstruction_guide_cache.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -54,7 +55,70 @@ rc::Camera built(const rypath::RasterCamera &source, const rc::CameraConfig &con
 }
 } // namespace
 
+void guide_key_dependencies() {
+    using namespace rypath;
+    render_wire::Parameters p{};
+    render_wire::TextureParameters t{};
+    reconstruction_guide_wire::Config c{};
+    const auto key = reconstruction::surface_guide_key(p, t, c);
+    const auto check = [&](const auto &pp, const auto &tt, const auto &cc) {
+        if (reconstruction::surface_guide_key(pp, tt, cc) == key)
+            throw std::runtime_error("Guide key omitted a dependency");
+    };
+    auto samples = p;
+    samples.sample_low = 123;
+    samples.sample_high = 456;
+    if (reconstruction::surface_guide_key(samples, t, c) != key)
+        throw std::runtime_error("Guide key includes transport sample index");
+    auto changed = p;
+    changed.camera_medium = 1;
+    check(changed, t, c);
+    changed = p;
+    changed.origin.x = 1;
+    check(changed, t, c);
+    auto texture = t;
+    texture.spp_scale = 2;
+    check(p, texture, c);
+    texture = t;
+    texture.minimum_dx.x = 1;
+    check(p, texture, c);
+    texture = t;
+    texture.world_from_camera[4] = 2;
+    check(p, texture, c);
+    texture = t;
+    texture.camera_from_world[8] = 2;
+    check(p, texture, c);
+    auto cfg = c;
+    cfg.previous_valid = 1;
+    check(p, t, cfg);
+    cfg = c;
+    cfg.flags = 1;
+    check(p, t, cfg);
+    for (unsigned i = 0; i < 16; ++i) {
+        cfg = c;
+        cfg.current_world_to_view[i] = 1;
+        check(p, t, cfg);
+        cfg = c;
+        cfg.current_view_to_clip[i] = 1;
+        check(p, t, cfg);
+        cfg = c;
+        cfg.previous_world_to_view[i] = 1;
+        check(p, t, cfg);
+        cfg = c;
+        cfg.previous_view_to_clip[i] = 1;
+        check(p, t, cfg);
+    }
+    for (unsigned i = 0; i < 4; ++i) {
+        cfg = c;
+        cfg.current_camera_to_matrix_origin[i] = 1;
+        check(p, t, cfg);
+        cfg = c;
+        cfg.previous_camera_to_matrix_origin[i] = 1;
+        check(p, t, cfg);
+    }
+}
 int main() try {
+    guide_key_dependencies();
     using namespace rypath;
     const rc::CameraConfig config{4, 2, .25, {}};
     RenderCamera demo;

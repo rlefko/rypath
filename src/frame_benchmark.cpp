@@ -63,6 +63,7 @@ struct Options {
     std::optional<std::uint64_t> capture_frame;
     fs::path capture_path;
     std::optional<rypath::ReconstructionMode> reconstruction;
+    bool guide_cache = false;
     std::uint32_t output_width = 0, output_height = 0;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
     rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
@@ -116,6 +117,7 @@ const char *usage =
     "  [--profile-stages] [--capture-frame N --capture-path FRAME.gputrace]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
     "  [--reconstruction none|raw-rgb|metalfx|temporal (default: none)]\n"
+    "  [--guide-cache on|off (default: off)]\n"
     "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
     "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
 std::string parse(int argc, char **argv, Options &o) {
@@ -158,6 +160,10 @@ std::string parse(int argc, char **argv, Options &o) {
         } else if (key == "--output-height") {
             if (!integer(value, o.output_height) || !o.output_height)
                 return "invalid output height";
+        } else if (key == "--guide-cache") {
+            if (value != "on" && value != "off")
+                return "guide cache must be on or off";
+            o.guide_cache = value == "on";
         } else if (key == "--reconstruction") {
             if (value == "none")
                 o.reconstruction.reset();
@@ -245,6 +251,9 @@ std::string parse(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if (o.guide_cache &&
+        (!o.reconstruction || o.reconstruction == rypath::ReconstructionMode::raw_rgb))
+        return "guide cache requires temporal or metalfx reconstruction";
     if (!o.reconstruction && (seen.contains("--output-width") || seen.contains("--output-height") ||
                               !o.reconstructed_capture.empty()))
         return "output dimensions and reconstructed capture require reconstruction";
@@ -614,6 +623,7 @@ struct Report {
             << ",\"architecture\":" << quote(architecture) << ",\"registry_id\":" << registry_id
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
             << ",\"reconstruction\":" << quote(reconstruction_name(options.reconstruction))
+            << ",\"guide_cache\":" << (options.guide_cache ? "true" : "false")
             << ",\"internal_width\":" << options.width << ",\"internal_height\":" << options.height
             << ",\"output_width\":" << options.output_width
             << ",\"output_height\":" << options.output_height
@@ -776,6 +786,10 @@ struct Report {
                     << ",\"defocus_approximation\":"
                     << (f.reconstruction && f.reconstruction->defocus_approximation ? "true"
                                                                                     : "false")
+                    << ",\"guide_cache_hit\":"
+                    << (f.reconstruction && f.reconstruction->guide_cache_hit ? "true" : "false")
+                    << ",\"generated_surface_pixels\":"
+                    << (f.reconstruction ? f.reconstruction->generated_surface_pixels : 0)
                     << ",\"width\":" << options.output_width
                     << ",\"height\":" << options.output_height << ",\"history_accepted\":"
                     << (f.reconstruction ? f.reconstruction->history_accepted : 0)
@@ -1059,10 +1073,12 @@ int run(const Options &options) {
                                 created = true;
                                 const auto creation_start = Clock::now();
                                 auto stream = rypath::build_reconstruction_stream(
-                                    *submitted.frame, {.profile_stages = options.profile_stages,
-                                                       .mode = *options.reconstruction,
-                                                       .output_width = options.output_width,
-                                                       .output_height = options.output_height});
+                                    *submitted.frame,
+                                    {.profile_stages = options.profile_stages,
+                                     .mode = *options.reconstruction,
+                                     .output_width = options.output_width,
+                                     .output_height = options.output_height,
+                                     .cache_surface_guides = options.guide_cache});
                                 report.reconstruction_startup_seconds = seconds(creation_start);
                                 if (stream.status != rypath::GeometryStatus::success ||
                                     !stream.stream)
