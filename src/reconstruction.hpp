@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "frame_session.hpp"
+#include "gpu_diagnostics.hpp"
 
 namespace rypath {
 enum class ReconstructionMode { raw_rgb, metalfx, temporal };
 inline constexpr std::uint32_t reconstruction_dimension_limit = 16384;
 struct ReconstructionConfig {
+    bool profile_stages = false;
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
     std::uint32_t output_width = 0, output_height = 0; // Zero preserves input dimensions.
     double near_plane = .001; // Guides only; raw transport has no new cutoff.
@@ -22,6 +24,7 @@ struct ReconstructionCounters {
     std::uint32_t passthrough = 0, media_approximation = 0, invalid_previous = 0, background = 0;
 };
 struct ReconstructionInfo {
+    GPUStageDiagnostics gpu_stages{};
     ReconstructionStatus status = ReconstructionStatus::pending;
     FrameInfo source{};
     ReconstructionMode mode = ReconstructionMode::raw_rgb;

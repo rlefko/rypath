@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "temporal_denoiser.hpp"
 #include "metal_frame_access.hpp"
+#include "metal_gpu_diagnostics.hpp"
 #include "temporal_denoiser_wire.h"
 #include <algorithm>
 #include <array>
@@ -169,7 +170,7 @@ TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
     return {.denoiser = std::unique_ptr<TemporalDenoiser>(new TemporalDenoiser(std::move(impl)))};
 }
 std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
-                                     const TemporalDenoiserInputs &inputs) {
+                                     const TemporalDenoiserInputs &inputs, MetalGPUStages *stages) {
     // A rejected overlapping encode must not alter a running command's state.
     if (impl_->pending)
         return "Temporal denoiser already has a pending command";
@@ -210,6 +211,7 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
                 return reject("Temporal denoiser textures must not alias");
     }
     auto encoder = [command computeCommandEncoder];
+    encoder.label = @"signed temporal reconstruction";
     if (!encoder)
         return reject("Temporal denoiser compute encoder allocation failed");
     for (const auto &binding : bindings)
@@ -223,7 +225,25 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
     for (unsigned i = 0; i < history.size(); ++i)
         [encoder setTexture:history[i] atIndex:tw::history_mean_id + i];
     [encoder setBuffer:impl_->counters offset:0 atIndex:1];
+    const bool split_encoders = stages && stages->splits_encoders();
+    id<MTLTexture> source_mean = nil, source_variance = nil, destination_mean = nil,
+                   destination_variance = nil;
     const auto dispatch = [&](unsigned index, const tw::Config &config, bool single = false) {
+        static constexpr const char *labels[] = {"temporal.reset", "temporal.accumulate",
+                                                 "temporal.spatial", "temporal.finish"};
+        if (stages && !stages->begin(command, encoder, labels[index]))
+            return;
+        if (split_encoders) {
+            for (const auto &binding : bindings)
+                [encoder setTexture:binding.texture atIndex:binding.index];
+            for (unsigned i = 0; i < history.size(); ++i)
+                [encoder setTexture:history[i] atIndex:tw::history_mean_id + i];
+            [encoder setBuffer:impl_->counters offset:0 atIndex:1];
+            [encoder setTexture:source_mean atIndex:tw::source_mean_id];
+            [encoder setTexture:source_variance atIndex:tw::source_variance_id];
+            [encoder setTexture:destination_mean atIndex:tw::destination_mean_id];
+            [encoder setTexture:destination_variance atIndex:tw::destination_variance_id];
+        }
         auto pipeline = impl_->pipelines[index]->pipeline();
         [encoder setComputePipelineState:pipeline];
         [encoder setBytes:&config length:sizeof(config) atIndex:0];
@@ -232,6 +252,8 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
         [encoder dispatchThreads:MTLSizeMake(single ? 1 : impl_->width, single ? 1 : impl_->height,
                                              1)
             threadsPerThreadgroup:MTLSizeMake(width, 1, 1)];
+        if (stages)
+            stages->end(encoder);
         [encoder memoryBarrierWithScope:MTLBarrierScopeTextures | MTLBarrierScopeBuffers];
     };
     tw::Config config{impl_->width,
@@ -243,6 +265,10 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
                       tw::version,
                       0};
     dispatch(0, config, true);
+    if (split_encoders) {
+        destination_mean = impl_->spatial[0].mean;
+        destination_variance = impl_->spatial[0].variance;
+    }
     [encoder setTexture:impl_->spatial[0].mean atIndex:tw::destination_mean_id];
     [encoder setTexture:impl_->spatial[0].variance atIndex:tw::destination_variance_id];
     dispatch(1, config);
@@ -250,6 +276,12 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
     for (unsigned i = 0; i < impl_->iterations; ++i) {
         config.step = 1u << i;
         config.iteration = i;
+        if (split_encoders) {
+            source_mean = impl_->spatial[source].mean;
+            source_variance = impl_->spatial[source].variance;
+            destination_mean = impl_->spatial[1 - source].mean;
+            destination_variance = impl_->spatial[1 - source].variance;
+        }
         [encoder setTexture:impl_->spatial[source].mean atIndex:tw::source_mean_id];
         [encoder setTexture:impl_->spatial[source].variance atIndex:tw::source_variance_id];
         [encoder setTexture:impl_->spatial[1 - source].mean atIndex:tw::destination_mean_id];
@@ -258,9 +290,13 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
         dispatch(2, config);
         source = 1 - source;
     }
+    if (split_encoders)
+        source_mean = impl_->spatial[source].mean;
     [encoder setTexture:impl_->spatial[source].mean atIndex:tw::source_mean_id];
     dispatch(3, config);
     [encoder endEncoding];
+    if (stages && stages->encoding_failed())
+        return reject("Profiling temporal compute encoder allocation failed");
     impl_->pending = true;
     return {};
 }
