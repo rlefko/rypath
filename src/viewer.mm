@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_wire.h"
 #include "camera_medium.hpp"
 #include "image_output.hpp"
 #include "metal_execution.hpp"
@@ -675,6 +676,18 @@ class ViewerState {
             {"rypath.epoch", std::to_string(info.source.epoch)},
             {"rypath.seed", std::to_string(options.seed)},
             {"rypath.estimator", estimator_name()},
+            {"rypath.area.contract",
+             std::to_string(options.estimator == FrameEstimator::area_replay ? area_wire::contract
+                                                                             : 0)},
+            {"rypath.area.output", options.estimator == FrameEstimator::area_replay
+                                       ? "conditional-mean"
+                                       : "not-applicable"},
+            {"rypath.area.target",
+             options.estimator == FrameEstimator::area_replay ? "quarter-l1-v1" : "none"},
+            {"rypath.area.source_mis",
+             options.estimator == FrameEstimator::area_replay ? "source-target-mis-v1" : "none"},
+            {"rypath.area.temporal_reuse",
+             options.estimator == FrameEstimator::area_replay ? "20" : "0"},
             {"rypath.mutations", std::to_string(options.estimator == FrameEstimator::area_replay
                                                     ? options.mutation_steps
                                                     : 0)},
