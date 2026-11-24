@@ -205,6 +205,11 @@ guards, and project agent guidance. Large-corpus acquisition remains separately 
 
 ## Interactive pipeline
 
+[Hero wavelength PT](hero-wavelength.md) supplies shared-path spectral sampling
+for eligible vacuum PT scenes. Remaining spectral work includes joint coated
+proposals and packet media transport; current hero implementation does not claim
+those capabilities or the suite's performance target.
+
 Implemented baselines cover the eight [golden-pipeline](golden-pipeline.md) review
 stages, through the native viewer and bounded M4 Max studies. The
 [audited qualification](pipeline-qualification.md) does **not** meet the suite's

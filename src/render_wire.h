@@ -321,6 +321,7 @@ struct Parameters {
     Word gaussian_width = 0;
     Word gaussian_height = 0;
     float filter_sigma = .5f;
+    // 0: scalar; 1: legacy packet; 2: hero wavelength PT (same ABI word).
     Word packet_transport = 0;
     Word bidirectional = 0;
     Word packet_lane_bytes = 0;

@@ -141,6 +141,7 @@ void help() {
         << "Usage: rypath-reconstruction-diagnostics --scene FILE --output-dir DIR --artifact-root "
            "DIR [options]\n"
            "  --width N --height N --frames N --seed N --estimator independent|area1|area2|area4\n"
+           "  --spectral-transport auto|scalar|packet|hero (default: auto)\n"
            "  --area-output selected|conditional-mean (Area fanout only; default: "
            "conditional-mean)\n"
            "  --capture-mode final|replay --capture-frames N,N --roi-file FILE\n"
@@ -154,6 +155,7 @@ void help() {
            "at 8 GiB.\n";
 }
 struct Options {
+    SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir, artifact_root, replay_list, roi_file;
     std::uint32_t width = 1920, height = 1080, frames = 128, reference_samples = 0;
     std::uint64_t seed = 51001;
@@ -187,7 +189,12 @@ Options parse(int argc, char **argv) {
         std::string key = argv[i];
         require(seen.insert(key).second && i + 1 < argc, "Duplicate option or missing value");
         std::string value = argv[++i];
-        if (key == "--scene")
+        if (key == "--spectral-transport") {
+            const auto selection = parse_spectral_transport(value);
+            require(selection.has_value(),
+                    "Spectral transport must be auto, scalar, packet, or hero");
+            o.spectral_transport = *selection;
+        } else if (key == "--scene")
             o.scene = value;
         else if (key == "--output-dir")
             o.output_dir = value;
@@ -1196,6 +1203,8 @@ int main(int argc, char **argv) {
                     @"area_temporal_reuse" :
                         @(options.estimator == FrameEstimator::area_replay ? 20 : 0),
                     @"requested_area_output" : ns(area_output_name(options.area_output)),
+                    @"spectral_transport" :
+                        ns(spectral_transport_name(scene.value.spectral_transport)),
                     @"mutation_steps" : @(config.mutation_steps),
                     @"source_identity" : ns(digest_hex(render_identity(scene.value, settings))),
                     @"resource_profile" : ns(resource_profile_name(options.resource_profile)),

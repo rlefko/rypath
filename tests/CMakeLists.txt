@@ -1714,6 +1714,49 @@ target_compile_options(rypath_mutation_tests PRIVATE
 add_test(NAME render.mutation_weights COMMAND rypath_mutation_tests)
 set_tests_properties(render.mutation_weights PROPERTIES TIMEOUT 30)
 
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_hero_render_tests hero_render_tests.cpp)
+    target_link_libraries(rypath_hero_render_tests PRIVATE rypath_metal_backend)
+    set_target_properties(rypath_hero_render_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_hero_render_tests)
+    add_test(NAME metal.hero_render COMMAND rypath_hero_render_tests)
+    set_tests_properties(metal.hero_render PROPERTIES TIMEOUT 180 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability IN ITEMS DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_hero_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.hero_render PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+endif()
+
+add_executable(rypath_hero_spectrum_tests hero_spectrum_tests.cpp)
+target_include_directories(rypath_hero_spectrum_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_hero_spectrum_tests)
+target_compile_options(rypath_hero_spectrum_tests PRIVATE
+    "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+add_test(NAME render.hero_spectrum COMMAND rypath_hero_spectrum_tests)
+set_tests_properties(render.hero_spectrum PROPERTIES TIMEOUT 30)
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_hero_scattering_probe hero_scattering_probe.mm)
+    target_link_libraries(rypath_hero_scattering_probe PRIVATE "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_hero_scattering_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_hero_scattering_probe PRIVATE -fobjc-arc)
+    target_compile_options(rypath_hero_scattering_probe PRIVATE
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+    rypath_configure_host_target(rypath_hero_scattering_probe)
+    add_dependencies(rypath_hero_scattering_probe rypath_hero_scattering_shader)
+    add_test(NAME metal.hero_scattering COMMAND rypath_hero_scattering_probe "${rypath_hero_scattering_library}")
+    set_tests_properties(metal.hero_scattering PROPERTIES TIMEOUT 60 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_hero_scattering_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.hero_scattering PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
 add_executable(rypath_reuse_mis_tests reuse_mis_tests.cpp)
 target_include_directories(rypath_reuse_mis_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_reuse_mis_tests)

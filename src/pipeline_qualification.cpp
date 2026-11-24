@@ -75,6 +75,7 @@ std::string optional_number(std::optional<double> value) {
     return stream.str();
 }
 struct Options {
+    SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir;
     std::uint32_t width = 320, height = 180, frames = 32, seeds = 8;
     std::uint32_t reference_spp = 4096, reference_batches = 8;
@@ -94,6 +95,7 @@ const char *reconstructed_kind(ReconstructionMode mode) {
 }
 const char *usage =
     "Usage: rypath-pipeline-qualification --scene SCENE.pbrt --output-dir FRESH\n"
+    "  --spectral-transport auto|scalar|packet|hero (default: auto)\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
@@ -111,7 +113,12 @@ Options parse(int argc, char **argv) {
         require(i + 1 < argc && !std::string_view(argv[i + 1]).starts_with("--"),
                 "Missing qualification option value");
         const std::string_view value = argv[++i];
-        if (key == "--scene")
+        if (key == "--spectral-transport") {
+            const auto selection = parse_spectral_transport(value);
+            require(selection.has_value(),
+                    "Spectral transport must be auto, scalar, packet, or hero");
+            o.spectral_transport = *selection;
+        } else if (key == "--scene")
             o.scene = value;
         else if (key == "--output-dir")
             o.output_dir = value;
@@ -370,19 +377,8 @@ Scene load_scene(const Options &o) {
     result.dependencies.push_back(o.scene);
     for (const auto &dependency : checked.document.dependencies)
         result.dependencies.push_back(dependency.resolved_path);
-    bool packet_policy = false;
-    for (const auto &descriptor : checked.scene->options) {
-        if (descriptor.authored.name == "Integrator" &&
-            descriptor.authored.arguments.front().text == "bdpt")
-            packet_policy = true;
-        if (descriptor.authored.name == "Film") {
-            const auto *clamp = descriptor.effective_parameter("maxcomponentvalue").parameter;
-            if (clamp && !clamp->values.empty() && std::isfinite(clamp->values.front().number))
-                packet_policy = true;
-        }
-    }
     result.provenance = overrides(checked, o);
-    auto translated = pbrt::translate(checked, {o.scene.string()});
+    auto translated = pbrt::translate(checked, {o.scene.string()}, {}, o.spectral_transport);
     for (const auto &diagnostic : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(diagnostic);
     require(translated.exit_code() == 0 && translated.scene.has_value(),
@@ -396,36 +392,14 @@ Scene load_scene(const Options &o) {
                     scene.instance_media,
                     [](const auto &medium) { return medium.inside != medium.outside; }),
                 "Motion cannot classify distinct medium interfaces");
-    if (packet_policy) {
-        const auto active_medium = [&](std::uint32_t id) {
-            if (id == no_medium)
-                return false;
-            const auto &medium = scene.media.at(id);
-            const auto nonzero = [](float value) { return value != 0; };
-            return std::ranges::any_of(medium.sigma_a, nonzero) ||
-                   std::ranges::any_of(medium.sigma_s, nonzero) ||
-                   std::ranges::any_of(medium.emission, nonzero);
-        };
-        bool active = active_medium(scene.camera_medium);
-        for (const auto &medium : scene.instance_media)
-            active = active || active_medium(medium.inside) || active_medium(medium.outside);
-        for (const auto &light : checked.scene->lights)
-            for (std::size_t i = 0; i < checked.scene->media.size(); ++i)
-                if (checked.scene->media[i].authored.arguments.front().text == light.outside_medium)
-                    active = active || active_medium(static_cast<std::uint32_t>(i));
-        if (!active && scene.max_depth <= 64) {
-            scene.spectral_transport = SpectralTransport::packet;
-            scene.camera_medium = no_medium;
-            scene.instance_media.clear();
-            result.provenance.push_back(
-                "authored BDPT/finite clamp packet policy preserved for vacuum live PT");
-        } else
-            result.provenance.push_back(
-                active ? "authored packet policy overridden: active media require scalar"
-                       : "authored packet policy overridden: depth above 64 requires scalar");
-    }
+
     scene.integrator = scene.volume_transport ? IntegratorKind::volpath : IntegratorKind::path;
     scene.max_component_value = std::numeric_limits<double>::infinity();
+    std::string spectral_provenance;
+    const auto spectral_error =
+        select_spectral_transport(scene, o.spectral_transport, &spectral_provenance);
+    require(spectral_error.empty(), spectral_error);
+    result.provenance.push_back(spectral_provenance);
     result.provenance.push_back("all arms and reference use native wavefront, independent tape, "
                                 "fixed footprint_samples=1, material_seed=0, unexposed output");
     return result;
@@ -1185,8 +1159,7 @@ int run(const Options &o) {
                  << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"sensor_model\":"
                  << quote(scene.value.model == RenderModel::pbrt ? "pbrt" : "demo")
                  << ",\"spectral_transport\":"
-                 << quote(scene.value.spectral_transport == SpectralTransport::packet ? "packet"
-                                                                                      : "scalar")
+                 << quote(spectral_transport_name(scene.value.spectral_transport))
                  << ",\"max_depth\":" << scene.value.max_depth
                  << ",\"raw_unclamped\":true,\"provenance\":[";
         for (std::size_t i = 0; i < scene.provenance.size(); ++i) {

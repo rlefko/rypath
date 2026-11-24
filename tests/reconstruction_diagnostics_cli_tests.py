@@ -13,6 +13,7 @@ def main():
     assert result.returncode == 0 and "replay" in result.stdout, result
     assert "independent|area1|area2|area4" in result.stdout, result.stdout
     assert "--area-output selected|conditional-mean" in result.stdout, result.stdout
+    assert "--spectral-transport auto|scalar|packet|hero" in result.stdout, result.stdout
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
         output = root / "must-not-exist"
@@ -24,6 +25,7 @@ def main():
         ]
         cases = [
             (["--width", "0"], "dimensions"),
+            (["--spectral-transport", "invalid"], "Spectral transport"),
             (["--height", "16385"], "dimensions"),
             (["--frames", "-1"], "integer"),
             (["--frames", "1.5"], "integer"),

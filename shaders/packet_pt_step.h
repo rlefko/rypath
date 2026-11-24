@@ -10,6 +10,7 @@
 // helpers and write it back afterward. Resources/SurfaceAlpha are reconstructed
 // per dispatch; they are never stored here. Vertex Prepared retains immutable
 // scene table pointers, which must remain valid through command completion.
+#include "hero_pt_helpers.h"
 struct PacketPTState {
     // PT retains only its latest frozen BSDF/frame. The older endpoint enters
     // represented_scattering_pdf only through type and position: a continuing
@@ -23,6 +24,7 @@ struct PacketPTState {
     float3 ray_origin, ray_direction;
     float pdf, ray_min_distance, ray_max_distance;
     rypath_packet_roulette::EtaScale roulette_eta;
+    HeroTrack hero;
     ulong index;
     uint count, crossings;
     bool complete;
@@ -37,6 +39,7 @@ struct PacketPTHot {
     float3 ray_origin, ray_direction;
     float pdf, ray_min_distance, ray_max_distance;
     rypath_packet_roulette::EtaScale roulette_eta;
+    HeroTrack hero;
     ulong index;
     uint count, crossings;
     bool complete;

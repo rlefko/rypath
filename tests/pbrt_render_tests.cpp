@@ -2053,6 +2053,64 @@ void sobol_cornell_fixtures(const fs::path &fixtures) {
     }
 }
 
+void hero_translation_policy(const fs::path &scratch) {
+    const auto entry = write(scratch, "hero-depth65.pbrt", R"(Camera "perspective"
+        "float lensradius" [.01] "float focaldistance" [2]
+Film "rgb" "integer xresolution" [4] "integer yresolution" [4]
+    "float maxcomponentvalue" [10]
+PixelFilter "gaussian"
+Sampler "independent" "integer pixelsamples" [1]
+Integrator "path" "integer maxdepth" [65]
+WorldBegin
+LightSource "infinite" "rgb L" [1 1 1]
+)");
+    const auto checked = check(entry);
+    require(checked.exit_code() == 0, report(checked));
+    require(translate(checked, {entry.string()}).exit_code() != 0,
+            "Omitted transport policy retains the legacy depth admission");
+    for (const auto policy :
+         {SpectralTransportSelection::automatic, SpectralTransportSelection::hero}) {
+        const auto result = translate(checked, {entry.string()}, {}, policy);
+        require(result.exit_code() == 0 && result.scene &&
+                    result.scene->spectral_transport == SpectralTransport::hero &&
+                    result.scene->max_depth == 65 && result.scene->max_component_value == 10,
+                "Hero admits authored finite clamp, depth65 and empty vacuum geometry");
+        for (const auto text : {"table-integral camera sample weight",
+                                "fixed packet header block 1", "Hero sampling:"})
+            require(std::ranges::any_of(
+                        result.provenance,
+                        [&](const auto &line) { return line.find(text) != std::string::npos; }),
+                    "Hero translation records its actual camera/filter/sampling policy");
+    }
+    require(
+        translate(checked, {entry.string()}, {}, SpectralTransportSelection::packet).exit_code() !=
+            0,
+        "Explicit legacy packet retains depth64 limit");
+    require(
+        translate(checked, {entry.string()}, {}, SpectralTransportSelection::scalar).exit_code() !=
+            0,
+        "Scalar cannot silently ignore the finite film clamp");
+    const auto fog = write(scratch, "hero-active-medium.pbrt", R"(Camera "perspective"
+Film "rgb" "integer xresolution" [4] "integer yresolution" [4]
+Sampler "independent" "integer pixelsamples" [1]
+Integrator "volpath" "integer maxdepth" [5]
+WorldBegin
+MakeNamedMedium "fog" "string type" ["homogeneous"] "rgb sigma_s" [.1 .1 .1]
+LightSource "infinite" "rgb L" [1 1 1]
+)");
+    const auto checked_fog = check(fog);
+    require(checked_fog.exit_code() == 0, report(checked_fog));
+    const auto fallback =
+        translate(checked_fog, {fog.string()}, {}, SpectralTransportSelection::automatic);
+    require(fallback.exit_code() == 0 && fallback.scene &&
+                fallback.scene->spectral_transport == SpectralTransport::scalar,
+            "Auto policy conservatively retains scalar transport for declared active media");
+    require(
+        translate(checked_fog, {fog.string()}, {}, SpectralTransportSelection::hero).exit_code() !=
+            0,
+        "Explicit hero diagnoses active media instead of changing the physical model");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -2094,6 +2152,7 @@ int main(int argc, char **argv) {
         sensor();
         owned_fixtures(argv[2]);
         sobol_cornell_fixtures(argv[2]);
+        hero_translation_policy(scratch);
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';
         return 1;

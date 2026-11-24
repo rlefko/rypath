@@ -22,6 +22,7 @@ assert "--as-build default|fast-blas|fast-tlas|fast-all" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--guide-cache on|off" in help_text
 assert "--area-output selected|conditional-mean" in help_text
+assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
              "--strict-spatial-segments on|off", "--metalfx-guide-policy primary|appearance",
              "--metalfx-exposure"):
@@ -65,6 +66,7 @@ for args in (
 for option, values in (
     ("--packet-events", ("0", "3", "5", "-1", "nan")),
     ("--packet-layout", ("invalid",)),
+    ("--spectral-transport", ("invalid", "2")),
     ("--area-output", ("invalid", "conditional_mean", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),

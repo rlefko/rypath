@@ -1,5 +1,12 @@
 # Project status
 
+[Hero wavelength PT](hero-wavelength.md) adds four uniform visible wavelengths,
+hero-driven continuation and cumulative spectral/direct-light balance MIS.
+Eligible vacuum PT scenes use it automatically; BDPT, active media and unsupported
+depths retain their documented alternatives. Coated materials use an explicit
+compensated hero-only fallback. Current validation and scene comparisons are
+being completed; historical scalar/packet results below do not measure this mode.
+
 The reconstruction repair includes [identical-frame capture and replay](reconstruction-diagnostics.md),
 connected surface filtering, explicit signed variance policies and experimental
 MetalFX input/appearance guides. Scene-quality qualification remains open;

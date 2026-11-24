@@ -113,6 +113,9 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/src/reservoir_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/mutation_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/reuse_mis_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/hero_spectrum_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_scattering.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_pt_helpers.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
@@ -372,6 +375,41 @@ add_custom_command(OUTPUT "${rypath_reuse_mis_math_library}"
         -o "${rypath_reuse_mis_math_library}"
     DEPENDS "${rypath_reuse_mis_math_air}" VERBATIM)
 add_custom_target(rypath_reuse_mis_math_shader DEPENDS "${rypath_reuse_mis_math_library}")
+
+# Standalone hero BSDF conformance; no ray tracing or production-library linkage.
+set(rypath_hero_scattering_library "${rypath_runtime_directory}/rypath-hero-scattering-probe.metallib")
+set(rypath_hero_scattering_air "${rypath_runtime_directory}/CMakeFiles/rypath-hero-scattering-probe.air")
+add_custom_command(OUTPUT "${rypath_hero_scattering_air}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -Os
+        "-I${CMAKE_SOURCE_DIR}/shaders" "-I${CMAKE_SOURCE_DIR}/src"
+        -c "${CMAKE_SOURCE_DIR}/tests/hero_scattering_probe.metal" -o "${rypath_hero_scattering_air}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/hero_scattering_probe.metal"
+        "${CMAKE_SOURCE_DIR}/tests/hero_scattering_probe_wire.h"
+        "${CMAKE_SOURCE_DIR}/shaders/hero_scattering.h"
+        "${CMAKE_SOURCE_DIR}/shaders/packet_scattering.h"
+        "${CMAKE_SOURCE_DIR}/shaders/packet_layered.h"
+        "${CMAKE_SOURCE_DIR}/shaders/scattering.h"
+        "${CMAKE_SOURCE_DIR}/shaders/conductor.h"
+        "${CMAKE_SOURCE_DIR}/shaders/dielectric.h"
+        "${CMAKE_SOURCE_DIR}/shaders/transmission.h"
+        "${CMAKE_SOURCE_DIR}/shaders/gltf_bsdf.h"
+        "${CMAKE_SOURCE_DIR}/shaders/layered.h"
+        "${CMAKE_SOURCE_DIR}/shaders/image_texture.h"
+        "${CMAKE_SOURCE_DIR}/shaders/table_bsdf.h"
+        "${CMAKE_SOURCE_DIR}/src/hero_spectrum_shared.h"
+        "${CMAKE_SOURCE_DIR}/src/packet_roulette_shared.h"
+        "${CMAKE_SOURCE_DIR}/src/layered_rng_shared.h"
+        "${CMAKE_SOURCE_DIR}/src/bsdf_table_wire.h"
+        "${CMAKE_SOURCE_DIR}/src/ewa_weights.h"
+        "${CMAKE_SOURCE_DIR}/src/render_wire.h"
+    VERBATIM)
+add_custom_command(OUTPUT "${rypath_hero_scattering_library}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_hero_scattering_air}"
+        -o "${rypath_hero_scattering_library}"
+    DEPENDS "${rypath_hero_scattering_air}" VERBATIM)
+add_custom_target(rypath_hero_scattering_shader DEPENDS "${rypath_hero_scattering_library}")
 
 # Native-capable legacy/mixed entry-point fixture for opaque capability checks.
 set(rypath_opaque_capability_air "${rypath_runtime_directory}/CMakeFiles/rypath-opaque-capability.air")

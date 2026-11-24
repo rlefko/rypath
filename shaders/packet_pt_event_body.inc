@@ -15,6 +15,12 @@
     thread auto &count = state.count;
     thread auto &crossings = state.crossings;
     thread auto &roulette_eta = state.roulette_eta;
+    const bool hero = hero_enabled(p);
+    const auto arrival_density = state.hero.density;
+    const auto previous_density = state.hero.previous;
+    auto direct_density = arrival_density;
+    float4 direct_beta = beta;
+    bool direct_allowed = true;
     const ulong index = state.index;
     const uint capacity = p.max_depth + 2;
     const Mode mode = Mode::Radiance;
@@ -203,7 +209,8 @@
                  material_auxiliary(material, r.alpha.material_data, p.material_data_words),
                  incoming.direction)) ||
             !scattering_frame(frame, v.frame) ||
-            !prepare_packet(r, material, context, lambda, beta, v.bsdf)) {
+            !prepare_packet(r, material, context, lambda, beta, v.bsdf,
+                             hero ? state.hero.active_mask : 15u)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -229,7 +236,7 @@
         const auto words = material_words(r, sample, material_index, count - 1, mode, replay);
         v.seed = words.w;
         v.beta = beta;
-        v.connectible = !rypath_packet::delta_only(v.bsdf);
+        v.connectible = hero ? hero_connectible(v.bsdf) : !rypath_packet::delta_only(v.bsdf);
         const Vertex prev = state.latest;
         const float sampled_area_pdf = convert_density(pdf, prev, v);
         // Retain sampled-area validation even when PT skips unused BDPT storage.
@@ -249,9 +256,56 @@
         const auto draws =
             random(r, sample, index, (mode == Mode::Radiance ? 4u : 69u) + count - 2, replay);
         const float3 sampled_wo_local = v.frame.local(v.wo);
-        const auto continuation =
-            rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
-                                  uniform2(p, draws.yz), v.seed, mode);
+        rypath_packet::Sample continuation{};
+        if (hero) {
+            // Arrival emission retains v.beta and the pre-collapse wavelength
+            // channels. Only future NEE/continuation use the conditional state.
+            if (!hero_prepare_future(state.hero, beta, current.bsdf)) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            direct_density = state.hero.density;
+            direct_allowed = hero_continue(beta, state.hero, count - 1, sample_uniform(p, draws.w));
+            direct_beta = beta;
+            current.connectible = hero_connectible(current.bsdf);
+            if (!direct_allowed)
+                break;
+            const auto proposed = rypath_hero_scattering::sample(
+                current.bsdf, sampled_wo_local, sample_uniform(p, draws.x), uniform2(p, draws.yz),
+                v.seed, mode);
+            continuation.wi = proposed.wi;
+            continuation.pdf = proposed.fallback ? proposed.fallback_pdf : proposed.pdf[0];
+            continuation.reverse_pdf = continuation.pdf;
+            continuation.delta = proposed.delta;
+            continuation.transmission = proposed.transmission;
+            continuation.accepted = proposed.accepted;
+            continuation.valid = proposed.valid;
+            if (proposed.valid && proposed.accepted) {
+                state.hero.previous = direct_density;
+                if (proposed.fallback) {
+                    // The scalar coated sampler returns a hidden-walk ratio.
+                    // Its directional MIS proxy is NOT a cumulative likelihood.
+                    beta *= proposed.fallback_weight;
+                } else {
+                    const auto advanced = rypath_hero::advance(
+                        direct_density, beta, proposed.numerator, proposed.pdf);
+                    continuation.valid = advanced.valid;
+                    if (advanced.valid) {
+                        beta = advanced.beta;
+                        state.hero.density = advanced.density;
+                    }
+                }
+                hero_account_eta(state.hero, proposed.eta, proposed.transmission);
+                state.hero.active_mask = 1;
+                for (uint k = 1; k < 4; ++k)
+                    if (state.hero.density.lane[k].fraction > 0 ||
+                        (rypath_hero::bits(beta[k]) & 0x7fffffffu))
+                        state.hero.active_mask |= 1u << k;
+            }
+        } else {
+            continuation = rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
+                                                  uniform2(p, draws.yz), v.seed, mode);
+        }
         if (!continuation.valid) {
             sample.status = wire::invalid_arithmetic;
             break;
@@ -273,7 +327,7 @@
         }
         // Preserve the sampled joint coating-walk ratio. Its directional MIS
         // proxy is a separate density and must never replace this weight.
-        if (mode == Mode::Importance) {
+        if (!hero && mode == Mode::Importance) {
             // Use the exact local cosines used by sample(), not a world/local
             // round trip that can erase a nonzero grazing sampled direction.
             const auto correction = rypath_shading_normal::correction(
@@ -282,7 +336,7 @@
             for (uint lane = 0; lane < 4; ++lane)
                 beta[lane] = rypath_shading_normal::multiply(beta[lane], continuation.weight[lane],
                                                              correction);
-        } else {
+        } else if (!hero) {
             beta *= continuation.weight;
         }
         if (!finite_nonnegative(beta)) {
@@ -308,7 +362,7 @@
             break;
         }
         incoming = ray(origin, wi);
-        if (!packet_bidirectional_enabled(p) && mode == Mode::Radiance) {
+        if (!hero && !packet_bidirectional_enabled(p) && mode == Mode::Radiance) {
             rypath_packet_roulette::account_transmission(roulette_eta, continuation.eta,
                                                          continuation.transmission);
             if (nonzero(beta)) {
@@ -338,10 +392,18 @@
         }
         // Match offline t-major, s=0 then s=1 accumulation. Sampled-local pairs
         // have been finalized before f() is queried, including rejected events.
-        state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
-        if (sample.status == wire::success && count < capacity)
-            state.radiance +=
-                packet_pt_direct(r, sample, lambda, index, pt, previous, count, replay);
+        if (hero) {
+            state.radiance += hero_endpoint(r, sample, lambda, pt, previous, before, count,
+                                             previous_density);
+            if (sample.status == wire::success && count < capacity && direct_allowed)
+                state.radiance += hero_direct(r, sample, lambda, index, pt, previous, count,
+                                               direct_beta, direct_density, replay);
+        } else {
+            state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
+            if (sample.status == wire::success && count < capacity)
+                state.radiance +=
+                    packet_pt_direct(r, sample, lambda, index, pt, previous, count, replay);
+        }
         if (!finite_nonnegative(state.radiance))
             sample.status = wire::invalid_arithmetic;
         if (sample.status != wire::success)

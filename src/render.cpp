@@ -1376,7 +1376,7 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
     // Bound fixed observer/reconstruction/sampling tables, empty-buffer sentinels,
     // and the largest supported Gaussian CDF without allocating them here.
     if (!charge(std::size_t{32} * 1024 * 1024, 1) ||
-        (scene.spectral_transport == SpectralTransport::packet &&
+        (uses_packet_transport(scene.spectral_transport) &&
          !charge(packet_wire::workspace_bytes + 64, 1)))
         return exceeded();
     // Native triangle boxes retain tagged corners plus six floating-point bounds.
@@ -1492,6 +1492,102 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
         return exceeded();
     if (estimated_bytes != nullptr)
         *estimated_bytes = used;
+    return {};
+}
+
+std::string_view spectral_transport_name(SpectralTransport mode) {
+    switch (mode) {
+    case SpectralTransport::scalar:
+        return "scalar";
+    case SpectralTransport::packet:
+        return "packet";
+    case SpectralTransport::hero:
+        return "hero";
+    }
+    return "invalid";
+}
+std::optional<SpectralTransportSelection> parse_spectral_transport(std::string_view name) {
+    if (name == "auto")
+        return SpectralTransportSelection::automatic;
+    if (name == "scalar")
+        return SpectralTransportSelection::scalar;
+    if (name == "packet")
+        return SpectralTransportSelection::packet;
+    if (name == "hero")
+        return SpectralTransportSelection::hero;
+    return std::nullopt;
+}
+std::string select_spectral_transport(RenderScene &scene, SpectralTransportSelection requested,
+                                      std::string *provenance) {
+    const auto valid_medium = [&](std::uint32_t id) {
+        return id == no_medium || id < scene.media.size();
+    };
+    if (!valid_medium(scene.camera_medium) ||
+        std::ranges::any_of(scene.instance_media, [&](const auto &medium) {
+            return !valid_medium(medium.inside) || !valid_medium(medium.outside);
+        }))
+        return "Spectral selection requires valid medium indices";
+    // Include declared nonzero media conservatively: light endpoint medium assignments
+    // are not retained in RenderScene. Never select vacuum transport for such a scene.
+    const bool active = std::ranges::any_of(scene.media, [](const auto &medium) {
+        const auto nonzero = [](float value) { return value != 0; };
+        return std::ranges::any_of(medium.sigma_a, nonzero) ||
+               std::ranges::any_of(medium.sigma_s, nonzero) ||
+               std::ranges::any_of(medium.emission, nonzero);
+    });
+    SpectralTransport mode = scene.spectral_transport;
+    std::string reason;
+    switch (requested) {
+    case SpectralTransportSelection::automatic:
+        if (scene.integrator == IntegratorKind::bdpt) {
+            mode = SpectralTransport::packet;
+            reason = "BDPT retains legacy packet transport";
+        } else if (scene.model != RenderModel::pbrt) {
+            mode = SpectralTransport::scalar;
+            reason = "non-PBRT scene uses scalar transport";
+        } else if (active) {
+            mode = SpectralTransport::scalar;
+            reason = "declared active media require scalar transport";
+        } else if (scene.max_depth <= 65) {
+            mode = SpectralTransport::hero;
+            reason = "vacuum PT with maxdepth at most 65";
+        } else {
+            mode = SpectralTransport::scalar;
+            reason = "depth above hero limit 65 uses scalar transport";
+        }
+        break;
+    case SpectralTransportSelection::scalar:
+        mode = SpectralTransport::scalar;
+        break;
+    case SpectralTransportSelection::packet:
+        mode = SpectralTransport::packet;
+        break;
+    case SpectralTransportSelection::hero:
+        mode = SpectralTransport::hero;
+        break;
+    default:
+        return "Invalid spectral transport selection";
+    }
+    if (uses_packet_transport(mode) && (scene.model != RenderModel::pbrt || active))
+        return "Packet/hero spectral transport requires a PBRT scene with vacuum media";
+    if (mode == SpectralTransport::hero &&
+        (scene.integrator == IntegratorKind::bdpt || scene.max_depth > 65))
+        return "Hero spectral transport requires vacuum PT/volpath with maxdepth from 0 to 65";
+    if (mode == SpectralTransport::packet && scene.max_depth > 64)
+        return "Legacy packet spectral transport requires maxdepth from 0 to 64";
+    if (!uses_packet_transport(mode) &&
+        (scene.integrator == IntegratorKind::bdpt || std::isfinite(scene.max_component_value)))
+        return "BDPT and finite film clamping require packet or hero spectral transport";
+    scene.spectral_transport = mode;
+    if (uses_packet_transport(mode)) {
+        scene.camera_medium = no_medium;
+        scene.instance_media.clear();
+    }
+    if (provenance) {
+        *provenance = "effective spectral transport " + std::string(spectral_transport_name(mode));
+        if (!reason.empty())
+            *provenance += "; " + reason;
+    }
     return {};
 }
 
@@ -1658,16 +1754,21 @@ std::string validate_render_scene(const RenderScene &scene) {
         scene.light_sampler != LightSamplerKind::uniform)
         return "Invalid light sampler";
     if (scene.spectral_transport != SpectralTransport::scalar &&
-        scene.spectral_transport != SpectralTransport::packet)
+        scene.spectral_transport != SpectralTransport::packet &&
+        scene.spectral_transport != SpectralTransport::hero)
         return "Invalid spectral transport mode";
     if (!(scene.max_component_value > 0))
         return "Film maximum component value must be positive";
     if ((scene.integrator == IntegratorKind::bdpt || std::isfinite(scene.max_component_value)) &&
-        scene.spectral_transport != SpectralTransport::packet)
+        !uses_packet_transport(scene.spectral_transport))
         return "BDPT and finite film clamping require packet transport";
     if (scene.spectral_transport == SpectralTransport::packet &&
         (scene.model != RenderModel::pbrt || scene.max_depth > 64))
         return "Packet transport requires PBRT with maxdepth from 0 to 64";
+    if (scene.spectral_transport == SpectralTransport::hero &&
+        (scene.model != RenderModel::pbrt || scene.max_depth > 65 ||
+         scene.integrator == IntegratorKind::bdpt))
+        return "Hero transport requires PBRT vacuum PT/volpath with maxdepth from 0 to 65";
     const auto valid_medium = [&](std::uint32_t id) {
         return id == no_medium || id < scene.media.size();
     };
@@ -1677,7 +1778,7 @@ std::string validate_render_scene(const RenderScene &scene) {
                               std::ranges::any_of(scene.instance_media, [](const auto &m) {
                                   return m.inside != m.outside;
                               });
-    if (active_media && scene.spectral_transport == SpectralTransport::packet)
+    if (active_media && uses_packet_transport(scene.spectral_transport))
         return "Packet transport currently requires vacuum camera and surface medium interfaces";
     if (active_media && (!scene.volume_transport || scene.model != RenderModel::pbrt))
         return "Participating media require PBRT volpath transport";
