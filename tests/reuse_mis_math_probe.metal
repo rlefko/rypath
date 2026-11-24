@@ -16,6 +16,7 @@ kernel void rypath_reuse_mis_math_probe(device const p::Query *queries [[buffer(
     out.history = r::temporal_history_score(q.Z, q.current_target, q.previous_target);
     out.pair = r::spatial_pair_score(q.Z, q.current_target, q.previous_target);
     out.contribution = r::signed_contribution(q.Z, q.component, q.current_target);
+    out.sum = r::signed_sum(q.x, q.y);
     auto pending =
         r::prepare_normalizer_acceptance(q.normalizer, q.current_target, q.previous_target);
     out.ratio = pending.smaller_ratio;

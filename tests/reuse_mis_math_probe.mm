@@ -30,7 +30,7 @@ std::string why(NSError *error) {
 struct Case {
     p::Query q{};
     std::string label = "scaled arithmetic";
-    bool accept = true, preflight_failure = false;
+    bool accept = true, preflight_failure = false, exact_contribution = false;
     int boundary = 2;
 };
 Case make(float Z = 7, float current = 2, float previous = 1, bool accept = true) {
@@ -114,6 +114,57 @@ std::vector<Case> cases() {
         out.push_back(make(1, a, b));
         out.push_back(make(1, b, a));
     }
+    // Exact power-of-two transforms isolate final rounding, with no backend
+    // division approximation allowance. Include signed zero and both RNE edges.
+    for (const auto &a : {std::array<float, 3>{1, fp(1), 1},
+                          {1, fp(0x007fffff), 1},
+                          {1, low, 1},
+                          {.5f, fp(1), 1},
+                          {.5f, fp(3), 1},
+                          {.5f, fp(5), 1},
+                          {.5f, fp(0x00ffffff), 1},
+                          {.5f, fp(0x00fffffd), 1},
+                          {low, .5f, 1},
+                          {low, fp(1), 1},
+                          {2, fp(0x00400000), 1},
+                          {1, fp(0x00800001), 2}})
+        for (unsigned sign : {0u, 0x80000000u}) {
+            c = make(a[0], a[2], a[2]);
+            c.q.component = fp(m::bits(a[1]) | sign);
+            c.exact_contribution = true;
+            c.label = "exact subnormal contribution scaling";
+            out.push_back(c);
+        }
+    for (unsigned xyz : {0x07ac8243u, 0x07bc9832u, 0x075d3081u})
+        for (unsigned sign : {0u, 0x80000000u}) {
+            c = make(fp(0x2ddb7f3e), fp(0x358637bd), fp(0x358637bd));
+            c.q.component = fp(xyz | sign);
+            c.label = "captured subnormal XYZ";
+            out.push_back(c);
+        }
+    const auto sum_case = [&](unsigned a, unsigned b) {
+        auto sum = make();
+        sum.q.x = fp(a);
+        sum.q.y = fp(b);
+        sum.label = "IEEE signed addition";
+        out.push_back(sum);
+    };
+    const std::array<unsigned, 25> edges{
+        0,           0x80000000u, 1,           2,           3,           0x007fffff, 0x00800000,
+        0x00800001,  0x00ffffff,  0x80000001u, 0x807fffffu, 0x80800000u, 0x3f800000, 0xbf800000u,
+        0x33800000,  0x7f7fffff,  0xff7fffffu, 0x7f800000,  0x7fc00000,  0x33000000, 0xb3000000u,
+        0xb3800000u, 0x73000000,  0xf3000000u, 0x3f7fffff};
+    for (auto a : edges)
+        for (auto b : edges)
+            sum_case(a, b);
+    unsigned state = 0x743ba129u;
+    for (unsigned i = 0; i < 8192; ++i) {
+        state = state * 1664525u + 1013904223u;
+        const unsigned a = state;
+        state = state * 1664525u + 1013904223u;
+        sum_case(a, state);
+        sum_case(a, a ^ 0x80000000u);
+    }
     return out;
 }
 class Probe {
@@ -189,6 +240,50 @@ void scalar(const m::ScalarResult &gpu, const m::ScalarResult &cpu, long double 
     need(std::isnormal(gpu.value) && std::abs((long double)gpu.value - expected) <= tolerance,
          label + ": independent scalar formula");
 }
+float contribution_oracle(float Z, float component, float target) {
+    if ((m::bits(component) & 0x7fffffffu) == 0)
+        return component;
+    int ez, ec, et;
+    const float fz = std::frexp(Z, &ez), fc = std::frexp(std::abs(component), &ec),
+                ft = std::frexp(target, &et);
+    // Independent host decomposition, with separately rounded normal fraction
+    // product/division; final binary64 scaling is exact before binary32 RNE.
+    const float product = float(double(fz) * double(fc));
+    const float quotient = float(double(product) / double(ft));
+    return std::copysign(float(std::ldexp(double(quotient), ez + ec - et)), component);
+}
+void check_contribution(const Case &c, const m::ScalarResult &gpu) {
+    const auto &q = c.q;
+    const auto cpu = r::signed_contribution(q.Z, q.component, q.current_target);
+    need(gpu.status == cpu.status, c.label + ": contribution status");
+    if (gpu.status != m::Status::ok)
+        return;
+    const float expected = contribution_oracle(q.Z, q.component, q.current_target);
+    const unsigned actual_bits = m::bits(gpu.value), expected_bits = m::bits(expected);
+    if (c.exact_contribution || (expected_bits & 0x7fffffffu) == 0) {
+        need(actual_bits == expected_bits, c.label + ": exact contribution bits");
+    } else if (std::fpclassify(expected) == FP_SUBNORMAL) {
+        // The captured witness requires one normal-fraction division. Metal's
+        // division may differ by one fraction ulp, which propagates to at most
+        // one subnormal ulp here. No absolute epsilon or flush-to-zero passes.
+        const unsigned a = actual_bits & 0x7fffffffu, b = expected_bits & 0x7fffffffu;
+        need((actual_bits >> 31) == (expected_bits >> 31) && (a > b ? a - b : b - a) <= 1,
+             c.label + ": staged oracle within one subnormal ulp");
+    } else {
+        scalar(gpu, cpu, (long double)q.Z * q.component / q.current_target, c.label + " signed");
+    }
+}
+void check_sum(const Case &c, const m::ScalarResult &gpu) {
+    volatile float left = c.q.x, right = c.q.y;
+    const float expected = left + right;
+    if (!std::isfinite(left) || !std::isfinite(right) || !std::isfinite(expected)) {
+        need(gpu.status != m::Status::ok, c.label + ": sum nonfinite/overflow failure");
+    } else {
+        need(gpu.status == m::Status::ok && m::bits(gpu.value) == m::bits(expected),
+             c.label + ": actual GPU addition vs host IEEE bits");
+    }
+}
+
 void check(const Case &c, const p::Result &v) {
     const auto &q = c.q;
     const std::string &label = c.label;
@@ -204,8 +299,8 @@ void check(const Case &c, const p::Result &v) {
            Z * 20 * t / (t + 20 * s), label + " history");
     scalar(v.pair, r::spatial_pair_score(q.Z, q.current_target, q.previous_target),
            Z * t / (4 * (t + s)), label + " spatial");
-    scalar(v.contribution, r::signed_contribution(q.Z, q.component, q.current_target),
-           Z * (long double)q.component / t, label + " signed");
+    check_contribution(c, v.contribution);
+    check_sum(c, v.sum);
     const auto prepared =
         r::prepare_normalizer_acceptance(q.normalizer, q.current_target, q.previous_target);
     const auto status = c.preflight_failure ? mh::Status::arithmetic_failure : prepared.status;

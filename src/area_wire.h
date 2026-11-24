@@ -7,7 +7,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 4,
+    contract = 5,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,

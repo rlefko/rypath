@@ -1,7 +1,7 @@
 # ReSTIR importance sampling repair
 
-Area contract 4 replaces the contract-3 bounded target and equal-weight reuse
-with a radiance-like target and source-target MIS. The former target varied by
+Area contract 5 retains contract 4's radiance-like target and source-target MIS,
+which replaced the contract-3 bounded target and equal-weight reuse. The former target varied by
 at most ten percent, so it intentionally surrendered most of the importance
 selection that motivates ReSTIR. Its historical correctness and timing results
 in [area-reuse.md](area-reuse.md) do not establish a useful MSE reduction.
@@ -98,16 +98,23 @@ selected.
 Proper weighting and the Rao–Blackwell variance reduction hold in real
 arithmetic. Scores, normalizer corrections, contributions and signed sums incur
 floating-point rounding. Exact floating-point or success-conditioned unbiasedness
-is not claimed. Values outside the declared arithmetic domain invalidate the
-attempt, including nonzero subnormal or nonfinite required contributions; exact
-zero contributions and signed cancellation are valid. The renderer does not drop
-the candidate, clamp it, or silently retry.
+is not claimed. Contract 5 supports subnormal signed contributions and sums;
+integer significand rounding implements gradual underflow for these outputs,
+including ties to even and values that round to signed zero. Signed addition
+scales finite operands into the normal range before arithmetic. This avoids
+Metal's permitted flush-to-zero behavior for subnormal operands/results
+([MSL specification, §8.1 and §8.5](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)).
+Products and quotients still round their intermediate mantissas; final conversion
+rounds that represented value rather than the infinitely precise formula.
+Positive scores, targets and normalizers retain the normal-only domain.
+Overflow and other values outside these domains invalidate the attempt.
+The renderer does not drop a candidate, clamp it, or silently retry.
 
 ## Accounting and validation
 
 The schedule evaluates `(5+n)*pixels` complete paths after a reset and
 `(7+n)*pixels` with history, for `n` mutations. One fresh path per pixel remains
-distinct from replay work. The benchmark records contract 4, `quarter-l1-v1`,
+distinct from replay work. The benchmark records contract 5, `quarter-l1-v1`,
 `source-target-mis-v1`, temporal coefficient 20 and the output mode. Independent
 output records these as inapplicable. The benchmark accepts `--area-output selected`
 or `--area-output conditional-mean`. Viewer, qualification and reconstruction
@@ -131,3 +138,11 @@ This backport targets the MCMC stage. Earlier validation in the Area/MCMC record
 measured the superseded bounded-target estimator. Native validation and independent
 review of this adapted host integration are pending; no current-revision GPU or
 scene-quality result is claimed here.
+
+Upstream evidence at `fe93cca` identified a cold Pavilion-day failure: weighted
+XYZ components near `(6.4771e-39, 7.0811e-39, 4.1524e-39)` were representable
+subnormals rejected by contract 4. That upstream native frame subsequently
+completed with API validation, and nine focused Release tests passed. This is
+inherited evidence for the numerical repair, not checks on this backport or a
+scene-quality/performance qualification. New probe cases retain those operands,
+rounding boundaries, signs, addition edge pairs, random pairs and exact cancellations.

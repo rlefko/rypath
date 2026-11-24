@@ -57,13 +57,96 @@ void scalar_cases() {
          "Recover subnormal input to normal output");
     need(m::bits(value(r::signed_contribution(1, -0.f, 1))) == 0x80000000u,
          "Signed zero bits preserved");
-    need(r::signed_contribution(lo, .5f, 1).status == r::Status::arithmetic_failure,
-         "True subnormal output fails");
+    need(m::bits(value(r::signed_contribution(lo, .5f, 1))) == 0x00400000u,
+         "Representable subnormal output survives");
     need(r::signed_contribution(hi, 2, 1).status == r::Status::arithmetic_failure,
          "True overflow fails");
     need(r::add_scores(hi, hi).status == r::Status::arithmetic_failure, "Score sum overflow fails");
     need(r::spatial_pair_score(0, 1, 1).status != r::Status::ok,
          "Zero score input cannot silently drop");
+}
+
+// Independent staged oracle: decode with host frexp, round the product and
+// quotient of normal fractions separately, then round the final scaled value.
+// Binary64 represents every binary32 product exactly; division is rounded once
+// to binary32, matching the declared staged arithmetic rather than Z*F/t.
+float contribution_oracle(float Z, float component, float target) {
+    if ((m::bits(component) & 0x7fffffffu) == 0)
+        return component;
+    int ez, ec, et;
+    const float fz = std::frexp(Z, &ez), fc = std::frexp(std::abs(component), &ec),
+                ft = std::frexp(target, &et);
+    const float product = float(double(fz) * double(fc));
+    const float quotient = float(double(product) / double(ft));
+    const float magnitude = float(std::ldexp(double(quotient), ez + ec - et));
+    return std::copysign(magnitude, component);
+}
+void signed_arithmetic_cases() {
+    const std::array<std::array<float, 3>, 12> cases{{{1, fp(1), 1},
+                                                      {1, fp(0x007fffff), 1},
+                                                      {1, lo, 1},
+                                                      {.5f, fp(1), 1},
+                                                      {.5f, fp(3), 1},
+                                                      {.5f, fp(5), 1},
+                                                      {.5f, fp(0x00ffffff), 1},
+                                                      {.5f, fp(0x00fffffd), 1},
+                                                      {lo, .5f, 1},
+                                                      {lo, fp(1), 1},
+                                                      {2, fp(0x00400000), 1},
+                                                      {1, fp(0x00800001), 2}}};
+    for (const auto &c : cases)
+        for (unsigned sign : {0u, 0x80000000u}) {
+            const float component = fp(m::bits(c[1]) | sign);
+            need(m::bits(value(r::signed_contribution(c[0], component, c[2]))) ==
+                     m::bits(contribution_oracle(c[0], component, c[2])),
+                 "Contribution identity/scaling ties and sign bits");
+        }
+    // Half minimum subnormal rounds to even zero; 1.5 and 2.5 round to two.
+    need(m::bits(value(r::signed_contribution(.5f, fp(1), 1))) == 0 &&
+             m::bits(value(r::signed_contribution(.5f, fp(3), 1))) == 2 &&
+             m::bits(value(r::signed_contribution(.5f, fp(5), 1))) == 2,
+         "Subnormal ties to even");
+    need(m::bits(value(r::signed_contribution(.5f, fp(0x00ffffff), 1))) == 0x00800000u &&
+             m::bits(value(r::signed_contribution(.5f, fp(0x00fffffd), 1))) == 0x007ffffeu,
+         "Normal boundary ties to even");
+    for (unsigned xyz : {0x07ac8243u, 0x07bc9832u, 0x075d3081u})
+        for (unsigned sign : {0u, 0x80000000u}) {
+            const float component = fp(xyz | sign), Z = fp(0x2ddb7f3e), t = fp(0x358637bd);
+            const float expected = contribution_oracle(Z, component, t);
+            need(std::fpclassify(expected) == FP_SUBNORMAL, "Captured witness is subnormal");
+            need(m::bits(value(r::signed_contribution(Z, component, t))) == m::bits(expected),
+                 "Captured XYZ independent staged oracle");
+        }
+    const auto check_sum = [](float a, float b) {
+        // The host IEEE addition is an independent oracle, never shared math.
+        volatile float left = a, right = b;
+        const float expected = left + right;
+        const auto actual = r::signed_sum(a, b);
+        if (!std::isfinite(a) || !std::isfinite(b) || !std::isfinite(expected))
+            need(actual.status != r::Status::ok, "Signed sum rejects nonfinite/overflow");
+        else
+            need(m::bits(value(actual)) == m::bits(expected), "IEEE signed sum bits");
+    };
+    const std::array<unsigned, 25> edges{
+        0,           0x80000000u, 1,           2,           3,           0x007fffff, 0x00800000,
+        0x00800001,  0x00ffffff,  0x80000001u, 0x807fffffu, 0x80800000u, 0x3f800000, 0xbf800000u,
+        0x33800000,  0x7f7fffff,  0xff7fffffu, 0x7f800000,  0x7fc00000,  0x33000000, 0xb3000000u,
+        0xb3800000u, 0x73000000,  0xf3000000u, 0x3f7fffff};
+    for (auto a : edges)
+        for (auto b : edges)
+            check_sum(fp(a), fp(b));
+    unsigned state = 0x743ba129u;
+    for (unsigned i = 0; i < 8192; ++i) {
+        state = state * 1664525u + 1013904223u;
+        const unsigned a = state;
+        state = state * 1664525u + 1013904223u;
+        const unsigned b = state;
+        check_sum(fp(a), fp(b));
+        check_sum(fp(a), fp(a ^ 0x80000000u));
+    }
+    for (float invalid : {INFINITY, -INFINITY, NAN})
+        need(r::signed_contribution(1, invalid, 1).status != r::Status::ok,
+             "Nonfinite contribution rejected");
 }
 
 struct Moments {
@@ -463,6 +546,7 @@ void extreme_tail_cancellation() {
 int main() {
     try {
         scalar_cases();
+        signed_arithmetic_cases();
         temporal_finite();
         spatial_finite(false);
         spatial_finite(true);

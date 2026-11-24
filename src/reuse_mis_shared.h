@@ -26,8 +26,8 @@ using Word = rypath_replay::Word;
 
 // Positive scaled values keep every multiplication/division normal. Exponents
 // stay separate until the final result passes the exact normal-scaling domain.
-// Only signed_contribution accepts a subnormal factor; integer normalization
-// prevents input/output FTZ from silently erasing a recoverable normal result.
+// Radiance components also admit subnormals. Integer normalization and final
+// bit construction keep Metal's permitted flush-to-zero out of these operations.
 struct Scaled {
     float fraction;
     int exponent;
@@ -75,6 +75,62 @@ inline ScalarResult materialize(Scaled value) {
     if (!math::positive_normal(result))
         return {0, Status::arithmetic_failure};
     return {result, Status::ok};
+}
+inline float from_bits(Word word) {
+#if defined(__METAL_VERSION__)
+    return as_type<float>(word);
+#else
+    return std::bit_cast<float>(word);
+#endif
+}
+// Round the represented scaled value to binary32, including gradual underflow.
+// This does not undo the rounding already incurred in product()/quotient().
+// Scores and normalizers retain their stricter positive-normal domain above.
+inline ScalarResult materialize_contribution(Scaled value) {
+    if (!math::positive_normal(value.fraction) || value.fraction < .5f || value.fraction >= 1)
+        return {0, Status::arithmetic_failure};
+    if (value.exponent >= -125)
+        return materialize(value);
+    if (value.exponent < -149)
+        return {0, Status::ok};
+    const Word significand = (math::bits(value.fraction) & 0x007fffffu) | 0x00800000u;
+    const unsigned shift = unsigned(-125 - value.exponent); // 1..24
+    Word units = significand >> shift;
+    const Word remainder = significand & ((Word(1) << shift) - 1);
+    const Word halfway = Word(1) << (shift - 1);
+    units += remainder > halfway || (remainder == halfway && (units & 1));
+    // Rounding can carry into 0x00800000, the smallest normal number.
+    return {from_bits(units), Status::ok};
+}
+inline ScalarResult signed_sum(float a, float b) {
+    if (!math::finite(a) || !math::finite(b))
+        return {0, Status::invalid_target};
+    const Word aw = math::bits(a), bw = math::bits(b);
+    const Word am = aw & 0x7fffffffu, bm = bw & 0x7fffffffu;
+    if (am == 0 && bm == 0)
+        return {from_bits(aw & bw), Status::ok};
+    if (am == 0)
+        return {b, Status::ok};
+    if (bm == 0)
+        return {a, Status::ok};
+    const bool a_larger = am >= bm;
+    const Word large_word = a_larger ? aw : bw, small_word = a_larger ? bw : aw;
+    const auto large = decompose_positive(from_bits(large_word & 0x7fffffffu));
+    const auto small = decompose_positive(from_bits(small_word & 0x7fffffffu));
+    const int gap = large.exponent - small.exponent;
+    // Keep gap 25: subtraction immediately below a power of two has half the
+    // upward ulp. Beyond 25 the small operand cannot affect nearest rounding.
+    if (gap > 25)
+        return {from_bits(large_word), Status::ok};
+    const float aligned = math::scale(small.fraction, -gap);
+    const float combined = ((large_word ^ small_word) & 0x80000000u) ? large.fraction - aligned
+                                                                     : large.fraction + aligned;
+    if (combined == 0)
+        return {0, Status::ok}; // Exact cancellation under nearest rounding.
+    auto result = materialize_contribution(normalized(combined, large.exponent));
+    if (result.status == Status::ok)
+        result.value = from_bits(math::bits(result.value) | (large_word & 0x80000000u));
+    return result;
 }
 inline bool less(Scaled a, Scaled b) {
     return a.exponent < b.exponent || (a.exponent == b.exponent && a.fraction < b.fraction);
@@ -151,10 +207,10 @@ inline ScalarResult signed_contribution(float Z, float component, float target) 
     const auto magnitude = math::magnitude(component);
     if (math::bits(magnitude) == 0)
         return {component, Status::ok}; // Preserve exact signed zero.
-    auto result = materialize(quotient(
+    auto result = materialize_contribution(quotient(
         product(decompose_positive(Z), decompose_positive(magnitude)), decompose_positive(target)));
-    if (result.status == Status::ok && (math::bits(component) & 0x80000000u))
-        result.value = -result.value;
+    if (result.status == Status::ok)
+        result.value = from_bits(math::bits(result.value) | (math::bits(component) & 0x80000000u));
     return result;
 }
 

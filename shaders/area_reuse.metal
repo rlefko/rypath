@@ -258,12 +258,15 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, float score, 
     if (!area_weighted_xyz(a, pixel, score, xyz, target, term))
         return false;
     const auto old = a.raw_xyz[pixel];
-    const wire::Point sum{old.x + term.x, old.y + term.y, old.z + term.z};
-    if (!reservoir::normal_or_zero(sum.x) || !reservoir::normal_or_zero(sum.y) ||
-        !reservoir::normal_or_zero(sum.z)) {
+    const auto x = reuse_mis::signed_sum(old.x, term.x);
+    const auto y = reuse_mis::signed_sum(old.y, term.y);
+    const auto z = reuse_mis::signed_sum(old.z, term.z);
+    const wire::Point sum{x.value, y.value, z.value};
+    if (x.status != reservoir::Status::ok || y.status != reservoir::Status::ok ||
+        z.status != reservoir::Status::ok) {
         AREA_DETAIL(a, aw::invalid_value, 0, as_type<uint4>(float4(old.x, old.y, old.z, score)),
                     as_type<uint4>(float4(term.x, term.y, term.z, target)),
-                    as_type<uint4>(float4(sum.x, sum.y, sum.z, 0)));
+                    uint4(uint(x.status), uint(y.status), uint(z.status), 0));
         return false;
     }
     a.raw_xyz[pixel] = sum;
