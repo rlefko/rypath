@@ -379,11 +379,13 @@ void cpu_spectral_selection() {
                 !parse_spectral_transport("invalid"),
             "Spectral CLI selection parsing");
     RenderScene invalid;
+    // Deliberately construct an unknown tag to exercise input rejection.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     invalid.spectral_transport = static_cast<SpectralTransport>(99);
     std::string invalid_provenance = "unchanged";
     require(
         !select_spectral_transport(invalid, Selection::automatic, &invalid_provenance).empty() &&
-            invalid.spectral_transport == static_cast<SpectralTransport>(99) &&
+            static_cast<std::uint32_t>(invalid.spectral_transport) == 99 &&
             invalid_provenance == "unchanged",
         "Auto rejects an invalid scene mode without publishing provenance");
     require(select_spectral_transport(invalid, Selection::scalar).empty() &&

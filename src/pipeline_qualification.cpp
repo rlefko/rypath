@@ -115,7 +115,8 @@ Options parse(int argc, char **argv) {
         const std::string_view value = argv[++i];
         if (key == "--spectral-transport") {
             const auto selection = parse_spectral_transport(value);
-            require(selection.has_value(),
+            if (!selection)
+                throw std::runtime_error(
                     "Spectral transport must be auto, scalar, packet, or hero");
             o.spectral_transport = *selection;
         } else if (key == "--scene")
