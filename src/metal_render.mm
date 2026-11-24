@@ -2366,6 +2366,8 @@ MetalFramePipelineResult MetalFrameLease::create_guide_pipeline(NSString *entry)
         }
         const bool bidirectional = false;
         [constants setConstantValue:&bidirectional type:MTLDataTypeBool atIndex:20];
+        const bool hero = false;
+        [constants setConstantValue:&hero type:MTLDataTypeBool atIndex:25];
         auto intersection = metal::load_patch_intersection(frame.library, result.diagnostic);
         if (intersection == nil)
             return result;
@@ -4413,6 +4415,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (native)
             [constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
         [constants setConstantValue:&impl->opaque_shadows type:MTLDataTypeBool atIndex:22];
+        const bool hero = impl->parameters.packet_transport == 2;
+        [constants setConstantValue:&hero type:MTLDataTypeBool atIndex:25];
         if (impl->parameters.packet_transport) {
             // Scan every material, including children reached through mix nodes.
             const ScatteringKind families[] = {ScatteringKind::thin_dielectric,

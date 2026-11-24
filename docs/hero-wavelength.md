@@ -57,8 +57,10 @@ direction proposals are distinct from the new hero-driven estimator.
 
 Offline and wavefront hero rendering share the rolling PT state. The offline
 output uses an 80-byte result per lane rather than allocating legacy camera and
-light path arrays. Wavefront scheduling and Area replay use the same estimator;
-all wavelength draws remain part of the replay tape. Renderer contract 28 and
+light path arrays. Wavefront scheduling and Area replay use the same estimator.
+Metal function constants remove the unused spectral estimator from production
+pipelines, while standalone probes retain runtime mode selection.
+All wavelength draws remain part of the replay tape. Renderer contract 28 and
 sampling contract 10 invalidate incompatible checkpoints.
 
 ## Validation scope

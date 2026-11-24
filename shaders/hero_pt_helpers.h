@@ -8,7 +8,7 @@ struct HeroTrack {
     uint active_mask = 15;
     bool roulette_enabled = true;
 };
-inline bool hero_enabled(constant wire::Parameters &p) { return p.packet_transport == 2; }
+inline bool hero_enabled(constant wire::Parameters &p) { return packet_hero_enabled(p); }
 inline Wavelengths packet_wavelengths(constant wire::Parameters &p, float u) {
     return hero_enabled(p) ? rypath_hero::sample_uniform(u)
                            : rypath_packet_spectrum::sample_visible(u);

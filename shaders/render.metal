@@ -67,6 +67,9 @@ constant bool packet_coated_enabled [[function_constant(17)]];
 constant bool packet_visibility_passthrough [[function_constant(18)]];
 // Unset in standalone probes to preserve their runtime integrator selection.
 constant bool packet_bidirectional [[function_constant(20)]];
+// Eliminate the unused estimator from production pipelines. Standalone probes
+// can leave this unset and select the estimator through their query parameters.
+constant bool packet_hero [[function_constant(25)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -2411,6 +2414,9 @@ kernel void rypath_qmc_probe(const device sobol::Tables &tables [[buffer(0)]],
 inline bool packet_bidirectional_enabled(constant wire::Parameters &p) {
     return is_function_constant_defined(packet_bidirectional) ? packet_bidirectional
                                                               : bool(p.bidirectional);
+}
+inline bool packet_hero_enabled(constant wire::Parameters &p) {
+    return is_function_constant_defined(packet_hero) ? packet_hero : p.packet_transport == 2;
 }
 
 #include "packet_transport.h"

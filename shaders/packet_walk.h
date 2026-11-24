@@ -69,7 +69,7 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
     const device auto *aux =
         material_auxiliary(material, r.alpha.material_data, p.material_data_words);
     out = {};
-    const bool hero = p.packet_transport == 2;
+    const bool hero = packet_hero_enabled(p);
     out.active_mask = hero ? hero_active_mask : (lambda.secondary_terminated() ? 1u : 15u);
     for (uint lane = 0; lane < 4; ++lane) {
         if (!(out.active_mask & (1u << lane))) {
