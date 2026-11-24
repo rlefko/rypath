@@ -7,6 +7,7 @@
 #include "checkpoint_contract.h"
 #include "frame_session.hpp"
 #include "frame_wire.h"
+#include "metal_gpu_diagnostics.hpp"
 #include "native_hint_budget.hpp"
 #include "render_timings.hpp"
 #include "wavefront_wire.h"
@@ -3098,6 +3099,7 @@ struct FrameSession::Impl {
                 frame->info.status = FrameStatus::failed;
                 frame->info.diagnostic = std::move(diagnostic);
                 frame->info.gpu_time_valid = false;
+                invalidate_gpu_stages(frame->info.gpu_stages, "invalid: frame failed");
             }
             frame->completed.notify_all();
         }
@@ -3205,23 +3207,35 @@ struct FrameSession::Impl {
                 const auto evaluation_surfaces = reverse ? source_context.surface_transforms
                                                          : frame->retention->surface_transforms;
                 auto command = [r.queue commandBuffer];
+                command.label = @"rypath wavefront frame quantum";
                 auto encoder = [command computeCommandEncoder];
+                encoder.label = @"wavefront trace shade refill advance / Area replay";
+                auto stages =
+                    config.profile_stages ? std::make_shared<MetalGPUStages>(r.device) : nullptr;
                 if (command == nil || encoder == nil) {
                     fail("Wavefront command creation failed");
                     return;
                 }
+                const auto use_resource = [&](id<MTLResource> resource, MTLResourceUsage usage) {
+                    if (stages)
+                        stages->use_resource(encoder, resource, usage);
+                    else
+                        [encoder useResource:resource usage:usage];
+                };
                 const auto read_write = MTLResourceUsageRead | MTLResourceUsageWrite;
                 for (auto buffer : {b.scalar_state, b.packet_state, b.queue[0], b.queue[1],
                                     b.free_slots, b.counters, b.done, b.current_dispatch,
                                     b.refill_dispatch, frame->raw, b.replay})
-                    [encoder useResource:buffer usage:read_write];
-                [encoder useResource:b.config usage:MTLResourceUsageRead];
-                [encoder useResource:cie usage:MTLResourceUsageRead];
+                    use_resource(buffer, read_write);
+                use_resource(b.config, MTLResourceUsageRead);
+                use_resource(cie, MTLResourceUsageRead);
                 const auto barrier = [&] {
                     [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
                 };
                 const auto generic = [&](id<MTLComputePipelineState> pipeline, NSUInteger count,
-                                         bool indirect) {
+                                         bool indirect, const char *label) {
+                    if (stages && !stages->begin(command, encoder, label))
+                        return;
                     [encoder setComputePipelineState:pipeline];
                     [encoder setBytes:&evaluation_parameters
                                length:sizeof(evaluation_parameters)
@@ -3239,10 +3253,14 @@ struct FrameSession::Impl {
                         [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
                             threadsPerThreadgroup:MTLSizeMake(count == 1 ? 1 : config.group_width,
                                                               1, 1)];
+                    if (stages)
+                        stages->end(encoder);
                     barrier();
                 };
                 const auto full = [&](id<MTLComputePipelineState> pipeline,
-                                      id<MTLIntersectionFunctionTable> table) {
+                                      id<MTLIntersectionFunctionTable> table, const char *label) {
+                    if (stages && !stages->begin(command, encoder, label))
+                        return;
                     [encoder setComputePipelineState:pipeline];
                     r.bind(encoder, evaluation_parameters, evaluation_texture, b.arguments[variant],
                            evaluation_graph, evaluation_surfaces, true, table);
@@ -3250,75 +3268,91 @@ struct FrameSession::Impl {
                                                indirectBufferOffset:0
                                               threadsPerThreadgroup:MTLSizeMake(config.group_width,
                                                                                 1, 1)];
+                    if (stages)
+                        stages->end(encoder);
                     barrier();
                 };
                 if (history) {
                     auto &a = *frame->retention->area;
                     for (auto buffer : {a.replay, a.leaf, a.accumulators, a.temporal, a.failure,
                                         a.cross_targets, history_destination})
-                        [encoder useResource:buffer usage:read_write];
-                    [encoder useResource:history_source usage:MTLResourceUsageRead];
+                        use_resource(buffer, read_write);
+                    use_resource(history_source, MTLResourceUsageRead);
                     for (auto buffer : a.config)
-                        [encoder useResource:buffer usage:MTLResourceUsageRead];
+                        use_resource(buffer, MTLResourceUsageRead);
                     const auto area_dispatch = [&](id<MTLComputePipelineState> pipeline,
-                                                   unsigned argument, NSUInteger count) {
+                                                   unsigned argument, NSUInteger count,
+                                                   const char *label) {
+                        if (stages && !stages->begin(command, encoder, label))
+                            return;
                         [encoder setComputePipelineState:pipeline];
                         [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
                         [encoder setBuffer:a.arguments[argument] offset:0 atIndex:1];
                         [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
                             threadsPerThreadgroup:MTLSizeMake(count == 1 ? 1 : config.group_width,
                                                               1, 1)];
+                        if (stages)
+                            stages->end(encoder);
                         barrier();
                     };
                     const auto pixels = std::uint64_t(config.width) * config.height;
                     if (area_reset) {
-                        area_dispatch(area_programs->reset, 0, 1);
+                        area_dispatch(area_programs->reset, 0, 1, "area.reset");
                         area_reset = false;
                     }
                     if (area_merge >= 0) {
                         const auto previous = static_cast<unsigned>(area_merge);
                         if (previous >= area_wire::mutation_config_begin &&
                             previous < area_wire::temporal_reverse_config) {
-                            area_dispatch(area_programs->mutation_finish, previous, pixels);
+                            area_dispatch(area_programs->mutation_finish, previous, pixels,
+                                          "area.mutation_finish");
                             if (previous - area_wire::mutation_config_begin + 1 ==
                                 config.mutation_steps)
-                                area_dispatch(area_programs->spatial_begin, 2, pixels);
+                                area_dispatch(area_programs->spatial_begin, 2, pixels,
+                                              "area.spatial_begin");
                         } else {
-                            area_dispatch(area_programs->merge, previous, pixels);
+                            area_dispatch(area_programs->merge, previous, pixels, "area.merge");
                             if (previous == 1 || (previous == 0 && !frame->info.history_used)) {
-                                area_dispatch(area_programs->temporal_finish, previous, pixels);
+                                area_dispatch(area_programs->temporal_finish, previous, pixels,
+                                              "area.temporal_finish");
                                 if (config.mutation_steps == 0)
-                                    area_dispatch(area_programs->spatial_begin, 2, pixels);
+                                    area_dispatch(area_programs->spatial_begin, 2, pixels,
+                                                  "area.spatial_begin");
                             }
                         }
                         area_merge = -1;
                     }
                     if (area_finalizing)
                         area_dispatch(area_programs->finalize, area_wire::spatial_finalize_config,
-                                      pixels);
+                                      pixels, "area.finalize");
                     else if (first) {
                         const bool mutation = area_leaf >= area_wire::mutation_config_begin &&
                                               area_leaf < area_wire::temporal_reverse_config;
-                        area_dispatch(mutation ? area_programs->mutation_prepare
-                                               : area_programs->prepare,
-                                      area_leaf, pixels);
+                        area_dispatch(
+                            mutation ? area_programs->mutation_prepare : area_programs->prepare,
+                            area_leaf, pixels, mutation ? "area.mutation_prepare" : "area.prepare");
                     }
                 }
                 if (!area_finalizing && first) {
-                    generic(programs->reset, std::uint64_t(config.width) * config.height, false);
-                    generic(programs->initialize, config.capacity, false);
+                    generic(programs->reset, std::uint64_t(config.width) * config.height, false,
+                            "wavefront.reset");
+                    generic(programs->initialize, config.capacity, false, "wavefront.initialize");
                     first = false;
                 }
                 for (std::uint32_t round = 0; !area_finalizing && round < config.quantum; ++round) {
                     if (!parameters.packet_transport)
-                        full(programs->trace, programs->trace_table);
-                    full(programs->shade, programs->shade_table);
-                    generic(programs->prepare_refill, 1, false);
-                    generic(programs->refill, 0, true);
-                    generic(programs->advance, 1, false);
+                        full(programs->trace, programs->trace_table, "wavefront.trace");
+                    full(programs->shade, programs->shade_table, "wavefront.shade");
+                    generic(programs->prepare_refill, 1, false, "wavefront.prepare_refill");
+                    generic(programs->refill, 0, true, "wavefront.refill");
+                    generic(programs->advance, 1, false, "wavefront.advance");
                     variant ^= 1;
                 }
                 [encoder endEncoding];
+                if (stages && stages->encoding_failed()) {
+                    fail("Profiling compute encoder allocation failed");
+                    return;
+                }
                 {
                     std::lock_guard lock(frame->info_mutex);
                     ++frame->info.command_count;
@@ -3328,6 +3362,10 @@ struct FrameSession::Impl {
                 const auto self = shared_from_this();
                 [command addCompletedHandler:^(id<MTLCommandBuffer> finished_command) {
                   @autoreleasepool {
+                      if (stages) {
+                          std::lock_guard lock(self->frame->info_mutex);
+                          stages->resolve(finished_command, self->frame->info.gpu_stages);
+                      }
                       self->finished(finished_command);
                   }
                 }];
@@ -3693,7 +3731,10 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         }
         std::memset(frame->status.contents, 0, sizeof(frame_wire::Status));
         auto command = [r.queue commandBuffer];
+        command.label = @"rypath megakernel frame";
         auto encoder = [command computeCommandEncoder];
+        encoder.label = @"megakernel render and resolve tiles";
+        auto stages = c.profile_stages ? std::make_shared<MetalGPUStages>(r.device) : nullptr;
         if (command == nil || encoder == nil) {
             result.diagnostic = "Frame command creation failed";
             return result;
@@ -3717,15 +3758,31 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                                             ? p.lane_count * p.packet_lane_bytes + 64
                                             : ((p.lane_count + group - 1) / group * group + 1) *
                                                   sizeof(wire::Sample))};
+            if (stages && !stages->begin(command, encoder, "megakernel.initialize")) {
+                result.diagnostic = "Profiling compute encoder allocation failed";
+                return result;
+            }
             [encoder setComputePipelineState:impl_->initialize];
             [encoder setBytes:&f length:sizeof(f) atIndex:0];
             [encoder setBuffer:frame->scratch offset:0 atIndex:1];
             [encoder dispatchThreads:MTLSizeMake(p.lane_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            if (stages)
+                stages->end(encoder);
             [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            if (stages && !stages->begin(command, encoder, "megakernel.render")) {
+                result.diagnostic = "Profiling compute encoder allocation failed";
+                return result;
+            }
             r.encode(encoder, p, texture, frame->scratch, group, frame_graph_nodes,
                      frame_surface_transforms);
+            if (stages)
+                stages->end(encoder);
             [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            if (stages && !stages->begin(command, encoder, "megakernel.resolve")) {
+                result.diagnostic = "Profiling compute encoder allocation failed";
+                return result;
+            }
             [encoder setComputePipelineState:impl_->resolve];
             [encoder setBytes:&f length:sizeof(f) atIndex:0];
             [encoder setBuffer:frame->scratch offset:0 atIndex:1];
@@ -3734,6 +3791,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
             [encoder setBuffer:impl_->cie offset:0 atIndex:4];
             [encoder dispatchThreads:MTLSizeMake(p.lane_count, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            if (stages)
+                stages->end(encoder);
             [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
         }
         [encoder endEncoding];
@@ -3743,6 +3802,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
           {
               std::lock_guard lock(frame->info_mutex);
               auto &info = frame->info;
+              if (stages)
+                  stages->resolve(finished, info.gpu_stages);
               if (finished.status != MTLCommandBufferStatusCompleted) {
                   info.status = FrameStatus::failed;
                   info.diagnostic = "Metal frame command failed";
@@ -3765,9 +3826,11 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                           : FrameStatus::complete;
                   if (info.status == FrameStatus::complete)
                       info.completed_evaluations = info.fresh_candidates = status.completed;
-                  if (info.status == FrameStatus::failed)
+                  if (info.status == FrameStatus::failed) {
+                      invalidate_gpu_stages(info.gpu_stages, "invalid: frame validation failed");
                       info.diagnostic =
                           "GPU frame validation failed: invalid, missing, or non-finite sample";
+                  }
               }
           }
           frame->completed.notify_all();

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "area_wire.h"
+#include "frame_benchmark_motion.hpp"
 #include "frame_session.hpp"
 #include "frame_statistics.hpp"
+#include "gpu_capture.hpp"
 #include "image_output.hpp"
 #include "mutation_shared.h"
 #include "pbrt_render.hpp"
@@ -56,7 +58,10 @@ template <typename T> bool integer(std::string_view value, T &result) {
 }
 struct Options {
     fs::path scene, output, capture, preview, reconstructed_capture;
-    bool demo = false;
+    bool demo = false, profile_stages = false;
+    std::optional<float> motion_offset;
+    std::optional<std::uint64_t> capture_frame;
+    fs::path capture_path;
     std::optional<rypath::ReconstructionMode> reconstruction;
     std::uint32_t output_width = 0, output_height = 0;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
@@ -107,6 +112,8 @@ const char *usage =
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
+    "  [--motion-offset WORLD_X (measured quarters: hold A, translate, hold B, cut A)]\n"
+    "  [--profile-stages] [--capture-frame N --capture-path FRAME.gputrace]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
     "  [--reconstruction none|raw-rgb|metalfx|temporal (default: none)]\n"
     "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
@@ -117,6 +124,10 @@ std::string parse(int argc, char **argv, Options &o) {
         const std::string_view key = argv[i];
         if (!seen.insert(key).second)
             return "duplicate option: " + std::string(key);
+        if (key == "--profile-stages") {
+            o.profile_stages = true;
+            continue;
+        }
         if (key == "--demo") {
             o.demo = true;
             continue;
@@ -128,6 +139,13 @@ std::string parse(int argc, char **argv, Options &o) {
             o.scene = value;
         else if (key == "--output")
             o.output = value;
+        else if (key == "--capture-frame") {
+            std::uint64_t frame = 0;
+            if (!integer(value, frame))
+                return "invalid capture frame";
+            o.capture_frame = frame;
+        } else if (key == "--capture-path")
+            o.capture_path = value;
         else if (key == "--capture")
             o.capture = value;
         else if (key == "--preview")
@@ -169,6 +187,14 @@ std::string parse(int argc, char **argv, Options &o) {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
                 return "mutations must be 0, 1, 2, or 4";
+        } else if (key == "--motion-offset") {
+            float offset = 0;
+            std::istringstream input{std::string(value)};
+            input.imbue(std::locale::classic());
+            input >> offset;
+            if (!input || !input.eof() || !std::isfinite(offset) || offset == 0)
+                return "motion offset must be finite and nonzero";
+            o.motion_offset = offset;
         } else if (key == "--target-scale") {
             std::istringstream input{std::string(value)};
             input.imbue(std::locale::classic());
@@ -240,6 +266,14 @@ std::string parse(int argc, char **argv, Options &o) {
     if (o.reconstruction == rypath::ReconstructionMode::metalfx &&
         (o.output_width < o.width || o.output_height < o.height))
         return "metalfx does not support downscaling";
+    if (o.capture_frame.has_value() != !o.capture_path.empty())
+        return "--capture-frame and --capture-path require each other";
+    if (o.capture_frame && *o.capture_frame >= o.warmup + o.frames)
+        return "capture frame must be less than warmup + frames (zero-based absolute frame)";
+    if (o.motion_offset && (o.frames < 8 || o.frames % 4 != 0))
+        return "motion requires at least eight measured frames divisible by four";
+    if (!o.capture_path.empty() && o.capture_path.extension() != ".gputrace")
+        return "--capture-path requires .gputrace";
     if (!o.reconstructed_capture.empty() && o.reconstructed_capture.extension() != ".exr")
         return "--reconstructed-capture requires .exr";
     if (o.estimator == rypath::FrameEstimator::area_replay &&
@@ -373,7 +407,8 @@ class Output {
 };
 void validate_paths(const Options &o, const std::vector<fs::path> &inputs) {
     std::set<fs::path> outputs;
-    for (const auto &path : {o.output, o.capture, o.preview, o.reconstructed_capture}) {
+    for (const auto &path :
+         {o.output, o.capture, o.preview, o.reconstructed_capture, o.capture_path}) {
         if (path.empty())
             continue;
         for (auto candidate : {path, fs::path(path.string() + ".pending")}) {
@@ -466,18 +501,64 @@ std::vector<std::string> overrides(rypath::pbrt::Result &checked, const Options 
     return provenance;
 }
 struct Observation : rypath::FrameStatisticsSample {
+    rypath::frame_benchmark::MotionPose pose;
+    std::optional<rypath::FrameCamera> camera;
     std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0,
                   command_count = 0, area_serial = 0, history_generation = 0,
                   completed_evaluations = 0, fresh_candidates = 0, mutation_attempts = 0,
                   mutation_accepts = 0;
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
     bool history_used = false;
+    rypath::GPUStageDiagnostics gpu_stages;
     rypath::FrameStatisticsSample pipeline;
     std::optional<rypath::ReconstructionInfo> reconstruction;
     double reconstruction_wall_seconds = 0;
     bool reconstruction_started = false;
     std::string diagnostic;
 };
+void write_stages(std::ostream &out, const rypath::GPUStageDiagnostics &d) {
+    out << "{\"requested\":" << (d.requested ? "true" : "false")
+        << ",\"complete\":" << (d.complete ? "true" : "false") << ",\"status\":" << quote(d.status)
+        << ",\"sampling_mode\":" << quote(d.sampling_mode)
+        << ",\"structural_overhead\":" << (d.structural_overhead ? "true" : "false")
+        << ",\"intervals_may_overlap\":true,\"stages\":[";
+    bool first = true;
+    for (const auto &s : d.stages) {
+        if (!first)
+            out << ',';
+        first = false;
+        out << "{\"name\":" << quote(s.name) << ",\"dispatches\":" << s.dispatches
+            << ",\"seconds\":";
+        if (s.valid)
+            out << s.seconds;
+        else
+            out << "null";
+        out << '}';
+    }
+    out << "]}";
+}
+void write_camera(std::ostream &out, const std::optional<rypath::FrameCamera> &camera) {
+    if (!camera) {
+        out << "null";
+        return;
+    }
+    const auto point = [&](std::string_view name, const rypath::GeometryPoint &value) {
+        out << ',' << quote(name) << ":[" << value.x << ',' << value.y << ',' << value.z << ']';
+    };
+    out << "{\"kind\":" << quote(camera->raster_camera ? "raster" : "demo");
+    if (camera->raster_camera) {
+        point("origin", camera->raster_camera->origin);
+        point("corner", camera->raster_camera->corner);
+        point("dx", camera->raster_camera->dx);
+        point("dy", camera->raster_camera->dy);
+    } else {
+        point("origin", camera->camera.origin);
+        point("target", camera->camera.target);
+        point("up", camera->camera.up);
+        out << ",\"vertical_fov_degrees\":" << camera->camera.vertical_fov_degrees;
+    }
+    out << '}';
+}
 void write_counters(std::ostream &out, const rypath::ReconstructionCounters &c) {
     const std::array<std::pair<const char *, std::uint32_t>, 16> fields{
         {{"failure", c.failure},
@@ -525,6 +606,10 @@ struct Report {
             << ",\"source_identity\":" << quote(source_identity)
             << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"os\":" << quote(os)
             << ",\"scene\":" << quote(options.demo ? "demo" : options.scene.string())
+            << ",\"motion_offset\":"
+            << (options.motion_offset ? precise_float(*options.motion_offset) : "null")
+            << ",\"motion_scope\":\"timing only; translation with fixed orientation/lens; "
+               "distinct medium interfaces unsupported; source_identity identifies base pose\""
             << ",\"device\":{\"name\":" << quote(device)
             << ",\"architecture\":" << quote(architecture) << ",\"registry_id\":" << registry_id
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
@@ -570,7 +655,14 @@ struct Report {
                           options.capacity, std::uint64_t(options.width) * options.height))
                     : "null")
             << ",\"quantum\":" << options.quantum << ",\"group_width\":" << options.group_width
-            << ",\"intersection_profile\":" << quote(profile_name(options.intersection_profile))
+            << ",\"profile_stages\":" << (options.profile_stages ? "true" : "false")
+            << ",\"capture_path\":" << quote(options.capture_path.string())
+            << ",\"capture_frame\":";
+        if (options.capture_frame)
+            out << *options.capture_frame;
+        else
+            out << "null";
+        out << ",\"intersection_profile\":" << quote(profile_name(options.intersection_profile))
             << ",\"integrator\":" << quote(integrator) << ",\"max_depth\":" << max_depth
             << ",\"sampler\":\"independent\",\"samples_per_pixel_per_frame\":1,\"footprint_"
                "samples\":1,"
@@ -624,8 +716,11 @@ struct Report {
             const auto &f = observations[i];
             if (i)
                 out << ',';
-            out << "{\"sample_index\":" << f.sample_index
-                << ",\"warmup\":" << (f.warmup ? "true" : "false")
+            out << "{\"sample_index\":" << f.sample_index << ",\"epoch\":" << f.pose.epoch
+                << ",\"phase\":" << quote(f.pose.phase) << ",\"motion_offset\":" << f.pose.offset
+                << ",\"camera\":";
+            write_camera(out, f.camera);
+            out << ",\"warmup\":" << (f.warmup ? "true" : "false")
                 << ",\"complete\":" << (f.complete ? "true" : "false")
                 << ",\"completed_samples\":" << f.completed_samples
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
@@ -637,8 +732,9 @@ struct Report {
                 << ",\"mutation_attempts\":" << f.mutation_attempts
                 << ",\"mutation_accepts\":" << f.mutation_accepts
                 << ",\"completed_evaluations\":" << f.completed_evaluations
-                << ",\"fresh_candidates\":" << f.fresh_candidates
-                << ",\"cpu_wall_seconds\":" << f.cpu_seconds << ",\"gpu_seconds\":";
+                << ",\"fresh_candidates\":" << f.fresh_candidates << ",\"gpu_stages\":";
+            write_stages(out, f.gpu_stages);
+            out << ",\"cpu_wall_seconds\":" << f.cpu_seconds << ",\"gpu_seconds\":";
             if (f.gpu_seconds)
                 out << *f.gpu_seconds;
             else
@@ -662,7 +758,12 @@ struct Report {
                             ? "true"
                             : "false")
                     << ",\"cpu_wall_seconds\":" << f.reconstruction_wall_seconds
-                    << ",\"gpu_seconds\":";
+                    << ",\"gpu_stages\":";
+                if (f.reconstruction)
+                    write_stages(out, f.reconstruction->gpu_stages);
+                else
+                    out << "null";
+                out << ",\"gpu_seconds\":";
                 if (f.reconstruction && f.reconstruction->gpu_time_valid)
                     out << f.reconstruction->gpu_seconds;
                 else
@@ -828,6 +929,14 @@ int run(const Options &options) {
         scene.integrator =
             scene.volume_transport ? rypath::IntegratorKind::volpath : rypath::IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
+        if (options.motion_offset) {
+            if (!rypath::frame_benchmark::motion_medium_supported(scene))
+                throw std::runtime_error("Motion cannot classify distinct medium interfaces");
+            (void)rypath::frame_benchmark::translated_camera(scene, *options.motion_offset);
+            const auto quarter = options.frames / 4;
+            (void)rypath::frame_benchmark::translated_camera(
+                scene, float(double(*options.motion_offset) / double(quarter)));
+        }
         report.integrator = scene.volume_transport ? "volpath" : "path";
         report.max_depth = scene.max_depth;
         report.provenance.push_back("effective exposure " + std::to_string(scene.exposure));
@@ -856,6 +965,7 @@ int run(const Options &options) {
         config.seed = options.seed;
         config.material_seed = options.material_seed;
         config.footprint_samples = 1;
+        config.profile_stages = options.profile_stages;
         config.intersection_profile = options.intersection_profile;
         config.execution = options.execution;
         config.estimator = options.estimator;
@@ -888,9 +998,24 @@ int run(const Options &options) {
                 if (sample == options.warmup)
                     report.warmup_seconds = seconds(warmup_start);
                 const auto frame_start = Clock::now();
+                std::unique_ptr<rypath::GPUCapture> gpu_capture;
+                const bool capture_this_frame =
+                    options.capture_frame && *options.capture_frame == sample;
+                if (capture_this_frame) {
+                    gpu_capture = std::make_unique<rypath::GPUCapture>();
+                    const auto error = gpu_capture->start(options.capture_path);
+                    if (!error.empty())
+                        throw std::runtime_error(error);
+                }
                 // Retain one previous success for capture; the other session slot remains free.
-                auto submitted = built.session->submit({sample, 0, {}});
                 Observation observation;
+                observation.pose = rypath::frame_benchmark::motion_pose(
+                    sample, options.warmup, options.frames, options.motion_offset);
+                if (options.motion_offset)
+                    observation.camera =
+                        rypath::frame_benchmark::translated_camera(scene, observation.pose.offset);
+                auto submitted =
+                    built.session->submit({sample, observation.pose.epoch, observation.camera});
                 observation.sample_index = sample;
                 observation.warmup = warmup;
                 observation.pipeline.warmup = warmup;
@@ -909,6 +1034,7 @@ int run(const Options &options) {
                                            info.completed_samples == pixels &&
                                            info.completed_evaluations == pixels * evaluations;
                     observation.completed_samples = info.completed_samples;
+                    observation.gpu_stages = info.gpu_stages;
                     observation.camera_upload_bytes = info.camera_upload_bytes;
                     observation.command_count = info.command_count;
                     observation.area_serial = info.area_serial;
@@ -933,7 +1059,8 @@ int run(const Options &options) {
                                 created = true;
                                 const auto creation_start = Clock::now();
                                 auto stream = rypath::build_reconstruction_stream(
-                                    *submitted.frame, {.mode = *options.reconstruction,
+                                    *submitted.frame, {.profile_stages = options.profile_stages,
+                                                       .mode = *options.reconstruction,
                                                        .output_width = options.output_width,
                                                        .output_height = options.output_height});
                                 report.reconstruction_startup_seconds = seconds(creation_start);
@@ -995,6 +1122,8 @@ int run(const Options &options) {
                     observation.pipeline.cpu_seconds = observation.cpu_seconds;
                 } else
                     observation.pipeline.cpu_seconds = seconds(frame_start);
+                if (gpu_capture)
+                    gpu_capture->stop();
                 report.observations.push_back(observation);
                 if (!observation.pipeline.complete) {
                     report.diagnostic = observation.diagnostic.empty()
@@ -1028,9 +1157,13 @@ int run(const Options &options) {
                     film.pixels[i].count = 1;
                 }
                 const auto frame_info = last->poll();
+                const auto captured_pose = rypath::frame_benchmark::motion_pose(
+                    frame_info.sample_index, options.warmup, options.frames, options.motion_offset);
                 const std::vector<std::pair<std::string, std::string>> metadata{
                     {"rypath.frame.sample_index", std::to_string(frame_info.sample_index)},
                     {"rypath.frame.epoch", std::to_string(frame_info.epoch)},
+                    {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
+                    {"rypath.frame.motion_offset", precise_float(captured_pose.offset)},
                     {"rypath.frame.seed", std::to_string(options.seed)},
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.footprint_samples", "1"},
@@ -1093,6 +1226,9 @@ int run(const Options &options) {
             }
             if (last_reconstructed && !options.reconstructed_capture.empty()) {
                 const auto info = last_reconstructed->poll();
+                const auto captured_pose =
+                    rypath::frame_benchmark::motion_pose(info.source.sample_index, options.warmup,
+                                                         options.frames, options.motion_offset);
                 const auto image = last_reconstructed->capture();
                 if (image.status != rypath::GeometryStatus::success)
                     throw std::runtime_error("reconstructed capture failed: " + image.diagnostic);
@@ -1110,6 +1246,8 @@ int run(const Options &options) {
                     {"rypath.recon.defocus", info.defocus_approximation ? "true" : "false"},
                     {"rypath.frame.sample", std::to_string(info.source.sample_index)},
                     {"rypath.frame.epoch", std::to_string(info.source.epoch)},
+                    {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
+                    {"rypath.frame.motion_offset", precise_float(captured_pose.offset)},
                     {"rypath.frame.seed", std::to_string(options.seed)},
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.estimator", estimator_name(options.estimator)},

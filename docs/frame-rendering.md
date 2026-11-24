@@ -153,3 +153,98 @@ executable and metallib identities. Manifest SHA-256:
 An earlier capture attempt completed its frames but failed on an overlong EXR
 attribute name; its report is retained separately and excluded from this table.
 The corrected capture uses `rypath.frame.intersections`.
+
+## Opt-in GPU diagnostics
+
+`--profile-stages` enables timestamp counters around the existing compute
+dispatches. It is off by default: no counter allocation, clock sampling or
+resolution occurs unless requested. Command and encoder labels remain available
+for Xcode capture. This diagnostic mode adds sampling barriers and host work;
+its timings must not be used as an uninstrumented performance baseline.
+
+Frame and reconstruction JSON include `gpu_stages`: requested/availability status,
+completeness, dispatch counts and seconds grouped by stage. Wavefront exposes
+reset/initialize, trace, shade, prepare-refill, refill and advance; Area exposes
+its prepare/merge/mutation/temporal/spatial/finalize dispatches. Packet transport
+traces inside shade. Reconstruction exposes reset, surface guides, color,
+temporal accumulation, each spatial dispatch (aggregated), and finish. Opaque
+MetalFX dispatches explicitly make reconstruction stage timing unavailable.
+Megakernel timing separates initialize, render and resolve dispatches.
+Raw RGB's output blit is outside the compute-dispatch diagnostic scope.
+
+The ordinary timestamp counter set is required. Devices supporting dispatch-boundary
+sampling keep the original encoders and insert counter samples. Devices supporting
+only stage-boundary sampling use one serial compute encoder per logical dispatch
+in profiling mode, with start/end samples attached through `MTLComputePassDescriptor`.
+This fallback reports `encoder-stage-boundary` intervals and structural overhead:
+the encoder boundaries and replayed resource declarations/bindings change the
+execution schedule. Results describe this instrumented execution, not the production
+schedule. The default unprofiled path retains its original encoder structure.
+Interdispatch memory barriers remain before encoder completion; tracked resources
+retain ordering within the same command buffer. Apple's
+[stage-boundary capability](https://developer.apple.com/documentation/metal/mtlcountersamplingpoint/atstageboundary)
+and [compute attachment indices](https://developer.apple.com/documentation/metal/mtlcomputepasssamplebufferattachmentdescriptor/startofencodersampleindex)
+define this sampling contract. Unsupported counters, resolve errors, invalid clock
+calibration, sentinel/regressing timestamps and command failures report explicit
+status and null durations; subsequent dispatches cannot repair an incomplete
+aggregate. Each command has at most 4,096 timestamp samples and each logical
+frame/consumer has at most 64 aggregated stage records. A cap only invalidates
+diagnostics; rendering continues. Counter buffers live through completion.
+Timestamp seconds use two paired CPU/GPU clock samples and Apple's
+[GPU-to-CPU time conversion](https://developer.apple.com/documentation/metal/converting-gpu-timestamps-into-cpu-time).
+Stage intervals may overlap other work and are never summed as complete frame
+GPU time. The existing command-buffer and CPU wall metrics retain their scopes.
+
+For a bounded programmatic Xcode trace, launch with `MTL_CAPTURE_ENABLED=1` and
+`--capture-frame N --capture-path /fresh/path/frame.gputrace`. N is a zero-based
+absolute sample index including warmup and must be below warmup + frames. Capture
+starts immediately before that frame's raw submission and stops after its
+reconstruction completes, including any first-frame reconstruction setup. The
+path must be fresh and distinct from all inputs/outputs. Unsupported capture or
+start failures fail explicitly. Scope cleanup stops capture on failures and
+exceptions; a partial failed trace is retained for diagnosis. Captures perturb
+execution, and no performance claim should use a captured frame. The JSON records
+the selected frame/path and profiling setting. Capture support and trace contents
+require a separate hardware smoke check; portable tests do not establish them.
+
+### Initial stage-diagnostics validation
+
+On November 23, 2026, an M4 Max reports stage-boundary sampling support and no
+dispatch-boundary support. Its timestamp sample buffer accepts at most 32 KiB:
+the original 16,384-sample allocation failed with `MTLCounterErrorDomain` code 1
+and an explicit 8–32,768-byte allowed range. The diagnostic buffer now uses at
+most 4,096 timestamp samples (32 KiB); allocation failures retain Metal's error
+domain, code and description.
+
+Debug source digest
+`fcffbf96c9cbf86ffa868cd4104c846c07366aa0ea9304b7d83d8e4044118452`
+passes bounded 64×64, three-frame controls on the adapted Cornell fixture under
+Metal API validation. Independent wavefront, Area replay with one mutation, and
+megakernel execution all report complete finite encoder-stage timings, including
+separate temporal reconstruction. Each arm has a matched unprofiled control;
+all six raw/reconstructed FLOAT EXR file pairs are byte-identical. These 18
+pipeline frames validate this fixture's scheduling/binding preservation, not
+general equivalence or production performance. A separate 4×4, quantum-1024
+frame completes rendering while explicitly reporting the counter-sample cap.
+Fresh manifests, reports, logs, output hashes and allocation probe results are
+retained outside Git under `.cache/validation/stage-diagnostics-001/`, with
+successful runs named `counterfix-*`.
+Earlier failed diagnostics reports remain separate from these successful checks.
+
+### Repeatable camera-motion timing
+
+`--motion-offset WORLD_X` adds a timing-only camera protocol: warmup holds the
+authored pose, then four equal measured intervals hold that pose, translate along
+world X, hold the translated pose, and cut back. The cut increments the frame
+epoch. Measured frames must number at least eight and be divisible by four; the
+offset must be finite, nonzero and representable by the active camera. Reports
+record each frame's phase, offset, epoch and effective camera. The original
+source identity still identifies the authored scene; the recorded camera
+overrides are part of the workload identity.
+
+Lens, camera medium and texture-camera matrices are preserved. Scenes with
+different inside/outside medium interfaces are rejected because this driver
+cannot classify camera crossings. This schedule exercises changing guides,
+stationary reuse and cuts; moving-scene timings remain separate from static
+timings and do not establish motion reconstruction quality. Captured EXRs record
+the phase and offset of their actual captured sample.

@@ -27,6 +27,11 @@ target_include_directories(rypath_frame_statistics_tests PRIVATE "${CMAKE_SOURCE
 rypath_configure_host_target(rypath_frame_statistics_tests)
 add_test(NAME frame.statistics COMMAND rypath_frame_statistics_tests)
 
+add_executable(rypath_frame_motion_tests frame_motion_tests.cpp)
+target_include_directories(rypath_frame_motion_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_frame_motion_tests)
+add_test(NAME frame.motion COMMAND rypath_frame_motion_tests)
+
 add_executable(rypath_shading_normal_tests shading_normal_tests.cpp)
 target_include_directories(rypath_shading_normal_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_shading_normal_tests)
@@ -1819,3 +1824,8 @@ add_executable(rypath_viewer_options_tests viewer_options_tests.cpp ../src/viewe
 target_include_directories(rypath_viewer_options_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_viewer_options_tests)
 add_test(NAME viewer.options COMMAND rypath_viewer_options_tests)
+
+add_executable(rypath_gpu_diagnostics_tests gpu_diagnostics_tests.cpp)
+target_include_directories(rypath_gpu_diagnostics_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_gpu_diagnostics_tests)
+add_test(NAME frame.gpu_diagnostics COMMAND rypath_gpu_diagnostics_tests)
