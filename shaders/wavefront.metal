@@ -3,7 +3,23 @@
 // Included after render.metal's scalar and packet definitions, never compiled separately.
 #include "../src/wavefront_wire.h"
 #include "frame_sensor.h"
+#include "packet_event_gate.h"
 namespace wf = rypath::wavefront_wire;
+// Optional defaults keep standalone queue probes on the packed/one-event path.
+// Session pipelines always provide both values after the contract-6 handshake.
+constant uint rypath_wavefront_packet_layout [[function_constant(wf::packet_layout_constant)]];
+constant uint rypath_wavefront_packet_events [[function_constant(wf::packet_events_constant)]];
+inline uint wavefront_packet_layout() {
+    return is_function_constant_defined(rypath_wavefront_packet_layout)
+               ? rypath_wavefront_packet_layout
+               : 0u;
+}
+inline uint wavefront_packet_events() {
+    return is_function_constant_defined(rypath_wavefront_packet_events)
+               ? rypath_wavefront_packet_events
+               : 1u;
+}
+
 struct WavefrontArguments {
     device const wf::Config *config [[id(wf::config_id)]];
     device uchar *scalar_state [[id(wf::scalar_state_id)]];
@@ -17,6 +33,9 @@ struct WavefrontArguments {
     device atomic_uint *done [[id(wf::done_id)]];
     device wf::DispatchArguments *current_dispatch [[id(wf::current_dispatch_id)]];
     device wf::DispatchArguments *refill_dispatch [[id(wf::refill_dispatch_id)]];
+    device rypath_bdpt::PacketPTHot *packet_hot [[id(wf::packet_hot_id)]];
+    device rypath_bdpt::Vertex *packet_cold [[id(wf::packet_cold_id)]];
+    device rypath_bdpt::PacketPTHit *packet_hit [[id(wf::packet_hit_id)]];
     device const rypath_replay::ReplayState *replay_input [[id(wf::replay_input_id)]];
 };
 inline void wavefront_fail(constant WavefrontArguments &a, uint failure) {
@@ -29,7 +48,12 @@ inline bool wavefront_config_valid(constant WavefrontArguments &a) {
     const auto c = *a.config;
     return c.pixel_count > 0 && c.capacity > 0 && c.capacity <= wf::default_capacity &&
            c.packet <= 1 && (c.model == wire::demo_model || c.model == wire::pbrt_model) &&
-           c.group_width > 0 && c.replay_enabled <= 1 && c.reserved[0] == 0 && c.reserved[1] == 0;
+           c.group_width > 0 && c.replay_enabled <= 1 &&
+           (c.packet_events == 1 || c.packet_events == 2 || c.packet_events == 4) &&
+           c.packet_layout <= 2 && (c.packet_layout != 2 || c.packet_events == 1) &&
+           (c.packet || (c.packet_events == 1 && c.packet_layout == 0)) &&
+           c.packet_layout == wavefront_packet_layout() &&
+           c.packet_events == wavefront_packet_events();
 }
 inline void wavefront_dispatch(device wf::DispatchArguments *args, uint count, uint group) {
     // Division plus remainder avoids the count+group-1 overflow.
@@ -43,6 +67,58 @@ inline device rypath_scalar::ScalarState &wavefront_scalar(constant WavefrontArg
 inline device rypath_bdpt::PacketPTState &wavefront_packet(constant WavefrontArguments &a,
                                                            uint slot) {
     return reinterpret_cast<device rypath_bdpt::PacketPTState *>(a.packet_state)[slot];
+}
+inline rypath_bdpt::PacketPTState wavefront_load_packet_separated(constant WavefrontArguments &a,
+                                                                  uint slot) {
+    const auto hot = a.packet_hot[slot];
+    rypath_bdpt::PacketPTState state;
+    state.latest = a.packet_cold[slot];
+    state.preceding_position = hot.preceding_position;
+    state.preceding_type = hot.preceding_type;
+    state.sample = hot.sample;
+    state.lambda = hot.lambda;
+    state.radiance = hot.radiance;
+    state.beta = hot.beta;
+    state.ray_origin = hot.ray_origin;
+    state.ray_direction = hot.ray_direction;
+    state.pdf = hot.pdf;
+    state.ray_min_distance = hot.ray_min_distance;
+    state.ray_max_distance = hot.ray_max_distance;
+    state.roulette_eta = hot.roulette_eta;
+    state.index = hot.index;
+    state.count = hot.count;
+    state.crossings = hot.crossings;
+    state.complete = hot.complete;
+    return state;
+}
+inline void wavefront_store_packet_separated(constant WavefrontArguments &a, uint slot,
+                                             const thread rypath_bdpt::PacketPTState &state) {
+    rypath_bdpt::PacketPTHot hot;
+    hot.preceding_position = state.preceding_position;
+    hot.preceding_type = state.preceding_type;
+    hot.sample = state.sample;
+    hot.lambda = state.lambda;
+    hot.radiance = state.radiance;
+    hot.beta = state.beta;
+    hot.ray_origin = state.ray_origin;
+    hot.ray_direction = state.ray_direction;
+    hot.pdf = state.pdf;
+    hot.ray_min_distance = state.ray_min_distance;
+    hot.ray_max_distance = state.ray_max_distance;
+    hot.roulette_eta = state.roulette_eta;
+    hot.index = state.index;
+    hot.count = state.count;
+    hot.crossings = state.crossings;
+    hot.complete = state.complete;
+    a.packet_hot[slot] = hot;
+    a.packet_cold[slot] = state.latest;
+}
+inline void wavefront_store_packet(constant WavefrontArguments &a, uint slot,
+                                   const thread rypath_bdpt::PacketPTState &state) {
+    if (wavefront_packet_layout() == 0)
+        wavefront_packet(a, slot) = state;
+    else
+        wavefront_store_packet_separated(a, slot, state);
 }
 inline bool wavefront_slot(constant WavefrontArguments &a, uint lane, thread uint &slot) {
     if (wavefront_failed(a))
@@ -124,7 +200,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
         rypath_bdpt::packet_pt_initialize(
             state, sample, lambda, incoming,
             rypath_bdpt::camera_pdf(p, incoming.origin, incoming.direction), index, p);
-        wavefront_packet(a, slot) = state;
+        wavefront_store_packet(a, slot, state);
     } else {
         rypath_scalar::ScalarResources resources{};
         resources.p = &p;
@@ -142,7 +218,14 @@ kernel void rypath_wavefront_contract(device wf::Contract *out [[buffer(0)]]) {
             alignof(rypath_bdpt::PacketPTState),
             sizeof(wf::Config),
             sizeof(wf::Counters),
-            sizeof(wf::DispatchArguments)};
+            sizeof(wf::DispatchArguments),
+            sizeof(rypath_bdpt::PacketPTHot),
+            alignof(rypath_bdpt::PacketPTHot),
+            sizeof(rypath_bdpt::Vertex),
+            alignof(rypath_bdpt::Vertex),
+            sizeof(rypath_bdpt::PacketPTHit),
+            alignof(rypath_bdpt::PacketPTHit),
+            {0, 0}};
 }
 kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
                                    uint lane [[thread_position_in_grid]]) {
@@ -328,12 +411,20 @@ kernel void rypath_wavefront_shade_scalar(RYPATH_WAVEFRONT_PARAMETERS(MixedInter
     }
 }
 
+inline bool wavefront_packet_event_needs_hit(bool complete, uint count, float4 beta, ray incoming,
+                                             uint capacity) {
+    return rypath_packet_event::needs_hit(complete, count, capacity, beta, incoming.origin,
+                                          incoming.direction);
+}
+
 kernel void
-rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+rypath_wavefront_trace_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
     uint slot;
     if (!wavefront_slot(a, lane, slot))
         return;
-    auto state = wavefront_packet(a, slot);
+    if (!wavefront_parameters(a, p) || !a.config->packet || wavefront_packet_layout() != 2)
+        return;
+    auto state = a.packet_hot[slot];
     const GraphResources graph{
         graph_nodes,
         graph_knots,
@@ -351,36 +442,93 @@ rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
     rypath_bdpt::Resources resources{
         alpha,           knots,        emissions, emitters, environment,
         environment_cdf, light_images, &tables,   scene,    intersection_table};
-    rypath_replay::ReplayState replay{};
-    if (a.config->replay_enabled) {
-        if (state.sample.pixel >= a.config->pixel_count) {
-            wavefront_fail(a, wf::invalid_sample);
-            return;
-        }
-        replay = a.replay_input[state.sample.pixel];
-        if (!rypath_replay::valid(replay)) {
-            wavefront_fail(a, wf::invalid_sample);
-            return;
-        }
+    rypath_bdpt::PacketPTHit traced{};
+    if (wavefront_packet_event_needs_hit(state.complete, state.count, state.beta, incoming,
+                                         p.max_depth + 2)) {
+        traced.hit = rypath_bdpt::packet_pt_trace(resources, state.sample, state.lambda, incoming);
+        traced.ready = 1;
     }
-    rypath_bdpt::packet_pt_step(resources, state, a.config->replay_enabled ? &replay : nullptr);
-    wavefront_packet(a, slot) = state;
-    if (state.complete) {
-        const auto result = rypath_bdpt::packet_pt_result(state, p);
-        const uint pixel = result.pixel;
-        float3 value;
-        if (pixel >= a.config->pixel_count ||
-            !rypath_frame_sensor::packet(result, pixel, p.sample_low, p.sample_high, a.cie,
-                                         value)) {
-            wavefront_fail(a, wf::invalid_sample);
-            return;
-        }
-        wavefront_publish(a, pixel, value);
-        wavefront_append(a, &a.counters->free, a.free_slots, slot);
-    } else {
-        wavefront_append(a, &a.counters->out, a.queue_out, slot);
-    }
+    a.packet_hot[slot] = state;
+    a.packet_hit[slot] = traced;
 }
+
+kernel void
+rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_SEPARATED 0
+#define RYPATH_PACKET_SHADE_EVENTS 1
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
+kernel void rypath_wavefront_shade_packet_packed_2(
+    RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_SEPARATED 0
+#define RYPATH_PACKET_SHADE_EVENTS 2
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
+kernel void rypath_wavefront_shade_packet_packed_4(
+    RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_SEPARATED 0
+#define RYPATH_PACKET_SHADE_EVENTS 4
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
+kernel void rypath_wavefront_shade_packet_hot_cold_1(
+    RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_SEPARATED 1
+#define RYPATH_PACKET_SHADE_EVENTS 1
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
+kernel void rypath_wavefront_shade_packet_hot_cold_2(
+    RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_SEPARATED 1
+#define RYPATH_PACKET_SHADE_EVENTS 2
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
+kernel void rypath_wavefront_shade_packet_hot_cold_4(
+    RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_SEPARATED 1
+#define RYPATH_PACKET_SHADE_EVENTS 4
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
+kernel void
+rypath_wavefront_shade_packet_split(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_SEPARATED 1
+#define RYPATH_PACKET_SHADE_EVENTS 1
+#define RYPATH_PACKET_SHADE_PRETRACED 1
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
 #undef RYPATH_WAVEFRONT_PARAMETERS
 
 kernel void rypath_wavefront_prepare_refill(constant WavefrontArguments &a [[buffer(1)]],

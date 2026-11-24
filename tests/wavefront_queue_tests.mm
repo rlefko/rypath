@@ -41,7 +41,7 @@ int run(const std::filesystem::path &path) {
     }
     auto queue = [device newCommandQueue];
     require(queue != nil && arguments != nil, "Queue fault test command resources");
-    const wf::Config config{4, 2, 0, render_wire::pbrt_model, 32, 0, {0, 0}};
+    const wf::Config config{4, 2, 0, render_wire::pbrt_model, 32, 0, 1, 0};
     const std::array<wf::Counters, 7> cases{{
         {2, 2, 0, 4, 2, 0, 7, 2}, // Valid two-owner continuation clears its range.
         {2, 3, 0, 4, 1, 0, 7, 0}, // Output exceeds physical capacity.
@@ -148,6 +148,62 @@ int run(const std::filesystem::path &path) {
             const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
             for (std::size_t j = written; j < buffers[i].length; ++j)
                 require(bytes[j] == 0xa5, "Range reservation touched queue storage or a guard");
+        }
+    }
+    // Exercise the real policy constants against every valid wire policy.
+    // A mismatched function/buffer pair must fail before issuing any owners.
+    const std::array<std::array<std::uint32_t, 2>, 7> policies{
+        {{0, 1}, {0, 2}, {0, 4}, {1, 1}, {1, 2}, {1, 4}, {2, 1}}};
+    for (const auto &compiled : policies) {
+        auto constants = [MTLFunctionConstantValues new];
+        [constants setConstantValue:&compiled[0]
+                               type:MTLDataTypeUInt
+                            atIndex:wf::packet_layout_constant];
+        [constants setConstantValue:&compiled[1]
+                               type:MTLDataTypeUInt
+                            atIndex:wf::packet_events_constant];
+        auto reset =
+            metal::load_pipeline(device, library, @"rypath_wavefront_reset", why, nil, constants);
+        require(reset != nil, why);
+        for (const auto &requested : policies) {
+            for (auto buffer : buffers)
+                std::memset(buffer.contents, 0xa5, buffer.length);
+            auto cfg = config;
+            cfg.packet = 1;
+            cfg.packet_layout = requested[0];
+            cfg.packet_events = requested[1];
+            std::memcpy(buffers[wf::config_id].contents, &cfg, sizeof(cfg));
+            auto command = [queue commandBuffer];
+            auto encoder = [command computeCommandEncoder];
+            require(command != nil && encoder != nil, "Policy consistency encoding");
+            [encoder setComputePipelineState:reset];
+            [encoder setBuffer:arguments offset:0 atIndex:1];
+            for (auto buffer : buffers)
+                [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+            [encoder dispatchThreads:MTLSizeMake(cfg.pixel_count, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+            [encoder endEncoding];
+            require(metal::complete(command, "wavefront policy consistency").empty(),
+                    "Policy consistency dispatch");
+            wf::Counters result{};
+            std::memcpy(&result, buffers[wf::counters_id].contents, sizeof(result));
+            const bool matched = compiled == requested;
+            require(result.failure == (matched ? 0u : wf::invalid_config) &&
+                        result.current == (matched ? cfg.capacity : 0u) &&
+                        result.next_pixel == (matched ? cfg.capacity : 0u) &&
+                        result.completed == 0 && result.out == 0 && result.free == 0,
+                    "Policy mismatch must not claim or complete an owner");
+            for (unsigned i = 0; i < buffers.size(); ++i) {
+                const auto written = i == wf::counters_id ? sizeof(wf::Counters)
+                                     : i == wf::config_id ? sizeof(wf::Config)
+                                     : i == wf::done_id   ? cfg.pixel_count * sizeof(std::uint32_t)
+                                     : i == wf::current_dispatch_id || i == wf::refill_dispatch_id
+                                         ? sizeof(wf::DispatchArguments)
+                                         : 0;
+                const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
+                for (std::size_t j = written; j < buffers[i].length; ++j)
+                    require(bytes[j] == 0xa5, "Policy consistency touched unrelated storage");
+            }
         }
     }
     std::cout

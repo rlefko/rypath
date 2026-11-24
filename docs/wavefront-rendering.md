@@ -184,3 +184,238 @@ The execution structure follows the motivation in
 [Megakernels Considered Harmful](https://research.nvidia.com/sites/default/files/pubs/2013-07_Megakernels-Considered-Harmful/laine2013hpg_paper.pdf).
 Our queue layout, packet staging and asynchronous command policy are adaptations;
 published GPU speedups do not establish M4 Max results.
+
+## Opt-in packet scheduling experiments
+
+`FrameConfig.packet_events` and `--packet-events 1|2|4` select how many unchanged
+packet events execute locally before publishing state. The default remains one.
+An event includes one trace/shade attempt or transparent-boundary crossing;
+termination stops the local loop immediately. The loop does not renumber random
+streams, alter coating walks, reorder endpoint/direct contributions, or truncate
+paths. Scalar transport and megakernel execution reject nondefault packet
+controls instead of silently ignoring them.
+
+`FrameConfig.packet_layout` and `--packet-layout packed|hot-cold|split-trace`
+select storage/execution. `packed` retains the default full per-slot state.
+`hot-cold` stores ray/sample/wavelength/throughput/radiance/progress state apart
+from the complete frozen latest Vertex and assembles the original thread state
+for shading. The Vertex retains all prepared scattering lanes and scene-table
+pointers: represented directional PDFs still evaluate the prepared BSDF using
+neighbor geometry, rather than substituting the sampled PDF.
+
+`split-trace` uses the same separate pools and adds a per-slot checked hit buffer.
+A separate trace dispatch reads only hot state and publishes the hit plus any
+alpha/sample state updates. Shading consumes that hit through the original event
+body. This mode requires one packet event per publication. Existing producer/
+consumer barriers publish hit and hot-state writes before shading; refill fully
+initializes hot and cold owner state before slot reuse. Only the selected large
+pools are allocated; other argument bindings use small sentinels. The shader
+handshake reports each allocation's size/alignment, and host per-buffer and total
+working-set checks include the selected pools. Wavefront contract 8 rejects older
+libraries and validates the current fixed-entry policy mapping.
+
+Reports retain requested packet settings and effective settings (null when no
+packet execution applies), and raw captures record both controls. These are
+execution experiments, with no established speedup. `metal.wavefront_frame`
+adds exact paired raw-XYZ controls for packet sky, diffuse, glass, coating and
+null/invisible history, capacity one/seventeen and high absolute sample indices.
+It also checks retained lifetimes, sample/evaluation accounting, nonfinite-output
+failure and explicit unsupported-policy rejection.
+Additional targeted controls use a stochastic glTF alpha sheet and adjacent
+triangle/bilinear-patch receivers. Native intersections cover all seven policies
+at capacity seventeen; compensated intersections cover each layout with one
+event. Both use high absolute sample indices, the existing direct-sample sensor
+oracle tolerance, and bitwise same-profile policy comparisons. These additional
+alpha/mixed-geometry/profile controls pass in all three presets; the later
+contract-8 record supplies current correctness evidence. The original bounded
+record below predates these additions. The tests require actual GPU execution;
+building them alone supplies no hardware equivalence evidence.
+
+### Bounded packet-policy correctness evidence
+
+On November 23, 2026, Debug source digest
+`e7b53300244884b27a848d7e69cc82812f36167e1847eb9ce3b7bf89c1750d32`
+on M4 Max / Darwin 25.6.0 / AppleClang 21.0 passes the expanded wavefront-frame
+and queue tests with Metal API validation (123.91 s and 0.26 s). These are
+correctness-test durations, not performance measurements. The shader reports
+1,232-byte packed state, a 224-byte hot state, 1,008-byte retained Vertex, and
+48-byte split hit record; alignments are 16/16/16/8 bytes. The new host explicitly
+rejects the older contract-4 metallib.
+
+A separate 64×64, three-frame smoke covers all seven valid layout/fusion policies
+for both independent and Area-one replay, with temporal reconstruction: all 42
+pipeline frames complete. Independent OpenEXR 3.4.4 / NumPy 2.4.5 decoding confirms
+finite FLOAT RGB and correct requested/effective report settings and raw EXR
+metadata. Every policy's final raw and reconstructed RGB values agree bit for bit
+with its same-estimator packed/one-event control. These controls retain the
+fixture's existing finite-layered-model diagnostic; scheduling adds no coating
+cutoff. This bounded evidence establishes neither general bit identity nor a
+speedup, and does not replace a matched Release performance/quality study.
+Receipts, exact commands, per-policy images, decoder script, hashes and the ABI
+probe are retained outside Git under `.cache/validation/packet-schedule-001/`.
+
+### Contract-6 specialization experiment
+
+The first runtime-policy experiment remains retained in history and frozen
+artifacts. Its paired screen is separate from the specialization below; no
+policy is promoted by changing the implementation mechanism.
+
+Apple's [function-specialization guide](https://developer.apple.com/documentation/metal/using-function-specialization-to-build-pipeline-variants)
+describes pipeline variants with function constants; its
+[unspecialized function lookup](https://developer.apple.com/documentation/metal/mtllibrary/makefunction(name:))
+provides function-constant metadata for capability checks. Our seven-policy
+adaptation does not establish register occupancy or a speedup.
+
+Session construction specializes wavefront-only Metal function constants 23
+(layout) and 24 (events), retaining the scene's material, intersection and opaque
+visibility constants. All seven supported policies share kernel source but get
+separate specialized pipelines. The packed/one-event branch has a single call
+to the original three-argument, non-inlined packet-step interface, with direct
+packed state access and no runtime event loop or nullable hit source. The
+numerical event body is force-inlined into the ordinary and pretraced step
+functions; prepared scattering, random draws and contribution order are unchanged.
+The split function receives a non-null hit reference and has no event-trace
+fallback. Its ready flag is checked only against the original event eligibility;
+complete, zero-throughput and invalid-ray states still reach their original
+termination/failure handling without requiring a hit.
+
+Wire contract 6 preserves the buffer layouts and rejects older libraries before
+loading policy pipelines. The host verifies specialization constants on the
+actual selected packet entry; effective report settings remain null until a
+session builds successfully. Reset checks runtime config against compiled
+policy constants. The queue test covers all 49 compiled/requested-policy pairs
+and requires a mismatch to fail before issuing or completing owners. A matched
+performance comparison against both the frozen pre-packet implementation and
+the retained runtime-policy experiment remains separate; no speedup is established
+by this implementation mechanism or the correctness checks below.
+
+The existing packet-scattering GPU probe also exercises the production split-hit
+guard through a private shared shader helper, without adding a renderer/host
+test API. Its fixed outcome table includes eligible missing and
+corrupt hit flags, a valid hit, complete/depth/zero-throughput exits, invalid ray
+and throughput inputs, and stale/sentinel hit flags. This isolates the new guard
+branches; the full frame controls separately validate original completion,
+arithmetic failure and raw-image behavior.
+
+#### Specialization correctness checks
+
+On November 23, 2026, source digest
+`2cdb69d00f1e06818117816833d168281da6ea5078f49d13967d92bf457114f8`
+passes the packet-scattering, expanded frame and queue checks on M4 Max in Debug,
+Release and ASan/UBSan with Metal API validation. The 14 ready-guard cases and
+49 compiled/requested-policy pairs pass, as do the alpha, procedural and
+compensated-profile image controls. The thread-reference pretraced wrapper
+compiles on the validated Metal toolchain. Strict LLVM 18 portable syntax and
+focused clang-tidy checks pass, along with CLI/motion/diagnostics tests.
+
+The initial Debug frame attempt timed out at 300.04 s; a contemporaneous process
+snapshot showed its Metal compiler service at 99.2% CPU while the test waited.
+That failed attempt remains retained. The frame-test bound is now 900 s, and
+fixture/policy progress is logged before pipeline creation. The retry passes in
+49.27 s; this cache-dependent duration is not a renderer-performance measurement.
+Release's three focused GPU checks pass in 28.93 s and ASan/UBSan's in 16.57 s.
+No numerical comparison or failure check was relaxed.
+
+All seven policies complete three 64×64 frames for each of independent and
+Area-one replay, with temporal reconstruction (42 complete pipeline frames).
+Independent OpenEXR/NumPy decoding finds every final raw and reconstructed image
+bit-identical to its same-estimator packed/one-event control. An additional
+nine-frame control combines split tracing, opaque-auto shadows, fast-all native
+AS builds, cached guides and profiling on/off: final raw and reconstructed
+images agree bit for bit with query/packed controls, and profiled stage samples
+are complete and finite. The cache correctly misses twice while previous-camera
+validity changes, then hits; an initial harness expectation of a frame-one hit
+was corrected with its failed audit retained. The host explicitly rejects the
+frozen contract-5 metallib, whose SHA-256 remains unchanged.
+
+Evidence, exact commands, images, decode hashes and failed attempts are retained
+outside Git under `.cache/validation/packet-specialization-001/`. The fresh
+Release executable and metallib are frozen separately as
+`core-speed-001/frozen-packet-specialized`; earlier frozen builds are unchanged.
+These are bounded correctness controls, not occupancy or speedup measurements.
+
+### Literal ordinary-path restoration
+
+The runtime-policy and contract-6 specialization experiments remain retained in
+Git and frozen artifacts; the lead's matched screens rejected them for an
+introduced default-path regression despite exact image controls. The current
+repair restores ordinary packed/one-event source structure before another
+matched performance comparison. No policy, workload or acceptance bound changes.
+
+The original `packet_pt_step` body is stored once in the private, intentionally
+unguarded `packet_pt_event_body.inc`. Ordinary and pretraced noinline functions
+include it with a compile-time hit-source selector. The ordinary expansion keeps
+`f0d8494`'s exact signature, numerical body, intersector declaration/set-cull
+placement and inline event trace statements. The split expansion substitutes only
+hit acquisition and omits the event intersector; it has no event-trace fallback.
+The template/always-inline wrapper experiment is removed.
+
+`rypath_wavefront_shade_packet` again contains the original direct packed-state
+load, single step call and packed-state publication. A separate experimental
+entry handles the other six policies. The host selects the ordinary entry only
+for packed/one-event and supplies its original scene constant set. Opaque-shadow
+constant 22 is verified on the actual selected entry; policy constants 23/24 are
+verified on the experimental entry and reset producer, with runtime policy
+consistency still checked before owners are issued. Wire contract 7 rejects
+older entry-routing libraries without changing resource sizes or state layouts.
+
+The body include is both an explicit Metal rebuild dependency and an input to
+the actual `BuildProvenance.cmake` source fingerprint (`shaders/*`, with no
+extension filter). An independent full-source manifest, including the `.inc`,
+agrees with CMake's embedded digest. Token receipts compare 2,733 ordinary-body
+tokens, 32 signature tokens and 409 default-kernel tokens with `f0d8494`; all
+agree. These checks establish source parity, not binary identity, register
+occupancy or restored throughput. Build/GPU and paired image evidence for this
+repair is recorded separately under `.cache/validation/packet-restoration-001/`.
+
+At source digest
+`653422fa55d2c91df9ad670d06af038e0c5b7640a353e69cb2e204f50dd61d72`,
+packet-scattering, expanded wavefront-frame and queue checks pass under Metal API
+validation in Debug (303.46 s), Release (28.27 s) and ASan/UBSan (17.14 s) on
+M4 Max. Debug's cold frame check completes in 299.02 s under the retained 900 s
+bound. These are test durations, not rendering-throughput measurements. Both
+frozen contract-6 and contract-5 libraries are explicitly rejected, with their
+file hashes unchanged.
+
+The same 14 policy controls complete 42 pipeline frames, and the combined
+split/opaque-auto/fast-all/cached-guide/profiling control completes nine more.
+Independent decoding again finds final raw and reconstructed images bit-identical
+to the corresponding packed/one-event controls; profiled stage samples remain
+complete and finite. No attempt failed in this restoration validation. The prior
+failed/rejected experiments stay in their own records. Clean Release artifacts
+and source/file provenance are frozen separately as
+`core-speed-001/frozen-packet-restored`; qualification against the original
+frozen workload remains required before claiming the default regression fixed.
+
+### Contract-8 fixed-entry experiment
+
+The contract-7 restoration retained the original ordinary event and packed1 shade
+body. Its measured default control matched the pre-packet control, while the six
+shared-entry alternatives remained slower. Those results and frozen artifacts
+remain retained; they do not establish a benefit for an experimental policy.
+
+Contract 8 replaces the shared experimental shade entry with seven named entries.
+A single `packet_shade_body.inc` expands literal layout, event-count, and hit-source
+paths: packed policies access the packed pool directly, separated policies call
+unconditional hot/cold accessors, and split trace calls only the pretraced event.
+Every shade pipeline receives the original scene constants. Producer pipelines
+retain constants 23/24 and immutable configuration checks; the host still verifies
+opaque-shadow constant 22 on the actual selected shade entry. Contract 8 rejects
+older libraries before loading this entry map. No policy defaults change.
+
+Source expansion checks retain the original `f0d8494` ordinary event's 2,733 body
+tokens and the packed1 kernel's 409 tokens. Both shared body includes participate
+in shader dependencies and the actual source fingerprint. This checks source
+structure and numerical ordering, not generated code, occupancy, or performance.
+Fresh validation evidence is retained outside Git under
+`.cache/validation/packet-fixed-001/`; performance qualification remains separate.
+
+The three focused GPU tests (`packet_scattering`, `wavefront_frame`, and
+`wavefront_queue`) pass in Debug, Release, and ASan/UBSan with Metal API validation.
+Seven-policy independent and Area controls (42 complete frames) retain bit-exact
+raw and reconstructed captures within each estimator. Three combined control
+arms retain exact captures with opaque traversal, fast-all AS builds, guide reuse,
+and stage profiling; profiled stages are complete and finite. The new host rejects
+the frozen contract-7 library. Reflection records layout 23 on refill and both
+23/24 on reset, initialize, and prepare-refill. An initial overly strict refill
+capability check failed visibly; its log remains retained with the corrected runs.

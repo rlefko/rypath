@@ -4,7 +4,12 @@
 namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 4, default_capacity = 65536 };
+enum : Word {
+    contract = 8,
+    default_capacity = 65536,
+    packet_layout_constant = 23,
+    packet_events_constant = 24
+};
 enum Failure : Word {
     invalid_config = 1u,
     queue_overflow = 2u,
@@ -26,11 +31,14 @@ enum Argument : Word {
     done_id,
     current_dispatch_id,
     refill_dispatch_id,
+    packet_hot_id,
+    packet_cold_id,
+    packet_hit_id,
     replay_input_id
 };
 struct Config {
     Word pixel_count, capacity, packet, model;
-    Word group_width, replay_enabled, reserved[2];
+    Word group_width, replay_enabled, packet_events, packet_layout;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -48,9 +56,11 @@ struct DispatchArguments {
 struct Contract {
     Word version, scalar_bytes, scalar_alignment, packet_bytes;
     Word packet_alignment, config_bytes, counters_bytes, dispatch_bytes;
+    Word hot_bytes, hot_alignment, cold_bytes, cold_alignment;
+    Word hit_bytes, hit_alignment, reserved[2];
 };
 static_assert(sizeof(Config) == 32 && sizeof(Counters) == 32 && sizeof(DispatchArguments) == 12 &&
-                  sizeof(Contract) == 32,
+                  sizeof(Contract) == 64,
               "Wavefront host/shader ABI");
 } // namespace wavefront_wire
 } // namespace rypath
