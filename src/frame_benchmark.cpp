@@ -1113,6 +1113,22 @@ int run(const Options &options) {
                     {"rypath.frame.seed", std::to_string(options.seed)},
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.estimator", estimator_name(options.estimator)},
+                    {"rypath.area.contract",
+                     std::to_string(options.estimator == rypath::FrameEstimator::area_replay
+                                        ? rypath::area_wire::contract
+                                        : 0)},
+                    {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
+                                               ? area_output_name(options.area_output)
+                                               : "not-applicable"},
+                    {"rypath.area.target", options.estimator == rypath::FrameEstimator::area_replay
+                                               ? "quarter-l1-v1"
+                                               : "none"},
+                    {"rypath.area.source_mis",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? "source-target-mis-v1"
+                         : "none"},
+                    {"rypath.area.temporal_reuse",
+                     options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
                     {"rypath.area.mutations",
                      std::to_string(options.estimator == rypath::FrameEstimator::area_replay
                                         ? options.mutation_steps
