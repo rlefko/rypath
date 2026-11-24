@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -304,6 +305,15 @@ void transmission_witness() {
         const auto &owner = result.packet_samples[0];
         if (owner.radiance[0] > 0) {
             ++positive;
+            // On every successful off-normal slab path, only the hero has
+            // spectral Dirac support. The spectral mixture contributes factor4;
+            // entrance/exit radiance eta factors cancel, and every Fresnel
+            // branch mass cancels its own sampling probability. The black
+            // environment adds nothing: the surviving hero MUST carry4*.7.
+            const float expected = 4 * .7f;
+            need(std::abs(owner.radiance[0] - expected) <=
+                     64 * std::numeric_limits<float>::epsilon() * expected,
+                 "Successful dispersive slab has analytic4*.7 hero radiance");
             for (unsigned k = 1; k < 4; ++k)
                 need(owner.radiance[k] == 0,
                      "Off-normal smooth dispersion retains only compatible Dirac support");
@@ -329,6 +339,30 @@ void transmission_witness() {
     const auto result = sample(*matched, high_sample, 1, 1);
     for (float value : result.packet_samples[0].radiance)
         need(value == .7f, "Matched solid-glass transmission has analytic unit throughput");
+
+    // Nontrivial eta, shared by all lanes: no spectral support is lost. Every
+    // successful path through the parallel slab has eta_in*eta_out=1 and
+    // throughput1, including any internal Fresnel reflections. Each lane must
+    // carry .7 rather than the dispersive hero-only4*.7. Fix the same8 indices;
+    // reflection/null paths remain recorded black outcomes, never retried.
+    scene.materials[0].eta.knots = {{360, 1.5f}, {830, 1.5f}};
+    frames(scene);
+    auto constant_eta = offline(scene);
+    unsigned positive_constant = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        const auto sample_result = sample(*constant_eta, high_sample + i, 1, 1);
+        const auto &owner = sample_result.packet_samples[0];
+        if (owner.radiance[0] > 0) {
+            ++positive_constant;
+            for (float value : owner.radiance)
+                need(std::abs(value - .7f) <= 64 * std::numeric_limits<float>::epsilon() * .7f,
+                     "Successful constant-eta slab retains analytic .7 in all four lanes");
+        } else {
+            for (float value : owner.radiance)
+                need(value == 0, "Constant-eta slab reflection/null remains black");
+        }
+    }
+    need(positive_constant > 0, "Fixed constant-eta slab samples include actual transmission");
 }
 void earlier_emission() {
     auto control = offline(early_emission(false));

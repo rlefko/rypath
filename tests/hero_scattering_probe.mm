@@ -19,7 +19,7 @@ void need(bool ok, const std::string &message) {
         throw std::runtime_error(message);
 }
 void close(double actual, double expected, const std::string &label) {
-    // Moderate, noncritical-angle fixtures: binary32 BSDF arithmetic has this
+    // Fixtures stay clear of the critical boundary itself; binary32 arithmetic has this
     // predeclared relative envelope against independent binary64 scalar formulas.
     need(std::isfinite(actual) && std::isfinite(expected) &&
              std::abs(actual - expected) <= 2e-4 * std::abs(expected) + 1e-8,
@@ -78,6 +78,8 @@ E dielectric(double eta, double alpha, V wo, V wi, bool importance) {
 struct Case {
     p::Query q;
     std::string label;
+    unsigned cyclic_hero = 0;
+    unsigned critical_branch = 2; // 0=reflection mass, 1=transmission mass, 2=ordinary fixture.
 };
 p::Query base(unsigned kind) {
     p::Query q{};
@@ -137,6 +139,25 @@ std::vector<Case> cases() {
         out.push_back({q, "aligned thin-sheet reflection"});
         q.uc = .95f;
         out.push_back({q, "aligned thin-sheet transmission"});
+        // Exiting theta=acos(.75): sin²(theta)*eta² is .8575/.984375/
+        // 1.12/1.264375. Two wavelengths transmit; two undergo TIR. This
+        // straddles spectral support while staying well clear of arithmetic
+        // ambiguity at the critical boundary. Rotate every lane into hero0.
+        const std::array<float, 4> indices{1.4f, 1.5f, 1.6f, 1.7f};
+        for (unsigned hero = 0; hero < 4; ++hero)
+            for (unsigned branch = 0; branch < 2; ++branch) {
+                q = base(2);
+                q.importance = mode;
+                q.wo[0] = std::sqrt(1.f - .75f * .75f);
+                q.wo[2] = -.75f;
+                q.uc = branch ? .99f : 0.f;
+                for (unsigned i = 0; i < 4; ++i)
+                    q.eta[i] = indices[(i + hero) % 4];
+                out.push_back({q,
+                               "exit critical-support cyclic hero" + std::to_string(hero) +
+                                   (branch ? " transmission draw" : " reflection draw"),
+                               hero, branch});
+            }
     }
     auto q = base(1);
     q.wo[0] = 0;
@@ -203,6 +224,19 @@ void check(const Case &c, const p::Result &v) {
     if (q.kind == 2 && q.eta[0] == 1)
         for (unsigned j = 0; j < 3; ++j)
             close(wi[j], -wo[j], label + ": matched-index transmission");
+    if (q.kind == 2 && expected_delta) {
+        const double F = fresnel(wo[2], q.eta[0]);
+        need(transmission == (q.uc >= F), label + ": independent hero Fresnel branch support");
+        V expected{-wo[0], -wo[1], wo[2]};
+        if (transmission) {
+            const double ep = wo[2] > 0 ? q.eta[0] : 1 / q.eta[0];
+            const double sin2 = (1 - wo[2] * wo[2]) / (ep * ep);
+            need(sin2 < 1, label + ": actual transmission cannot be TIR");
+            expected = {-wo[0] / ep, -wo[1] / ep, -std::copysign(std::sqrt(1 - sin2), wo[2])};
+        }
+        for (unsigned j = 0; j < 3; ++j)
+            close(wi[j], expected[j], label + ": independent reflected/refracted direction");
+    }
     for (unsigned i = 0; i < 4; ++i) {
         const E direct = continuous(q, i, vector(q.wi));
         close(v.f[i], direct.f, label + ": independent direct f");
@@ -211,7 +245,8 @@ void check(const Case &c, const p::Result &v) {
             const E e = continuous(q, i, wi);
             close(v.numerator[i], e.f * std::abs(wi[2]), label + ": independent f*cos");
             close(v.pdf[i], e.pdf, label + ": independent sampled-direction PDF");
-            const double eta = (q.kind == 2 && transmission) ? q.eta[i] : 1;
+            const double eta =
+                (q.kind == 2 && transmission) ? (wo[2] > 0 ? q.eta[i] : 1 / q.eta[i]) : 1;
             close(v.eta[i], eta, label + ": per-wavelength eta");
             continue;
         }
@@ -243,13 +278,48 @@ void check(const Case &c, const p::Result &v) {
             if (aligned) {
                 const double F = fresnel(wo[2], q.eta[i]);
                 density = transmission ? 1 - F : F;
-                eta = transmission ? q.eta[i] : 1;
+                eta = transmission ? (wo[2] > 0 ? q.eta[i] : 1 / q.eta[i]) : 1;
                 mass = density * (transmission && !q.importance ? 1 / (eta * eta) : 1);
             }
         }
         close(v.pdf[i], density, label + ": independent Dirac branch mass");
         close(v.numerator[i], mass, label + ": independent physical Dirac mass");
         close(v.eta[i], eta, label + ": independent Dirac eta");
+    }
+}
+// Independent finite enumeration of ONE interface with a unit-radiance
+// endpoint on each supported outgoing direction. Every physical wavelength can
+// be the hero with probability1/4; integrate both branch probabilities. This
+// checks actual GPU branch masses/support against Fresnel/Snell expectations,
+// without invoking the production hero density/throughput helper as an oracle.
+void critical_expectation(const std::vector<Case> &tests, const std::vector<p::Result> &values) {
+    const std::array<double, 4> indices{double(1.4f), double(1.5f), double(1.6f), double(1.7f)};
+    for (unsigned mode : {0u, 1u}) {
+        std::array<double, 4> mean{};
+        unsigned count = 0;
+        for (std::size_t n = 0; n < tests.size(); ++n) {
+            const auto &c = tests[n];
+            if (c.critical_branch > 1 || c.q.importance != mode)
+                continue;
+            ++count;
+            const auto &v = values[n];
+            const double F = fresnel(c.q.wo[2], c.q.eta[0]);
+            // A transmission draw on a TIR hero duplicates its reflected
+            // result but has ZERO transmission probability in this integral.
+            const double probability = c.critical_branch == 0 ? F : 1 - F;
+            double density = 0;
+            for (float pdf : v.pdf)
+                density += pdf;
+            need(density > 0, "Critical-support event has a positive mixture density");
+            for (unsigned i = 0; i < 4; ++i)
+                mean[(i + c.cyclic_hero) % 4] += probability * v.numerator[i] / density;
+        }
+        need(count == 8, "Enumerate exactly four heroes and two branch outcomes");
+        for (unsigned i = 0; i < 4; ++i) {
+            const double F = fresnel(-.75, indices[i]);
+            const double expected = F + (1 - F) * (mode ? 1 : indices[i] * indices[i]);
+            close(mean[i], expected, "Independent cyclic-hero critical-support expectation");
+        }
     }
 }
 std::string error(NSError *e) {
@@ -308,6 +378,7 @@ int run(const char *path) {
     std::memcpy(values.data(), output.contents, values.size() * sizeof(p::Result));
     for (std::size_t i = 0; i < tests.size(); ++i)
         check(tests[i], values[i]);
+    critical_expectation(tests, values);
     std::cout << tests.size()
               << " hero BSDF cases passed: independent scalar formulas; coated adapter controls\n";
     return 0;
