@@ -296,7 +296,10 @@ void canonical_mis(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQu
         std::string diagnostic;
         const auto pipeline =
             metal::load_pipeline(device, library, name, diagnostic, nil, constants);
-        require(pipeline != nil, diagnostic);
+        const char *function_name = name.UTF8String;
+        require(pipeline != nil,
+                std::string(function_name ? function_name : "<invalid function name>") + ": " +
+                    diagnostic);
         constexpr std::size_t guard = 64;
         const std::size_t scratch_bytes =
             rows * probe::canonical_scratch_slots * packet_wire::vertex_bytes;

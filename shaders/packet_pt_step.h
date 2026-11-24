@@ -58,7 +58,9 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
 // numerical body deliberately mirrors random_walk as an independent initial
 // execution control. Preserve sampled and represented-density checks, exact local
 // pairs, offsets, material streams and eta roulette when maintaining either path.
-[[clang::noinline]] inline void packet_pt_step(thread Resources &r, thread PacketPTState &state) {
+[[clang::noinline]] inline void
+packet_pt_step(thread Resources &r, thread PacketPTState &state,
+               thread const rypath_replay::ReplayState *replay = nullptr) {
     if (state.complete)
         return;
     const constant auto &p = *r.alpha.parameters;
@@ -270,7 +272,7 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        const auto words = material_words(r, sample, material_index, count - 1, mode);
+        const auto words = material_words(r, sample, material_index, count - 1, mode, replay);
         v.seed = words.w;
         v.beta = beta;
         v.connectible = !rypath_packet::delta_only(v.bsdf);
@@ -290,7 +292,7 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
             break;
         }
         const auto draws =
-            random(r, sample, index, (mode == Mode::Radiance ? 4u : 69u) + count - 2);
+            random(r, sample, index, (mode == Mode::Radiance ? 4u : 69u) + count - 2, replay);
         const float3 sampled_wo_local = v.frame.local(v.wo);
         const auto continuation =
             rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
@@ -379,7 +381,8 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
         // have been finalized before f() is queried, including rejected events.
         state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
         if (sample.status == wire::success && count < capacity)
-            state.radiance += packet_pt_direct(r, sample, lambda, index, pt, previous, count);
+            state.radiance +=
+                packet_pt_direct(r, sample, lambda, index, pt, previous, count, replay);
         if (!finite_nonnegative(state.radiance))
             sample.status = wire::invalid_arithmetic;
         if (sample.status != wire::success)

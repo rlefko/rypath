@@ -20,6 +20,7 @@
 #include "intersection.h"
 #include "masked_intersection.h"
 #include "medium.h"
+#include "replay_sampler.h"
 #include "scattering.h"
 #include "surface_detail.h"
 #include "texture_footprint.h"
@@ -121,7 +122,10 @@ static uint zdraw(constant wire::Parameters &p, const device sobol::Tables &tabl
                       p.zsobol_log_spp, p.randomization, p.seed_low);
 }
 static uint4 medium_words(constant wire::Parameters &p, thread const wire::Sample &sample,
-                          thread uint &draw) {
+                          thread uint &draw,
+                          thread const rypath_replay::ReplayState *replay = nullptr) {
+    if (replay)
+        return rypath_replay_sampler::vector(rypath_replay_sampler::medium(*replay, draw++));
     return philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
                         rypath::sampling_contract::medium_local_block(draw++)),
                   uint2(p.seed_low, p.seed_high ^ rypath::sampling_contract::medium_stream_v1));
@@ -144,7 +148,10 @@ static uint outgoing_medium(const device wire::Instance &instance, uint current,
 }
 
 static uint4 draw_words(constant wire::Parameters &p, const device sobol::Tables &tables,
-                        thread const wire::Sample &sample, ulong index, uint block) {
+                        thread const wire::Sample &sample, ulong index, uint block,
+                        thread const rypath_replay::ReplayState *replay = nullptr) {
+    if (replay)
+        return rypath_replay_sampler::vector(rypath_replay_sampler::transport(*replay, block));
     if (p.sampler_kind == wire::independent_sampler) {
         return philox(uint4(sample.pixel, sample.sample_low, sample.sample_high, block),
                       uint2(p.seed_low, p.seed_high));
@@ -167,7 +174,10 @@ static uint4 draw_words(constant wire::Parameters &p, const device sobol::Tables
 }
 
 static uint dielectric_lobe_word(constant wire::Parameters &p, const device sobol::Tables &tables,
-                                 thread const wire::Sample &sample, ulong index, uint bounce) {
+                                 thread const wire::Sample &sample, ulong index, uint bounce,
+                                 thread const rypath_replay::ReplayState *replay = nullptr) {
+    if (replay)
+        return rypath_replay_sampler::dielectric(*replay, bounce).x;
     if (p.sampler_kind == wire::halton_sampler)
         return qmc::float_bits(
             qmc::radical(rypath::sampling_contract::halton_dielectric_lobe_begin + bounce, index,
@@ -291,6 +301,33 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
                 ? sobol::camera_uniform(words.y, p.sobol_scale_exponent, pixel / p.width)
                 : sample_uniform(p, words.y);
         const auto offsets = gaussian_filter_offsets(p, tables, ux, uy);
+        result.filter_offsets[0] = offsets.x;
+        result.filter_offsets[1] = offsets.y;
+    }
+    return result;
+}
+
+// Replay's canonical coordinates are separate from current destination/output identity.
+// The live replay evaluator uses independent sampling; QMC remains offline-only.
+static wire::Sample begin_replay_sample(constant wire::Parameters &p,
+                                        const device sobol::Tables &tables, uint pixel,
+                                        thread const rypath_replay::ReplayState &replay) {
+    wire::Sample result{rypath_replay::valid(replay) && p.sampler_kind == wire::independent_sampler
+                            ? wire::success
+                            : wire::invalid_arithmetic,
+                        pixel,
+                        p.sample_low,
+                        p.sample_high,
+                        360.0f + 470.0f * rypath_replay::uniform(replay.wavelength),
+                        0.0f,
+                        0,
+                        {replay.film[0], replay.film[1], replay.wavelength, 0},
+                        {replay.lens[0], replay.lens[1]},
+                        {0, 0}};
+    if (p.filter_kind == wire::gaussian_filter) {
+        const auto offsets =
+            gaussian_filter_offsets(p, tables, rypath_replay::uniform(replay.film[0]),
+                                    rypath_replay::uniform(replay.film[1]));
         result.filter_offsets[0] = offsets.x;
         result.filter_offsets[1] = offsets.y;
     }
@@ -2502,3 +2539,5 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
 }
 
 #include "wavefront.metal"
+
+#include "area_reuse.metal"

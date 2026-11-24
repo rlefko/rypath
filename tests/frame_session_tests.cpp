@@ -166,7 +166,7 @@ void lifetime_and_camera() {
 }
 void invalid_cases() {
     auto scene = sky();
-    for (const auto config :
+    for (const auto &config :
          {FrameConfig{}, FrameConfig{.width = UINT32_MAX, .height = 2},
           FrameConfig{.width = 1, .height = 1, .footprint_samples = 0},
           FrameConfig{.width = 1, .height = 1, .transient_byte_limit = 1},

@@ -11,6 +11,11 @@ packet scene; subsequent wavefront measurements are reported separately.
 Native 1080p at 20–30 rendered FPS remains a target; the complete pipeline is not
 available yet.
 
+Opt-in [Area-domain path reuse](area-reuse.md) now replays film, lens, wavelength
+and complete indirect transport. Bounded importance contrast limits reuse-induced
+weights. Debug, Release and sanitizer arithmetic/lifetime checks and small mean
+studies pass; visual improvement and time to image quality remain unqualified.
+
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
 sampling and performance fixes. The remaining Pavilion convergence investigation

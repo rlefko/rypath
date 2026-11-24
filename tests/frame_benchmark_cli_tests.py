@@ -35,6 +35,8 @@ for args in (
 
 for option, values in (
     ("--execution", ("invalid",)),
+    ("--estimator", ("invalid",)),
+    ("--target-scale", ("0", "-1", "nan", "inf", "1e-45", "1e100", "1e-6x")),
     ("--intersections", ("invalid",)),
     ("--capacity", ("0", "65537", "-1")),
     ("--quantum", ("0", "1025", "-1")),
@@ -42,6 +44,8 @@ for option, values in (
 ):
     for value in values:
         invoke(["--demo", "--output", "x.json", option, value])
+
+invoke(["--demo", "--output", "x.json", "--estimator", "area-replay", "--execution", "megakernel"])
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
@@ -82,6 +86,8 @@ with tempfile.TemporaryDirectory() as directory:
     assert data["summary"]["missing_GPU_timestamps"] == 0
     assert data["capture_in_frame_timing"] is False
     assert data["settings"]["execution"] == "wavefront"
+    assert data["settings"]["estimator"] == "independent"
+    assert data["settings"]["replay_contract"] == 0
     for execution in ("wavefront", "megakernel"):
         destination = root / (execution + ".json")
         invoke(["--scene", str(malformed), "--output", str(destination),
@@ -100,4 +106,12 @@ with tempfile.TemporaryDirectory() as directory:
         selected_data = json.loads(selected.read_text())
         assert selected_data["settings"]["intersection_profile"] == profile
         assert selected_data["completed_frames"] == 0
+    destination = root / "area.json"
+    invoke(["--scene", str(malformed), "--output", str(destination),
+            "--estimator", "area-replay", "--target-scale", "0.125"])
+    settings = json.loads(destination.read_text())["settings"]
+    assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
+    assert settings["area_contract"] == 2
+    assert settings["area_target"] == "bounded-l1-contrast-0.1-v1"
+    assert settings["target_scale"] == 0.125 and settings["fresh_paths_per_pixel_per_frame"] == 1
 print("frame benchmark CLI checks passed")

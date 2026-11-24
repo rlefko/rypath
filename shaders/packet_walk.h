@@ -6,9 +6,13 @@
 // Included inside rypath_bdpt after Resources, Vertex and density helpers.
 
 inline uint4 material_words(const thread Resources &r, const thread wire::Sample &sample,
-                            uint material, uint bounce, Mode mode) {
+                            uint material, uint bounce, Mode mode,
+                            thread const rypath_replay::ReplayState *replay = nullptr) {
     const constant auto &p = *r.alpha.parameters;
     const uint role = mode == Mode::Radiance ? 0x63616d31u : 0x6c697431u;
+    if (replay)
+        return rypath_replay_sampler::vector(
+            rypath_replay_sampler::material(*replay, bounce, material, role));
     return philox(uint4(sample.pixel, sample.sample_low, sample.sample_high,
                         rypath::sampling_contract::material_local_block(bounce)),
                   uint2(p.seed_low ^ material,
