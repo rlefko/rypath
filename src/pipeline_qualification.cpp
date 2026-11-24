@@ -385,8 +385,8 @@ Scene load_scene(const Options &o) {
     auto translated = pbrt::translate(checked, {o.scene.string()});
     for (const auto &diagnostic : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(diagnostic);
-    require(translated.exit_code() == 0 && translated.scene.has_value(),
-            "Qualification PBRT translation failed");
+    if (translated.exit_code() != 0 || !translated.scene)
+        throw std::runtime_error("Qualification PBRT translation failed");
     result.provenance.insert(result.provenance.end(), translated.provenance.begin(),
                              translated.provenance.end());
     result.value = std::move(*translated.scene);
