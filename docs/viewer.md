@@ -185,5 +185,13 @@ optimization; the default change itself does not change transport or filtering.
 Full-replay Area/MCMC remains the explicit research candidate until its added cost
 and correlation earn a measured quality benefit.
 
+The separate [audited pipeline qualification](pipeline-qualification.md) reports
+post-cap quality and native-1080p timing at historical `0ef51ba`. Across three
+seeds, independent sampling spans 2.93–21.97 complete-pipeline FPS and Area-one
+0.48–6.66 FPS. Only two of 90 primary runs meet p95 ≤50 ms, none meet approximately
+33.33 ms, and no scene/arm passes all three seeds. The suite therefore misses its
+20–30 rendered FPS target. Four audited sustained controls also miss 20 FPS;
+the UI checks above remain functional evidence rather than timing qualification.
+
 See [reconstruction](reconstruction.md) for surface-guide approximations and
 [the golden pipeline](golden-pipeline.md) for the measurement target.

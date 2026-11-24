@@ -11,7 +11,12 @@
 // per dispatch; they are never stored here. Vertex Prepared retains immutable
 // scene table pointers, which must remain valid through command completion.
 struct PacketPTState {
-    Vertex vertices[3];
+    // PT retains only its latest frozen BSDF/frame. The older endpoint enters
+    // represented_scattering_pdf only through type and position: a continuing
+    // walk contains camera/surface history, never a terminal environment vertex.
+    Vertex latest;
+    float3 preceding_position;
+    uint preceding_type;
     wire::Sample sample;
     Wavelengths lambda;
     float4 radiance, beta;
@@ -38,7 +43,7 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
     state.beta = 1;
     state.roulette_eta = {};
     state.count = 1;
-    thread auto &endpoint = state.vertices[0];
+    thread auto &endpoint = state.latest;
     endpoint.type = camera_vertex;
     endpoint.path_id = 0;
     endpoint.point.position = incoming.origin;
@@ -82,6 +87,9 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
     sample.wavelength = lambda.lambda[0];
     const uint old_count = count;
     bool terminated = true;
+    // Keep the current event local until its endpoint/direct contributions have
+    // consumed both historical endpoints. It need not survive another dispatch.
+    Vertex current{};
     do {
         if (count >= capacity || !nonzero(beta))
             break;
@@ -116,7 +124,8 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
                 v.beta = beta;
                 // PT does not consume stored BDPT MIS densities.
                 v.connectible = true;
-                state.vertices[(count++) % 3] = v;
+                current = v;
+                ++count;
             }
             break;
         }
@@ -276,14 +285,15 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
         v.seed = words.w;
         v.beta = beta;
         v.connectible = !rypath_packet::delta_only(v.bsdf);
-        const Vertex prev = state.vertices[(count - 1) % 3];
+        const Vertex prev = state.latest;
         const float sampled_area_pdf = convert_density(pdf, prev, v);
         // Retain sampled-area validation even when PT skips unused BDPT storage.
         if (!isfinite(sampled_area_pdf) || sampled_area_pdf < 0) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
-        state.vertices[(count++) % 3] = v;
+        current = v;
+        ++count;
         crossings = 0;
         if (count == capacity)
             break;
@@ -305,7 +315,7 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
             break;
         // Retain exact sampled locals for throughput and directional-f queries.
         // MIS densities instead use actual neighboring geometry after tracing.
-        thread auto &stored = state.vertices[(count - 1) % 3];
+        thread auto &stored = current;
         stored.sampled_wo_local = sampled_wo_local;
         stored.sampled_wi_local = continuation.wi;
         stored.sampled_prev_id = prev.path_id;
@@ -339,7 +349,7 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
         pdf = continuation.pdf;
         float reverse_pdf = continuation.reverse_pdf;
         if (continuation.delta) {
-            state.vertices[(count - 1) % 3].delta = true;
+            current.delta = true;
             pdf = reverse_pdf = 0;
         }
         const float reverse_area_pdf = convert_density(reverse_pdf, v, prev);
@@ -374,9 +384,13 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
     state.complete =
         terminated || sample.status != wire::success || count >= capacity || !nonzero(beta);
     if (count != old_count && sample.status == wire::success) {
-        const Vertex pt = state.vertices[(count - 1) % 3];
-        const Vertex previous = state.vertices[(count - 2) % 3];
-        const Vertex before = count > 2 ? state.vertices[(count - 3) % 3] : Vertex{};
+        const Vertex pt = current;
+        const Vertex previous = state.latest;
+        Vertex before{};
+        if (count > 2) {
+            before.type = state.preceding_type;
+            before.point.position = state.preceding_position;
+        }
         // Match offline t-major, s=0 then s=1 accumulation. Sampled-local pairs
         // have been finalized before f() is queried, including rejected events.
         state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
@@ -387,6 +401,14 @@ packet_pt_step(thread Resources &r, thread PacketPTState &state,
             sample.status = wire::invalid_arithmetic;
         if (sample.status != wire::success)
             state.complete = true;
+    }
+    if (count != old_count) {
+        // Null/invisible boundaries leave count unchanged and preserve history.
+        // Environment endpoints are evaluated above and mark the walk complete;
+        // their normals are therefore never needed as a later preceding endpoint.
+        state.preceding_position = state.latest.point.position;
+        state.preceding_type = state.latest.type;
+        state.latest = current;
     }
 }
 inline storage::Result packet_pt_result(const thread PacketPTState &state,

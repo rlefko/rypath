@@ -2,14 +2,16 @@
 
 rypath is a C++20 spectral path tracer being developed for Apple Silicon through
 Metal. Progressive offline rendering and an experimental native macOS viewer
-are implemented; image-quality and interactive-performance qualification remain
-open.
+are implemented. The measured interactive pipeline does not meet its
+native-1080p performance target across the scene suite.
 
 **Current state: progressive Metal rendering, a strict PBRT spectral profile, and
 an experimental [native viewer](docs/viewer.md).** The viewer offers camera controls,
 raw/reconstructed comparison and paired linear-RGB captures. Independent sampling
-and signed temporal reconstruction are the fixture-tested defaults; Area/MCMC and
-MetalFX remain explicit options. Native-1080p performance remains unqualified.
+and signed temporal reconstruction are the measured fixture defaults; full-replay
+Area/MCMC and MetalFX remain explicit options. See the audited
+[pipeline qualification](docs/pipeline-qualification.md) for quality, native timing
+and integration limits.
 
 Render the built-in demo or PBRT files containing supported sampled spectra or
 linear sRGB colors. Diffuse reflectance supports blackbody, built-in and file spectra,
@@ -114,12 +116,14 @@ rendering, remaining surface models and heterogeneous media follow this bounded 
 correctness, and performance each need separate evidence. The [PBRT profile](docs/pbrt-profile.md) distinguishes checked scene structure
 from rendering conformance. Measured M4 Max traversal and scheduling results are
 recorded in [frame rendering](docs/frame-rendering.md) and
-[wavefront execution](docs/wavefront-rendering.md); complete-pipeline qualification
-remains open.
+[wavefront execution](docs/wavefront-rendering.md). The completed
+[pipeline studies](docs/pipeline-qualification.md) report quality and timing
+separately; implementation completion does not imply target acceptance.
 Ray-tracing API flags describe device capabilities; geometry validation runs
 through CTest, while the CLI smoke test exercises integer compute.
 
 - [Native viewer: launch, controls and output modes](docs/viewer.md)
+- [Pipeline qualification: audited quality and native timing](docs/pipeline-qualification.md)
 - [Frame reconstruction and its limitations](docs/reconstruction.md)
 - [Architecture and product goals](docs/architecture.md)
 - [Metal execution and validation](docs/metal-execution.md)

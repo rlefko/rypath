@@ -55,9 +55,13 @@ generates pinhole surface guides and converts raw XYZ into separate RGB storage
 for MetalFX denoising/upscaling or signed temporal/spatial reconstruction. The
 AppKit viewer presents these retained outputs through a CAMetalLayer, with camera
 controls and explicit raw/reconstructed comparison. Retained output leases and
-checked completion govern history and downstream GPU consumption. Viewer quality
-and sustained performance remain unqualified. Offline accumulation and checkpoints
-remain separate.
+checked completion govern history and downstream GPU consumption. Implemented
+interactive baselines have a bounded six-scene qualification study; the
+[audited studies](pipeline-qualification.md) select independent sampling with
+signed temporal reconstruction as the viewer default and show that the suite
+misses its native-1080p performance target. Four audited sustained runs also miss
+20 FPS. Pavilion stress performance remains unmeasured in this snapshot.
+Offline accumulation and checkpoints remain separate.
 
 ## PBRT preflight boundary
 

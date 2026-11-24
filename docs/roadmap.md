@@ -205,20 +205,24 @@ guards, and project agent guidance. Large-corpus acquisition remains separately 
 
 ## Interactive pipeline
 
-The current development direction is the [golden pipeline](golden-pipeline.md),
-with eight compatible review boundaries from persistent GPU frames through
-native traversal, wavefront transport, Area ReSTIR/MCMC, reconstruction, a native
-viewer and measured M4 Max qualification. Offline acceptance above remains open;
-interactive work does not imply that those quality and compatibility gates pass.
+Implemented baselines cover the eight [golden-pipeline](golden-pipeline.md) review
+stages, through the native viewer and bounded M4 Max studies. The
+[audited qualification](pipeline-qualification.md) does **not** meet the suite's
+native-1080p 20–30 rendered FPS target. Offline acceptance above remains open;
+interactive implementation does not close those quality or compatibility gates.
+New Pavilion day/night stress timing is outside this measured snapshot.
 
-Resident native frames, bounded wavefront execution and opt-in full-replay Area
-reuse with corrected MCMC mutations, retained MetalFX reconstruction and a
-signed-float temporal fallback are implemented. The experimental
-[native viewer](viewer.md) also exists, with camera controls, explicit output modes,
-raw/reconstructed comparison and paired captures. Signed-temporal UI checks pass;
-sustained-performance qualification remains open. The audited static fixtures
-select independent sampling plus signed temporal reconstruction as the viewer
-default; full-replay Area/MCMC remains an explicit research candidate.
+The viewer defaults to independent sampling plus signed temporal reconstruction.
+Full-replay Area reuse with one corrected MCMC step remains opt-in, with
+zero/two/four-step ablations; the six static fixtures favor independent/temporal
+over Area-one/temporal. MetalFX remains an explicit integration with documented
+guide and input limitations. Four audited sustained controls also miss 20 FPS.
+
+The next interactive work should improve importance sampling, replay/reconnection
+efficiency and guide/filter cost, then demonstrate quality per unit time against
+the independent control. The current adaptation does not reproduce the papers'
+optimized reconnection implementations, and completed studies do not imply
+universal quality or performance acceptance.
 
 Broader conformance includes full OBJ non-polygon geometry, additional mesh
 formats, PBRT materials/cameras, curves, motion, and heterogeneous media.

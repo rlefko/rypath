@@ -1,19 +1,14 @@
 # Project status
 
-The [golden pipeline](golden-pipeline.md) is the current development direction:
-resident frames, native triangle traversal, wavefront PT, Area ReSTIR with MCMC,
-and separate reconstruction in a native viewer. Persistent
-[frame sessions and the headless benchmark](frame-rendering.md) support native
-triangle traversal and [wavefront execution](wavefront-rendering.md), with
-matched megakernel and compensated-profile controls. The retained native
-megakernel baselines are 86.1–86.6 ms for Cornell and 196.6–199.4 ms for the coated
-packet scene; subsequent wavefront measurements are reported separately.
-The experimental [native viewer](viewer.md) now connects these implemented
-stages with camera controls, raw/reconstructed comparison and paired EXR capture.
-Native 1080p at 20–30 rendered FPS remains a target. The audited static fixture
-study selects independent sampling and signed temporal reconstruction as viewer
-defaults. Signed-temporal viewer controls and capture checks pass; sustained
-performance qualification remains pending.
+The eight [golden-pipeline stages](golden-pipeline.md) have implemented baselines:
+resident frames, native traversal, wavefront PT, full-replay Area reuse with
+corrected MCMC, separate reconstruction, a native viewer and bounded end-to-end
+studies.
+The **native-1080p 20–30 rendered FPS target is not met across the scene suite**.
+The [audited qualification record](pipeline-qualification.md) covers 17 quality
+jobs (26,240 frames and 1,980 EXRs) and 108 native timing runs (3,024 frames) at
+historical source `0ef51ba`. Pavilion day/night stress performance was not measured
+in this snapshot; broader stress coverage remains open.
 
 Opt-in [Area-domain path reuse](area-reuse.md) replays film, lens, wavelength
 and complete indirect transport. The [importance repair](restir-importance.md)
@@ -23,14 +18,23 @@ zero/two/four-step ablations. Earlier arithmetic/lifetime checks and small mean
 studies describe the historical estimator. Native validation of this adapted
 repair, visual improvement and time to image quality remain unqualified.
 
-Separate [frame reconstruction](reconstruction.md) consumes completed raw frames.
-It offers MetalFX denoising/upscaling and a native-resolution signed-float temporal
-fallback, with guide approximation counters, retained GPU outputs and direct
-linear-RGB captures. The fallback avoids clipping fresh spectral samples before
-filtering. Integrated correctness checks pass, and the static study favors this
-fallback over the current MetalFX integration. The viewer exposes
-`--mode temporal|metalfx|raw`. Broader image-quality acceptance and complete-pipeline
-timing remain open; see the [viewer evidence](viewer.md#validation-boundary).
+At historical source `0ef51ba`, the following viewer comparison was measured.
+The [viewer](viewer.md) defaults to independent sampling and signed temporal
+[reconstruction](reconstruction.md). Independent/temporal has lower post-cap
+physical MSE than Area-one/temporal in all six static fixtures. Opt-in
+[Area reuse](area-reuse.md) performs complete destination replay, with
+[one corrected MCMC step](mcmc-mutations.md) and zero/two/four-step ablations.
+This is a correctness baseline, not the published optimized reconnection method.
+MetalFX remains explicit; its measured limitations apply to our integration,
+not to the framework generally.
+
+Across three seeds, native complete-pipeline throughput spans 2.93–21.97 FPS for
+independent sampling and 0.48–6.66 FPS for Area-one. Only 2/90 primary runs meet
+p95 ≤50 ms (two defocus/independent seeds); none meet approximately 33.33 ms,
+and no scene/arm passes all three seeds. Four audited sustained runs add 1,784
+frames and meet their duration requirements; none reaches 20 FPS. Next optimization
+targets are stronger importance sampling, replay/reconnection efficiency and
+guide/filter cost, with measured quality benefits. Offline acceptance remains separate.
 
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
