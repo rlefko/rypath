@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Original rypath qualification fixture; all geometry is authored inline.
+# No external assets or adapted third-party scene geometry.
+# Four closed 12-triangle box definitions, each placed four times: 16 objects.
+# Three room quads plus 16 directly placed, downward one-sided light triangles.
+# Each light has area 0.32 m^2 and power 400 lm: 5.12 m^2 / 6400 lm total.
+# Each emitter is ONE triangle, so power is not repeated across a quad's faces.
+# Box bottoms sit 0.025 above the floor to avoid coincident bottom/floor faces.
+# Native-1080 timing and smaller matched-quality harnesses override film settings.
+LookAt 7.5 8 -10.5  0 1 3.7  0 1 0
+Camera "perspective" "float fov" [34]
+    "float shutteropen" [0] "float shutterclose" [1]
+Film "rgb" "integer xresolution" [1920] "integer yresolution" [1080]
+    "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box" "float xradius" [0.5] "float yradius" [0.5]
+Sampler "independent" "integer pixelsamples" [1] "integer seed" [0]
+Integrator "path" "integer maxdepth" [6] "string lightsampler" "bvh"
+WorldBegin
+
+# The four meshes retain their definition-time diffuse materials.
+ObjectBegin "red-box"
+    Material "diffuse" "rgb reflectance" [0.55 0.12 0.08]
+    Shape "trianglemesh"
+        "point3 P" [
+            -0.45 0.025 -0.45   0.45 0.025 -0.45
+             0.45 0.025  0.45  -0.45 0.025  0.45
+            -0.45 1.05 -0.45   0.45 1.05 -0.45
+             0.45 1.05  0.45  -0.45 1.05  0.45
+        ]
+        "integer indices" [0 1 2 0 2 3 4 7 6 4 6 5 0 4 5 0 5 1 3 2 6 3 6 7 0 3 7 0 7 4 1 5 6 1 6 2]
+ObjectEnd
+
+ObjectBegin "blue-box"
+    Material "diffuse" "rgb reflectance" [0.08 0.22 0.55]
+    Shape "trianglemesh"
+        "point3 P" [
+            -0.45 0.025 -0.45   0.45 0.025 -0.45
+             0.45 0.025  0.45  -0.45 0.025  0.45
+            -0.45 1.45 -0.45   0.45 1.45 -0.45
+             0.45 1.45  0.45  -0.45 1.45  0.45
+        ]
+        "integer indices" [0 1 2 0 2 3 4 7 6 4 6 5 0 4 5 0 5 1 3 2 6 3 6 7 0 3 7 0 7 4 1 5 6 1 6 2]
+ObjectEnd
+
+ObjectBegin "green-box"
+    Material "diffuse" "rgb reflectance" [0.12 0.45 0.18]
+    Shape "trianglemesh"
+        "point3 P" [
+            -0.45 0.025 -0.45   0.45 0.025 -0.45
+             0.45 0.025  0.45  -0.45 0.025  0.45
+            -0.45 0.8 -0.45   0.45 0.8 -0.45
+             0.45 0.8  0.45  -0.45 0.8  0.45
+        ]
+        "integer indices" [0 1 2 0 2 3 4 7 6 4 6 5 0 4 5 0 5 1 3 2 6 3 6 7 0 3 7 0 7 4 1 5 6 1 6 2]
+ObjectEnd
+
+ObjectBegin "ochre-box"
+    Material "diffuse" "rgb reflectance" [0.55 0.4 0.12]
+    Shape "trianglemesh"
+        "point3 P" [
+            -0.45 0.025 -0.45   0.45 0.025 -0.45
+             0.45 0.025  0.45  -0.45 0.025  0.45
+            -0.45 1.8 -0.45   0.45 1.8 -0.45
+             0.45 1.8  0.45  -0.45 1.8  0.45
+        ]
+        "integer indices" [0 1 2 0 2 3 4 7 6 4 6 5 0 4 5 0 5 1 3 2 6 3 6 7 0 3 7 0 7 4 1 5 6 1 6 2]
+ObjectEnd
+
+# A 4 x 4 layout; every row contains all four mesh/material definitions.
+# Object row 1.
+AttributeBegin
+    Translate -2.4 0 1
+    ObjectInstance "red-box"
+AttributeEnd
+AttributeBegin
+    Translate -0.8 0 1
+    ObjectInstance "blue-box"
+AttributeEnd
+AttributeBegin
+    Translate 0.8 0 1
+    ObjectInstance "green-box"
+AttributeEnd
+AttributeBegin
+    Translate 2.4 0 1
+    ObjectInstance "ochre-box"
+AttributeEnd
+# Object row 2.
+AttributeBegin
+    Translate -2.4 0 2.8
+    ObjectInstance "blue-box"
+AttributeEnd
+AttributeBegin
+    Translate -0.8 0 2.8
+    ObjectInstance "green-box"
+AttributeEnd
+AttributeBegin
+    Translate 0.8 0 2.8
+    ObjectInstance "ochre-box"
+AttributeEnd
+AttributeBegin
+    Translate 2.4 0 2.8
+    ObjectInstance "red-box"
+AttributeEnd
+# Object row 3.
+AttributeBegin
+    Translate -2.4 0 4.6
+    ObjectInstance "green-box"
+AttributeEnd
+AttributeBegin
+    Translate -0.8 0 4.6
+    ObjectInstance "ochre-box"
+AttributeEnd
+AttributeBegin
+    Translate 0.8 0 4.6
+    ObjectInstance "red-box"
+AttributeEnd
+AttributeBegin
+    Translate 2.4 0 4.6
+    ObjectInstance "blue-box"
+AttributeEnd
+# Object row 4.
+AttributeBegin
+    Translate -2.4 0 6.4
+    ObjectInstance "ochre-box"
+AttributeEnd
+AttributeBegin
+    Translate -0.8 0 6.4
+    ObjectInstance "red-box"
+AttributeEnd
+AttributeBegin
+    Translate 0.8 0 6.4
+    ObjectInstance "blue-box"
+AttributeEnd
+AttributeBegin
+    Translate 2.4 0 6.4
+    ObjectInstance "green-box"
+AttributeEnd
+
+# Neutral room surfaces; the front and right side remain open to the camera.
+Material "diffuse" "rgb reflectance" [0.5 0.5 0.5]
+Shape "trianglemesh"
+    "point3 P" [-4.8 0 -1.5  -4.8 0 8  4.8 0 8  4.8 0 -1.5]
+    "integer indices" [0 1 2 0 2 3]
+Material "diffuse" "rgb reflectance" [0.35 0.35 0.35]
+Shape "trianglemesh"
+    "point3 P" [-4.8 0 8  -4.8 4.5 8  4.8 4.5 8  4.8 0 8]
+    "integer indices" [0 1 2 0 2 3]
+Material "diffuse" "rgb reflectance" [0.4 0.4 0.4]
+Shape "trianglemesh"
+    "point3 P" [-4.8 0 -1.5  -4.8 4.5 -1.5  -4.8 4.5 8  -4.8 0 8]
+    "integer indices" [0 1 2 0 2 3]
+
+# A 4 x 4 light grid, offset forward relative to the boxes for visible shadows.
+# Local vertex order gives a -Y geometric normal. No emitting object members.
+# Light row 1: four emitters / 1600 lm.
+AttributeBegin
+    Translate -2.4 4.6 0.7
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate -0.8 4.6 0.7
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 0.8 4.6 0.7
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 2.4 4.6 0.7
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+# Light row 2: four emitters / 1600 lm.
+AttributeBegin
+    Translate -2.4 4.6 2.5
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate -0.8 4.6 2.5
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 0.8 4.6 2.5
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 2.4 4.6 2.5
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+# Light row 3: four emitters / 1600 lm.
+AttributeBegin
+    Translate -2.4 4.6 4.3
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate -0.8 4.6 4.3
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 0.8 4.6 4.3
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 2.4 4.6 4.3
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+# Light row 4: four emitters / 1600 lm.
+AttributeBegin
+    Translate -2.4 4.6 6.1
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate -0.8 4.6 6.1
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 0.8 4.6 6.1
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd
+AttributeBegin
+    Translate 2.4 4.6 6.1
+    Material "diffuse" "rgb reflectance" [0 0 0]
+    AreaLightSource "diffuse" "rgb L" [1 1 1]
+        "float power" [400] "bool twosided" [false]
+    Shape "trianglemesh" "point3 P" [-0.4 0 -0.4  0.4 0 -0.4  0 0 0.4]
+        "integer indices" [0 1 2]
+AttributeEnd

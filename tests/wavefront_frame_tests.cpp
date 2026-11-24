@@ -145,6 +145,57 @@ RenderScene diffuse(bool packet) {
     scene.point_lights.push_back(light);
     return scene;
 }
+// The two receivers face each other. Camera rays first cross z=1 before
+// scattering at z=3; reflected paths cross z=1 and z=-1 en route to z=-3.
+// The rear receiver also emits, exercising endpoint MIS with surviving history.
+RenderScene packet_history(bool invisible, unsigned depth) {
+    auto scene = base(true);
+    scene.environment.fill(0);
+    scene.max_depth = depth;
+    SpectralMaterial diffuse;
+    diffuse.kind = SpectralMaterialKind::constant;
+    diffuse.constant = .65f;
+    scene.materials.push_back(diffuse);
+    auto boundary = diffuse;
+    boundary.constant = 0;
+    boundary.scattering = ScatteringKind::null_interface;
+    scene.materials.push_back(boundary);
+    plane(scene, 3, false);
+    plane(scene, -3, true);
+    plane(scene, 1, false, {}, invisible ? 0 : 1);
+    plane(scene, -1, true, {}, invisible ? 0 : 1);
+    scene.area_emissions.emplace_back();
+    scene.area_emissions.back().radiance.fill(.4f);
+    scene.instance_emissions = {no_area_emission, 0, no_area_emission, no_area_emission};
+    PointLight light;
+    light.position = {.5f, .25f, 0};
+    light.intensity.fill(4);
+    scene.point_lights.push_back(light);
+    if (invisible) {
+        // Invisibility requires an emitting placement and certified constant-zero
+        // alpha, even when that emitter's own radiance is zero.
+        scene.area_emissions.emplace_back();
+        scene.area_emissions.back().radiance.fill(0);
+        scene.instance_emissions[2] = scene.instance_emissions[3] = 1;
+        scene.texture_graph.nodes.emplace_back();
+        scene.instance_alpha_roots = {UINT32_MAX, UINT32_MAX, 0, 0};
+        scene.instance_invisible_emitters = {0, 0, 1, 1};
+        scene.instance_surface_transforms.resize(scene.geometry.instances.size());
+        scene.instance_texture_frames.resize(scene.geometry.instances.size());
+        for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+            if (!instance_uses_texture_context(scene, i))
+                continue;
+            const auto &t = scene.instance_surface_transforms[i];
+            const auto error = prepare_texture_triangle_frames(
+                scene.geometry.meshes[scene.geometry.instances[i].mesh_index], t.shape, t.placement,
+                scene.instance_texture_frames[i]);
+            require(error.empty(), error);
+        }
+    }
+    const auto error = validate_render_scene(scene);
+    require(error.empty(), error);
+    return scene;
+}
 RenderScene fixture(std::string_view name) {
     const auto path = std::filesystem::path(RYPATH_SOURCE_DIR) /
                       "tests/fixtures/pbrt-render/packet-transport" / name;
@@ -198,8 +249,8 @@ RenderScene medium(bool boundaries) {
         scene.camera_medium = 0;
     return scene;
 }
-void scheduling_case(const RenderScene &scene, std::string_view label,
-                     IntersectionProfile profile = IntersectionProfile::native) {
+FrameCapture scheduling_case(const RenderScene &scene, std::string_view label,
+                             IntersectionProfile profile = IntersectionProfile::native) {
     auto mega = configuration(FrameExecution::megakernel);
     mega.intersection_profile = profile;
     auto reference = build_frame_session(scene, mega);
@@ -221,6 +272,35 @@ void scheduling_case(const RenderScene &scene, std::string_view label,
         auto frame = submit(*built.session);
         compare(capture(*frame, config, quantum == 1), expected, label);
     }
+    return expected;
+}
+void packet_history_cases() {
+    for (const bool invisible : {false, true}) {
+        const std::string name = invisible ? "Packet invisible history" : "Packet null history";
+        const auto shallow = scheduling_case(packet_history(invisible, 1), name + " depth1");
+        scheduling_case(packet_history(invisible, 2), name + " depth2");
+        const auto deep = scheduling_case(packet_history(invisible, 4), name + " depth4");
+        bool nonzero = false, indirect = false;
+        for (std::size_t i = 0; i < deep.raw_xyz.size(); ++i) {
+            nonzero |= shallow.raw_xyz[i][1] > 0;
+            indirect |= deep.raw_xyz[i][1] > shallow.raw_xyz[i][1] + 1e-5f;
+        }
+        require(nonzero, name + " must illuminate the first receiver");
+        require(indirect, name + " must retain a nonzero deeper-scattering contribution");
+    }
+    // A null child in a mix is unsupported; do not silently relabel it diffuse
+    // in order to claim coverage of an unavailable transport model.
+    auto invalid = packet_history(false, 4);
+    SpectralMaterial mix;
+    mix.scattering = ScatteringKind::mix;
+    mix.surface.first_material = 0;
+    mix.surface.second_material = 1;
+    invalid.materials.push_back(mix);
+    invalid.instance_materials[0] = 2;
+    invalid.instance_surface_transforms.resize(invalid.geometry.instances.size());
+    require(validate_render_scene(invalid).find("Mix materials cannot contain null boundaries") !=
+                std::string::npos,
+            "Mixed-null material must retain its explicit unsupported-model diagnostic");
 }
 void lifetime() {
     const auto scene = diffuse(true);
@@ -292,22 +372,24 @@ void invalid_and_async_failure() {
     }
     // Finite authored radiance can overflow raw float sensor resolution. This
     // exercises an actual asynchronous error, not a model-changing queue knob.
-    auto overflow = base(false);
-    overflow.environment.fill(std::numeric_limits<float>::max());
-    config.capacity = 1;
-    config.quantum = 1;
-    auto built = build_frame_session(overflow, config);
-    require(built.status == GeometryStatus::success && built.session, built.diagnostic);
-    auto frame = submit(*built.session);
-    built.session.reset();
-    const auto failed = frame->wait();
-    require(failed.status == FrameStatus::failed && !failed.diagnostic.empty() &&
-                failed.command_count > 0,
-            "Asynchronous nonfinite sensor failure must propagate through retained frame");
-    const auto image = frame->capture();
-    require(image.status == GeometryStatus::failure && image.raw_xyz.empty() &&
-                frame->poll().status == FrameStatus::failed,
-            "Failed raw frame must not publish partial capture");
+    for (const bool packet : {false, true}) {
+        auto overflow = base(packet);
+        overflow.environment.fill(std::numeric_limits<float>::max());
+        config.capacity = 1;
+        config.quantum = 1;
+        auto built = build_frame_session(overflow, config);
+        require(built.status == GeometryStatus::success && built.session, built.diagnostic);
+        auto frame = submit(*built.session);
+        built.session.reset();
+        const auto failed = frame->wait();
+        require(failed.status == FrameStatus::failed && !failed.diagnostic.empty() &&
+                    failed.command_count > 0,
+                "Asynchronous nonfinite sensor failure must propagate through retained frame");
+        const auto image = frame->capture();
+        require(image.status == GeometryStatus::failure && image.raw_xyz.empty() &&
+                    frame->poll().status == FrameStatus::failed,
+                "Failed raw frame must not publish partial capture");
+    }
 }
 #endif
 } // namespace
@@ -327,6 +409,7 @@ int main() {
         require(device.device.compute_ray_tracing, "Wavefront tests require compute ray tracing");
         scheduling_case(diffuse(false), "Scalar diffuse");
         scheduling_case(diffuse(true), "Packet diffuse");
+        packet_history_cases();
         scheduling_case(glass(false), "Scalar dispersive glass chain");
         scheduling_case(glass(true), "Packet dispersive glass chain");
         scheduling_case(fixture("coated-path.pbrt"), "Packet coating");

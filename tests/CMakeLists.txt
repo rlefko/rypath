@@ -21,6 +21,9 @@ add_test(NAME infrastructure.canonical_probe_generation COMMAND "${Python3_EXECU
     "${CMAKE_CURRENT_SOURCE_DIR}/test_generate_canonical_probe.py")
 add_test(NAME cli.frame_benchmark COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/frame_benchmark_cli_tests.py" "$<TARGET_FILE:rypath_frame_benchmark>")
+add_test(NAME cli.pipeline_qualification COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/pipeline_qualification_cli_tests.py"
+    "$<TARGET_FILE:rypath_pipeline_qualification>")
 add_executable(rypath_frame_statistics_tests frame_statistics_tests.cpp)
 target_include_directories(rypath_frame_statistics_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_frame_statistics_tests)

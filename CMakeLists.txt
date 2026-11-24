@@ -291,6 +291,15 @@ if(RYPATH_ENABLE_METAL)
     rypath_configure_host_target(rypath_viewer)
 endif()
 
+add_executable(rypath_pipeline_qualification src/pipeline_qualification.cpp)
+set_target_properties(rypath_pipeline_qualification PROPERTIES
+    OUTPUT_NAME rypath-pipeline-qualification
+    RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+target_link_libraries(rypath_pipeline_qualification PRIVATE rypath_reconstruction rypath_pbrt_render)
+target_compile_definitions(rypath_pipeline_qualification PRIVATE
+    RYPATH_BUILD_DESCRIPTION="${PROJECT_VERSION} ${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION} $<CONFIG> source=${rypath_source_digest} flags=${rypath_flags_digest}")
+rypath_configure_host_target(rypath_pipeline_qualification)
+
 include(CTest)
 if(BUILD_TESTING)
     add_subdirectory(tests)
