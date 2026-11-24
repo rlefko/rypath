@@ -66,21 +66,61 @@ if(NOT exit STREQUAL "1" OR NOT stdout MATCHES "missing-file" OR stdout MATCHES 
 endif()
 expect_existing_output()
 
-function(check_render input sampler seed warning_pattern result)
+function(check_render input sampler seed warning_pattern result selection transport maxdepth)
+    set(spectral_arguments)
+    if(NOT selection STREQUAL "auto")
+        list(APPEND spectral_arguments --spectral-transport "${selection}")
+    endif()
+    set(expected_sampler "${sampler}")
+    if(transport STREQUAL "hero")
+        string(APPEND expected_sampler "; hero PT fixed packet dimension blocks; keyed material-local Philox streams; independent coating hash/PCG domains")
+        set(spectral_description "Hero sampling: four uniform visible wavelengths; cumulative spectral and direct-light balance MIS")
+    elseif(transport STREQUAL "packet")
+        string(APPEND expected_sampler "; packet fixed dimension allocation [0,920); keyed material-local Philox streams; independent coating hash/PCG domains")
+        set(spectral_description "Packet sampling: fixed dimension allocation [0,920); keyed material-local Philox streams; independent coating hash/PCG domains")
+    elseif(NOT transport STREQUAL "scalar")
+        message(FATAL_ERROR "Unknown expected spectral mode: ${transport}")
+    endif()
+    set(mode_provenance "effective spectral transport ${transport}")
+    if(selection STREQUAL "auto")
+        if(transport STREQUAL "hero")
+            string(APPEND mode_provenance "; vacuum PT with maxdepth at most 65")
+        else()
+            string(APPEND mode_provenance "; depth above hero limit 65 uses scalar transport")
+        endif()
+    endif()
     file(WRITE "${output}" "${sentinel}")
     file(REMOVE "${test_directory}/must-not-be-created.png")
     execute_process(COMMAND "${executable}" --render-pbrt "${test_directory}/${input}"
-        --output "${output}" --batch-size 2 WORKING_DIRECTORY "${test_directory}"
+        --output "${output}" --batch-size 2 ${spectral_arguments} WORKING_DIRECTORY "${test_directory}"
         RESULT_VARIABLE exit OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr)
     if(EXISTS "${test_directory}/must-not-be-created.png")
         message(FATAL_ERROR "Render wrote the overridden Film.filename")
     endif()
-    string(FIND "${stdout}" "Sampler: ${sampler}\n" sampler_position)
+    string(FIND "${stdout}" "Sampler: ${expected_sampler}\n" sampler_position)
+    string(FIND "${stdout}" "${mode_provenance}\n" mode_position)
+    string(REGEX MATCHALL "effective spectral transport " mode_records "${stdout}")
+    list(LENGTH mode_records mode_count)
+    if(NOT mode_count EQUAL 1 OR mode_position EQUAL -1)
+        message(FATAL_ERROR "Expected exactly one precise spectral mode provenance: ${stdout}${stderr}")
+    endif()
+    if(transport STREQUAL "scalar")
+        if(stdout MATCHES "Hero sampling:|Packet sampling:")
+            message(FATAL_ERROR "Scalar mode contains packet/hero provenance: ${stdout}${stderr}")
+        endif()
+    else()
+        string(FIND "${stdout}" "${spectral_description}\n" description_position)
+        string(REGEX MATCHALL "(Hero|Packet) sampling:" spectral_records "${stdout}")
+        list(LENGTH spectral_records description_count)
+        if(description_position EQUAL -1 OR NOT description_count EQUAL 1)
+            message(FATAL_ERROR "Expected one precise spectral sampling description: ${stdout}${stderr}")
+        endif()
+    endif()
     if(sampler_position EQUAL -1 OR NOT stdout MATCHES "Render profile: pbrt-spectral-v1\n" OR
        NOT stdout MATCHES "Pixel filter: triangle \\(x radius 1, y radius 1.5\\)" OR
        NOT stdout MATCHES "Light sampling: bvh; matched forward and reverse probabilities" OR
        NOT stdout MATCHES "Resolution: 8x6\nSamples per pixel: 3\nBatch size: 2\nSeed: ${seed}\n" OR
-       NOT stdout MATCHES "Finite path maxdepth: 1\n")
+       NOT stdout MATCHES "Finite path maxdepth: ${maxdepth}\n")
         message(FATAL_ERROR "Unexpected PBRT settings for ${input}: ${stdout}${stderr}")
     endif()
     if(exit STREQUAL "2")
@@ -104,7 +144,20 @@ function(check_render input sampler seed warning_pattern result)
     set("${result}" "success" PARENT_SCOPE)
 endfunction()
 
-check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" independent_status)
+# Eligible vacuum PT defaults to hero, with exact sampler/provenance expectations.
+check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" independent_status auto hero 1)
+# Explicit selectors preserve each prior estimator's own sampler description.
+check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" scalar_status scalar scalar 1)
+check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" packet_status packet packet 1)
+# Automatic selection must retain scalar transport above the hero depth bound.
+string(REPLACE "\"integer maxdepth\" 1" "\"integer maxdepth\" 66" deep_independent "${valid_scene}")
+file(WRITE "${test_directory}/deep-independent.pbrt" "${deep_independent}")
+check_render("deep-independent.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" deep_status auto scalar 66)
+foreach(status IN ITEMS scalar_status packet_status deep_status)
+    if(NOT "${${status}}" STREQUAL "${independent_status}")
+        message(FATAL_ERROR "Spectral selectors differ in backend availability: ${status}=${${status}}, auto=${independent_status}")
+    endif()
+endforeach()
 
 string(REPLACE "Sampler \"independent\" \"integer pixelsamples\" 3 \"integer seed\" 0"
     "Sampler \"sobol\" \"integer pixelsamples\" 3 \"integer seed\" -17 \"string randomization\" \"owen\""
@@ -169,7 +222,7 @@ expect_existing_output()
 
 check_render("sobol.pbrt" "sobol-v1 / owen (PBRT camera variates; rypath transport dimensions)" -17
     "[^\n]+:5:[0-9]+: warning \\[sobol-non-power-of-two\\][^\n]*requested 3 samples per pixel\n"
-    sobol_status)
+    sobol_status auto hero 1)
 if(NOT independent_status STREQUAL sobol_status)
     message(FATAL_ERROR "PBRT render availability differs between independent (${independent_status}) and Sobol (${sobol_status})")
 endif()

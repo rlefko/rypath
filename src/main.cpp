@@ -628,12 +628,6 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
         return fail("PBRT translation returned no render scene");
     }
     auto &scene = owned_scene.value();
-    std::string spectral_provenance;
-    if (const auto error =
-            rypath::select_spectral_transport(scene, spectral_transport, &spectral_provenance);
-        !error.empty())
-        return fail(error);
-    translated.provenance.push_back(spectral_provenance);
     if (!raw_output.empty()) {
         auto protected_paths = inputs;
         protected_paths.push_back(output);
