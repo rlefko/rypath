@@ -11,6 +11,7 @@
 #define RYPATH_TEST_HAS_DENOISER 0
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -221,7 +222,8 @@ void validation_cases(MetalFXDenoiser &effect, id<MTLDevice> device, id<MTLComma
     rejected(effect.encode(command, valid), "already committed");
 }
 void plane_sequence(MetalFXDenoiser &effect, id<MTLDevice> device, id<MTLCommandQueue> queue,
-                    MetalFXDenoiserInputs frame, bool noisy) {
+                    MetalFXDenoiserInputs frame, bool noisy, Color base = {.25f, .5f, .75f, 1},
+                    float exposure = 1, bool small_feature = false) {
     id<MTLBuffer> readback = nil;
     const NSUInteger row = ((frame.output.width * 8 + 255) / 256) * 256;
     for (unsigned sample = 0; sample < 4; ++sample) {
@@ -236,21 +238,30 @@ void plane_sequence(MetalFXDenoiser &effect, id<MTLDevice> device, id<MTLCommand
             };
             upload(
                 device, producer, frame.color,
-                [noisy, sample](NSUInteger x, NSUInteger y) {
+                [noisy, sample, base, small_feature](NSUInteger x, NSUInteger y) {
                     const std::uint32_t hash = (std::uint32_t(x) * 1664525u) ^
                                                (std::uint32_t(y) * 1013904223u) ^
                                                (sample * 747796405u);
                     const float noise = noisy ? (float(hash & 255u) / 255 - .5f) * .0625f : 0;
-                    return Color{.25f + noise, .5f + noise, .75f + noise, 1};
+                    const bool feature = small_feature && x >= 62 && x < 66 && y >= 62 && y < 66;
+                    return Color{base[0] + noise + (feature ? 2.f : 0.f), base[1] + noise,
+                                 base[2] + noise, 1};
                 },
                 staging);
             upload(device, producer, frame.depth, constant({.05f, 0, 0, 0}), staging);
             upload(device, producer, frame.motion, constant({0, 0, 0, 0}), staging);
-            upload(device, producer, frame.diffuse_albedo, constant({.25f, .5f, .75f, 1}), staging);
+            upload(
+                device, producer, frame.diffuse_albedo,
+                [base, small_feature](NSUInteger x, NSUInteger y) {
+                    const bool feature = small_feature && x >= 62 && x < 66 && y >= 62 && y < 66;
+                    return Color{feature ? 1.f : std::min(base[0], 1.f), std::min(base[1], 1.f),
+                                 std::min(base[2], 1.f), 1};
+                },
+                staging);
             upload(device, producer, frame.specular_albedo, constant({0, 0, 0, 1}), staging);
             upload(device, producer, frame.normal, constant({0, 0, -1, 1}), staging);
             upload(device, producer, frame.roughness, constant({1, 0, 0, 0}), staging);
-            upload(device, producer, frame.exposure, constant({1, 0, 0, 0}), staging);
+            upload(device, producer, frame.exposure, constant({exposure, 0, 0, 0}), staging);
             [producer endEncoding];
             frame.reset_history = sample == 0;
             const auto diagnostic = effect.encode(command, frame);
@@ -278,6 +289,8 @@ void plane_sequence(MetalFXDenoiser &effect, id<MTLDevice> device, id<MTLCommand
         }
     }
     std::array<double, 3> mean{};
+    double feature_red = 0, surround_red = 0;
+    unsigned feature_count = 0, surround_count = 0;
     for (NSUInteger y = 0; y < frame.output.height; ++y)
         for (NSUInteger x = 0; x < frame.output.width; ++x) {
             const auto *texel = reinterpret_cast<const _Float16 *>(
@@ -288,12 +301,26 @@ void plane_sequence(MetalFXDenoiser &effect, id<MTLDevice> device, id<MTLCommand
                         "Synthetic denoised plane contains invalid or grossly out-of-range RGB");
                 mean[c] += value;
             }
+            if (small_feature && x >= 62 && x < 66 && y >= 62 && y < 66) {
+                feature_red += float(texel[0]);
+                ++feature_count;
+            } else if (small_feature && x >= 58 && x < 70 && y >= 58 && y < 70) {
+                surround_red += float(texel[0]);
+                ++surround_count;
+            }
         }
+    if (small_feature) {
+        require(feature_count == 16 && surround_count == 128, "Native feature ROI accounting");
+        const double contrast = feature_red / feature_count - surround_red / surround_count;
+        std::cout << "Native 4x4 feature contrast " << contrast << " (input 2)\n";
+        require(contrast > .25, "Noise-free small feature erased by denoising");
+    }
     const double pixels = double(frame.output.width) * frame.output.height;
     for (unsigned c = 0; c < 3; ++c) {
         mean[c] /= pixels;
         // Predeclared broad integration gate; not a perceptual quality metric.
-        require(std::abs(mean[c] - (.25 + .25 * c)) <= .35,
+        const double expected = base[c] + (small_feature && c == 0 ? 32. / pixels : 0.);
+        require(std::abs(mean[c] - expected) <= (noisy ? .35 : .1 + .1 * expected),
                 "Synthetic denoised plane mean is outside the broad integration gate");
     }
     std::cout << frame.color.width << "x" << frame.color.height << " -> " << frame.output.width
@@ -334,6 +361,12 @@ int run(bool require_supported) {
         validation_cases(*native.denoiser, device, queue, frame);
         plane_sequence(*native.denoiser, device, queue, frame, false);
         plane_sequence(*native.denoiser, device, queue, frame, true);
+        // Native-only color/detail regressions. Exposure is metadata, not a
+        // brightness compensation; compare output against the same linear input.
+        plane_sequence(*native.denoiser, device, queue, frame, false, {.02f, .05f, 2.f, 1}, .25f);
+        plane_sequence(*native.denoiser, device, queue, frame, false, {.02f, .05f, 2.f, 1}, 4.f);
+        plane_sequence(*native.denoiser, device, queue, frame, false, {.02f, .05f, .1f, 1}, 1.f,
+                       true);
         auto upscaled = MetalFXDenoiser::create(device, {128, 128, 256, 256});
         require(upscaled.denoiser != nullptr, upscaled.diagnostic);
         const auto smaller = inputs(device, upscaled.denoiser->requirements());

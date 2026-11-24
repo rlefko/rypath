@@ -93,7 +93,11 @@ void guide_key_dependencies() {
     cfg.previous_valid = 1;
     check(p, t, cfg);
     cfg = c;
-    cfg.flags = 1;
+    cfg.flags = reconstruction_guide_wire::media_scene;
+    check(p, t, cfg);
+    cfg.flags = reconstruction_guide_wire::appearance_guides;
+    check(p, t, cfg);
+    cfg.flags = reconstruction_guide_wire::signed_temporal;
     check(p, t, cfg);
     for (unsigned i = 0; i < 16; ++i) {
         cfg = c;
