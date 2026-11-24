@@ -33,12 +33,14 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <new>
 #include <numbers>
 #include <ranges>
+#include <sstream>
 #include <tuple>
 #include <type_traits>
 
@@ -2821,12 +2823,43 @@ struct FrameSession::Impl {
             std::memcpy(&failure, frame->retention->area->failure.contents, sizeof(failure));
             return failure != 0;
         }
+        std::string area_failure_diagnostic() const {
+            area_wire::Counters counters{};
+            std::memcpy(&counters, frame->retention->area->failure.contents, sizeof(counters));
+            const auto &record = counters.first_failure;
+            std::ostringstream out;
+            out << "GPU Area reservoir validation failed: flags=0x" << std::hex << counters.failure
+                << std::dec << " mutations=" << counters.mutations
+                << " accepted=" << counters.accepted << " reserved=" << counters.reserved
+                << " area_leaf=" << area_leaf << " area_merge=" << area_merge
+                << " completed_evaluations=" << frame->info.completed_evaluations
+                << " first={site=shaders/area_reuse.metal:" << record.source_line
+                << " pixel=" << record.pixel << " phase=" << record.phase
+                << " candidate=" << record.candidate
+                << " serial=" << ((std::uint64_t(record.serial_high) << 32) | record.serial_low)
+                << " flags=0x" << std::hex << record.flags << std::dec
+                << " substatus=" << record.substatus << " words=[";
+            for (unsigned i = 0; i < 16; ++i) {
+                if (i)
+                    out << ',';
+                out << "0x" << std::hex << std::setw(8) << std::setfill('0') << record.operands[i];
+            }
+            out << "]}";
+            return out.str();
+        }
         void complete_area() {
             const auto pixels = std::uint64_t(config.width) * config.height;
             std::string error;
             area_wire::Counters mutation_counters{};
             std::memcpy(&mutation_counters, frame->retention->area->failure.contents,
                         sizeof(mutation_counters));
+            const area_wire::FirstFailure empty_record{};
+            if (std::memcmp(&mutation_counters.first_failure, &empty_record,
+                            sizeof(empty_record)) != 0 &&
+                mutation_counters.failure == 0) {
+                fail("GPU Area first-failure record is nonzero without a failure");
+                return;
+            }
             if (mutation_counters.failure || mutation_counters.reserved ||
                 mutation_counters.mutations != pixels * config.mutation_steps ||
                 mutation_counters.accepted > mutation_counters.mutations) {
@@ -2897,7 +2930,7 @@ struct FrameSession::Impl {
                 gpu_seconds += command.GPUEndTime - command.GPUStartTime;
             all_gpu_times_valid &= std::isfinite(gpu_seconds);
             if (area_failed()) {
-                fail("GPU Area reservoir validation failed");
+                fail(area_failure_diagnostic());
                 return;
             }
             if (history && area_finalizing) {

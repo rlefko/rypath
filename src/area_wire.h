@@ -44,8 +44,17 @@ using Counter = metal::atomic_uint;
 #else
 using Counter = Word;
 #endif
+// First atomic failure reporter only; host reads after command completion.
+// source_line refers to shaders/area_reuse.metal. Operand layouts follow that
+// site's diagnostic call and preserve raw IEEE float bits without conversion.
+struct FirstFailure {
+    Word source_line, pixel, phase, candidate;
+    Word serial_low, serial_high, flags, substatus;
+    Word operands[16];
+};
 struct Counters {
     Counter failure, mutations, accepted, reserved;
+    FirstFailure first_failure;
 };
 struct History {
     rypath_replay::ReplayState payload;
@@ -81,8 +90,10 @@ struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
     Word accumulator_bytes, replay_bytes, counters_bytes, reserved;
 };
+static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
+              "Area first-failure record ABI");
 static_assert(sizeof(Config) == 64 && sizeof(History) == 48 && sizeof(Temporal) == 64 &&
-                  sizeof(Accumulator) == 68 && sizeof(Contract) == 32 && sizeof(Counters) == 16,
+                  sizeof(Accumulator) == 68 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath
