@@ -21,14 +21,14 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // the 3766-byte empty-scene fixture includes field tags and all defaults.
+    // renderer28/sampling10, 3766 bytes including field tags and all defaults.
     require(digest_hex(baseline) ==
-                "a88e9d4b30d6c7e0fbbb9e1bdcc0cb9f80f00a85619a376d1e1fa35b22e064ce",
+                "cba95ccc5101edea36a5c8b529eeab5eb217e0cf833286ca0dc12c9fbfbdcf8a",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     {
         // Independently serialized fixture, retaining nested counts, shared
-        // content and exact nonfinite/-zero bits across the8192-byte buffer.
+        // content and exact nonfinite/-zero bits: 67499 bytes across the8192-byte buffer.
         RenderScene populated;
         auto image = std::make_shared<ImagePyramid>();
         image->encoding = ImageEncoding{};
@@ -55,7 +55,7 @@ void identity_checks() {
                             std::bit_cast<float>(std::uint32_t{0x80000000})};
         const auto expected = render_identity(populated, settings);
         require(digest_hex(expected) ==
-                    "70aff95f7f052128f5958479cc1825a0a59f32133b0f0a7242a993d18bb3c9ba",
+                    "06dd6aee04c440560f702dd813290c6e426325200bb1465df1580772f9933a74",
                 "canonical populated identity golden");
         populated.image_textures[1].image = std::make_shared<ImagePyramid>(*image);
         require(render_identity(populated, settings) == expected,
@@ -79,6 +79,21 @@ void identity_checks() {
             "uniform light selection identity");
     changed([](auto &s) { s.spectral_transport = SpectralTransport::packet; },
             "spectral transport identity");
+    {
+        // Identical raw scene/settings with only the spectral estimator changed:
+        // hero must not alias scalar or the legacy packet checkpoint identity.
+        auto spectral = scene;
+        spectral.model = RenderModel::pbrt;
+        spectral.raster_camera = RasterCamera{{}, {-.1f, -.1f, 1}, {.2f, 0, 0}, {0, .2f, 0}};
+        spectral.spectral_transport = SpectralTransport::scalar;
+        const auto scalar = render_identity(spectral, settings);
+        spectral.spectral_transport = SpectralTransport::packet;
+        const auto packet = render_identity(spectral, settings);
+        spectral.spectral_transport = SpectralTransport::hero;
+        const auto hero = render_identity(spectral, settings);
+        require(hero != scalar && hero != packet && scalar != packet,
+                "scalar, legacy packet and hero identities are pairwise distinct");
+    }
     changed([](auto &s) { s.max_component_value = 50; }, "film clamp identity");
     auto clamped = scene;
     clamped.spectral_transport = SpectralTransport::packet;
