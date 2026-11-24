@@ -385,11 +385,14 @@ Scene load_scene(const Options &o) {
     auto translated = pbrt::translate(checked, {o.scene.string()});
     for (const auto &diagnostic : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(diagnostic);
-    if (translated.exit_code() != 0 || !translated.scene)
+    if (translated.exit_code() != 0)
         throw std::runtime_error("Qualification PBRT translation failed");
+    auto &translated_scene = translated.scene;
+    if (!translated_scene.has_value())
+        throw std::runtime_error("Qualification PBRT translation failed");
+    result.value = std::move(*translated_scene);
     result.provenance.insert(result.provenance.end(), translated.provenance.begin(),
                              translated.provenance.end());
-    result.value = std::move(*translated.scene);
     auto &scene = result.value;
     if (o.motion_offset)
         require(std::ranges::none_of(
