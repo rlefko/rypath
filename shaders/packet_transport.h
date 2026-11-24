@@ -76,9 +76,10 @@ inline float3 offset(const thread Vertex &v, float3 direction) {
 inline float2 uniform2(constant wire::Parameters &p, uint2 words) {
     return float2(sample_uniform(p, words.x), sample_uniform(p, words.y));
 }
+// Replay is caller-local sampler state, never part of the opaque-AS aggregate.
 inline uint4 random(const thread Resources &r, const thread wire::Sample &sample, ulong index,
-                    uint block) {
-    return draw_words(*r.alpha.parameters, *r.tables, sample, index, block);
+                    uint block, thread const rypath_replay::ReplayState *replay = nullptr) {
+    return draw_words(*r.alpha.parameters, *r.tables, sample, index, block, replay);
 }
 inline float4 environment_radiance(const thread Resources &r, float3 direction,
                                    const thread Wavelengths &lambda) {
@@ -773,15 +774,16 @@ inline float4 packet_pt_endpoint(thread Resources &r, thread wire::Sample &sampl
 }
 inline float4 packet_pt_direct(thread Resources &r, thread wire::Sample &sample,
                                const thread Wavelengths &lambda, ulong index,
-                               const thread Vertex &pt, const thread Vertex &before, uint t) {
+                               const thread Vertex &pt, const thread Vertex &before, uint t,
+                               thread const rypath_replay::ReplayState *replay = nullptr) {
     if (pt.type != surface_vertex || !pt.connectible)
         return 0;
     const constant auto &p = *r.alpha.parameters;
     Vertex sampled{};
     float3 direction;
     float sampled_pdf = 0;
-    if (!sample_li(r, pt, lambda, uniforms4(p, random(r, sample, index, 133 + t - 2)), sampled,
-                   direction, sampled_pdf) ||
+    if (!sample_li(r, pt, lambda, uniforms4(p, random(r, sample, index, 133 + t - 2, replay)),
+                   sampled, direction, sampled_pdf) ||
         !isfinite(sampled_pdf) || sampled_pdf < 0) {
         sample.status = wire::invalid_arithmetic;
         return 0;

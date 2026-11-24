@@ -22,9 +22,31 @@ std::string utf8(NSString *value) {
 }
 
 std::string with_error(std::string message, NSError *error) {
-    if (error != nil) {
-        message += " (" + utf8(error.domain) + " " + std::to_string(error.code) +
-                   "): " + utf8(error.localizedDescription);
+    if (error == nil)
+        return message;
+    const auto append = [&](NSError *entry) {
+        const auto description = utf8(entry.localizedDescription);
+        message +=
+            " (" + utf8(entry.domain) + " " + std::to_string(entry.code) + "): " + description;
+        const auto reason = utf8(entry.localizedFailureReason);
+        if (!reason.empty() && reason != description && message.find(reason) == std::string::npos)
+            message += "; reason: " + reason;
+    };
+    append(error);
+    // Some Metal backends retain their compiler reason only in an underlying
+    // NSError. Keep this diagnostic bounded and never dump arbitrary userInfo.
+    std::array<NSError *, 4> visited{error, nil, nil, nil};
+    for (std::size_t depth = 0; depth < visited.size() - 1; ++depth) {
+        id value = error.userInfo[NSUnderlyingErrorKey];
+        if (![value isKindOfClass:[NSError class]])
+            break;
+        NSError *underlying = static_cast<NSError *>(value);
+        if (std::find(visited.begin(), visited.end(), underlying) != visited.end())
+            break;
+        visited[depth + 1] = underlying;
+        message += "; underlying";
+        append(underlying);
+        error = underlying;
     }
     return message;
 }

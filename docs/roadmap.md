@@ -211,6 +211,10 @@ native traversal, wavefront transport, Area ReSTIR/MCMC, reconstruction, a nativ
 viewer and measured M4 Max qualification. Offline acceptance above remains open;
 interactive work does not imply that those quality and compatibility gates pass.
 
+Resident native frames, bounded wavefront execution and opt-in full-replay Area
+reuse are implemented. Reconstruction, the viewer and complete-pipeline quality
+and performance qualification remain subsequent boundaries.
+
 Broader conformance includes full OBJ non-polygon geometry, additional mesh
 formats, PBRT materials/cameras, curves, motion, and heterogeneous media.
 

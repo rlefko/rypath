@@ -3,9 +3,11 @@
 #include "metal_render.hpp"
 
 namespace rypath {
-// Live frames contain one independent absolute sample per pixel. Footprints use
-// this fixed budget even when sample_index exceeds it. Raw output is unclamped.
+// Frames contribute one fresh sample per pixel. Area replay additionally
+// evaluates reused candidates and emits one reservoir-weighted raw estimate.
+// Footprints keep a fixed budget even when sample_index exceeds it; output is unclamped.
 enum class FrameExecution { megakernel, wavefront };
+enum class FrameEstimator { independent, area_replay };
 struct FrameConfig {
     std::uint32_t width = 0, height = 0;
     std::uint64_t seed = 1;
@@ -20,6 +22,10 @@ struct FrameConfig {
     // Rounds per asynchronous command, never a path-depth or boundary limit.
     std::uint32_t quantum = 8;
     std::uint32_t group_width = 32;
+    FrameEstimator estimator = FrameEstimator::independent;
+    // Importance proxy only: 1 + .1*L1(XYZ)/(target_scale+L1(XYZ)).
+    // Bounded contrast controls history weights without changing raw radiance.
+    float target_scale = 1.f;
 };
 struct FrameCamera {
     RenderCamera camera;
@@ -44,6 +50,13 @@ struct FrameInfo {
     bool gpu_time_valid = false;
     std::uint64_t completed_samples = 0;
     std::uint64_t command_count = 0;
+    std::uint64_t area_serial = 0;
+    bool history_used = false;
+    std::uint64_t history_generation = 0;
+    // Per-pixel pool sizes, including cached fresh/center candidates.
+    std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
+    // Full successful path evaluations; cached candidates add no evaluations.
+    std::uint64_t completed_evaluations = 0, fresh_candidates = 0;
     // Camera translation may upload rebased graph/surface records. Repeated
     // origins in the same free slot reuse those records without uploading.
     std::uint64_t camera_upload_bytes = 0;
