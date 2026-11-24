@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "metal_texture_snapshot.hpp"
 #include "reconstruction.hpp"
 #import <Metal/Metal.h>
 #include <cstddef>
@@ -39,7 +40,15 @@ struct MetalReconstructionGuideSnapshot {
     std::string diagnostic;
     std::array<std::vector<std::byte>, 8> textures;
 };
+struct MetalReconstructionSnapshot {
+    std::string diagnostic;
+    ReconstructionInfo info;
+    std::vector<MetalReconstructionTextureSnapshot> textures;
+};
 struct MetalReconstructionStreamProbe {
     static MetalReconstructionGuideSnapshot capture_guides(const ReconstructionStream &);
+    // Requires opt-in, a retained last output and no subsequent submission.
+    // Externally serialize with submit; copies actual input/history/pass values.
+    static MetalReconstructionSnapshot capture_diagnostics(const ReconstructionStream &);
 };
 } // namespace rypath

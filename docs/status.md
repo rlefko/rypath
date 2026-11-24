@@ -1,5 +1,10 @@
 # Project status
 
+The denoiser repair starts with [identical-frame capture and replay](reconstruction-diagnostics.md).
+This diagnostic stage preserves existing reconstruction math and raw transport;
+signed surface continuity, MetalFX input repair and scene-quality qualification
+follow separately. Existing performance and quality figures below remain historical.
+
 The eight [golden-pipeline stages](golden-pipeline.md) have implemented baselines:
 resident frames, native traversal, wavefront PT, full-replay Area reuse with
 corrected MCMC, separate reconstruction, a native viewer and bounded end-to-end
