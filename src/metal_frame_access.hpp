@@ -48,6 +48,9 @@ class MetalFrameLease {
     id<MTLDevice> device() const;
     id<MTLCommandQueue> queue() const;
     id<MTLBuffer> raw_xyz() const;
+    // Reconstruction-only indexed continuity metadata; never transport identity.
+    std::string prepare_reconstruction_groups() const;
+    id<MTLBuffer> reconstruction_groups() const;
     const FrameInfo &info() const;
     const render_wire::Parameters &parameters() const;
     const render_wire::TextureParameters &texture_parameters() const;

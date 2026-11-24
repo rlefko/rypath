@@ -36,28 +36,58 @@ static bool temporal_denoiser_same_surface(uint4 a, uint4 b, float za, float zb,
     const float tolerance = temporal_denoiser_depth_tolerance(za, zb);
     return abs(za - zb) <= tolerance && dot(normalize(na), normalize(nb)) >= .9f;
 }
-// Conservative geometry support: exact instance/primitive/kind/material IDs.
-// This sacrifices smoothing across primitive seams instead of inventing correspondence.
-static float temporal_denoiser_geometry(uint4 a, uint4 b, float za, float zb, float3 na, float3 nb,
-                                        float3 da, float3 db, float3 sa, float3 sb) {
-    if (!all(a == b))
+// Spatial support is separate from exact temporal correspondence. Groups are
+// connected indexed seed-plane regions; instance/material and geometric plane
+// checks remain mandatory. Shading normals and albedo retain appearance edges.
+static float temporal_denoiser_geometry(uint4 a, uint4 b, uint ga, uint gb, float za, float zb,
+                                        float3 pa, float3 pb, float3 gna, float3 gnb, float3 na,
+                                        float3 nb, float3 da, float3 db, float3 sa, float3 sb) {
+    if (temporal_denoiser_sky(a) != temporal_denoiser_sky(b))
         return 0.f;
-    float weight = 1.f;
     if (!temporal_denoiser_sky(a)) {
-        if (!temporal_denoiser_guides(za, na, a) || !temporal_denoiser_guides(zb, nb, b))
+        if (a.x != b.x || a.z != b.z || a.w != b.w)
             return 0.f;
-        const float tolerance = temporal_denoiser_depth_tolerance(za, zb);
-        weight =
-            exp(-abs(za - zb) / tolerance) * pow(max(0.f, dot(normalize(na), normalize(nb))), 32.f);
+        if (a.z != 1u) {
+            // Curved patches and analytics retain exact-primitive support and
+            // the original reversed-depth/shading-normal weighting.
+            if (a.y != b.y || !temporal_denoiser_guides(za, na, a) ||
+                !temporal_denoiser_guides(zb, nb, b))
+                return 0.f;
+        } else {
+            if (a.y != b.y && (ga == 0xffffffffu || ga != gb))
+                return 0.f;
+            if (!all(isfinite(pa)) || !all(isfinite(pb)) || !temporal_denoiser_normal(gna) ||
+                !temporal_denoiser_normal(gnb))
+                return 0.f;
+            const float3 delta = pb - pa;
+            // Finite endpoints can overflow subtraction. Reject unsupported
+            // pairs before Inf*0 can make a plane residual NaN and fail open.
+            if (!all(isfinite(delta)))
+                return 0.f;
+            const float3 an = normalize(gna), bn = normalize(gnb);
+            const float3 magnitude = max(abs(pa), abs(pb));
+            const float scale = max(magnitude.x, max(magnitude.y, magnitude.z));
+            const float tolerance = max(0x1p-126f, 32.f * 0x1p-23f * scale);
+            const float residual_a = dot(delta, an), residual_b = dot(delta, bn);
+            if (!isfinite(residual_a) || !isfinite(residual_b) || dot(an, bn) < .99999f ||
+                abs(residual_a) > tolerance || abs(residual_b) > tolerance)
+                return 0.f;
+        }
     }
-    return weight * exp(-4.f * (dot(abs(da - db), float3(1.f)) + dot(abs(sa - sb), float3(1.f))));
+    const float depth_weight = !temporal_denoiser_sky(a) && a.z != 1u
+                                   ? exp(-abs(za - zb) / temporal_denoiser_depth_tolerance(za, zb))
+                                   : 1.f;
+    return depth_weight *
+           (temporal_denoiser_sky(a) ? 1.f
+                                     : pow(max(0.f, dot(normalize(na), normalize(nb))), 32.f)) *
+           exp(-4.f * (dot(abs(da - db), float3(1.f)) + dot(abs(sa - sb), float3(1.f))));
 }
 
 kernel void rypath_temporal_denoiser_contract(device tdw::Contract &contract [[buffer(0)]]) {
     contract = {tdw::version,
                 sizeof(tdw::Config),
                 sizeof(tdw::Counters),
-                tdw::output_id + 1u,
+                tdw::spatial_group_id + 1u,
                 {0, 0, 0, 0}};
 }
 
@@ -74,13 +104,14 @@ static uint2 temporal_denoiser_accumulate_pixel(
     texture2d<float, access::read> motion, texture2d<float, access::read> diffuse,
     texture2d<float, access::read> specular, texture2d<float, access::read> normal,
     texture2d<float, access::read> expected_depth, texture2d<uint, access::read> identity,
-    texture2d<float, access::read> previous_mean, texture2d<float, access::read> previous_variance,
-    texture2d<uint, access::read> previous_count, texture2d<float, access::read> previous_z,
-    texture2d<float, access::read> previous_normal, texture2d<uint, access::read> previous_identity,
-    texture2d<float, access::write> next_mean, texture2d<float, access::write> next_variance,
-    texture2d<uint, access::write> next_count, texture2d<float, access::write> next_z,
-    texture2d<float, access::write> next_normal, texture2d<uint, access::write> next_identity,
-    texture2d<float, access::write> filtered_mean,
+    texture2d<float, access::read> position, texture2d<float, access::read> geometric_normal,
+    texture2d<uint, access::read> group, texture2d<float, access::read> previous_mean,
+    texture2d<float, access::read> previous_variance, texture2d<uint, access::read> previous_count,
+    texture2d<float, access::read> previous_z, texture2d<float, access::read> previous_normal,
+    texture2d<uint, access::read> previous_identity, texture2d<float, access::write> next_mean,
+    texture2d<float, access::write> next_variance, texture2d<uint, access::write> next_count,
+    texture2d<float, access::write> next_z, texture2d<float, access::write> next_normal,
+    texture2d<uint, access::write> next_identity, texture2d<float, access::write> filtered_mean,
     texture2d<float, access::write> filtered_variance, uint2 pixel) {
     if (pixel.x >= config.width || pixel.y >= config.height)
         return uint2(0);
@@ -99,6 +130,12 @@ static uint2 temporal_denoiser_accumulate_pixel(
     if (!all(isfinite(input)) || input.w != 1.f || !all(isfinite(displacement)) ||
         !all(isfinite(d)) || !all(isfinite(s)) || !isfinite(expected) ||
         !temporal_denoiser_guides(z, n, id)) {
+        temporal_denoiser_fail(status, tdw::invalid_input);
+        return uint2(0);
+    }
+    if (!all(isfinite(position.read(pixel).xyz)) ||
+        (!temporal_denoiser_sky(id) &&
+         !temporal_denoiser_normal(geometric_normal.read(pixel).xyz))) {
         temporal_denoiser_fail(status, tdw::invalid_input);
         return uint2(0);
     }
@@ -155,8 +192,10 @@ static uint2 temporal_denoiser_accumulate_pixel(
                 const uint2 q = uint2(candidate);
                 const float3 value = color.read(q).xyz;
                 const float weight = temporal_denoiser_geometry(
-                    id, identity.read(q), z, depth.read(q).x, n, normal.read(q).xyz, d,
-                    diffuse.read(q).xyz, s, specular.read(q).xyz);
+                    id, identity.read(q), group.read(pixel).x, group.read(q).x, depth.read(pixel).x,
+                    depth.read(q).x, position.read(pixel).xyz, position.read(q).xyz,
+                    geometric_normal.read(pixel).xyz, geometric_normal.read(q).xyz, n,
+                    normal.read(q).xyz, d, diffuse.read(q).xyz, s, specular.read(q).xyz);
                 if (!isfinite(weight)) {
                     temporal_denoiser_fail(status, tdw::invalid_input);
                     return uint2(0);
@@ -203,6 +242,9 @@ kernel void rypath_temporal_denoiser_accumulate(
     texture2d<float, access::read> normal [[texture(tdw::normal_id)]],
     texture2d<float, access::read> expected_depth [[texture(tdw::previous_depth_id)]],
     texture2d<uint, access::read> identity [[texture(tdw::identity_id)]],
+    texture2d<float, access::read> position [[texture(tdw::spatial_position_id)]],
+    texture2d<float, access::read> geometric_normal [[texture(tdw::spatial_normal_id)]],
+    texture2d<uint, access::read> group [[texture(tdw::spatial_group_id)]],
     texture2d<float, access::read> previous_mean [[texture(tdw::history_mean_id)]],
     texture2d<float, access::read> previous_variance [[texture(tdw::history_variance_id)]],
     texture2d<uint, access::read> previous_count [[texture(tdw::history_count_id)]],
@@ -220,9 +262,9 @@ kernel void rypath_temporal_denoiser_accumulate(
     uint2 pixel [[thread_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]]) {
     const uint2 counts = temporal_denoiser_accumulate_pixel(
         config, status, color, depth, motion, diffuse, specular, normal, expected_depth, identity,
-        previous_mean, previous_variance, previous_count, previous_z, previous_normal,
-        previous_identity, next_mean, next_variance, next_count, next_z, next_normal, next_identity,
-        filtered_mean, filtered_variance, pixel);
+        position, geometric_normal, group, previous_mean, previous_variance, previous_count,
+        previous_z, previous_normal, previous_identity, next_mean, next_variance, next_count,
+        next_z, next_normal, next_identity, filtered_mean, filtered_variance, pixel);
     const uint accepted = simd_sum(counts.x);
     const uint rejected = simd_sum(counts.y);
     if (simd_lane == 0) {
@@ -240,6 +282,9 @@ kernel void rypath_temporal_denoiser_spatial(
     texture2d<float, access::read> specular [[texture(tdw::specular_id)]],
     texture2d<float, access::read> normal [[texture(tdw::normal_id)]],
     texture2d<uint, access::read> identity [[texture(tdw::identity_id)]],
+    texture2d<float, access::read> position [[texture(tdw::spatial_position_id)]],
+    texture2d<float, access::read> geometric_normal [[texture(tdw::spatial_normal_id)]],
+    texture2d<uint, access::read> group [[texture(tdw::spatial_group_id)]],
     texture2d<float, access::read> source_mean [[texture(tdw::source_mean_id)]],
     texture2d<float, access::read> source_variance [[texture(tdw::source_variance_id)]],
     texture2d<float, access::write> destination_mean [[texture(tdw::destination_mean_id)]],
@@ -250,10 +295,38 @@ kernel void rypath_temporal_denoiser_spatial(
     if (atomic_load_explicit(&status.failure, memory_order_relaxed))
         return;
     const float3 center = source_mean.read(pixel).xyz, v = source_variance.read(pixel).xyz;
-    const float z = depth.read(pixel).x;
     const float3 n = normal.read(pixel).xyz, d = diffuse.read(pixel).xyz,
                  s = specular.read(pixel).xyz;
     const uint4 id = identity.read(pixel);
+    // Guidance variance is independent of propagated variance and moments.
+    float3 guidance = v;
+    if (config.spatial_options & 1u) {
+        float sum = 0.f;
+        float3 proxy(0);
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                const int2 candidate = int2(pixel) + int2(x, y);
+                if (any(candidate < 0) || candidate.x >= int(config.width) ||
+                    candidate.y >= int(config.height))
+                    continue;
+                const uint2 q = uint2(candidate);
+                const float gaussian = float((x == 0 ? 2 : 1) * (y == 0 ? 2 : 1));
+                const float w =
+                    gaussian * temporal_denoiser_geometry(
+                                   id, identity.read(q), group.read(pixel).x, group.read(q).x,
+                                   depth.read(pixel).x, depth.read(q).x, position.read(pixel).xyz,
+                                   position.read(q).xyz, geometric_normal.read(pixel).xyz,
+                                   geometric_normal.read(q).xyz, n, normal.read(q).xyz, d,
+                                   diffuse.read(q).xyz, s, specular.read(q).xyz);
+                if (w > 0.f) {
+                    const float alpha = w / (sum + w);
+                    proxy += alpha * (source_variance.read(q).xyz - proxy);
+                    sum += w;
+                }
+            }
+        if (sum > 0.f)
+            guidance = proxy;
+    }
     constexpr float kernel_weight[5] = {1.f, 4.f, 6.f, 4.f, 1.f};
     float weight_sum = 0.f;
     float3 mean = center, variance = 0.f;
@@ -265,18 +338,44 @@ kernel void rypath_temporal_denoiser_spatial(
                 continue;
             const uint2 q = uint2(candidate);
             const float geometry = temporal_denoiser_geometry(
-                id, identity.read(q), z, depth.read(q).x, n, normal.read(q).xyz, d,
-                diffuse.read(q).xyz, s, specular.read(q).xyz);
+                id, identity.read(q), group.read(pixel).x, group.read(q).x, depth.read(pixel).x,
+                depth.read(q).x, position.read(pixel).xyz, position.read(q).xyz,
+                geometric_normal.read(pixel).xyz, geometric_normal.read(q).xyz, n,
+                normal.read(q).xyz, d, diffuse.read(q).xyz, s, specular.read(q).xyz);
             if (!isfinite(geometry) || geometry < 0.f) {
                 temporal_denoiser_fail(status, tdw::invalid_input);
                 return;
             }
             if (geometry == 0.f)
                 continue;
+            // Dilated taps must not jump a raster-visible gap/occluder even if
+            // both endpoints belong to the same connected sheet around a hole.
+            const int2 offset = candidate - int2(pixel);
+            const int length = max(abs(offset.x), abs(offset.y));
+            bool connected = true;
+            for (int k = 1; (config.spatial_options & 2u) && k < length; ++k) {
+                const uint2 r =
+                    uint2(int2(pixel) + int2(round(float2(offset) * (float(k) / float(length)))));
+                const float support = temporal_denoiser_geometry(
+                    id, identity.read(r), group.read(pixel).x, group.read(r).x, depth.read(pixel).x,
+                    depth.read(r).x, position.read(pixel).xyz, position.read(r).xyz,
+                    geometric_normal.read(pixel).xyz, geometric_normal.read(r).xyz, n, n, d, d, s,
+                    s);
+                if (support == 0.f) {
+                    connected = false;
+                    break;
+                }
+            }
+            if (!connected)
+                continue;
             const float3 value = source_mean.read(q).xyz,
                          neighbor_variance = source_variance.read(q).xyz;
             const float3 delta = value - center;
-            const float3 noise = 4.f * (v + neighbor_variance) + 1e-4f;
+            const uint policy = (config.spatial_options >> 2u) & 3u;
+            const float3 edge_variance =
+                policy == 0u ? guidance + neighbor_variance
+                             : (policy == 1u ? guidance : min(guidance, neighbor_variance));
+            const float3 noise = 4.f * edge_variance + 1e-4f;
             const float3 scaled = delta * delta / noise;
             const float chromatic_distance = dot(scaled, float3(1.f));
             if (!all(isfinite(value)) || !all(isfinite(v)) || !all(isfinite(neighbor_variance)) ||

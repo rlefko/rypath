@@ -681,6 +681,9 @@ void surface_cache_pair(ReconstructionMode mode) {
             const auto bg = MetalReconstructionStreamProbe::capture_guides(*control);
             require(ag.diagnostic.empty() && bg.diagnostic.empty(),
                     "Surface guide snapshot failed");
+            for (unsigned i = 8; i < 11; ++i)
+                require(ag.textures[i].empty() == (mode != ReconstructionMode::temporal),
+                        "Temporal geometry guide capture availability");
             require(ag.textures == bg.textures, "Cached surface textures differ from regeneration");
             require(capture(*a).linear_rgb == capture(*b).linear_rgb,
                     "Cached reconstruction differs from forced uncached output");

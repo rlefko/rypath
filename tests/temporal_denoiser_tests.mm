@@ -13,7 +13,7 @@
 
 namespace {
 using namespace rypath;
-unsigned width = 9, height = 5, pixels = width * height;
+unsigned width = 129, height = 129, pixels = width * height;
 using Color = std::array<float, 4>;
 using Identity = std::array<std::uint32_t, 4>;
 using RGB = std::array<double, 3>;
@@ -50,6 +50,9 @@ struct Fixture {
     std::vector<float> depth = std::vector<float>(pixels, .25f),
                        previous = std::vector<float>(pixels, .25f);
     std::vector<Identity> identity = std::vector<Identity>(pixels, Identity{0, 0, 1, 0});
+    std::vector<Color> position = std::vector<Color>(pixels, Color{0, 0, 4, 0});
+    std::vector<Color> geometric_normal = std::vector<Color>(pixels, Color{0, 0, 1, 0});
+    std::vector<std::uint32_t> group = std::vector<std::uint32_t>(pixels, UINT32_MAX);
     explicit Fixture(id<MTLDevice> device) {
         inputs.color = texture(device, MTLPixelFormatRGBA32Float);
         inputs.depth = texture(device, MTLPixelFormatR32Float);
@@ -59,6 +62,9 @@ struct Fixture {
         inputs.normal = texture(device, MTLPixelFormatRGBA16Float);
         inputs.previous_depth = texture(device, MTLPixelFormatR32Float);
         inputs.identity = texture(device, MTLPixelFormatRGBA32Uint);
+        inputs.spatial_position = texture(device, MTLPixelFormatRGBA32Float);
+        inputs.spatial_normal = texture(device, MTLPixelFormatRGBA32Float);
+        inputs.spatial_group = texture(device, MTLPixelFormatR32Uint);
         inputs.output = texture(device, MTLPixelFormatRGBA32Float);
     }
     static void upload(id<MTLTexture> target, const void *data, NSUInteger row) {
@@ -75,6 +81,9 @@ struct Fixture {
         upload(target, half.data(), width * sizeof(half[0]));
     }
     void upload() {
+        upload(inputs.spatial_position, position.data(), width * sizeof(Color));
+        upload(inputs.spatial_normal, geometric_normal.data(), width * sizeof(Color));
+        upload(inputs.spatial_group, group.data(), width * sizeof(std::uint32_t));
         upload(inputs.color, color.data(), width * sizeof(Color));
         upload(inputs.depth, depth.data(), width * sizeof(float));
         upload(inputs.previous_depth, previous.data(), width * sizeof(float));
@@ -103,12 +112,17 @@ struct Fixture {
         return image;
     }
 };
-std::unique_ptr<TemporalDenoiser> adapter(MetalFrameLease &lease, unsigned iterations = 0,
-                                          unsigned history = 64) {
+std::unique_ptr<TemporalDenoiser>
+adapter(MetalFrameLease &lease, unsigned iterations = 0, unsigned history = 64,
+        bool prefilter = false, bool strict_segments = false,
+        SpatialVariancePolicy policy = SpatialVariancePolicy::paired) {
     auto built = TemporalDenoiser::create(lease, {.width = width,
                                                   .height = height,
                                                   .history_limit = history,
-                                                  .spatial_iterations = iterations});
+                                                  .spatial_iterations = iterations,
+                                                  .variance_prefilter = prefilter,
+                                                  .spatial_variance_policy = policy,
+                                                  .strict_spatial_segments = strict_segments});
     require(built.denoiser != nullptr, built.diagnostic);
     return std::move(built.denoiser);
 }
@@ -134,11 +148,27 @@ void compare(const Image &actual, const Image &expected, const std::string &mess
 double geometry(const Fixture &f, unsigned p, unsigned q) {
     if (f.identity[p] != f.identity[q])
         return 0;
+    double geometry_weight = 1.;
+    if (f.identity[p][2] != 1u && f.identity[p][0] != UINT32_MAX) {
+        const double za = f.depth[p], zb = f.depth[q];
+        const double tolerance = .02 * std::max(std::abs(za), std::abs(zb)) +
+                                 std::max(double(std::numeric_limits<float>::min()),
+                                          8. * std::numeric_limits<float>::epsilon() *
+                                              std::max(std::abs(za), std::abs(zb)));
+        double na = 0, nb = 0, product = 0;
+        for (unsigned c = 0; c < 3; ++c) {
+            na += double(f.normal[p][c]) * f.normal[p][c];
+            nb += double(f.normal[q][c]) * f.normal[q][c];
+            product += double(f.normal[p][c]) * f.normal[q][c];
+        }
+        geometry_weight = std::exp(-std::abs(za - zb) / tolerance) *
+                          std::pow(std::max(0., product / std::sqrt(na * nb)), 32.);
+    }
     double distance = 0;
     for (unsigned c = 0; c < 3; ++c)
         distance += std::abs(double(f.diffuse[p][c]) - f.diffuse[q][c]) +
                     std::abs(double(f.specular[p][c]) - f.specular[q][c]);
-    return std::exp(-4 * distance);
+    return geometry_weight * std::exp(-4 * distance);
 }
 Image cold_variance(const Fixture &f, const Image &input) {
     Image result(pixels);
@@ -167,13 +197,33 @@ Image cold_variance(const Fixture &f, const Image &input) {
 struct Moments {
     Image mean, variance;
 };
-Image spatial(const Fixture &f, Moments moments, unsigned iterations) {
+Image spatial(const Fixture &f, Moments moments, unsigned iterations, bool prefilter = false,
+              SpatialVariancePolicy policy = SpatialVariancePolicy::paired,
+              double variance_floor = 1e-4) {
     auto &[mean, variance] = moments;
     constexpr std::array<double, 5> kernel{1, 4, 6, 4, 1};
     for (unsigned iteration = 0; iteration < iterations; ++iteration) {
         Image next(pixels), next_variance(pixels);
         const int step = 1 << iteration;
         for (unsigned p = 0; p < pixels; ++p) {
+            RGB guidance = variance[p];
+            if (prefilter) {
+                guidance = {};
+                double normalization = 0;
+                for (int y = -1; y <= 1; ++y)
+                    for (int x = -1; x <= 1; ++x) {
+                        int qx = int(p % width) + x, qy = int(p / width) + y;
+                        if (qx < 0 || qy < 0 || qx >= int(width) || qy >= int(height))
+                            continue;
+                        unsigned q = unsigned(qy) * width + unsigned(qx);
+                        double weight = geometry(f, p, q) * (x == 0 ? 2 : 1) * (y == 0 ? 2 : 1);
+                        normalization += weight;
+                        for (unsigned c = 0; c < 3; ++c)
+                            guidance[c] += weight * variance[q][c];
+                    }
+                for (auto &c : guidance)
+                    c /= normalization;
+            }
             double sum = 0;
             for (int y = -2; y <= 2; ++y)
                 for (int x = -2; x <= 2; ++x) {
@@ -184,7 +234,12 @@ Image spatial(const Fixture &f, Moments moments, unsigned iterations) {
                     double distance = 0;
                     for (unsigned c = 0; c < 3; ++c) {
                         const double delta = mean[q][c] - mean[p][c];
-                        distance += delta * delta / (4 * (variance[p][c] + variance[q][c]) + 1e-4);
+                        const double edge_variance = policy == SpatialVariancePolicy::paired
+                                                         ? guidance[c] + variance[q][c]
+                                                     : policy == SpatialVariancePolicy::center
+                                                         ? guidance[c]
+                                                         : std::min(guidance[c], variance[q][c]);
+                        distance += delta * delta / (4 * edge_variance + variance_floor);
                     }
                     const double weight = kernel[unsigned(x + 2)] * kernel[unsigned(y + 2)] / 256 *
                                           geometry(f, p, q) * std::exp(-distance);
@@ -285,6 +340,12 @@ void spatial_cases(MetalFrameLease &lease) {
     const auto expected = spatial(f, {values, cold_variance(f, values)}, 5);
     require(execute(*denoiser, f, lease.queue()).empty(), "Spatial cold execution");
     const auto positive = f.capture();
+    auto prefiltered = adapter(lease, 5, 64, true, false, SpatialVariancePolicy::center);
+    require(execute(*prefiltered, f, lease.queue()).empty(),
+            "Optional guidance prefilter execution");
+    compare(f.capture(),
+            spatial(f, {values, cold_variance(f, values)}, 5, true, SpatialVariancePolicy::center),
+            "Independent guidance-only prefilter oracle", 6e-4);
     compare(positive, expected, "Independent five-pass spatial stencil", 6e-4);
     for (auto &pixel : f.color)
         for (unsigned c = 0; c < 3; ++c)
@@ -310,6 +371,239 @@ void spatial_cases(MetalFrameLease &lease) {
     const auto disjoint = f.capture();
     for (unsigned p = 0; p < pixels; ++p)
         near(disjoint[p][0], f.color[p][0], "Zero-support HDR preservation", 0, 0);
+}
+// Full 129-pixel support exposes the step-16 halo that small fixtures miss.
+void continuity_and_halo(MetalFrameLease &lease) {
+    Fixture whole(lease.device()), split(lease.device());
+    auto a = adapter(lease, 5), b = adapter(lease, 5);
+    for (unsigned p = 0; p < pixels; ++p) {
+        const float x = float(p % width) * .01f, y = float(p / width) * .01f;
+        // Oblique sheet has substantial depth variation but a shared geometric plane.
+        whole.position[p] = {x, y, 4.f + x, 0};
+        whole.geometric_normal[p] = {-.70710677f, 0, .70710677f, 0};
+        whole.group[p] = 0;
+        whole.color[p] = {float(int(p % 11) - 5), float(int(p % 7) - 3), float(int(p % 3) - 1), 1};
+    }
+    split.position = whole.position;
+    split.geometric_normal = whole.geometric_normal;
+    split.group = whole.group;
+    split.color = whole.color;
+    for (unsigned p = 0; p < pixels; ++p)
+        split.identity[p][1] = (p % width) / 8;
+    require(execute(*a, whole, lease.queue()).empty(), "Oblique whole-plane execution");
+    require(execute(*b, split, lease.queue()).empty(), "Indexed triangulated-plane execution");
+    compare(split.capture(), whole.capture(), "Triangulation invariance across connected plane",
+            1e-5);
+    const auto baseline = whole.capture();
+    Image original_values(pixels);
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            original_values[p][c] = whole.color[p][c];
+    const auto original_oracle =
+        spatial(whole, {original_values, cold_variance(whole, original_values)}, 5);
+    compare(baseline, original_oracle, "Original exposure independent stencil", 6e-4);
+    constexpr double exposure_scale = 1024.;
+    for (auto &pixel : whole.color)
+        for (unsigned c = 0; c < 3; ++c)
+            pixel[c] *= float(exposure_scale);
+    Image scaled_values(pixels);
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            scaled_values[p][c] = whole.color[p][c];
+    const auto scaled_variance = cold_variance(whole, scaled_values);
+    const auto scaled_oracle = spatial(whole, {scaled_values, scaled_variance}, 5);
+    // The absolute floor stays 1e-4 in production. Homogeneity is restored only
+    // when that floor is scaled along with color squared and its variance.
+    const auto homogeneous_oracle =
+        spatial(whole, {scaled_values, scaled_variance}, 5, false, SpatialVariancePolicy::paired,
+                1e-4 * exposure_scale * exposure_scale);
+    require(execute(*a, whole, lease.queue()).empty(), "Exposure-scaled execution");
+    const auto exposed = whole.capture();
+    Image normalized_exposed = exposed, normalized_oracle = scaled_oracle;
+    double observed_scaling_deviation = 0, expected_floor_deviation = 0;
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c) {
+            normalized_exposed[p][c] /= exposure_scale;
+            normalized_oracle[p][c] /= exposure_scale;
+            observed_scaling_deviation =
+                std::max(observed_scaling_deviation,
+                         std::abs(exposed[p][c] - baseline[p][c] * exposure_scale));
+            expected_floor_deviation =
+                std::max(expected_floor_deviation,
+                         std::abs(scaled_oracle[p][c] - original_oracle[p][c] * exposure_scale));
+            near(homogeneous_oracle[p][c] / exposure_scale, original_oracle[p][c],
+                 "CPU exposure homogeneity when variance floor also scales", 1e-10, 1e-12);
+        }
+    // Preserve the existing five-pass stencil error bounds in source units;
+    // do not compare different mathematical filters as if exposure-equivariant.
+    compare(normalized_exposed, normalized_oracle,
+            "Scaled exposure fixed-floor independent stencil", 6e-4);
+    std::cout << "exposure_fixed_floor scale=" << exposure_scale
+              << " observed_max_scaling_deviation=" << observed_scaling_deviation
+              << " oracle_max_floor_deviation=" << expected_floor_deviation << '\n';
+    // Distinct connected components and close parallel layers cannot exchange color.
+    Fixture layers(lease.device());
+    auto no_leak = adapter(lease, 5, 64, false, true);
+    for (unsigned p = 0; p < pixels; ++p) {
+        const bool right = p % width >= width / 2;
+        layers.identity[p][1] = right ? 1 : 0;
+        layers.group[p] = right ? 1 : 0;
+        layers.position[p] = {float(p % width) * .01f, 0, right ? 4.0001f : 4.f, 0};
+        layers.color[p] = right ? Color{100000.f, -50000.f, 25000.f, 1} : Color{0, 0, 0, 1};
+    }
+    require(execute(*no_leak, layers, lease.queue()).empty(), "Disconnected close-layer execution");
+    auto output = layers.capture();
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            near(output[p][c], layers.color[p][c], "No disconnected-layer leak", 0, 0);
+    // A same-group plane with a visible gap must not be jumped by dilated taps.
+    for (unsigned p = 0; p < pixels; ++p) {
+        layers.group[p] = 0;
+        layers.position[p][2] = 4.f;
+        if (p % width == width / 2)
+            layers.identity[p] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    }
+    require(execute(*no_leak, layers, lease.queue()).empty(), "Visible-gap execution");
+    output = layers.capture();
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            near(output[p][c], layers.color[p][c], "Dilated taps cannot jump gap", 0, 0);
+    // Both positions are finite, but their x displacement overflows float32.
+    // Inf*zero in either plane dot product must reject support rather than
+    // letting NaN comparisons admit these separated same-group planes.
+    Fixture extreme(lease.device());
+    auto extreme_filter = adapter(lease, 5);
+    for (unsigned p = 0; p < pixels; ++p) {
+        const bool right = p % width >= width / 2;
+        extreme.identity[p][1] = right ? 1u : 0u;
+        extreme.group[p] = 0;
+        extreme.position[p] = right ? Color{3e38f, 0, 1e37f, 0} : Color{-3e38f, 0, 0, 0};
+        extreme.color[p] = right ? Color{100000.f, -50000.f, 25000.f, 1} : Color{0, 0, 0, 1};
+    }
+    require(execute(*extreme_filter, extreme, lease.queue()).empty(),
+            "Finite extreme-position planes execute without unsupported blending");
+    auto extreme_output = extreme.capture();
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            near(extreme_output[p][c], extreme.color[p][c],
+                 "Nonfinite displacement rejects separated same-group planes", 0, 0);
+    Fixture impulse(lease.device());
+    auto halo = adapter(lease, 5, 64, false, false, SpatialVariancePolicy::center);
+    for (unsigned frame = 0; frame < 70; ++frame) {
+        impulse.inputs.reset_history = frame == 0;
+        require(execute(*halo, impulse, lease.queue()).empty(), "Mature impulse history");
+    }
+    const unsigned center = (height / 2) * width + width / 2;
+    impulse.color[center] = {128000.f, -64000.f, 32000.f, 1};
+    require(execute(*halo, impulse, lease.queue()).empty(), "Mature signed HDR impulse");
+    output = impulse.capture();
+    for (unsigned p = 0; p < pixels; ++p)
+        if (p != center)
+            for (unsigned c = 0; c < 3; ++c)
+                near(output[p][c], 0, "Center guidance rejects high-variance neighbor halo", 0, 0);
+}
+void curved_primitive(MetalFrameLease &lease) {
+    for (auto kind : {2u, 4u}) {
+        Fixture f(lease.device());
+        auto filter = adapter(lease, 1);
+        Image values(pixels);
+        for (unsigned p = 0; p < pixels; ++p) {
+            const float angle = (float(p % width) - float(width / 2)) * .01f;
+            f.identity[p][2] = kind;
+            // Half-representable appearance normal for independent CPU oracle.
+            f.normal[p] = {float(_Float16(std::sin(angle))), 0, float(_Float16(std::cos(angle))),
+                           0};
+            f.geometric_normal[p] = f.normal[p];
+            f.position[p] = {std::sin(angle), float(p / width) * .01f, 4.f + 1.f - std::cos(angle),
+                             0};
+            f.depth[p] = .25f / (1.f + .1f * (1.f - std::cos(angle)));
+            f.color[p] = {float(int(p % 7) - 3), float(int(p % 5) - 2), float(int(p % 3) - 1), 1};
+            for (unsigned c = 0; c < 3; ++c)
+                values[p][c] = f.color[p][c];
+        }
+        require(execute(*filter, f, lease.queue()).empty(), "Curved same-primitive execution");
+        auto result = f.capture();
+        compare(result, spatial(f, {values, cold_variance(f, values)}, 1),
+                "Original depth/shading-normal curved geometry oracle", 8e-4);
+        bool changed = false;
+        for (unsigned p = 0; p < pixels; ++p)
+            changed = changed || std::abs(result[p][0] - values[p][0]) > .01;
+        require(changed, "Curved primitive must meaningfully filter neighboring estimates");
+    }
+}
+void variance_policy_signals(MetalFrameLease &lease) {
+    const unsigned center = (height / 2) * width + width / 2;
+    for (auto policy : {SpatialVariancePolicy::paired, SpatialVariancePolicy::center,
+                        SpatialVariancePolicy::conservative}) {
+        Fixture signal(lease.device());
+        auto filter = adapter(lease, 5, 64, false, false, policy);
+        // Known deterministic incident radiance: a narrow signed HDR reflection/
+        // caustic-shaped signal. This is a filter fixture, not transport qualification.
+        for (unsigned p = 0; p < pixels; ++p) {
+            const bool stripe =
+                p % width == width / 2 && std::abs(int(p / width) - int(height / 2)) <= 2;
+            signal.color[p] = stripe ? Color{128000.f, 96000.f, -32000.f, 1} : Color{0, 0, 0, 1};
+        }
+        for (unsigned frame = 0; frame < 5; ++frame) {
+            signal.inputs.reset_history = frame == 0;
+            require(execute(*filter, signal, lease.queue()).empty(),
+                    "Persistent noise-free HDR signal");
+        }
+        auto output = signal.capture();
+        for (unsigned p = 0; p < pixels; ++p)
+            for (unsigned c = 0; c < 3; ++c)
+                near(output[p][c], signal.color[p][c],
+                     "Mature noise-free narrow HDR signal preservation", 0, 0);
+        Fixture transient(lease.device());
+        auto temporal = adapter(lease, 5, 64, false, false, policy);
+        for (unsigned frame = 0; frame < 65; ++frame) {
+            transient.inputs.reset_history = frame == 0;
+            require(execute(*temporal, transient, lease.queue()).empty(),
+                    "Transient signal baseline history");
+        }
+        // A legitimate newly appearing signal has the same numeric shape as a
+        // noise impulse; measure attenuation explicitly instead of declaring it noise.
+        transient.color[center] = {128000.f, 96000.f, -32000.f, 1};
+        require(execute(*temporal, transient, lease.queue()).empty(),
+                "Transient legitimate HDR signal");
+        output = transient.capture();
+        const double temporal_peak = 128000. / 64.;
+        double roi_energy = 0, halo_energy = 0;
+        for (unsigned p = 0; p < pixels; ++p) {
+            require(std::isfinite(output[p][0]), "Finite policy signal output");
+            if (std::abs(int(p % width) - int(width / 2)) <= 32 &&
+                std::abs(int(p / width) - int(height / 2)) <= 32)
+                roi_energy += output[p][0];
+            if (p != center)
+                halo_energy += std::abs(output[p][0]);
+        }
+        std::cout << "variance_policy_signal policy=" << static_cast<unsigned>(policy)
+                  << " ground_truth_peak=128000 temporal_peak=" << temporal_peak
+                  << " reconstructed_peak=" << output[center][0]
+                  << " center_retention=" << output[center][0] / temporal_peak
+                  << " halo_energy=" << halo_energy << " roi_energy=" << roi_energy << '\n';
+        if (policy == SpatialVariancePolicy::conservative) {
+            near(output[center][0], temporal_peak, "Conservative transient center preservation",
+                 2e-5);
+            near(halo_energy, 0, "Conservative transient halo rejection", 0, 0);
+        }
+    }
+    Fixture hdr(lease.device());
+    auto prefilter = adapter(lease, 1, 64, true, false, SpatialVariancePolicy::center);
+    require(execute(*prefilter, hdr, lease.queue()).empty(),
+            "HDR variance prefilter zero initial state");
+    hdr.inputs.reset_history = false;
+    for (auto &pixel : hdr.color)
+        pixel = {1.8e19f, -1.8e19f, 1.8e19f, 1};
+    require(execute(*prefilter, hdr, lease.queue()).empty(),
+            "Finite HDR Gaussian variance guidance");
+    for (auto value : hdr.capture())
+        for (unsigned c = 0; c < 3; ++c)
+            near(value[c], double(hdr.color[0][c]) * .5, "Stable finite HDR prefilter mean", 2e-6);
+    require(!TemporalDenoiser::create(
+                 lease, {.width = width, .height = height, .variance_prefilter = true})
+                 .denoiser,
+            "Prefilter with paired policy must reject ambiguous ablation");
 }
 void reprojection(MetalFrameLease &lease) {
     auto denoiser = adapter(lease);
@@ -544,6 +838,9 @@ int main() {
             require(acquired.lease != nullptr, acquired.diagnostic);
             recurrence(*acquired.lease);
             spatial_cases(*acquired.lease);
+            continuity_and_halo(*acquired.lease);
+            curved_primitive(*acquired.lease);
+            variance_policy_signals(*acquired.lease);
             reprojection(*acquired.lease);
             failure_and_validation(*acquired.lease);
             counter_sizes(scene);
