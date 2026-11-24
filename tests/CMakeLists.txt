@@ -17,6 +17,8 @@ else()
     add_test(NAME frame.unavailable COMMAND rypath_frame_session_tests)
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME infrastructure.canonical_probe_generation COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_generate_canonical_probe.py")
 add_test(NAME cli.frame_benchmark COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/frame_benchmark_cli_tests.py" "$<TARGET_FILE:rypath_frame_benchmark>")
 add_executable(rypath_frame_statistics_tests frame_statistics_tests.cpp)
@@ -77,6 +79,38 @@ rypath_configure_host_target(rypath_pbrt_packet_tests)
 add_test(NAME pbrt.packet COMMAND rypath_pbrt_packet_tests)
 
 if(RYPATH_ENABLE_METAL)
+    # Isolate arithmetic probes from unrelated reconstruction-guide entrypoints.
+    # The whole-production-TU canonical_full_context test below stays unchanged.
+    set(canonical_probe_dir "${CMAKE_CURRENT_BINARY_DIR}/canonical-probe")
+    set(canonical_probe_source "${canonical_probe_dir}/canonical_probe.metal")
+    set(canonical_render_source "${canonical_probe_dir}/canonical_render.metal")
+    set(canonical_probe_manifest "${canonical_probe_dir}/generation.json")
+    set(canonical_probe_air "${canonical_probe_dir}/canonical_probe.air")
+    set(canonical_probe_library "${rypath_runtime_directory}/rypath-canonical-probe.metallib")
+    add_custom_command(
+        OUTPUT "${canonical_probe_source}" "${canonical_render_source}" "${canonical_probe_manifest}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/generate_canonical_probe.py"
+            --render "${CMAKE_SOURCE_DIR}/shaders/render.metal"
+            --probe "${CMAKE_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
+            --output-dir "${canonical_probe_dir}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/generate_canonical_probe.py"
+            "${CMAKE_SOURCE_DIR}/shaders/render.metal"
+            "${CMAKE_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${canonical_probe_library}"
+        COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+            "-fmodules-cache-path=${rypath_metal_cache}" "-I${CMAKE_SOURCE_DIR}/shaders"
+            -fno-fast-math -O1 -c "${canonical_probe_source}" -o "${canonical_probe_air}"
+        COMMAND "${RYPATH_XCRUN}" --sdk macosx metal "${rypath_metal_min_version}"
+            -o "${canonical_probe_library}" "${canonical_probe_air}"
+        DEPENDS "${canonical_probe_source}" "${canonical_render_source}" "${canonical_probe_manifest}"
+            ${rypath_render_shader_dependencies}
+            "${CMAKE_CURRENT_SOURCE_DIR}/light_geometry_sampling_probe_wire.h"
+        VERBATIM
+    )
+    add_custom_target(rypath_canonical_probe_shader DEPENDS "${canonical_probe_library}")
     foreach(suite IN ITEMS light_geometry_sampling light_sampling)
         add_executable(rypath_${suite}_probe ${suite}_probe.mm)
         target_link_libraries(rypath_${suite}_probe PRIVATE rypath_metal_backend rypath_render "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
@@ -84,8 +118,8 @@ if(RYPATH_ENABLE_METAL)
         target_compile_options(rypath_${suite}_probe PRIVATE -fobjc-arc)
         rypath_configure_host_target(rypath_${suite}_probe)
         if(suite STREQUAL "light_geometry_sampling")
-            add_dependencies(rypath_${suite}_probe rypath_light_geometry_shader)
-            add_test(NAME metal.${suite} COMMAND rypath_${suite}_probe "${rypath_light_geometry_library}")
+            add_dependencies(rypath_${suite}_probe rypath_light_geometry_shader rypath_canonical_probe_shader)
+            add_test(NAME metal.${suite} COMMAND rypath_${suite}_probe "${canonical_probe_library}")
             add_test(NAME metal.canonical_full_context COMMAND rypath_${suite}_probe
                 "${rypath_light_geometry_library}" --canonical-full-context "${rypath_metal_library}")
             set_tests_properties(metal.canonical_full_context PROPERTIES TIMEOUT 120)
@@ -1795,3 +1829,24 @@ if(RYPATH_ENABLE_METAL)
         endif()
     endforeach()
 endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_camera_medium_tests camera_medium_tests.cpp)
+    target_link_libraries(rypath_camera_medium_tests PRIVATE rypath_camera_motion)
+    set_target_properties(rypath_camera_medium_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_camera_medium_tests)
+    add_test(NAME metal.camera_medium COMMAND rypath_camera_medium_tests "${rypath_metal_library}")
+    set_tests_properties(metal.camera_medium PROPERTIES TIMEOUT 120 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_camera_medium_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.camera_medium PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+endif()
+
+add_executable(rypath_viewer_options_tests viewer_options_tests.cpp ../src/viewer_options.cpp)
+target_include_directories(rypath_viewer_options_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_viewer_options_tests)
+add_test(NAME viewer.options COMMAND rypath_viewer_options_tests)

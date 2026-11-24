@@ -213,8 +213,12 @@ interactive work does not imply that those quality and compatibility gates pass.
 
 Resident native frames, bounded wavefront execution and opt-in full-replay Area
 reuse with corrected MCMC mutations, retained MetalFX reconstruction and a
-signed-float temporal fallback are implemented. The native viewer and
-complete-pipeline quality/performance qualification remain subsequent boundaries.
+signed-float temporal fallback are implemented. The experimental
+[native viewer](viewer.md) also exists, with camera controls, explicit output modes,
+raw/reconstructed comparison and paired captures. Signed-temporal UI checks pass;
+sustained-performance qualification remains open. The audited static fixtures
+select independent sampling plus signed temporal reconstruction as the viewer
+default; full-replay Area/MCMC remains an explicit research candidate.
 
 Broader conformance includes full OBJ non-polygon geometry, additional mesh
 formats, PBRT materials/cameras, curves, motion, and heterogeneous media.

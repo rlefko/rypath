@@ -21,7 +21,7 @@ set(rypath_metal_cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/rypath-metal-cach
 set(rypath_metal_min_version "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 
 set(rypath_metal_air_files)
-foreach(shader IN ITEMS frame temporal_denoiser smoke geometry analytic_probe packet_scattering_probe render gltf_texture_probe texture_probe hdr_texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe light_sampling_probe conductor_probe gltf_probe dielectric_probe layered_probe table_bsdf_probe medium_probe)
+foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_probe packet_scattering_probe render gltf_texture_probe texture_probe hdr_texture_probe masked_probe texture_graph_probe surface_detail_probe image_lighting_probe light_sampling_probe conductor_probe gltf_probe dielectric_probe layered_probe table_bsdf_probe medium_probe)
     set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}.metal")
     if(shader STREQUAL "packet_scattering_probe")
         set(source "${CMAKE_CURRENT_SOURCE_DIR}/tests/packet_scattering_probe.metal")
@@ -42,6 +42,8 @@ foreach(shader IN ITEMS frame temporal_denoiser smoke geometry analytic_probe pa
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h")
     endif()
     if(shader STREQUAL "render")
+        list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/camera_medium.metal"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_medium_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/reconstruction_guides.metal"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/reconstruction_guide_wire.h")
     endif()
