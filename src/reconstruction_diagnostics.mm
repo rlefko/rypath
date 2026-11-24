@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_wire.h"
 #include "frame_benchmark_motion.hpp"
 #include "metal_frame_access.hpp"
 #include "metal_reconstruction_access.hpp"
@@ -98,7 +99,9 @@ void help() {
     std::cout
         << "Usage: rypath-reconstruction-diagnostics --scene FILE --output-dir DIR --artifact-root "
            "DIR [options]\n"
-           "  --width N --height N --frames N --seed N --estimator independent|area1\n"
+           "  --width N --height N --frames N --seed N --estimator independent|area1|area2|area4\n"
+           "  --area-output selected|conditional-mean (Area fanout only; default: "
+           "conditional-mean)\n"
            "  --capture-mode final|replay --capture-frames N,N --roi-file FILE\n"
            "  --motion-offset X | --reference-samples 1024|4096 --seed N [--reference-offset X]\n"
            "  --replay-list FILE [--replay-spatial 0..5] --resource-profile NAME\n"
@@ -112,10 +115,19 @@ struct Options {
     ResourceProfile resource_profile = ResourceProfile::standard;
     std::optional<float> motion_offset, reference_offset;
     FrameEstimator estimator = FrameEstimator::independent;
+    FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
+    std::uint32_t mutation_steps = 0;
     std::set<std::uint64_t> captures;
     std::uint32_t replay_spatial = 5;
     std::string capture_mode = "final";
 };
+std::string_view area_output_name(FrameAreaOutput output) {
+    return output == FrameAreaOutput::selected ? "selected" : "conditional-mean";
+}
+std::string_view effective_area_output(const Options &o) {
+    return o.estimator == FrameEstimator::area_replay ? area_output_name(o.area_output)
+                                                      : "not-applicable";
+}
 Options parse(int argc, char **argv) {
     Options o;
     std::set<std::string> seen;
@@ -141,10 +153,17 @@ Options parse(int argc, char **argv) {
             require(p.has_value(), "Invalid resource profile");
             o.resource_profile = *p;
         } else if (key == "--estimator") {
-            require(value == "independent" || value == "area1",
-                    "Estimator must be independent or area1");
+            require(value == "independent" || value == "area1" || value == "area2" ||
+                        value == "area4",
+                    "Estimator must be independent, area1, area2, or area4");
             o.estimator =
-                value == "area1" ? FrameEstimator::area_replay : FrameEstimator::independent;
+                value == "independent" ? FrameEstimator::independent : FrameEstimator::area_replay;
+            o.mutation_steps = value == "independent" ? 0u : unsigned(value.back() - '0');
+        } else if (key == "--area-output") {
+            require(value == "selected" || value == "conditional-mean",
+                    "Area output must be selected or conditional-mean");
+            o.area_output =
+                value == "selected" ? FrameAreaOutput::selected : FrameAreaOutput::conditional_mean;
         } else if (key == "--motion-offset") {
             const auto x = finite_float(value);
             require(x != 0, "Invalid motion offset");
@@ -178,6 +197,9 @@ Options parse(int argc, char **argv) {
             }
         }
     }
+    require(!seen.contains("--area-output") ||
+                (o.estimator == FrameEstimator::area_replay && o.replay_list.empty()),
+            "Area output requires an Area diagnostic fanout run");
     require(!o.scene.empty() && !o.output_dir.empty() && !o.artifact_root.empty(),
             "--scene, --output-dir and --artifact-root required");
     require(o.width && o.height && o.width <= 16384 && o.height <= 16384 && o.frames &&
@@ -332,6 +354,12 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
         @"textures" : textures,
         @"signed_raw_is_accumulated_spp" : @NO,
         @"source_sample" : @(snapshot.info.source.sample_index),
+        @"area_contract" : @(o.estimator == FrameEstimator::area_replay ? area_wire::contract : 0),
+        @"area_output" : ns(effective_area_output(o)),
+        @"area_target" : o.estimator == FrameEstimator::area_replay ? @"quarter-l1-v1" : @"none",
+        @"area_source_mis" : o.estimator == FrameEstimator::area_replay ? @"source-target-mis-v1"
+                                                                        : @"none",
+        @"area_temporal_reuse" : @(o.estimator == FrameEstimator::area_replay ? 20 : 0),
         @"source_evaluations" : @(snapshot.info.source.completed_evaluations),
         @"history_accepted" : @(snapshot.info.history_accepted),
         @"history_rejected" : @(snapshot.info.history_rejected)
@@ -350,6 +378,12 @@ std::unique_ptr<Frame> render(FrameSession &session, std::uint64_t sample, const
             submitted.diagnostic);
     auto info = submitted.frame->wait();
     require(info.status == FrameStatus::complete, info.diagnostic);
+    const auto pixels = std::uint64_t(o.width) * o.height;
+    const auto evaluations = o.estimator == FrameEstimator::area_replay
+                                 ? (info.history_used ? 7u : 5u) + o.mutation_steps
+                                 : 1u;
+    require(info.completed_samples == pixels && info.completed_evaluations == pixels * evaluations,
+            "Diagnostic source-MIS path accounting mismatch");
     return std::move(submitted.frame);
 }
 std::array<float, 3> xyz_rgb(const std::array<float, 3> &v) {
@@ -374,6 +408,15 @@ void save_rgb(Output &out, std::string prefix, const std::vector<std::array<floa
             @"dtype" : @"<f4",
             @"role" : ns(role),
             @"seed" : @(o.seed),
+            @"area_contract" :
+                @(o.estimator == FrameEstimator::area_replay ? area_wire::contract : 0),
+            @"area_output" : ns(effective_area_output(o)),
+            @"area_target" : o.estimator == FrameEstimator::area_replay ? @"quarter-l1-v1"
+                                                                        : @"none",
+            @"area_source_mis" : o.estimator == FrameEstimator::area_replay
+                ? @"source-target-mis-v1"
+                : @"none",
+            @"area_temporal_reuse" : @(o.estimator == FrameEstimator::area_replay ? 20 : 0),
             @"reference_samples" : @(o.reference_samples)
         });
 }
@@ -483,6 +526,15 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                     @"epoch" : @(pose.epoch),
                     @"reset_history" : @(info.history_reset),
                     @"output_RGB_sha256" : ns(hash),
+                    @"area_contract" :
+                        @(o.estimator == FrameEstimator::area_replay ? area_wire::contract : 0),
+                    @"area_output" : ns(effective_area_output(o)),
+                    @"area_target" : o.estimator == FrameEstimator::area_replay ? @"quarter-l1-v1"
+                                                                                : @"none",
+                    @"area_source_mis" : o.estimator == FrameEstimator::area_replay
+                        ? @"source-target-mis-v1"
+                        : @"none",
+                    @"area_temporal_reuse" : @(o.estimator == FrameEstimator::area_replay ? 20 : 0),
                     @"same_input_raw_XYZ_sha256" : ns(raw_hash),
                     @"regions" : region_means(result.linear_rgb, regions, o),
                     @"raw_regions" : region_means(raw_rgb, regions, o),
@@ -765,7 +817,8 @@ int main(int argc, char **argv) {
             config.height = options.height;
             config.seed = options.seed;
             config.estimator = options.estimator;
-            config.mutation_steps = config.estimator == FrameEstimator::area_replay ? 1 : 0;
+            config.area_output = options.area_output;
+            config.mutation_steps = options.mutation_steps;
             config.intersection_profile = IntersectionProfile::native;
             config.execution = FrameExecution::wavefront;
             auto built = build_frame_session(scene.value, config);
@@ -788,8 +841,21 @@ int main(int argc, char **argv) {
                     @"width" : @(options.width),
                     @"height" : @(options.height),
                     @"frames" : @(options.frames),
-                    @"estimator" : config.estimator == FrameEstimator::area_replay ? @"area1"
-                                                                                   : @"independent",
+                    @"estimator" : config.estimator == FrameEstimator::area_replay
+                        ? ns("area" + std::to_string(config.mutation_steps))
+                        : @"independent",
+                    @"area_contract" : @(
+                        options.estimator == FrameEstimator::area_replay ? area_wire::contract : 0),
+                    @"area_output" : ns(effective_area_output(options)),
+                    @"area_target" : options.estimator == FrameEstimator::area_replay
+                        ? @"quarter-l1-v1"
+                        : @"none",
+                    @"area_source_mis" : options.estimator == FrameEstimator::area_replay
+                        ? @"source-target-mis-v1"
+                        : @"none",
+                    @"area_temporal_reuse" :
+                        @(options.estimator == FrameEstimator::area_replay ? 20 : 0),
+                    @"requested_area_output" : ns(area_output_name(options.area_output)),
                     @"mutation_steps" : @(config.mutation_steps),
                     @"source_identity" : ns(digest_hex(render_identity(scene.value, settings))),
                     @"resource_profile" : ns(resource_profile_name(options.resource_profile)),

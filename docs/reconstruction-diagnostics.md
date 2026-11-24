@@ -34,6 +34,17 @@ MTL_DEBUG_LAYER=1 build/debug/rypath-reconstruction-diagnostics \
   --width 128 --height 128 --frames 4 --capture-mode replay
 ```
 
+`--estimator independent|area1|area2|area4` selects independent sampling or
+Area replay with exactly one, two or four mutation steps. The default remains
+independent; its mutation count is zero. `configuration.json` records the exact
+estimator label and actual configured mutation count. These choices use the
+existing frame mutation-count contract and preserve replay semantics. Reference
+batches still require independent sampling.
+
+Area2 and Area4 image galleries are additional diagnostic comparisons. They do
+not expand or replace the frozen three-seed Area1 qualification plan; their GPU
+cost and evaluation counts require separate verification.
+
 Replay mode archives every input of the signed spatial arm, including reset
 decisions, for a complete cold-start sequence of at most 16 frames. A replay list
 is a JSON object with a `snapshots` array naming ordered `temporal-0.json`,
@@ -92,3 +103,9 @@ Apple M4 Max (128 GiB), macOS 26.6 / 25G5065a, Apple Clang 21.0.0:
 
 These checks establish the diagnostic contract, not denoiser scene quality or
 real-time performance. Large native-resolution qualification remains separate.
+
+Area fanout uses contract 5 with source-target MIS and the default conditional-mean
+output. `--area-output selected` retains the selected-output ablation. These
+settings and the cold/warm full-replay evaluation counts are recorded explicitly;
+independent references remain separate. Historical validation below predates this
+adapted integration; current combined validation is pending.

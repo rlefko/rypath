@@ -11,6 +11,8 @@ def main():
     executable = pathlib.Path(sys.argv[1]).resolve()
     result = subprocess.run([executable, "--help"], capture_output=True, text=True)
     assert result.returncode == 0 and "replay" in result.stdout, result
+    assert "independent|area1|area2|area4" in result.stdout, result.stdout
+    assert "--area-output selected|conditional-mean" in result.stdout, result.stdout
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
         output = root / "must-not-exist"
@@ -33,6 +35,23 @@ def main():
             (["--reference-samples", "1024"], "seed"),
             (["--reference-samples", "2"], "Reference samples"),
             (["--motion-offset", "nan"], "finite"),
+            (["--area-output", "invalid"], "Area output"),
+            (["--area-output", "selected"], "requires"),
+            (["--area-output", "conditional-mean", "--estimator", "independent"], "requires"),
+            (["--estimator", "area2", "--area-output", "selected", "--area-output", "conditional-mean"], "Duplicate"),
+            (["--estimator", "area2", "--replay-list", "x.json", "--area-output", "selected"], "fanout"),
+            (["--estimator", "area0"], "Estimator"),
+            (["--estimator", "area3"], "Estimator"),
+            (["--estimator", "area8"], "Estimator"),
+            (["--estimator", "area02"], "Estimator"),
+            (["--estimator", "area-1"], "Estimator"),
+            (["--estimator", "area1.5"], "Estimator"),
+            (["--estimator", "area"], "Estimator"),
+            (["--estimator", "independent1"], "Estimator"),
+            (["--estimator", "area2", "--estimator", "area4"], "Duplicate"),
+            (["--reference-samples", "1024", "--seed", "99", "--estimator", "area1"], "static independent"),
+            (["--reference-samples", "1024", "--seed", "99", "--estimator", "area2"], "static independent"),
+            (["--reference-samples", "1024", "--seed", "99", "--estimator", "area4"], "static independent"),
             (["--unknown", "1"], "Unknown"),
             (["--seed"], "missing"),
         ]
