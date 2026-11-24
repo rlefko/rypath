@@ -1,19 +1,36 @@
 # Canonical Probe Compilation Boundary
 
-The ordinary `metal.light_geometry_sampling` test uses a derived test library.
-Its renderer input is the current production `render.metal` with exactly one
-unrelated `reconstruction_guides.metal` include omitted. Its probe input differs
-only in the include naming that derived renderer. Production MIS/scattering,
-partition/finalizer bodies, geometry proposals, expected values, and failure
-handling remain unchanged. Generation fails if either expected include is absent
-or duplicated; `generation.json` records original and generated source hashes.
+The ordinary `metal.light_geometry_sampling` test uses a derived test library
+with exactly five entrypoints: geometry proposals, offset rounding, density
+conversion, canonical partition and canonical finalizer. All five executed
+probe bodies remain byte-identical to the production-context probe source.
 
-This isolates an observed hosted macOS 15.8.2 / Xcode 16.4 pipeline-compiler
-failure after guide argument-buffer growth. The same canonical probe previously
-ran on hosted devices reporting no compute ray tracing, so absence of that API
-does not justify skipping it. No compiler, pipeline, or numerical failure becomes
-an availability skip. The precise older compiler defect remains unresolved until
-the changed test executes successfully in fresh hosted CI.
+Generation removes the ten top-level kernel definitions from `render.metal`
+and its four trailing entrypoint includes (`wavefront.metal`, `area_reuse.metal`,
+`reconstruction_guides.metal`, `camera_medium.metal`). It retains all non-kernel
+production text and the recursive helper includes, including actual packet
+scattering, MIS, walk finalization, geometry and offset functions. No helper
+math, `Resources`, or `Vertex` representation is copied or rewritten. The probe
+input changes its renderer include and omits the separate full-context suffix
+beginning at the uniquely checked original-retention-reproducer marker.
+
+The bounded lexical scanner masks comments and quoted literals before balancing
+kernel braces. It accepts only the exact reviewed kernel inventory and include
+tail, rejects overlapping/malformed definitions and unexpected helper entrypoints,
+and verifies that restoring the omitted slices reproduces both source files
+byte-for-byte. Validation completes before output creation; derived files are
+replaced atomically per file. Schema 2 `generation.json` records source,
+retained-helper, generated-file and omitted/replacement-slice hashes. CMake
+reruns generation when retained shader dependencies or the probe wire header
+change. CPU tests cover actual-source reversibility, exact retained probe bodies,
+lexical edge cases, malformed/missing/duplicate/unexpected layouts, recursive
+helper rejection and failure without creating outputs.
+
+The narrower entrypoint closure is a compiler-context isolation hypothesis,
+not a claimed diagnosis or fix for the hosted backend. Ordinary probes still
+use opaque production resource types but do not trace rays; previous successful
+hosted dispatches mean absent compute ray tracing alone does not justify a skip.
+Compiler, pipeline and numerical failures remain failures.
 
 `metal.canonical_full_context` retains its original whole-production-TU library,
 command, physical/material checks, and explicit geometry capability policy. It
@@ -54,18 +71,22 @@ Only the partition and finalizer probe entrypoints now declare
 lane: nine and 12 threads total. They retain multiple large private `Vertex`
 copies. Bounding the compiler's threadgroup sizing may avoid excessive private
 state allocation on the virtual backend; that resource-allocation explanation
-remains a hypothesis until fresh hosted validation. Apple's
+was not a complete remedy: hero run `45511242742` still failed ordinary
+canonical-partition pipeline creation with `CompilerError 2` despite the bound,
+while PR #62 at `abfde03` passed. The current change therefore isolates all
+unrelated entrypoints rather than attributing the failure solely to private-state
+allocation. Apple's
 [`maxTotalThreadsPerThreadgroup` documentation](https://developer.apple.com/documentation/metal/mtlcomputepipelinedescriptor/maxtotalthreadsperthreadgroup)
 describes the explicit compiler bound and automatic resource-based default.
 The host's existing `group_width` respects the resulting pipeline maximum.
 
 No arithmetic, expected values, assertions, availability handling, fallback, or
-renderer kernel changes accompany these two test-only annotations. The original
+renderer kernel changes accompany the annotations or generated entrypoint isolation. The original
 full-context command and coverage remain in place. Native focused validation
 and a fresh hosted run are required; native success alone does not establish a
 fix for the hosted compiler.
 
-Native check on 2026-11-24, base `d08b85c` plus these annotations: normal Debug
+Historical native check on 2026-11-24, base `d08b85c` plus those annotations: normal Debug
 configure/build passed on Apple M4 Max (`applegpu_g16s`), macOS 26.6 / Xcode 26.6.
 With `RYPATH_ALLOW_NO_METAL_DEVICE=OFF`,
 `RYPATH_ALLOW_NO_METAL_RAY_TRACING=OFF`, and `MTL_DEBUG_LAYER=1`, the generator,
@@ -79,5 +100,25 @@ MTL_DEBUG_LAYER=1 ctest --preset debug --no-tests=error --verbose \
   -R '^(infrastructure\.canonical_probe_generation|metal\.light_geometry_sampling|metal\.canonical_full_context)$'
 ```
 
-This is native regression evidence for the patch, not hosted compiler acceptance
-or a performance result. A fresh hosted run remains outstanding.
+That is historical native evidence for the annotations, not validation of the
+new five-entrypoint generation, hosted compiler acceptance or a performance result.
+Fresh hosted acceptance for the current generation remains outstanding.
+
+## Five-entrypoint native validation
+
+On 2026-11-24, base `daa494d` plus the generator/dependency changes passed a
+fresh normal Debug configure/build on Apple M4 Max (`applegpu_g16s`), macOS 26.6 /
+Xcode 26.6. Both Metal availability options remained OFF. The same focused
+command above, with `MTL_DEBUG_LAYER=1`, passed all three tests with zero skips
+in 25.02 seconds: generation (seven CPU contracts), ordinary geometry/canonical
+probes (12.18 seconds), and the unchanged full-context command (12.25 seconds).
+The ordinary probe checked 81,920 production-adapter proposals. The full-context
+summary retained eight contexts and 24 MIS strategies, with zero bad-physical,
+wrong-nested-reflectance or typed-field errors.
+
+The schema 2 generated manifest records five entrypoints, 62 retained helper
+files and 14 renderer / two probe edits. CPU tests independently restore all
+omissions, compare all retained probe bodies and check source/helper/output
+hashes. These are native regression and source-boundary checks; the virtual
+Xcode 16.4 compiler failure still requires a fresh hosted run. No hosted success
+or performance improvement is inferred from these results.
