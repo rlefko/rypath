@@ -70,6 +70,8 @@ void scalar_cases() {
 // quotient of normal fractions separately, then round the final scaled value.
 // Binary64 represents every binary32 product exactly; division is rounded once
 // to binary32, matching the declared staged arithmetic rather than Z*F/t.
+// The oracle deliberately accepts the three scalar factors of that expression.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 float contribution_oracle(float Z, float component, float target) {
     if ((m::bits(component) & 0x7fffffffu) == 0)
         return component;
