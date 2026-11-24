@@ -3,9 +3,11 @@
 // Included by render.metal; the leaf evaluator remains the complete PT estimator.
 #include "../src/area_wire.h"
 #include "../src/mutation_shared.h"
+#include "../src/reuse_mis_shared.h"
 namespace aw = rypath::area_wire;
 namespace reservoir = rypath_reservoir;
 namespace mutation = rypath_mutation;
+namespace reuse_mis = rypath_reuse_mis;
 struct AreaArguments {
     device const aw::Config *config [[id(aw::config_id)]];
     device rypath_replay::ReplayState *replay [[id(aw::replay_id)]];
@@ -16,6 +18,7 @@ struct AreaArguments {
     device aw::History *history_destination [[id(aw::history_destination_id)]];
     device wire::Point *raw_xyz [[id(aw::raw_xyz_id)]];
     device aw::Counters *counters [[id(aw::failure_id)]];
+    device float *cross_targets [[id(aw::cross_targets_id)]];
 };
 inline void area_fail(constant AreaArguments &a, uint failure) {
     atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
@@ -25,23 +28,28 @@ inline bool area_failed(constant AreaArguments &a) {
 }
 inline bool area_config(constant AreaArguments &a) {
     const auto c = *a.config;
-    const bool schedule = (c.phase == aw::fresh && c.candidate == 0) ||
-                          (c.phase == aw::temporal && c.candidate == 1 && c.history_used == 1) ||
-                          (c.phase == aw::spatial && c.candidate <= 4) ||
-                          (c.phase == aw::mutation && c.candidate < c.mutation_steps);
+    const bool schedule =
+        (c.phase == aw::fresh && c.candidate == 0) ||
+        (c.phase == aw::temporal && c.candidate == 1 && c.history_used == 1) ||
+        (c.phase == aw::temporal_reverse && c.candidate == 0 && c.history_used == 1) ||
+        (c.phase == aw::spatial_final && c.candidate == 0) ||
+        (c.phase == aw::spatial && c.candidate <= 4) ||
+        (c.phase == aw::mutation && c.candidate < c.mutation_steps);
     if (c.pixel_count == 0 || c.width == 0 || c.height == 0 ||
         ulong(c.width) * c.height != c.pixel_count || c.history_used > 1 ||
         !mutation::valid_step_count(c.mutation_steps) ||
         ulong(c.pixel_count) * c.mutation_steps > 0xfffffffful ||
-        !reservoir::positive_normal(c.target_scale) || !schedule) {
+        !reservoir::positive_normal(c.target_scale) ||
+        c.output_mode > aw::conditional_mean_output || c.reserved[0] || c.reserved[1] ||
+        c.reserved[2] || !schedule) {
         area_fail(a, aw::invalid_config);
         return false;
     }
     return !area_failed(a);
 }
-inline uint area_neighbor(constant AreaArguments &a, uint pixel) {
+inline uint area_neighbor_direction(constant AreaArguments &a, uint pixel, uint direction) {
     const uint x = pixel % a.config->width, y = pixel / a.config->width;
-    switch (a.config->candidate) {
+    switch (direction) {
     case 1:
         return x > 0 ? pixel - 1 : pixel;
     case 2:
@@ -54,6 +62,9 @@ inline uint area_neighbor(constant AreaArguments &a, uint pixel) {
         return pixel;
     }
 }
+inline uint area_neighbor(constant AreaArguments &a, uint pixel) {
+    return area_neighbor_direction(a, pixel, a.config->candidate);
+}
 inline bool area_same_payload(const thread rypath_replay::ReplayState &a,
                               const thread rypath_replay::ReplayState &b) {
     return a.tail_key[0] == b.tail_key[0] && a.tail_key[1] == b.tail_key[1] &&
@@ -61,15 +72,16 @@ inline bool area_same_payload(const thread rypath_replay::ReplayState &a,
            a.lens[1] == b.lens[1] && a.wavelength == b.wavelength && a.version == b.version;
 }
 inline bool area_history(constant AreaArguments &a, const thread aw::History &history) {
-    if (history.valid != 1 || history.reserved[0] != 0 || history.reserved[1] != 0 ||
-        !rypath_replay::valid(history.payload) || !reservoir::positive_normal(history.weight)) {
+    if (history.valid != 1 || history.reserved != 0 || !rypath_replay::valid(history.payload) ||
+        !reservoir::positive_normal(history.normalizer) ||
+        !reservoir::positive_normal(history.target)) {
         area_fail(a, aw::invalid_payload);
         return false;
     }
     return true;
 }
 inline bool area_target(constant AreaArguments &a, wire::Point xyz, thread float &target) {
-    const auto checked = reservoir::bounded_target_xyz(xyz.x, xyz.y, xyz.z, a.config->target_scale);
+    const auto checked = reuse_mis::importance_target(xyz.x, xyz.y, xyz.z, a.config->target_scale);
     if (checked.status != reservoir::Status::ok) {
         area_fail(a, aw::invalid_value);
         return false;
@@ -77,7 +89,7 @@ inline bool area_target(constant AreaArguments &a, wire::Point xyz, thread float
     target = checked.value;
     return true;
 }
-// Separate decision stream. With phase<=2, candidate<=4 and ordinal<9 this
+// Separate decision stream. With phase<=5, candidate<=4 and ordinal<9 this
 // mixed-radix tag is injective. Pixel and the complete submission serial retain
 // their own counter words; no payload/key/coordinate becomes selection entropy.
 inline uint area_selection_word(constant AreaArguments &a, uint pixel, uint ordinal) {
@@ -90,8 +102,10 @@ inline uint area_selection_word(constant AreaArguments &a, uint pixel, uint ordi
 }
 inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumulator &accumulator,
                         const thread rypath_replay::ReplayState &payload, wire::Point xyz,
-                        float weight, float target) {
-    auto pending = reservoir::prepare_update(accumulator.state, weight, target);
+                        float score, float target) {
+    // The shared categorical selector receives an already MIS-weighted score.
+    // Its target is one; the physical selected target lives separately.
+    auto pending = reservoir::prepare_update(accumulator.state, score, 1.f);
     if (pending.status != reservoir::Status::ok) {
         area_fail(a, aw::invalid_reservoir);
         return false;
@@ -112,28 +126,69 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
     if (result.selected) {
         accumulator.payload = payload;
         accumulator.xyz = xyz;
+        accumulator.target = target;
     }
     return true;
 }
 inline bool area_finish(constant AreaArguments &a, const thread aw::Accumulator &accumulator,
-                        uint count, thread float &weight) {
+                        uint count, thread float &normalizer) {
     if (accumulator.state.candidate_count != count || !rypath_replay::valid(accumulator.payload)) {
         area_fail(a, aw::invalid_count);
         return false;
     }
-    const auto result = reservoir::finalize(accumulator.state);
-    if (result.status != reservoir::Status::ok) {
+    if (!reservoir::valid_state(accumulator.state) || accumulator.state.selected_target != 1.f) {
         area_fail(a, aw::invalid_reservoir);
         return false;
     }
     float target;
     if (!area_target(a, accumulator.xyz, target))
         return false;
-    if (target != accumulator.state.selected_target) {
+    if (target != accumulator.target) {
         area_fail(a, aw::invalid_reservoir);
         return false;
     }
-    weight = result.value;
+    // The MIS functions form a partition of unity. Another /K would bias it.
+    normalizer = accumulator.state.score_sum;
+    return true;
+}
+inline bool area_temporal_valid(constant AreaArguments &a, const thread aw::Temporal &source) {
+    float target;
+    if (!rypath_replay::valid(source.payload) || !reservoir::positive_normal(source.normalizer) ||
+        source.reserved[0] || source.reserved[1] || source.reserved[2] ||
+        !area_target(a, source.xyz, target) || source.target != target) {
+        area_fail(a, aw::invalid_value);
+        return false;
+    }
+    return true;
+}
+inline bool area_weighted_xyz(constant AreaArguments &a, float normalizer, wire::Point xyz,
+                              float target, thread wire::Point &weighted) {
+    const auto x = reuse_mis::signed_contribution(normalizer, xyz.x, target);
+    const auto y = reuse_mis::signed_contribution(normalizer, xyz.y, target);
+    const auto z = reuse_mis::signed_contribution(normalizer, xyz.z, target);
+    if (x.status != reservoir::Status::ok || y.status != reservoir::Status::ok ||
+        z.status != reservoir::Status::ok) {
+        area_fail(a, aw::invalid_value);
+        return false;
+    }
+    weighted = {x.value, y.value, z.value};
+    return true;
+}
+inline bool area_add_output(constant AreaArguments &a, uint pixel, float score, wire::Point xyz,
+                            float target) {
+    if (a.config->output_mode != aw::conditional_mean_output)
+        return true;
+    wire::Point term;
+    if (!area_weighted_xyz(a, score, xyz, target, term))
+        return false;
+    const auto old = a.raw_xyz[pixel];
+    const wire::Point sum{old.x + term.x, old.y + term.y, old.z + term.z};
+    if (!reservoir::normal_or_zero(sum.x) || !reservoir::normal_or_zero(sum.y) ||
+        !reservoir::normal_or_zero(sum.z)) {
+        area_fail(a, aw::invalid_value);
+        return false;
+    }
+    a.raw_xyz[pixel] = sum;
     return true;
 }
 kernel void rypath_area_contract(device aw::Contract *out [[buffer(0)]]) {
@@ -173,6 +228,11 @@ kernel void rypath_area_prepare(constant wire::Parameters &p [[buffer(0)]],
     if (a.config->phase == aw::fresh) {
         a.replay[pixel] =
             rypath_replay::fresh({pixel, p.sample_low, p.sample_high, p.seed_low, p.seed_high});
+    } else if (a.config->phase == aw::temporal_reverse) {
+        const aw::Temporal source = a.temporal[pixel];
+        if (!area_temporal_valid(a, source))
+            return;
+        a.replay[pixel] = source.payload;
     } else if (a.config->phase == aw::temporal) {
         const aw::History source = a.history_source[pixel];
         if (!area_history(a, source))
@@ -184,8 +244,7 @@ kernel void rypath_area_prepare(constant wire::Parameters &p [[buffer(0)]],
             return;
         }
         const aw::Temporal source = a.temporal[area_neighbor(a, pixel)];
-        if (!rypath_replay::valid(source.payload) || !reservoir::positive_normal(source.weight)) {
-            area_fail(a, aw::invalid_payload);
+        if (!area_temporal_valid(a, source)) {
             return;
         }
         a.replay[pixel] = source.payload;
@@ -205,9 +264,31 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         return;
     }
     aw::Accumulator accumulator{};
-    float weight = 1;
+    auto xyz = a.leaf_xyz[pixel];
+    float target;
+    if (!area_target(a, xyz, target))
+        return;
+    float score = target;
     uint expected = 0;
-    if (a.config->phase == aw::temporal) {
+    if (a.config->phase == aw::fresh) {
+        a.temporal[pixel] = {payload, target, xyz, target, {0, 0, 0}};
+        if (a.config->history_used)
+            return; // Fresh score also needs this payload's previous-context target.
+    } else if (a.config->phase == aw::temporal_reverse) {
+        const aw::Temporal source = a.temporal[pixel];
+        if (!area_temporal_valid(a, source) || !area_same_payload(source.payload, payload)) {
+            area_fail(a, aw::invalid_payload);
+            return;
+        }
+        const auto checked = reuse_mis::temporal_fresh_score(source.target, target);
+        if (checked.status != reservoir::Status::ok) {
+            area_fail(a, aw::invalid_value);
+            return;
+        }
+        score = checked.value;
+        xyz = source.xyz;
+        target = source.target;
+    } else if (a.config->phase == aw::temporal) {
         const aw::History source = a.history_source[pixel];
         if (!area_history(a, source) || !area_same_payload(source.payload, payload)) {
             area_fail(a, aw::invalid_payload);
@@ -215,30 +296,46 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         accumulator = a.accumulators[pixel];
         expected = 1;
-        weight = source.weight;
+        const auto checked =
+            reuse_mis::temporal_history_score(source.normalizer, target, source.target);
+        if (checked.status != reservoir::Status::ok) {
+            area_fail(a, aw::invalid_value);
+            return;
+        }
+        score = checked.value;
     } else if (a.config->phase == aw::spatial) {
         if (a.config->candidate == 0) {
             area_fail(a, aw::invalid_config);
             return;
         }
         const aw::Temporal source = a.temporal[area_neighbor(a, pixel)];
-        if (!rypath_replay::valid(source.payload) || !reservoir::positive_normal(source.weight) ||
-            !area_same_payload(source.payload, payload)) {
+        if (!area_temporal_valid(a, source) || !area_same_payload(source.payload, payload)) {
             area_fail(a, aw::invalid_payload);
             return;
         }
         accumulator = a.accumulators[pixel];
-        expected = a.config->candidate;
-        weight = source.weight;
+        expected = a.config->candidate - 1;
+        const auto checked =
+            reuse_mis::spatial_pair_score(source.normalizer, target, source.target);
+        if (checked.status != reservoir::Status::ok) {
+            area_fail(a, aw::invalid_value);
+            return;
+        }
+        score = checked.value;
+        // The inverse direction at the neighboring pixel provides the center
+        // payload's reverse target after all four immutable-cache passes finish.
+        a.cross_targets[ulong(a.config->candidate - 1) * a.config->pixel_count + pixel] = target;
+        if (!area_add_output(a, pixel, score, xyz, target))
+            return;
+    } else {
+        area_fail(a, aw::invalid_config);
+        return;
     }
     if (accumulator.state.candidate_count != expected) {
         area_fail(a, aw::invalid_count);
         return;
     }
-    const auto xyz = a.leaf_xyz[pixel];
-    float target;
-    if (!area_target(a, xyz, target) ||
-        !area_update(a, pixel, accumulator, payload, xyz, weight, target))
+    if (!area_update(a, pixel, accumulator, payload, xyz, score, target))
         return;
     a.accumulators[pixel] = accumulator;
 }
@@ -253,11 +350,11 @@ kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
         return;
     }
     const auto accumulator = a.accumulators[pixel];
-    float weight;
-    if (!area_finish(a, accumulator, count, weight))
+    float normalizer;
+    if (!area_finish(a, accumulator, count, normalizer))
         return;
     a.temporal[pixel] = {
-        accumulator.payload, weight, accumulator.xyz, accumulator.state.selected_target, {0, 0, 0}};
+        accumulator.payload, normalizer, accumulator.xyz, accumulator.target, {0, 0, 0}};
 }
 kernel void rypath_area_spatial_begin(constant AreaArguments &a [[buffer(1)]],
                                       uint pixel [[thread_position_in_grid]]) {
@@ -268,44 +365,65 @@ kernel void rypath_area_spatial_begin(constant AreaArguments &a [[buffer(1)]],
         return;
     }
     const auto center = a.temporal[pixel];
-    float target;
-    if (!rypath_replay::valid(center.payload) || !reservoir::positive_normal(center.weight)) {
-        area_fail(a, aw::invalid_payload);
+    if (!area_temporal_valid(a, center)) {
         return;
     }
-    if (!area_target(a, center.xyz, target))
-        return;
-    if (target != center.target) {
-        area_fail(a, aw::invalid_value);
-        return;
-    }
-    aw::Accumulator accumulator{};
-    if (!area_update(a, pixel, accumulator, center.payload, center.xyz, center.weight, target))
-        return;
-    a.accumulators[pixel] = accumulator;
+    a.accumulators[pixel] = aw::Accumulator{};
+    a.raw_xyz[pixel] = {0, 0, 0};
 }
 kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
                                  uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a))
         return;
-    if (a.config->phase != aw::spatial || a.config->candidate != 4) {
+    if (a.config->phase != aw::spatial_final || a.config->candidate != 0) {
         area_fail(a, aw::invalid_config);
         return;
     }
-    const auto accumulator = a.accumulators[pixel];
-    float weight;
-    if (!area_finish(a, accumulator, aw::spatial_candidates, weight))
-        return;
-    const float3 xyz(accumulator.xyz.x, accumulator.xyz.y, accumulator.xyz.z);
-    const float3 weighted = xyz * weight;
-    if (!all(isfinite(weighted)) || !reservoir::normal_or_zero(weighted.x) ||
-        !reservoir::normal_or_zero(weighted.y) || !reservoir::normal_or_zero(weighted.z) ||
-        any((xyz != float3(0)) & (weighted == float3(0)))) {
-        area_fail(a, aw::invalid_value);
+    auto accumulator = a.accumulators[pixel];
+    if (accumulator.state.candidate_count != 4) {
+        area_fail(a, aw::invalid_count);
         return;
     }
-    a.history_destination[pixel] = {accumulator.payload, weight, 1, {0, 0}};
-    a.raw_xyz[pixel] = {weighted.x, weighted.y, weighted.z};
+    const aw::Temporal center = a.temporal[pixel];
+    if (!area_temporal_valid(a, center))
+        return;
+    float center_score = 0;
+    for (uint direction = 1; direction <= 4; ++direction) {
+        const uint neighbor = area_neighbor_direction(a, pixel, direction);
+        const uint opposite = direction == 1 ? 2 : direction == 2 ? 1 : direction == 3 ? 4 : 3;
+        // A clamped self-neighbor does not have the ordinary opposite inverse.
+        const float reverse_target =
+            neighbor == pixel
+                ? center.target
+                : a.cross_targets[ulong(opposite - 1) * a.config->pixel_count + neighbor];
+        const auto part =
+            reuse_mis::spatial_pair_score(center.normalizer, center.target, reverse_target);
+        if (part.status != reservoir::Status::ok) {
+            area_fail(a, aw::invalid_value);
+            return;
+        }
+        const auto sum = direction == 1 ? part : reuse_mis::add_scores(center_score, part.value);
+        if (sum.status != reservoir::Status::ok) {
+            area_fail(a, aw::invalid_value);
+            return;
+        }
+        center_score = sum.value;
+    }
+    if (!area_update(a, pixel, accumulator, center.payload, center.xyz, center_score,
+                     center.target) ||
+        !area_add_output(a, pixel, center_score, center.xyz, center.target))
+        return;
+    float normalizer;
+    if (!area_finish(a, accumulator, aw::spatial_candidates, normalizer))
+        return;
+    if (a.config->output_mode == aw::selected_output) {
+        wire::Point weighted;
+        if (!area_weighted_xyz(a, normalizer, accumulator.xyz, accumulator.target, weighted))
+            return;
+        a.raw_xyz[pixel] = weighted;
+    }
+    // Output marginalization never changes the selected sample reused later.
+    a.history_destination[pixel] = {accumulator.payload, normalizer, accumulator.target, 1, 0};
 }
 
 // The source cache always belongs to the CURRENT destination evaluation. Each
@@ -316,9 +434,9 @@ inline mutation::MutationIdentity area_mutation_identity(constant AreaArguments 
             a.config->seed_high};
 }
 inline bool area_mutation_source(constant AreaArguments &a, const thread aw::Temporal &source) {
-    const auto target = reservoir::bounded_target_xyz(source.xyz.x, source.xyz.y, source.xyz.z,
-                                                      a.config->target_scale);
-    if (!rypath_replay::valid(source.payload) || !reservoir::positive_normal(source.weight) ||
+    const auto target = reuse_mis::importance_target(source.xyz.x, source.xyz.y, source.xyz.z,
+                                                     a.config->target_scale);
+    if (!rypath_replay::valid(source.payload) || !reservoir::positive_normal(source.normalizer) ||
         !reservoir::positive_normal(source.target) || source.reserved[0] != 0 ||
         source.reserved[1] != 0 || source.reserved[2] != 0 ||
         target.status != reservoir::Status::ok || target.value != source.target) {
@@ -380,12 +498,13 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
         return;
     }
     const auto xyz = a.leaf_xyz[pixel];
-    const auto target = reservoir::bounded_target_xyz(xyz.x, xyz.y, xyz.z, a.config->target_scale);
+    const auto target = reuse_mis::importance_target(xyz.x, xyz.y, xyz.z, a.config->target_scale);
     if (target.status != reservoir::Status::ok) {
         area_fail(a, aw::invalid_mutation);
         return;
     }
-    auto pending = mutation::prepare_acceptance(source.weight, source.target, target.value);
+    auto pending =
+        reuse_mis::prepare_normalizer_acceptance(source.normalizer, source.target, target.value);
     if (pending.status != mutation::Status::ok) {
         area_fail(a, aw::invalid_mutation);
         return;
@@ -395,12 +514,12 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
          ++ordinal) {
         const auto entropy = mutation::acceptance_word(identity, a.config->candidate, ordinal);
         if (entropy.status != mutation::Status::ok ||
-            mutation::feed_random_word(pending, entropy.value) != mutation::Status::ok) {
+            reuse_mis::feed_random_word(pending, entropy.value) != mutation::Status::ok) {
             area_fail(a, aw::invalid_mutation);
             return;
         }
     }
-    const auto result = mutation::finalize_acceptance(pending);
+    const auto result = reuse_mis::finalize_normalizer_acceptance(pending);
     if (result.status != mutation::Status::ok) {
         area_fail(a, aw::invalid_mutation);
         return;
@@ -418,8 +537,8 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
             area_fail(a, aw::invalid_mutation);
             return;
         }
-        a.temporal[pixel] = {proposal.payload, result.weight, xyz, target.value, {0, 0, 0}};
+        a.temporal[pixel] = {proposal.payload, result.normalizer, xyz, target.value, {0, 0, 0}};
     }
-    // Rejection retains the exact old payload/UCW/XYZ/target. The host always
+    // Rejection retains the exact old payload/Z/XYZ/target. The host always
     // launches every configured step, including after rejections/equal targets.
 }

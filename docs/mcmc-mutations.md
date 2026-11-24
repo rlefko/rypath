@@ -1,5 +1,11 @@
 # Weight-corrected Area mutations
 
+The proposal/domain description remains applicable. Contract 4 stores a
+normalizer instead of the UCW used in the historical implementation below and
+uses source-target MIS with a stronger target; see the
+[importance sampling repair](restir-importance.md). Historical counts and results
+here do not qualify that change.
+
 The opt-in `area-replay` estimator performs one mutation per pixel by default,
 between temporal and spatial reuse. `FrameConfig::mutation_steps` and the
 benchmark's `--mutations` accept exactly `0`, `1`, `2`, or `4`. Independent

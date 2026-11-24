@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "frame_session.hpp"
+#include "replay_shared.h"
 
 #include <algorithm>
 #include <array>
@@ -187,8 +188,12 @@ Completed complete(Frame &frame, const FrameConfig &settings, bool history) {
     if (settings.estimator == FrameEstimator::area_replay) {
         require(info.history_used == history && info.temporal_candidates == (history ? 2u : 1u) &&
                     info.spatial_candidates == 5 &&
-                    info.completed_evaluations == pixels * (history ? 6 : 5),
+                    info.completed_evaluations ==
+                        pixels * ((history ? 7u : 5u) + settings.mutation_steps),
                 "Area full-replay evaluation and per-pixel pool accounting");
+        require(info.mutation_attempts == pixels * settings.mutation_steps &&
+                    info.mutation_accepts <= info.mutation_attempts,
+                "Configured mutation work is independent of output marginalization");
         require(info.history_generation > 0, "Completed area history publication generation");
     } else
         require(!info.history_used && info.completed_evaluations == pixels,
@@ -325,6 +330,84 @@ void camera_replay() {
     require(mean(complete(*restored, settings, true).image)[1] > 0,
             "Restoring emitter camera retraces paths after black history");
 }
+void changing_source_analytic_oracle() {
+    // Two disjoint panels select the source function by camera position.
+    // Pose B also looks backwards, so retaining only origin OR direction is
+    // insufficient to reproduce the previous physical evaluation context.
+    constexpr std::array radiance{.125f, 2.f};
+    auto scene = emitter();
+    scene.area_emissions[0].radiance.fill(radiance[0]);
+    auto bright = scene.area_emissions[0];
+    bright.radiance.fill(radiance[1]);
+    scene.area_emissions.push_back(bright);
+    plane(scene, 5, true, 0, {}, 1);
+    for (auto &point : scene.geometry.meshes.back().positions)
+        point.x += 100;
+    auto settings = config();
+    settings.width = settings.height = 1;
+    settings.capacity = settings.quantum = 1;
+    const auto payload =
+        rypath_replay::fresh({0, unsigned(high_sample), unsigned(high_sample >> 32),
+                              unsigned(settings.seed), unsigned(settings.seed >> 32)});
+    const float wavelength = 360.f + 470.f * rypath_replay::uniform(payload.wavelength);
+    const auto cie = pbrt_cie_xyz(wavelength);
+    std::array<std::array<double, 3>, 2> expected{};
+    std::array<double, 2> target{1e-6, 1e-6};
+    for (unsigned pose = 0; pose < 2; ++pose)
+        for (unsigned channel = 0; channel < 3; ++channel) {
+            expected[pose][channel] = radiance[pose] * cie[channel] * 470.;
+            target[pose] += std::abs(expected[pose][channel]) / 4;
+        }
+    require(target[1] > 8 * target[0],
+            "Position-selected panels must substantially change source/current targets");
+    // Sensitivity witness only, not the expected GPU recurrence: if reverse
+    // replay incorrectly uses the CURRENT camera, its fresh denominator is
+    // 21*t_current instead of t_current+20*t_previous. With the correct old
+    // history target retained, this yields the following wrong normalization.
+    const double wrong_Z =
+        target[1] / 21 + 20 * target[0] * target[1] / (target[1] + 20 * target[0]);
+    bool rejects_wrong_context = false;
+    for (unsigned channel = 0; channel < 3; ++channel) {
+        const double error = std::abs(expected[1][channel] * (wrong_Z / target[1] - 1));
+        rejects_wrong_context |= error > 100 * (3e-6 + 3e-5 * std::abs(expected[1][channel]));
+    }
+    require(rejects_wrong_context,
+            "Analytic tolerance must reject substituting the current source denominator");
+    for (auto mode : {FrameAreaOutput::selected, FrameAreaOutput::conditional_mean}) {
+        settings.area_output = mode;
+        auto session = build(scene, settings);
+        std::uint64_t generation = 0;
+        for (unsigned ordinal = 0; ordinal < 6; ++ordinal) {
+            const unsigned pose = ordinal % 2;
+            auto snapshot = camera(scene);
+            require(snapshot.raster_camera.has_value(), "Emissive oracle raster camera");
+            if (pose) {
+                snapshot.raster_camera->origin = {100, 0, 10};
+                snapshot.raster_camera->corner = {.3f, -.3f, -1};
+                snapshot.raster_camera->dx = {-.6f, 0, 0};
+                snapshot.texture_camera = TextureCamera{};
+                snapshot.texture_camera->world_from_camera = {-1, 0, 0, 0, 1, 0, 0, 0, -1};
+                snapshot.texture_camera->camera_from_world = {-1, 0, 0, 0, 1, 0, 0, 0, -1};
+            }
+            const bool cut = ordinal == 5;
+            auto frame = submit(*session, high_sample, cut ? 8 : 7, snapshot);
+            const auto result = complete(*frame, settings, ordinal != 0 && !cut);
+            require(result.info.history_generation == ++generation &&
+                        result.info.area_serial == ordinal,
+                    "Changing-source oracle publishes one complete generation per accepted frame");
+            // Repeated sample identity and mutation0 mean EVERY temporal and
+            // spatial candidate carries the same payload. At any camera the
+            // exact integral for this one-payload measure is its current
+            // emitter radiance*CIE(lambda)*470. Selection is immaterial; no CPU
+            // reservoir/MIS recurrence is used to manufacture the expectation.
+            for (unsigned channel = 0; channel < 3; ++channel)
+                require(std::abs(result.image.raw_xyz[0][channel] - expected[pose][channel]) <=
+                            3e-6 + 3e-5 * std::abs(expected[pose][channel]),
+                        "Warm source-MIS must recover analytic current-emitter XYZ under "
+                        "translation and reversed viewing direction");
+        }
+    }
+}
 void scheduling(const RenderScene &scene) {
     auto narrow = config();
     narrow.capacity = 1;
@@ -355,6 +438,154 @@ void scheduling(const RenderScene &scene) {
         require(x.info.command_count > 1, "Capacity-one area replay must resume across commands");
         paired(x.image, y.image);
     }
+}
+std::array<float, 3> fresh_sky(unsigned pixel, const FrameConfig &settings) {
+    const auto payload =
+        rypath_replay::fresh({pixel, unsigned(high_sample), unsigned(high_sample >> 32),
+                              unsigned(settings.seed), unsigned(settings.seed >> 32)});
+    const auto xyz = pbrt_cie_xyz(360.f + 470.f * rypath_replay::uniform(payload.wavelength));
+    return {float(xyz[0]) * 470.f, float(xyz[1]) * 470.f, float(xyz[2]) * 470.f};
+}
+void reciprocal_edges_and_output_modes() {
+    require(FrameConfig{}.area_output == FrameAreaOutput::conditional_mean,
+            "Conditional mean is the Area output default");
+    for (const auto dimensions : {std::array{1u, 1u}, std::array{1u, 5u}, std::array{5u, 1u}}) {
+        auto conditional = config();
+        conditional.width = dimensions[0];
+        conditional.height = dimensions[1];
+        // Cold scalar sky admits an independent closed-form spatial oracle:
+        // each neighbor contributes F/8, the center F/2. Clamped duplicate
+        // slots retain their multiplicity, including all five at 1x1.
+        auto cold_session = build(sky(), conditional);
+        auto cold_frame = submit(*cold_session);
+        const auto cold = complete(*cold_frame, conditional, false);
+        for (unsigned y = 0; y < conditional.height; ++y)
+            for (unsigned x = 0; x < conditional.width; ++x) {
+                const unsigned pixel = y * conditional.width + x;
+                const std::array neighbors{
+                    y * conditional.width + (x ? x - 1 : x),
+                    y * conditional.width + std::min(x + 1, conditional.width - 1),
+                    (y ? y - 1 : y) * conditional.width + x,
+                    std::min(y + 1, conditional.height - 1) * conditional.width + x};
+                const auto center = fresh_sky(pixel, conditional);
+                for (unsigned channel = 0; channel < 3; ++channel) {
+                    double expected = .5 * center[channel];
+                    for (auto neighbor : neighbors)
+                        expected += .125 * fresh_sky(neighbor, conditional)[channel];
+                    require(std::abs(cold.image.raw_xyz[pixel][channel] - expected) <=
+                                3e-6 + 3e-5 * std::abs(expected),
+                            "Reciprocal clamped-edge conditional spatial stencil");
+                }
+            }
+        conditional.mutation_steps = 1;
+        auto selected = conditional;
+        selected.area_output = FrameAreaOutput::selected;
+        auto a = build(sky(), conditional), b = build(sky(), selected);
+        for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+            auto af = submit(*a, high_sample + ordinal);
+            auto bf = submit(*b, high_sample + ordinal);
+            const auto x = complete(*af, conditional, ordinal != 0);
+            const auto y = complete(*bf, selected, ordinal != 0);
+            require(x.info.history_generation == y.info.history_generation &&
+                        x.info.area_serial == y.info.area_serial &&
+                        x.info.mutation_attempts == y.info.mutation_attempts &&
+                        x.info.mutation_accepts == y.info.mutation_accepts &&
+                        x.info.completed_evaluations == y.info.completed_evaluations &&
+                        x.info.command_count == y.info.command_count,
+                    "Output marginalization preserves decisions/history/work across warm frames");
+            if (conditional.width == 1 && conditional.height == 1)
+                paired(x.image, y.image);
+        }
+    }
+}
+RenderScene patterned_receiver() {
+    namespace graph = texture_graph_wire;
+    auto scene = sky();
+    scene.max_depth = 1;
+    scene.texture_graph.nodes = {
+        {.kind = graph::constant_node, .type = graph::spectrum, .values = {.1f}},
+        {.kind = graph::constant_node, .type = graph::spectrum, .values = {.8f}},
+        {.kind = graph::checkerboard, .type = graph::spectrum, .children = {0, 1}}};
+    auto &mapping = scene.texture_graph.nodes.back().mapping;
+    mapping.kind = graph::spatial;
+    mapping.texture_from_render[0] = 1.f / 1.75f;
+    mapping.texture_from_render[5] = 1.f / 2.5f;
+    mapping.texture_from_render[11] = .125f;
+    SpectralMaterial material;
+    material.kind = SpectralMaterialKind::texture_graph;
+    material.texture_root = 2;
+    scene.materials.push_back(material);
+    plane(scene, 3, false);
+    scene.instance_texture_frames.resize(1);
+    const auto &surface = scene.instance_surface_transforms[0];
+    const auto error =
+        prepare_texture_triangle_frames(scene.geometry.meshes[0], surface.shape, surface.placement,
+                                        scene.instance_texture_frames[0]);
+    require(error.empty(), "World-space receiver texture frames: " + error);
+    return scene;
+}
+void retained_source_context() {
+    const auto scene = patterned_receiver();
+    auto settings = config();
+    settings.width = 8;
+    settings.height = 4;
+    auto independent = settings;
+    independent.estimator = FrameEstimator::independent;
+    auto control = build(scene, independent);
+    auto pose_a = camera(scene), pose_b = camera(scene);
+    require(pose_a.raster_camera && pose_b.raster_camera, "Pattern fixture raster cameras");
+    pose_a.raster_camera->origin = {.375f, -.125f, 0};
+    pose_b.raster_camera->origin = {.75f, -.125f, 0};
+    auto af = submit(*control, high_sample, 7, pose_a);
+    auto bf = submit(*control, high_sample, 7, pose_b);
+    const auto a_control = complete(*af, independent, false);
+    const auto b_control = complete(*bf, independent, false);
+    bool pattern_changes = false;
+    for (std::size_t pixel = 0; pixel < a_control.image.raw_xyz.size(); ++pixel)
+        pattern_changes |=
+            std::abs(a_control.image.raw_xyz[pixel][1] - b_control.image.raw_xyz[pixel][1]) > .01f;
+    require(pattern_changes,
+            "Fixed independent payloads witness a nonconstant world-space texture under motion");
+    auto reused = build(scene, settings), retained = build(scene, settings);
+    std::unique_ptr<Frame> previous;
+    FrameCapture original;
+    bool changed = false;
+    // The first arm reuses slot zero immediately. The control retains the last
+    // completed source until its successor finishes, alternating two slots.
+    // This detects source-context mappings aliasing mutable frame-slot buffers.
+    for (unsigned ordinal = 0; ordinal < 5; ++ordinal) {
+        auto pose = camera(scene);
+        require(pose.raster_camera.has_value(), "Pattern fixture raster camera");
+        pose.raster_camera->origin.x = ordinal == 0 ? .375f : ordinal == 1 ? .75f : -.25f;
+        pose.raster_camera->origin.y = -.125f;
+        auto a = submit(*reused, high_sample, 7, pose);
+        auto b = submit(*retained, high_sample, 7, pose);
+        const auto x = complete(*a, settings, ordinal != 0);
+        const auto y = complete(*b, settings, ordinal != 0);
+        paired(x.image, y.image);
+        require(x.info.history_generation == y.info.history_generation,
+                "Mapping ownership cannot change successful history publication");
+        if (ordinal == 0)
+            original = x.image;
+        else
+            for (std::size_t pixel = 0; pixel < original.raw_xyz.size(); ++pixel)
+                changed |= std::abs(original.raw_xyz[pixel][1] - x.image.raw_xyz[pixel][1]) > .01f;
+        if (ordinal < 3)
+            require(x.info.camera_upload_bytes > 0,
+                    "Translated camera records mapping and source-context copies");
+        if (ordinal == 4)
+            require(x.info.camera_upload_bytes == 0,
+                    "Unchanged origin reuses frame-slot and both history-context mapping caches");
+        previous = std::move(b);
+    }
+    require(changed, "World-space checker motion supplies a nonconstant image witness");
+    auto lease = submit(*retained, high_sample, 7, camera(scene));
+    complete(*lease, settings, true);
+    require(retained->submit({.sample_index = high_sample, .epoch = 7}).busy,
+            "History source snapshots do not bypass the two retained frame-slot leases");
+    previous.reset();
+    auto available = submit(*retained, high_sample, 7, camera(scene));
+    complete(*available, settings, true);
 }
 void failure_preserves_history() {
     auto scene = sky();
@@ -671,6 +902,12 @@ void rejected_configs() {
                     !result.diagnostic.empty(),
                 "Invalid area support floor rejected");
     }
+    auto invalid_output = config();
+    invalid_output.area_output = static_cast<FrameAreaOutput>(99);
+    const auto output = build_frame_session(sky(), invalid_output);
+    require(output.status == GeometryStatus::failure && !output.session &&
+                !output.diagnostic.empty(),
+            "Unknown Area output mode rejects explicitly");
     auto settings = config();
     settings.execution = FrameExecution::megakernel;
     const auto result = build_frame_session(sky(), settings);
@@ -697,10 +934,13 @@ int main() {
         independent_oracle();
         black_and_identity();
         camera_replay();
+        changing_source_analytic_oracle();
         scheduling(emitter(true, true));
         scheduling(fog(false));
         scheduling(fog(true));
         failure_preserves_history();
+        reciprocal_edges_and_output_modes();
+        retained_source_context();
         statistical_means(sky(false), 1);
         statistical_means(emitter(true), .7f);
         independent_means(diffuse_lighting(false), "Point NEE", MeanControl::point_nee);

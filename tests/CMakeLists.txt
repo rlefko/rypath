@@ -1650,6 +1650,35 @@ target_compile_options(rypath_mutation_tests PRIVATE
 add_test(NAME render.mutation_weights COMMAND rypath_mutation_tests)
 set_tests_properties(render.mutation_weights PROPERTIES TIMEOUT 30)
 
+add_executable(rypath_reuse_mis_tests reuse_mis_tests.cpp)
+target_include_directories(rypath_reuse_mis_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_reuse_mis_tests)
+target_compile_options(rypath_reuse_mis_tests PRIVATE
+    "$<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+add_test(NAME render.reuse_mis COMMAND rypath_reuse_mis_tests)
+add_test(NAME render.reuse_mis_exact COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/reuse_mis_exact_oracle.py")
+set_tests_properties(render.reuse_mis render.reuse_mis_exact PROPERTIES TIMEOUT 30)
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_reuse_mis_math_probe reuse_mis_math_probe.mm)
+    target_link_libraries(rypath_reuse_mis_math_probe PRIVATE "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_reuse_mis_math_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_reuse_mis_math_probe PRIVATE -fobjc-arc)
+    target_compile_options(rypath_reuse_mis_math_probe PRIVATE
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+    rypath_configure_host_target(rypath_reuse_mis_math_probe)
+    add_dependencies(rypath_reuse_mis_math_probe rypath_reuse_mis_math_shader)
+    add_test(NAME metal.reuse_mis_math COMMAND rypath_reuse_mis_math_probe "${rypath_reuse_mis_math_library}")
+    set_tests_properties(metal.reuse_mis_math PROPERTIES TIMEOUT 60 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_reuse_mis_math_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.reuse_mis_math PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
 add_executable(rypath_mutation_frame_tests mutation_frame_tests.cpp)
 target_link_libraries(rypath_mutation_frame_tests PRIVATE rypath_metal_backend)
 target_compile_definitions(rypath_mutation_frame_tests PRIVATE

@@ -98,6 +98,7 @@ foreach(shader IN ITEMS frame smoke geometry analytic_probe packet_scattering_pr
             "${CMAKE_CURRENT_SOURCE_DIR}/src/replay_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/reservoir_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/mutation_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/reuse_mis_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
@@ -333,3 +334,24 @@ add_custom_command(OUTPUT "${rypath_mutation_math_library}"
         -o "${rypath_mutation_math_library}"
     DEPENDS "${rypath_mutation_math_air}" VERBATIM)
 add_custom_target(rypath_mutation_math_shader DEPENDS "${rypath_mutation_math_library}")
+
+# Source-target MIS and normalizer MH arithmetic without ray tracing requirements.
+set(rypath_reuse_mis_math_library "${rypath_runtime_directory}/rypath-reuse-mis-math-probe.metallib")
+set(rypath_reuse_mis_math_air "${rypath_runtime_directory}/CMakeFiles/rypath-reuse-mis-math-probe.air")
+add_custom_command(OUTPUT "${rypath_reuse_mis_math_air}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/reuse_mis_math_probe.metal" -o "${rypath_reuse_mis_math_air}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/reuse_mis_math_probe.metal"
+        "${CMAKE_SOURCE_DIR}/tests/reuse_mis_math_probe_wire.h"
+        "${CMAKE_SOURCE_DIR}/src/reuse_mis_shared.h"
+        "${CMAKE_SOURCE_DIR}/src/replay_shared.h"
+        "${CMAKE_SOURCE_DIR}/src/mutation_shared.h"
+        "${CMAKE_SOURCE_DIR}/src/reservoir_shared.h"
+    VERBATIM)
+add_custom_command(OUTPUT "${rypath_reuse_mis_math_library}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_reuse_mis_math_air}"
+        -o "${rypath_reuse_mis_math_library}"
+    DEPENDS "${rypath_reuse_mis_math_air}" VERBATIM)
+add_custom_target(rypath_reuse_mis_math_shader DEPENDS "${rypath_reuse_mis_math_library}")

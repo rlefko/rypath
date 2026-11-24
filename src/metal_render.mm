@@ -2176,6 +2176,7 @@ struct FrameWavefrontPrograms {
 };
 struct FrameAreaBuffers {
     id<MTLBuffer> replay = nil, leaf = nil, accumulators = nil, temporal = nil, failure = nil;
+    id<MTLBuffer> cross_targets = nil;
     id<MTLBuffer> config[area_wire::config_count]{};
     id<MTLBuffer> arguments[area_wire::config_count]{};
 };
@@ -2185,9 +2186,19 @@ struct FrameAreaPrograms {
     id<MTLComputePipelineState> mutation_prepare = nil, mutation_finish = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
 };
+// Independent of frame slots: the published reservoir must retain the exact
+// physical evaluation context used to compute its stored source target.
+struct FrameAreaContext {
+    std::optional<wire::Point> copied_origin;
+    wire::Parameters parameters{};
+    wire::TextureParameters texture{};
+    FrameCamera camera;
+    id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
+};
 struct FrameAreaHistory {
     std::mutex mutex;
     id<MTLBuffer> banks[2]{nil, nil};
+    FrameAreaContext contexts[2];
     bool pending = false, valid = false, epoch_known = false, serial_exhausted = false;
     std::uint64_t epoch = 0, generation = 0, next_serial = 0, pending_serial = 0;
     unsigned front = 0;
@@ -2530,16 +2541,20 @@ struct FrameSession::Impl {
         const std::uint64_t replay_bytes = pixels * sizeof(rypath_replay::ReplayState);
         const std::uint64_t leaf_bytes = pixels * sizeof(wire::Point);
         const std::uint64_t temporal_bytes = pixels * sizeof(area_wire::Temporal);
+        const std::uint64_t cross_bytes = pixels * 4 * sizeof(float);
         const std::uint64_t accumulator_bytes = pixels * sizeof(area_wire::Accumulator);
         const auto arguments_bytes = area->argument_encoder.encodedLength;
         const auto workspace_bytes =
-            replay_bytes + leaf_bytes + temporal_bytes + accumulator_bytes +
+            replay_bytes + leaf_bytes + temporal_bytes + accumulator_bytes + cross_bytes +
             sizeof(area_wire::Counters) +
             area_wire::config_count * (sizeof(area_wire::Config) + arguments_bytes);
         const std::uint64_t total =
-            2 * (std::uint64_t(slot_bytes) - 32 + workspace_bytes) + 2 * history_bytes + cie.length;
-        for (const auto bytes : {history_bytes, replay_bytes, leaf_bytes, temporal_bytes,
-                                 accumulator_bytes, std::uint64_t(arguments_bytes)})
+            2 * (std::uint64_t(slot_bytes) - 32 + workspace_bytes) + 2 * history_bytes +
+            2 * (r.graph_nodes.length + r.surface_transforms.length) + cie.length;
+        for (const auto bytes :
+             {history_bytes, replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes,
+              cross_bytes, std::uint64_t(arguments_bytes), std::uint64_t(r.graph_nodes.length),
+              std::uint64_t(r.surface_transforms.length)})
             if (bytes > r.device.maxBufferLength)
                 return "Area buffer exceeds the device limit";
         if (total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
@@ -2572,6 +2587,7 @@ struct FrameSession::Impl {
             !allocate(b.leaf, pixels * sizeof(wire::Point)) ||
             !allocate(b.accumulators, pixels * sizeof(area_wire::Accumulator)) ||
             !allocate(b.temporal, pixels * sizeof(area_wire::Temporal)) ||
+            !allocate(b.cross_targets, pixels * 4 * sizeof(float)) ||
             !allocate(b.failure, sizeof(area_wire::Counters), true))
             return "Area workspace allocation failed";
         for (unsigned index = 0; index < area_wire::config_count; ++index)
@@ -2585,14 +2601,19 @@ struct FrameSession::Impl {
         auto &b = *slot.area;
         std::memset(b.failure.contents, 0, b.failure.length);
         for (unsigned index = 0; index < area_wire::config_count; ++index) {
-            const auto phase = index == 0                                  ? area_wire::fresh
-                               : index == 1                                ? area_wire::temporal
-                               : index >= area_wire::mutation_config_begin ? area_wire::mutation
-                                                                           : area_wire::spatial;
-            const auto candidate = index >= area_wire::mutation_config_begin
-                                       ? index - area_wire::mutation_config_begin
-                                   : index < 2 ? index
-                                               : index - 2;
+            const bool mutation = index >= area_wire::mutation_config_begin &&
+                                  index < area_wire::temporal_reverse_config;
+            const auto phase =
+                index == 0                                    ? area_wire::fresh
+                : index == 1                                  ? area_wire::temporal
+                : index == area_wire::temporal_reverse_config ? area_wire::temporal_reverse
+                : index == area_wire::spatial_finalize_config ? area_wire::spatial_final
+                : mutation                                    ? area_wire::mutation
+                                                              : area_wire::spatial;
+            const auto candidate = mutation ? index - area_wire::mutation_config_begin
+                                   : index >= area_wire::temporal_reverse_config ? 0u
+                                   : index < 2                                   ? index
+                                                                                 : index - 2;
             const area_wire::Config cfg{config.width * config.height,
                                         config.width,
                                         config.height,
@@ -2604,13 +2625,17 @@ struct FrameSession::Impl {
                                         static_cast<std::uint32_t>(config.seed),
                                         static_cast<std::uint32_t>(config.seed >> 32),
                                         config.target_scale,
-                                        config.mutation_steps};
+                                        config.mutation_steps,
+                                        config.area_output == FrameAreaOutput::conditional_mean
+                                            ? area_wire::conditional_mean_output
+                                            : area_wire::selected_output,
+                                        {0, 0, 0}};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
-            const std::array<id<MTLBuffer>, 9> resources{b.config[index], b.replay,   b.leaf,
-                                                         b.accumulators,  b.temporal, source,
-                                                         destination,     raw,        b.failure};
+            const std::array<id<MTLBuffer>, 10> resources{
+                b.config[index], b.replay,    b.leaf, b.accumulators, b.temporal,
+                source,          destination, raw,    b.failure,      b.cross_targets};
             for (NSUInteger argument = 0; argument < resources.size(); ++argument)
                 [encoder setBuffer:resources[argument] offset:0 atIndex:argument];
         }
@@ -2730,6 +2755,45 @@ struct FrameSession::Impl {
         slot.rebased_origin = origin;
         return {};
     }
+    std::string snapshot_area_context(FrameAreaContext &context, const wire::Parameters &p,
+                                      const wire::TextureParameters &texture,
+                                      const FrameCamera &camera, id<MTLBuffer> graph,
+                                      id<MTLBuffer> surfaces, std::uint64_t &uploaded) {
+        // Only the non-front bank is written while no Area frame is pending.
+        // Cache by numerical origin, never by reusable slot-buffer identity.
+        const bool same_origin = context.copied_origin && context.copied_origin->x == p.origin.x &&
+                                 context.copied_origin->y == p.origin.y &&
+                                 context.copied_origin->z == p.origin.z;
+        if (graph == nil && surfaces == nil) {
+            context.graph_nodes = nil;
+            context.surface_transforms = nil;
+            context.copied_origin.reset();
+        } else if (!same_origin) {
+            auto &r = *renderer->impl_;
+            const auto copy = [&](id<MTLBuffer> source, id<MTLBuffer> __strong &destination) {
+                if (source == nil) {
+                    destination = nil;
+                    return true;
+                }
+                if (destination == nil)
+                    destination = [r.device newBufferWithLength:source.length
+                                                        options:MTLResourceStorageModeShared];
+                if (destination == nil)
+                    return false;
+                std::memcpy(destination.contents, source.contents, source.length);
+                uploaded += source.length;
+                return true;
+            };
+            context.copied_origin.reset();
+            if (!copy(graph, context.graph_nodes) || !copy(surfaces, context.surface_transforms))
+                return "Area source-context mapping allocation failed";
+            context.copied_origin = p.origin;
+        }
+        context.parameters = p;
+        context.texture = texture;
+        context.camera = camera;
+        return {};
+    }
     struct Runner : std::enable_shared_from_this<Runner> {
         std::shared_ptr<Frame::Impl> frame;
         std::shared_ptr<FrameWavefrontPrograms> programs;
@@ -2737,6 +2801,7 @@ struct FrameSession::Impl {
         std::shared_ptr<FrameAreaHistory> history;
         id<MTLBuffer> history_source = nil, history_destination = nil;
         unsigned history_destination_index = 0, area_leaf = 0;
+        FrameAreaContext source_context;
         int area_merge = -1;
         bool area_reset = true, area_finalizing = false;
         std::uint32_t leaf_completed = 0;
@@ -2778,7 +2843,7 @@ struct FrameSession::Impl {
                 else {
                     std::lock_guard frame_lock(frame->info_mutex);
                     if (frame->info.completed_evaluations !=
-                        pixels * ((frame->info.history_used ? 6u : 5u) + config.mutation_steps))
+                        pixels * ((frame->info.history_used ? 7u : 5u) + config.mutation_steps))
                         error = "Area evaluation accounting mismatch";
                     else {
                         history->front = history_destination_index;
@@ -2881,10 +2946,13 @@ struct FrameSession::Impl {
                 if (area_leaf == 6)
                     area_finalizing = true;
                 else if (area_leaf == 0 && frame->info.history_used)
+                    area_leaf = area_wire::temporal_reverse_config;
+                else if (area_leaf == area_wire::temporal_reverse_config)
                     area_leaf = 1;
                 else if (area_leaf == 0 || area_leaf == 1)
                     area_leaf = config.mutation_steps ? area_wire::mutation_config_begin : 3;
-                else if (area_leaf >= area_wire::mutation_config_begin)
+                else if (area_leaf >= area_wire::mutation_config_begin &&
+                         area_leaf < area_wire::temporal_reverse_config)
                     area_leaf =
                         area_leaf - area_wire::mutation_config_begin + 1 < config.mutation_steps
                             ? area_leaf + 1
@@ -2907,6 +2975,14 @@ struct FrameSession::Impl {
             @autoreleasepool {
                 auto &r = *renderer;
                 auto &b = *frame->retention->wavefront;
+                const bool reverse = history && area_leaf == area_wire::temporal_reverse_config;
+                const auto &evaluation_parameters =
+                    reverse ? source_context.parameters : parameters;
+                const auto &evaluation_texture = reverse ? source_context.texture : texture;
+                const auto evaluation_graph =
+                    reverse ? source_context.graph_nodes : frame->retention->graph_nodes;
+                const auto evaluation_surfaces = reverse ? source_context.surface_transforms
+                                                         : frame->retention->surface_transforms;
                 auto command = [r.queue commandBuffer];
                 auto encoder = [command computeCommandEncoder];
                 if (command == nil || encoder == nil) {
@@ -2926,7 +3002,9 @@ struct FrameSession::Impl {
                 const auto generic = [&](id<MTLComputePipelineState> pipeline, NSUInteger count,
                                          bool indirect) {
                     [encoder setComputePipelineState:pipeline];
-                    [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
+                    [encoder setBytes:&evaluation_parameters
+                               length:sizeof(evaluation_parameters)
+                              atIndex:0];
                     [encoder setBuffer:b.arguments[variant] offset:0 atIndex:1];
                     [encoder setBuffer:r.environment offset:0 atIndex:7];
                     [encoder setBuffer:r.sampling_tables offset:0 atIndex:12];
@@ -2945,9 +3023,8 @@ struct FrameSession::Impl {
                 const auto full = [&](id<MTLComputePipelineState> pipeline,
                                       id<MTLIntersectionFunctionTable> table) {
                     [encoder setComputePipelineState:pipeline];
-                    r.bind(encoder, parameters, texture, b.arguments[variant],
-                           frame->retention->graph_nodes, frame->retention->surface_transforms,
-                           true, table);
+                    r.bind(encoder, evaluation_parameters, evaluation_texture, b.arguments[variant],
+                           evaluation_graph, evaluation_surfaces, true, table);
                     [encoder dispatchThreadgroupsWithIndirectBuffer:b.current_dispatch
                                                indirectBufferOffset:0
                                               threadsPerThreadgroup:MTLSizeMake(config.group_width,
@@ -2957,7 +3034,7 @@ struct FrameSession::Impl {
                 if (history) {
                     auto &a = *frame->retention->area;
                     for (auto buffer : {a.replay, a.leaf, a.accumulators, a.temporal, a.failure,
-                                        history_destination})
+                                        a.cross_targets, history_destination})
                         [encoder useResource:buffer usage:read_write];
                     [encoder useResource:history_source usage:MTLResourceUsageRead];
                     for (auto buffer : a.config)
@@ -2979,7 +3056,8 @@ struct FrameSession::Impl {
                     }
                     if (area_merge >= 0) {
                         const auto previous = static_cast<unsigned>(area_merge);
-                        if (previous >= area_wire::mutation_config_begin) {
+                        if (previous >= area_wire::mutation_config_begin &&
+                            previous < area_wire::temporal_reverse_config) {
                             area_dispatch(area_programs->mutation_finish, previous, pixels);
                             if (previous - area_wire::mutation_config_begin + 1 ==
                                 config.mutation_steps)
@@ -2995,12 +3073,15 @@ struct FrameSession::Impl {
                         area_merge = -1;
                     }
                     if (area_finalizing)
-                        area_dispatch(area_programs->finalize, 6, pixels);
-                    else if (first)
-                        area_dispatch(area_leaf >= area_wire::mutation_config_begin
-                                          ? area_programs->mutation_prepare
-                                          : area_programs->prepare,
+                        area_dispatch(area_programs->finalize, area_wire::spatial_finalize_config,
+                                      pixels);
+                    else if (first) {
+                        const bool mutation = area_leaf >= area_wire::mutation_config_begin &&
+                                              area_leaf < area_wire::temporal_reverse_config;
+                        area_dispatch(mutation ? area_programs->mutation_prepare
+                                               : area_programs->prepare,
                                       area_leaf, pixels);
+                    }
                 }
                 if (!area_finalizing && first) {
                     generic(programs->reset, std::uint64_t(config.width) * config.height, false);
@@ -3330,6 +3411,13 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     history.epoch = request.epoch;
                     history.valid = false;
                 }
+                const unsigned destination_index = history.front ^ 1;
+                result.diagnostic = impl_->snapshot_area_context(
+                    history.contexts[destination_index], p, texture, frame->resolved_camera,
+                    frame_graph_nodes, frame_surface_transforms, camera_upload_bytes);
+                if (!result.diagnostic.empty())
+                    return result;
+                frame->info.camera_upload_bytes = camera_upload_bytes;
                 const auto serial = history.next_serial;
                 if (serial == std::numeric_limits<std::uint64_t>::max())
                     history.serial_exhausted = true;
@@ -3345,7 +3433,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 runner->history = impl_->history;
                 runner->area_programs = impl_->area;
                 runner->history_source = history.banks[history.front];
-                runner->history_destination_index = history.front ^ 1;
+                runner->source_context = history.contexts[history.front];
+                runner->history_destination_index = destination_index;
                 runner->history_destination = history.banks[runner->history_destination_index];
                 impl_->configure_area(*slot, frame->raw, serial, history.valid,
                                       runner->history_source, runner->history_destination);
@@ -3475,6 +3564,11 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     if (config.estimator != FrameEstimator::independent &&
         config.estimator != FrameEstimator::area_replay) {
         result.diagnostic = "Invalid frame estimator";
+        return result;
+    }
+    if (config.area_output != FrameAreaOutput::selected &&
+        config.area_output != FrameAreaOutput::conditional_mean) {
+        result.diagnostic = "Invalid Area output mode";
         return result;
     }
     if (!std::isnormal(config.target_scale) || !(config.target_scale > 0)) {

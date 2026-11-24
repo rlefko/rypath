@@ -15,6 +15,7 @@ def invoke(args, expected=1):
     return result
 
 assert "--intersections native|compensated" in invoke(["--help"], 0).stdout
+assert "--area-output selected|conditional-mean" in invoke(["--help"], 0).stdout
 for args in (
     [], ["--demo"], ["--demo", "--scene", "x", "--output", "x.json"],
     ["--demo", "--demo", "--output", "x.json"],
@@ -39,6 +40,7 @@ for option, values in (
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
     ("--target-scale", ("0", "-1", "nan", "inf", "1e-45", "1e100", "1e-6x")),
     ("--intersections", ("invalid",)),
+    ("--area-output", ("invalid", "conditional_mean", "0")),
     ("--capacity", ("0", "65537", "-1")),
     ("--quantum", ("0", "1025", "-1")),
     ("--group-width", ("0", "257", "-1")),
@@ -112,9 +114,12 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 3
+    assert settings["area_contract"] == 4
     assert settings["mutation_steps"] == 1 and settings["effective_mutation_steps"] == 1
-    assert settings["area_target"] == "bounded-l1-contrast-0.1-v1"
+    assert settings["area_target"] == "quarter-l1-v1"
+    assert settings["area_output"] == "conditional-mean"
+    assert settings["area_source_mis"] == "source-target-mis-v1"
+    assert settings["area_temporal_reuse"] == 20
     assert settings["target_scale"] == 0.125 and settings["fresh_paths_per_pixel_per_frame"] == 1
     for count in (0, 1, 2, 4):
         destination = root / f"area-mutations-{count}.json"
@@ -122,4 +127,12 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay", "--mutations", str(count)])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["mutation_steps"] == count and settings["effective_mutation_steps"] == count
+    for mode in ("selected", "conditional-mean"):
+        destination = root / f"area-output-{mode}.json"
+        invoke(["--scene", str(malformed), "--output", str(destination),
+                "--estimator", "area-replay", "--area-output", mode])
+        settings = json.loads(destination.read_text())["settings"]
+        assert settings["area_output"] == settings["requested_area_output"] == mode
+    invoke(["--demo", "--output", str(root / "independent-output.json"),
+            "--area-output", "selected"])
 print("frame benchmark CLI checks passed")

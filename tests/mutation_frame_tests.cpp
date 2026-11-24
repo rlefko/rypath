@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -107,7 +108,7 @@ Output finish(Frame &frame, const FrameConfig &c, bool history, bool black = fal
              i.spatial_candidates == 5 && i.fresh_candidates == n,
          "Mutation retains temporal/spatial/fresh accounting");
     need(i.mutation_attempts == n * c.mutation_steps && i.mutation_accepts <= i.mutation_attempts &&
-             i.completed_evaluations == n * ((history ? 6u : 5u) + c.mutation_steps),
+             i.completed_evaluations == n * ((history ? 7u : 5u) + c.mutation_steps),
          "Every fixed mutation attempt adds exactly one full replay evaluation");
     if (black)
         need(i.mutation_accepts == i.mutation_attempts, "Black unit targets accept every proposal");
@@ -171,56 +172,109 @@ std::array<float, 3> sensor(const rr::ReplayState &p) {
         value[c] = float(cie[c]) * 470.f;
     return value;
 }
+float target(const std::array<float, 3> &xyz, float scale) {
+    // Ordinary-range fixture oracle: evaluate the documented target directly,
+    // without the production scaled-arithmetic or reservoir/MIS helpers.
+    return std::max(std::numeric_limits<float>::min(), 1e-6f * scale) +
+           ((std::abs(xyz[0]) * .25f + std::abs(xyz[1]) * .25f) + std::abs(xyz[2]) * .25f);
+}
+struct MutationOracle {
+    bool accepted;
+    float normalizer;
+};
+MutationOracle decide(float normalizer, float old_target, float new_target,
+                      const mh::MutationIdentity &id, unsigned step) {
+    if (old_target == new_target)
+        return {true, normalizer};
+    const bool uphill = new_target > old_target;
+    int small_exponent = 0, large_exponent = 0, ratio_exponent = 0;
+    const float small = std::frexp(std::min(old_target, new_target), &small_exponent);
+    const float large = std::frexp(std::max(old_target, new_target), &large_exponent);
+    const float ratio = small / large;
+    const float fraction = std::frexp(ratio, &ratio_exponent);
+    const auto significand = static_cast<unsigned>(std::ldexp(fraction, 24));
+    const int bits = 24 - (ratio_exponent + small_exponent - large_exponent);
+    need(bits > 0 && bits <= 277, "Independent dyadic MH probability domain");
+    bool accepted = uphill, decided = uphill;
+    // Compare the random binary expansion directly with the represented dyadic
+    // threshold. Equality rejects. No production acceptance/update helper runs.
+    for (unsigned ordinal = 0; !decided && ordinal < 9; ++ordinal) {
+        const auto word = mh::acceptance_word(id, step, ordinal);
+        need(word.status == mh::Status::ok, "Independent oracle entropy");
+        for (unsigned bit = 0; bit < 32 && !decided; ++bit) {
+            const int position = bits - 1 - int(32 * ordinal + bit);
+            const unsigned threshold =
+                position >= 0 && position < 24 ? (significand >> unsigned(position)) & 1u : 0u;
+            const unsigned random = (word.value >> (31 - bit)) & 1u;
+            if (random != threshold) {
+                accepted = random < threshold;
+                decided = true;
+            } else if (position == 0) {
+                accepted = false;
+                decided = true;
+            }
+        }
+    }
+    need(decided, "Independent oracle must finish exact dyadic comparison");
+    if (!accepted)
+        return {false, normalizer};
+    const float represented_product = ratio * large;
+    const float correction = uphill ? represented_product / small : small / represented_product;
+    return {true, normalizer * correction};
+}
 void single_pixel_oracle() {
     unsigned wavelength_moves = 0;
-    // Cross-backend adapter check: shared CPU helper math, independent host CIE
-    // reduction. Generic helper correctness has its own independent math probe.
     for (std::uint64_t seed : {1ull, 19317ull, 0x913b6a1f7957c251ull, 0xabcdef0135792468ull}) {
-        auto c = settings(4);
-        c.width = c.height = 1;
-        c.seed = seed;
-        auto session = build(sky(), c);
-        auto frame = submit(*session);
-        const auto o = finish(*frame, c, false);
-        auto payload = rr::fresh({0, unsigned(sample_id), unsigned(sample_id >> 32), unsigned(seed),
-                                  unsigned(seed >> 32)});
-        float weight = 1;
-        unsigned accepted = 0;
-        for (unsigned step = 0; step < c.mutation_steps; ++step) {
-            const mh::MutationIdentity id{0, unsigned(o.info.area_serial),
-                                          unsigned(o.info.area_serial >> 32), unsigned(seed),
-                                          unsigned(seed >> 32)};
-            const auto entropy = mh::decision_words(id, step, mh::Entropy::proposal);
-            need(entropy.status == mh::Status::ok, "CPU proposal entropy");
-            const auto proposed = mh::propose(payload, entropy.value);
-            need(proposed.status == mh::Status::ok, "CPU proposal");
-            const auto a = sensor(payload), b = sensor(proposed.payload);
-            const auto ta = rypath_reservoir::bounded_target_xyz(a[0], a[1], a[2], c.target_scale),
-                       tb = rypath_reservoir::bounded_target_xyz(b[0], b[1], b[2], c.target_scale);
-            auto pending = mh::prepare_acceptance(weight, ta.value, tb.value);
-            need(pending.status == mh::Status::ok, "CPU acceptance prepare");
-            for (unsigned word = 0; !pending.decision.complete && word < 9; ++word) {
-                const auto u = mh::acceptance_word(id, step, word);
-                need(u.status == mh::Status::ok &&
-                         mh::feed_random_word(pending, u.value) == mh::Status::ok,
-                     "CPU acceptance words");
+        std::optional<Output> selected;
+        for (auto mode : {FrameAreaOutput::selected, FrameAreaOutput::conditional_mean}) {
+            auto c = settings(4);
+            c.width = c.height = 1;
+            c.seed = seed;
+            c.area_output = mode;
+            auto session = build(sky(), c);
+            auto frame = submit(*session);
+            const auto o = finish(*frame, c, false);
+            auto payload = rr::fresh({0, unsigned(sample_id), unsigned(sample_id >> 32),
+                                      unsigned(seed), unsigned(seed >> 32)});
+            float normalizer = target(sensor(payload), c.target_scale);
+            unsigned accepted = 0;
+            for (unsigned step = 0; step < c.mutation_steps; ++step) {
+                const mh::MutationIdentity id{0, unsigned(o.info.area_serial),
+                                              unsigned(o.info.area_serial >> 32), unsigned(seed),
+                                              unsigned(seed >> 32)};
+                const auto entropy = mh::decision_words(id, step, mh::Entropy::proposal);
+                need(entropy.status == mh::Status::ok, "CPU proposal entropy");
+                const auto proposed = mh::propose(payload, entropy.value);
+                need(proposed.status == mh::Status::ok, "CPU proposal");
+                const auto decision =
+                    decide(normalizer, target(sensor(payload), c.target_scale),
+                           target(sensor(proposed.payload), c.target_scale), id, step);
+                if (decision.accepted) {
+                    wavelength_moves += payload.wavelength != proposed.payload.wavelength;
+                    payload = proposed.payload;
+                    ++accepted;
+                }
+                normalizer = decision.normalizer;
             }
-            const auto decision = mh::finalize_acceptance(pending);
-            need(decision.status == mh::Status::ok, "CPU acceptance finish");
-            if (decision.accepted) {
-                wavelength_moves += payload.wavelength != proposed.payload.wavelength;
-                payload = proposed.payload;
-                ++accepted;
+            const auto expected = sensor(payload);
+            need(o.info.mutation_accepts == accepted,
+                 "GPU acceptance count versus independent dyadic normalizer oracle");
+            for (unsigned channel = 0; channel < 3; ++channel) {
+                const double value =
+                    double(expected[channel]) * normalizer / target(expected, c.target_scale);
+                need(std::abs(o.image.raw_xyz[0][channel] - value) <= 3e-5 * std::abs(value) + 3e-6,
+                     "One-pixel cold replay wavelength and Z/target contribution");
             }
-            weight = decision.weight;
-        }
-        const auto expected = sensor(payload);
-        need(o.info.mutation_accepts == accepted,
-             "GPU acceptance count versus CPU shared-helper adapter");
-        for (unsigned channel = 0; channel < 3; ++channel) {
-            const double value = double(expected[channel]) * weight;
-            need(std::abs(o.image.raw_xyz[0][channel] - value) <= 3e-5 * std::abs(value) + 3e-6,
-                 "One-pixel cold replay wavelength and corrected-weight transport");
+            if (selected) {
+                need(o.info.mutation_accepts == selected->info.mutation_accepts,
+                     "Output choice cannot change mutation decisions");
+                for (unsigned channel = 0; channel < 3; ++channel)
+                    need(std::abs(o.image.raw_xyz[0][channel] -
+                                  selected->image.raw_xyz[0][channel]) <=
+                             3e-5 * std::abs(selected->image.raw_xyz[0][channel]) + 3e-6,
+                         "Five duplicated one-pixel payloads have the same conditional output");
+            } else
+                selected = o;
         }
     }
     need(wavelength_moves > 0, "One-pixel oracle exercises actual wavelength proposals");

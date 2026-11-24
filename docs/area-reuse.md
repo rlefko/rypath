@@ -1,5 +1,10 @@
 # Area-domain reservoir math
 
+This is the historical contract-3 record. Contract 4 replaces its bounded target,
+reuse weights, output policy and warm evaluation count; see the current
+[importance sampling repair](restir-importance.md). The retained failures and
+validation below describe their named revisions, not the new estimator.
+
 The opt-in `FrameEstimator::area_replay` implementation reuses full camera paths
 across film, lens, wavelength and indirect transport variables. It is an
 area-domain full-replay GRIS adaptation, with a correctness baseline that

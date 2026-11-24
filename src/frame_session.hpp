@@ -4,10 +4,11 @@
 
 namespace rypath {
 // Frames contribute one fresh sample per pixel. Area replay additionally
-// evaluates reused candidates and emits one reservoir-weighted raw estimate.
+// evaluates reused candidates and emits one properly weighted raw estimate.
 // Footprints keep a fixed budget even when sample_index exceeds it; output is unclamped.
 enum class FrameExecution { megakernel, wavefront };
 enum class FrameEstimator { independent, area_replay };
+enum class FrameAreaOutput { selected, conditional_mean };
 struct FrameConfig {
     std::uint32_t width = 0, height = 0;
     std::uint64_t seed = 1;
@@ -23,9 +24,11 @@ struct FrameConfig {
     std::uint32_t quantum = 8;
     std::uint32_t group_width = 32;
     FrameEstimator estimator = FrameEstimator::independent;
-    // Importance proxy only: 1 + .1*L1(XYZ)/(target_scale+L1(XYZ)).
-    // Bounded contrast controls history weights without changing raw radiance.
+    // Strong importance proxy: L1(XYZ)/4 plus a positive scale-dependent floor.
+    // Source-aware MIS handles reuse; neither radiance nor weights are clipped.
     float target_scale = 1.f;
+    // Marginalize final selection while retaining the same reservoir for reuse.
+    FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;
 };
