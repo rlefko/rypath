@@ -4,8 +4,8 @@ The opt-in `FrameEstimator::area_replay` implementation reuses full camera paths
 across film, lens, wavelength and indirect transport variables. It is an
 area-domain full-replay GRIS adaptation, with a correctness baseline that
 retraces destination paths. It does not yet implement the Area ReSTIR paper's
-fractional footprint matching or primary-hit lens reconnection. MCMC is a
-separate subsequent stage. Independent rendering remains the default; offline
+fractional footprint matching or primary-hit lens reconnection.
+[Weight-corrected MCMC mutations](mcmc-mutations.md) run between temporal and spatial reuse. Independent rendering remains the default; offline
 transport and checkpoint contracts remain separate.
 
 The benchmark enables it with `--estimator area-replay` and requires wavefront
@@ -20,13 +20,14 @@ Native and compensated intersections remain separate numerical choices.
 A fresh payload is evaluated once per destination pixel. Temporal reuse merges
 that result with the previous reservoir's payload, fully reevaluated at the
 current camera; reset frames use the fresh input alone. The selected temporal
-result is frozen before spatial reuse. Each pixel then merges its cached center
+result undergoes the configured fixed mutation steps, then is frozen before spatial reuse. Each pixel then merges its cached center
 with fully replayed left, right, upper and lower neighbors. Edge clamping keeps
 all five scheduled slots, including duplicates. Cached source-pixel or
 previous-frame XYZ never substitutes for destination evaluation.
 
-Each frame has one fresh path per pixel and **five complete path evaluations
-after a reset, six with history**. Output is the selected unweighted XYZ times
+Each frame has one fresh path per pixel and **five plus `n` complete path
+evaluations after a reset, six plus `n` with history**, for `n` configured
+mutation steps (default one; ablations zero, two and four). Output is the selected unweighted XYZ times
 its normalized contribution weight, counted once. All replay and reservoir work
 is included in command counts and timing. Raw output is separate from the
 recyclable leaf and temporal caches.
@@ -403,8 +404,8 @@ B_next <= g * (1+B)/2
 
 The spatial inequality holds for all five slots, including repeated clamped
 neighbors: an average of bounded incoming weights remains bounded. The mutation
-inequality reserves a subsequent stage with `n` in `0/1/2/4`; PR4 itself has
-`n=0`. No history-only stage or additional resampling pass is implicit here.
+inequality covers the implemented fixed schedule with `n` in `0/1/2/4`.
+The original PR4 measurements use `n=0`. No history-only stage or additional resampling pass is implicit here.
 
 If `g<2`, the warm recurrence has fixed point `g/(2-g)`. A cold reset is a
 different case: temporal `K=1` returns weight one, so
@@ -427,7 +428,7 @@ Unlike the earlier coefficient bound, it does not contain selection-probability
 errors: the magnitude of a realized finalized weight depends on the sum and
 selected target, not on the probability that selected it.
 
-For the planned actual-forward/reverse dyadic MH correction, a represented
+For the implemented actual-forward/reverse dyadic MH correction, a represented
 downhill probability is at least its ideal ratio times `1-u`; the accepted UCW
 operation adds at most `1+u`. A conservative maximum mutation factor is thus
 `R*(1+u)/(1-u)` per step. Including all stages,
@@ -446,10 +447,10 @@ mutation and spatial factors. With the actual binary32 `R` above and conservativ
 
 | Mutation steps | Cold upper | Global upper | Warm lower |
 | ---: | ---: | ---: | ---: |
-| 0 (current stage) | 1.100001 | 1.531651 | 0.413222 |
-| 1 (subsequent stage) | 1.210002 | 1.989547 | 0.375656 |
-| 2 (subsequent stage) | 1.331002 | 2.732059 | 0.341506 |
-| 4 (subsequent stage) | 1.610514 | 7.755236 | 0.282236 |
+| 0 (ablation) | 1.100001 | 1.531651 | 0.413222 |
+| 1 (default) | 1.210002 | 1.989547 | 0.375656 |
+| 2 (ablation) | 1.331002 | 2.732059 | 0.341506 |
+| 4 (ablation) | 1.610514 | 7.755236 | 0.282236 |
 
 The common contrast keeps `G` below two for every legal step count. Changing the
 schedule, target contrast, mutation correction or arithmetic assumptions requires
@@ -498,8 +499,8 @@ math and contraction.
 
 These are mean smoke checks and arithmetic/lifetime evidence. Longer
 convergence and time-to-quality qualification remain separate; passing a small
-mean study does not establish a visual or performance benefit. MCMC is not yet
-integrated here.
+mean study does not establish a visual or performance benefit. The separate
+[MCMC record](mcmc-mutations.md) describes the subsequent mutation implementation.
 
 Packet replay state is passed explicitly through the live PT sampling helpers,
 separately from the resource aggregate containing native acceleration structures.
@@ -539,4 +540,5 @@ hosted compiler fix.
   fractional matching and primary-hit reconnection are not implemented here.
 - Sawhney et al., [Decorrelating ReSTIR Samplers via MCMC Mutations](https://arxiv.org/html/2211.00166),
   Section 3 and Equation 16 define the subsequent weight-corrected mutation
-  stage. This PR implements no mutation or adaptive history cap.
+  stage. This implementation uses the explicit finite replay-domain adaptation
+  in the MCMC record, with no adaptive history cap.

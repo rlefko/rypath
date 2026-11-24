@@ -26,6 +26,8 @@ struct FrameConfig {
     // Importance proxy only: 1 + .1*L1(XYZ)/(target_scale+L1(XYZ)).
     // Bounded contrast controls history weights without changing raw radiance.
     float target_scale = 1.f;
+    // Corrected MH steps after temporal reuse; independent rendering applies zero.
+    std::uint32_t mutation_steps = 1;
 };
 struct FrameCamera {
     RenderCamera camera;
@@ -57,6 +59,7 @@ struct FrameInfo {
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
     // Full successful path evaluations; cached candidates add no evaluations.
     std::uint64_t completed_evaluations = 0, fresh_candidates = 0;
+    std::uint64_t mutation_attempts = 0, mutation_accepts = 0;
     // Camera translation may upload rebased graph/surface records. Repeated
     // origins in the same free slot reuse those records without uploading.
     std::uint64_t camera_upload_bytes = 0;

@@ -6,21 +6,30 @@
 namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 2, spatial_candidates = 5 };
-enum Phase : Word { fresh = 0, temporal = 1, spatial = 2 };
+enum : Word { contract = 3, spatial_candidates = 5, config_count = 11, mutation_config_begin = 7 };
+enum Phase : Word { fresh = 0, temporal = 1, spatial = 2, mutation = 3 };
 enum Failure : Word {
     invalid_config = 1,
     invalid_payload = 2,
     invalid_value = 4,
     invalid_reservoir = 8,
-    invalid_count = 16
+    invalid_count = 16,
+    invalid_mutation = 32
 };
 struct Config {
     Word pixel_count, width, height, phase;
     Word candidate, history_used, serial_low, serial_high;
     Word seed_low, seed_high;
     float target_scale;
-    Word reserved;
+    Word mutation_steps;
+};
+#if defined(__METAL_VERSION__)
+using Counter = metal::atomic_uint;
+#else
+using Counter = Word;
+#endif
+struct Counters {
+    Counter failure, mutations, accepted, reserved;
 };
 struct History {
     rypath_replay::ReplayState payload;
@@ -52,10 +61,10 @@ enum Argument : Word {
 };
 struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
-    Word accumulator_bytes, replay_bytes, reserved[2];
+    Word accumulator_bytes, replay_bytes, counters_bytes, reserved;
 };
 static_assert(sizeof(Config) == 48 && sizeof(History) == 48 && sizeof(Temporal) == 64 &&
-                  sizeof(Accumulator) == 64 && sizeof(Contract) == 32,
+                  sizeof(Accumulator) == 64 && sizeof(Contract) == 32 && sizeof(Counters) == 16,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath

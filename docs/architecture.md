@@ -47,7 +47,10 @@ XYZ on the GPU, with native triangle traversal and bounded
 uses normalized contribution weights over a finite replay domain, with fresh
 input, complete destination replay and separate published history banks. It is a
 correctness baseline for an Area-domain GRIS adaptation, not the paper's optimized
-reconnection implementation. Offline accumulation and checkpoints remain separate.
+reconnection implementation. [Fixed MCMC mutations](mcmc-mutations.md) use
+symmetric integer proposals, complete replay and actual forward/reverse acceptance
+weight correction before spatial reuse. Offline accumulation and checkpoints
+remain separate.
 
 ## PBRT preflight boundary
 
