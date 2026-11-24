@@ -75,6 +75,8 @@ struct FrameCapture {
     std::vector<std::array<float, 3>> raw_xyz;
 };
 class FrameSession;
+class MetalFrameLease;
+struct MetalFrameAccess;
 class Frame {
   public:
     ~Frame();
@@ -92,6 +94,8 @@ class Frame {
     std::shared_ptr<Impl> impl_;
     explicit Frame(std::shared_ptr<Impl>);
     friend class FrameSession;
+    friend class MetalFrameLease;
+    friend struct MetalFrameAccess;
 };
 struct FrameSubmitResult {
     GeometryStatus status = GeometryStatus::failure;

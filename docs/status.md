@@ -19,6 +19,13 @@ zero/two/four-step ablations. Earlier arithmetic/lifetime checks and small mean
 studies describe the historical estimator. Native validation of this adapted
 repair, visual improvement and time to image quality remain unqualified.
 
+Separate [frame reconstruction](reconstruction.md) consumes completed raw frames.
+It offers MetalFX denoising/upscaling and a native-resolution signed-float temporal
+fallback, with guide approximation counters, retained GPU outputs and direct
+linear-RGB captures. The fallback avoids clipping fresh spectral samples before
+filtering. Integrated correctness checks pass; reference-image quality and
+complete-pipeline timing remain to be qualified.
+
 Pavilion scene support merged in [PR #50](https://github.com/rlefko/rypath/pull/50).
 [PR #51](https://github.com/rlefko/rypath/pull/51) delivers the subsequent transport,
 sampling and performance fixes. The remaining Pavilion convergence investigation

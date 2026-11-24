@@ -14,8 +14,11 @@ def invoke(args, expected=1):
     assert result.returncode == expected, (args, result.returncode, result.stdout, result.stderr)
     return result
 
-assert "--intersections native|compensated" in invoke(["--help"], 0).stdout
-assert "--area-output selected|conditional-mean" in invoke(["--help"], 0).stdout
+help_text = invoke(["--help"], 0).stdout
+assert "--intersections native|compensated" in help_text
+assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
+assert "--reconstructed-capture" in help_text
+assert "--area-output selected|conditional-mean" in help_text
 for args in (
     [], ["--demo"], ["--demo", "--scene", "x", "--output", "x.json"],
     ["--demo", "--demo", "--output", "x.json"],
@@ -48,6 +51,31 @@ for option, values in (
     for value in values:
         invoke(["--demo", "--output", "x.json", option, value])
 
+for extra in (
+    ["--reconstruction"],
+    ["--reconstruction", "invalid"],
+    ["--reconstruction", "none", "--reconstruction", "raw-rgb"],
+    ["--output-width", "1920"],
+    ["--output-height", "1080"],
+    ["--reconstruction", "none", "--output-width", "1920"],
+    ["--reconstructed-capture", "image.exr"],
+    ["--reconstruction", "raw-rgb", "--reconstructed-capture", "image.png"],
+    ["--reconstruction", "raw-rgb", "--output-width", "1921"],
+    ["--reconstruction", "raw-rgb", "--output-height", "1079"],
+    ["--reconstruction", "temporal", "--output-width", "1921"],
+    ["--reconstruction", "temporal", "--output-height", "1079"],
+    ["--reconstruction", "metalfx", "--output-width", "1919"],
+    ["--reconstruction", "metalfx", "--output-height", "1079"],
+    ["--reconstruction", "raw-rgb", "--width", "16385"],
+    ["--reconstruction", "metalfx", "--height", "16385"],
+    ["--reconstruction", "metalfx", "--output-width", "16385"],
+    ["--reconstruction", "metalfx", "--output-height", "16385"],
+):
+    invoke(["--demo", "--output", "x.json", *extra])
+for key in ("--output-width", "--output-height"):
+    for value in ("0", "-1", "nan", "4294967296", "1x"):
+        invoke(["--demo", "--output", "x.json", "--reconstruction", "metalfx", key, value])
+
 invoke(["--demo", "--output", "x.json", "--estimator", "area-replay", "--execution", "megakernel"])
 
 with tempfile.TemporaryDirectory() as directory:
@@ -70,6 +98,29 @@ with tempfile.TemporaryDirectory() as directory:
     invoke(["--demo", "--output", str(root / "fresh.json")])
     assert pending.read_text() == "keep pending"
     assert not (root / "fresh.json").exists()
+    # All reconstructed destinations and their pending names participate in
+    # reservation conflicts, including aliases of a checked source dependency.
+    reconstructed_alias = root / "source-alias.exr"
+    reconstructed_alias.symlink_to(child)
+    destination = root / "reconstruction-alias.json"
+    invoke(["--scene", str(scene), "--output", str(destination), "--reconstruction", "raw-rgb",
+            "--reconstructed-capture", str(reconstructed_alias)])
+    assert not destination.exists() and child.read_bytes() == original[child]
+    duplicate = root / "duplicate.exr"
+    invoke(["--demo", "--output", str(duplicate), "--reconstruction", "raw-rgb",
+            "--reconstructed-capture", str(duplicate)])
+    assert not duplicate.exists()
+    overlap = root / "overlap.exr"
+    invoke(["--demo", "--output", str(overlap) + ".pending", "--reconstruction", "raw-rgb",
+            "--reconstructed-capture", str(overlap)])
+    assert not overlap.exists() and not Path(str(overlap) + ".pending").exists()
+    locked_capture = root / "locked.exr"
+    Path(str(locked_capture) + ".pending").write_text("keep reconstructed pending")
+    destination = root / "locked-report.json"
+    invoke(["--scene", str(scene), "--output", str(destination), "--reconstruction", "raw-rgb",
+            "--reconstructed-capture", str(locked_capture)])
+    assert not destination.exists() and not locked_capture.exists()
+    assert Path(str(locked_capture) + ".pending").read_text() == "keep reconstructed pending"
     for path, content in original.items():
         assert path.read_bytes() == content
     # Startup failures retain a complete JSON report without GPU work.
@@ -102,6 +153,39 @@ with tempfile.TemporaryDirectory() as directory:
         assert settings["effective_capacity"] == (17 if execution == "wavefront" else None)
         assert settings["intersection_profile"] == "compensated"
     assert data["settings"]["intersection_profile"] == "native"
+    assert data["settings"]["reconstruction"] == "none"
+    assert (data["settings"]["output_width"], data["settings"]["output_height"]) == (1920, 1080)
+    assert data["pipeline_summary"]["completed_frames"] == 0
+    assert data["pipeline_summary"]["frames_per_second"] is None
+    assert data["reconstruction_startup_seconds"] == 0
+    assert "startup GPU probe" in data["pipeline_GPU_scope"]
+    for mode in ("none", "raw-rgb", "metalfx", "temporal"):
+        destination = root / ("reconstruction-" + mode + ".json")
+        extra = [] if mode == "none" else ["--output-width", "17", "--output-height", "9"]
+        invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",
+                "--reconstruction", mode, *extra])
+        selected = json.loads(destination.read_text())
+        settings = selected["settings"]
+        assert settings["reconstruction"] == mode
+        assert (settings["internal_width"], settings["internal_height"]) == (17, 9)
+        assert (settings["output_width"], settings["output_height"]) == (17, 9)
+        assert settings["output_pixels_per_input_pixel"] == 1
+        assert "reconstruction mode " + mode in selected["provenance"]
+        assert selected["frames"] == [] and selected["pipeline_summary"]["GPU"]["count"] == 0
+        assert selected["pipeline_summary"]["cpu_wall"]["count"] == 0
+    destination = root / "upscale.json"
+    invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",
+            "--reconstruction", "metalfx", "--output-width", "34", "--output-height", "18"])
+    settings = json.loads(destination.read_text())["settings"]
+    assert (settings["width"], settings["height"]) == (17, 9)
+    assert (settings["output_width"], settings["output_height"]) == (34, 18)
+    assert settings["output_pixels_per_input_pixel"] == 4
+    destination = root / "width-only.json"
+    invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",
+            "--reconstruction", "metalfx", "--output-width", "34"])
+    settings = json.loads(destination.read_text())["settings"]
+    assert settings["output_height"] == 9
+
     # A malformed input stops before GPU setup while preserving parsed profile settings.
     for profile in ("native", "compensated"):
         selected = root / f"{profile}.json"

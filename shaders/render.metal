@@ -2541,3 +2541,4 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
 #include "wavefront.metal"
 
 #include "area_reuse.metal"
+#include "reconstruction_guides.metal"

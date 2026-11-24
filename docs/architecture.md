@@ -49,7 +49,10 @@ input, complete destination replay and separate published history banks. It is a
 correctness baseline for an Area-domain GRIS adaptation, not the paper's optimized
 reconnection implementation. [Fixed MCMC mutations](mcmc-mutations.md) use
 symmetric integer proposals, complete replay and actual forward/reverse acceptance
-weight correction before spatial reuse. Offline accumulation and checkpoints
+weight correction before spatial reuse. Separate [reconstruction](reconstruction.md)
+generates pinhole surface guides and converts raw XYZ into presentation RGB before
+MetalFX denoising/upscaling. Retained output leases and checked completion govern
+history and downstream GPU consumption. Offline accumulation and checkpoints
 remain separate.
 
 ## PBRT preflight boundary

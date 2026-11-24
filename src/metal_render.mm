@@ -15,6 +15,7 @@
 #include "gaussian_filter.hpp"
 #include "light_sampling.hpp"
 #include "metal_execution.hpp"
+#include "metal_frame_access.hpp"
 #include "metal_geometry_access.hpp"
 #include "packet_dispatch.hpp"
 #include "packet_spectrum_shared.h"
@@ -41,6 +42,7 @@
 #include <numbers>
 #include <ranges>
 #include <sstream>
+#include <stdexcept>
 #include <tuple>
 #include <type_traits>
 
@@ -2219,9 +2221,196 @@ struct Frame::Impl {
     id<MTLCommandQueue> queue = nil;
     id<MTLBuffer> raw = nil, status = nil, scratch = nil;
     FrameInfo info;
+    // Resolved once after validation, before submission; consumers never mutate these.
+    wire::Parameters resolved_parameters{};
+    wire::TextureParameters resolved_texture_parameters{};
+    FrameCamera resolved_camera;
+    IntersectionProfile intersection_profile = IntersectionProfile::compensated;
+    id<MTLLibrary> library = nil;
     mutable std::mutex info_mutex, capture_mutex;
     mutable std::condition_variable completed;
 };
+struct MetalFrameLease::Impl {
+    std::shared_ptr<Frame::Impl> frame;
+    FrameInfo info;
+};
+struct MetalFramePipeline::Impl {
+    // Pipelines are scene-specialized, not camera-specialized. A weak owner
+    // permits stream-wide caching without pinning a completed frame or slot.
+    std::weak_ptr<MetalRenderScene> renderer;
+    id<MTLDevice> device = nil;
+    IntersectionProfile profile = IntersectionProfile::compensated;
+    id<MTLComputePipelineState> pipeline = nil;
+    id<MTLFunction> function = nil;
+    id<MTLIntersectionFunctionTable> table = nil;
+};
+MetalFrameLease::MetalFrameLease(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+MetalFrameLease::~MetalFrameLease() = default;
+MetalFrameLease::MetalFrameLease(MetalFrameLease &&) noexcept = default;
+MetalFrameLease &MetalFrameLease::operator=(MetalFrameLease &&) noexcept = default;
+MetalFramePipeline::MetalFramePipeline(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+MetalFramePipeline::~MetalFramePipeline() = default;
+MetalFramePipeline::MetalFramePipeline(MetalFramePipeline &&) noexcept = default;
+MetalFramePipeline &MetalFramePipeline::operator=(MetalFramePipeline &&) noexcept = default;
+id<MTLComputePipelineState> MetalFramePipeline::pipeline() const {
+    return impl_ ? impl_->pipeline : nil;
+}
+id<MTLIntersectionFunctionTable> MetalFramePipeline::intersection_table() const {
+    return impl_ ? impl_->table : nil;
+}
+id<MTLArgumentEncoder> MetalFramePipeline::argument_encoder() const {
+    return impl_ ? [impl_->function newArgumentEncoderWithBufferIndex:1] : nil;
+}
+id<MTLDevice> MetalFrameLease::device() const { return impl_ ? impl_->frame->device : nil; }
+id<MTLCommandQueue> MetalFrameLease::queue() const { return impl_ ? impl_->frame->queue : nil; }
+id<MTLBuffer> MetalFrameLease::raw_xyz() const { return impl_ ? impl_->frame->raw : nil; }
+const FrameInfo &MetalFrameLease::info() const {
+    if (!impl_)
+        throw std::logic_error("Metal frame lease is moved-from");
+    return impl_->info;
+}
+const render_wire::Parameters &MetalFrameLease::parameters() const {
+    if (!impl_)
+        throw std::logic_error("Metal frame lease is moved-from");
+    return impl_->frame->resolved_parameters;
+}
+const render_wire::TextureParameters &MetalFrameLease::texture_parameters() const {
+    if (!impl_)
+        throw std::logic_error("Metal frame lease is moved-from");
+    return impl_->frame->resolved_texture_parameters;
+}
+const FrameCamera &MetalFrameLease::camera() const {
+    if (!impl_)
+        throw std::logic_error("Metal frame lease is moved-from");
+    return impl_->frame->resolved_camera;
+}
+IntersectionProfile MetalFrameLease::intersection_profile() const {
+    if (!impl_)
+        throw std::logic_error("Metal frame lease is moved-from");
+    return impl_->frame->intersection_profile;
+}
+MetalFrameAcquireResult MetalFrameAccess::acquire(const Frame &frame) {
+    MetalFrameAcquireResult result;
+    if (!frame.impl_) {
+        result.info.status = FrameStatus::failed;
+        result.info.diagnostic = result.diagnostic = "Frame is moved-from";
+        return result;
+    }
+    {
+        std::lock_guard lock(frame.impl_->info_mutex);
+        result.info = frame.impl_->info;
+    }
+    result.status = result.info.status;
+    result.diagnostic = result.info.diagnostic;
+    if (result.status != FrameStatus::complete)
+        return result;
+    const auto pixels = std::uint64_t(result.info.width) * result.info.height;
+    if (!pixels || result.info.completed_samples != pixels || !frame.impl_->retention ||
+        frame.impl_->device == nil || frame.impl_->queue == nil || frame.impl_->library == nil ||
+        frame.impl_->raw == nil || frame.impl_->raw.storageMode != MTLStorageModePrivate ||
+        frame.impl_->raw.length != pixels * sizeof(wire::Point)) {
+        result.status = result.info.status = FrameStatus::failed;
+        result.info.diagnostic = result.diagnostic =
+            "Completed Metal frame resources are inconsistent";
+        return result;
+    }
+    auto impl = std::make_unique<MetalFrameLease::Impl>();
+    impl->frame = frame.impl_;
+    impl->info = result.info;
+    result.lease = std::unique_ptr<MetalFrameLease>(new MetalFrameLease(std::move(impl)));
+    return result;
+}
+MetalFramePipelineResult MetalFrameLease::create_guide_pipeline(NSString *entry) const {
+    @autoreleasepool {
+        MetalFramePipelineResult result;
+        if (!impl_ || entry == nil || entry.length == 0) {
+            result.diagnostic = "A live Metal frame lease and guide entry point are required";
+            return result;
+        }
+        auto &frame = *impl_->frame;
+        const auto owner = frame.retention->renderer;
+        auto &renderer = *owner->impl_;
+        if (renderer.function_constants == nil) {
+            result.diagnostic = "Metal frame scene specialization constants are unavailable";
+            return result;
+        }
+        MTLFunctionConstantValues *constants = [renderer.function_constants copy];
+        if (constants == nil) {
+            result.diagnostic = "Guide specialization constants allocation failed";
+            return result;
+        }
+        const bool bidirectional = false;
+        [constants setConstantValue:&bidirectional type:MTLDataTypeBool atIndex:20];
+        auto intersection = metal::load_patch_intersection(frame.library, result.diagnostic);
+        if (intersection == nil)
+            return result;
+        auto pipeline = metal::load_pipeline(frame.device, frame.library, entry, result.diagnostic,
+                                             intersection, constants);
+        if (pipeline == nil)
+            return result;
+        auto table = metal::make_intersection_table(pipeline, intersection, result.diagnostic);
+        if (table == nil)
+            return result;
+        auto function = metal::load_function(frame.library, entry, result.diagnostic, constants);
+        if (function == nil)
+            return result;
+        auto built = std::make_unique<MetalFramePipeline::Impl>();
+        built->renderer = owner;
+        built->device = frame.device;
+        built->profile = frame.intersection_profile;
+        built->pipeline = pipeline;
+        built->function = function;
+        built->table = table;
+        result.pipeline =
+            std::unique_ptr<MetalFramePipeline>(new MetalFramePipeline(std::move(built)));
+        result.status = GeometryStatus::success;
+        return result;
+    }
+}
+std::string MetalFrameLease::bind_guides(id<MTLComputeCommandEncoder> encoder,
+                                         const MetalFramePipeline &pipeline,
+                                         id<MTLBuffer> arguments) const {
+    if (!impl_ || !pipeline.impl_)
+        return "Metal frame lease or guide pipeline is moved-from";
+    auto &frame = *impl_->frame;
+    const auto owner = pipeline.impl_->renderer.lock();
+    if (!owner || owner != frame.retention->renderer ||
+        pipeline.impl_->profile != frame.intersection_profile)
+        return "Guide pipeline belongs to a different render session or numerical profile";
+    if (encoder == nil || arguments == nil || !arguments.length || encoder.device != frame.device ||
+        arguments.device != frame.device || pipeline.impl_->device != frame.device ||
+        pipeline.impl_->pipeline == nil || pipeline.impl_->table == nil)
+        return "Guide encoder, arguments, and pipeline must use the completed frame's device";
+    auto &renderer = *owner->impl_;
+    if (!renderer.parameters.instance_count && renderer.empty_packet_structure == nil)
+        return "Completed frame is missing its empty-scene acceleration structure";
+    auto p = frame.resolved_parameters;
+    p.packet_transport = 0;
+    p.bidirectional = 0;
+    p.lens_radius = 0;
+    p.pixel_begin = 0;
+    p.pixel_count = p.lane_count = frame.info.width * frame.info.height;
+    [encoder setComputePipelineState:pipeline.impl_->pipeline];
+    renderer.bind(encoder, p, frame.resolved_texture_parameters, arguments,
+                  frame.retention->graph_nodes, frame.retention->surface_transforms, true,
+                  pipeline.impl_->table);
+    return {};
+}
+std::string MetalFrameLease::retain_until_completed(id<MTLCommandBuffer> command) const {
+    if (!impl_)
+        return "Metal frame lease is moved-from";
+    if (command == nil || command.device != impl_->frame->device)
+        return "Consumer command must use the completed frame's device";
+    if (command.status != MTLCommandBufferStatusNotEnqueued &&
+        command.status != MTLCommandBufferStatusEnqueued)
+        return "Attach the completed-frame lease before committing the consumer command";
+    const auto retained = impl_->frame;
+    [command addCompletedHandler:^(id<MTLCommandBuffer>) {
+      (void)retained;
+    }];
+    return {};
+}
+
 struct FrameSession::Impl {
     std::shared_ptr<MetalRenderScene> renderer;
     FrameConfig config;
@@ -2229,6 +2418,7 @@ struct FrameSession::Impl {
     bool supports_camera_medium = false;
     id<MTLComputePipelineState> initialize = nil, resolve = nil;
     id<MTLBuffer> cie = nil;
+    id<MTLLibrary> frame_library = nil;
     std::shared_ptr<FrameWavefrontPrograms> wavefront;
     std::shared_ptr<FrameAreaPrograms> area;
     std::shared_ptr<FrameAreaHistory> history;
@@ -2262,6 +2452,7 @@ struct FrameSession::Impl {
         auto library = metal::load_library(r.device, library_path, error);
         if (library == nil)
             return error;
+        frame_library = library;
         initialize = metal::load_pipeline(r.device, library, @"rypath_frame_initialize", error);
         if (initialize == nil)
             return error;
@@ -2297,6 +2488,29 @@ struct FrameSession::Impl {
         cie = upload(r.device, table);
         if (cie == nil)
             return "Frame sensor table allocation failed";
+        // Scalar sky previously avoided all geometry arguments. The generic
+        // wavefront signatures require valid storage even on a synthetic miss.
+        if (!r.parameters.instance_count && r.empty_packet_structure == nil) {
+            r.empty_packet_structure = build_empty_packet_structure(r.device, r.queue, error);
+            if (r.empty_packet_structure == nil)
+                return error;
+        }
+        if (!r.parameters.instance_count) {
+            auto sentinel = [r.device newBufferWithLength:2048
+                                                  options:MTLResourceStorageModeShared];
+            if (sentinel == nil)
+                return "Wavefront empty-scene sentinel allocation failed";
+            std::memset(sentinel.contents, 0, sentinel.length);
+            for (auto *buffer :
+                 {&r.instances,       &r.positions,    &r.triangles,        &r.patches,
+                  &r.materials,       &r.knots,        &r.area_emissions,   &r.emitters,
+                  &r.normals,         &r.texture_uvs,  &r.texture_frames,   &r.image_textures,
+                  &r.image_levels,    &r.image_texels, &r.image_transfer,   &r.image_spectra,
+                  &r.graph_nodes,     &r.graph_knots,  &r.surface_vertices, &r.surface_transforms,
+                  &r.environment_cdf, &r.illuminant,   &r.material_data})
+                if (*buffer == nil)
+                    *buffer = sentinel;
+        }
         if (config.execution == FrameExecution::wavefront)
             return prepare_wavefront(library);
         const auto stride =
@@ -2416,29 +2630,6 @@ struct FrameSession::Impl {
         wavefront->argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
         if (wavefront->argument_encoder == nil)
             return "Wavefront argument encoder creation failed";
-        // Scalar sky previously avoided all geometry arguments. The generic
-        // wavefront signatures require valid storage even on a synthetic miss.
-        if (!r.parameters.instance_count && r.empty_packet_structure == nil) {
-            r.empty_packet_structure = build_empty_packet_structure(r.device, r.queue, error);
-            if (r.empty_packet_structure == nil)
-                return error;
-        }
-        if (!r.parameters.instance_count) {
-            auto sentinel = [r.device newBufferWithLength:2048
-                                                  options:MTLResourceStorageModeShared];
-            if (sentinel == nil)
-                return "Wavefront empty-scene sentinel allocation failed";
-            std::memset(sentinel.contents, 0, sentinel.length);
-            for (auto *buffer :
-                 {&r.instances,       &r.positions,    &r.triangles,        &r.patches,
-                  &r.materials,       &r.knots,        &r.area_emissions,   &r.emitters,
-                  &r.normals,         &r.texture_uvs,  &r.texture_frames,   &r.image_textures,
-                  &r.image_levels,    &r.image_texels, &r.image_transfer,   &r.image_spectra,
-                  &r.graph_nodes,     &r.graph_knots,  &r.surface_vertices, &r.surface_transforms,
-                  &r.environment_cdf, &r.illuminant,   &r.material_data})
-                if (*buffer == nil)
-                    *buffer = sentinel;
-        }
         config.capacity =
             std::min<std::uint64_t>(config.capacity, std::uint64_t(config.width) * config.height);
         state_bytes = r.parameters.packet_transport ? contract.packet_bytes : contract.scalar_bytes;
@@ -3368,6 +3559,22 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         auto frame = std::make_shared<Frame::Impl>();
         frame->device = r.device;
         frame->queue = r.queue;
+        frame->resolved_parameters = p;
+        frame->resolved_parameters.pixel_begin = 0;
+        frame->resolved_parameters.pixel_count = frame->resolved_parameters.lane_count =
+            c.width * c.height;
+        frame->resolved_texture_parameters = texture;
+        frame->resolved_camera = {.camera = camera_scene.camera,
+                                  .camera_medium = p.camera_medium,
+                                  .raster_camera = camera_scene.raster_camera,
+                                  .perspective_lens = camera_scene.perspective_lens,
+                                  .texture_camera = TextureCamera{}};
+        std::ranges::copy(texture.world_from_camera,
+                          frame->resolved_camera.texture_camera->world_from_camera.begin());
+        std::ranges::copy(texture.camera_from_world,
+                          frame->resolved_camera.texture_camera->camera_from_world.begin());
+        frame->intersection_profile = c.intersection_profile;
+        frame->library = impl_->frame_library;
         frame->info = {.width = c.width,
                        .height = c.height,
                        .sample_index = request.sample_index,

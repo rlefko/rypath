@@ -87,6 +87,14 @@ Library, pipeline, allocation, command, and output failures never qualify as an
 availability skip. Some sandboxes hide the device, so real hardware acceptance
 must run in a process with GPU access.
 
+MetalFX temporal denoising is separately capability-gated: it requires the
+macOS 26 API in the build SDK and runtime, plus a supported device. Reconstruction
+tests require it by default. Hosted CI explicitly sets
+`RYPATH_ALLOW_NO_METALFX_DENOISER=ON` to permit a visible skip for an absent API or
+capability; encoding, allocation and image-validation failures still fail. Raw RGB
+presentation remains available without the denoiser. Local M4 Max qualification
+runs the adapter with `--require-supported` and reports actual execution.
+
 CLI validators emit their skip marker only after checking the complete result;
 CTest accepts it only at the beginning of output. Render checks require exactly
 one complete availability status line, its canonical diagnostic, exit code 2,
