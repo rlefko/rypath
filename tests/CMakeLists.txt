@@ -92,7 +92,7 @@ rypath_configure_host_target(rypath_pbrt_packet_tests)
 add_test(NAME pbrt.packet COMMAND rypath_pbrt_packet_tests)
 
 if(RYPATH_ENABLE_METAL)
-    # Isolate arithmetic probes from unrelated reconstruction-guide entrypoints.
+    # Isolate five arithmetic probes from unrelated production entrypoints.
     # The whole-production-TU canonical_full_context test below stays unchanged.
     set(canonical_probe_dir "${CMAKE_CURRENT_BINARY_DIR}/canonical-probe")
     set(canonical_probe_source "${canonical_probe_dir}/canonical_probe.metal")
@@ -109,6 +109,8 @@ if(RYPATH_ENABLE_METAL)
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/generate_canonical_probe.py"
             "${CMAKE_SOURCE_DIR}/shaders/render.metal"
             "${CMAKE_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
+            ${rypath_render_shader_dependencies}
+            "${CMAKE_CURRENT_SOURCE_DIR}/light_geometry_sampling_probe_wire.h"
         VERBATIM
     )
     add_custom_command(
