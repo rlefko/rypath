@@ -165,6 +165,12 @@ def inspect_report(report, expected, frames, warmup):
                 row["sample_index"] != index or row["warmup"] is not (index < warmup) or
                 row["completed_samples"] != expected["width"] * expected["height"]):
             raise ValueError(f"Incomplete/mismatched frame observation: {index}")
+        if not isinstance(row.get("history_used"), bool):
+            raise ValueError(f"Missing actual history accounting: {index}")
+        evaluations = 1 if expected["estimator"] == "independent" else (
+            (7 if row["history_used"] else 5) + expected["effective_mutation_steps"])
+        if row.get("completed_evaluations") != expected["width"] * expected["height"] * evaluations:
+            raise ValueError(f"Source-MIS evaluation count mismatch: {index}")
     for name in ("summary", "pipeline_summary"):
         metric = report[name]["cpu_wall"]
         if metric["count"] != frames or any(not isinstance(metric[k], (float, int)) or
@@ -200,6 +206,8 @@ def arguments(argv):
     p.add_argument("--seeds", default="31001,31002,31003")
     p.add_argument("--reconstruction", choices=("temporal", "metalfx"), default="temporal",
                    help="explicit native primary-arm mode (default: temporal); no substitution")
+    p.add_argument("--area-output", choices=("selected", "conditional-mean"), default="conditional-mean",
+                   help="explicit Area output ablation; independent arms remain unchanged")
     p.add_argument("--controls", action="store_true", help="add three first-seed controls per scene")
     a = p.parse_args(argv)
     try:
@@ -247,6 +255,9 @@ def main(argv=None):
     manifest = {"schema": 1, "complete": False, "started": utc(), "requested_runs": len(plan),
                 "requested_frames_per_run": a.frames, "requested_warmup_per_run": a.warmup,
                 "primary_reconstruction": a.reconstruction,
+                "area_contract": 5, "area_output": a.area_output,
+                "area_target": "quarter-l1-v1", "area_source_mis": "source-target-mis-v1",
+                "area_temporal_reuse": 20,
                 "quiescence": "Caller must ensure no competing GPU work; not automatically verified",
                 "timing_scope": "child wall/RSS include startup/output; frame summaries come from child JSON",
                 "environment_overrides": {"MTL_DEBUG_LAYER": "0", "MTL_SHADER_VALIDATION": "0"},
@@ -272,13 +283,20 @@ def main(argv=None):
                         "output_height": a.height, "seed": run["seed"], "material_seed": 0,
                         "execution": "wavefront", "intersection_profile": "native", "target_scale": 1,
                         "estimator": run["estimator"], "effective_mutation_steps": run["mutations"],
-                        "reconstruction": run["reconstruction"], "footprint_samples": 1}
+                        "reconstruction": run["reconstruction"], "footprint_samples": 1,
+                        "area_contract": 5 if run["estimator"] == "area-replay" else 0,
+                        "area_output": a.area_output if run["estimator"] == "area-replay" else "not-applicable",
+                        "area_target": "quarter-l1-v1" if run["estimator"] == "area-replay" else "none",
+                        "area_source_mis": "source-target-mis-v1" if run["estimator"] == "area-replay" else "none",
+                        "area_temporal_reuse": 20 if run["estimator"] == "area-replay" else 0}
             command = [str(a.executable), "--scene", run["scene_path"], "--output", str(report),
                        "--width", str(a.width), "--height", str(a.height), "--frames", str(a.frames),
                        "--warmup", str(a.warmup), "--seed", str(run["seed"]), "--material-seed", "0",
                        "--execution", "wavefront", "--intersections", "native", "--target-scale", "1",
                        "--estimator", run["estimator"], "--mutations", str(run["mutations"]),
                        "--reconstruction", run["reconstruction"]]
+            if run["estimator"] == "area-replay":
+                command += ["--area-output", a.area_output]
             row = {**run, "command": command, "report": str(report), "started": utc(), "complete": False, "exit_code": None,
                    "child_pid": None, "active_pid": None,
                    "stdout_log": str(a.output_dir / (stem + ".stdout.log")),
@@ -344,7 +362,8 @@ def main(argv=None):
             manifest.update(stopped=utc(), exit_code=code)
             publish(a.output_dir / "manifest.json", manifest)
             summary = {k: manifest[k] for k in ("schema", "complete", "requested_runs", "primary_reconstruction",
-                                               "started", "stopped", "exit_code")}
+                                               "area_contract", "area_output", "area_target", "area_source_mis",
+                                               "area_temporal_reuse", "started", "stopped", "exit_code")}
             summary["failure"] = manifest.get("failure")
             summary["runs"] = []
             for row in manifest["runs"]:

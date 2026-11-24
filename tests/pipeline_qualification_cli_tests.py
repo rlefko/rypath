@@ -53,15 +53,28 @@ if os.environ.get('RYPATH_FAKE_SUBSTITUTE') == '1': mode = 'metalfx'
 settings = {'width': w, 'height': h, 'output_width': w, 'output_height': h, 'seed': seed,
  'material_seed': 0, 'execution': 'wavefront', 'intersection_profile': 'native', 'target_scale': 1,
  'estimator': args['--estimator'], 'effective_mutation_steps': int(args['--mutations']),
- 'reconstruction': mode, 'footprint_samples': 1}
+ 'reconstruction': mode, 'footprint_samples': 1,
+ 'area_contract': 5 if args['--estimator'] == 'area-replay' else 0,
+ 'area_output': args.get('--area-output', 'conditional-mean') if args['--estimator'] == 'area-replay' else 'not-applicable',
+ 'area_target': 'quarter-l1-v1' if args['--estimator'] == 'area-replay' else 'none',
+ 'area_source_mis': 'source-target-mis-v1' if args['--estimator'] == 'area-replay' else 'none',
+ 'area_temporal_reuse': 20 if args['--estimator'] == 'area-replay' else 0}
+if args['--estimator'] == 'independent': assert '--area-output' not in args
+if os.environ.get('RYPATH_FAKE_LEGACY_AREA') == '1': settings['area_contract'] = 3
 metric = {'cpu_wall': {'count': n, 'median_seconds': .01, 'p95_seconds': .02}}
 report = {'status': 'complete', 'exit_code': 0, 'diagnostic': '', 'settings': settings,
  'requested_frames': n, 'completed_frames': n, 'requested_warmup': warmup, 'completed_warmup': warmup,
  'consumed_sample_indices': n + warmup, 'source_identity': 'cpu-fake-effective-source',
  'build': 'CPU fake only', 'device': {'name': 'CPU fake only'}, 'startup_seconds': .001,
  'frames': [{'complete': True, 'pipeline_complete': True, 'sample_index': i, 'warmup': i < warmup,
-             'completed_samples': w*h} for i in range(n + warmup)],
+             'completed_samples': w*h,
+             'history_used': i > 0 and args['--estimator'] == 'area-replay',
+             'completed_evaluations': w*h*(1 if args['--estimator'] == 'independent' else
+                 ((7 if i > 0 else 5)+int(args['--mutations'])))} for i in range(n + warmup)],
  'summary': metric, 'pipeline_summary': metric}
+if os.environ.get('RYPATH_FAKE_OLD_COUNTS') == '1':
+    for row in report['frames']:
+        if row['history_used']: row['completed_evaluations'] -= w*h
 Path(args['--output']).write_text(json.dumps(report))
 ''')
         executable.chmod(0o755)
@@ -89,10 +102,10 @@ Path(args['--output']).write_text(json.dumps(report))
                    "command_info": lambda command: {"command": command, "exit_code": None,
                                                      "unavailable_or_timeout": "CPU fake test"}}
         with patch.dict(runner.__globals__, queries):
-            for requested in (None, "temporal", "metalfx"):
+            for requested, area_output in ((None, "conditional-mean"), ("temporal", "conditional-mean"), ("metalfx", "conditional-mean"), ("temporal", "selected")):
                 expected = requested or "temporal"
-                destination = root / (requested or "default")
-                arguments = base + ["--output-dir", str(destination)]
+                destination = root / ((requested or "default") + "-" + area_output)
+                arguments = base + ["--output-dir", str(destination), "--area-output", area_output]
                 if requested:
                     arguments += ["--reconstruction", requested]
                 assert invoke(arguments) == 0
@@ -102,6 +115,9 @@ Path(args['--output']).write_text(json.dumps(report))
                                      object_pairs_hook=unique_object)
                 assert manifest["complete"] and summary["complete"]
                 assert manifest["primary_reconstruction"] == summary["primary_reconstruction"] == expected
+                assert manifest["area_output"] == summary["area_output"] == area_output
+                assert manifest["area_contract"] == summary["area_contract"] == 5
+                assert summary["area_source_mis"] == "source-target-mis-v1"
                 assert len(manifest["runs"]) == 13
                 modes = [row["reconstruction"] for row in manifest["runs"]]
                 assert modes.count(expected) == 10 and modes.count("none") == 2 and modes.count("raw-rgb") == 1
@@ -109,6 +125,8 @@ Path(args['--output']).write_text(json.dumps(report))
                     assert row["complete"] and row["benchmark"]["settings"]["reconstruction"] == row["reconstruction"]
                     child = json.loads(Path(row["report"]).read_text())
                     assert child["settings"]["reconstruction"] == row["reconstruction"]
+                    assert child["settings"]["area_output"] == (area_output if row["estimator"] == "area-replay" else "not-applicable")
+                    assert ("--area-output" in row["command"]) is (row["estimator"] == "area-replay")
                 retained = (destination / "manifest.json").read_bytes()
                 assert invoke(arguments) == 2
                 assert (destination / "manifest.json").read_bytes() == retained
@@ -116,12 +134,21 @@ Path(args['--output']).write_text(json.dumps(report))
                 destination = root / ("invalid-" + invalid)
                 assert invoke(base + ["--output-dir", str(destination), "--reconstruction", invalid]) == 2
                 assert not destination.exists()
+            destination = root / "invalid-area-output"
+            assert invoke(base + ["--output-dir", str(destination), "--area-output", "conditional_mean"]) == 2
+            assert not destination.exists()
             destination = root / "substitution"
             with patch.dict(os.environ, {"RYPATH_FAKE_SUBSTITUTE": "1"}):
                 assert invoke(base + ["--output-dir", str(destination)]) == 1
             manifest = json.loads((destination / "manifest.json").read_text())
             assert not manifest["complete"] and len(manifest["runs"]) == 1
             assert "reconstruction" in manifest["failure"]
+            for kind, expected_failure in (("LEGACY_AREA", "area_contract"), ("OLD_COUNTS", "evaluation count")):
+                destination = root / ("rejected-" + kind)
+                with patch.dict(os.environ, {"RYPATH_FAKE_" + kind: "1"}):
+                    assert invoke(base + ["--output-dir", str(destination)]) == 1
+                rejected = json.loads((destination / "manifest.json").read_text())
+                assert not rejected["complete"] and expected_failure in rejected["failure"]
             # Deliver a signal from inside Popen, after creation but BEFORE main
             # receives the child handle. A non-raising handler must let it take
             # ownership and reap that exact process.
@@ -219,7 +246,7 @@ sys.exit(main(sys.argv[2:]))
 def qualification_checks(executable):
     help_result = run(executable, ["--help"])
     assert help_result.returncode == 0 and "reference-spp" in help_result.stdout
-    assert all(word in help_result.stdout for word in ("reconstruction", "temporal", "metalfx"))
+    assert all(word in help_result.stdout for word in ("reconstruction", "temporal", "metalfx", "--area-output"))
     with tempfile.TemporaryDirectory(prefix="rypath-qualification-cli-") as temporary:
         root = Path(temporary)
         destination = root / "unused"
@@ -240,6 +267,8 @@ def qualification_checks(executable):
             base + ["--motion-offset", "inf"], base + ["--motion-offset", "1junk"],
             base + ["--motion-offset", ".25", "--frames", "7"],
             base + ["--motion-offset", ".25", "--frames", "4"],
+            base + ["--area-output"], base + ["--area-output", "invalid"],
+            base + ["--area-output", "selected", "--area-output", "conditional-mean"],
             base + ["--reconstruction"], base + ["--reconstruction", "none"],
             base + ["--reconstruction", "raw-rgb"], base + ["--reconstruction", "unknown"],
             base + ["--reconstruction", "temporal", "--reconstruction", "metalfx"],
@@ -268,6 +297,12 @@ def qualification_checks(executable):
             report = json.loads((destination / "summary.json").read_text(),
                                 object_pairs_hook=unique_object)
             assert report["complete"] is False
+            assert report["schema"] == 2
+            assert report["settings"]["area_contract"] == 5
+            assert report["settings"]["area_output"] == "conditional-mean"
+            assert report["settings"]["area_target"] == "quarter-l1-v1"
+            assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
+            assert report["settings"]["area_temporal_reuse"] == 20
             expected = selected or "temporal"
             assert report["settings"]["reconstruction"] == expected
             assert report["settings"]["reconstruction_resolution"] == "native"
@@ -276,6 +311,12 @@ def qualification_checks(executable):
             assert "signed" in report["physical_metric"]
             assert "separately clamp" in report["presentation_metric"]
             assert not list(destination.glob("*.exr"))
+        destination = root / "selected-area-output"
+        result = run(executable, ["--scene", source, "--output-dir", destination, "--area-output", "selected"])
+        assert result.returncode != 0
+        selected = json.loads((destination / "summary.json").read_text())
+        assert selected["schema"] == 2 and selected["settings"]["area_output"] == "selected"
+        assert selected["settings"]["area_contract"] == 5
     print("Qualification CLI and failure publication checks passed")
 
 

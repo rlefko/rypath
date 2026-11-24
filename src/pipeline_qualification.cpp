@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_wire.h"
 #include "frame_session.hpp"
 #include "image_output.hpp"
 #include "pbrt_render.hpp"
@@ -78,8 +79,12 @@ struct Options {
     std::uint32_t width = 320, height = 180, frames = 32, seeds = 8;
     std::uint32_t reference_spp = 4096, reference_batches = 8;
     ReconstructionMode reconstruction = ReconstructionMode::temporal;
+    FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
     std::optional<float> motion_offset;
 };
+const char *area_output_name(FrameAreaOutput output) {
+    return output == FrameAreaOutput::selected ? "selected" : "conditional-mean";
+}
 const char *reconstruction_name(ReconstructionMode mode) {
     return mode == ReconstructionMode::temporal ? "temporal" : "metalfx";
 }
@@ -91,6 +96,7 @@ const char *usage =
     "Usage: rypath-pipeline-qualification --scene SCENE.pbrt --output-dir FRESH\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
+    "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
     "  [--reference-spp 4096] [--reference-batches 8] [--motion-offset WORLD_X]\n"
     "Reference SPP must divide equally across at least two independent batches.\n"
     "Explicit native-resolution reconstruction; optional four-phase translation; one fresh "
@@ -114,6 +120,11 @@ Options parse(int argc, char **argv) {
                     "Reconstruction must be temporal or metalfx");
             o.reconstruction =
                 value == "temporal" ? ReconstructionMode::temporal : ReconstructionMode::metalfx;
+        } else if (key == "--area-output") {
+            require(value == "selected" || value == "conditional-mean",
+                    "Area output must be selected or conditional-mean");
+            o.area_output =
+                value == "selected" ? FrameAreaOutput::selected : FrameAreaOutput::conditional_mean;
         } else if (key == "--motion-offset") {
             float offset = 0;
             std::istringstream parsed{std::string(value)};
@@ -778,6 +789,7 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
     auto config = configuration(o, aggregate.seed);
     config.estimator = mutations < 0 ? FrameEstimator::independent : FrameEstimator::area_replay;
     config.mutation_steps = mutations < 0 ? 0 : unsigned(mutations);
+    config.area_output = o.area_output;
     auto renderer = session(scene.value, config, device);
     aggregate.session_startup = elapsed(startup);
     std::unique_ptr<ReconstructionStream> reconstruction;
@@ -799,7 +811,7 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
             require(raw_info->fresh_candidates == pixels &&
                         raw_info->completed_evaluations ==
                             pixels * (mutations < 0 ? 1u
-                                                    : (raw_info->history_used ? 6u : 5u) +
+                                                    : (raw_info->history_used ? 7u : 5u) +
                                                           unsigned(mutations)),
                     "Evaluation arm path accounting mismatch");
             require(raw_info->mutation_attempts ==
@@ -870,6 +882,13 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"mutation_accepts\":" << raw_info->mutation_accepts
                  << ",\"raw_commands\":" << raw_info->command_count
                  << ",\"reconstruction_commands\":" << reconstruction_info->command_count
+                 << ",\"area_contract\":" << (mutations < 0 ? 0 : area_wire::contract)
+                 << ",\"area_output\":"
+                 << quote(mutations < 0 ? "not-applicable" : area_output_name(o.area_output))
+                 << ",\"area_target\":" << quote(mutations < 0 ? "none" : "quarter-l1-v1")
+                 << ",\"area_source_mis\":"
+                 << quote(mutations < 0 ? "none" : "source-target-mis-v1")
+                 << ",\"area_temporal_reuse\":" << (mutations < 0 ? 0 : 20)
                  << ",\"area_serial\":" << raw_info->area_serial
                  << ",\"history_generation\":" << raw_info->history_generation
                  << ",\"history_used\":" << (raw_info->history_used ? "true" : "false")
@@ -943,6 +962,18 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                     for (auto &[key, value] : attributes)
                         if (key == "rypath.frame.epoch")
                             value = std::to_string(pose.epoch);
+                    attributes.emplace_back(
+                        "rypath.area.contract",
+                        std::to_string(mutations < 0 ? 0 : area_wire::contract));
+                    attributes.emplace_back("rypath.area.output",
+                                            mutations < 0 ? "not-applicable"
+                                                          : area_output_name(o.area_output));
+                    attributes.emplace_back("rypath.area.target",
+                                            mutations < 0 ? "none" : "quarter-l1-v1");
+                    attributes.emplace_back("rypath.area.source_mis",
+                                            mutations < 0 ? "none" : "source-target-mis-v1");
+                    attributes.emplace_back("rypath.area.temporal_reuse",
+                                            mutations < 0 ? "0" : "20");
                     attributes.emplace_back("rypath.area.mutation_steps",
                                             std::to_string(mutations < 0 ? 0 : mutations));
                     output.exr(stem + "-raw.exr", raw_image, o, attributes);
@@ -996,6 +1027,10 @@ std::string settings_json(const Options &o) {
     auto out = json_stream();
     out << "{\"scene\":" << quote(o.scene.string()) << ",\"width\":" << o.width
         << ",\"height\":" << o.height << ",\"frames\":" << o.frames << ",\"seeds\":" << o.seeds
+        << ",\"area_contract\":" << area_wire::contract
+        << ",\"area_output\":" << quote(area_output_name(o.area_output))
+        << ",\"area_target\":\"quarter-l1-v1\",\"area_source_mis\":\"source-target-mis-v1\",\"area_"
+           "temporal_reuse\":20"
         << ",\"reference_spp\":" << o.reference_spp
         << ",\"reference_batches\":" << o.reference_batches
         << ",\"reference_spp_per_batch\":" << o.reference_spp / o.reference_batches
@@ -1049,7 +1084,7 @@ std::string summary_json(const Options &o, const std::vector<SeedAggregate> &agg
                          const MetalDeviceInfo &device, const std::string &source_id, double wall,
                          std::string_view diagnostic, bool complete) {
     auto out = json_stream();
-    out << "{\"schema\":1,\"complete\":" << (complete ? "true" : "false")
+    out << "{\"schema\":2,\"complete\":" << (complete ? "true" : "false")
         << ",\"quality_pass_claimed\":false,\"scope\":\"static/translation anchor measurement; not "
            "a "
            "quality acceptance gate\""
@@ -1144,7 +1179,7 @@ int run(const Options &o) {
         }
         source_id = identity(scene.value, o, 1);
         auto manifest = json_stream();
-        manifest << "{\"schema\":1,\"complete\":false,\"status\":\"running; summary.json "
+        manifest << "{\"schema\":2,\"complete\":false,\"status\":\"running; summary.json "
                     "determines final completion\",\"settings\":"
                  << settings_json(o) << ",\"source_identity\":" << quote(source_id)
                  << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"sensor_model\":"
