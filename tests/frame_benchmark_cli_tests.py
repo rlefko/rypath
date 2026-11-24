@@ -20,6 +20,7 @@ assert "--shadow-traversal query|opaque-auto" in help_text
 assert "--as-build default|fast-blas|fast-tlas|fast-all" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--guide-cache on|off" in help_text
+assert "--variance-policy paired|center|conservative" in help_text
 assert "--reconstructed-capture" in help_text
 assert "--area-output selected|conditional-mean" in help_text
 assert "--profile-stages" in help_text
