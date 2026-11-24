@@ -2,10 +2,13 @@
 
 [Hero wavelength PT](hero-wavelength.md) adds four uniform visible wavelengths,
 hero-driven continuation and cumulative spectral/direct-light balance MIS.
-Eligible vacuum PT scenes use it automatically; BDPT, active media and unsupported
-depths retain their documented alternatives. Coated materials use an explicit
-compensated hero-only fallback. Current validation and scene comparisons are
-being completed; historical scalar/packet results below do not measure this mode.
+It is explicit through `--spectral-transport hero`; automatic selection retains
+the prior scalar/packet behavior. Coated materials use a compensated hero-only
+fallback. A 16-seed raw screen strongly reduces Cornell variance, while Prism
+shows no established variance benefit and higher cost. One Prism regional mean
+safeguard remains failed; a controlled roulette diagnostic reduces the discrepancy
+without establishing its sole cause. This limits default adoption, not availability
+for explicit comparisons. Historical scalar/packet results below do not measure hero.
 
 The reconstruction repair includes [identical-frame capture and replay](reconstruction-diagnostics.md),
 connected surface filtering, explicit signed variance policies and experimental
@@ -36,8 +39,10 @@ estimator; independent sampling remains the viewer default.
 
 
 The reconciled MCMC-stage integration `df65c62` passes all 247 mandatory Debug
-tests. Native checks on the subsequent combined reconstruction integration remain
-pending; these checks do not qualify scene quality or performance.
+tests. Hero's analytical glass/TIR and CLI controls pass five focused tests at
+`b3e0f05`; six focused sanitizer checks passed at `ddc87d2`. Each pull request
+records its current publication checks separately. Mechanical checks do not
+qualify scene quality or performance.
 
 The [core execution follow-up](core-performance.md) enables exact guide reuse.
 At `54fa952`, native static complete-pipeline p95 falls **4.5–29.5%** across the
