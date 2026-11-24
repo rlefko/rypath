@@ -2194,7 +2194,6 @@ struct FrameAreaContext {
     std::optional<wire::Point> copied_origin;
     wire::Parameters parameters{};
     wire::TextureParameters texture{};
-    FrameCamera camera;
     id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
 };
 struct FrameAreaHistory {
@@ -2758,8 +2757,7 @@ struct FrameSession::Impl {
         return {};
     }
     std::string snapshot_area_context(FrameAreaContext &context, const wire::Parameters &p,
-                                      const wire::TextureParameters &texture,
-                                      const FrameCamera &camera, id<MTLBuffer> graph,
+                                      const wire::TextureParameters &texture, id<MTLBuffer> graph,
                                       id<MTLBuffer> surfaces, std::uint64_t &uploaded) {
         // Only the non-front bank is written while no Area frame is pending.
         // Cache by numerical origin, never by reusable slot-buffer identity.
@@ -2793,7 +2791,6 @@ struct FrameSession::Impl {
         }
         context.parameters = p;
         context.texture = texture;
-        context.camera = camera;
         return {};
     }
     struct Runner : std::enable_shared_from_this<Runner> {
@@ -3446,8 +3443,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 }
                 const unsigned destination_index = history.front ^ 1;
                 result.diagnostic = impl_->snapshot_area_context(
-                    history.contexts[destination_index], p, texture, frame->resolved_camera,
-                    frame_graph_nodes, frame_surface_transforms, camera_upload_bytes);
+                    history.contexts[destination_index], p, texture, frame_graph_nodes,
+                    frame_surface_transforms, camera_upload_bytes);
                 if (!result.diagnostic.empty())
                     return result;
                 frame->info.camera_upload_bytes = camera_upload_bytes;
