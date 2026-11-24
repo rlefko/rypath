@@ -1539,22 +1539,10 @@ std::string select_spectral_transport(RenderScene &scene, SpectralTransportSelec
     std::string reason;
     switch (requested) {
     case SpectralTransportSelection::automatic:
-        if (scene.integrator == IntegratorKind::bdpt) {
-            mode = SpectralTransport::packet;
-            reason = "BDPT retains legacy packet transport";
-        } else if (scene.model != RenderModel::pbrt) {
-            mode = SpectralTransport::scalar;
-            reason = "non-PBRT scene uses scalar transport";
-        } else if (active) {
-            mode = SpectralTransport::scalar;
-            reason = "declared active media require scalar transport";
-        } else if (scene.max_depth <= 65) {
-            mode = SpectralTransport::hero;
-            reason = "vacuum PT with maxdepth at most 65";
-        } else {
-            mode = SpectralTransport::scalar;
-            reason = "depth above hero limit 65 uses scalar transport";
-        }
+        // Translation (or the API caller) already chose the historical estimator.
+        // Hero transport is opt-in; automatic selection never promotes a scene.
+        reason = "automatic selection preserves scene-selected " +
+                 std::string(spectral_transport_name(mode)) + " transport";
         break;
     case SpectralTransportSelection::scalar:
         mode = SpectralTransport::scalar;
@@ -1568,6 +1556,9 @@ std::string select_spectral_transport(RenderScene &scene, SpectralTransportSelec
     default:
         return "Invalid spectral transport selection";
     }
+    if (mode != SpectralTransport::scalar && mode != SpectralTransport::packet &&
+        mode != SpectralTransport::hero)
+        return "Invalid scene spectral transport";
     if (uses_packet_transport(mode) && (scene.model != RenderModel::pbrt || active))
         return "Packet/hero spectral transport requires a PBRT scene with vacuum media";
     if (mode == SpectralTransport::hero &&

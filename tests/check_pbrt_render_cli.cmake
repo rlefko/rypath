@@ -83,11 +83,7 @@ function(check_render input sampler seed warning_pattern result selection transp
     endif()
     set(mode_provenance "effective spectral transport ${transport}")
     if(selection STREQUAL "auto")
-        if(transport STREQUAL "hero")
-            string(APPEND mode_provenance "; vacuum PT with maxdepth at most 65")
-        else()
-            string(APPEND mode_provenance "; depth above hero limit 65 uses scalar transport")
-        endif()
+        string(APPEND mode_provenance "; automatic selection preserves scene-selected ${transport} transport")
     endif()
     file(WRITE "${output}" "${sentinel}")
     file(REMOVE "${test_directory}/must-not-be-created.png")
@@ -144,16 +140,17 @@ function(check_render input sampler seed warning_pattern result selection transp
     set("${result}" "success" PARENT_SCOPE)
 endfunction()
 
-# Eligible vacuum PT defaults to hero, with exact sampler/provenance expectations.
-check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" independent_status auto hero 1)
-# Explicit selectors preserve each prior estimator's own sampler description.
+# Automatic selection preserves historical scalar PT sampler/provenance.
+check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" independent_status auto scalar 1)
+# Explicit selectors report each estimator's own sampler description.
 check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" scalar_status scalar scalar 1)
 check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" packet_status packet packet 1)
-# Automatic selection must retain scalar transport above the hero depth bound.
+check_render("valid.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" hero_status hero hero 1)
+# Independent scalar transport keeps its historical depth admission.
 string(REPLACE "\"integer maxdepth\" 1" "\"integer maxdepth\" 66" deep_independent "${valid_scene}")
 file(WRITE "${test_directory}/deep-independent.pbrt" "${deep_independent}")
 check_render("deep-independent.pbrt" "philox4x32-10-v1 (sequence differs from PBRT)" 0 "" deep_status auto scalar 66)
-foreach(status IN ITEMS scalar_status packet_status deep_status)
+foreach(status IN ITEMS scalar_status packet_status hero_status deep_status)
     if(NOT "${${status}}" STREQUAL "${independent_status}")
         message(FATAL_ERROR "Spectral selectors differ in backend availability: ${status}=${${status}}, auto=${independent_status}")
     endif()
@@ -222,7 +219,7 @@ expect_existing_output()
 
 check_render("sobol.pbrt" "sobol-v1 / owen (PBRT camera variates; rypath transport dimensions)" -17
     "[^\n]+:5:[0-9]+: warning \\[sobol-non-power-of-two\\][^\n]*requested 3 samples per pixel\n"
-    sobol_status auto hero 1)
+    sobol_status auto scalar 1)
 if(NOT independent_status STREQUAL sobol_status)
     message(FATAL_ERROR "PBRT render availability differs between independent (${independent_status}) and Sobol (${sobol_status})")
 endif()

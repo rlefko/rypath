@@ -739,8 +739,7 @@ void Translator::integrator(const Descriptor &descriptor) {
     const auto depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 5));
     const bool qmc = result_.settings.sampler.kind != SamplerKind::independent;
     const bool hero_candidate = scene_.integrator != IntegratorKind::bdpt && depth <= 65 &&
-                                (spectral_ == SpectralTransportSelection::hero ||
-                                 spectral_ == SpectralTransportSelection::automatic);
+                                spectral_ == SpectralTransportSelection::hero;
     const auto limit = hero_candidate                                           ? 65u
                        : scene_.spectral_transport == SpectralTransport::packet ? 64u
                        : qmc ? sampler_max_depth(result_.settings.sampler, false)

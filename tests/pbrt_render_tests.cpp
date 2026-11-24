@@ -2068,9 +2068,12 @@ LightSource "infinite" "rgb L" [1 1 1]
     require(checked.exit_code() == 0, report(checked));
     require(translate(checked, {entry.string()}).exit_code() != 0,
             "Omitted transport policy retains the legacy depth admission");
-    for (const auto policy :
-         {SpectralTransportSelection::automatic, SpectralTransportSelection::hero}) {
-        const auto result = translate(checked, {entry.string()}, {}, policy);
+    require(translate(checked, {entry.string()}, {}, SpectralTransportSelection::automatic)
+                    .exit_code() != 0,
+            "Auto retains the finite-clamp legacy packet depth64 admission");
+    {
+        const auto result =
+            translate(checked, {entry.string()}, {}, SpectralTransportSelection::hero);
         require(result.exit_code() == 0 && result.scene &&
                     result.scene->spectral_transport == SpectralTransport::hero &&
                     result.scene->max_depth == 65 && result.scene->max_component_value == 10,
@@ -2090,6 +2093,35 @@ LightSource "infinite" "rgb L" [1 1 1]
         translate(checked, {entry.string()}, {}, SpectralTransportSelection::scalar).exit_code() !=
             0,
         "Scalar cannot silently ignore the finite film clamp");
+    // Compare automatic policy against translation's historical estimator, including
+    // the two authored features that select legacy packet transport.
+    struct PolicyCase {
+        const char *integrator;
+        bool clamp;
+        SpectralTransport expected;
+    };
+    for (const auto &[integrator, clamp, expected] :
+         {PolicyCase{"path", false, SpectralTransport::scalar},
+          PolicyCase{"path", true, SpectralTransport::packet},
+          PolicyCase{"bdpt", false, SpectralTransport::packet}}) {
+        const auto input =
+            write(scratch, "auto-policy.pbrt",
+                  std::string("Camera \"perspective\"\nFilm \"rgb\" ") +
+                      (clamp ? "\"float maxcomponentvalue\" [10]\n" : "\n") +
+                      "Sampler \"independent\" \"integer pixelsamples\" [1]\nIntegrator \"" +
+                      integrator + "\" \"integer maxdepth\" [5]\nWorldBegin\n" +
+                      "LightSource \"infinite\" \"rgb L\" [1 1 1]\n" + std::string(triangle));
+        const auto checked_input = check(input);
+        require(checked_input.exit_code() == 0, report(checked_input));
+        const auto historical = translate(checked_input, {input.string()});
+        const auto automatic =
+            translate(checked_input, {input.string()}, {}, SpectralTransportSelection::automatic);
+        require(historical.exit_code() == 0 && historical.scene && automatic.exit_code() == 0 &&
+                    automatic.scene && historical.scene->spectral_transport == expected &&
+                    automatic.scene->spectral_transport == expected &&
+                    historical.settings.sampler.kind == automatic.settings.sampler.kind,
+                "Auto preserves translation-selected scalar/BDPT/clamped packet transport");
+    }
     const auto fog = write(scratch, "hero-active-medium.pbrt", R"(Camera "perspective"
 Film "rgb" "integer xresolution" [4] "integer yresolution" [4]
 Sampler "independent" "integer pixelsamples" [1]

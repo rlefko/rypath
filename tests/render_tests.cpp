@@ -378,22 +378,45 @@ void cpu_spectral_selection() {
                 parse_spectral_transport("hero") == Selection::hero &&
                 !parse_spectral_transport("invalid"),
             "Spectral CLI selection parsing");
+    RenderScene invalid;
+    invalid.spectral_transport = static_cast<SpectralTransport>(99);
+    std::string invalid_provenance = "unchanged";
+    require(
+        !select_spectral_transport(invalid, Selection::automatic, &invalid_provenance).empty() &&
+            invalid.spectral_transport == static_cast<SpectralTransport>(99) &&
+            invalid_provenance == "unchanged",
+        "Auto rejects an invalid scene mode without publishing provenance");
+    require(select_spectral_transport(invalid, Selection::scalar).empty() &&
+                invalid.spectral_transport == SpectralTransport::scalar,
+            "An explicit valid selection can replace an invalid API mode");
     RenderScene scene;
     scene.model = RenderModel::pbrt;
     scene.max_depth = 65;
     std::string provenance;
     require(select_spectral_transport(scene, Selection::automatic, &provenance).empty() &&
-                scene.spectral_transport == SpectralTransport::hero && scene.max_depth == 65 &&
-                provenance.find("hero") != std::string::npos,
-            "Vacuum PT depth65 must select hero without truncating authored depth");
+                scene.spectral_transport == SpectralTransport::scalar && scene.max_depth == 65 &&
+                provenance == "effective spectral transport scalar; automatic selection preserves "
+                              "scene-selected scalar transport",
+            "Auto preserves scalar PT without changing authored depth");
+    require(select_spectral_transport(scene, Selection::hero).empty() &&
+                scene.spectral_transport == SpectralTransport::hero,
+            "Explicit vacuum hero PT admits depth65");
+    require(select_spectral_transport(scene, Selection::automatic, &provenance).empty() &&
+                scene.spectral_transport == SpectralTransport::hero &&
+                provenance == "effective spectral transport hero; automatic selection preserves "
+                              "scene-selected hero transport",
+            "Auto preserves an API-selected hero estimator");
+    scene.max_depth = 0;
+    require(select_spectral_transport(scene, Selection::hero).empty(),
+            "Explicit hero admits depth0");
     scene.max_depth = 16;
     scene.max_component_value = 50;
+    require(select_spectral_transport(scene, Selection::hero).empty(),
+            "Explicit hero supports finite film clamping");
+    scene.spectral_transport = SpectralTransport::packet;
     require(select_spectral_transport(scene, Selection::automatic).empty() &&
-                scene.spectral_transport == SpectralTransport::hero,
-            "Finite film clamp must not select legacy packet implicitly");
-    require(select_spectral_transport(scene, Selection::packet).empty() &&
                 scene.spectral_transport == SpectralTransport::packet,
-            "Explicit legacy packet control");
+            "Auto preserves translation-selected finite-clamp packet transport");
     scene.max_depth = 65;
     require(!select_spectral_transport(scene, Selection::packet).empty() && scene.max_depth == 65,
             "Legacy packet limit remains64");
@@ -401,25 +424,30 @@ void cpu_spectral_selection() {
     scene.max_depth = 66;
     require(!select_spectral_transport(scene, Selection::hero).empty(),
             "Explicit hero depth66 must reject, not silently fall back");
-    require(select_spectral_transport(scene, Selection::automatic, &provenance).empty() &&
-                scene.spectral_transport == SpectralTransport::scalar &&
-                provenance.find("depth") != std::string::npos,
-            "Unsupported auto depth must report scalar fallback");
+    scene.spectral_transport = SpectralTransport::scalar;
+    require(select_spectral_transport(scene, Selection::automatic).empty() &&
+                scene.spectral_transport == SpectralTransport::scalar,
+            "Automatic independent scalar PT retains its historical depth range");
     scene.max_depth = 16;
     scene.integrator = IntegratorKind::bdpt;
+    scene.spectral_transport = SpectralTransport::packet;
     require(select_spectral_transport(scene, Selection::automatic).empty() &&
                 scene.spectral_transport == SpectralTransport::packet &&
                 !select_spectral_transport(scene, Selection::hero).empty(),
             "BDPT retains legacy estimator and rejects explicit hero");
     scene.integrator = IntegratorKind::volpath;
     scene.volume_transport = true;
+    scene.spectral_transport = SpectralTransport::scalar;
     scene.media.resize(1);
     scene.media[0].sigma_s[200] = .1f;
     require(!select_spectral_transport(scene, Selection::hero).empty() &&
-                select_spectral_transport(scene, Selection::automatic, &provenance).empty() &&
-                scene.spectral_transport == SpectralTransport::scalar &&
-                provenance.find("media") != std::string::npos,
-            "Active media must reject hero and report auto scalar fallback");
+                select_spectral_transport(scene, Selection::automatic).empty() &&
+                scene.spectral_transport == SpectralTransport::scalar,
+            "Active media reject explicit hero while auto preserves scalar transport");
+    scene.spectral_transport = SpectralTransport::hero;
+    require(!select_spectral_transport(scene, Selection::automatic).empty() &&
+                scene.media[0].sigma_s[200] == .1f,
+            "Auto diagnoses an invalid API hero/media combination without changing the model");
     require(uses_packet_transport(SpectralTransport::hero) &&
                 spectral_transport_name(SpectralTransport::hero) == "hero",
             "Hero backend classification and metadata name");
