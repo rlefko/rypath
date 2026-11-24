@@ -17,6 +17,7 @@ def invoke(args, expected=1):
 help_text = invoke(["--help"], 0).stdout
 assert "--intersections native|compensated" in help_text
 assert "--shadow-traversal query|opaque-auto" in help_text
+assert "--as-build default|fast-blas|fast-tlas|fast-all" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--guide-cache on|off" in help_text
 assert "--reconstructed-capture" in help_text
@@ -29,6 +30,9 @@ for args in (
     ["--demo", "--output", "x.json", "--capture-frame", "-1", "--capture-path", "x.gputrace"],
     ["--demo", "--output", "x.json", "--frames", "1", "--warmup", "0", "--capture-frame", "1", "--capture-path", "x.gputrace"],
     ["--demo", "--output", "x.json", "--capture-frame", "0", "--capture-path", "x.json"],
+    ["--demo", "--output", "x.json", "--as-build"],
+    ["--demo", "--output", "x.json", "--as-build", "invalid"],
+    ["--demo", "--output", "x.json", "--as-build", "fast-all", "--intersections", "compensated"],
     [], ["--demo"], ["--demo", "--scene", "x", "--output", "x.json"],
     ["--demo", "--demo", "--output", "x.json"],
     ["--demo", "--output", "x.json", "--width", "0"],
@@ -209,6 +213,19 @@ with tempfile.TemporaryDirectory() as directory:
             "--reconstruction", "temporal", "--guide-cache", "on", "--profile-stages"])
     assert json.loads(destination.read_text())["settings"]["guide_cache"] is True
     assert json.loads(destination.read_text())["settings"]["profile_stages"] is True
+    for policy in ("default", "fast-blas", "fast-tlas", "fast-all"):
+        destination = root / ("as-build-" + policy + ".json")
+        invoke(["--scene", str(malformed), "--output", str(destination), "--as-build", policy,
+                "--shadow-traversal", "opaque-auto", "--profile-stages"])
+        selected = json.loads(destination.read_text())
+        assert selected["settings"]["as_build"] == policy
+        assert selected["settings"]["shadow_traversal_requested"] == "opaque-auto"
+        assert selected["settings"]["profile_stages"] is True
+        metadata = selected["acceleration_build"]
+        assert metadata["requested"] == policy and metadata["effective"] is None
+        assert metadata["supported"] is None
+        assert metadata["blas_bytes"] == metadata["tlas_bytes"] == 0
+        assert metadata["device_allocated_bytes"] is None
     destination = root / "upscale.json"
     invoke(["--scene", str(malformed), "--output", str(destination), "--width", "17", "--height", "9",
             "--reconstruction", "metalfx", "--output-width", "34", "--output-height", "18"])
