@@ -9,6 +9,7 @@
 #include "pbrt_render.hpp"
 #include "reconstruction.hpp"
 #include "render_identity.hpp"
+#include "resource_limits.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -59,6 +60,7 @@ template <typename T> bool integer(std::string_view value, T &result) {
 struct Options {
     fs::path scene, output, capture, preview, reconstructed_capture;
     bool demo = false, profile_stages = false;
+    rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
     fs::path capture_path;
@@ -66,6 +68,8 @@ struct Options {
     bool guide_cache = false;
     rypath::SpatialVariancePolicy variance_policy = rypath::SpatialVariancePolicy::paired;
     bool variance_prefilter = false, strict_spatial_segments = false;
+    rypath::MetalFXGuidePolicy metalfx_guide_policy = rypath::MetalFXGuidePolicy::primary_surface;
+    float metalfx_exposure = 1;
     std::uint32_t output_width = 0, output_height = 0;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
     rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
@@ -84,6 +88,14 @@ struct Options {
     rypath::ShadowTraversal shadow_traversal = rypath::ShadowTraversal::query;
     rypath::AccelerationBuildPolicy as_build = rypath::AccelerationBuildPolicy::default_build;
 };
+const char *variance_policy_name(rypath::SpatialVariancePolicy policy) {
+    return policy == rypath::SpatialVariancePolicy::center         ? "center"
+           : policy == rypath::SpatialVariancePolicy::conservative ? "conservative"
+                                                                   : "paired";
+}
+const char *metalfx_guide_policy_name(rypath::MetalFXGuidePolicy policy) {
+    return policy == rypath::MetalFXGuidePolicy::appearance ? "appearance" : "primary";
+}
 const char *shadow_name(rypath::ShadowTraversal mode) {
     return mode == rypath::ShadowTraversal::opaque_auto ? "opaque-auto" : "query";
 }
@@ -97,11 +109,6 @@ const char *profile_name(rypath::IntersectionProfile profile) {
 }
 const char *execution_name(rypath::FrameExecution execution) {
     return execution == rypath::FrameExecution::wavefront ? "wavefront" : "megakernel";
-}
-const char *variance_policy_name(rypath::SpatialVariancePolicy policy) {
-    return policy == rypath::SpatialVariancePolicy::center         ? "center"
-           : policy == rypath::SpatialVariancePolicy::conservative ? "conservative"
-                                                                   : "paired";
 }
 const char *area_output_name(rypath::FrameAreaOutput output) {
     return output == rypath::FrameAreaOutput::selected ? "selected" : "conditional-mean";
@@ -128,6 +135,7 @@ const char *usage =
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
     "  [--as-build default|fast-blas|fast-tlas|fast-all (default: default)]\n"
     "  [--seed 1] [--material-seed 0] [--intersections native|compensated (default: native)]\n"
+    "  [--resource-profile standard|large (default: standard)]\n"
     "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
@@ -142,6 +150,8 @@ const char *usage =
     "  [--variance-policy paired|center|conservative (temporal only)]\n"
     "  [--variance-prefilter on|off (center variance only)]\n"
     "  [--strict-spatial-segments on|off (temporal only)]\n"
+    "  [--metalfx-guide-policy primary|appearance (MetalFX only)]\n"
+    "  [--metalfx-exposure POSITIVE_HALF (MetalFX metadata only)]\n"
     "  [--guide-cache on|off (default: on for temporal/metalfx, off otherwise)]\n"
     "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
     "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
@@ -164,7 +174,12 @@ std::string parse(int argc, char **argv, Options &o) {
         const std::string_view value = argv[++i];
         if (key == "--scene")
             o.scene = value;
-        else if (key == "--output")
+        else if (key == "--resource-profile") {
+            const auto profile = rypath::parse_resource_profile(value);
+            if (!profile)
+                return "invalid resource profile: expected standard or large";
+            o.resource_profile = *profile;
+        } else if (key == "--output")
             o.output = value;
         else if (key == "--capture-frame") {
             std::uint64_t frame = 0;
@@ -199,6 +214,20 @@ std::string parse(int argc, char **argv, Options &o) {
                 return std::string(key) + " must be on or off";
             (key == "--variance-prefilter" ? o.variance_prefilter : o.strict_spatial_segments) =
                 value == "on";
+        } else if (key == "--metalfx-guide-policy") {
+            if (value == "primary")
+                o.metalfx_guide_policy = rypath::MetalFXGuidePolicy::primary_surface;
+            else if (value == "appearance")
+                o.metalfx_guide_policy = rypath::MetalFXGuidePolicy::appearance;
+            else
+                return "metalfx guide policy must be primary or appearance";
+        } else if (key == "--metalfx-exposure") {
+            std::istringstream input{std::string(value)};
+            input.imbue(std::locale::classic());
+            input >> o.metalfx_exposure;
+            if (!input || !input.eof() || !std::isfinite(o.metalfx_exposure) ||
+                o.metalfx_exposure < 0x1p-24f || o.metalfx_exposure > 65504.f)
+                return "metalfx exposure must be positive finite half-float metadata";
         } else if (key == "--guide-cache") {
             if (value != "on" && value != "off")
                 return "guide cache must be on or off";
@@ -315,6 +344,8 @@ std::string parse(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if (seen.contains("--area-output") && o.estimator != rypath::FrameEstimator::area_replay)
+        return "area output requires area-replay estimator";
     if ((seen.contains("--variance-policy") || seen.contains("--variance-prefilter") ||
          seen.contains("--strict-spatial-segments")) &&
         o.reconstruction != rypath::ReconstructionMode::temporal)
@@ -322,6 +353,9 @@ std::string parse(int argc, char **argv, Options &o) {
     if (seen.contains("--variance-prefilter") &&
         o.variance_policy != rypath::SpatialVariancePolicy::center)
         return "variance prefilter requires center variance policy";
+    if ((seen.contains("--metalfx-guide-policy") || seen.contains("--metalfx-exposure")) &&
+        o.reconstruction != rypath::ReconstructionMode::metalfx)
+        return "metalfx guide policy and exposure require metalfx reconstruction";
     if (!seen.contains("--guide-cache"))
         o.guide_cache = o.reconstruction == rypath::ReconstructionMode::temporal ||
                         o.reconstruction == rypath::ReconstructionMode::metalfx;
@@ -370,8 +404,6 @@ std::string parse(int argc, char **argv, Options &o) {
     if (o.estimator == rypath::FrameEstimator::area_replay &&
         o.execution != rypath::FrameExecution::wavefront)
         return "area-replay requires wavefront execution";
-    if (seen.contains("--area-output") && o.estimator != rypath::FrameEstimator::area_replay)
-        return "area output requires area-replay estimator";
     if (o.demo == !o.scene.empty())
         return "choose exactly one of --scene and --demo";
     if (o.output.empty())
@@ -707,12 +739,16 @@ struct Report {
             << ",\"device\":{\"name\":" << quote(device)
             << ",\"architecture\":" << quote(architecture) << ",\"registry_id\":" << registry_id
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
+            << ",\"resource_profile\":"
+            << quote(rypath::resource_profile_name(options.resource_profile))
             << ",\"reconstruction\":" << quote(reconstruction_name(options.reconstruction))
             << ",\"guide_cache\":" << (options.guide_cache ? "true" : "false")
             << ",\"variance_policy\":" << quote(variance_policy_name(options.variance_policy))
             << ",\"variance_prefilter\":" << (options.variance_prefilter ? "true" : "false")
             << ",\"strict_spatial_segments\":"
-            << (options.strict_spatial_segments ? "true" : "false")
+            << (options.strict_spatial_segments ? "true" : "false") << ",\"metalfx_guide_policy\":"
+            << quote(metalfx_guide_policy_name(options.metalfx_guide_policy))
+            << ",\"metalfx_exposure\":" << precise_float(options.metalfx_exposure)
             << ",\"internal_width\":" << options.width << ",\"internal_height\":" << options.height
             << ",\"output_width\":" << options.output_width
             << ",\"output_height\":" << options.output_height
@@ -903,6 +939,15 @@ struct Report {
                 out << "null";
             else {
                 out << "{\"mode\":" << quote(reconstruction_name(options.reconstruction))
+                    << ",\"variance_policy\":"
+                    << quote(variance_policy_name(options.variance_policy))
+                    << ",\"variance_prefilter\":" << (options.variance_prefilter ? "true" : "false")
+                    << ",\"strict_spatial_segments\":"
+                    << (options.strict_spatial_segments ? "true" : "false")
+                    << ",\"metalfx_guide_policy\":"
+                    << quote(metalfx_guide_policy_name(options.metalfx_guide_policy))
+                    << ",\"exposure\":"
+                    << (f.reconstruction ? precise_float(f.reconstruction->exposure) : "null")
                     << ",\"attempted\":" << (f.reconstruction_started ? "true" : "false")
                     << ",\"complete\":"
                     << (f.reconstruction &&
@@ -1003,7 +1048,8 @@ int run(const Options &options) {
     try {
         std::optional<rypath::pbrt::Result> checked;
         if (!options.demo) {
-            checked = rypath::pbrt::check(options.scene);
+            checked = rypath::pbrt::check(options.scene,
+                                          rypath::resource_limits(options.resource_profile).pbrt);
             report.dependencies.push_back(options.scene);
             for (const auto &dependency : checked->document.dependencies)
                 report.dependencies.push_back(dependency.resolved_path);
@@ -1041,7 +1087,9 @@ int run(const Options &options) {
             const auto benchmark_overrides = overrides(*checked, options);
             report.provenance.insert(report.provenance.end(), benchmark_overrides.begin(),
                                      benchmark_overrides.end());
-            auto translated = rypath::pbrt::translate(*checked, {options.scene.string()});
+            auto translated =
+                rypath::pbrt::translate(*checked, {options.scene.string()},
+                                        rypath::resource_limits(options.resource_profile).pbrt);
             for (const auto &diagnostic : translated.diagnostics)
                 std::cerr << rypath::pbrt::format_diagnostic(diagnostic);
             report.provenance.insert(report.provenance.end(), translated.provenance.begin(),
@@ -1231,6 +1279,7 @@ int run(const Options &options) {
                                      .mode = *options.reconstruction,
                                      .output_width = options.output_width,
                                      .output_height = options.output_height,
+                                     .metalfx_guide_policy = options.metalfx_guide_policy,
                                      .spatial_variance_policy = options.variance_policy,
                                      .strict_spatial_segments = options.strict_spatial_segments,
                                      .variance_prefilter = options.variance_prefilter,
@@ -1246,7 +1295,9 @@ int run(const Options &options) {
                                     reconstruction = std::move(stream.stream);
                             }
                             if (reconstruction) {
-                                auto reconstructed = reconstruction->submit(*submitted.frame);
+                                auto reconstructed = reconstruction->submit(
+                                    *submitted.frame, rypath::ReconstructionSubmitOptions{
+                                                          .exposure = options.metalfx_exposure});
                                 if (reconstructed.status != rypath::GeometryStatus::success ||
                                     !reconstructed.frame)
                                     observation.diagnostic =
@@ -1389,6 +1440,8 @@ int run(const Options &options) {
                     {"rypath.frame.spectral_mode",
                      scene.spectral_transport == rypath::SpectralTransport::packet ? "packet"
                                                                                    : "scalar"},
+                    {"rypath.frame.resource_profile",
+                     std::string(rypath::resource_profile_name(options.resource_profile))},
                     {"rypath.frame.source_identity", report.source_identity},
                     {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
                     {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},
@@ -1417,7 +1470,15 @@ int run(const Options &options) {
                          : "raw-rgb-color-conversion"},
                     {"rypath.recon.mode", reconstruction_name(options.reconstruction)},
                     {"rypath.output.space", "linear-srgb"},
-                    {"rypath.recon.exposure", "1"},
+                    {"rypath.recon.exposure", precise_float(info.exposure)},
+                    {"rypath.recon.requested_exposure", precise_float(options.metalfx_exposure)},
+                    {"rypath.recon.variance_policy", variance_policy_name(options.variance_policy)},
+                    {"rypath.recon.variance_prefilter",
+                     options.variance_prefilter ? "true" : "false"},
+                    {"rypath.recon.strict_spatial_segments",
+                     options.strict_spatial_segments ? "true" : "false"},
+                    {"rypath.recon.metalfx_guide_policy",
+                     metalfx_guide_policy_name(options.metalfx_guide_policy)},
                     {"rypath.recon.reset", info.history_reset ? "true" : "false"},
                     {"rypath.recon.defocus", info.defocus_approximation ? "true" : "false"},
                     {"rypath.frame.sample", std::to_string(info.source.sample_index)},
@@ -1452,6 +1513,8 @@ int run(const Options &options) {
                     {"rypath.internal.height", std::to_string(options.height)},
                     {"rypath.output.width", std::to_string(image.width)},
                     {"rypath.output.height", std::to_string(image.height)},
+                    {"rypath.frame.resource_profile",
+                     std::string(rypath::resource_profile_name(options.resource_profile))},
                     {"rypath.frame.source_identity", report.source_identity},
                     {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
                     {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},

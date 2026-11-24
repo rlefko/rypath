@@ -17,12 +17,16 @@ def invoke(args, expected=1):
 help_text = invoke(["--help"], 0).stdout
 assert "--intersections native|compensated" in help_text
 assert "--shadow-traversal query|opaque-auto" in help_text
+assert "--resource-profile standard|large (default: standard)" in help_text
 assert "--as-build default|fast-blas|fast-tlas|fast-all" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--guide-cache on|off" in help_text
-assert "--variance-policy paired|center|conservative" in help_text
-assert "--reconstructed-capture" in help_text
 assert "--area-output selected|conditional-mean" in help_text
+for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
+             "--strict-spatial-segments on|off", "--metalfx-guide-policy primary|appearance",
+             "--metalfx-exposure"):
+    assert flag in help_text
+assert "--reconstructed-capture" in help_text
 assert "--profile-stages" in help_text
 assert "--capture-frame" in help_text and "--capture-path" in help_text
 for args in (
@@ -31,6 +35,10 @@ for args in (
     ["--demo", "--output", "x.json", "--capture-frame", "-1", "--capture-path", "x.gputrace"],
     ["--demo", "--output", "x.json", "--frames", "1", "--warmup", "0", "--capture-frame", "1", "--capture-path", "x.gputrace"],
     ["--demo", "--output", "x.json", "--capture-frame", "0", "--capture-path", "x.json"],
+    ["--demo", "--output", "x.json", "--resource-profile"],
+    ["--demo", "--output", "x.json", "--resource-profile", "invalid"],
+    ["--demo", "--output", "x.json", "--resource-profile", "Large"],
+    ["--demo", "--output", "x.json", "--resource-profile", "standard", "--resource-profile", "large"],
     ["--demo", "--output", "x.json", "--as-build"],
     ["--demo", "--output", "x.json", "--as-build", "invalid"],
     ["--demo", "--output", "x.json", "--as-build", "fast-all", "--intersections", "compensated"],
@@ -57,12 +65,12 @@ for args in (
 for option, values in (
     ("--packet-events", ("0", "3", "5", "-1", "nan")),
     ("--packet-layout", ("invalid",)),
+    ("--area-output", ("invalid", "conditional_mean", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
     ("--target-scale", ("0", "-1", "nan", "inf", "1e-45", "1e100", "1e-6x")),
     ("--intersections", ("invalid",)),
-    ("--area-output", ("invalid", "conditional_mean", "0")),
     ("--motion-offset", ("0", "nan", "inf", "1e100", "1x")),
     ("--shadow-traversal", ("invalid",)),
     ("--capacity", ("0", "65537", "-1")),
@@ -103,6 +111,43 @@ for key in ("--output-width", "--output-height"):
     for value in ("0", "-1", "nan", "4294967296", "1x"):
         invoke(["--demo", "--output", "x.json", "--reconstruction", "metalfx", key, value])
 
+# These errors must come from parsing, before scene/device acquisition or output reservation.
+for mode in ("none", "raw-rgb", "metalfx", "temporal"):
+    flags = (("--variance-policy", "paired"), ("--variance-prefilter", "off"),
+             ("--strict-spatial-segments", "off")) if mode != "temporal" else ()
+    for flag, value in flags:
+        result = invoke(["--demo", "--output", "x.json", "--reconstruction", mode, flag, value])
+        assert "require temporal reconstruction" in result.stderr
+    if mode != "metalfx":
+        for flag, value in (("--metalfx-guide-policy", "primary"), ("--metalfx-exposure", "1")):
+            result = invoke(["--demo", "--output", "x.json", "--reconstruction", mode, flag, value])
+            assert "require metalfx reconstruction" in result.stderr
+for policy in ("paired", "conservative"):
+    for switch in ("on", "off"):
+        result = invoke(["--demo", "--output", "x.json", "--reconstruction", "temporal",
+                         "--variance-policy", policy, "--variance-prefilter", switch])
+        assert "prefilter requires center" in result.stderr
+for flag, mode, values in (
+    ("--variance-policy", "temporal", ("invalid",)),
+    ("--variance-prefilter", "temporal", ("yes", "1")),
+    ("--strict-spatial-segments", "temporal", ("yes", "1")),
+    ("--metalfx-guide-policy", "metalfx", ("invalid", "primary_surface")),
+    ("--metalfx-exposure", "metalfx", ("0", "-1", "nan", "inf", "65505", "1e-9", "1e100", "1x")),
+):
+    base = ["--demo", "--output", "x.json", "--reconstruction", mode]
+    assert "missing value" in invoke([*base, flag]).stderr
+    for value in values:
+        result = invoke([*base, flag, value])
+        assert "frame benchmark:" not in result.stderr
+    value = "center" if flag == "--variance-policy" else "on" if flag in (
+        "--variance-prefilter", "--strict-spatial-segments") else "primary" if flag == "--metalfx-guide-policy" else "1"
+    assert "duplicate option" in invoke([*base, flag, value, flag, value]).stderr
+
+for policy in ("selected", "conditional-mean"):
+    result = invoke(["--demo", "--output", "x.json", "--area-output", policy])
+    assert "requires area-replay" in result.stderr
+invoke(["--demo", "--output", "x.json", "--estimator", "area-replay", "--area-output"])
+invoke(["--demo", "--output", "x.json", "--estimator", "area-replay", "--area-output", "selected", "--area-output", "conditional-mean"])
 invoke(["--demo", "--output", "x.json", "--estimator", "area-replay", "--execution", "megakernel"])
 for frames in ("4", "7", "9"):
     invoke(["--demo", "--output", "x.json", "--motion-offset", ".1", "--frames", frames])
@@ -176,6 +221,16 @@ with tempfile.TemporaryDirectory() as directory:
     assert data["settings"]["execution"] == "wavefront"
     assert data["settings"]["estimator"] == "independent"
     assert data["settings"]["replay_contract"] == 0
+    assert data["settings"]["resource_profile"] == "standard"
+    for profile in ("standard", "large"):
+        destination = root / ("resource-" + profile + ".json")
+        result = invoke(["--scene", str(malformed), "--output", str(destination),
+                         "--resource-profile", profile])
+        selected = json.loads(destination.read_text())
+        assert selected["settings"]["resource_profile"] == profile
+        assert selected["status"] == "failed" and selected["completed_frames"] == 0
+        assert selected["device"]["name"] == ""
+        assert "PBRT preflight failed; rendering not attempted" in result.stderr
     for execution in ("wavefront", "megakernel"):
         destination = root / (execution + ".json")
         invoke(["--scene", str(malformed), "--output", str(destination),
@@ -189,6 +244,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert data["settings"]["intersection_profile"] == "native"
     assert data["settings"]["reconstruction"] == "none"
     assert data["settings"]["guide_cache"] is False
+    assert data["settings"]["area_output"] == "not-applicable"
+    assert data["settings"]["area_target"] == data["settings"]["area_source_mis"] == "none"
+    assert data["settings"]["area_temporal_reuse"] == data["settings"]["area_contract"] == 0
     assert (data["settings"]["output_width"], data["settings"]["output_height"]) == (1920, 1080)
     assert data["pipeline_summary"]["completed_frames"] == 0
     assert data["pipeline_summary"]["frames_per_second"] is None
@@ -220,6 +278,36 @@ with tempfile.TemporaryDirectory() as directory:
             settings = json.loads(destination.read_text())["settings"]
             assert settings["reconstruction"] == mode
             assert settings["guide_cache"] is (choice == "on")
+    # Valid switches survive parsing in either argument order, without invoking a device.
+    for policy in ("paired", "center", "conservative"):
+        for strict in ("on", "off"):
+            prefilters = ("on", "off") if policy == "center" else (None,)
+            for prefilter in prefilters:
+                destination = root / f"variance-{policy}-{strict}-{prefilter}.json"
+                extra = ["--variance-policy", policy, "--strict-spatial-segments", strict]
+                if prefilter is not None:
+                    extra += ["--variance-prefilter", prefilter]
+                invoke(["--scene", str(malformed), "--output", str(destination),
+                        *extra, "--reconstruction", "temporal"])
+                settings = json.loads(destination.read_text())["settings"]
+                assert settings["variance_policy"] == policy
+                assert settings["strict_spatial_segments"] is (strict == "on")
+                assert settings["variance_prefilter"] is (prefilter == "on")
+                assert settings["estimator"] == "independent"
+    for policy in ("primary", "appearance"):
+        for exposure in ("1", "1.0003", "0.000000059604644775390625", "65504"):
+            destination = root / f"metalfx-{policy}-{exposure}.json"
+            invoke(["--scene", str(malformed), "--output", str(destination),
+                    "--metalfx-guide-policy", policy, "--metalfx-exposure", exposure,
+                    "--reconstruction", "metalfx"])
+            settings = json.loads(destination.read_text())["settings"]
+            assert settings["metalfx_guide_policy"] == policy
+            assert abs(settings["metalfx_exposure"] - float(exposure)) <= float(exposure) * 1e-7
+    assert data["settings"]["variance_policy"] == "paired"
+    assert data["settings"]["variance_prefilter"] is False
+    assert data["settings"]["strict_spatial_segments"] is False
+    assert data["settings"]["metalfx_guide_policy"] == "primary"
+    assert data["settings"]["metalfx_exposure"] == 1
     destination = root / "profile-options.json"
     trace = root / "fresh.gputrace"
     invoke(["--scene", str(malformed), "--output", str(destination),
@@ -290,9 +378,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert settings["area_contract"] == 5
     assert settings["mutation_steps"] == 1 and settings["effective_mutation_steps"] == 1
     assert settings["area_target"] == "quarter-l1-v1"
-    assert settings["area_output"] == "conditional-mean"
     assert settings["area_source_mis"] == "source-target-mis-v1"
     assert settings["area_temporal_reuse"] == 20
+    assert settings["area_output"] == "conditional-mean"
     assert settings["target_scale"] == 0.125 and settings["fresh_paths_per_pixel_per_frame"] == 1
     for count in (0, 1, 2, 4):
         destination = root / f"area-mutations-{count}.json"
@@ -300,12 +388,12 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay", "--mutations", str(count)])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["mutation_steps"] == count and settings["effective_mutation_steps"] == count
-    for mode in ("selected", "conditional-mean"):
-        destination = root / f"area-output-{mode}.json"
-        invoke(["--scene", str(malformed), "--output", str(destination),
-                "--estimator", "area-replay", "--area-output", mode])
+    for policy in ("selected", "conditional-mean"):
+        destination = root / f"area-output-{policy}.json"
+        invoke(["--scene", str(malformed), "--output", str(destination), "--area-output", policy,
+                "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
-        assert settings["area_output"] == settings["requested_area_output"] == mode
-    invoke(["--demo", "--output", str(root / "independent-output.json"),
-            "--area-output", "selected"])
+        assert settings["requested_area_output"] == settings["area_output"] == policy
+        assert settings["area_contract"] == 5
+        assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")
