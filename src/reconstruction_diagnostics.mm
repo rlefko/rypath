@@ -4,6 +4,7 @@
 #include "metal_frame_access.hpp"
 #include "metal_reconstruction_access.hpp"
 #include "pbrt_render.hpp"
+#include "reconstruction_guide_wire.h"
 #include "render_identity.hpp"
 #include "resource_limits.hpp"
 #include "temporal_denoiser.hpp"
@@ -112,6 +113,8 @@ NSDictionary *signed_configuration(SpatialVariancePolicy policy, bool prefilter,
         @"strict_spatial_segments" : @(strict),
         @"spatial_iterations" : @(spatial),
         @"history_limit" : @64,
+        @"spatial_protection_policy" : @"primary-prepared-delta-v1",
+        @"guide_wire_version" : @(reconstruction_guide_wire::contract),
         @"temporal_wire_version" : @(temporal_denoiser_wire::version)
     };
 }
@@ -392,11 +395,17 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
         require(texture.bytes.size() ==
                     std::uint64_t(texture.width) * texture.height * pixel_bytes(texture.format),
                 "Snapshot size mismatch");
-        const bool archive =
+        const bool replay_input =
             o.capture_mode == "replay" && prefix.starts_with("temporal-") &&
             (texture.name.starts_with("input.") || texture.name == "temporal.mean" ||
              texture.name == "temporal.variance" || texture.name == "temporal.count" ||
              texture.name == "output");
+        // Compact captures retain one mask, not a full replay sequence. The
+        // existing texture descriptor records its shape, format and SHA256.
+        const bool final_protection = o.capture_mode == "final" && frame == o.frames - 1 &&
+                                      prefix.starts_with("temporal-") &&
+                                      texture.name == "input.spatial_protection";
+        const bool archive = replay_input || final_protection;
         std::string filename = prefix + "." + texture.name + ".bin";
         auto hash = digest_hex(sha256(
             {reinterpret_cast<const std::uint8_t *>(texture.bytes.data()), texture.bytes.size()}));
@@ -415,7 +424,7 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
         }];
     }
     NSDictionary *metadata = @{
-        @"schema" : @2,
+        @"schema" : @3,
         @"frame" : @(frame),
         @"seed" : @(o.seed),
         @"epoch" : @(snapshot.info.source.epoch),
@@ -424,6 +433,8 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
         @"variance_policy" : ns(variance_policy_name(config.spatial_variance_policy)),
         @"variance_prefilter" : @(config.variance_prefilter),
         @"strict_spatial_segments" : @(config.strict_spatial_segments),
+        @"spatial_protection_policy" : @"primary-prepared-delta-v1",
+        @"guide_wire_version" : @(reconstruction_guide_wire::contract),
         @"temporal_wire_version" : @(temporal_denoiser_wire::version),
         @"signed_configuration_applicable" : @(config.mode == ReconstructionMode::temporal),
         @"history_limit" : @64,
@@ -726,10 +737,11 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
     NSArray *paths = array(list[@"snapshots"]);
     require(paths.count && paths.count <= 128, "Replay requires 1..128 ordered snapshots");
     const auto first_record = load_json(o.replay_list.parent_path() / string(paths[0]));
-    require(integer(first_record[@"schema"]) != 1,
-            "Replay schema 1 lacks the spatial_position/spatial_normal/spatial_group guide "
-            "contract; recapture with schema 2, without substituting missing guides");
-    require(integer(first_record[@"schema"]) == 2, "Unsupported replay schema; require schema 2");
+    require(integer(first_record[@"schema"]) == 3,
+            "Replay requires schema 3 primary spatial-protection guides; recapture older inputs");
+    require(integer(first_record[@"guide_wire_version"]) == reconstruction_guide_wire::contract &&
+                string(first_record[@"spatial_protection_policy"]) == "primary-prepared-delta-v1",
+            "Replay primary guide/protection contract differs from current implementation");
     require(integer(first_record[@"temporal_wire_version"]) == temporal_denoiser_wire::version,
             "Replay temporal wire version differs from the current spatial guide contract");
     auto dummy = render(session, 0, o, scene.value);
@@ -752,13 +764,16 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
         "input.color",          "input.depth",           "input.motion",
         "input.diffuse_albedo", "input.specular_albedo", "input.normal",
         "input.previous_depth", "input.identity",        "input.spatial_position",
-        "input.spatial_normal", "input.spatial_group"};
+        "input.spatial_normal", "input.spatial_group",   "input.spatial_protection"};
     for (id relative : paths)
         @autoreleasepool {
             fs::path path = o.replay_list.parent_path() / string(relative);
             NSDictionary *record = load_json(path);
-            require(integer(record[@"schema"]) == 2,
-                    "Replay requires schema 2 spatial geometry guides on every frame");
+            require(integer(record[@"schema"]) == 3,
+                    "Replay requires schema 3 spatial-protection guides on every frame");
+            require(integer(record[@"guide_wire_version"]) == reconstruction_guide_wire::contract &&
+                        string(record[@"spatial_protection_policy"]) == "primary-prepared-delta-v1",
+                    "Replay primary guide/protection contract changed within sequence");
             require(integer(record[@"temporal_wire_version"]) == temporal_denoiser_wire::version,
                     "Replay temporal wire version changed within sequence");
             require(integer(record[@"history_limit"]) == 64, "Replay requires history_limit64");
@@ -894,6 +909,7 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
                                           .spatial_position = get("spatial_position"),
                                           .spatial_normal = get("spatial_normal"),
                                           .spatial_group = get("spatial_group"),
+                                          .spatial_protection = get("spatial_protection"),
                                           .output = output,
                                           .reset_history = reset};
             require(inputs.color.pixelFormat == MTLPixelFormatRGBA32Float,

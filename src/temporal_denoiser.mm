@@ -147,7 +147,7 @@ TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
     if (contract.version != tw::version || contract.config_bytes != sizeof(tw::Config) ||
         contract.counters_bytes != sizeof(tw::Counters) ||
-        contract.texture_count != tw::spatial_group_id + 1u ||
+        contract.texture_count != tw::spatial_protection_id + 1u ||
         std::any_of(std::begin(contract.reserved), std::end(contract.reserved),
                     [](auto word) { return word != 0; }))
         return {.diagnostic =
@@ -209,7 +209,7 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
         const char *name;
         unsigned index;
     };
-    const std::array<Binding, 12> bindings{
+    const std::array<Binding, 13> bindings{
         {{inputs.color, MTLPixelFormatRGBA32Float, "color", tw::color_id},
          {inputs.depth, MTLPixelFormatR32Float, "depth", tw::depth_id},
          {inputs.motion, MTLPixelFormatRG16Float, "motion", tw::motion_id},
@@ -222,6 +222,8 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
           tw::spatial_position_id},
          {inputs.spatial_normal, MTLPixelFormatRGBA32Float, "spatial normal",
           tw::spatial_normal_id},
+         {inputs.spatial_protection, MTLPixelFormatR32Uint, "spatial protection",
+          tw::spatial_protection_id},
          {inputs.spatial_group, MTLPixelFormatR32Uint, "spatial group", tw::spatial_group_id},
          {inputs.output, MTLPixelFormatRGBA32Float, "output", tw::output_id}}};
     for (std::size_t i = 0; i < bindings.size(); ++i) {

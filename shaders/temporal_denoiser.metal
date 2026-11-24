@@ -87,7 +87,7 @@ kernel void rypath_temporal_denoiser_contract(device tdw::Contract &contract [[b
     contract = {tdw::version,
                 sizeof(tdw::Config),
                 sizeof(tdw::Counters),
-                tdw::spatial_group_id + 1u,
+                tdw::spatial_protection_id + 1u,
                 {0, 0, 0, 0}};
 }
 
@@ -105,13 +105,14 @@ static uint2 temporal_denoiser_accumulate_pixel(
     texture2d<float, access::read> specular, texture2d<float, access::read> normal,
     texture2d<float, access::read> expected_depth, texture2d<uint, access::read> identity,
     texture2d<float, access::read> position, texture2d<float, access::read> geometric_normal,
-    texture2d<uint, access::read> group, texture2d<float, access::read> previous_mean,
-    texture2d<float, access::read> previous_variance, texture2d<uint, access::read> previous_count,
-    texture2d<float, access::read> previous_z, texture2d<float, access::read> previous_normal,
-    texture2d<uint, access::read> previous_identity, texture2d<float, access::write> next_mean,
-    texture2d<float, access::write> next_variance, texture2d<uint, access::write> next_count,
-    texture2d<float, access::write> next_z, texture2d<float, access::write> next_normal,
-    texture2d<uint, access::write> next_identity, texture2d<float, access::write> filtered_mean,
+    texture2d<uint, access::read> group, texture2d<uint, access::read> protection,
+    texture2d<float, access::read> previous_mean, texture2d<float, access::read> previous_variance,
+    texture2d<uint, access::read> previous_count, texture2d<float, access::read> previous_z,
+    texture2d<float, access::read> previous_normal, texture2d<uint, access::read> previous_identity,
+    texture2d<float, access::write> next_mean, texture2d<float, access::write> next_variance,
+    texture2d<uint, access::write> next_count, texture2d<float, access::write> next_z,
+    texture2d<float, access::write> next_normal, texture2d<uint, access::write> next_identity,
+    texture2d<float, access::write> filtered_mean,
     texture2d<float, access::write> filtered_variance, uint2 pixel) {
     if (pixel.x >= config.width || pixel.y >= config.height)
         return uint2(0);
@@ -127,9 +128,9 @@ static uint2 temporal_denoiser_accumulate_pixel(
     const float3 n = normal.read(pixel).xyz;
     const float3 d = diffuse.read(pixel).xyz, s = specular.read(pixel).xyz;
     const uint4 id = identity.read(pixel);
-    if (!all(isfinite(input)) || input.w != 1.f || !all(isfinite(displacement)) ||
-        !all(isfinite(d)) || !all(isfinite(s)) || !isfinite(expected) ||
-        !temporal_denoiser_guides(z, n, id)) {
+    if (protection.read(pixel).x > 1u || !all(isfinite(input)) || input.w != 1.f ||
+        !all(isfinite(displacement)) || !all(isfinite(d)) || !all(isfinite(s)) ||
+        !isfinite(expected) || !temporal_denoiser_guides(z, n, id)) {
         temporal_denoiser_fail(status, tdw::invalid_input);
         return uint2(0);
     }
@@ -178,7 +179,7 @@ static uint2 temporal_denoiser_accumulate_pixel(
     // v/n is a noise-scale heuristic, not a confidence interval for correlated
     // Area/MCMC samples. Early histories also use a geometry-aware local proxy.
     float3 spatial_variance = variance / float(count);
-    if (count < 4u && config.iteration != 0u) {
+    if (count < 4u && config.iteration != 0u && protection.read(pixel).x == 0u) {
         float weight_sum = 1.f;
         float3 local_mean = input.xyz, local_variance = 0.f;
         for (int y = -1; y <= 1; ++y)
@@ -190,6 +191,8 @@ static uint2 temporal_denoiser_accumulate_pixel(
                     candidate.y >= int(config.height))
                     continue;
                 const uint2 q = uint2(candidate);
+                if (protection.read(q).x != 0u)
+                    continue;
                 const float3 value = color.read(q).xyz;
                 const float weight = temporal_denoiser_geometry(
                     id, identity.read(q), group.read(pixel).x, group.read(q).x, depth.read(pixel).x,
@@ -245,6 +248,7 @@ kernel void rypath_temporal_denoiser_accumulate(
     texture2d<float, access::read> position [[texture(tdw::spatial_position_id)]],
     texture2d<float, access::read> geometric_normal [[texture(tdw::spatial_normal_id)]],
     texture2d<uint, access::read> group [[texture(tdw::spatial_group_id)]],
+    texture2d<uint, access::read> protection [[texture(tdw::spatial_protection_id)]],
     texture2d<float, access::read> previous_mean [[texture(tdw::history_mean_id)]],
     texture2d<float, access::read> previous_variance [[texture(tdw::history_variance_id)]],
     texture2d<uint, access::read> previous_count [[texture(tdw::history_count_id)]],
@@ -262,9 +266,9 @@ kernel void rypath_temporal_denoiser_accumulate(
     uint2 pixel [[thread_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]]) {
     const uint2 counts = temporal_denoiser_accumulate_pixel(
         config, status, color, depth, motion, diffuse, specular, normal, expected_depth, identity,
-        position, geometric_normal, group, previous_mean, previous_variance, previous_count,
-        previous_z, previous_normal, previous_identity, next_mean, next_variance, next_count,
-        next_z, next_normal, next_identity, filtered_mean, filtered_variance, pixel);
+        position, geometric_normal, group, protection, previous_mean, previous_variance,
+        previous_count, previous_z, previous_normal, previous_identity, next_mean, next_variance,
+        next_count, next_z, next_normal, next_identity, filtered_mean, filtered_variance, pixel);
     const uint accepted = simd_sum(counts.x);
     const uint rejected = simd_sum(counts.y);
     if (simd_lane == 0) {
@@ -285,6 +289,7 @@ kernel void rypath_temporal_denoiser_spatial(
     texture2d<float, access::read> position [[texture(tdw::spatial_position_id)]],
     texture2d<float, access::read> geometric_normal [[texture(tdw::spatial_normal_id)]],
     texture2d<uint, access::read> group [[texture(tdw::spatial_group_id)]],
+    texture2d<uint, access::read> protection [[texture(tdw::spatial_protection_id)]],
     texture2d<float, access::read> source_mean [[texture(tdw::source_mean_id)]],
     texture2d<float, access::read> source_variance [[texture(tdw::source_variance_id)]],
     texture2d<float, access::write> destination_mean [[texture(tdw::destination_mean_id)]],
@@ -294,6 +299,11 @@ kernel void rypath_temporal_denoiser_spatial(
         return;
     if (atomic_load_explicit(&status.failure, memory_order_relaxed))
         return;
+    if (protection.read(pixel).x != 0u) {
+        destination_mean.write(source_mean.read(pixel), pixel);
+        destination_variance.write(source_variance.read(pixel), pixel);
+        return;
+    }
     const float3 center = source_mean.read(pixel).xyz, v = source_variance.read(pixel).xyz;
     const float3 n = normal.read(pixel).xyz, d = diffuse.read(pixel).xyz,
                  s = specular.read(pixel).xyz;
@@ -310,6 +320,8 @@ kernel void rypath_temporal_denoiser_spatial(
                     candidate.y >= int(config.height))
                     continue;
                 const uint2 q = uint2(candidate);
+                if (protection.read(q).x != 0u)
+                    continue;
                 const float gaussian = float((x == 0 ? 2 : 1) * (y == 0 ? 2 : 1));
                 const float w =
                     gaussian * temporal_denoiser_geometry(
@@ -337,6 +349,8 @@ kernel void rypath_temporal_denoiser_spatial(
                 candidate.y >= int(config.height))
                 continue;
             const uint2 q = uint2(candidate);
+            if (protection.read(q).x != 0u)
+                continue;
             const float geometry = temporal_denoiser_geometry(
                 id, identity.read(q), group.read(pixel).x, group.read(q).x, depth.read(pixel).x,
                 depth.read(q).x, position.read(pixel).xyz, position.read(q).xyz,
@@ -361,7 +375,7 @@ kernel void rypath_temporal_denoiser_spatial(
                     depth.read(r).x, position.read(pixel).xyz, position.read(r).xyz,
                     geometric_normal.read(pixel).xyz, geometric_normal.read(r).xyz, n, n, d, d, s,
                     s);
-                if (support == 0.f) {
+                if (protection.read(r).x != 0u || support == 0.f) {
                     connected = false;
                     break;
                 }

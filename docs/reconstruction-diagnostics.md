@@ -54,8 +54,8 @@ is a JSON object with a `snapshots` array naming ordered `temporal-0.json`,
 transport frame to acquire the device and pipelines, then filters captured
 inputs directly. Matching-settings replay must reproduce captured output exactly;
 `--replay-spatial 0..5` can instead identify a deliberate spatial-pass ablation.
-Schema 2 also requires the actual spatial position, geometric normal and connected
-group textures. Schema 1 cannot supply these fields and must be recaptured.
+Schema 3 requires the actual spatial position, geometric normal, connected group
+and primary spatial-protection textures. Schema 1 and 2 inputs must be recaptured.
 
 `--variance-policy paired|center|conservative`, `--variance-prefilter on|off`, and
 `--strict-spatial-segments on|off` select explicit signed-filter experiments.
@@ -65,8 +65,13 @@ changing a recorded setting requires its explicit option and marks the result
 as an ablation. Temporal-only and MetalFX outputs remain separate arms.
 
 Default `--capture-mode final` records per-frame hashes and region means, and
-retains final full-resolution RGB planes plus diagnostic metadata. Internal
-texture hashes without archived payloads are explicitly marked unavailable for
+retains final full-resolution RGB planes plus diagnostic metadata. When the final
+sequence frame is selected for capture, its signed spatial arm also archives
+`input.spatial_protection` as one tight native little-endian R32Uint mask, with
+width, height, byte length and SHA256 in the existing texture record. Earlier
+selected compact frames retain only mask metadata; this does not enable full
+replay. The mask permits exact protected-pixel comparison with the separately
+retained temporal-only RGB. Internal texture hashes without archived payloads are explicitly marked unavailable for
 replay. An optional ROI file has `{"regions":{"name":[x0,y0,x1,y1]}}`, using
 exclusive upper coordinates. Default whole-image means are not feature-quality
 gates. Both modes enforce a shared 8 GiB artifact-root limit; an individual
@@ -121,3 +126,10 @@ output. `--area-output selected` retains the selected-output ablation. These
 settings and the cold/warm full-replay evaluation counts are recorded explicitly;
 independent references remain separate. Historical validation below predates this
 adapted integration; current combined validation is pending.
+
+
+Current snapshots use schema 3 and temporal wire version 3. They archive the
+required `input.spatial_protection` R32Uint primary-material flag with the other
+quantized inputs and record `primary-prepared-delta-v1` provenance. Replay rejects
+older snapshots instead of substituting a missing flag. The schema-2 replay
+evidence above describes the earlier implementation.

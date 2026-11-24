@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -53,6 +54,7 @@ struct Fixture {
     std::vector<Color> position = std::vector<Color>(pixels, Color{0, 0, 4, 0});
     std::vector<Color> geometric_normal = std::vector<Color>(pixels, Color{0, 0, 1, 0});
     std::vector<std::uint32_t> group = std::vector<std::uint32_t>(pixels, UINT32_MAX);
+    std::vector<std::uint32_t> protection = std::vector<std::uint32_t>(pixels, 0);
     explicit Fixture(id<MTLDevice> device) {
         inputs.color = texture(device, MTLPixelFormatRGBA32Float);
         inputs.depth = texture(device, MTLPixelFormatR32Float);
@@ -64,6 +66,7 @@ struct Fixture {
         inputs.identity = texture(device, MTLPixelFormatRGBA32Uint);
         inputs.spatial_position = texture(device, MTLPixelFormatRGBA32Float);
         inputs.spatial_normal = texture(device, MTLPixelFormatRGBA32Float);
+        inputs.spatial_protection = texture(device, MTLPixelFormatR32Uint);
         inputs.spatial_group = texture(device, MTLPixelFormatR32Uint);
         inputs.output = texture(device, MTLPixelFormatRGBA32Float);
     }
@@ -83,6 +86,7 @@ struct Fixture {
     void upload() {
         upload(inputs.spatial_position, position.data(), width * sizeof(Color));
         upload(inputs.spatial_normal, geometric_normal.data(), width * sizeof(Color));
+        upload(inputs.spatial_protection, protection.data(), width * sizeof(std::uint32_t));
         upload(inputs.spatial_group, group.data(), width * sizeof(std::uint32_t));
         upload(inputs.color, color.data(), width * sizeof(Color));
         upload(inputs.depth, depth.data(), width * sizeof(float));
@@ -115,14 +119,15 @@ struct Fixture {
 std::unique_ptr<TemporalDenoiser>
 adapter(MetalFrameLease &lease, unsigned iterations = 0, unsigned history = 64,
         bool prefilter = false, bool strict_segments = false,
-        SpatialVariancePolicy policy = SpatialVariancePolicy::paired) {
+        SpatialVariancePolicy policy = SpatialVariancePolicy::paired, bool diagnostics = false) {
     auto built = TemporalDenoiser::create(lease, {.width = width,
                                                   .height = height,
                                                   .history_limit = history,
                                                   .spatial_iterations = iterations,
                                                   .variance_prefilter = prefilter,
                                                   .spatial_variance_policy = policy,
-                                                  .strict_spatial_segments = strict_segments});
+                                                  .strict_spatial_segments = strict_segments,
+                                                  .capture_diagnostics = diagnostics});
     require(built.denoiser != nullptr, built.diagnostic);
     return std::move(built.denoiser);
 }
@@ -666,6 +671,115 @@ void reprojection(MetalFrameLease &lease) {
     require(execute(*denoiser, f, lease.queue()).empty(), "Sky ignores depth/normal");
     require(denoiser->stats().history_accepted == pixels, "Sky history acceptance");
 }
+// Analytic distant stripe reflection on a sinusoidally bumped, flat sheet.
+// Primary normals differ by less than a degree while reflected color has detail.
+void delta_detail(MetalFrameLease &lease) {
+    Fixture f(lease.device());
+    for (unsigned y = 0; y < height; ++y)
+        for (unsigned x = 0; x < width; ++x) {
+            const auto p = y * width + x;
+            const float slope = .008f * std::sin(float(x) * .8f);
+            const float nz = std::sqrt(1 - slope * slope);
+            f.normal[p] = {slope, 0, nz, 0};
+            // Reflection of (0,0,-1): rx=2*nz*slope.
+            const float stripe = .5f + .05f * std::sin(600.f * 2.f * nz * slope);
+            f.color[p] = {stripe, -stripe, 2.f * stripe, 1};
+            f.protection[p] = 1;
+        }
+    Image expected(pixels);
+    for (unsigned p = 0; p < pixels; ++p)
+        expected[p] = {f.color[p][0], f.color[p][1], f.color[p][2]};
+    for (unsigned passes = 0; passes <= 5; ++passes) {
+        auto filter = adapter(lease, passes);
+        require(execute(*filter, f, lease.queue()).empty(), "Protected reflection execution");
+        const auto actual = f.capture();
+        for (unsigned p = 0; p < pixels; ++p)
+            require(actual[p] == expected[p], "Protected reflection must exactly equal T0");
+    }
+    auto traced = adapter(lease, 5, 64, false, false, SpatialVariancePolicy::paired, true);
+    require(execute(*traced, f, lease.queue()).empty(), "Protected traced first frame");
+    f.inputs.reset_history = false;
+    for (auto &value : f.color)
+        for (unsigned c = 0; c < 3; ++c)
+            value[c] = -value[c];
+    require(execute(*traced, f, lease.queue()).empty(), "Protected traced temporal frame");
+    require(traced->stats().history_accepted == pixels, "Protection retains temporal history");
+    std::vector<Color> baseline_mean, baseline_variance;
+    for (const auto &entry : traced->diagnostic_textures()) {
+        if (!entry.name.starts_with("spatial."))
+            continue;
+        const auto row = (width * sizeof(Color) + 255) & ~std::size_t(255);
+        const auto bytes = row * height;
+        auto staging = [lease.device() newBufferWithLength:bytes
+                                                   options:MTLResourceStorageModeShared];
+        auto command = [lease.queue() commandBuffer];
+        auto blit = [command blitCommandEncoder];
+        require(staging && command && blit, "Protected trace readback allocation");
+        [blit copyFromTexture:entry.texture
+                         sourceSlice:0
+                         sourceLevel:0
+                        sourceOrigin:MTLOriginMake(0, 0, 0)
+                          sourceSize:MTLSizeMake(width, height, 1)
+                            toBuffer:staging
+                   destinationOffset:0
+              destinationBytesPerRow:row
+            destinationBytesPerImage:bytes];
+        [blit endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        require(command.status == MTLCommandBufferStatusCompleted, "Protected trace readback");
+        std::vector<Color> captured(pixels);
+        for (unsigned y = 0; y < height; ++y)
+            std::memcpy(captured.data() + y * width,
+                        static_cast<const std::byte *>(staging.contents) + y * row,
+                        width * sizeof(Color));
+        const auto *data = captured.data();
+        auto &baseline = entry.name.ends_with(".mean") ? baseline_mean : baseline_variance;
+        if (baseline.empty())
+            baseline.assign(data, data + pixels);
+        else
+            require(std::equal(baseline.begin(), baseline.end(), data),
+                    "Every protected pass copies full mean and variance exactly");
+    }
+    require(!baseline_mean.empty() && !baseline_variance.empty() && baseline_variance[0][0] > 0,
+            "Protected pass identity must include nonzero temporal variance");
+    f.inputs.reset_history = true;
+    for (unsigned p = 0; p < pixels; ++p)
+        for (unsigned c = 0; c < 3; ++c)
+            f.color[p][c] = float(expected[p][c]);
+    std::fill(f.protection.begin(), f.protection.end(), 0);
+    auto old = adapter(lease, 5);
+    require(execute(*old, f, lease.queue()).empty(), "Unprotected reflection control");
+    const auto blurred = f.capture();
+    double error = 0;
+    for (unsigned p = 0; p < pixels; ++p)
+        error += std::abs(blurred[p][0] - expected[p][0]);
+    require(error / pixels > .001, "Old spatial support must lose analytic reflection detail");
+    // Same identity/normal/albedo on either side: only the semantic flag can
+    // prevent protected radiance from changing the diffuse center or variance.
+    for (bool flipped : {false, true}) {
+        for (unsigned p = 0; p < pixels; ++p) {
+            const bool protected_side = ((p % width) < width / 2) != flipped;
+            f.protection[p] = protected_side ? 1 : 0;
+            f.normal[p] = {0, 0, 1, 0};
+            f.color[p] = protected_side ? Color{.55f, -.55f, 1.1f, 1} : Color{.5f, -.5f, 1.f, 1};
+        }
+        for (bool prefilter : {false, true}) {
+            auto filter =
+                adapter(lease, 5, 64, prefilter, false,
+                        prefilter ? SpatialVariancePolicy::center : SpatialVariancePolicy::paired);
+            require(execute(*filter, f, lease.queue()).empty(), "Symmetric protected boundary");
+            const auto actual = f.capture();
+            for (unsigned p = 0; p < pixels; ++p)
+                for (unsigned c = 0; c < 3; ++c)
+                    require(actual[p][c] == f.color[p][c],
+                            "Spatial boundary must not exchange RGB");
+        }
+    }
+    f.protection[0] = 2;
+    auto invalid = adapter(lease, 0);
+    require(!execute(*invalid, f, lease.queue()).empty(), "Nonboolean protection must fail");
+}
 void failure_and_validation(MetalFrameLease &lease) {
     require(TemporalDenoiser::owned_resource_bytes(0, height) == UINT64_MAX,
             "Invalid budget dimensions");
@@ -842,6 +956,7 @@ int main() {
             curved_primitive(*acquired.lease);
             variance_policy_signals(*acquired.lease);
             reprojection(*acquired.lease);
+            delta_detail(*acquired.lease);
             failure_and_validation(*acquired.lease);
             counter_sizes(scene);
             std::cout << "Signed temporal denoiser numerical/API qualification passed; image "

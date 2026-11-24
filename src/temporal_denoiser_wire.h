@@ -4,7 +4,7 @@
 namespace rypath {
 namespace temporal_denoiser_wire {
 using Word = render_wire::Word;
-enum : Word { version = 2, maximum_history = 64, maximum_iterations = 5 };
+enum : Word { version = 3, maximum_history = 64, maximum_iterations = 5 };
 enum Failure : Word { invalid_input = 1u, arithmetic_overflow = 2u, invalid_history = 4u };
 struct Config {
     Word width, height, history_limit, reset_history;
@@ -46,7 +46,8 @@ enum Texture : Word {
     output_id,
     spatial_position_id,
     spatial_normal_id,
-    spatial_group_id
+    spatial_group_id,
+    spatial_protection_id
 };
 struct Contract {
     Word version, config_bytes, counters_bytes, texture_count;

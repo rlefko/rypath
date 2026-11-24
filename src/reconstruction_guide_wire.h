@@ -4,7 +4,7 @@
 namespace rypath {
 namespace reconstruction_guide_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 3, node_count = 16 };
+enum : Word { contract = 4, node_count = 16 };
 enum Flag : Word { media_scene = 1u, signed_temporal = 2u };
 enum Failure : Word {
     invalid_config = 1u,
@@ -60,6 +60,7 @@ enum Argument : Word {
     spatial_position_id,
     spatial_normal_id,
     spatial_group_id,
+    spatial_protection_id,
     continuity_id
 };
 struct Contract {

@@ -21,9 +21,10 @@ struct TemporalDenoiserInputs {
     id<MTLTexture> identity =
         nil; // RGBA32Uint(instance,primitive,kind,material), all UINT_MAX sky.
     id<MTLTexture> spatial_position = nil,
-                   spatial_normal = nil; // Camera-relative xyz / geometric normal, RGBA32Float.
-    id<MTLTexture> spatial_group = nil;  // R32Uint; indexed connected coplanar triangles.
-    id<MTLTexture> output = nil;         // Distinct RGBA32Float, shader-write usage.
+                   spatial_normal = nil;     // Camera-relative xyz / geometric normal, RGBA32Float.
+    id<MTLTexture> spatial_group = nil;      // R32Uint; indexed connected coplanar triangles.
+    id<MTLTexture> spatial_protection = nil; // R32Uint; 0 or 1, primary delta contribution.
+    id<MTLTexture> output = nil;             // Distinct RGBA32Float, shader-write usage.
     bool reset_history = true;
 };
 struct TemporalDenoiserStats {

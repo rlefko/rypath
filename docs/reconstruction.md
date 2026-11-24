@@ -352,3 +352,60 @@ Primary platform references: Apple's [MetalFX integration session](https://devel
 [temporal denoised scaler](https://developer.apple.com/documentation/metalfx/mtlfxtemporaldenoisedscaler),
 [roughness guide](https://developer.apple.com/documentation/metalfx/mtlfxtemporaldenoisedscalerbase/roughnesstexture),
 and [GPU feature limits](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf).
+
+## Primary delta detail protection
+
+Pavilion's pool ripples survive temporal averaging but are erased by the earlier
+five-pass spatial filter: almost identical primary normals can reflect very
+different parts of the scene. Primary geometry alone does not establish
+correspondence for that reflected detail. [NRD's integration guidance](https://github.com/NVIDIA-RTX/NRD/blob/master/README.md#interaction-with-primary-surface-replacements)
+describes secondary-hit and virtual-surface data for this problem, alongside
+separate diffuse/specular signals. The policy below is a conservative fallback
+for our combined signed RGB, not an implementation of NRD or those secondary
+correspondence methods.
+
+Signed spatial reconstruction consumes a separate `R32Uint` primary-material
+protection guide (0 or 1). A protected center copies its source mean and variance
+exactly in every spatial pass; unprotected centers reject protected taps in the
+cold local-variance proxy, variance prefilter and spatial stencil. Temporal
+correspondence and accumulation retain their existing rules. Zero through five
+spatial passes therefore retain the same temporal-only RGB at protected pixels.
+The raw spectral estimator and its accumulation are unchanged.
+
+Eligibility follows prepared BSDF semantics, rather than the maximum-roughness
+appearance proxy. Smooth conductors, solid and thin dielectrics, glTF delta
+reflection, and smooth coating interfaces or conductor substrates protect the
+combined RGB as potential primary/secondary detail. Smooth index-matched
+transmission is included. Reflection potential is conservative across wavelength
+and incidence: a zero Fresnel value at one sample does not remove protection.
+The existing scalar-graph contract makes mix weights and roughness independent
+of wavelength; one bounded material-tree walk at 550 nm ORs positive-weight leaves.
+The walk stops after 256 entered nodes; unresolved shared-DAG support
+conservatively protects the pixel. This budget fallback describes unknown
+support, not an observed delta contribution. Exactly zero-weight mix branches
+are excluded. Null boundaries pass through visibility; null-containing mixes
+remain explicitly unsupported by scene validation. The classifier treats a null
+leaf as potential delta transmission if that restriction is relaxed in the future.
+
+Primary eligibility is retained independently of secondary appearance normal
+replacements. Combined coated/mixed RGB may consequently retain more noise,
+including diffuse contributions. A two-knot equal-value IOR is proven constant
+only with endpoint extension or coverage of the full 360–830 nm domain; ordinary
+rough constant-IOR glass and coatings remain filterable. Other spectral curves
+or textured dielectric IOR are conservatively protected even with rough
+microfacets: an unsampled wavelength may be index matched and therefore transmit
+a delta event. This intentionally overprotects spectral IOR curves that never
+reach one.
+
+Sky and diffuse leaves remain spatially supported. Measured/Fourier table BSDFs
+expose continuous densities and remain unprotected; their reflected-feature
+correspondence is unknown. This fallback does not establish secondary-hit
+correspondence or guarantee preservation for glossy or moving reflections.
+Guide ABI 4 at this stage, temporal ABI 3 and snapshot schema 3 make the new required input
+explicit; older replay snapshots must be recaptured. Focused tests specify the
+new deterministic contracts. As inherited upstream evidence, on M4 Max production source `dad28bce1521` passes
+all seven focused reconstruction tests with Metal API validation, including
+protected reflection stripes, nonzero variance, material boundaries and guide
+classification. A separate 32×32 two-frame capture replays exactly and rejects
+schema-2 or missing-mask inputs. Native image-quality qualification is pending;
+earlier validation records remain historical.

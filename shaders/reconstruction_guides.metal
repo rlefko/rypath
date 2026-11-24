@@ -21,6 +21,7 @@ struct ReconstructionGuideArguments {
     texture2d<float, access::write> spatial_position [[id(gw::spatial_position_id)]];
     texture2d<float, access::write> spatial_normal [[id(gw::spatial_normal_id)]];
     texture2d<uint, access::write> spatial_group [[id(gw::spatial_group_id)]];
+    texture2d<uint, access::write> spatial_protection [[id(gw::spatial_protection_id)]];
     device const uint *continuity [[id(gw::continuity_id)]];
 };
 inline void reconstruction_guide_fail(constant ReconstructionGuideArguments &a, uint flag) {
@@ -297,6 +298,139 @@ inline bool reconstruction_guide_optical(const thread SurfaceAlpha &resources,
         return false;
     }
 }
+// O(1) proof over transport's 360..830 nm support. Without endpoint
+// extension a short pair becomes eta=0 (then eta=1) outside its domain.
+inline bool reconstruction_guide_constant_ior(const device wire::SpectralKnot *knots, uint begin,
+                                              uint count, uint total, bool extend, uint root) {
+    if (root != 0xffffffffu || begin > total || count > total - begin)
+        return false;
+    // Single-knot optical inputs remain invalid in prepare_scattering.
+    return count == 2 && knots[begin].value == knots[begin + 1].value &&
+           (extend || (knots[begin].wavelength <= 360 && knots[begin + 1].wavelength >= 830));
+}
+// Primary material semantics, independent of roughness/albedo guide proxies and
+// appearance replacements. Any active delta lobe protects the combined RGB.
+inline bool reconstruction_guide_delta(const thread SurfaceAlpha &resources,
+                                       const device wire::Material &m,
+                                       const device wire::SpectralKnot *knots,
+                                       graph_wire::Context context, float wavelength,
+                                       thread bool &protect) {
+    protect = false;
+    // Table BSDFs expose continuous densities only; their reflected-feature
+    // correspondence remains unknown. Diffuse leaves have no delta lobe.
+    if (m.scattering == 0 || m.scattering == 4 || m.scattering == 7 || m.scattering == 8)
+        return true;
+    if (m.scattering == 10) {
+        protect = true; // Nonzero null mix leaves can transmit secondary detail.
+        return true;
+    }
+    float rho;
+    rypath_scattering::Prepared prepared{};
+    const constant auto &p = *resources.parameters;
+    if (!reconstruction_guide_reflectance(resources, m, knots, context, wavelength, rho) ||
+        !prepare_scattering(m,
+                            material_auxiliary(m, resources.material_data, p.material_data_words),
+                            rho, knots, p, resources.graph, context, wavelength,
+                            resources.material_data, resources.graph.images.spectra, prepared))
+        return false;
+    const auto aux = material_auxiliary(m, resources.material_data, p.material_data_words);
+    // Spectral/textured IOR may equal one away from 550 nm, making even a
+    // rough dielectric a delta transmitter. Protect potential support without
+    // claiming that a finite set of wavelength samples proves its absence.
+    const bool spectral_eta = !reconstruction_guide_constant_ior(
+        knots, m.eta_begin, m.eta_count, p.knot_count, (m.optical_extensions & 1u) != 0,
+        aux ? aux->eta_root : 0xffffffffu);
+    switch (prepared.kind) {
+    case 1:
+        protect = prepared.conductor.smooth;
+        return true;
+    case 2:
+        protect = prepared.dielectric.smooth || spectral_eta;
+        return true;
+    case 3:
+        protect = true;
+        return true;
+    case 5:
+    case 6: {
+        const bool spectral_interface =
+            prepared.kind == 5
+                ? spectral_eta
+                : (!aux ||
+                   !reconstruction_guide_constant_ior(
+                       knots, aux->interface_eta_begin, aux->interface_eta_count, p.knot_count,
+                       aux->interface_eta_extend != 0, aux->interface_eta_root));
+        protect = prepared.layered.interface.smooth || spectral_interface;
+        if (prepared.kind == 6)
+            protect = protect || prepared.layered.conductor.smooth;
+        return true;
+    }
+    case 11:
+        protect = prepared.gltf.alpha == 0;
+        return true;
+    }
+    return false;
+}
+// The visibility selector above follows one mix branch. Protection must visit
+// every positive-weight branch instead; boolean eligibility avoids product
+// underflow dropping a small but nonzero contribution. Host validation forbids cycles.
+inline bool reconstruction_guide_protection(const thread SurfaceAlpha &resources, uint root,
+                                            const device wire::SpectralKnot *knots,
+                                            graph_wire::Context context, float wavelength,
+                                            thread bool &protect) {
+    if (root >= resources.parameters->material_count)
+        return false;
+    if (resources.materials[root].scattering != 9)
+        return reconstruction_guide_delta(resources, resources.materials[root], knots, context,
+                                          wavelength, protect);
+    struct Frame {
+        uint material, phase;
+    };
+    Frame stack[65];
+    stack[0] = {root, 0};
+    uint depth = 1, entered = 0;
+    const constant auto &p = *resources.parameters;
+    while (depth) {
+        thread auto &f = stack[depth - 1];
+        if (f.material >= p.material_count)
+            return false;
+        if (f.phase == 0 && ++entered > 256) {
+            // Repeated shared DAG branches have unknown remaining support;
+            // conservatively preserve detail without unbounded guide work.
+            protect = true;
+            return true;
+        }
+        const device auto &m = resources.materials[f.material];
+        if (m.scattering != 9) {
+            bool leaf;
+            if (!reconstruction_guide_delta(resources, m, knots, context, wavelength, leaf))
+                return false;
+            if (leaf) {
+                protect = true;
+                return true; // OR classification needs no remaining leaves.
+            }
+            --depth;
+            continue;
+        }
+        const auto aux = material_auxiliary(m, resources.material_data, p.material_data_words);
+        float amount;
+        if (!aux ||
+            !parameter_value(aux->mix_amount_root, aux->mix_amount, resources.graph, context,
+                             wavelength, amount) ||
+            !isfinite(amount))
+            return false;
+        if (f.phase == 2) {
+            --depth;
+            continue;
+        }
+        const uint phase = f.phase++;
+        if ((phase == 0 && amount >= 1) || (phase == 1 && amount <= 0))
+            continue;
+        if (depth == 65)
+            return false;
+        stack[depth++] = {phase == 0 ? aux->first_material : aux->second_material, 0};
+    }
+    return true;
+}
 kernel void rypath_reconstruction_guide_contract(device gw::Contract *out [[buffer(0)]]) {
     *out = {gw::contract,
             sizeof(gw::Config),
@@ -454,6 +588,7 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
     float3 geometric_normal(0);
     uint spatial_group = 0xffffffffu;
     float roughness = 1;
+    bool spatial_protection = false;
     if (background) {
         reconstruction_guide_count(a, &a.counters->background);
     } else {
@@ -491,6 +626,12 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
         uint material = instance.material;
         if (mixed &&
             !reconstruction_guide_material(resources, instance, point, context, material)) {
+            reconstruction_guide_fail(a, gw::invalid_material);
+            return;
+        }
+        if ((a.config->flags & gw::signed_temporal) &&
+            !reconstruction_guide_protection(resources, instance.material, knots, context, 550.f,
+                                             spatial_protection)) {
             reconstruction_guide_fail(a, gw::invalid_material);
             return;
         }
@@ -593,6 +734,7 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
         a.spatial_position.write(float4(relative, 0), pixel);
         a.spatial_normal.write(float4(geometric_normal, 0), pixel);
         a.spatial_group.write(uint4(spatial_group, 0, 0, 0), pixel);
+        a.spatial_protection.write(uint4(spatial_protection ? 1u : 0u, 0, 0, 0), pixel);
     }
 }
 #undef RYPATH_RECONSTRUCTION_GUIDE_PARAMETERS
