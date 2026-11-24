@@ -156,7 +156,7 @@ independent references remain separate. Historical validation below predates thi
 adapted integration; current combined validation is pending.
 
 
-Current snapshots use schema 3 and temporal wire version 3. They archive the
+Current snapshots use schema 3, guide ABI 5 and temporal wire version 3. They archive the
 required `input.spatial_protection` R32Uint primary-material flag with the other
 quantized inputs and record `primary-prepared-delta-v1` provenance. Replay rejects
 older snapshots instead of substituting a missing flag. The schema-2 replay
