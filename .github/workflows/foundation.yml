@@ -115,7 +115,7 @@ jobs:
           fi
       - name: Build Debug with Metal shaders
         run: |
-          cmake --preset debug -DRYPATH_ALLOW_NO_METAL_DEVICE=ON -DRYPATH_ALLOW_NO_METAL_RAY_TRACING=ON
+          cmake --preset debug -DRYPATH_ALLOW_NO_METAL_DEVICE=ON -DRYPATH_ALLOW_NO_METAL_RAY_TRACING=ON -DRYPATH_ALLOW_NO_METALFX_DENOISER=ON
           cmake --build --preset debug
       - name: Analyze Objective-C++ source
         run: |

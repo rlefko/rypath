@@ -5,6 +5,7 @@
 #include "image_output.hpp"
 #include "mutation_shared.h"
 #include "pbrt_render.hpp"
+#include "reconstruction.hpp"
 #include "render_identity.hpp"
 
 #include <algorithm>
@@ -54,8 +55,10 @@ template <typename T> bool integer(std::string_view value, T &result) {
     return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size();
 }
 struct Options {
-    fs::path scene, output, capture, preview;
+    fs::path scene, output, capture, preview, reconstructed_capture;
     bool demo = false;
+    std::optional<rypath::ReconstructionMode> reconstruction;
+    std::uint32_t output_width = 0, output_height = 0;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
     rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
     rypath::FrameAreaOutput area_output = rypath::FrameAreaOutput::conditional_mean;
@@ -81,6 +84,13 @@ const char *area_output_name(rypath::FrameAreaOutput output) {
 const char *estimator_name(rypath::FrameEstimator estimator) {
     return estimator == rypath::FrameEstimator::area_replay ? "area-replay" : "independent";
 }
+const char *reconstruction_name(const std::optional<rypath::ReconstructionMode> &mode) {
+    if (!mode)
+        return "none";
+    return *mode == rypath::ReconstructionMode::metalfx    ? "metalfx"
+           : *mode == rypath::ReconstructionMode::temporal ? "temporal"
+                                                           : "raw-rgb";
+}
 std::string precise_float(float value) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
@@ -98,6 +108,8 @@ const char *usage =
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
+    "  [--reconstruction none|raw-rgb|metalfx|temporal (default: none)]\n"
+    "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
     "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
 std::string parse(int argc, char **argv, Options &o) {
     std::set<std::string_view> seen;
@@ -120,7 +132,26 @@ std::string parse(int argc, char **argv, Options &o) {
             o.capture = value;
         else if (key == "--preview")
             o.preview = value;
-        else if (key == "--estimator") {
+        else if (key == "--reconstructed-capture")
+            o.reconstructed_capture = value;
+        else if (key == "--output-width") {
+            if (!integer(value, o.output_width) || !o.output_width)
+                return "invalid output width";
+        } else if (key == "--output-height") {
+            if (!integer(value, o.output_height) || !o.output_height)
+                return "invalid output height";
+        } else if (key == "--reconstruction") {
+            if (value == "none")
+                o.reconstruction.reset();
+            else if (value == "raw-rgb")
+                o.reconstruction = rypath::ReconstructionMode::raw_rgb;
+            else if (value == "metalfx")
+                o.reconstruction = rypath::ReconstructionMode::metalfx;
+            else if (value == "temporal")
+                o.reconstruction = rypath::ReconstructionMode::temporal;
+            else
+                return "invalid reconstruction mode: " + std::string(value);
+        } else if (key == "--estimator") {
             if (value == "independent")
                 o.estimator = rypath::FrameEstimator::independent;
             else if (value == "area-replay")
@@ -188,6 +219,29 @@ std::string parse(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if (!o.reconstruction && (seen.contains("--output-width") || seen.contains("--output-height") ||
+                              !o.reconstructed_capture.empty()))
+        return "output dimensions and reconstructed capture require reconstruction";
+    if (!o.output_width)
+        o.output_width = o.width;
+    if (!o.output_height)
+        o.output_height = o.height;
+    if (o.reconstruction && (o.width > rypath::reconstruction_dimension_limit ||
+                             o.height > rypath::reconstruction_dimension_limit ||
+                             o.output_width > rypath::reconstruction_dimension_limit ||
+                             o.output_height > rypath::reconstruction_dimension_limit))
+        return "reconstruction dimensions exceed 16384";
+    if (o.reconstruction == rypath::ReconstructionMode::raw_rgb &&
+        (o.output_width != o.width || o.output_height != o.height))
+        return "raw-rgb output dimensions must equal input dimensions";
+    if (o.reconstruction == rypath::ReconstructionMode::temporal &&
+        (o.output_width != o.width || o.output_height != o.height))
+        return "temporal output dimensions must equal input dimensions";
+    if (o.reconstruction == rypath::ReconstructionMode::metalfx &&
+        (o.output_width < o.width || o.output_height < o.height))
+        return "metalfx does not support downscaling";
+    if (!o.reconstructed_capture.empty() && o.reconstructed_capture.extension() != ".exr")
+        return "--reconstructed-capture requires .exr";
     if (o.estimator == rypath::FrameEstimator::area_replay &&
         o.execution != rypath::FrameExecution::wavefront)
         return "area-replay requires wavefront execution";
@@ -266,10 +320,60 @@ class Output {
         if (!same(descriptor_, path_) || ::rename(pending_.c_str(), path_.c_str()))
             throw std::runtime_error("capture publication failed");
     }
+    void linear_rgb(const rypath::ReconstructionCapture &image,
+                    std::span<const std::pair<std::string, std::string>> metadata) {
+        if (image.status != rypath::GeometryStatus::success ||
+            image.linear_rgb.size() != std::uint64_t(image.width) * image.height)
+            throw std::runtime_error("incomplete reconstructed RGB capture");
+        if (!same(descriptor_, path_) || !same(pending_descriptor_, pending_))
+            throw std::runtime_error("reconstructed capture reservation changed");
+        std::vector<float> rgb;
+        rgb.reserve(image.linear_rgb.size() * 3);
+        for (const auto &pixel : image.linear_rgb)
+            rgb.insert(rgb.end(), pixel.begin(), pixel.end());
+        if (::ftruncate(pending_descriptor_, 0))
+            throw std::runtime_error("could not truncate reconstructed capture reservation");
+        std::uint64_t end = 0;
+        bool write_failed = false;
+        const auto error = rypath::encode_exr(
+            {image.width, image.height, rgb, rypath::ExrPrecision::float32, metadata},
+            [&](std::uint64_t offset, std::span<const std::uint8_t> bytes) {
+                const auto maximum = std::uint64_t(std::numeric_limits<off_t>::max());
+                if (offset > maximum || bytes.size() > maximum - offset) {
+                    write_failed = true;
+                    return false;
+                }
+                while (!bytes.empty()) {
+                    const auto requested =
+                        std::min<std::size_t>(bytes.size(), std::numeric_limits<ssize_t>::max());
+                    const auto written =
+                        ::pwrite(pending_descriptor_, bytes.data(), requested, off_t(offset));
+                    if (written < 0 && errno == EINTR)
+                        continue;
+                    if (written <= 0) {
+                        write_failed = true;
+                        return false;
+                    }
+                    offset += std::uint64_t(written);
+                    bytes = bytes.subspan(std::size_t(written));
+                }
+                end = std::max(end, offset);
+                return true;
+            },
+            {.max_dimension = std::max(image.width, image.height),
+             .retained_bytes = rgb.size() * sizeof(float)});
+        if (write_failed || !error.empty())
+            throw std::runtime_error(write_failed ? "reconstructed EXR positioned write failed"
+                                                  : error);
+        if (::ftruncate(pending_descriptor_, off_t(end)) || ::fsync(pending_descriptor_) ||
+            !same(descriptor_, path_) || !same(pending_descriptor_, pending_) ||
+            ::rename(pending_.c_str(), path_.c_str()))
+            throw std::runtime_error("reconstructed capture publication failed");
+    }
 };
 void validate_paths(const Options &o, const std::vector<fs::path> &inputs) {
     std::set<fs::path> outputs;
-    for (const auto &path : {o.output, o.capture, o.preview}) {
+    for (const auto &path : {o.output, o.capture, o.preview, o.reconstructed_capture}) {
         if (path.empty())
             continue;
         for (auto candidate : {path, fs::path(path.string() + ".pending")}) {
@@ -368,13 +472,43 @@ struct Observation : rypath::FrameStatisticsSample {
                   mutation_accepts = 0;
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
     bool history_used = false;
+    rypath::FrameStatisticsSample pipeline;
+    std::optional<rypath::ReconstructionInfo> reconstruction;
+    double reconstruction_wall_seconds = 0;
+    bool reconstruction_started = false;
     std::string diagnostic;
 };
+void write_counters(std::ostream &out, const rypath::ReconstructionCounters &c) {
+    const std::array<std::pair<const char *, std::uint32_t>, 16> fields{
+        {{"failure", c.failure},
+         {"completed", c.completed},
+         {"color_negative", c.color_negative},
+         {"color_high", c.color_high},
+         {"albedo_clamped", c.albedo_clamped},
+         {"roughness_clamped", c.roughness_clamped},
+         {"mix_fallback", c.mix_fallback},
+         {"measured_fallback", c.measured_fallback},
+         {"fourier_fallback", c.fourier_fallback},
+         {"layered_approximation", c.layered_approximation},
+         {"transmission_approximation", c.transmission_approximation},
+         {"normal_approximation", c.normal_approximation},
+         {"passthrough", c.passthrough},
+         {"media_approximation", c.media_approximation},
+         {"invalid_previous", c.invalid_previous},
+         {"background", c.background}}};
+    out << '{';
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        if (i)
+            out << ',';
+        out << quote(fields[i].first) << ':' << fields[i].second;
+    }
+    out << '}';
+}
 struct Report {
     Options options;
     std::string diagnostic, device, architecture, integrator, os, source_identity;
     std::uint64_t registry_id = 0, warmup_completed = 0, frames_completed = 0;
-    double startup_seconds = 0, warmup_seconds = 0;
+    double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
     std::vector<std::string> provenance;
     std::vector<fs::path> dependencies;
@@ -394,6 +528,13 @@ struct Report {
             << ",\"device\":{\"name\":" << quote(device)
             << ",\"architecture\":" << quote(architecture) << ",\"registry_id\":" << registry_id
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
+            << ",\"reconstruction\":" << quote(reconstruction_name(options.reconstruction))
+            << ",\"internal_width\":" << options.width << ",\"internal_height\":" << options.height
+            << ",\"output_width\":" << options.output_width
+            << ",\"output_height\":" << options.output_height
+            << ",\"output_pixels_per_input_pixel\":"
+            << double(std::uint64_t(options.output_width) * options.output_height) /
+                   double(std::uint64_t(options.width) * options.height)
             << ",\"seed\":" << options.seed << ",\"material_seed\":" << options.material_seed
             << ",\"execution\":" << quote(execution_name(options.execution))
             << ",\"estimator\":" << quote(estimator_name(options.estimator))
@@ -440,6 +581,12 @@ struct Report {
             << ",\"consumed_sample_indices\":" << observations.size()
             << ",\"startup_seconds\":" << startup_seconds
             << ",\"warmup_seconds\":" << warmup_seconds
+            << ",\"reconstruction_startup_seconds\":" << reconstruction_startup_seconds
+            << ",\"reconstruction_startup_in_first_frame_wall\":true"
+            << ",\"frame_completion_fields\":\"complete is raw; pipeline_complete includes "
+               "reconstruction\""
+            << ",\"pipeline_GPU_scope\":\"raw plus reconstruction commands; CPU gaps excluded; "
+               "creation frame omitted because startup GPU probe is not separately timed\""
             << ",\"capture_in_frame_timing\":false,\"GPU_time_source\":\"command-buffer-"
                "timestamps\","
                "\"overrides\":[\"authored resolution -> CLI resolution\","
@@ -462,6 +609,17 @@ struct Report {
         }
         out << "],\"frames\":[";
         const auto statistics = rypath::summarize_frames(observations);
+        std::vector<rypath::FrameStatisticsSample> pipeline_samples;
+        double pipeline_wall = 0;
+        std::uint64_t pipeline_count = 0;
+        for (const auto &sample : observations) {
+            pipeline_samples.push_back(sample.pipeline);
+            if (!sample.warmup) {
+                pipeline_wall += sample.pipeline.cpu_seconds;
+                pipeline_count += sample.pipeline.complete;
+            }
+        }
+        const auto pipeline_statistics = rypath::summarize_frames(pipeline_samples);
         for (std::size_t i = 0; i < observations.size(); ++i) {
             const auto &f = observations[i];
             if (i)
@@ -485,6 +643,49 @@ struct Report {
                 out << *f.gpu_seconds;
             else
                 out << "null";
+            out << ",\"pipeline_complete\":" << (f.pipeline.complete ? "true" : "false")
+                << ",\"pipeline_cpu_wall_seconds\":" << f.pipeline.cpu_seconds
+                << ",\"pipeline_gpu_seconds\":";
+            if (f.pipeline.gpu_seconds)
+                out << *f.pipeline.gpu_seconds;
+            else
+                out << "null";
+            out << ",\"reconstruction\":";
+            if (!options.reconstruction)
+                out << "null";
+            else {
+                out << "{\"mode\":" << quote(reconstruction_name(options.reconstruction))
+                    << ",\"attempted\":" << (f.reconstruction_started ? "true" : "false")
+                    << ",\"complete\":"
+                    << (f.reconstruction &&
+                                f.reconstruction->status == rypath::ReconstructionStatus::complete
+                            ? "true"
+                            : "false")
+                    << ",\"cpu_wall_seconds\":" << f.reconstruction_wall_seconds
+                    << ",\"gpu_seconds\":";
+                if (f.reconstruction && f.reconstruction->gpu_time_valid)
+                    out << f.reconstruction->gpu_seconds;
+                else
+                    out << "null";
+                out << ",\"command_count\":"
+                    << (f.reconstruction ? f.reconstruction->command_count : 0)
+                    << ",\"history_reset\":"
+                    << (f.reconstruction ? (f.reconstruction->history_reset ? "true" : "false")
+                                         : "null")
+                    << ",\"defocus_approximation\":"
+                    << (f.reconstruction && f.reconstruction->defocus_approximation ? "true"
+                                                                                    : "false")
+                    << ",\"width\":" << options.output_width
+                    << ",\"height\":" << options.output_height << ",\"history_accepted\":"
+                    << (f.reconstruction ? f.reconstruction->history_accepted : 0)
+                    << ",\"history_rejected\":"
+                    << (f.reconstruction ? f.reconstruction->history_rejected : 0)
+                    << ",\"counters\":";
+                write_counters(out, f.reconstruction ? f.reconstruction->counters
+                                                     : rypath::ReconstructionCounters{});
+                out << ",\"diagnostic\":"
+                    << quote(f.reconstruction ? f.reconstruction->diagnostic : f.diagnostic) << '}';
+            }
             out << ",\"diagnostic\":" << quote(f.diagnostic) << '}';
         }
         out << "],\"summary\":{\"percentile_method\":\"nearest-rank\",\"excludes_warmup_and_failed_"
@@ -505,7 +706,20 @@ struct Report {
         summary("cpu_wall", statistics.cpu);
         out << ',';
         summary("GPU", statistics.gpu);
-        out << ",\"missing_GPU_timestamps\":" << statistics.missing_gpu_timestamps << "}}\n";
+        out << ",\"missing_GPU_timestamps\":" << statistics.missing_gpu_timestamps
+            << "},\"pipeline_summary\":{"
+               "\"percentile_method\":\"nearest-rank\",\"excludes_warmup_and_failed_frames\":true,";
+        summary("cpu_wall", pipeline_statistics.cpu);
+        out << ',';
+        summary("GPU", pipeline_statistics.gpu);
+        out << ",\"missing_GPU_timestamps\":" << pipeline_statistics.missing_gpu_timestamps
+            << ",\"completed_frames\":" << pipeline_count
+            << ",\"measured_wall_seconds\":" << pipeline_wall << ",\"frames_per_second\":";
+        if (pipeline_wall > 0)
+            out << double(pipeline_count) / pipeline_wall;
+        else
+            out << "null";
+        out << "}}\n";
         return out.str();
     }
 };
@@ -513,10 +727,19 @@ int run(const Options &options) {
     const auto start = Clock::now();
     Report report;
     report.options = options;
+    report.provenance.push_back(std::string("reconstruction mode ") +
+                                reconstruction_name(options.reconstruction));
+    report.provenance.push_back("transport resolution " + std::to_string(options.width) + "x" +
+                                std::to_string(options.height) + "; reconstruction output " +
+                                std::to_string(options.output_width) + "x" +
+                                std::to_string(options.output_height));
+    if (options.reconstruction)
+        report.provenance.push_back("reconstructed output is separate unexposed linear RGB "
+                                    "presentation data; raw XYZ is retained");
     struct utsname system {};
     if (::uname(&system) == 0)
         report.os = std::string(system.sysname) + " " + system.release + " " + system.machine;
-    Output output, capture, preview;
+    Output output, capture, preview, reconstructed_capture;
     bool reserved = false;
     int code = 1;
     try {
@@ -536,6 +759,8 @@ int run(const Options &options) {
             capture.reserve(options.capture);
         if (!options.preview.empty())
             preview.reserve(options.preview);
+        if (!options.reconstructed_capture.empty())
+            reconstructed_capture.reserve(options.reconstructed_capture);
         rypath::RenderScene scene;
         if (checked) {
             if (checked->exit_code() != 0) {
@@ -555,7 +780,9 @@ int run(const Options &options) {
                         authored_packet_policy = true;
                 }
             }
-            report.provenance = overrides(*checked, options);
+            const auto benchmark_overrides = overrides(*checked, options);
+            report.provenance.insert(report.provenance.end(), benchmark_overrides.begin(),
+                                     benchmark_overrides.end());
             auto translated = rypath::pbrt::translate(*checked, {options.scene.string()});
             for (const auto &diagnostic : translated.diagnostics)
                 std::cerr << rypath::pbrt::format_diagnostic(diagnostic);
@@ -654,6 +881,8 @@ int run(const Options &options) {
         } else {
             const auto warmup_start = Clock::now();
             std::unique_ptr<rypath::Frame> last;
+            std::unique_ptr<rypath::ReconstructionStream> reconstruction;
+            std::unique_ptr<rypath::ReconstructedFrame> last_reconstructed;
             for (std::uint64_t sample = 0; sample < options.warmup + options.frames; ++sample) {
                 const bool warmup = sample < options.warmup;
                 if (sample == options.warmup)
@@ -664,6 +893,7 @@ int run(const Options &options) {
                 Observation observation;
                 observation.sample_index = sample;
                 observation.warmup = warmup;
+                observation.pipeline.warmup = warmup;
                 if (submitted.status != rypath::GeometryStatus::success || !submitted.frame) {
                     observation.cpu_seconds = seconds(frame_start);
                     observation.diagnostic = submitted.diagnostic;
@@ -694,11 +924,79 @@ int run(const Options &options) {
                     if (info.gpu_time_valid && std::isfinite(info.gpu_seconds) &&
                         info.gpu_seconds >= 0)
                         observation.gpu_seconds = info.gpu_seconds;
+                    if (observation.complete && options.reconstruction) {
+                        const auto reconstruction_start = Clock::now();
+                        observation.reconstruction_started = true;
+                        bool created = false;
+                        try {
+                            if (!reconstruction) {
+                                created = true;
+                                const auto creation_start = Clock::now();
+                                auto stream = rypath::build_reconstruction_stream(
+                                    *submitted.frame, {.mode = *options.reconstruction,
+                                                       .output_width = options.output_width,
+                                                       .output_height = options.output_height});
+                                report.reconstruction_startup_seconds = seconds(creation_start);
+                                if (stream.status != rypath::GeometryStatus::success ||
+                                    !stream.stream)
+                                    observation.diagnostic =
+                                        stream.diagnostic.empty()
+                                            ? "reconstruction stream unavailable"
+                                            : stream.diagnostic;
+                                else
+                                    reconstruction = std::move(stream.stream);
+                            }
+                            if (reconstruction) {
+                                auto reconstructed = reconstruction->submit(*submitted.frame);
+                                if (reconstructed.status != rypath::GeometryStatus::success ||
+                                    !reconstructed.frame)
+                                    observation.diagnostic =
+                                        reconstructed.diagnostic.empty()
+                                            ? "reconstruction submission failed"
+                                            : reconstructed.diagnostic;
+                                else {
+                                    observation.reconstruction = reconstructed.frame->wait();
+                                    if (observation.reconstruction->status !=
+                                        rypath::ReconstructionStatus::complete)
+                                        observation.diagnostic =
+                                            observation.reconstruction->diagnostic.empty()
+                                                ? "reconstruction failed"
+                                                : observation.reconstruction->diagnostic;
+                                    else
+                                        last_reconstructed = std::move(reconstructed.frame);
+                                }
+                            }
+                        } catch (const std::exception &error) {
+                            observation.diagnostic = error.what();
+                        }
+                        observation.reconstruction_wall_seconds = seconds(reconstruction_start);
+                        if (created && report.reconstruction_startup_seconds == 0)
+                            report.reconstruction_startup_seconds =
+                                observation.reconstruction_wall_seconds;
+                        observation.pipeline.complete = observation.reconstruction &&
+                                                        observation.reconstruction->status ==
+                                                            rypath::ReconstructionStatus::complete;
+                        if (observation.pipeline.complete && !created && observation.gpu_seconds &&
+                            observation.reconstruction->gpu_time_valid &&
+                            std::isfinite(observation.reconstruction->gpu_seconds) &&
+                            observation.reconstruction->gpu_seconds >= 0) {
+                            const auto sum =
+                                *observation.gpu_seconds + observation.reconstruction->gpu_seconds;
+                            if (std::isfinite(sum))
+                                observation.pipeline.gpu_seconds = sum;
+                        }
+                    }
                     if (observation.complete)
                         last = std::move(submitted.frame);
                 }
+                if (!options.reconstruction) {
+                    observation.pipeline.complete = observation.complete;
+                    observation.pipeline.gpu_seconds = observation.gpu_seconds;
+                    observation.pipeline.cpu_seconds = observation.cpu_seconds;
+                } else
+                    observation.pipeline.cpu_seconds = seconds(frame_start);
                 report.observations.push_back(observation);
-                if (!observation.complete) {
+                if (!observation.pipeline.complete) {
                     report.diagnostic = observation.diagnostic.empty()
                                             ? "frame incomplete or sample count mismatch"
                                             : observation.diagnostic;
@@ -792,6 +1090,61 @@ int run(const Options &options) {
                     film.exposure = scene.exposure;
                     preview.image(film, false);
                 }
+            }
+            if (last_reconstructed && !options.reconstructed_capture.empty()) {
+                const auto info = last_reconstructed->poll();
+                const auto image = last_reconstructed->capture();
+                if (image.status != rypath::GeometryStatus::success)
+                    throw std::runtime_error("reconstructed capture failed: " + image.diagnostic);
+                const std::vector<std::pair<std::string, std::string>> metadata{
+                    {"rypath.output.kind",
+                     *options.reconstruction == rypath::ReconstructionMode::metalfx
+                         ? "metalfx-denoised-linear-rgb"
+                     : *options.reconstruction == rypath::ReconstructionMode::temporal
+                         ? "temporal-denoised-linear-rgb"
+                         : "raw-rgb-color-conversion"},
+                    {"rypath.recon.mode", reconstruction_name(options.reconstruction)},
+                    {"rypath.output.space", "linear-srgb"},
+                    {"rypath.recon.exposure", "1"},
+                    {"rypath.recon.reset", info.history_reset ? "true" : "false"},
+                    {"rypath.recon.defocus", info.defocus_approximation ? "true" : "false"},
+                    {"rypath.frame.sample", std::to_string(info.source.sample_index)},
+                    {"rypath.frame.epoch", std::to_string(info.source.epoch)},
+                    {"rypath.frame.seed", std::to_string(options.seed)},
+                    {"rypath.frame.material_seed", std::to_string(options.material_seed)},
+                    {"rypath.frame.estimator", estimator_name(options.estimator)},
+                    {"rypath.area.contract",
+                     std::to_string(options.estimator == rypath::FrameEstimator::area_replay
+                                        ? rypath::area_wire::contract
+                                        : 0)},
+                    {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
+                                               ? area_output_name(options.area_output)
+                                               : "not-applicable"},
+                    {"rypath.area.target", options.estimator == rypath::FrameEstimator::area_replay
+                                               ? "quarter-l1-v1"
+                                               : "none"},
+                    {"rypath.area.source_mis",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? "source-target-mis-v1"
+                         : "none"},
+                    {"rypath.area.temporal_reuse",
+                     options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
+                    {"rypath.area.mutations",
+                     std::to_string(options.estimator == rypath::FrameEstimator::area_replay
+                                        ? options.mutation_steps
+                                        : 0)},
+                    {"rypath.area.serial", std::to_string(info.source.area_serial)},
+                    {"rypath.internal.width", std::to_string(options.width)},
+                    {"rypath.internal.height", std::to_string(options.height)},
+                    {"rypath.output.width", std::to_string(image.width)},
+                    {"rypath.output.height", std::to_string(image.height)},
+                    {"rypath.frame.source_identity", report.source_identity},
+                    {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
+                    {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},
+                    {"rypath.frame.intersections", profile_name(options.intersection_profile)},
+                    {"rypath.recon.color_negative", std::to_string(info.counters.color_negative)},
+                    {"rypath.recon.color_high", std::to_string(info.counters.color_high)}};
+                reconstructed_capture.linear_rgb(image, metadata);
             }
         }
     } catch (const std::exception &error) {

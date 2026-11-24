@@ -8,6 +8,7 @@
 namespace rypath {
 
 class RenderTimings;
+class MetalFrameLease;
 
 struct RenderRequest {
     std::uint32_t width = 0;
@@ -54,6 +55,7 @@ class MetalRenderScene {
 
   private:
     friend class FrameSession;
+    friend class MetalFrameLease;
     friend RenderBuildResult build_metal_renderer(const RenderScene &,
                                                   const std::filesystem::path &, RenderBuildOptions,
                                                   RenderTimings *);
