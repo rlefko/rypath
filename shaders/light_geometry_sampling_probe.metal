@@ -208,6 +208,10 @@ inline void protect(device probe::CanonicalProtected &out, const device Vertex &
 
 // Separate entrypoint intentionally uses only APIs available in old22 source.
 // The negative control excludes the later finalizer entrypoint, not this test.
+// These independent fixtures dispatch only 9/12 lanes including their guard lane.
+// Bound compiler threadgroup sizing for their large private Vertex copies; the
+// host's group_width also respects the resulting pipeline limit.
+[[max_total_threads_per_threadgroup(32)]]
 kernel void rypath_probe_canonical_partition(
     const device rypath::light_geometry_probe::CanonicalQuery *queries [[buffer(0)]],
     constant wire::Parameters *parameters [[buffer(1)]],
@@ -315,6 +319,7 @@ kernel void rypath_probe_canonical_partition(
 
 // Kept separate so an old-source negative-control TU can exclude this entrypoint
 // while compiling and dispatching the unchanged partition entrypoint above.
+[[max_total_threads_per_threadgroup(32)]]
 kernel void rypath_probe_canonical_finalizer(
     const device rypath::light_geometry_probe::CanonicalQuery *queries [[buffer(0)]],
     constant wire::Parameters *parameters [[buffer(1)]],
