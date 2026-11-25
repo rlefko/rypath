@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "metal_geometry.hpp"
+#include "metal_acceleration_build.hpp"
 
 #include "analytic.hpp"
 #include "geometry_wire.h"
@@ -54,7 +55,14 @@ template <class T> id<MTLBuffer> upload(id<MTLDevice> device, std::span<const T>
 id<MTLAccelerationStructure> build_structure(id<MTLDevice> device, id<MTLCommandQueue> queue,
                                              MTLAccelerationStructureDescriptor *descriptor,
                                              NSString *label, std::string &diagnostic,
-                                             NativeHintStats *hint_stats = nullptr) {
+                                             NativeHintStats *hint_stats = nullptr,
+                                             AccelerationBuildInfo *build_info = nullptr,
+                                             bool blas = true, bool fast = false) {
+    const auto start = std::chrono::steady_clock::now();
+    if (!metal::prefer_fast_intersection(descriptor, fast)) {
+        diagnostic = "Fast acceleration builds require the macOS 26 SDK and runtime";
+        return nil;
+    }
     const auto sizes = [device accelerationStructureSizesWithDescriptor:descriptor];
     if (sizes.accelerationStructureSize == 0 ||
         sizes.buildScratchBufferSize > device.maxBufferLength) {
@@ -107,6 +115,9 @@ id<MTLAccelerationStructure> build_structure(id<MTLDevice> device, id<MTLCommand
                     scratchBufferOffset:0];
     [encoder endEncoding];
     diagnostic = metal::complete(command, "Metal acceleration structure build");
+    if (diagnostic.empty() && build_info &&
+        !metal::record_acceleration_build(*build_info, structure, blas, fast, start))
+        diagnostic = "Acceleration structure byte count overflow";
     return diagnostic.empty() ? structure : nil;
 }
 
@@ -298,7 +309,9 @@ std::size_t primitive_count(const GeometryMesh &mesh, PrimitiveKind kind) {
 id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue> queue,
                                         const GeometryMesh &mesh, PrimitiveKind kind,
                                         std::string &diagnostic,
-                                        id<MTLBuffer> __strong *shared_records = nullptr) {
+                                        id<MTLBuffer> __strong *shared_records = nullptr,
+                                        AccelerationBuildInfo *build_info = nullptr,
+                                        bool fast = false) {
     const bool triangle = kind == PrimitiveKind::triangle;
     MTLAccelerationStructureGeometryDescriptor *geometry =
         triangle                                ? triangle_descriptor(device, mesh, diagnostic)
@@ -317,12 +330,14 @@ id<MTLAccelerationStructure> build_mesh(id<MTLDevice> device, id<MTLCommandQueue
                            triangle                                ? @"rypath triangles"
                            : kind == PrimitiveKind::bilinear_patch ? @"rypath bilinear patches"
                                                                    : @"rypath analytic shapes",
-                           diagnostic);
+                           diagnostic, nullptr, build_info, true, fast);
 }
 
 id<MTLAccelerationStructure> build_hint_mesh(id<MTLDevice> device, id<MTLCommandQueue> queue,
                                              const GeometryMesh &mesh, id<MTLBuffer> record_buffer,
-                                             NativeHintStats &stats, std::string &diagnostic) {
+                                             NativeHintStats &stats, std::string &diagnostic,
+                                             AccelerationBuildInfo *build_info = nullptr,
+                                             bool fast = false) {
     if (!fits_buffer<GeometryPoint>(device, mesh.positions.size()) ||
         !fits_buffer<std::array<Word, 3>>(device, mesh.triangles.size())) {
         diagnostic = "Native hint vertex/index buffer exceeds device limit";
@@ -362,7 +377,7 @@ id<MTLAccelerationStructure> build_hint_mesh(id<MTLDevice> device, id<MTLCommand
     }
     stats.shared_record_bytes += record_buffer.length;
     auto result = build_structure(device, queue, descriptor, @"rypath native triangle hint",
-                                  diagnostic, &stats);
+                                  diagnostic, &stats, build_info, true, fast);
     if (result)
         ++stats.native_blas_count;
     return result;
@@ -645,6 +660,17 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
                                                     GeometryBuildOptions options) {
     @autoreleasepool {
         GeometryBuildResult result;
+        result.acceleration_build.requested = options.acceleration_build_policy;
+        const bool fast =
+            options.acceleration_build_policy != AccelerationBuildPolicy::default_build;
+        if (!valid_acceleration_build_policy(options.acceleration_build_policy) ||
+            (fast && options.intersection_profile != IntersectionProfile::native)) {
+            result.diagnostic = "Fast acceleration build policies require the native intersection "
+                                "profile and a valid policy";
+            result.acceleration_build.supported = false;
+            result.acceleration_build.diagnostic = result.diagnostic;
+            return result;
+        }
         const bool native = options.intersection_profile == IntersectionProfile::native;
         if (options.intersection_profile != IntersectionProfile::compensated && !native) {
             result.diagnostic = "Unknown intersection profile";
@@ -671,6 +697,17 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
             return result;
         }
 
+        result.acceleration_build.supported =
+            !fast || metal::supports_fast_acceleration_build(device);
+        if (result.acceleration_build.supported == false) {
+            result.diagnostic = "Fast acceleration builds require the macOS 26 SDK and runtime, "
+                                "Apple GPU family 9, and compute ray tracing";
+            result.acceleration_build.diagnostic = result.diagnostic;
+            return result;
+        }
+        const bool fast_blas = acceleration_fast_blas(options.acceleration_build_policy);
+        const bool fast_tlas = acceleration_fast_tlas(options.acceleration_build_policy);
+        auto completed_builds = result.acceleration_build;
         std::size_t active_instances = 0;
         for (const auto &instance : geometry.instances) {
             const auto &mesh = geometry.meshes[instance.mesh_index];
@@ -810,16 +847,18 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
                                                descriptor)
                                               .primitiveDataBuffer;
                                 structure = build_hint_mesh(device, impl->queue, mesh, records,
-                                                            impl->hint_stats, result.diagnostic);
+                                                            impl->hint_stats, result.diagnostic,
+                                                            &completed_builds, fast_blas);
                             }
                         } else {
-                            structure =
-                                build_mesh(device, impl->queue, mesh, kind, result.diagnostic,
-                                           build_hints ? &records : nullptr);
+                            structure = build_mesh(
+                                device, impl->queue, mesh, kind, result.diagnostic,
+                                build_hints ? &records : nullptr, &completed_builds, fast_blas);
                         }
                         if (structure && records && build_hints) {
                             auto native = build_hint_mesh(device, impl->queue, mesh, records,
-                                                          impl->hint_stats, result.diagnostic);
+                                                          impl->hint_stats, result.diagnostic,
+                                                          &completed_builds, fast_blas);
                             if (native == nil)
                                 return result;
                             native_hints[@(index)] = native;
@@ -890,8 +929,9 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
             descriptor.instanceDescriptorStride =
                 sizeof(MTLAccelerationStructureInstanceDescriptor);
             descriptor.instanceCount = native_instances.size();
-            impl->instances = build_structure(device, impl->queue, descriptor, @"rypath instances",
-                                              result.diagnostic);
+            impl->instances =
+                build_structure(device, impl->queue, descriptor, @"rypath instances",
+                                result.diagnostic, nullptr, &completed_builds, false, fast_tlas);
             if (impl->instances == nil) {
                 result.diagnostic += " (instances)";
                 return result;
@@ -920,9 +960,9 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
                 hint_descriptor.instanceDescriptorStride =
                     sizeof(MTLAccelerationStructureInstanceDescriptor);
                 hint_descriptor.instanceCount = hint_instances.size();
-                impl->hint_instances = build_structure(device, impl->queue, hint_descriptor,
-                                                       @"rypath native hint instances",
-                                                       result.diagnostic, &impl->hint_stats);
+                impl->hint_instances = build_structure(
+                    device, impl->queue, hint_descriptor, @"rypath native hint instances",
+                    result.diagnostic, &impl->hint_stats, &completed_builds, false, false);
                 if (impl->hint_instances == nil)
                     return result;
                 impl->hint_meshes = [hint_structures copy];
@@ -934,6 +974,8 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
             }
         }
 
+        result.acceleration_build = std::move(completed_builds);
+        result.acceleration_build.effective = options.acceleration_build_policy;
         result.scene.reset(new MetalGeometryScene(std::move(impl)));
         result.status = GeometryStatus::success;
         return result;

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "acceleration_build_policy.hpp"
 #include "geometry.hpp"
 #include "metal_backend.hpp"
 
@@ -15,6 +16,7 @@ namespace rypath {
 enum class IntersectionProfile { compensated, native };
 struct GeometryBuildOptions {
     IntersectionProfile intersection_profile = IntersectionProfile::compensated;
+    AccelerationBuildPolicy acceleration_build_policy = AccelerationBuildPolicy::default_build;
 };
 
 enum class GeometryStatus { success, not_built, no_device, no_ray_tracing, failure };
@@ -72,6 +74,7 @@ struct GeometryBuildResult {
     MetalDeviceInfo device;
     std::string diagnostic;
     std::unique_ptr<MetalGeometryScene> scene;
+    AccelerationBuildInfo acceleration_build{};
 };
 
 // Supplementary hints apply only to the compensated profile. Explicit native

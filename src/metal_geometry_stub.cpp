@@ -39,8 +39,11 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
 
 GeometryBuildResult build_metal_geometry(const GeometryData &geometry,
                                          const std::filesystem::path &library,
-                                         GeometryBuildOptions) {
-    return build_metal_geometry(geometry, library);
+                                         GeometryBuildOptions options) {
+    auto result = build_metal_geometry(geometry, library);
+    result.acceleration_build.requested = options.acceleration_build_policy;
+    result.acceleration_build.diagnostic = result.diagnostic;
+    return result;
 }
 GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry,
                                                     const std::filesystem::path &library, bool,

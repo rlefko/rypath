@@ -78,6 +78,7 @@ struct Options {
     std::int32_t material_seed = 0;
     rypath::IntersectionProfile intersection_profile = rypath::IntersectionProfile::native;
     rypath::ShadowTraversal shadow_traversal = rypath::ShadowTraversal::query;
+    rypath::AccelerationBuildPolicy as_build = rypath::AccelerationBuildPolicy::default_build;
 };
 const char *shadow_name(rypath::ShadowTraversal mode) {
     return mode == rypath::ShadowTraversal::opaque_auto ? "opaque-auto" : "query";
@@ -111,6 +112,7 @@ std::string precise_float(float value) {
 const char *usage =
     "Usage: rypath-frame-benchmark (--scene SCENE.pbrt | --demo) --output REPORT.json\n"
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
+    "  [--as-build default|fast-blas|fast-tlas|fast-all (default: default)]\n"
     "  [--seed 1] [--material-seed 0] [--intersections native|compensated (default: native)]\n"
     "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
@@ -235,6 +237,11 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.shadow_traversal = rypath::ShadowTraversal::opaque_auto;
             else
                 return "invalid shadow traversal: " + std::string(value);
+        } else if (key == "--as-build") {
+            const auto policy = rypath::parse_acceleration_build_policy(value);
+            if (!policy)
+                return "invalid acceleration build policy: " + std::string(value);
+            o.as_build = *policy;
         } else if (key == "--intersections") {
             if (value == "native")
                 o.intersection_profile = rypath::IntersectionProfile::native;
@@ -266,6 +273,9 @@ std::string parse(int argc, char **argv, Options &o) {
     if (o.guide_cache &&
         (!o.reconstruction || o.reconstruction == rypath::ReconstructionMode::raw_rgb))
         return "guide cache requires temporal or metalfx reconstruction";
+    if (o.as_build != rypath::AccelerationBuildPolicy::default_build &&
+        o.intersection_profile != rypath::IntersectionProfile::native)
+        return "fast acceleration builds require native intersections";
     if (!o.reconstruction && (seen.contains("--output-width") || seen.contains("--output-height") ||
                               !o.reconstructed_capture.empty()))
         return "output dimensions and reconstructed capture require reconstruction";
@@ -608,6 +618,7 @@ void write_counters(std::ostream &out, const rypath::ReconstructionCounters &c) 
 }
 struct Report {
     Options options;
+    rypath::AccelerationBuildInfo acceleration_build;
     std::string diagnostic, device, architecture, integrator, os, source_identity;
     std::uint64_t registry_id = 0, warmup_completed = 0, frames_completed = 0;
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
@@ -699,6 +710,7 @@ struct Report {
                              !shadow_traversal->eligible
                          ? shadow_traversal->reason
                          : "")
+            << ",\"as_build\":" << quote(rypath::acceleration_build_policy_name(options.as_build))
             << ",\"integrator\":" << quote(integrator) << ",\"max_depth\":" << max_depth
             << ",\"sampler\":\"independent\",\"samples_per_pixel_per_frame\":1,\"footprint_"
                "samples\":1,"
@@ -717,6 +729,29 @@ struct Report {
                     : 0)
             << ",\"excludes_warmup\":true}"
             << ",\"consumed_sample_indices\":" << observations.size()
+            << ",\"acceleration_build\":{\"requested\":"
+            << quote(rypath::acceleration_build_policy_name(acceleration_build.requested))
+            << ",\"effective\":"
+            << (acceleration_build.effective
+                    ? quote(rypath::acceleration_build_policy_name(*acceleration_build.effective))
+                    : "null")
+            << ",\"supported\":"
+            << (acceleration_build.supported ? (*acceleration_build.supported ? "true" : "false")
+                                             : "null")
+            << ",\"diagnostic\":" << quote(acceleration_build.diagnostic)
+            << ",\"build_cpu_wall_seconds\":" << acceleration_build.build_cpu_wall_seconds
+            << ",\"blas_bytes\":" << acceleration_build.blas_bytes
+            << ",\"tlas_bytes\":" << acceleration_build.tlas_bytes << ",\"retained_as_bytes\":"
+            << acceleration_build.blas_bytes + acceleration_build.tlas_bytes
+            << ",\"blas_count\":" << acceleration_build.blas_count
+            << ",\"tlas_count\":" << acceleration_build.tlas_count
+            << ",\"fast_blas_count\":" << acceleration_build.fast_blas_count
+            << ",\"fast_tlas_count\":" << acceleration_build.fast_tlas_count
+            << ",\"device_allocated_bytes\":"
+            << (acceleration_build.device_allocated_bytes
+                    ? std::to_string(*acceleration_build.device_allocated_bytes)
+                    : "null")
+            << "}"
             << ",\"startup_seconds\":" << startup_seconds
             << ",\"warmup_seconds\":" << warmup_seconds
             << ",\"reconstruction_startup_seconds\":" << reconstruction_startup_seconds
@@ -878,6 +913,7 @@ int run(const Options &options) {
     const auto start = Clock::now();
     Report report;
     report.options = options;
+    report.acceleration_build.requested = options.as_build;
     report.provenance.push_back(std::string("reconstruction mode ") +
                                 reconstruction_name(options.reconstruction));
     report.provenance.push_back("transport resolution " + std::to_string(options.width) + "x" +
@@ -1018,6 +1054,7 @@ int run(const Options &options) {
         config.profile_stages = options.profile_stages;
         config.intersection_profile = options.intersection_profile;
         config.shadow_traversal = options.shadow_traversal;
+        config.acceleration_build_policy = options.as_build;
         config.execution = options.execution;
         config.estimator = options.estimator;
         config.area_output = options.area_output;
@@ -1027,6 +1064,7 @@ int run(const Options &options) {
         config.quantum = options.quantum;
         config.group_width = options.group_width;
         auto built = rypath::build_frame_session(scene, config);
+        report.acceleration_build = built.acceleration_build;
         report.startup_seconds = seconds(start);
         report.device = built.device.name;
         report.architecture = built.device.architecture;
@@ -1264,6 +1302,8 @@ int run(const Options &options) {
                     {"rypath.frame.command_count", std::to_string(frame_info.command_count)},
                     {"rypath.frame.integrator", report.integrator},
                     {"rypath.frame.intersections", profile_name(options.intersection_profile)},
+                    {"rypath.frame.as_build",
+                     std::string(rypath::acceleration_build_policy_name(options.as_build))},
                     {"rypath.frame.spectral_mode",
                      scene.spectral_transport == rypath::SpectralTransport::packet ? "packet"
                                                                                    : "scalar"},
@@ -1334,6 +1374,8 @@ int run(const Options &options) {
                     {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
                     {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},
                     {"rypath.frame.intersections", profile_name(options.intersection_profile)},
+                    {"rypath.frame.as_build",
+                     std::string(rypath::acceleration_build_policy_name(options.as_build))},
                     {"rypath.recon.color_negative", std::to_string(info.counters.color_negative)},
                     {"rypath.recon.color_high", std::to_string(info.counters.color_high)}};
                 reconstructed_capture.linear_rgb(image, metadata);
