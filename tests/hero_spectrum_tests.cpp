@@ -308,27 +308,35 @@ void scaled_balance_contribution() {
 // Independent wavelength-space quadrature. Smooth spectral responses exercise
 // constant, broad and narrow-band energy without using the sampler's PDF as an
 // integration measure. This is a sensor-weight check, not a scene-quality claim.
-long double response(long double lambda, unsigned channel) {
+enum class ResponseShape { constant, broad, narrow };
+long double response(long double lambda, ResponseShape shape) {
     const long double t = (lambda - 360) / 470;
-    if (channel == 0)
+    switch (shape) {
+    case ResponseShape::constant:
         return 1;
-    if (channel == 1)
+    case ResponseShape::broad:
         return .1L + t * t;
-    const long double z = (lambda - 455) / 12;
-    return std::exp(-z * z / 2);
+    case ResponseShape::narrow: {
+        const long double z = (lambda - 455) / 12;
+        return std::exp(-z * z / 2);
+    }
+    }
+    throw std::runtime_error("Unknown response shape");
 }
 void visible_quadrature() {
+    constexpr std::array shapes{ResponseShape::constant, ResponseShape::broad,
+                                ResponseShape::narrow};
     constexpr unsigned count = 131072;
     Exact integral{}, estimate{}, wrong{};
     for (unsigned n = 0; n < count; ++n) {
         const auto wavelengths = h::sample_visible((float(n) + .5f) / count);
         const long double lambda = 360 + 470.L * (n + .5L) / count;
         for (unsigned c = 0; c < 3; ++c) {
-            integral[c] += 470.L * response(lambda, c) / count;
+            integral[c] += 470.L * response(lambda, shapes[c]) / count;
             for (unsigned k = 0; k < 4; ++k) {
                 estimate[c] +=
-                    response(wavelengths.lambda[k], c) / (4.L * count * wavelengths.pdf[k]);
-                wrong[c] += 470.L * response(wavelengths.lambda[k], c) / (4.L * count);
+                    response(wavelengths.lambda[k], shapes[c]) / (4.L * count * wavelengths.pdf[k]);
+                wrong[c] += 470.L * response(wavelengths.lambda[k], shapes[c]) / (4.L * count);
             }
         }
     }
