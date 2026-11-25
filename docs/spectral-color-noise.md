@@ -66,8 +66,12 @@ weighted nonstationary expectations, reciprocity, borders and duplicate slots.
 Native tests add CPU/MSL wavelength mapping, analytic cold Area0 sensor output,
 dispersive transmission, early emission, full-width indices and queue scheduling.
 
-The local study `spectral-color-repair-001` predeclares 352 raw screening jobs:
-11 arms, two scenes, 16 session seeds, 160x90, 64 frames. Four independent scalar
+The local study `spectral-color-repair-001` predeclares 336 raw screening jobs:
+ten common arms across both scenes plus a Prism-only legacy packet control,
+16 session seeds, 160x90, 64 frames. Cornell retains authored depth 65; legacy
+packet supports at most 64, so that unavailable control is omitted without
+changing the scene. The Prism packet comparison is descriptive and does not
+affect adoption. Four independent scalar
 4096-frame online-mean batches per scene provide references. Quality uses the
 final single-frame signed RGB, chroma and low-frequency chroma MSE. Paired
 bootstrap resamples entire session seeds and independent reference batches,
