@@ -612,6 +612,132 @@ void temporal_recurrence() {
     require(negative_input && negative_output && distinct_samples,
             "Signed recurrence requires negative values and genuinely varying sample frames");
 }
+// Matched streams receive the same raw frames and temporal order. Readback is
+// explicit and outside timing, and compares all eight surface textures exactly.
+void surface_cache_pair(ReconstructionMode mode) {
+    if (mode == ReconstructionMode::raw_rgb)
+        return;
+    auto scene = plane();
+    scene.volume_transport = true;
+    scene.integrator = IntegratorKind::volpath;
+    scene.media.resize(1);
+    scene.media[0].sigma_a.fill(.1f);
+    // Keep a resident graph so the frame session resolves authored texture-camera
+    // matrices instead of eliding unused texture parameters in this fixture.
+    scene.texture_graph.nodes.push_back({});
+    scene.instance_texture_frames.resize(scene.geometry.instances.size());
+    auto owner = session(scene);
+    auto camera = snapshot(scene);
+    camera.texture_camera = TextureCamera{};
+    std::unique_ptr<ReconstructionStream> cached, control;
+    std::unique_ptr<Frame> previous_source;
+    std::unique_ptr<ReconstructedFrame> previous_cached, previous_control;
+    std::vector<std::array<float, 3>> retained_rgb;
+    unsigned index = 0;
+    std::uint64_t epoch = 7;
+    auto step = [&](bool expected_hit, bool reset = false, bool failure = false) {
+        // Holding the last raw frame forces alternating source slots; output
+        // leases also retain the prior completed output while this one runs.
+        auto input = source(*owner, (1ull << 32) + index++, epoch, camera);
+        source_complete(*input);
+        const auto raw = input->capture();
+        if (!cached) {
+            auto build =
+                build_reconstruction_stream(*input, {.mode = mode, .cache_surface_guides = true});
+            require(build.stream != nullptr, build.diagnostic);
+            cached = std::move(build.stream);
+            control = stream(*input, mode);
+        }
+        auto a = submit(*cached, *input, reset), b = submit(*control, *input, reset);
+        const auto ai = a->wait(), bi = b->wait();
+        require(ai.status == bi.status, "Cache changed success/failure status");
+        if (failure) {
+            require(ai.status == ReconstructionStatus::failed, "Expected guide failure");
+        } else {
+            complete(*a, mode);
+            complete(*b, mode);
+            require(ai.guide_cache_hit == expected_hit && !bi.guide_cache_hit,
+                    "Surface cache transition at frame " + std::to_string(index - 1) +
+                        ": expected hit " + std::to_string(expected_hit) + ", got " +
+                        std::to_string(ai.guide_cache_hit));
+            require(ai.generated_surface_pixels == (expected_hit ? 0u : side * side) &&
+                        bi.generated_surface_pixels == side * side,
+                    "Surface cache generated-pixel telemetry");
+            require(ai.history_reset == bi.history_reset &&
+                        ai.history_accepted == bi.history_accepted &&
+                        ai.history_rejected == bi.history_rejected &&
+                        std::memcmp(&ai.counters, &bi.counters, sizeof(ai.counters)) == 0,
+                    "Surface cache changed logical counters or history state");
+            const auto ag = MetalReconstructionStreamProbe::capture_guides(*cached);
+            const auto bg = MetalReconstructionStreamProbe::capture_guides(*control);
+            require(ag.diagnostic.empty() && bg.diagnostic.empty(),
+                    "Surface guide snapshot failed");
+            require(ag.textures == bg.textures, "Cached surface textures differ from regeneration");
+            require(capture(*a).linear_rgb == capture(*b).linear_rgb,
+                    "Cached reconstruction differs from forced uncached output");
+            if (previous_cached && previous_cached->poll().status == ReconstructionStatus::complete)
+                require(capture(*previous_cached).linear_rgb == retained_rgb,
+                        "Cache reuse changed a retained output slot");
+            retained_rgb = capture(*a).linear_rgb;
+        }
+        unchanged(*input, raw);
+        previous_source = std::move(input);
+        previous_cached = std::move(a);
+        previous_control = std::move(b);
+    };
+    step(false);
+    step(false);
+    step(true);
+    step(true);
+    if (mode == ReconstructionMode::temporal)
+        for (unsigned i = 4; i < 70; ++i)
+            step(true); // Cross the temporal history cap with fresh signed colors.
+    {
+        auto foreign_owner = session(scene);
+        auto foreign = source(*foreign_owner, 0, epoch, camera);
+        source_complete(*foreign);
+        auto rejected = cached->submit(*foreign);
+        require(!rejected.frame && rejected.status == GeometryStatus::failure,
+                "Cache hit bypassed immutable session/profile authorization");
+    }
+    step(false, true); // Align the control after failed authorization invalidated cached history.
+    step(false);
+    step(true);
+    ++epoch;
+    step(false);
+    step(false);
+    step(true);
+    camera.raster_camera->origin.x = .25f;
+    step(false);
+    step(false);
+    step(true); // Translation then hold.
+    camera.raster_camera->corner.x += .1f;
+    step(false);
+    step(false);
+    step(true); // Rotation then hold.
+    step(false, true);
+    step(false);
+    step(true); // Explicit cut.
+    camera.perspective_lens = PerspectiveLens{.radius = .02f, .focal_distance = 2};
+    step(false);
+    step(false);
+    step(true);
+    camera.texture_camera = TextureCamera{};
+    camera.texture_camera->world_from_camera[0] = 2;
+    camera.texture_camera->camera_from_world[0] = .5f;
+    step(false);
+    step(true); // Texture camera changes without a geometric camera change.
+    camera.camera_medium = 0;
+    step(false);
+    step(false);
+    step(true);
+    camera.raster_camera->origin.z = 1.9999f;
+    step(false, false, true);
+    camera.raster_camera->origin.z = 0;
+    step(false);
+    step(false);
+    step(true);
+}
 int availability(ReconstructionMode mode) {
     const auto device = query_metal_device();
     if (device.status == MetalStatus::no_device) {
@@ -665,6 +791,7 @@ int main(int argc, char **argv) {
                                   : ReconstructionMode::metalfx;
             if (const auto unavailable = availability(mode))
                 return unavailable;
+            surface_cache_pair(mode);
             lifecycle(mode);
             camera_case(mode, false, false);
             camera_case(mode, true, false);

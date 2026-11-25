@@ -2368,6 +2368,18 @@ MetalFramePipelineResult MetalFrameLease::create_guide_pipeline(NSString *entry)
         return result;
     }
 }
+render_wire::Parameters MetalFrameLease::guide_parameters() const {
+    if (!impl_)
+        throw std::logic_error("Metal frame lease is moved-from");
+    const auto &frame = *impl_->frame;
+    auto p = frame.resolved_parameters;
+    p.packet_transport = 0;
+    p.bidirectional = 0;
+    p.lens_radius = 0;
+    p.pixel_begin = 0;
+    p.pixel_count = p.lane_count = frame.info.width * frame.info.height;
+    return p;
+}
 std::string MetalFrameLease::bind_guides(id<MTLComputeCommandEncoder> encoder,
                                          const MetalFramePipeline &pipeline,
                                          id<MTLBuffer> arguments) const {
@@ -2385,12 +2397,7 @@ std::string MetalFrameLease::bind_guides(id<MTLComputeCommandEncoder> encoder,
     auto &renderer = *owner->impl_;
     if (!renderer.parameters.instance_count && renderer.empty_packet_structure == nil)
         return "Completed frame is missing its empty-scene acceleration structure";
-    auto p = frame.resolved_parameters;
-    p.packet_transport = 0;
-    p.bidirectional = 0;
-    p.lens_radius = 0;
-    p.pixel_begin = 0;
-    p.pixel_count = p.lane_count = frame.info.width * frame.info.height;
+    const auto p = guide_parameters();
     [encoder setComputePipelineState:pipeline.impl_->pipeline];
     renderer.bind(encoder, p, frame.resolved_texture_parameters, arguments,
                   frame.retention->graph_nodes, frame.retention->surface_transforms, true,

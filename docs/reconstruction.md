@@ -90,6 +90,39 @@ in float32. Counters report pixels with negative channels or channels above the
 half-float limit, including when no clamp is applied. Nonfinite conversion fails.
 No radiance clamp is added to raw rendering or Area/MCMC weights.
 
+## Optional exact surface-guide reuse
+
+`ReconstructionConfig::cache_surface_guides` and benchmark `--guide-cache on|off`
+select a stream-local surface-guide cache. The default remains **off** pending
+hardware qualification. This changes execution only: fresh XYZ-to-RGB conversion
+and all selected temporal/spatial passes still execute every frame. Raw XYZ,
+sampling, reconstruction settings, and temporal recurrence are unchanged.
+
+The cache owns the existing single set of depth, motion, diffuse/specular albedo,
+normal, roughness, previous depth and identity textures. Output slots and temporal
+history banks remain independent. The explicit fieldwise key covers the resolved
+full-film pinhole parameters bound by `bind_guides`, all texture parameters
+(including sample scale and camera footprints), and the complete current/previous
+projection configuration. Only transport sample indices are additionally
+normalized. Session/profile authorization still executes on every submission;
+source slot and buffer addresses do not participate. A cold static stream misses
+on frames one and two, then hits once previous-camera validity is stable.
+
+Misses invalidate before overwriting surfaces. Explicit reset, epoch, lens or
+medium changes invalidate reuse; movement and previous-camera changes miss through
+the key. Only successful completion of the entire reconstruction publishes a key
+and logical surface-counter snapshot. Failures invalidate both cache and temporal
+eligibility. Hits preserve logical surface counts while freshly computing color,
+conversion counts and color-range diagnostics. `guide_cache_hit` and
+`generated_surface_pixels` distinguish reused guides from executed surface work.
+
+The matched-stream test compares all eight guide textures byte for byte, output,
+logical counters, history decisions and raw preservation across static/cap,
+translation/rotation holds, reset/epoch, lens, texture-camera, medium, session
+authorization and recovery cases.
+These tests require actual Metal execution; portable key and CLI checks alone do
+not establish hardware correctness or a performance benefit.
+
 ## Signed temporal fallback
 
 Clamping fresh spectral samples before filtering changes their expectation.
