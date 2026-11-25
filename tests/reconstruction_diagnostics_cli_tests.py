@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: GPL-3.0-only
+"""Argument failures must precede scene/device acquisition and output writes."""
+
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+
+def main():
+    executable = pathlib.Path(sys.argv[1]).resolve()
+    result = subprocess.run([executable, "--help"], capture_output=True, text=True)
+    assert result.returncode == 0 and "replay" in result.stdout, result
+    assert "independent|area1|area2|area4" in result.stdout, result.stdout
+    assert "--area-output selected|conditional-mean" in result.stdout, result.stdout
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        output = root / "must-not-exist"
+        base = [
+            str(executable),
+            "--scene", str(root / "missing.pbrt"),
+            "--artifact-root", str(root),
+            "--output-dir", str(output),
+        ]
+        cases = [
+            (["--width", "0"], "dimensions"),
+            (["--height", "16385"], "dimensions"),
+            (["--frames", "-1"], "integer"),
+            (["--frames", "1.5"], "integer"),
+            (["--frames", "4", "--frames", "8"], "Duplicate"),
+            (["--capture-mode", "other"], "Capture mode"),
+            (["--capture-mode", "replay", "--frames", "17"], "sixteen"),
+            (["--replay-spatial", "6"], "spatial"),
+            (["--capture-frames", "128"], "outside"),
+            (["--reference-samples", "1024"], "seed"),
+            (["--reference-samples", "2"], "Reference samples"),
+            (["--motion-offset", "nan"], "finite"),
+            (["--area-output", "invalid"], "Area output"),
+            (["--area-output", "selected"], "requires"),
+            (["--area-output", "conditional-mean", "--estimator", "independent"], "requires"),
+            (["--estimator", "area2", "--area-output", "selected", "--area-output", "conditional-mean"], "Duplicate"),
+            (["--estimator", "area2", "--replay-list", "x.json", "--area-output", "selected"], "fanout"),
+            (["--estimator", "area0"], "Estimator"),
+            (["--estimator", "area3"], "Estimator"),
+            (["--estimator", "area8"], "Estimator"),
+            (["--estimator", "area02"], "Estimator"),
+            (["--estimator", "area-1"], "Estimator"),
+            (["--estimator", "area1.5"], "Estimator"),
+            (["--estimator", "area"], "Estimator"),
+            (["--estimator", "independent1"], "Estimator"),
+            (["--estimator", "area2", "--estimator", "area4"], "Duplicate"),
+            (["--reference-samples", "1024", "--seed", "99", "--estimator", "area1"], "static independent"),
+            (["--reference-samples", "1024", "--seed", "99", "--estimator", "area2"], "static independent"),
+            (["--reference-samples", "1024", "--seed", "99", "--estimator", "area4"], "static independent"),
+            (["--unknown", "1"], "Unknown"),
+            (["--seed"], "missing"),
+        ]
+        for arguments, diagnostic in cases:
+            result = subprocess.run(base + arguments, capture_output=True, text=True)
+            assert result.returncode == 1, (arguments, result)
+            assert diagnostic.lower() in result.stderr.lower(), (arguments, result.stderr)
+            assert not output.exists(), arguments
+    print(f"Diagnostic CLI: help and {len(cases)} pre-acquisition failures passed")
+
+
+if __name__ == "__main__":
+    main()

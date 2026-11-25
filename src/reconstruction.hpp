@@ -14,6 +14,8 @@ struct ReconstructionConfig {
     // Native signed-color fallback. Zero spatial passes selects temporal only.
     std::uint32_t history_limit = 64, spatial_iterations = 5;
     bool cache_surface_guides = true; // Reuse guides when resolved inputs match.
+    // Explicit diagnostic work/storage; excludes this stream from timing claims.
+    bool capture_diagnostics = false;
 };
 enum class ReconstructionStatus { pending, complete, failed };
 struct ReconstructionCounters {
