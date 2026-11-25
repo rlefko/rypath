@@ -68,37 +68,26 @@ kernel void rypath_temporal_denoiser_reset(device tdw::Counters &status [[buffer
     atomic_store_explicit(&status.history_rejected, 0u, memory_order_relaxed);
 }
 
-kernel void rypath_temporal_denoiser_accumulate(
-    constant tdw::Config &config [[buffer(0)]], device tdw::Counters &status [[buffer(1)]],
-    texture2d<float, access::read> color [[texture(tdw::color_id)]],
-    texture2d<float, access::read> depth [[texture(tdw::depth_id)]],
-    texture2d<float, access::read> motion [[texture(tdw::motion_id)]],
-    texture2d<float, access::read> diffuse [[texture(tdw::diffuse_id)]],
-    texture2d<float, access::read> specular [[texture(tdw::specular_id)]],
-    texture2d<float, access::read> normal [[texture(tdw::normal_id)]],
-    texture2d<float, access::read> expected_depth [[texture(tdw::previous_depth_id)]],
-    texture2d<uint, access::read> identity [[texture(tdw::identity_id)]],
-    texture2d<float, access::read> previous_mean [[texture(tdw::history_mean_id)]],
-    texture2d<float, access::read> previous_variance [[texture(tdw::history_variance_id)]],
-    texture2d<uint, access::read> previous_count [[texture(tdw::history_count_id)]],
-    texture2d<float, access::read> previous_z [[texture(tdw::history_depth_id)]],
-    texture2d<float, access::read> previous_normal [[texture(tdw::history_normal_id)]],
-    texture2d<uint, access::read> previous_identity [[texture(tdw::history_identity_id)]],
-    texture2d<float, access::write> next_mean [[texture(tdw::next_mean_id)]],
-    texture2d<float, access::write> next_variance [[texture(tdw::next_variance_id)]],
-    texture2d<uint, access::write> next_count [[texture(tdw::next_count_id)]],
-    texture2d<float, access::write> next_z [[texture(tdw::next_depth_id)]],
-    texture2d<float, access::write> next_normal [[texture(tdw::next_normal_id)]],
-    texture2d<uint, access::write> next_identity [[texture(tdw::next_identity_id)]],
-    texture2d<float, access::write> filtered_mean [[texture(tdw::destination_mean_id)]],
-    texture2d<float, access::write> filtered_variance [[texture(tdw::destination_variance_id)]],
-    uint2 pixel [[thread_position_in_grid]]) {
+static uint2 temporal_denoiser_accumulate_pixel(
+    constant tdw::Config &config, device tdw::Counters &status,
+    texture2d<float, access::read> color, texture2d<float, access::read> depth,
+    texture2d<float, access::read> motion, texture2d<float, access::read> diffuse,
+    texture2d<float, access::read> specular, texture2d<float, access::read> normal,
+    texture2d<float, access::read> expected_depth, texture2d<uint, access::read> identity,
+    texture2d<float, access::read> previous_mean, texture2d<float, access::read> previous_variance,
+    texture2d<uint, access::read> previous_count, texture2d<float, access::read> previous_z,
+    texture2d<float, access::read> previous_normal, texture2d<uint, access::read> previous_identity,
+    texture2d<float, access::write> next_mean, texture2d<float, access::write> next_variance,
+    texture2d<uint, access::write> next_count, texture2d<float, access::write> next_z,
+    texture2d<float, access::write> next_normal, texture2d<uint, access::write> next_identity,
+    texture2d<float, access::write> filtered_mean,
+    texture2d<float, access::write> filtered_variance, uint2 pixel) {
     if (pixel.x >= config.width || pixel.y >= config.height)
-        return;
+        return uint2(0);
     if (config.version != tdw::version || config.history_limit == 0u ||
         config.history_limit > tdw::maximum_history || config.iteration > tdw::maximum_iterations) {
         temporal_denoiser_fail(status, tdw::invalid_input);
-        return;
+        return uint2(0);
     }
     const float4 input = color.read(pixel);
     const float2 displacement = motion.read(pixel).xy;
@@ -111,7 +100,7 @@ kernel void rypath_temporal_denoiser_accumulate(
         !all(isfinite(d)) || !all(isfinite(s)) || !isfinite(expected) ||
         !temporal_denoiser_guides(z, n, id)) {
         temporal_denoiser_fail(status, tdw::invalid_input);
-        return;
+        return uint2(0);
     }
     float3 mean = input.xyz, variance = 0.f;
     uint count = 1u;
@@ -133,7 +122,7 @@ kernel void rypath_temporal_denoiser_accumulate(
             if (!all(isfinite(old_mean)) || !all(isfinite(old_variance)) ||
                 any(old_variance < 0.f) || old_count == 0u || old_count > config.history_limit) {
                 temporal_denoiser_fail(status, tdw::invalid_history);
-                return;
+                return uint2(0);
             }
             count = min(old_count + 1u, config.history_limit);
             const float alpha = 1.f / float(count);
@@ -145,7 +134,7 @@ kernel void rypath_temporal_denoiser_accumulate(
     }
     if (!all(isfinite(mean)) || !all(isfinite(variance)) || any(variance < 0.f)) {
         temporal_denoiser_fail(status, tdw::arithmetic_overflow);
-        return;
+        return uint2(0);
     }
     // Geometry-aware cold variance is only a spatial noise proxy. Persisting it
     // as temporal moments would change the centered recurrence's n=1 initial state.
@@ -170,13 +159,13 @@ kernel void rypath_temporal_denoiser_accumulate(
                     diffuse.read(q).xyz, s, specular.read(q).xyz);
                 if (!isfinite(weight)) {
                     temporal_denoiser_fail(status, tdw::invalid_input);
-                    return;
+                    return uint2(0);
                 }
                 if (weight <= 0.f)
                     continue;
                 if (!all(isfinite(value))) {
                     temporal_denoiser_fail(status, tdw::invalid_input);
-                    return;
+                    return uint2(0);
                 }
                 const float alpha = weight / (weight_sum + weight);
                 const float3 delta = value - local_mean;
@@ -188,7 +177,7 @@ kernel void rypath_temporal_denoiser_accumulate(
         if (!all(isfinite(local_mean)) || !all(isfinite(spatial_variance)) ||
             any(spatial_variance < 0.f)) {
             temporal_denoiser_fail(status, tdw::arithmetic_overflow);
-            return;
+            return uint2(0);
         }
     }
     next_mean.write(float4(mean, 1), pixel);
@@ -199,10 +188,49 @@ kernel void rypath_temporal_denoiser_accumulate(
     next_identity.write(id, pixel);
     filtered_mean.write(float4(mean, 1), pixel);
     filtered_variance.write(float4(spatial_variance, 0), pixel);
-    if (accepted)
-        atomic_fetch_add_explicit(&status.history_accepted, 1u, memory_order_relaxed);
-    else
-        atomic_fetch_add_explicit(&status.history_rejected, 1u, memory_order_relaxed);
+    return uint2(accepted ? 1u : 0u, accepted ? 0u : 1u);
+}
+
+// All dispatched lanes reconverge here; no fixed SIMD width or threadgroup barrier.
+// Host dimensions cap the per-frame totals at 16,384 squared, below uint32 overflow.
+kernel void rypath_temporal_denoiser_accumulate(
+    constant tdw::Config &config [[buffer(0)]], device tdw::Counters &status [[buffer(1)]],
+    texture2d<float, access::read> color [[texture(tdw::color_id)]],
+    texture2d<float, access::read> depth [[texture(tdw::depth_id)]],
+    texture2d<float, access::read> motion [[texture(tdw::motion_id)]],
+    texture2d<float, access::read> diffuse [[texture(tdw::diffuse_id)]],
+    texture2d<float, access::read> specular [[texture(tdw::specular_id)]],
+    texture2d<float, access::read> normal [[texture(tdw::normal_id)]],
+    texture2d<float, access::read> expected_depth [[texture(tdw::previous_depth_id)]],
+    texture2d<uint, access::read> identity [[texture(tdw::identity_id)]],
+    texture2d<float, access::read> previous_mean [[texture(tdw::history_mean_id)]],
+    texture2d<float, access::read> previous_variance [[texture(tdw::history_variance_id)]],
+    texture2d<uint, access::read> previous_count [[texture(tdw::history_count_id)]],
+    texture2d<float, access::read> previous_z [[texture(tdw::history_depth_id)]],
+    texture2d<float, access::read> previous_normal [[texture(tdw::history_normal_id)]],
+    texture2d<uint, access::read> previous_identity [[texture(tdw::history_identity_id)]],
+    texture2d<float, access::write> next_mean [[texture(tdw::next_mean_id)]],
+    texture2d<float, access::write> next_variance [[texture(tdw::next_variance_id)]],
+    texture2d<uint, access::write> next_count [[texture(tdw::next_count_id)]],
+    texture2d<float, access::write> next_z [[texture(tdw::next_depth_id)]],
+    texture2d<float, access::write> next_normal [[texture(tdw::next_normal_id)]],
+    texture2d<uint, access::write> next_identity [[texture(tdw::next_identity_id)]],
+    texture2d<float, access::write> filtered_mean [[texture(tdw::destination_mean_id)]],
+    texture2d<float, access::write> filtered_variance [[texture(tdw::destination_variance_id)]],
+    uint2 pixel [[thread_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]]) {
+    const uint2 counts = temporal_denoiser_accumulate_pixel(
+        config, status, color, depth, motion, diffuse, specular, normal, expected_depth, identity,
+        previous_mean, previous_variance, previous_count, previous_z, previous_normal,
+        previous_identity, next_mean, next_variance, next_count, next_z, next_normal, next_identity,
+        filtered_mean, filtered_variance, pixel);
+    const uint accepted = simd_sum(counts.x);
+    const uint rejected = simd_sum(counts.y);
+    if (simd_lane == 0) {
+        if (accepted)
+            atomic_fetch_add_explicit(&status.history_accepted, accepted, memory_order_relaxed);
+        if (rejected)
+            atomic_fetch_add_explicit(&status.history_rejected, rejected, memory_order_relaxed);
+    }
 }
 
 kernel void rypath_temporal_denoiser_spatial(
@@ -279,22 +307,32 @@ kernel void rypath_temporal_denoiser_spatial(
     destination_variance.write(float4(variance, 0), pixel);
 }
 
-kernel void rypath_temporal_denoiser_finish(constant tdw::Config &config [[buffer(0)]],
-                                            device tdw::Counters &status [[buffer(1)]],
-                                            texture2d<float, access::read> source_mean
-                                            [[texture(tdw::source_mean_id)]],
-                                            texture2d<float, access::write> output
-                                            [[texture(tdw::output_id)]],
-                                            uint2 pixel [[thread_position_in_grid]]) {
+static uint temporal_denoiser_finish_pixel(constant tdw::Config &config,
+                                           device tdw::Counters &status,
+                                           texture2d<float, access::read> source_mean,
+                                           texture2d<float, access::write> output, uint2 pixel) {
     if (pixel.x >= config.width || pixel.y >= config.height)
-        return;
+        return uint(0);
     if (atomic_load_explicit(&status.failure, memory_order_relaxed))
-        return;
+        return uint(0);
     const float4 value = source_mean.read(pixel);
     if (!all(isfinite(value))) {
         temporal_denoiser_fail(status, tdw::arithmetic_overflow);
-        return;
+        return uint(0);
     }
     output.write(value, pixel);
-    atomic_fetch_add_explicit(&status.completed, 1u, memory_order_relaxed);
+    return 1u;
+}
+
+// All dispatched lanes reconverge here; no fixed SIMD width or threadgroup barrier.
+// Host dimensions cap the per-frame totals at 16,384 squared, below uint32 overflow.
+kernel void rypath_temporal_denoiser_finish(
+    constant tdw::Config &config [[buffer(0)]], device tdw::Counters &status [[buffer(1)]],
+    texture2d<float, access::read> source_mean [[texture(tdw::source_mean_id)]],
+    texture2d<float, access::write> output [[texture(tdw::output_id)]],
+    uint2 pixel [[thread_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]]) {
+    const uint counts = temporal_denoiser_finish_pixel(config, status, source_mean, output, pixel);
+    const uint completed = simd_sum(counts);
+    if (simd_lane == 0 && completed)
+        atomic_fetch_add_explicit(&status.completed, completed, memory_order_relaxed);
 }

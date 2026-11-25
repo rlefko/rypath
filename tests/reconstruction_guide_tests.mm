@@ -27,7 +27,7 @@ void close(double actual, double expected, double tolerance, const std::string &
 std::string error(NSError *e) {
     return e ? e.localizedDescription.UTF8String : "No Metal diagnostic";
 }
-constexpr unsigned width = 5, height = 3, pixels = width * height;
+unsigned width = 5, height = 3, pixels = width * height;
 constexpr std::array<float, 12> rgb_matrix{3.240444291419f, -1.537133830545f, -.498529890988f, 0,
                                            -.969266752560f, 1.876012242980f,  .041556048487f,  0,
                                            .055643519672f,  -.204026238798f,  1.057226873771f, 0};
@@ -137,7 +137,7 @@ struct Captured {
     FrameCapture raw_before, raw_after;
 };
 Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &library,
-               bool color_overflow = false) {
+               bool color_overflow = false, bool padded_color = false) {
     const auto diagnostic = validate_render_scene(scene);
     need(diagnostic.empty(), "Guide fixture: " + diagnostic);
     FrameConfig settings;
@@ -274,7 +274,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
         [command waitUntilCompleted];
         need(command.status == MTLCommandBufferStatusCompleted, "Counter setup command");
         gw::Counters seed{};
-        seed.completed = UINT32_MAX;
+        seed.completed = UINT32_MAX - (pixels - 1);
         std::memcpy(counters.contents, &seed, sizeof(seed));
         command = [lease.queue() commandBuffer];
         encoder = [command computeCommandEncoder];
@@ -287,10 +287,13 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
             threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
         [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers | MTLBarrierScopeTextures];
     }
-    [encoder setComputePipelineState:pipeline[3]->pipeline()];
+    const auto color_pipeline = pipeline[3]->pipeline();
+    const auto color_threads =
+        std::min<NSUInteger>(64, color_pipeline.maxTotalThreadsPerThreadgroup);
+    [encoder setComputePipelineState:color_pipeline];
     [encoder setBuffer:arguments offset:0 atIndex:1];
-    [encoder dispatchThreads:MTLSizeMake(color_overflow ? 1 : pixels, 1, 1)
-        threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder dispatchThreads:MTLSizeMake(pixels + (padded_color ? 17 : 0), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(color_threads, 1, 1)];
     [encoder endEncoding];
     auto blit = [command blitCommandEncoder];
     need(blit != nil, "Guide readback encoder");
@@ -457,6 +460,34 @@ std::array<double, 3> linear_color(bool dense) {
         sum[c] /= white[c];
     return sum;
 }
+void counter_sizes(const std::string &library) {
+    for (const unsigned size : {1u, 31u, 32u, 33u}) {
+        width = size;
+        height = size == 1 ? 1 : 3;
+        pixels = width * height;
+        const auto r = raster();
+        const auto cam = camera(r);
+        auto cfg = config(cam, cam);
+        // Force unambiguous negative/high witnesses for every nonzero sky sample.
+        // Also dispatch padding so out-of-image lanes must contribute zero.
+        std::fill(std::begin(cfg.xyz_to_rgb), std::end(cfg.xyz_to_rgb), 0.f);
+        cfg.xyz_to_rgb[0] = -1.f;
+        cfg.xyz_to_rgb[5] = 1e9f;
+        for (const bool signed_color : {false, true}) {
+            cfg.flags = signed_color ? gw::signed_temporal : 0u;
+            const auto out = guide(base(r), cfg, library, false, true);
+            need(out.counters.failure == 0 && out.counters.completed == pixels &&
+                     out.counters.color_negative == pixels && out.counters.color_high == pixels,
+                 "Exact color counters across partial and full SIMD groups");
+            color_check(out, cfg);
+        }
+        cfg.xyz_to_rgb[0] = std::numeric_limits<float>::infinity();
+        const auto failed = guide(base(r), cfg, library, false, true);
+        need((failed.counters.failure & gw::invalid_value) != 0 && failed.counters.completed == 0 &&
+                 failed.counters.color_negative == 0 && failed.counters.color_high == 0,
+             "Nonfinite color contributes no success counters in a partial group");
+    }
+}
 void cases(const std::string &library) {
     const auto original = raster(), moved = raster({.origin_x = .3f, .yaw = .2f});
     const auto old_camera = camera(original), current = camera(moved);
@@ -606,6 +637,7 @@ int main(int argc, char **argv) {
 #endif
             need(device.device.compute_ray_tracing, "Guide tests require compute ray tracing");
             cases(argv[1]);
+            counter_sizes(argv[1]);
             std::cout << "Reconstruction guide native validation passed\n";
             return 0;
         } catch (const std::exception &e) {
