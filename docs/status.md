@@ -1,9 +1,11 @@
 # Project status
 
-[Spectral noise repair](spectral-color-noise.md) adds visible-CDF hero sampling
-and explicit spectral-refresh/reciprocal spatial reuse controls. Current scene
-quality and native timing qualification are pending; automatic reuse still
-selects legacy mutation and adjacent sources.
+[Spectral noise controls](spectral-color-noise.md) add visible-CDF hero sampling
+and explicit spectral-refresh/reciprocal spatial reuse. At `2fa3266`, the bounded
+Cornell/Prism study improves Cornell strongly but fails Prism RGB-error gates,
+including a signed-reconstruction regression. Both relative native cost gates
+pass, while throughput remains about 0.30 FPS. New reuse settings remain
+experimental; automatic selection still uses legacy mutation and adjacent sources.
 
 [Hero wavelength PT](hero-wavelength.md) originally added four uniform visible wavelengths,
 hero-driven continuation and cumulative spectral/direct-light balance MIS.

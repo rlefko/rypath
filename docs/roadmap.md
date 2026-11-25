@@ -208,10 +208,12 @@ guards, and project agent guidance. Large-corpus acquisition remains separately 
 [Hero wavelength PT](hero-wavelength.md) supplies explicit shared-path spectral
 sampling for eligible vacuum PT scenes. Automatic adoption awaits broader
 quality/cost qualification and resolution of the retained Prism mean warning.
-[Visible-CDF and spectral reuse qualification](spectral-color-noise.md) is the
-current bounded repair. Remaining spectral work includes joint coated proposals and packet media
-transport; the implementation does not claim those capabilities or the suite's
-performance target.
+[Visible-CDF and spectral reuse qualification](spectral-color-noise.md) records
+scene-dependent improvements and retained Prism RGB/reconstruction regressions.
+Path-aware spectral importance and reuse/reconstruction interaction need further
+work before wider adoption. Joint coated proposals and packet media transport
+also remain open; the implementation does not claim those capabilities or the
+suite's performance target.
 
 Implemented baselines cover the eight [golden-pipeline](golden-pipeline.md) review
 stages, through the native viewer and bounded M4 Max studies. The
