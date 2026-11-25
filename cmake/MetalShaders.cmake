@@ -120,6 +120,8 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/src/packet_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_transport.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_pt_step.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_pt_event_body.inc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_shade_body.inc"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_walk.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/conductor.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/dielectric.h"
@@ -161,6 +163,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
     endif()
     if(shader STREQUAL "render" OR shader STREQUAL "packet_scattering_probe")
         list(APPEND shader_dependencies
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/packet_event_gate.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/shading_normal_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/shading_normal_probe_wire.h")
     endif()

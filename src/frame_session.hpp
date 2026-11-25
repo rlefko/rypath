@@ -8,6 +8,7 @@ namespace rypath {
 // evaluates reused candidates and emits one properly weighted raw estimate.
 // Footprints keep a fixed budget even when sample_index exceeds it; output is unclamped.
 enum class FrameExecution { megakernel, wavefront };
+enum class FramePacketLayout { packed, hot_cold, split_trace };
 enum class FrameEstimator { independent, area_replay };
 enum class FrameAreaOutput { selected, conditional_mean };
 struct FrameConfig {
@@ -27,6 +28,9 @@ struct FrameConfig {
     // Rounds per asynchronous command, never a path-depth or boundary limit.
     std::uint32_t quantum = 8;
     std::uint32_t group_width = 32;
+    // Semantic packet events per state publication; scalar scheduling is unchanged.
+    std::uint32_t packet_events = 1;
+    FramePacketLayout packet_layout = FramePacketLayout::packed;
     FrameEstimator estimator = FrameEstimator::independent;
     // Strong importance proxy: L1(XYZ)/4 plus a positive scale-dependent floor.
     // Source-aware MIS handles reuse; neither radiance nor weights are clipped.

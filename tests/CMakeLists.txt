@@ -1616,7 +1616,8 @@ set_target_properties(rypath_wavefront_frame_tests PROPERTIES
 rypath_configure_host_target(rypath_wavefront_frame_tests)
 if(RYPATH_ENABLE_METAL)
     add_test(NAME metal.wavefront_frame COMMAND rypath_wavefront_frame_tests)
-    set_tests_properties(metal.wavefront_frame PROPERTIES TIMEOUT 300 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    # Seven policy specializations can exceed five minutes on a cold Metal compiler cache.
+    set_tests_properties(metal.wavefront_frame PROPERTIES TIMEOUT 900 ENVIRONMENT "MTL_DEBUG_LAYER=1")
     foreach(capability DEVICE RAY_TRACING)
         if(RYPATH_ALLOW_NO_METAL_${capability})
             target_compile_definitions(rypath_wavefront_frame_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
