@@ -72,6 +72,8 @@ struct Options {
     float metalfx_exposure = 1;
     std::uint32_t output_width = 0, output_height = 0;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
+    rypath::SpectralTransportSelection spectral_transport =
+        rypath::SpectralTransportSelection::automatic;
     rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
     rypath::FrameAreaOutput area_output = rypath::FrameAreaOutput::conditional_mean;
     float target_scale = 1.f;
@@ -140,6 +142,7 @@ const char *usage =
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
+    "  [--spectral-transport auto|scalar|packet|hero (default: auto)]\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--packet-events 1|2|4 (default: 1)] [--packet-layout packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
@@ -243,6 +246,11 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.reconstruction = rypath::ReconstructionMode::temporal;
             else
                 return "invalid reconstruction mode: " + std::string(value);
+        } else if (key == "--spectral-transport") {
+            const auto selection = rypath::parse_spectral_transport(value);
+            if (!selection)
+                return "spectral transport must be auto, scalar, packet, or hero";
+            o.spectral_transport = *selection;
         } else if (key == "--estimator") {
             if (value == "independent")
                 o.estimator = rypath::FrameEstimator::independent;
@@ -711,7 +719,8 @@ void write_counters(std::ostream &out, const rypath::ReconstructionCounters &c) 
 struct Report {
     Options options;
     rypath::AccelerationBuildInfo acceleration_build;
-    std::string diagnostic, device, architecture, integrator, os, source_identity;
+    std::string diagnostic, device, architecture, integrator, os, source_identity,
+        spectral_transport;
     std::uint64_t registry_id = 0, warmup_completed = 0, frames_completed = 0;
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
@@ -757,6 +766,7 @@ struct Report {
                    double(std::uint64_t(options.width) * options.height)
             << ",\"seed\":" << options.seed << ",\"material_seed\":" << options.material_seed
             << ",\"execution\":" << quote(execution_name(options.execution))
+            << ",\"spectral_transport\":" << quote(spectral_transport)
             << ",\"estimator\":" << quote(estimator_name(options.estimator))
             << ",\"area_contract\":"
             << (options.estimator == rypath::FrameEstimator::area_replay
@@ -1071,25 +1081,12 @@ int run(const Options &options) {
                 std::cerr << rypath::pbrt::report(*checked);
                 throw std::runtime_error("PBRT preflight failed; rendering not attempted");
             }
-            bool authored_packet_policy = false;
-            for (const auto &descriptor : checked->scene->options) {
-                if (descriptor.authored.name == "Integrator" &&
-                    descriptor.authored.arguments.front().text == "bdpt")
-                    authored_packet_policy = true;
-                if (descriptor.authored.name == "Film") {
-                    const auto *clamp =
-                        descriptor.effective_parameter("maxcomponentvalue").parameter;
-                    if (clamp && !clamp->values.empty() &&
-                        std::isfinite(clamp->values.front().number))
-                        authored_packet_policy = true;
-                }
-            }
             const auto benchmark_overrides = overrides(*checked, options);
             report.provenance.insert(report.provenance.end(), benchmark_overrides.begin(),
                                      benchmark_overrides.end());
-            auto translated =
-                rypath::pbrt::translate(*checked, {options.scene.string()},
-                                        rypath::resource_limits(options.resource_profile).pbrt);
+            auto translated = rypath::pbrt::translate(
+                *checked, {options.scene.string()},
+                rypath::resource_limits(options.resource_profile).pbrt, options.spectral_transport);
             for (const auto &diagnostic : translated.diagnostics)
                 std::cerr << rypath::pbrt::format_diagnostic(diagnostic);
             report.provenance.insert(report.provenance.end(), translated.provenance.begin(),
@@ -1097,43 +1094,20 @@ int run(const Options &options) {
             if (translated.exit_code() || !translated.scene)
                 throw std::runtime_error("PBRT translation failed; rendering not attempted");
             scene = std::move(*translated.scene);
-            if (authored_packet_policy) {
-                const auto active_medium = [&](std::uint32_t id) {
-                    if (id == rypath::no_medium)
-                        return false;
-                    const auto &medium = scene.media.at(id);
-                    const auto nonzero = [](float value) { return value != 0; };
-                    return std::ranges::any_of(medium.sigma_a, nonzero) ||
-                           std::ranges::any_of(medium.sigma_s, nonzero) ||
-                           std::ranges::any_of(medium.emission, nonzero);
-                };
-                bool active = active_medium(scene.camera_medium);
-                for (const auto &medium : scene.instance_media)
-                    active =
-                        active || active_medium(medium.inside) || active_medium(medium.outside);
-                for (const auto &light : checked->scene->lights)
-                    for (std::size_t i = 0; i < checked->scene->media.size(); ++i)
-                        if (checked->scene->media[i].authored.arguments.front().text ==
-                            light.outside_medium)
-                            active = active || active_medium(static_cast<std::uint32_t>(i));
-                if (!active && scene.max_depth <= 64) {
-                    scene.spectral_transport = rypath::SpectralTransport::packet;
-                    scene.camera_medium = rypath::no_medium;
-                    scene.instance_media.clear();
-                    report.provenance.push_back("authored BDPT/finite clamp packet wavelength "
-                                                "policy preserved for vacuum live PT");
-                } else
-                    report.provenance.push_back(
-                        active ? "authored packet wavelength policy overridden: active media "
-                                 "require scalar transport"
-                               : "authored packet wavelength policy overridden: maxdepth above 64 "
-                                 "requires scalar transport");
-            }
+
         } else
             scene = rypath::make_demo_scene();
         scene.integrator =
             scene.volume_transport ? rypath::IntegratorKind::volpath : rypath::IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
+        std::string spectral_provenance;
+        if (const auto error = rypath::select_spectral_transport(scene, options.spectral_transport,
+                                                                 &spectral_provenance);
+            !error.empty())
+            throw std::runtime_error(error);
+        report.provenance.push_back(spectral_provenance);
+        report.spectral_transport =
+            std::string(rypath::spectral_transport_name(scene.spectral_transport));
         if (options.motion_offset) {
             if (!rypath::frame_benchmark::motion_medium_supported(scene))
                 throw std::runtime_error("Motion cannot classify distinct medium interfaces");
@@ -1147,8 +1121,7 @@ int run(const Options &options) {
         report.provenance.push_back("effective exposure " + std::to_string(scene.exposure));
         report.provenance.push_back(
             "effective spectral transport " +
-            std::string(scene.spectral_transport == rypath::SpectralTransport::packet ? "packet"
-                                                                                      : "scalar"));
+            std::string(rypath::spectral_transport_name(scene.spectral_transport)));
         report.provenance.push_back("effective light sampler " +
                                     std::to_string(static_cast<int>(scene.light_sampler)));
         report.provenance.push_back("effective pixel filter " +
@@ -1187,7 +1160,7 @@ int run(const Options &options) {
         auto built = rypath::build_frame_session(scene, config);
         report.packet_controls_effective =
             built.status == rypath::GeometryStatus::success && built.session &&
-            scene.spectral_transport == rypath::SpectralTransport::packet &&
+            rypath::uses_packet_transport(scene.spectral_transport) &&
             options.execution == rypath::FrameExecution::wavefront;
         report.acceleration_build = built.acceleration_build;
         report.startup_seconds = seconds(start);
@@ -1438,8 +1411,7 @@ int run(const Options &options) {
                     {"rypath.frame.as_build",
                      std::string(rypath::acceleration_build_policy_name(options.as_build))},
                     {"rypath.frame.spectral_mode",
-                     scene.spectral_transport == rypath::SpectralTransport::packet ? "packet"
-                                                                                   : "scalar"},
+                     std::string(rypath::spectral_transport_name(scene.spectral_transport))},
                     {"rypath.frame.resource_profile",
                      std::string(rypath::resource_profile_name(options.resource_profile))},
                     {"rypath.frame.source_identity", report.source_identity},

@@ -60,7 +60,8 @@ inline bool packet_reflectance(const thread Resources &r, const device wire::Mat
 
 inline bool prepare_packet(const thread Resources &r, const device wire::Material &material,
                            graph_wire::Context context, thread Wavelengths &lambda,
-                           thread float4 &beta, thread rypath_packet::Prepared &out) {
+                           thread float4 &beta, thread rypath_packet::Prepared &out,
+                           uint hero_active_mask = 15) {
     const constant auto &p = *r.alpha.parameters;
     if (material.scattering != 0 &&
         !(conductor_enabled || dielectric_enabled || surface_materials_enabled || gltf_enabled))
@@ -68,9 +69,10 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
     const device auto *aux =
         material_auxiliary(material, r.alpha.material_data, p.material_data_words);
     out = {};
-    out.active_mask = lambda.secondary_terminated() ? 1u : 15u;
+    const bool hero = packet_hero_enabled(p);
+    out.active_mask = hero ? hero_active_mask : (lambda.secondary_terminated() ? 1u : 15u);
     for (uint lane = 0; lane < 4; ++lane) {
-        if (lane > 0 && out.active_mask == 1) {
+        if (!(out.active_mask & (1u << lane))) {
             out.lane[lane] = out.lane[0];
             continue;
         }
@@ -100,6 +102,8 @@ inline bool prepare_packet(const thread Resources &r, const device wire::Materia
                     out.lane[lane].layered.interface.eta != out.lane[0].layered.interface.eta;
         }
     }
+    if (hero)
+        return rypath_hero_scattering::valid_structure(out);
     if (dispersive) {
         lambda.terminate_secondary();
         out.active_mask = 1;

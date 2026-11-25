@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -135,6 +137,7 @@ struct PbrtPaths {
     std::filesystem::path input;
     std::filesystem::path output;
     std::int32_t material_seed = 0;
+    std::string_view spectral_transport = "auto";
 };
 
 int pbrt(std::string_view scenario, const PbrtPaths &paths) {
@@ -174,23 +177,55 @@ int pbrt(std::string_view scenario, const PbrtPaths &paths) {
             return unavailable({.stdout_text = "Wrote EXR: invalid\nRender status: no_device\n"});
     }
     if (!sobol && filename != "valid.pbrt" && filename != "half.pbrt" &&
-        filename != "half-default.pbrt") {
+        filename != "half-default.pbrt" && filename != "deep-independent.pbrt") {
         return 3;
     }
     std::cout << "Render profile: pbrt-spectral-v1\n"
                  "Pixel filter: triangle (x radius 1, y radius 1.5)\n"
                  "Light sampling: bvh; matched forward and reverse probabilities\n";
-    if (sobol) {
+    // Emulate only the validator's owned fixtures and inspected CLI fields;
+    // this is not a PBRT parser or renderer.
+    std::ifstream fixture{paths.input};
+    const std::string source{std::istreambuf_iterator<char>{fixture},
+                             std::istreambuf_iterator<char>{}};
+    const auto parameter = source.find("\"integer maxdepth\"");
+    if (parameter == std::string::npos)
+        return 3;
+    const auto begin = source.find_first_of("0123456789", parameter + 18);
+    if (begin == std::string::npos)
+        return 3;
+    unsigned depth = 0;
+    if (std::from_chars(source.data() + begin, source.data() + source.size(), depth).ec !=
+        std::errc{})
+        return 3;
+    const auto mode = paths.spectral_transport == "auto" ? "scalar" : paths.spectral_transport;
+    if (mode != "scalar" && mode != "packet" && mode != "hero")
+        return 3;
+    std::cout << "effective spectral transport " << mode;
+    if (paths.spectral_transport == "auto")
+        std::cout << "; automatic selection preserves scene-selected " << mode << " transport";
+    std::cout << '\n' << "Sampler: ";
+    if (sobol)
+        std::cout << "sobol-v1 / owen (PBRT camera variates; rypath transport dimensions)";
+    else
+        std::cout << "philox4x32-10-v1 (sequence differs from PBRT)";
+    if (mode == "hero")
         std::cout
-            << "Sampler: sobol-v1 / owen (PBRT camera variates; rypath transport dimensions)\n"
-            << settings << "Seed: -17\n";
+            << "; hero PT fixed packet dimension blocks; keyed material-local Philox streams; "
+               "independent coating hash/PCG domains\n"
+               "Hero sampling: four uniform visible wavelengths; cumulative spectral and "
+               "direct-light balance MIS";
+    else if (mode == "packet")
+        std::cout << "; packet fixed dimension allocation [0,920); keyed material-local Philox "
+                     "streams; independent coating hash/PCG domains\n"
+                     "Packet sampling: fixed dimension allocation [0,920); keyed material-local "
+                     "Philox streams; independent coating hash/PCG domains";
+    std::cout << '\n' << settings << "Seed: " << (sobol ? -17 : 0) << '\n';
+    if (sobol)
         std::cerr
             << "sobol.pbrt:5:1: warning [sobol-non-power-of-two]: requested 3 samples per pixel\n";
-    } else {
-        std::cout << "Sampler: philox4x32-10-v1 (sequence differs from PBRT)\n"
-                  << settings << "Seed: 0\n";
-    }
-    std::cout << "Material seed: " << paths.material_seed << '\n' << "Finite path maxdepth: 1\n";
+    std::cout << "Material seed: " << paths.material_seed << '\n'
+              << "Finite path maxdepth: " << depth << '\n';
     if (scenario == "pbrt-success" || (scenario == "pbrt-independent-success" && !sobol) ||
         (scenario == "pbrt-sobol-success" && sobol)) {
         return render_png(paths.output, paths.material_seed);
@@ -238,7 +273,14 @@ int main(int argc, char **argv) try {
     }
     if (mode == "--render-pbrt" && argc >= 5 && std::string_view{argv[3]} == "--output") {
         std::int32_t material_seed = 0;
+        std::string_view spectral_transport = "auto";
         for (int index = 5; index < argc; index += 2) {
+            if (std::string_view{argv[index]} == "--spectral-transport") {
+                if (index + 1 == argc)
+                    return 3;
+                spectral_transport = argv[index + 1];
+                continue;
+            }
             if (std::string_view{argv[index]} != "--material-seed")
                 continue;
             if (index + 1 == argc) {
@@ -253,8 +295,10 @@ int main(int argc, char **argv) try {
                 return 1;
             }
         }
-        return pbrt(scenario,
-                    {.input = argv[2], .output = argv[4], .material_seed = material_seed});
+        return pbrt(scenario, {.input = argv[2],
+                               .output = argv[4],
+                               .material_seed = material_seed,
+                               .spectral_transport = spectral_transport});
     }
     return 3;
 } catch (const std::exception &error) {

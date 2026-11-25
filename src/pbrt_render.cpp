@@ -343,8 +343,9 @@ int handedness(const GeometryTransform &transform) {
 
 class Translator {
   public:
-    Translator(const Scene &input, const Location &entry, const Limits &limits)
-        : input_(input), entry_(entry), limits_(limits) {
+    Translator(const Scene &input, const Location &entry, const Limits &limits,
+               std::optional<SpectralTransportSelection> spectral)
+        : input_(input), entry_(entry), limits_(limits), spectral_(spectral) {
         scene_.model = RenderModel::pbrt;
         scene_.image_limits = limits.image;
         scene_.triangle_frame_limit =
@@ -358,6 +359,7 @@ class Translator {
     const Scene &input_;
     const Location &entry_;
     const Limits &limits_;
+    std::optional<SpectralTransportSelection> spectral_;
     Document diagnostics_;
     RenderTranslation result_;
     RenderScene scene_;
@@ -736,7 +738,10 @@ void Translator::integrator(const Descriptor &descriptor) {
         scene_.spectral_transport = SpectralTransport::packet;
     const auto depth = static_cast<std::uint32_t>(integer(descriptor, "maxdepth", 5));
     const bool qmc = result_.settings.sampler.kind != SamplerKind::independent;
-    const auto limit = scene_.spectral_transport == SpectralTransport::packet ? 64u
+    const bool hero_candidate = scene_.integrator != IntegratorKind::bdpt && depth <= 65 &&
+                                spectral_ == SpectralTransportSelection::hero;
+    const auto limit = hero_candidate                                           ? 65u
+                       : scene_.spectral_transport == SpectralTransport::packet ? 64u
                        : qmc ? sampler_max_depth(result_.settings.sampler, false)
                              : render_emergency_limit;
     if (depth > limit) {
@@ -2709,7 +2714,7 @@ void Translator::geometry() {
             remaining -= count * width;
         }
     }
-    if (!scene_.volume_transport && scene_.spectral_transport != SpectralTransport::packet &&
+    if (!scene_.volume_transport && !uses_packet_transport(scene_.spectral_transport) &&
         std::ranges::none_of(geometry.instances, [&](const GeometryInstance &instance) {
             const auto &mesh = geometry.meshes[instance.mesh_index];
             return !mesh.triangles.empty() || !mesh.patches.empty() || !mesh.analytics.empty();
@@ -3362,6 +3367,17 @@ RenderTranslation Translator::run() {
     }
     media();
     scene_.camera_medium = medium_id(input_.camera_medium);
+    // Resolve the execution policy after declared media are known, before
+    // backend-specific geometry admission and provenance. The omitted option
+    // preserves the translation library's historical transport selection.
+    if (spectral_) {
+        std::string provenance;
+        if (const auto error = select_spectral_transport(scene_, *spectral_, &provenance);
+            !error.empty())
+            unsupported(entry_, error);
+        else
+            result_.provenance.push_back(std::move(provenance));
+    }
     for (const auto &option : input_.options) {
         if (option.authored.name != "Accelerator") {
             continue;
@@ -3396,7 +3412,7 @@ RenderTranslation Translator::run() {
         if (distant != input_.lights.end())
             distant_bounds(*distant);
     }
-    if (scene_.spectral_transport == SpectralTransport::packet) {
+    if (uses_packet_transport(scene_.spectral_transport)) {
         const auto vacuum = [&](std::uint32_t id) {
             if (id == no_medium)
                 return true;
@@ -3498,7 +3514,7 @@ RenderTranslation Translator::run() {
         if (scene_.filter.kind == PixelFilterKind::gaussian)
             filter_provenance << " (sigma " << scene_.filter.sigma
                               << "; normalized PBRT midpoint table; "
-                              << (scene_.spectral_transport == SpectralTransport::packet
+                              << (uses_packet_transport(scene_.spectral_transport)
                                       ? "table-integral camera sample weight)"
                                       : "unit sample weight)");
         result_.provenance.push_back(filter_provenance.str());
@@ -3509,12 +3525,15 @@ RenderTranslation Translator::run() {
                  << "Perspective lens: radius " << scene_.perspective_lens->radius
                  << ", focal distance " << scene_.perspective_lens->focal_distance
                  << " (normalized aperture; unit ray weight; "
-                 << (scene_.spectral_transport == SpectralTransport::packet
+                 << (uses_packet_transport(scene_.spectral_transport)
                          ? "fixed packet header block 1)"
                          : "lens-v1 sampling)");
             result_.provenance.push_back(lens.str());
         }
-        if (scene_.spectral_transport == SpectralTransport::packet)
+        if (scene_.spectral_transport == SpectralTransport::hero)
+            result_.provenance.emplace_back("Hero sampling: four uniform visible wavelengths; "
+                                            "cumulative spectral and direct-light balance MIS");
+        else if (scene_.spectral_transport == SpectralTransport::packet)
             result_.provenance.emplace_back("Packet sampling: fixed dimension allocation [0,920); "
                                             "keyed material-local Philox streams; "
                                             "independent coating hash/PCG domains");
@@ -3565,13 +3584,14 @@ RenderTranslation Translator::run() {
 
 } // namespace
 
-RenderTranslation translate(const Result &checked, const Location &entry, const Limits &limits) {
+RenderTranslation translate(const Result &checked, const Location &entry, const Limits &limits,
+                            std::optional<SpectralTransportSelection> spectral) {
     if (const int status = checked.exit_code(); status != 0 || !checked.scene) {
         RenderTranslation result;
         result.status = status != 0 ? status : 1;
         return result;
     }
-    return Translator(*checked.scene, entry, limits).run();
+    return Translator(*checked.scene, entry, limits, spectral).run();
 }
 
 } // namespace rypath::pbrt

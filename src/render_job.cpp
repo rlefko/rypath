@@ -133,7 +133,7 @@ RenderJobResult run_render_job(const RenderScene &scene, const RenderSettings &s
                        sobol_signed_seed(settings.seed)
                  : loaded.value->settings.seed != settings.seed) ||
             loaded.value->film.model != scene.model ||
-            loaded.value->film.packet != (scene.spectral_transport == SpectralTransport::packet) ||
+            loaded.value->film.packet != (uses_packet_transport(scene.spectral_transport)) ||
             (loaded.value->film.packet &&
              (loaded.value->film.filter != scene.filter ||
               loaded.value->film.max_component_value != scene.max_component_value ||

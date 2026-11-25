@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "render_driver.hpp"
-#include "packet_wire.h"
+#include "packet_dispatch.hpp"
 #include "render_timings.hpp"
 
 #include <algorithm>
@@ -22,7 +22,7 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
         if (!result.diagnostic.empty()) {
             return result;
         }
-        if (scene.spectral_transport == SpectralTransport::packet &&
+        if (uses_packet_transport(scene.spectral_transport) &&
             scene.integrator == IntegratorKind::bdpt && scene.max_depth > 0 &&
             settings.sampler.kind == SamplerKind::halton) {
             result.diagnostic =
@@ -63,7 +63,7 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
             return result;
         }
         RenderTimingScope film_initialization(control.timings, RenderTimingPhase::film_initialize);
-        const bool packet = scene.spectral_transport == SpectralTransport::packet;
+        const bool packet = uses_packet_transport(scene.spectral_transport);
         if (control.initial_film) {
             const auto &film = *control.initial_film;
             if (film.width != settings.width || film.height != settings.height ||
@@ -173,12 +173,12 @@ RenderResult detail::drive_progressive(const RenderScene &scene, const RenderSet
                 auto batch = render_timed(control.timings, RenderTimingPhase::film_stage, [&] {
                     return PacketFilmBatch(result.film, batch_count);
                 });
-                const auto packet_pixels = std::min(
-                    render_tile_capacity,
-                    built.packet_lane_capacity != 0
-                        ? built.packet_lane_capacity
-                        : static_cast<std::uint32_t>(packet_wire::workspace_bytes /
-                                                     packet_wire::lane_bytes(scene.max_depth)));
+                const auto packet_pixels =
+                    std::min(render_tile_capacity,
+                             built.packet_lane_capacity != 0
+                                 ? built.packet_lane_capacity
+                                 : static_cast<std::uint32_t>(packet_wire::workspace_bytes /
+                                                              packet_dispatch::lane_bytes(scene)));
                 // Splat destinations overlap pixel tiles. Canonical owner order
                 // is absolute sample, then source pixel, independent of batches.
                 for (std::uint64_t sample_offset = 0; sample_offset < batch_count;

@@ -141,9 +141,9 @@ GeometryPoint unpack(wire::Point point) { return {point.x, point.y, point.z}; }
 
 wire::Parameters camera_parameters(const RenderScene &scene) {
     wire::Parameters result{};
-    result.packet_transport = scene.spectral_transport == SpectralTransport::packet;
+    result.packet_transport = static_cast<wire::Word>(scene.spectral_transport);
     result.bidirectional = scene.integrator == IntegratorKind::bdpt;
-    result.packet_lane_bytes = packet_wire::lane_bytes(scene.max_depth);
+    result.packet_lane_bytes = static_cast<wire::Word>(packet_dispatch::lane_bytes(scene));
     result.packet_filter_weight = 1;
     result.filter_kind = static_cast<wire::Word>(scene.filter.kind);
     result.filter_sigma = scene.filter.sigma;
@@ -2003,7 +2003,9 @@ struct MetalRenderScene::Impl {
             // Preserve missing-output sentinels; path vertices are initialized by
             // the shader before their counts expose them to other path operations.
             // Unused internal Vertex storage is intentionally not poisoned.
-            const auto prefix_bytes = packet_wire::vertex_offset(p.max_depth);
+            const auto prefix_bytes = p.packet_transport == 2
+                                          ? sizeof(packet_wire::Result)
+                                          : packet_wire::vertex_offset(p.max_depth);
             for (std::size_t lane = 0; lane < p.lane_count; ++lane)
                 std::memset(output_bytes + lane * stride, 0xff, prefix_bytes);
             std::memset(output_bytes + slots * stride, 0xff, guard_bytes);
@@ -2059,8 +2061,9 @@ struct MetalRenderScene::Impl {
                 const std::uint64_t sample =
                     (std::uint64_t{value.sample_high} << 32) | value.sample_low;
                 if (value.pixel != request.pixel_begin + lane || sample != request.sample_begin ||
-                    value.splat_count > p.max_depth || !(value.filter_weight > 0) ||
-                    !std::isfinite(value.filter_weight)) {
+                    value.splat_count > p.max_depth ||
+                    (p.packet_transport == 2 && value.splat_count != 0) ||
+                    !(value.filter_weight > 0) || !std::isfinite(value.filter_weight)) {
                     result.diagnostic =
                         "Invalid packet sample identity, splat count or filter weight";
                     return result;
@@ -2363,6 +2366,8 @@ MetalFramePipelineResult MetalFrameLease::create_guide_pipeline(NSString *entry)
         }
         const bool bidirectional = false;
         [constants setConstantValue:&bidirectional type:MTLDataTypeBool atIndex:20];
+        const bool hero = false;
+        [constants setConstantValue:&hero type:MTLDataTypeBool atIndex:25];
         auto intersection = metal::load_patch_intersection(frame.library, result.diagnostic);
         if (intersection == nil)
             return result;
@@ -4189,7 +4194,9 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         }
         auto parameters = camera_parameters(scene);
         if (parameters.packet_transport) {
-            if (scene.max_depth > packet_wire::max_depth || !(parameters.camera_image_area > 0) ||
+            if (scene.max_depth >
+                    (parameters.packet_transport == 2 ? 65u : packet_wire::max_depth) ||
+                !(parameters.camera_image_area > 0) ||
                 !std::isfinite(parameters.camera_image_area) || !finite(parameters.camera_normal) ||
                 !(parameters.camera_plane_depth > 0) ||
                 !std::isfinite(parameters.camera_plane_depth) ||
@@ -4408,6 +4415,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (native)
             [constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
         [constants setConstantValue:&impl->opaque_shadows type:MTLDataTypeBool atIndex:22];
+        const bool hero = impl->parameters.packet_transport == 2;
+        [constants setConstantValue:&hero type:MTLDataTypeBool atIndex:25];
         if (impl->parameters.packet_transport) {
             // Scan every material, including children reached through mix nodes.
             const ScatteringKind families[] = {ScatteringKind::thin_dielectric,

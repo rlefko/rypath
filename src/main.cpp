@@ -303,14 +303,17 @@ std::string surface_model_description(const rypath::RenderScene &scene) {
 
 std::string render_sampler_description(const rypath::RenderSettings &settings,
                                        const rypath::RenderScene &scene) {
-    const bool packet = scene.spectral_transport == rypath::SpectralTransport::packet;
+    const bool packet = rypath::uses_packet_transport(scene.spectral_transport);
     auto description = rypath::sampler_description(settings.sampler,
                                                    !packet && rypath::scene_has_dielectrics(scene),
                                                    !packet && scene.perspective_lens.has_value());
-    if (packet)
+    if (packet) {
+        description += scene.spectral_transport == rypath::SpectralTransport::hero
+                           ? "; hero PT fixed packet dimension blocks"
+                           : "; packet fixed dimension allocation [0,920)";
         description +=
-            "; packet fixed dimension allocation [0,920); keyed material-local Philox streams; "
-            "independent coating hash/PCG domains";
+            "; keyed material-local Philox streams; independent coating hash/PCG domains";
+    }
     return description;
 }
 
@@ -338,6 +341,8 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                       {"rypath.batchSize", std::to_string(settings.batch_size)},
                       {"rypath.exposure", exposure.str()},
                       {"rypath.maxDepth", std::to_string(render_scene.max_depth)},
+                      {"rypath.spectralMode", std::string(rypath::spectral_transport_name(
+                                                  render_scene.spectral_transport))},
                       {"rypath.overrides", std::move(overrides)}};
     if (render_scene.perspective_lens) {
         std::ostringstream camera;
@@ -346,7 +351,7 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                << "perspective thin lens; radius=" << render_scene.perspective_lens->radius
                << "; focal distance=" << render_scene.perspective_lens->focal_distance
                << "; normalized aperture; unit ray weight";
-        if (render_scene.spectral_transport == rypath::SpectralTransport::packet)
+        if (rypath::uses_packet_transport(render_scene.spectral_transport))
             camera << "; fixed packet header block 1";
         metadata.emplace_back("rypath.camera", camera.str());
     }
@@ -359,23 +364,31 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                     }))
         metadata.emplace_back(
             "rypath.materialSampling",
-            render_scene.spectral_transport == rypath::SpectralTransport::packet
+            rypath::uses_packet_transport(render_scene.spectral_transport)
                 ? "role-separated material-local Philox; deterministic keyed local walks; "
                   "stable-ID mix"
                 : "material-local-philox-v1; deterministic keyed local walks; stable-ID mix");
-    if (render_scene.spectral_transport == rypath::SpectralTransport::packet) {
-        metadata.emplace_back("rypath.integrator",
-                              render_scene.integrator == rypath::IntegratorKind::bdpt
-                                  ? "bdpt; vacuum surface transport; balance MIS; camera splats"
-                              : render_scene.integrator == rypath::IntegratorKind::volpath
-                                  ? "volpath; vacuum surface transport; power MIS"
-                                  : "path; vacuum surface transport; power MIS");
+    if (rypath::uses_packet_transport(render_scene.spectral_transport)) {
+        metadata.emplace_back(
+            "rypath.integrator",
+            render_scene.integrator == rypath::IntegratorKind::bdpt
+                ? "bdpt; vacuum surface transport; balance MIS; camera splats"
+            : render_scene.spectral_transport == rypath::SpectralTransport::hero
+                ? "vacuum hero PT; cumulative spectral and direct-light balance MIS"
+            : render_scene.integrator == rypath::IntegratorKind::volpath
+                ? "volpath; vacuum surface transport; power MIS"
+                : "path; vacuum surface transport; power MIS");
         metadata.emplace_back(
             "rypath.spectralTransport",
-            "four shared-geometry visible wavelengths; secondary termination for dispersion");
+            render_scene.spectral_transport == rypath::SpectralTransport::hero
+                ? "hero; four shared-geometry visible wavelengths; hero-driven continuation"
+                : "packet; four shared-geometry visible wavelengths; secondary termination for "
+                  "dispersion");
         metadata.emplace_back(
             "rypath.packetSampling",
-            "fixed dimension allocation [0,920); keyed material-local Philox streams");
+            render_scene.spectral_transport == rypath::SpectralTransport::hero
+                ? "hero PT fixed packet dimension blocks; keyed material-local Philox streams"
+                : "fixed dimension allocation [0,920); keyed material-local Philox streams");
         if (std::isfinite(render_scene.max_component_value)) {
             metadata.emplace_back("rypath.filmApproximation",
                                   "exposed CIE sensor XYZ max-component clamp before filtering; "
@@ -405,6 +418,7 @@ const char *output_description(const std::filesystem::path &path, rypath::ExrPre
 
 int render_demo(int argc, char *argv[]) {
     rypath::RenderSettings settings;
+    auto spectral_transport = rypath::SpectralTransportSelection::automatic;
     rypath::CheckpointOptions checkpoints;
     std::filesystem::path output;
     std::set<std::string_view> seen;
@@ -424,6 +438,11 @@ int render_demo(int argc, char *argv[]) {
                 return render_error(diagnostic);
         } else if (option == "--output") {
             output = value;
+        } else if (option == "--spectral-transport") {
+            const auto selection = rypath::parse_spectral_transport(value);
+            if (!selection)
+                return render_error("--spectral-transport requires auto, scalar, packet, or hero");
+            spectral_transport = *selection;
         } else if (option == "--width") {
             valid = parse_integer(value, settings.width);
         } else if (option == "--height") {
@@ -460,7 +479,13 @@ int render_demo(int argc, char *argv[]) {
               << "Batch size: " << settings.batch_size << '\n'
               << "Seed: " << settings.seed << '\n'
               << std::flush;
-    const auto scene = rypath::make_demo_scene();
+    auto scene = rypath::make_demo_scene();
+    std::string spectral_provenance;
+    if (const auto error =
+            rypath::select_spectral_transport(scene, spectral_transport, &spectral_provenance);
+        !error.empty())
+        return render_error(error);
+    std::cout << spectral_provenance << '\n';
     const auto metadata = render_metadata(settings, "demo-v1", "demo-v1", scene, "output path");
     std::cout << "Output: " << output.string() << " ("
               << output_description(output, rypath::ExrPrecision::float32) << ")\n";
@@ -494,6 +519,7 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
     std::filesystem::path output, raw_output, timing_path;
     std::uint64_t batch_size = 8;
     std::int32_t material_seed = 0;
+    auto spectral_transport = rypath::SpectralTransportSelection::automatic;
     auto resource_profile = rypath::ResourceProfile::standard;
     std::set<std::string_view> seen;
     for (int index = 3; index < argc; index += 2) {
@@ -517,6 +543,11 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
         } else if (option == "--material-seed") {
             if (!parse_integer(std::string_view{argv[index + 1]}, material_seed))
                 return fail("--material-seed must be a signed 32-bit integer");
+        } else if (option == "--spectral-transport") {
+            const auto selection = rypath::parse_spectral_transport(argv[index + 1]);
+            if (!selection)
+                return fail("--spectral-transport requires auto, scalar, packet, or hero");
+            spectral_transport = *selection;
         } else if (option == "--resource-profile") {
             const auto parsed = rypath::parse_resource_profile(argv[index + 1]);
             if (!parsed)
@@ -577,7 +608,7 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
             return fail(timing_error);
         translated = rypath::render_timed(timings, Phase::pbrt_translate, [&] {
             return rypath::pbrt::translate(checked, rypath::pbrt::Location{entry.string()},
-                                           resources.pbrt);
+                                           resources.pbrt, spectral_transport);
         });
         if (timings)
             timings->transition(Phase::document_cleanup);
@@ -596,7 +627,7 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
     if (!owned_scene.has_value()) {
         return fail("PBRT translation returned no render scene");
     }
-    const auto &scene = owned_scene.value();
+    auto &scene = owned_scene.value();
     if (!raw_output.empty()) {
         auto protected_paths = inputs;
         protected_paths.push_back(output);
@@ -752,6 +783,7 @@ int main(int argc, char *argv[]) {
                      "       rypath --convert-stl MODEL.stl --output DIRECTORY\n"
                      "              [--stl-colors auto|viscam|magics]\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
+                     "           [--spectral-transport auto|scalar|packet|hero]\n"
                      "           [--resource-profile standard|large] [--raw-output PATH.exr] "
                      "[--timings PATH.json]\n"
                      "           [--material-seed 0]\n"

@@ -12,6 +12,13 @@
 namespace rypath::packet_dispatch {
 inline constexpr std::size_t guard_bytes = 64;
 inline constexpr std::size_t maximum_payload_bytes = std::size_t{1024} * 1024 * 1024;
+inline std::size_t lane_bytes(const RenderScene &scene) {
+    // Hero PT uses the same rolling state in both execution modes and emits no
+    // splats. Its offline output does not need legacy camera/light path arrays.
+    return scene.spectral_transport == SpectralTransport::hero
+               ? sizeof(packet_wire::Result)
+               : packet_wire::lane_bytes(scene.max_depth);
+}
 
 // The estimate already charges three copies of the baseline payload and guard.
 // This extends that accounting; it is not a whole-process peak-memory bound.

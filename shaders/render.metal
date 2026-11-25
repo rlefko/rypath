@@ -67,6 +67,9 @@ constant bool packet_coated_enabled [[function_constant(17)]];
 constant bool packet_visibility_passthrough [[function_constant(18)]];
 // Unset in standalone probes to preserve their runtime integrator selection.
 constant bool packet_bidirectional [[function_constant(20)]];
+// Eliminate the unused estimator from production pipelines. Standalone probes
+// can leave this unset and select the estimator through their query parameters.
+constant bool packet_hero [[function_constant(25)]];
 
 kernel void rypath_sobol_probe(const device sobol::Tables &tables [[buffer(0)]],
                                const device sobol::Probe *queries [[buffer(1)]],
@@ -2412,6 +2415,9 @@ inline bool packet_bidirectional_enabled(constant wire::Parameters &p) {
     return is_function_constant_defined(packet_bidirectional) ? packet_bidirectional
                                                               : bool(p.bidirectional);
 }
+inline bool packet_hero_enabled(constant wire::Parameters &p) {
+    return is_function_constant_defined(packet_hero) ? packet_hero : p.packet_transport == 2;
+}
 
 #include "packet_transport.h"
 
@@ -2467,7 +2473,7 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     const auto lens = draw_words(p, tables, sample, index, 1);
     sample.lens_words[0] = lens.x;
     sample.lens_words[1] = lens.y;
-    auto lambda = rypath_packet_spectrum::sample_visible(sample_uniform(p, sample.random_words[2]));
+    auto lambda = bdpt::packet_wavelengths(p, sample_uniform(p, sample.random_words[2]));
     sample.wavelength = lambda.lambda[0];
     ray incoming = primary_ray(p, sample);
     const GraphResources graph{
@@ -2486,6 +2492,17 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
         alpha,           knots,        emissions, emitters, environment,
         environment_cdf, light_images, &tables,   scene,    intersection_table};
     device uchar *workspace = output + size_t(lane) * p.packet_lane_bytes;
+    if (bdpt::hero_enabled(p)) {
+        bdpt::PacketPTState state;
+        bdpt::packet_pt_initialize(state, sample, lambda, incoming,
+                                   bdpt::camera_pdf(p, incoming.origin, incoming.direction), index,
+                                   p);
+        while (!state.complete)
+            bdpt::packet_pt_step(resources, state);
+        *reinterpret_cast<device packet_storage::Result *>(workspace) =
+            bdpt::packet_pt_result(state, p);
+        return;
+    }
     device uchar *camera = workspace + packet_storage::vertex_offset(p.max_depth);
     device uchar *light = camera + (p.max_depth + 2) * packet_storage::vertex_bytes;
     auto splats = reinterpret_cast<device packet_storage::Splat *>(workspace +

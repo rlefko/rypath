@@ -19,7 +19,7 @@ struct RenderTranslation {
 
 // Translate a successful structural check into owned renderer data. Structural
 // failures keep their original status and diagnostics in the checked result.
-RenderTranslation translate(const Result &checked, const Location &entry,
-                            const Limits &limits = {});
+RenderTranslation translate(const Result &checked, const Location &entry, const Limits &limits = {},
+                            std::optional<SpectralTransportSelection> spectral = std::nullopt);
 
 } // namespace rypath::pbrt

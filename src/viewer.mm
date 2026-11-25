@@ -170,16 +170,6 @@ RenderScene load_scene(const viewer::Options &options) {
         std::cerr << pbrt::report(checked);
         throw std::runtime_error("PBRT preflight failed; viewer did not render");
     }
-    bool packet_policy = false;
-    for (const auto &d : checked.scene->options) {
-        if (d.authored.name == "Integrator" && d.authored.arguments.front().text == "bdpt")
-            packet_policy = true;
-        if (d.authored.name == "Film") {
-            const auto *p = d.effective_parameter("maxcomponentvalue").parameter;
-            if (p && !p->values.empty() && std::isfinite(p->values.front().number))
-                packet_policy = true;
-        }
-    }
     for (const auto &[name, type] :
          {std::pair{"Sampler", "independent"}, std::pair{"Film", "rgb"}}) {
         if (std::ranges::none_of(checked.scene->options,
@@ -223,7 +213,8 @@ RenderScene load_scene(const viewer::Options &options) {
             set_parameter(d, "maxcomponentvalue", {});
         }
     }
-    auto translated = pbrt::translate(checked, {options.scene.string()});
+    auto translated = pbrt::translate(checked, {options.scene.string()}, {},
+                                      SpectralTransportSelection::automatic);
     for (const auto &d : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(d);
     for (const auto &p : translated.provenance)
@@ -231,32 +222,13 @@ RenderScene load_scene(const viewer::Options &options) {
     if (translated.exit_code() || !translated.scene)
         throw std::runtime_error("PBRT rendering translation failed");
     auto scene = std::move(*translated.scene);
-    if (packet_policy) {
-        const auto active = [&](std::uint32_t id) {
-            if (id == no_medium)
-                return false;
-            const auto &m = scene.media.at(id);
-            const auto nonzero = [](float v) { return v != 0; };
-            return std::ranges::any_of(m.sigma_a, nonzero) ||
-                   std::ranges::any_of(m.sigma_s, nonzero) ||
-                   std::ranges::any_of(m.emission, nonzero);
-        };
-        bool media = active(scene.camera_medium);
-        for (const auto &m : scene.instance_media)
-            media = media || active(m.inside) || active(m.outside);
-        for (const auto &light : checked.scene->lights)
-            for (std::size_t i = 0; i < checked.scene->media.size(); ++i)
-                if (checked.scene->media[i].authored.arguments.front().text == light.outside_medium)
-                    media = media || active(static_cast<std::uint32_t>(i));
-        if (!media && scene.max_depth <= 64) {
-            scene.spectral_transport = SpectralTransport::packet;
-            scene.camera_medium = no_medium;
-            scene.instance_media.clear();
-            std::cout << "Live override: preserve authored BDPT/clamp packet wavelength policy in "
-                         "vacuum PT\n";
-        } else
-            std::cout << "Live override: scalar wavelength transport required by media/depth\n";
-    }
+
+    std::string spectral_provenance;
+    if (const auto error = select_spectral_transport(scene, SpectralTransportSelection::automatic,
+                                                     &spectral_provenance);
+        !error.empty())
+        throw std::runtime_error(error);
+    std::cout << spectral_provenance << '\n';
     return scene;
 }
 double movement_speed(const RenderScene &scene) {
@@ -382,8 +354,8 @@ class ViewerState {
                   << ", PT/volpath, independent sample stream, one fresh path/pixel/frame, "
                      "footprint=1, unclamped raw XYZ\n"
                   << "Native wavefront; estimator=" << estimator_name()
-                  << "; mutations=" << config.mutation_steps << "; spectral="
-                  << (scene.spectral_transport == SpectralTransport::packet ? "packet" : "scalar")
+                  << "; mutations=" << config.mutation_steps
+                  << "; spectral=" << spectral_transport_name(scene.spectral_transport)
                   << "; film exposure=" << scene.exposure << "; display EV=" << ev << '\n';
     }
     const char *estimator_name() const {

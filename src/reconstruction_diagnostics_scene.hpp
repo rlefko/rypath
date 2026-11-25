@@ -90,20 +90,10 @@ Scene load_scene(const Options &o) {
     result.dependencies.push_back(o.scene);
     for (const auto &dependency : checked.document.dependencies)
         result.dependencies.push_back(dependency.resolved_path);
-    bool packet_policy = false;
-    for (const auto &descriptor : checked.scene->options) {
-        if (descriptor.authored.name == "Integrator" &&
-            descriptor.authored.arguments.front().text == "bdpt")
-            packet_policy = true;
-        if (descriptor.authored.name == "Film") {
-            const auto *clamp = descriptor.effective_parameter("maxcomponentvalue").parameter;
-            if (clamp && !clamp->values.empty() && std::isfinite(clamp->values.front().number))
-                packet_policy = true;
-        }
-    }
     result.provenance = overrides(checked, o);
     auto translated =
-        pbrt::translate(checked, {o.scene.string()}, resource_limits(o.resource_profile).pbrt);
+        pbrt::translate(checked, {o.scene.string()}, resource_limits(o.resource_profile).pbrt,
+                        o.spectral_transport);
     for (const auto &diagnostic : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(diagnostic);
     require(translated.exit_code() == 0 && translated.scene.has_value(),
@@ -117,36 +107,14 @@ Scene load_scene(const Options &o) {
                     scene.instance_media,
                     [](const auto &medium) { return medium.inside != medium.outside; }),
                 "Motion cannot classify distinct medium interfaces");
-    if (packet_policy) {
-        const auto active_medium = [&](std::uint32_t id) {
-            if (id == no_medium)
-                return false;
-            const auto &medium = scene.media.at(id);
-            const auto nonzero = [](float value) { return value != 0; };
-            return std::ranges::any_of(medium.sigma_a, nonzero) ||
-                   std::ranges::any_of(medium.sigma_s, nonzero) ||
-                   std::ranges::any_of(medium.emission, nonzero);
-        };
-        bool active = active_medium(scene.camera_medium);
-        for (const auto &medium : scene.instance_media)
-            active = active || active_medium(medium.inside) || active_medium(medium.outside);
-        for (const auto &light : checked.scene->lights)
-            for (std::size_t i = 0; i < checked.scene->media.size(); ++i)
-                if (checked.scene->media[i].authored.arguments.front().text == light.outside_medium)
-                    active = active || active_medium(static_cast<std::uint32_t>(i));
-        if (!active && scene.max_depth <= 64) {
-            scene.spectral_transport = SpectralTransport::packet;
-            scene.camera_medium = no_medium;
-            scene.instance_media.clear();
-            result.provenance.push_back(
-                "authored BDPT/finite clamp packet policy preserved for vacuum live PT");
-        } else
-            result.provenance.push_back(
-                active ? "authored packet policy overridden: active media require scalar"
-                       : "authored packet policy overridden: depth above 64 requires scalar");
-    }
+
     scene.integrator = scene.volume_transport ? IntegratorKind::volpath : IntegratorKind::path;
     scene.max_component_value = std::numeric_limits<double>::infinity();
+    std::string spectral_provenance;
+    const auto spectral_error =
+        select_spectral_transport(scene, o.spectral_transport, &spectral_provenance);
+    require(spectral_error.empty(), spectral_error);
+    result.provenance.push_back(spectral_provenance);
     result.provenance.push_back("all arms and reference use native wavefront, independent tape, "
                                 "fixed footprint_samples=1, material_seed=0, unexposed output");
     return result;

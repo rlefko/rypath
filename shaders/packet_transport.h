@@ -3,9 +3,11 @@
 // Copyright (c) 1998–2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
 // See third_party/pbrt/LICENSE.txt. Packet scheduling and storage are rypath adaptations.
 #pragma once
+#include "../src/hero_spectrum_shared.h"
 #include "../src/packet_spectrum_shared.h"
 #include "../src/packet_wire.h"
 #include "../src/shading_normal_shared.h"
+#include "hero_scattering.h"
 #include "packet_scattering.h"
 
 namespace rypath_bdpt {

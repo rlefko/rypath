@@ -47,7 +47,7 @@ inline bool wavefront_failed(constant WavefrontArguments &a) {
 inline bool wavefront_config_valid(constant WavefrontArguments &a) {
     const auto c = *a.config;
     return c.pixel_count > 0 && c.capacity > 0 && c.capacity <= wf::default_capacity &&
-           c.packet <= 1 && (c.model == wire::demo_model || c.model == wire::pbrt_model) &&
+           c.packet <= 2 && (c.model == wire::demo_model || c.model == wire::pbrt_model) &&
            c.group_width > 0 && c.replay_enabled <= 1 &&
            (c.packet_events == 1 || c.packet_events == 2 || c.packet_events == 4) &&
            c.packet_layout <= 2 && (c.packet_layout != 2 || c.packet_events == 1) &&
@@ -85,6 +85,7 @@ inline rypath_bdpt::PacketPTState wavefront_load_packet_separated(constant Wavef
     state.ray_min_distance = hot.ray_min_distance;
     state.ray_max_distance = hot.ray_max_distance;
     state.roulette_eta = hot.roulette_eta;
+    state.hero = hot.hero;
     state.index = hot.index;
     state.count = hot.count;
     state.crossings = hot.crossings;
@@ -106,6 +107,7 @@ inline void wavefront_store_packet_separated(constant WavefrontArguments &a, uin
     hot.ray_min_distance = state.ray_min_distance;
     hot.ray_max_distance = state.ray_max_distance;
     hot.roulette_eta = state.roulette_eta;
+    hot.hero = state.hero;
     hot.index = state.index;
     hot.count = state.count;
     hot.crossings = state.crossings;
@@ -192,8 +194,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
             sample.lens_words[0] = lens.x;
             sample.lens_words[1] = lens.y;
         }
-        auto lambda =
-            rypath_packet_spectrum::sample_visible(sample_uniform(p, sample.random_words[2]));
+        auto lambda = rypath_bdpt::packet_wavelengths(p, sample_uniform(p, sample.random_words[2]));
         sample.wavelength = lambda.lambda[0];
         const ray incoming = primary_ray(p, sample);
         rypath_bdpt::PacketPTState state;

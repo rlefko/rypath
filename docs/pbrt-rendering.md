@@ -31,6 +31,12 @@ or change an existing output.
 
 ## Pavilion packet transport
 
+Application entry points now select [hero wavelength PT](hero-wavelength.md) for
+eligible vacuum path/volpath scenes at depth 0–65, including finite film clamping.
+Explicit legacy packet mode and actual BDPT retain depth 0–64. The translation
+library's omitted transport policy retains its historical behavior described
+below; selected mode and filter/lens sampling are recorded in provenance.
+
 BDPT, finite `Film.maxcomponentvalue`, native analytic shapes and the explicit
 `--resource-profile large` are described in the [Pavilion compatibility and
 validation record](pavilion-validation.md). Packet modes use four shared-path

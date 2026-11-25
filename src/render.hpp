@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <string_view>
 
 namespace rypath {
 
@@ -215,7 +216,13 @@ struct SurfaceTransforms {
 };
 enum class IntegratorKind : std::uint32_t { path, volpath, bdpt };
 enum class LightSamplerKind : std::uint32_t { bvh, power, uniform };
-enum class SpectralTransport : std::uint32_t { scalar, packet };
+enum class SpectralTransport : std::uint32_t { scalar = 0, packet = 1, hero = 2 };
+enum class SpectralTransportSelection { automatic, scalar, packet, hero };
+constexpr bool uses_packet_transport(SpectralTransport mode) {
+    return mode == SpectralTransport::packet || mode == SpectralTransport::hero;
+}
+std::string_view spectral_transport_name(SpectralTransport mode);
+std::optional<SpectralTransportSelection> parse_spectral_transport(std::string_view name);
 struct RenderScene {
     GeometryData geometry;
     std::vector<SpectralMaterial> materials;
@@ -264,6 +271,10 @@ struct RenderScene {
     std::size_t triangle_frame_limit = render_patch_corner_limit;
     std::size_t preparation_byte_limit = std::numeric_limits<std::size_t>::max();
 };
+// Select after entry-point integrator/film overrides. Does not change authored depth.
+// Explicit unsupported requests return an error without selecting a fallback.
+std::string select_spectral_transport(RenderScene &scene, SpectralTransportSelection requested,
+                                      std::string *provenance = nullptr);
 struct RenderSettings {
     std::uint32_t width = 256;
     std::uint32_t height = 192;
