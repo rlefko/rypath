@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_stencil_shared.h"
 #include "mutation_shared.h"
 
 #include <algorithm>
@@ -116,6 +117,101 @@ void proposal_symmetry() {
                 "Only fixed 0/1/2/4 mutation steps are legal");
 }
 
+void spectral_refresh_proposals() {
+    auto source = replay::fresh({7, 13, 1, 29, 2});
+    for (unsigned block = 0; block < 4; ++block) {
+        const replay::Words4 local{block, 3, 17, 91};
+        require(same(mutation::propose(source, local).payload,
+                     mutation::propose(source, local, mutation::Policy::spectral_refresh).payload),
+                "Lower mixture half is exactly the legacy proposal");
+        for (const unsigned word : {0u, 1u, 0x00ffffffu, 0xffffffffu, source.wavelength}) {
+            auto expected = source;
+            expected.wavelength = word;
+            const auto forward = mutation::propose(source, {0x80000000u | block, 3, word, 91},
+                                                   mutation::Policy::spectral_refresh);
+            require(forward.status == mutation::Status::ok &&
+                        forward.block == mutation::Block::wavelength &&
+                        same(forward.payload, expected),
+                    "Upper mixture half replaces the full wavelength word only, equality included");
+            const auto reverse =
+                mutation::propose(expected, {0x80000000u | block, 3, source.wavelength, 91},
+                                  mutation::Policy::spectral_refresh);
+            require(same(reverse.payload, source),
+                    "Every uniform global transition has its reverse");
+        }
+    }
+    require(mutation::propose(source, {0, 0, 0, 0}, mutation::Policy(99)).status ==
+                mutation::Status::invalid_domain,
+            "Unknown mutation policies fail explicitly");
+    auto invalid = source;
+    ++invalid.version;
+    require(mutation::propose(invalid, {0x80000000u, 0, 0, 0}, mutation::Policy::spectral_refresh)
+                    .status == mutation::Status::invalid_payload,
+            "Global refresh validates its source payload before replay");
+    // Reduced four-state global kernel: each source has one equally likely
+    // entropy address for every destination, including its diagonal.
+    unsigned transitions[4][4]{};
+    for (unsigned x = 0; x < 4; ++x) {
+        source.wavelength = x << 30;
+        for (unsigned y = 0; y < 4; ++y) {
+            const auto p = mutation::propose(source, {0x80000000u, 0, y << 30, 0},
+                                             mutation::Policy::spectral_refresh);
+            ++transitions[x][p.payload.wavelength >> 30];
+        }
+    }
+    for (unsigned x = 0; x < 4; ++x)
+        for (unsigned y = 0; y < 4; ++y)
+            require(transitions[x][y] == 1 && transitions[x][y] == transitions[y][x],
+                    "Exhaustive reduced global kernel symmetry and self support");
+}
+
+void stencil_oracles() {
+    namespace stencil = rypath_area_stencil;
+    std::set<std::array<int, 2>> perimeter;
+    for (unsigned index = 0; index < 128; ++index) {
+        const auto d = stencil::perimeter(index);
+        require(stencil::valid(d) && perimeter.insert({d.x, d.y}).second,
+                "Exactly128 distinct nonzero radius16 perimeter offsets");
+        for (const auto dims : {std::array{1u, 1u}, std::array{1u, 33u}, std::array{33u, 1u},
+                                std::array{19u, 17u}, std::array{33u, 35u}}) {
+            const stencil::Offsets offsets{d, d}; // Deliberate duplicate slots.
+            for (unsigned pixel = 0; pixel < dims[0] * dims[1]; ++pixel)
+                for (unsigned slot = 1; slot <= 4; ++slot) {
+                    const int sign = (slot & 1) ? 1 : -1;
+                    const long long x = pixel % dims[0] + sign * static_cast<long long>(d.x);
+                    const long long y = pixel / dims[0] + sign * static_cast<long long>(d.y);
+                    const bool inside = x >= 0 && y >= 0 && x < dims[0] && y < dims[1];
+                    const auto expected = inside ? unsigned(y * dims[0] + x) : pixel;
+                    const auto neighbor = stencil::neighbor(pixel, dims[0], dims[1], offsets, slot);
+                    require(neighbor == expected,
+                            "Exhaustive signed edge mapping versus independent oracle");
+                    require(stencil::neighbor(pixel, dims[0], dims[1], offsets,
+                                              slot <= 2 ? slot + 2 : slot - 2) == neighbor,
+                            "Duplicate slots retain identical mapping and multiplicity");
+                    if (neighbor != pixel) {
+                        const auto opposite = stencil::inverse_slot(slot);
+                        require(stencil::inverse_slot(opposite) == slot &&
+                                    stencil::neighbor(neighbor, dims[0], dims[1], offsets,
+                                                      opposite) == pixel,
+                                "Opposite cross-target plane returns the exact source pixel");
+                    }
+                }
+        }
+    }
+    const auto words = replay::philox({0xffffffffu, 0x87654321u, 0, 0x73741600u}, {13, 29});
+    const auto offsets = stencil::draw(0xffffffffu, 0x87654321u, 13, 29);
+    const auto first = stencil::perimeter(words.x & 127u),
+               second = stencil::perimeter(words.y & 127u);
+    require(
+        offsets.first.x == first.x && offsets.first.y == first.y && offsets.second.x == second.x &&
+            offsets.second.y == second.y,
+        "Shared frame stencil preserves seed, full serial, independent lanes and dedicated domain");
+    const stencil::Offsets extreme{{16, 0}, {0, 16}};
+    require(stencil::neighbor(0xfffffff0u, 0xffffffffu, 1, extreme, 1) == 0xfffffff0u &&
+                stencil::neighbor(0u, 0xffffffffu, 1, extreme, 2) == 0u,
+            "Signed64 mapping cannot wrap at either unsigned boundary");
+}
+
 void counter_domains() {
     const mutation::MutationIdentity identity{0xfedcba98u, 0xffffffffu, 0x87654321u, 123, 456};
     std::set<std::array<unsigned, 4>> counters;
@@ -179,56 +275,64 @@ struct Outcome {
     long double probability;
     float weight;
 };
-std::vector<Outcome> step(const std::vector<Outcome> &source, Targets targets, bool correct) {
+std::vector<Outcome> step(const std::vector<Outcome> &source, Targets targets, bool correct,
+                          bool mixture = false) {
     std::vector<Outcome> output;
     for (const auto &old : source)
-        for (unsigned sign = 0; sign < 2; ++sign)
-            for (unsigned magnitude = 1; magnitude <= 2; ++magnitude) {
-                const unsigned next = (old.state + (sign ? 4 - magnitude : magnitude)) % 4;
-                const auto pending =
-                    mutation::prepare_acceptance(old.weight, targets[old.state], targets[next]);
-                const long double a = acceptance(pending);
-                const long double ideal =
-                    std::min(1.L, static_cast<long double>(targets[next]) / targets[old.state]);
-                require(std::abs(a - ideal) <= std::ldexp(1.L, -24) * ideal,
-                        "Represented MH acceptance versus independent long-double ratio");
-                if (a < 1) {
-                    const auto rejected = finish(pending, false);
-                    require(rejected.weight == old.weight, "Rejected UCW remains unchanged");
-                    output.push_back({old.state, old.probability * (1 - a) / 4, old.weight});
+        for (unsigned component = 0; component < (mixture ? 2u : 1u); ++component)
+            for (unsigned sign = 0; sign < 2; ++sign)
+                for (unsigned magnitude = 1; magnitude <= 2; ++magnitude) {
+                    const unsigned next =
+                        component ? sign * 2 + magnitude - 1
+                                  : (old.state + (sign ? 4 - magnitude : magnitude)) % 4;
+                    const long double q = mixture ? .125L : .25L;
+                    const auto pending =
+                        mutation::prepare_acceptance(old.weight, targets[old.state], targets[next]);
+                    const long double a = acceptance(pending);
+                    const long double ideal =
+                        std::min(1.L, static_cast<long double>(targets[next]) / targets[old.state]);
+                    require(std::abs(a - ideal) <= std::ldexp(1.L, -24) * ideal,
+                            "Represented MH acceptance versus independent long-double ratio");
+                    if (a < 1) {
+                        const auto rejected = finish(pending, false);
+                        require(rejected.weight == old.weight, "Rejected UCW remains unchanged");
+                        output.push_back({old.state, old.probability * (1 - a) * q, old.weight});
+                    }
+                    const auto accepted = finish(pending, true);
+                    output.push_back(
+                        {next, old.probability * a * q, correct ? accepted.weight : old.weight});
                 }
-                const auto accepted = finish(pending, true);
-                output.push_back(
-                    {next, old.probability * a / 4, correct ? accepted.weight : old.weight});
-            }
     return output;
 }
 void measure_oracles() {
     // Exact initial probability*weight=1/4 in each state, deliberately not at
     // the target's stationary distribution: no startup/burn-in assumption.
     const std::vector<Outcome> initial{{0, .125L, 2}, {1, .125L, 2}, {2, .25L, 1}, {3, .5L, .5f}};
-    for (const auto targets : {Targets{1, 2, 4, 8}, Targets{1, 3, 7, 10}})
-        for (const unsigned count : {0u, 1u, 2u, 4u}) {
-            auto outcomes = initial;
-            for (unsigned i = 0; i < count; ++i)
-                outcomes = step(outcomes, targets, true);
-            std::array<Sum, 4> mass{};
-            Sum probability, signed_integral;
-            constexpr std::array<int, 4> h{-7, 2, 11, -3};
-            for (const auto &outcome : outcomes) {
-                probability.add(outcome.probability);
-                mass[outcome.state].add(outcome.probability * outcome.weight);
-                signed_integral.add(outcome.probability * outcome.weight * h[outcome.state]);
-            }
-            require(std::abs(probability.value() - 1) <= oracle_margin,
-                    "Transition probability partition");
-            const auto bound = std::pow(1.L + std::ldexp(1.L, -24), count) - 1;
-            for (const auto value : mass)
-                require(std::abs(value.value() - .25L) <= bound / 4 + oracle_margin,
+    for (const bool mixture : {false, true})
+        for (const auto targets : {Targets{1, 2, 4, 8}, Targets{1, 3, 7, 10}})
+            for (const unsigned count : {0u, 1u, 2u, 4u}) {
+                auto outcomes = initial;
+                for (unsigned i = 0; i < count; ++i)
+                    outcomes = step(outcomes, targets, true, mixture);
+                std::array<Sum, 4> mass{};
+                Sum probability, signed_integral;
+                constexpr std::array<int, 4> h{-7, 2, 11, -3};
+                for (const auto &outcome : outcomes) {
+                    probability.add(outcome.probability);
+                    mass[outcome.state].add(outcome.probability * outcome.weight);
+                    signed_integral.add(outcome.probability * outcome.weight * h[outcome.state]);
+                }
+                require(std::abs(probability.value() - 1) <= oracle_margin,
+                        "Transition probability partition");
+                const auto bound = std::pow(1.L + std::ldexp(1.L, -24), count) - 1;
+                for (const auto value : mass)
+                    require(
+                        std::abs(value.value() - .25L) <= bound / 4 + oracle_margin,
                         "Finite-state indicator UCW within the accumulated normal-rounding bound");
-            require(std::abs(signed_integral.value() - .75L) <= bound * 23 / 4 + 23 * oracle_margin,
-                    "Arbitrary signed integrand preserves weighted measure");
-        }
+                require(std::abs(signed_integral.value() - .75L) <=
+                            bound * 23 / 4 + 23 * oracle_margin,
+                        "Arbitrary signed integrand preserves weighted measure");
+            }
     const auto control = step(initial, {1, 3, 7, 10}, false);
     std::array<long double, 4> wrong_mass{};
     for (const auto &outcome : control)
@@ -409,6 +513,8 @@ void failure_contracts() {
 int main() {
     try {
         proposal_symmetry();
+        spectral_refresh_proposals();
+        stencil_oracles();
         counter_domains();
         measure_oracles();
         extreme_ratios_and_boundaries();

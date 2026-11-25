@@ -218,6 +218,9 @@ enum class IntegratorKind : std::uint32_t { path, volpath, bdpt };
 enum class LightSamplerKind : std::uint32_t { bvh, power, uniform };
 enum class SpectralTransport : std::uint32_t { scalar = 0, packet = 1, hero = 2 };
 enum class SpectralTransportSelection { automatic, scalar, packet, hero };
+enum class HeroWavelengthSampling : std::uint32_t { uniform = 0, visible = 1 };
+std::string_view hero_wavelength_sampling_name(HeroWavelengthSampling mode);
+std::optional<HeroWavelengthSampling> parse_hero_wavelength_sampling(std::string_view name);
 constexpr bool uses_packet_transport(SpectralTransport mode) {
     return mode == SpectralTransport::packet || mode == SpectralTransport::hero;
 }
@@ -265,6 +268,7 @@ struct RenderScene {
     IntegratorKind integrator = IntegratorKind::path;
     LightSamplerKind light_sampler = LightSamplerKind::bvh;
     SpectralTransport spectral_transport = SpectralTransport::scalar;
+    HeroWavelengthSampling hero_wavelengths = HeroWavelengthSampling::visible;
     double max_component_value = std::numeric_limits<double>::infinity();
     // Acceptance/resource policy does not change the radiometric scene identity.
     ImageLimits image_limits{};

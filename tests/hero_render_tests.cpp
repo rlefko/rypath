@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "frame_session.hpp"
+#include "hero_spectrum_shared.h"
+#include "replay_shared.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -148,7 +150,8 @@ std::unique_ptr<MetalRenderScene> offline(const RenderScene &scene) {
     return std::move(result.scene);
 }
 RenderSamplesResult sample(MetalRenderScene &renderer, std::uint64_t index, unsigned width = 3,
-                           unsigned height = 2) {
+                           unsigned height = 2,
+                           HeroWavelengthSampling mode = HeroWavelengthSampling::visible) {
     auto result = renderer.sample({.width = width,
                                    .height = height,
                                    .seed = seed,
@@ -165,10 +168,17 @@ RenderSamplesResult sample(MetalRenderScene &renderer, std::uint64_t index, unsi
         const auto &owner = result.packet_samples[i];
         need(owner.pixel == i && owner.sample == index && owner.splat_count == 0,
              "Hero full-width sample identity");
-        for (unsigned k = 0; k < 4; ++k)
+        for (unsigned k = 0; k < 4; ++k) {
+            const float expected_pdf =
+                mode == HeroWavelengthSampling::visible
+                    ? rypath_packet_spectrum::visible_pdf(owner.wavelengths[k])
+                    : 1.f / 470.f;
             need(std::isfinite(owner.radiance[k]) && owner.radiance[k] >= 0 &&
-                     owner.wavelength_pdfs[k] == 1.f / 470.f,
-                 "Original four hero sensor PDFs retained");
+                     std::isfinite(owner.wavelengths[k]) && owner.wavelengths[k] >= 360 &&
+                     owner.wavelengths[k] <= 830 && owner.wavelength_pdfs[k] > 0 &&
+                     std::abs(owner.wavelength_pdfs[k] - expected_pdf) <= 3e-6 * expected_pdf,
+                 "Original four hero sensor PDFs retained for the selected wavelength policy");
+        }
     }
     return result;
 }
@@ -246,7 +256,7 @@ void offline_wavefront(const RenderScene &scene) {
     const auto c = config();
     auto frames = session(scene, c);
     for (auto index : {std::uint64_t(0), high_sample}) {
-        const auto samples = sample(*direct, index);
+        const auto samples = sample(*direct, index, 3, 2, scene.hero_wavelengths);
         compare_sensor(capture(*frames, c, index, false), samples);
     }
 }
@@ -266,6 +276,8 @@ void scheduling(const RenderScene &scene) {
         std::array<FrameCapture, 2> reference;
         for (std::size_t mode = 0; mode < modes.size(); ++mode) {
             auto c = config(estimator);
+            c.mutation_policy = FrameMutationPolicy::spectral_refresh;
+            c.area_stencil = FrameAreaStencil::reciprocal16;
             c.packet_layout = modes[mode].layout;
             c.packet_events = modes[mode].events;
             c.capacity = mode % 2 ? 5 : 2;
@@ -280,6 +292,88 @@ void scheduling(const RenderScene &scene) {
                     exact(image, reference[f]);
             }
         }
+    }
+}
+void visible_mapping_and_area0() {
+    auto scene = early_emission(false);
+    auto direct = offline(scene);
+    auto scalar_scene = scene;
+    scalar_scene.spectral_transport = SpectralTransport::scalar;
+    auto scalar = offline(scalar_scene);
+    // Scalar diagnostic words expose the same initial wavelength coordinate,
+    // independently of the hero implementation and later transport choices.
+    const auto diagnostic = scalar->sample({.width = 3,
+                                            .height = 2,
+                                            .seed = seed,
+                                            .material_seed = -11,
+                                            .pixel_count = 6,
+                                            .sample_begin = high_sample,
+                                            .sample_count = 1,
+                                            .total_samples = high_sample + 1});
+    need(diagnostic.status == GeometryStatus::success && diagnostic.samples.size() == 6,
+         "Scalar wavelength-coordinate diagnostic");
+    const auto result = sample(*direct, high_sample);
+    for (unsigned pixel = 0; pixel < 6; ++pixel) {
+        const auto mapped = rypath_hero::sample_visible(
+            rypath_replay::uniform(diagnostic.samples[pixel].random_words[2]));
+        for (unsigned k = 0; k < 4; ++k) {
+            need(std::abs(result.packet_samples[pixel].wavelengths[k] - mapped.lambda[k]) <= .001f,
+                 "CPU/MSL visible inverse-CDF mapping at identical renderer coordinates");
+            need(std::abs(result.packet_samples[pixel].wavelength_pdfs[k] - mapped.pdf[k]) <=
+                     3e-5 * mapped.pdf[k],
+                 "CPU/MSL visible per-lane sensor PDF mapping");
+        }
+    }
+    auto c = config(FrameEstimator::area_replay);
+    c.width = 35;
+    c.height = 19;
+    c.capacity = 128;
+    c.mutation_steps = 0;
+    c.area_stencil = FrameAreaStencil::reciprocal16;
+    auto area = session(scene, c);
+    auto submitted = area->submit({.sample_index = high_sample, .epoch = 73});
+    need(submitted.status == GeometryStatus::success && submitted.frame, submitted.diagnostic);
+    const auto info = submitted.frame->wait();
+    need(info.status == FrameStatus::complete && !info.history_used &&
+             info.completed_evaluations == std::uint64_t(c.width) * c.height * 5 &&
+             info.mutation_attempts == 0,
+         "Hero-visible Area0 full replay accounting");
+    const auto image = submitted.frame->capture();
+    need(image.status == GeometryStatus::success, image.diagnostic);
+    auto analytic = [&](unsigned pixel) {
+        const auto payload =
+            rypath_replay::fresh({pixel, unsigned(high_sample), unsigned(high_sample >> 32),
+                                  unsigned(seed), unsigned(seed >> 32)});
+        const auto wavelengths =
+            rypath_hero::sample_visible(rypath_replay::uniform(payload.wavelength));
+        std::array<double, 3> xyz{};
+        for (unsigned k = 0; k < 4; ++k) {
+            const auto cie = pbrt_cie_xyz(wavelengths.lambda[k]);
+            for (unsigned channel = 0; channel < 3; ++channel)
+                xyz[channel] += cie[channel] * emitted / (4 * wavelengths.pdf[k]);
+        }
+        return xyz;
+    };
+    const auto d = info.area_stencil_offsets;
+    for (unsigned pixel = 0; pixel < c.width * c.height; ++pixel) {
+        auto expected = analytic(pixel);
+        for (auto &v : expected)
+            v *= .5;
+        for (unsigned slot = 0; slot < 4; ++slot) {
+            const int sign = slot % 2 ? -1 : 1;
+            const int x = int(pixel % c.width) + sign * d[slot / 2 * 2];
+            const int y = int(pixel / c.width) + sign * d[slot / 2 * 2 + 1];
+            const unsigned neighbor = x >= 0 && y >= 0 && x < int(c.width) && y < int(c.height)
+                                          ? unsigned(y) * c.width + unsigned(x)
+                                          : pixel;
+            const auto value = analytic(neighbor);
+            for (unsigned channel = 0; channel < 3; ++channel)
+                expected[channel] += .125 * value[channel];
+        }
+        for (unsigned channel = 0; channel < 3; ++channel)
+            need(std::abs(image.raw_xyz[pixel][channel] - expected[channel]) <=
+                     3e-5 * std::abs(expected[channel]) + 3e-6,
+                 "Analytic constant-emitter hero-visible sensor integral and cold Area0 mapping");
     }
 }
 void transmission_witness() {
@@ -418,6 +512,10 @@ int main() {
         capability.scene.reset();
         std::cout << "Hero native: diffuse backend comparison" << std::endl;
         offline_wavefront(diffuse());
+        auto uniform = diffuse();
+        uniform.hero_wavelengths = HeroWavelengthSampling::uniform;
+        offline_wavefront(uniform);
+        visible_mapping_and_area0();
         std::cout << "Hero native: dispersive backend comparison" << std::endl;
         offline_wavefront(dispersive());
         std::cout << "Hero native: seven schedules and replay" << std::endl;

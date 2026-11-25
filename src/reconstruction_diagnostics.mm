@@ -140,8 +140,12 @@ void help() {
     std::cout
         << "Usage: rypath-reconstruction-diagnostics --scene FILE --output-dir DIR --artifact-root "
            "DIR [options]\n"
-           "  --width N --height N --frames N --seed N --estimator independent|area1|area2|area4\n"
+           "  --width N --height N --frames N --seed N --estimator "
+           "independent|area0|area1|area2|area4\n"
            "  --spectral-transport auto|scalar|packet|hero (default: auto)\n"
+           "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
+           "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
+           "auto|adjacent|reciprocal16\n"
            "  --area-output selected|conditional-mean (Area fanout only; default: "
            "conditional-mean)\n"
            "  --capture-mode final|replay --capture-frames N,N --roi-file FILE\n"
@@ -155,6 +159,9 @@ void help() {
            "at 8 GiB.\n";
 }
 struct Options {
+    std::optional<HeroWavelengthSampling> hero_wavelengths;
+    FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
+    FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir, artifact_root, replay_list, roi_file;
     std::uint32_t width = 1920, height = 1080, frames = 128, reference_samples = 0;
@@ -189,7 +196,30 @@ Options parse(int argc, char **argv) {
         std::string key = argv[i];
         require(seen.insert(key).second && i + 1 < argc, "Duplicate option or missing value");
         std::string value = argv[++i];
-        if (key == "--spectral-transport") {
+        if (key == "--hero-wavelengths") {
+            o.hero_wavelengths = parse_hero_wavelength_sampling(value);
+            if (!o.hero_wavelengths)
+                throw std::runtime_error("Hero wavelengths must be uniform or visible");
+        } else if (key == "--area-mutation-policy") {
+            if (value == "auto")
+                o.mutation_policy = FrameMutationPolicy::automatic;
+            else if (value == "legacy")
+                o.mutation_policy = FrameMutationPolicy::legacy;
+            else if (value == "spectral-refresh")
+                o.mutation_policy = FrameMutationPolicy::spectral_refresh;
+            else
+                throw std::runtime_error(
+                    "Area mutation policy must be auto, legacy, or spectral-refresh");
+        } else if (key == "--area-stencil") {
+            if (value == "auto")
+                o.area_stencil = FrameAreaStencil::automatic;
+            else if (value == "adjacent")
+                o.area_stencil = FrameAreaStencil::adjacent;
+            else if (value == "reciprocal16")
+                o.area_stencil = FrameAreaStencil::reciprocal16;
+            else
+                throw std::runtime_error("Area stencil must be auto, adjacent, or reciprocal16");
+        } else if (key == "--spectral-transport") {
             const auto selection = parse_spectral_transport(value);
             require(selection.has_value(),
                     "Spectral transport must be auto, scalar, packet, or hero");
@@ -234,9 +264,9 @@ Options parse(int argc, char **argv) {
             require(p.has_value(), "Invalid resource profile");
             o.resource_profile = *p;
         } else if (key == "--estimator") {
-            require(value == "independent" || value == "area1" || value == "area2" ||
-                        value == "area4",
-                    "Estimator must be independent, area1, area2, or area4");
+            require(value == "independent" || value == "area0" || value == "area1" ||
+                        value == "area2" || value == "area4",
+                    "Estimator must be independent, area0, area1, area2, or area4");
             o.estimator =
                 value == "independent" ? FrameEstimator::independent : FrameEstimator::area_replay;
             o.mutation_steps = value == "independent" ? 0u : unsigned(value.back() - '0');
@@ -476,6 +506,21 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
         @"textures" : textures,
         @"signed_raw_is_accumulated_spp" : @NO,
         @"source_sample" : @(snapshot.info.source.sample_index),
+        @"requested_area_mutation_policy" : ns(frame_mutation_policy_name(o.mutation_policy)),
+        @"requested_area_stencil" : ns(frame_area_stencil_name(o.area_stencil)),
+        @"area_mutation_policy" :
+            ns(o.estimator == FrameEstimator::area_replay
+                   ? frame_mutation_policy_name(snapshot.info.source.mutation_policy)
+                   : "not-applicable"),
+        @"area_stencil" : ns(o.estimator == FrameEstimator::area_replay
+                                 ? frame_area_stencil_name(snapshot.info.source.area_stencil)
+                                 : "not-applicable"),
+        @"area_stencil_offsets" : @[
+            @(snapshot.info.source.area_stencil_offsets[0]),
+            @(snapshot.info.source.area_stencil_offsets[1]),
+            @(snapshot.info.source.area_stencil_offsets[2]),
+            @(snapshot.info.source.area_stencil_offsets[3])
+        ],
         @"area_contract" : @(o.estimator == FrameEstimator::area_replay ? area_wire::contract : 0),
         @"area_output" : ns(effective_area_output(o)),
         @"area_target" : o.estimator == FrameEstimator::area_replay ? @"quarter-l1-v1" : @"none",
@@ -697,6 +742,28 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                         ? @"source-target-mis-v1"
                         : @"none",
                     @"area_temporal_reuse" : @(o.estimator == FrameEstimator::area_replay ? 20 : 0),
+                    @"source_completed_samples" : @(info.source.completed_samples),
+                    @"source_evaluations" : @(info.source.completed_evaluations),
+                    @"source_fresh_candidates" : @(info.source.fresh_candidates),
+                    @"source_mutation_attempts" : @(info.source.mutation_attempts),
+                    @"source_mutation_accepts" : @(info.source.mutation_accepts),
+                    @"source_area_serial" : @(info.source.area_serial),
+                    @"requested_area_mutation_policy" :
+                        ns(frame_mutation_policy_name(o.mutation_policy)),
+                    @"requested_area_stencil" : ns(frame_area_stencil_name(o.area_stencil)),
+                    @"area_mutation_policy" :
+                        ns(o.estimator == FrameEstimator::area_replay
+                               ? frame_mutation_policy_name(info.source.mutation_policy)
+                               : "not-applicable"),
+                    @"area_stencil" : ns(o.estimator == FrameEstimator::area_replay
+                                             ? frame_area_stencil_name(info.source.area_stencil)
+                                             : "not-applicable"),
+                    @"area_stencil_offsets" : @[
+                        @(info.source.area_stencil_offsets[0]),
+                        @(info.source.area_stencil_offsets[1]),
+                        @(info.source.area_stencil_offsets[2]),
+                        @(info.source.area_stencil_offsets[3])
+                    ],
                     @"same_input_raw_XYZ_sha256" : ns(raw_hash),
                     @"raw_RGB_sha256" : ns(raw_rgb_hash),
                     @"regions" : region_means(result.linear_rgb, regions, o),
@@ -762,6 +829,29 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                             @"offset" : @(pose.offset),
                             @"epoch" : @(pose.epoch),
                             @"reset_history" : @(conditioned.history_reset),
+                            @"source_completed_samples" : @(info.source.completed_samples),
+                            @"source_evaluations" : @(info.source.completed_evaluations),
+                            @"source_fresh_candidates" : @(info.source.fresh_candidates),
+                            @"source_mutation_attempts" : @(info.source.mutation_attempts),
+                            @"source_mutation_accepts" : @(info.source.mutation_accepts),
+                            @"source_area_serial" : @(info.source.area_serial),
+                            @"requested_area_mutation_policy" :
+                                ns(frame_mutation_policy_name(o.mutation_policy)),
+                            @"requested_area_stencil" : ns(frame_area_stencil_name(o.area_stencil)),
+                            @"area_mutation_policy" :
+                                ns(o.estimator == FrameEstimator::area_replay
+                                       ? frame_mutation_policy_name(info.source.mutation_policy)
+                                       : "not-applicable"),
+                            @"area_stencil" :
+                                ns(o.estimator == FrameEstimator::area_replay
+                                       ? frame_area_stencil_name(info.source.area_stencil)
+                                       : "not-applicable"),
+                            @"area_stencil_offsets" : @[
+                                @(info.source.area_stencil_offsets[0]),
+                                @(info.source.area_stencil_offsets[1]),
+                                @(info.source.area_stencil_offsets[2]),
+                                @(info.source.area_stencil_offsets[3])
+                            ],
                             @"same_input_raw_XYZ_sha256" : ns(raw_hash),
                             @"raw_RGB_sha256" : ns(raw_rgb_hash),
                             @"conditioned_input_RGB_sha256" : ns(conditioned_input_hash),
@@ -1162,6 +1252,8 @@ int main(int argc, char **argv) {
             config.estimator = options.estimator;
             config.area_output = options.area_output;
             config.mutation_steps = options.mutation_steps;
+            config.mutation_policy = options.mutation_policy;
+            config.area_stencil = options.area_stencil;
             config.intersection_profile = IntersectionProfile::native;
             config.execution = FrameExecution::wavefront;
             auto built = build_frame_session(scene.value, config);
@@ -1206,6 +1298,17 @@ int main(int argc, char **argv) {
                     @"spectral_transport" :
                         ns(spectral_transport_name(scene.value.spectral_transport)),
                     @"mutation_steps" : @(config.mutation_steps),
+                    @"requested_hero_wavelengths" :
+                        ns(options.hero_wavelengths
+                               ? hero_wavelength_sampling_name(*options.hero_wavelengths)
+                               : "default"),
+                    @"hero_wavelengths" :
+                        ns(scene.value.spectral_transport == SpectralTransport::hero
+                               ? hero_wavelength_sampling_name(scene.value.hero_wavelengths)
+                               : "not-applicable"),
+                    @"requested_area_mutation_policy" :
+                        ns(frame_mutation_policy_name(options.mutation_policy)),
+                    @"requested_area_stencil" : ns(frame_area_stencil_name(options.area_stencil)),
                     @"source_identity" : ns(digest_hex(render_identity(scene.value, settings))),
                     @"resource_profile" : ns(resource_profile_name(options.resource_profile)),
                     @"build_description" : ns(RYPATH_BUILD_DESCRIPTION),

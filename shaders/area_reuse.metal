@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 // Included by render.metal; the leaf evaluator remains the complete PT estimator.
+#include "../src/area_stencil_shared.h"
 #include "../src/area_wire.h"
 #include "../src/mutation_shared.h"
 #include "../src/reuse_mis_shared.h"
@@ -47,8 +48,8 @@ inline void area_fail_at(constant AreaArguments &a, uint failure, uint pixel, ui
         uint4(a.config->pixel_count, a.config->width, a.config->height, a.config->history_used),
         uint4(a.config->mutation_steps, a.config->output_mode,
               as_type<uint>(a.config->target_scale), a.config->seed_low),
-        uint4(a.config->seed_high, a.config->reserved[0], a.config->reserved[1],
-              a.config->reserved[2]));
+        uint4(a.config->seed_high, a.config->mutation_policy, a.config->stencil,
+              a.config->reserved));
 }
 #define AREA_FAIL(a, flag) area_fail_at(a, flag, pixel, __LINE__)
 #define AREA_DETAIL(a, flag, status, ...)                                                          \
@@ -70,14 +71,24 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
         !mutation::valid_step_count(c.mutation_steps) ||
         ulong(c.pixel_count) * c.mutation_steps > 0xfffffffful ||
         !reservoir::positive_normal(c.target_scale) ||
-        c.output_mode > aw::conditional_mean_output || c.reserved[0] || c.reserved[1] ||
-        c.reserved[2] || !schedule) {
+        c.output_mode > aw::conditional_mean_output ||
+        c.mutation_policy > aw::spectral_refresh_mutation || c.stencil > aw::reciprocal16_stencil ||
+        c.reserved ||
+        (c.stencil == aw::reciprocal16_stencil &&
+         (!rypath_area_stencil::valid({c.offset_x[0], c.offset_y[0]}) ||
+          !rypath_area_stencil::valid({c.offset_x[1], c.offset_y[1]}))) ||
+        !schedule) {
         AREA_FAIL(a, aw::invalid_config);
         return false;
     }
     return !area_failed(a);
 }
 inline uint area_neighbor_direction(constant AreaArguments &a, uint pixel, uint direction) {
+    if (a.config->stencil == aw::reciprocal16_stencil)
+        return rypath_area_stencil::neighbor(pixel, a.config->width, a.config->height,
+                                             {{a.config->offset_x[0], a.config->offset_y[0]},
+                                              {a.config->offset_x[1], a.config->offset_y[1]}},
+                                             direction);
     const uint x = pixel % a.config->width, y = pixel / a.config->width;
     switch (direction) {
     case 1:
@@ -488,7 +499,7 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
     float center_score = 0;
     for (uint direction = 1; direction <= 4; ++direction) {
         const uint neighbor = area_neighbor_direction(a, pixel, direction);
-        const uint opposite = direction == 1 ? 2 : direction == 2 ? 1 : direction == 3 ? 4 : 3;
+        const uint opposite = rypath_area_stencil::inverse_slot(direction);
         // A clamped self-neighbor does not have the ordinary opposite inverse.
         const float reverse_target =
             neighbor == pixel
@@ -564,7 +575,8 @@ area_mutation_proposal(constant AreaArguments &a, uint pixel,
                     area_payload_tail(source));
         return {source, mutation::Block::film, entropy.status};
     }
-    const auto proposal = mutation::propose(source, entropy.value);
+    const auto proposal =
+        mutation::propose(source, entropy.value, mutation::Policy(a.config->mutation_policy));
     if (proposal.status != mutation::Status::ok)
         AREA_DETAIL(a, aw::invalid_mutation, proposal.status, area_payload_head(source),
                     area_payload_tail(source),

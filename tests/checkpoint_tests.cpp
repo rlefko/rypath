@@ -155,10 +155,10 @@ void codec(const std::filesystem::path &dir) {
     require(validate_checkpoint(c).empty(), "valid fixture");
     require(write_checkpoint(c, path).empty(), "checkpoint publication");
     const auto original = read(path);
-    // Independent Python struct.pack('<...') + hashlib: renderer28/sampling10,
+    // Independent Python struct.pack('<...') + hashlib: renderer29/sampling11,
     // 44 header +250 metadata +432 pixel bytes; only contract words changed.
     require(digest_hex(sha256(std::span(original).first(original.size() - 32))) ==
-                "350bd25acc1837bcf9153d5dd7c6a21b98c2beaafc0d80de915d91ee342f4232",
+                "a4d3ba40fc95440074bd8b646b9f23052c89f24ab245cf79c1700b32c7fe4d19",
             "independent binary layout checksum");
     auto result = read_checkpoint(path);
     require(result.value.has_value(), result.diagnostic);

@@ -10,8 +10,10 @@ struct HeroTrack {
 };
 inline bool hero_enabled(constant wire::Parameters &p) { return packet_hero_enabled(p); }
 inline Wavelengths packet_wavelengths(constant wire::Parameters &p, float u) {
-    return hero_enabled(p) ? rypath_hero::sample_uniform(u)
-                           : rypath_packet_spectrum::sample_visible(u);
+    if (!hero_enabled(p))
+        return rypath_packet_spectrum::sample_visible(u);
+    return p.hero_wavelengths == 1 ? rypath_hero::sample_visible(u)
+                                   : rypath_hero::sample_uniform(u);
 }
 inline bool hero_connectible(const thread rypath_packet::Prepared &bsdf) {
     for (uint k = 0; k < 4; ++k)

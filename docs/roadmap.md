@@ -208,7 +208,8 @@ guards, and project agent guidance. Large-corpus acquisition remains separately 
 [Hero wavelength PT](hero-wavelength.md) supplies explicit shared-path spectral
 sampling for eligible vacuum PT scenes. Automatic adoption awaits broader
 quality/cost qualification and resolution of the retained Prism mean warning.
-Remaining spectral work includes joint coated proposals and packet media
+[Visible-CDF and spectral reuse qualification](spectral-color-noise.md) is the
+current bounded repair. Remaining spectral work includes joint coated proposals and packet media
 transport; the implementation does not claim those capabilities or the suite's
 performance target.
 

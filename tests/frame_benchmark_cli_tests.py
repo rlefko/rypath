@@ -30,6 +30,11 @@ for flag in ("--variance-policy paired|center|conservative", "--variance-prefilt
 assert "--reconstructed-capture" in help_text
 assert "--profile-stages" in help_text
 assert "--capture-frame" in help_text and "--capture-path" in help_text
+for flag in ("--hero-wavelengths", "--area-mutation-policy", "--area-stencil"):
+    assert flag in help_text
+    for value in ("invalid", "Visible", ""):
+        result = invoke(["--demo", "--output", "x.json", flag, value])
+        assert "must be" in result.stderr, result.stderr
 for args in (
     ["--demo", "--output", "x.json", "--capture-frame", "0"],
     ["--demo", "--output", "x.json", "--capture-path", "x.gputrace"],
@@ -377,7 +382,7 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 5
+    assert settings["area_contract"] == 6
     assert settings["mutation_steps"] == 1 and settings["effective_mutation_steps"] == 1
     assert settings["area_target"] == "quarter-l1-v1"
     assert settings["area_source_mis"] == "source-target-mis-v1"
@@ -396,6 +401,6 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 5
+        assert settings["area_contract"] == 6
         assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")

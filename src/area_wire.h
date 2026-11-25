@@ -7,7 +7,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 5,
+    contract = 6,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -23,6 +23,8 @@ enum Phase : Word {
     spatial_final = 5
 };
 enum Output : Word { selected_output = 0, conditional_mean_output = 1 };
+enum MutationPolicy : Word { legacy_mutation = 0, spectral_refresh_mutation = 1 };
+enum Stencil : Word { adjacent_stencil = 0, reciprocal16_stencil = 1 };
 enum Failure : Word {
     invalid_config = 1,
     invalid_payload = 2,
@@ -37,7 +39,8 @@ struct Config {
     Word seed_low, seed_high;
     float target_scale;
     Word mutation_steps;
-    Word output_mode, reserved[3];
+    Word output_mode, mutation_policy, stencil, reserved;
+    int offset_x[2], offset_y[2];
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -92,7 +95,7 @@ struct Contract {
 };
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 64 && sizeof(History) == 48 && sizeof(Temporal) == 64 &&
+static_assert(sizeof(Config) == 80 && sizeof(History) == 48 && sizeof(Temporal) == 64 &&
                   sizeof(Accumulator) == 68 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire

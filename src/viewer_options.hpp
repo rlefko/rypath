@@ -8,6 +8,10 @@ struct Options {
     bool demo = false, help = false;
     std::uint32_t width = 1920, height = 1080, mutation_steps = 1;
     std::uint64_t frames = 0, seed = 1; // Zero frames means interactive/unlimited.
+    SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
+    std::optional<HeroWavelengthSampling> hero_wavelengths;
+    FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
+    FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
     FrameEstimator estimator = FrameEstimator::independent;
     ReconstructionMode reconstruction = ReconstructionMode::temporal;
     double exposure_ev = 0, near_plane = .001;

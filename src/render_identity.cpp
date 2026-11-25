@@ -400,6 +400,10 @@ class Canonical {
         FIELD(integrator);
         FIELD(light_sampler);
         FIELD(spectral_transport);
+        // This policy changes only hero transport; dormant choices have no effect.
+        field("hero_wavelengths", x.spectral_transport == SpectralTransport::hero
+                                      ? x.hero_wavelengths
+                                      : HeroWavelengthSampling::uniform);
         FIELD(max_component_value);
         if (std::isfinite(x.max_component_value))
             FIELD(exposure);

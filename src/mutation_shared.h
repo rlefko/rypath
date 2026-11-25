@@ -38,6 +38,7 @@ inline bool valid_step_count(unsigned count) {
     return count == 0 || count == 1 || count == 2 || count == 4;
 }
 
+enum class Policy : Word { legacy, spectral_refresh };
 enum class Block : Word { film, lens, wavelength, tail_key };
 struct ProposalScale {
     unsigned magnitude_bits = 16;
@@ -90,6 +91,24 @@ inline ProposalResult propose(RYPATH_MUTATION_THREAD const ReplayState &source, 
         break;
     }
     return result;
+}
+
+// Fixed state-independent mixture: half refreshes the complete wavelength word,
+// including equality as a valid self proposal; half uses the legacy kernel.
+// Both components are symmetric, so the existing actual-dyadic MH correction
+// applies unchanged. A refresh still receives exactly one complete replay.
+inline ProposalResult propose(RYPATH_MUTATION_THREAD const ReplayState &source, Words4 entropy,
+                              Policy policy, ProposalScale scale = {}) {
+    if (policy != Policy::legacy && policy != Policy::spectral_refresh)
+        return {source, Block::wavelength, Status::invalid_domain};
+    if (policy == Policy::spectral_refresh && (entropy.x & 0x80000000u)) {
+        if (!rypath_replay::valid(source))
+            return {source, Block::wavelength, Status::invalid_payload};
+        auto payload = source;
+        payload.wavelength = entropy.z;
+        return {payload, Block::wavelength, Status::ok};
+    }
+    return propose(source, entropy, scale);
 }
 
 enum class Entropy : Word { proposal, acceptance };

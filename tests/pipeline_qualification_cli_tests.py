@@ -54,7 +54,7 @@ settings = {'width': w, 'height': h, 'output_width': w, 'output_height': h, 'see
  'material_seed': 0, 'execution': 'wavefront', 'intersection_profile': 'native', 'target_scale': 1,
  'estimator': args['--estimator'], 'effective_mutation_steps': int(args['--mutations']),
  'reconstruction': mode, 'footprint_samples': 1,
- 'area_contract': 5 if args['--estimator'] == 'area-replay' else 0,
+ 'area_contract': 6 if args['--estimator'] == 'area-replay' else 0,
  'area_output': args.get('--area-output', 'conditional-mean') if args['--estimator'] == 'area-replay' else 'not-applicable',
  'area_target': 'quarter-l1-v1' if args['--estimator'] == 'area-replay' else 'none',
  'area_source_mis': 'source-target-mis-v1' if args['--estimator'] == 'area-replay' else 'none',
@@ -116,7 +116,7 @@ Path(args['--output']).write_text(json.dumps(report))
                 assert manifest["complete"] and summary["complete"]
                 assert manifest["primary_reconstruction"] == summary["primary_reconstruction"] == expected
                 assert manifest["area_output"] == summary["area_output"] == area_output
-                assert manifest["area_contract"] == summary["area_contract"] == 5
+                assert manifest["area_contract"] == summary["area_contract"] == 6
                 assert summary["area_source_mis"] == "source-target-mis-v1"
                 assert len(manifest["runs"]) == 13
                 modes = [row["reconstruction"] for row in manifest["runs"]]
@@ -253,6 +253,9 @@ def qualification_checks(executable):
         source = root / "missing.pbrt"
         base = ["--scene", source, "--output-dir", destination]
         invalid = [
+            base + ["--hero-wavelengths", "invalid"],
+            base + ["--area-mutation-policy", "invalid"],
+            base + ["--area-stencil", "invalid"],
             [], ["--scene"], base + ["--unknown", "1"],
             base + ["--width", "0"], base + ["--height", "16385"],
             base + ["--width", "4294967296"],
@@ -298,7 +301,7 @@ def qualification_checks(executable):
                                 object_pairs_hook=unique_object)
             assert report["complete"] is False
             assert report["schema"] == 2
-            assert report["settings"]["area_contract"] == 5
+            assert report["settings"]["area_contract"] == 6
             assert report["settings"]["area_output"] == "conditional-mean"
             assert report["settings"]["area_target"] == "quarter-l1-v1"
             assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
@@ -316,7 +319,7 @@ def qualification_checks(executable):
         assert result.returncode != 0
         selected = json.loads((destination / "summary.json").read_text())
         assert selected["schema"] == 2 and selected["settings"]["area_output"] == "selected"
-        assert selected["settings"]["area_contract"] == 5
+        assert selected["settings"]["area_contract"] == 6
     print("Qualification CLI and failure publication checks passed")
 
 

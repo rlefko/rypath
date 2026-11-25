@@ -1,6 +1,11 @@
 # Project status
 
-[Hero wavelength PT](hero-wavelength.md) adds four uniform visible wavelengths,
+[Spectral noise repair](spectral-color-noise.md) adds visible-CDF hero sampling
+and explicit spectral-refresh/reciprocal spatial reuse controls. Current scene
+quality and native timing qualification are pending; automatic reuse still
+selects legacy mutation and adjacent sources.
+
+[Hero wavelength PT](hero-wavelength.md) originally added four uniform visible wavelengths,
 hero-driven continuation and cumulative spectral/direct-light balance MIS.
 It is explicit through `--spectral-transport hero`; automatic selection retains
 the prior scalar/packet behavior. Coated materials use a compensated hero-only

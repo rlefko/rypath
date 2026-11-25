@@ -41,6 +41,24 @@ viewer::Options accepted(std::initializer_list<std::string> arguments) {
 void rejected(std::initializer_list<std::string> arguments, const std::string &reason) {
     require(!parse(arguments).diagnostic.empty(), "Invalid options accepted: " + reason);
 }
+void spectral_and_area_policies() {
+    const auto o =
+        accepted({"--demo", "--spectral-transport", "hero", "--hero-wavelengths", "uniform",
+                  "--area-mutation-policy", "spectral-refresh", "--area-stencil", "reciprocal16"});
+    require(o.spectral_transport == SpectralTransportSelection::hero &&
+                o.hero_wavelengths == HeroWavelengthSampling::uniform &&
+                o.mutation_policy == FrameMutationPolicy::spectral_refresh &&
+                o.area_stencil == FrameAreaStencil::reciprocal16,
+            "Spectral and Area policy selections preserved");
+    const auto defaults = accepted({"--demo"});
+    require(!defaults.hero_wavelengths &&
+                defaults.mutation_policy == FrameMutationPolicy::automatic &&
+                defaults.area_stencil == FrameAreaStencil::automatic,
+            "Spectral and Area defaults remain explicit");
+    rejected({"--demo", "--hero-wavelengths", "invalid"}, "Invalid wavelength sampler");
+    rejected({"--demo", "--area-mutation-policy", "invalid"}, "Invalid mutation policy");
+    rejected({"--demo", "--area-stencil", "invalid"}, "Invalid area stencil");
+}
 void defaults_and_modes() {
     const auto defaults = accepted({"--demo"});
     require(defaults.demo && defaults.scene.empty() && !defaults.help, "Demo selection defaults");
@@ -190,6 +208,7 @@ void paths_are_only_parsed() {
 } // namespace
 int main() {
     try {
+        spectral_and_area_policies();
         defaults_and_modes();
         denoiser_selection_and_comparison();
         integer_boundaries();

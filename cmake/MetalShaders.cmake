@@ -117,6 +117,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_scattering.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_pt_helpers.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/area_stencil_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/offset_rounding_shared.h"

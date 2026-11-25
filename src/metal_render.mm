@@ -2,6 +2,7 @@
 
 #include "metal_render.hpp"
 #include "analytic.hpp"
+#include "area_stencil_shared.h"
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
@@ -142,6 +143,7 @@ GeometryPoint unpack(wire::Point point) { return {point.x, point.y, point.z}; }
 wire::Parameters camera_parameters(const RenderScene &scene) {
     wire::Parameters result{};
     result.packet_transport = static_cast<wire::Word>(scene.spectral_transport);
+    result.hero_wavelengths = static_cast<wire::Word>(scene.hero_wavelengths);
     result.bidirectional = scene.integrator == IntegratorKind::bdpt;
     result.packet_lane_bytes = static_cast<wire::Word>(packet_dispatch::lane_bytes(scene));
     result.packet_filter_weight = 1;
@@ -2400,6 +2402,7 @@ render_wire::Parameters MetalFrameLease::guide_parameters() const {
     const auto &frame = *impl_->frame;
     auto p = frame.resolved_parameters;
     p.packet_transport = 0;
+    p.hero_wavelengths = 0;
     p.bidirectional = 0;
     p.lens_radius = 0;
     p.pixel_begin = 0;
@@ -2542,6 +2545,10 @@ struct FrameSession::Impl {
                         const FrameConfig &settings, const std::filesystem::path &library_path) {
         renderer = std::move(owner);
         config = settings;
+        if (config.mutation_policy == FrameMutationPolicy::automatic)
+            config.mutation_policy = FrameMutationPolicy::legacy;
+        if (config.area_stencil == FrameAreaStencil::automatic)
+            config.area_stencil = FrameAreaStencil::adjacent;
         if (config.estimator == FrameEstimator::independent)
             config.mutation_steps = 0;
         supports_camera_medium = scene.model == RenderModel::pbrt && scene.volume_transport &&
@@ -2976,7 +2983,8 @@ struct FrameSession::Impl {
         return {};
     }
     void configure_area(Slot &slot, id<MTLBuffer> raw, std::uint64_t serial, bool history_used,
-                        id<MTLBuffer> source, id<MTLBuffer> destination) {
+                        id<MTLBuffer> source, id<MTLBuffer> destination,
+                        rypath_area_stencil::Offsets offsets) {
         auto &b = *slot.area;
         std::memset(b.failure.contents, 0, b.failure.length);
         for (unsigned index = 0; index < area_wire::config_count; ++index) {
@@ -3008,7 +3016,16 @@ struct FrameSession::Impl {
                                         config.area_output == FrameAreaOutput::conditional_mean
                                             ? area_wire::conditional_mean_output
                                             : area_wire::selected_output,
-                                        {0, 0, 0}};
+                                        config.mutation_policy ==
+                                                FrameMutationPolicy::spectral_refresh
+                                            ? area_wire::spectral_refresh_mutation
+                                            : area_wire::legacy_mutation,
+                                        config.area_stencil == FrameAreaStencil::reciprocal16
+                                            ? area_wire::reciprocal16_stencil
+                                            : area_wire::adjacent_stencil,
+                                        0,
+                                        {offsets.first.x, offsets.second.x},
+                                        {offsets.first.y, offsets.second.y}};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
@@ -3905,6 +3922,17 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 history.pending = true;
                 history.pending_serial = serial;
                 frame->info.area_serial = serial;
+                frame->info.mutation_policy = c.mutation_policy;
+                frame->info.area_stencil = c.area_stencil;
+                const auto offsets =
+                    c.area_stencil == FrameAreaStencil::reciprocal16
+                        ? rypath_area_stencil::draw(static_cast<std::uint32_t>(serial),
+                                                    static_cast<std::uint32_t>(serial >> 32),
+                                                    static_cast<std::uint32_t>(c.seed),
+                                                    static_cast<std::uint32_t>(c.seed >> 32))
+                        : rypath_area_stencil::Offsets{{-1, 0}, {0, -1}};
+                frame->info.area_stencil_offsets = {offsets.first.x, offsets.first.y,
+                                                    offsets.second.x, offsets.second.y};
                 frame->info.history_used = history.valid;
                 frame->info.history_generation = history.generation;
                 frame->info.temporal_candidates = history.valid ? 2 : 1;
@@ -3916,7 +3944,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 runner->history_destination_index = destination_index;
                 runner->history_destination = history.banks[runner->history_destination_index];
                 impl_->configure_area(*slot, frame->raw, serial, history.valid,
-                                      runner->history_source, runner->history_destination);
+                                      runner->history_source, runner->history_destination, offsets);
             }
 
             slot->active = frame->retention;
@@ -4055,6 +4083,18 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     if (!pixels || pixels > max_index || !config.footprint_samples ||
         !config.transient_byte_limit) {
         result.diagnostic = "Invalid frame dimensions, footprint budget, or memory budget";
+        return result;
+    }
+    if (config.mutation_policy != FrameMutationPolicy::automatic &&
+        config.mutation_policy != FrameMutationPolicy::legacy &&
+        config.mutation_policy != FrameMutationPolicy::spectral_refresh) {
+        result.diagnostic = "Invalid Area mutation policy";
+        return result;
+    }
+    if (config.area_stencil != FrameAreaStencil::automatic &&
+        config.area_stencil != FrameAreaStencil::adjacent &&
+        config.area_stencil != FrameAreaStencil::reciprocal16) {
+        result.diagnostic = "Invalid Area stencil";
         return result;
     }
     if (config.mutation_steps != 0 && config.mutation_steps != 1 && config.mutation_steps != 2 &&

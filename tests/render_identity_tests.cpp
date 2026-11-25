@@ -21,14 +21,14 @@ void identity_checks() {
     RenderSettings settings;
     const auto baseline = render_identity(scene, settings);
     // Independently serialized with Python struct '<I', '<Q', '<f', hashlib;
-    // renderer28/sampling10, 3766 bytes including field tags and all defaults.
+    // renderer29/sampling11, 3794 bytes including field tags and all defaults.
     require(digest_hex(baseline) ==
-                "cba95ccc5101edea36a5c8b529eeab5eb217e0cf833286ca0dc12c9fbfbdcf8a",
+                "1ee23ba694073244125355e3041e362fa23b425bd18520bc68b7d952900144db",
             "canonical empty-scene identity golden");
     require(baseline == render_identity(scene, settings), "deterministic identity");
     {
         // Independently serialized fixture, retaining nested counts, shared
-        // content and exact nonfinite/-zero bits: 67499 bytes across the8192-byte buffer.
+        // content and exact nonfinite/-zero bits: 67527 bytes across the8192-byte buffer.
         RenderScene populated;
         auto image = std::make_shared<ImagePyramid>();
         image->encoding = ImageEncoding{};
@@ -55,7 +55,7 @@ void identity_checks() {
                             std::bit_cast<float>(std::uint32_t{0x80000000})};
         const auto expected = render_identity(populated, settings);
         require(digest_hex(expected) ==
-                    "06dd6aee04c440560f702dd813290c6e426325200bb1465df1580772f9933a74",
+                    "83dcd02ad88e0b9a9560edc5cf25f6748eceb5c1278099fdf97afd09a6aa42d7",
                 "canonical populated identity golden");
         populated.image_textures[1].image = std::make_shared<ImagePyramid>(*image);
         require(render_identity(populated, settings) == expected,
@@ -93,6 +93,17 @@ void identity_checks() {
         const auto hero = render_identity(spectral, settings);
         require(hero != scalar && hero != packet && scalar != packet,
                 "scalar, legacy packet and hero identities are pairwise distinct");
+        spectral.hero_wavelengths = HeroWavelengthSampling::uniform;
+        require(render_identity(spectral, settings) != hero,
+                "uniform and visible hero wavelength estimators have distinct identities");
+        for (auto transport : {SpectralTransport::scalar, SpectralTransport::packet}) {
+            spectral.spectral_transport = transport;
+            const auto uniform = render_identity(spectral, settings);
+            spectral.hero_wavelengths = HeroWavelengthSampling::visible;
+            require(render_identity(spectral, settings) == uniform,
+                    "dormant hero wavelength option does not alter nonhero identity");
+            spectral.hero_wavelengths = HeroWavelengthSampling::uniform;
+        }
     }
     changed([](auto &s) { s.max_component_value = 50; }, "film clamp identity");
     auto clamped = scene;

@@ -1495,6 +1495,22 @@ std::string validate_render_preparation_budget(const RenderScene &scene,
     return {};
 }
 
+std::string_view hero_wavelength_sampling_name(HeroWavelengthSampling mode) {
+    switch (mode) {
+    case HeroWavelengthSampling::uniform:
+        return "uniform";
+    case HeroWavelengthSampling::visible:
+        return "visible";
+    }
+    return "invalid";
+}
+std::optional<HeroWavelengthSampling> parse_hero_wavelength_sampling(std::string_view name) {
+    if (name == "uniform")
+        return HeroWavelengthSampling::uniform;
+    if (name == "visible")
+        return HeroWavelengthSampling::visible;
+    return std::nullopt;
+}
 std::string_view spectral_transport_name(SpectralTransport mode) {
     switch (mode) {
     case SpectralTransport::scalar:
@@ -1748,6 +1764,9 @@ std::string validate_render_scene(const RenderScene &scene) {
         scene.spectral_transport != SpectralTransport::packet &&
         scene.spectral_transport != SpectralTransport::hero)
         return "Invalid spectral transport mode";
+    if (scene.hero_wavelengths != HeroWavelengthSampling::uniform &&
+        scene.hero_wavelengths != HeroWavelengthSampling::visible)
+        return "Invalid hero wavelength sampling mode";
     if (!(scene.max_component_value > 0))
         return "Film maximum component value must be positive";
     if ((scene.integrator == IntegratorKind::bdpt || std::isfinite(scene.max_component_value)) &&
