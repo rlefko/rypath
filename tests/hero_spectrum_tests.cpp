@@ -186,7 +186,7 @@ void delta_collapse_and_past() {
     near(past + future,
          closed_past + static_cast<long double>(f[0]) * singular_f[0] / (p[0] * singular_pdf[0]),
          "Earlier plus later contribution uses each event's own weights");
-    need(std::abs(past - prefix.beta[0] * emission[0]) > .01L,
+    need(std::abs(past - static_cast<long double>(prefix.beta[0]) * emission[0]) > .01L,
          "Fixture detects retroactive final-mask factor-four replacement");
 }
 
