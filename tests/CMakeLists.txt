@@ -456,6 +456,7 @@ string(CONCAT help_text
     "              [--stl-colors auto|viscam|magics]\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
     "           [--spectral-transport auto|scalar|packet|hero]\n"
+    "           [--hero-wavelengths uniform|visible]\n"
     "           [--resource-profile standard|large] [--raw-output PATH.exr] [--timings PATH.json]\n"
     "           [--material-seed 0]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
