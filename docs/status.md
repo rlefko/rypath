@@ -1,9 +1,9 @@
 # Project status
 
-The denoiser repair starts with [identical-frame capture and replay](reconstruction-diagnostics.md).
-This diagnostic stage preserves existing reconstruction math and raw transport;
-signed surface continuity, MetalFX input repair and scene-quality qualification
-follow separately. Existing performance and quality figures below remain historical.
+The reconstruction repair includes [identical-frame capture and replay](reconstruction-diagnostics.md),
+connected surface filtering, explicit signed variance policies and experimental
+MetalFX input/appearance guides. Scene-quality qualification remains open;
+existing performance and quality figures below remain historical.
 
 The eight [golden-pipeline stages](golden-pipeline.md) have implemented baselines:
 resident frames, native traversal, wavefront PT, full-replay Area reuse with
@@ -15,13 +15,22 @@ jobs (26,240 frames and 1,980 EXRs) and 108 native timing runs (3,024 frames) at
 historical source `0ef51ba`. Pavilion day/night stress performance was not measured
 in this snapshot; broader stress coverage remains open.
 
-Opt-in [Area-domain path reuse](area-reuse.md) replays film, lens, wavelength
-and complete indirect transport. The [importance repair](restir-importance.md)
-replaces the bounded target with source-target MIS and adds final-selection
-marginalization. [MCMC mutations](mcmc-mutations.md) retain a one-step default and
-zero/two/four-step ablations. Earlier arithmetic/lifetime checks and small mean
-studies describe the historical estimator. Native validation of this adapted
-repair, visual improvement and time to image quality remain unqualified.
+The [ReSTIR importance repair](restir-importance.md) adds source-target MIS and
+final-selection marginalization. Its completed 212-job, six-seed 160×90 raw-MSE
+screen shows scene-dependent gains and retained Pavilion tails; Cornell is worse
+than eight independent estimates averaged, and no incremental mutation benefit
+is established. Native follow-up stopped on a cold Pavilion-day GPU reservoir
+validation failure after ten jobs completed; native and equal-time/total-work
+acceptance remain open. Contract 5 fixes the identified rejection of representable
+subnormal contributions; the failed cold frame now completes with Metal API
+validation and nine focused Release tests pass. This recovery does not replace
+the failed study or qualify performance. Earlier Area studies below measure the superseded
+estimator; independent sampling remains the viewer default.
+
+
+The reconciled MCMC-stage integration `df65c62` passes all 247 mandatory Debug
+tests. Native checks on the subsequent combined reconstruction integration remain
+pending; these checks do not qualify scene quality or performance.
 
 The [core execution follow-up](core-performance.md) enables exact guide reuse.
 At `54fa952`, native static complete-pipeline p95 falls **4.5–29.5%** across the

@@ -35,7 +35,8 @@ struct FrameConfig {
     // Strong importance proxy: L1(XYZ)/4 plus a positive scale-dependent floor.
     // Source-aware MIS handles reuse; neither radiance nor weights are clipped.
     float target_scale = 1.f;
-    // Marginalize final selection while retaining the same reservoir for reuse.
+    // Conditional mean removes final spatial selection noise while preserving
+    // the same selected reservoir for subsequent reuse. Selected is an ablation.
     FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;

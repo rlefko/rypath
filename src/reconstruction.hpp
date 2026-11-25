@@ -6,6 +6,13 @@
 
 namespace rypath {
 enum class ReconstructionMode { raw_rgb, metalfx, temporal };
+// Appearance guides are an explicit MetalFX approximation, pending image qualification.
+enum class MetalFXGuidePolicy { primary_surface, appearance };
+struct ReconstructionSubmitOptions {
+    bool reset_history = false;
+    // Display exposure hint only; never scales raw or reconstructed pixels.
+    float exposure = 1;
+};
 inline constexpr std::uint32_t reconstruction_dimension_limit = 16384;
 struct ReconstructionConfig {
     bool profile_stages = false;
@@ -14,6 +21,7 @@ struct ReconstructionConfig {
     double near_plane = .001; // Guides only; raw transport has no new cutoff.
     // Native signed-color fallback. Zero spatial passes selects temporal only.
     std::uint32_t history_limit = 64, spatial_iterations = 5;
+    MetalFXGuidePolicy metalfx_guide_policy = MetalFXGuidePolicy::primary_surface;
     SpatialVariancePolicy spatial_variance_policy = SpatialVariancePolicy::paired;
     bool strict_spatial_segments = false; // Expensive raster-gap experiment.
     bool variance_prefilter = false;      // Optional geometry-aware 3x3 guidance proxy.
@@ -29,6 +37,8 @@ struct ReconstructionCounters {
     std::uint32_t fourier_fallback = 0, layered_approximation = 0, transmission_approximation = 0,
                   normal_approximation = 0;
     std::uint32_t passthrough = 0, media_approximation = 0, invalid_previous = 0, background = 0;
+    std::uint32_t directional_approximation = 0, appearance_replacement = 0, appearance_bounded = 0,
+                  appearance_fallback = 0;
 };
 struct ReconstructionInfo {
     GPUStageDiagnostics gpu_stages{};
@@ -36,6 +46,7 @@ struct ReconstructionInfo {
     FrameInfo source{};
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
     std::uint32_t width = 0, height = 0;
+    float exposure = 1; // Actual half-float MetalFX metadata, not a pixel multiplier.
     bool history_reset = true;
     bool guide_cache_hit = false;
     // Surface pixel lanes dispatched this job; zero on hits and in color-only mode.
@@ -98,6 +109,7 @@ class ReconstructionStream {
     ReconstructionStream(const ReconstructionStream &) = delete;
     ReconstructionStream &operator=(const ReconstructionStream &) = delete;
     ReconstructionSubmitResult submit(const Frame &, bool reset_history = false);
+    ReconstructionSubmitResult submit(const Frame &, const ReconstructionSubmitOptions &);
 
   private:
     struct Impl;

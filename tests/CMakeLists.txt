@@ -1795,6 +1795,22 @@ rypath_configure_host_target(rypath_reconstruction_camera_tests)
 add_test(NAME reconstruction.camera COMMAND rypath_reconstruction_camera_tests)
 
 if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_metalfx_conditioning_tests metalfx_conditioning_tests.mm
+        ../src/metalfx_conditioning.mm)
+    target_link_libraries(rypath_metalfx_conditioning_tests PRIVATE rypath_reconstruction
+        "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_metalfx_conditioning_tests PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_metalfx_conditioning_tests PRIVATE -fobjc-arc)
+    rypath_configure_host_target(rypath_metalfx_conditioning_tests)
+    if(RYPATH_ALLOW_NO_METALFX_DENOISER)
+        add_test(NAME metal.reconstruction_conditioning COMMAND rypath_metalfx_conditioning_tests)
+    else()
+        add_test(NAME metal.reconstruction_conditioning COMMAND rypath_metalfx_conditioning_tests --require-supported)
+    endif()
+    set_tests_properties(metal.reconstruction_conditioning PROPERTIES TIMEOUT 120
+        ENVIRONMENT "MTL_DEBUG_LAYER=1" SKIP_RETURN_CODE 77)
     add_executable(rypath_metalfx_denoiser_tests metalfx_denoiser_tests.mm)
     target_link_libraries(rypath_metalfx_denoiser_tests PRIVATE rypath_reconstruction
         "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")

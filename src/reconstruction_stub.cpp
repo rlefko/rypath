@@ -24,6 +24,11 @@ ReconstructionSubmitResult ReconstructionStream::submit(const Frame &, bool) {
     return {.status = GeometryStatus::not_built,
             .diagnostic = "Metal reconstruction was not built"};
 }
+ReconstructionSubmitResult ReconstructionStream::submit(const Frame &,
+                                                        const ReconstructionSubmitOptions &) {
+    return {.status = GeometryStatus::not_built,
+            .diagnostic = "Metal reconstruction was not built"};
+}
 ReconstructionBuildResult build_reconstruction_stream(const Frame &, const ReconstructionConfig &) {
     return {.status = GeometryStatus::not_built,
             .diagnostic = "Metal reconstruction was not built"};

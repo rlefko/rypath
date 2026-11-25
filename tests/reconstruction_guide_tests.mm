@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -186,8 +187,8 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     gw::Contract actual{};
     std::memcpy(&actual, contract.contents, sizeof(actual));
     need(actual.version == gw::contract && actual.config_bytes == 368 &&
-             actual.counters_bytes == 64 && actual.node_bytes == 16 && actual.nodes == 16 &&
-             actual.argument_count == gw::continuity_id + 1,
+             actual.counters_bytes == sizeof(gw::Counters) && actual.node_bytes == 16 &&
+             actual.nodes == 16 && actual.argument_count == gw::continuity_id + 1,
          "Native reconstruction guide contract");
     const auto spectral = nodes();
     auto config_buffer = [device newBufferWithBytes:&cfg
@@ -481,6 +482,237 @@ std::array<double, 3> linear_color(bool dense) {
         sum[c] /= white[c];
     return sum;
 }
+void prepare_guide_texture_context(RenderScene &scene) {
+    const std::array<double, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    // Validation requires no frame entries for untextured diffuse instances.
+    // Rebuild after geometry/material changes instead of retaining old tables.
+    scene.instance_texture_frames.assign(scene.geometry.instances.size(), {});
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        if (!instance_uses_texture_context(scene, i))
+            continue;
+        auto &xf = scene.instance_surface_transforms[i];
+        xf.shape = xf.placement = identity;
+        need(prepare_texture_triangle_frames(scene.geometry.meshes[i], xf.shape, xf.placement,
+                                             scene.instance_texture_frames[i])
+                 .empty(),
+             "Appearance fixture texture context");
+    }
+}
+void appearance_cases(const std::string &library) {
+    width = 5;
+    height = 3;
+    pixels = width * height;
+    const auto r = raster();
+    const auto cam = camera(r);
+    const auto prepare = prepare_guide_texture_context;
+    const auto fresnel = [](double cosine, double n = .3, double k = 3.) {
+        const std::complex<double> eta(n, k);
+        const auto eta2 = eta * eta;
+        const auto root = std::sqrt(eta2 - (1 - cosine * cosine));
+        return .5 * (std::norm((cosine - root) / (cosine + root)) +
+                     std::norm((eta2 * cosine - root) / (eta2 * cosine + root)));
+    };
+    auto scene = base(r);
+    scene.materials[0].scattering = ScatteringKind::conductor;
+    scene.materials[0].constant = 0;
+    scene.materials[0].eta = {{{360, .3f}, {830, .3f}}, true};
+    scene.materials[0].k = {{{360, 3.f}, {830, 3.f}}, true};
+    auto target = base(r).materials.front();
+    target.kind = SpectralMaterialKind::sampled;
+    target.constant = 0;
+    target.knots = {{360, .02f}, {430, .9f}, {470, .9f}, {500, .02f}, {830, .02f}};
+    scene.materials.push_back(target);
+    plane(scene, 3);
+    plane(scene, -3, 1);
+    case_context = "appearance/mirror reflected high-chroma plane";
+    prepare(scene);
+    auto cfg = config(cam, cam);
+    cfg.flags = gw::appearance_guides;
+    const auto replaced = guide(scene, cfg, library);
+    need(replaced.counters.failure == 0 && replaced.counters.appearance_replacement == pixels &&
+             replaced.counters.directional_approximation == pixels &&
+             replaced.counters.appearance_fallback == 0,
+         "Mirror appearance replacement accounting");
+    std::array<double, 3> target_rgb{};
+    const auto spectral = nodes();
+    for (const auto &node : spectral) {
+        double rho = 0;
+        for (std::size_t k = 1; k < target.knots.size(); ++k) {
+            const auto a = target.knots[k - 1], b = target.knots[k];
+            if (node.wavelength >= a.wavelength && node.wavelength <= b.wavelength)
+                rho = a.value + (b.value - a.value) * (node.wavelength - a.wavelength) /
+                                    (b.wavelength - a.wavelength);
+        }
+        const std::array<double, 3> weight{node.r, node.g, node.b};
+        for (unsigned c = 0; c < 3; ++c)
+            target_rgb[c] += weight[c] * rho;
+    }
+    for (unsigned i = 0; i < pixels; ++i) {
+        const auto ray = cam.center_ray(i % width, i / width);
+        need(ray.has_value(), "Appearance oracle camera ray");
+        const double F = fresnel(ray->direction[2]);
+        for (unsigned c = 0; c < 3; ++c) {
+            close(replaced.texture[3][4 * i + c], std::clamp(F * target_rgb[c], 0., 1.), .002,
+                  "Directional Fresnel times high-chroma reflected albedo");
+            close(replaced.texture[4][4 * i + c], 0, 0,
+                  "Replaced specular guide is separate proxy");
+        }
+    }
+    // A tiny reflected patch affects only the central pinhole guide pixel.
+    for (auto &point : scene.geometry.meshes[1].positions) {
+        point.x *= .005f;
+        point.y *= .005f;
+    }
+    case_context = "appearance/mirror small reflected feature";
+    prepare(scene);
+    const auto feature = guide(scene, cfg, library);
+    need(feature.counters.failure == 0 && feature.counters.appearance_replacement == 1 &&
+             feature.counters.appearance_fallback == pixels - 1,
+         "Bounded guide tracing must preserve a small reflected feature");
+    const unsigned center = (height / 2) * width + width / 2;
+    need(feature.texture[3][4 * center + 2] > .3f,
+         "High-chroma small reflection missing from appearance albedo");
+    // Thin glass blends two deterministically resolved surfaces. At normal
+    // incidence eta1.5 gives F=.04, thin-sheet F=2*.04/1.04.
+    scene = base(r);
+    scene.materials[0].scattering = ScatteringKind::thin_dielectric;
+    scene.materials[0].constant = 0;
+    scene.materials[0].eta = {{{360, 1.5f}, {830, 1.5f}}, true};
+    auto dark = base(r).materials.front(), light = dark;
+    dark.constant = .2f;
+    light.constant = .8f;
+    scene.materials.push_back(dark);
+    scene.materials.push_back(light);
+    plane(scene, 3);
+    plane(scene, -3, 1);
+    plane(scene, 6, 2);
+    case_context = "appearance/thin sheet front normal incidence";
+    prepare(scene);
+    const auto glass = guide(scene, cfg, library);
+    need(glass.counters.failure == 0 && glass.counters.appearance_replacement == pixels,
+         "Thin-glass reflected/transmitted replacement accounting");
+    const double F = .08 / 1.04;
+    for (unsigned c = 0; c < 3; ++c)
+        close(glass.texture[3][4 * center + c], F * .2 + (1 - F) * .8, .002,
+              "Thin-sheet Fresnel blend independent normal-incidence oracle");
+    // Backside oblique thin sheets still see air on both sides. At |cos|=.5,
+    // treating the sign as an interior eta1.5 interface would incorrectly TIR.
+    const RasterCamera oblique{
+        {0, 0, 0}, {float(std::sqrt(3.)) - .3f, -.3f, 1}, {.6f, 0, 0}, {0, .6f, 0}};
+    const auto oblique_camera = camera(oblique);
+    const auto center_ray = oblique_camera.center_ray(width / 2, height / 2);
+    need(center_ray.has_value(), "Backside oblique thin-sheet camera");
+    const double cosine = center_ray->direction[2];
+    close(cosine, .5, 1e-7, "Independent oblique incidence");
+    const double transmitted_cosine = std::sqrt(1 - (1 - cosine * cosine) / (1.5 * 1.5));
+    const double rs = (cosine - 1.5 * transmitted_cosine) / (cosine + 1.5 * transmitted_cosine);
+    const double rp = (1.5 * cosine - transmitted_cosine) / (1.5 * cosine + transmitted_cosine);
+    const double interface_fresnel = .5 * (rs * rs + rp * rp);
+    const double thin_fresnel = 2 * interface_fresnel / (1 + interface_fresnel);
+    const auto enlarge = [](RenderScene &s) {
+        for (auto &mesh : s.geometry.meshes)
+            for (auto &p : mesh.positions) {
+                p.x *= 4;
+                p.y *= 4;
+            }
+    };
+    auto backside = base(oblique);
+    auto sheet = scene.materials.front();
+    backside.materials = {sheet, dark, light};
+    plane(backside, 3);
+    plane(backside, -3, 1);
+    plane(backside, 6, 2);
+    for (auto &triangle : backside.geometry.meshes[0].triangles)
+        std::swap(triangle[1], triangle[2]); // +Z normal: negative incidence.
+    enlarge(backside);
+    case_context = "appearance/thin sheet backside oblique primary";
+    prepare(backside);
+    auto oblique_cfg = config(oblique_camera, oblique_camera);
+    oblique_cfg.flags = gw::appearance_guides;
+    const auto primary_backside = guide(backside, oblique_cfg, library);
+    need(primary_backside.counters.failure == 0 &&
+             primary_backside.counters.appearance_replacement == pixels,
+         "Backside primary thin-sheet replacement accounting");
+    for (unsigned c = 0; c < 3; ++c)
+        close(primary_backside.texture[3][4 * center + c],
+              thin_fresnel * .2 + (1 - thin_fresnel) * .8, .002,
+              "Independent backside oblique primary thin-sheet Fresnel blend");
+    // A solid dielectric really is exiting the denser medium here and must TIR.
+    backside.materials[0].scattering = ScatteringKind::dielectric;
+    case_context = "appearance/solid dielectric backside total internal reflection";
+    const auto solid_backside = guide(backside, oblique_cfg, library);
+    need(solid_backside.counters.failure == 0, "Backside solid dielectric guide validity");
+    for (unsigned c = 0; c < 3; ++c)
+        close(solid_backside.texture[3][4 * center + c], .2, .002,
+              "Signed solid dielectric total-internal reflection is retained");
+    // The same backside sheet encountered on a mirror's secondary guide path
+    // transmits straight through and attenuates by (1-thin_F), never fake TIR.
+    auto secondary = base(oblique);
+    auto mirror = secondary.materials.front();
+    mirror.scattering = ScatteringKind::conductor;
+    mirror.constant = 0;
+    mirror.eta = {{{360, .3f}, {830, .3f}}, true};
+    mirror.k = {{{360, 3.f}, {830, 3.f}}, true};
+    secondary.materials = {mirror, sheet, light};
+    plane(secondary, 3);
+    plane(secondary, -3, 1); // -Z normal, reflected incoming ray travels toward -Z.
+    plane(secondary, -6, 2);
+    enlarge(secondary);
+    case_context = "appearance/thin sheet backside oblique secondary";
+    prepare(secondary);
+    const auto secondary_backside = guide(secondary, oblique_cfg, library);
+    need(secondary_backside.counters.failure == 0 &&
+             secondary_backside.counters.appearance_replacement == pixels &&
+             secondary_backside.counters.appearance_bounded >= pixels,
+         "Backside secondary thin-sheet continuation accounting");
+    for (unsigned c = 0; c < 3; ++c)
+        close(secondary_backside.texture[3][4 * center + c],
+              fresnel(cosine) * (1 - thin_fresnel) * .8, .002,
+              "Independent backside oblique secondary thin-sheet transmission oracle");
+    // Both supported coatings flip backside wo into their exterior hemisphere.
+    // Pin the existing F + (1-F)^2 substrate proxy, not an exact layered integral.
+    for (const auto family : {ScatteringKind::coated_diffuse, ScatteringKind::coated_conductor}) {
+        auto coating_scene = base(oblique);
+        auto &coating = coating_scene.materials[0];
+        coating.scattering = family;
+        coating.constant = family == ScatteringKind::coated_diffuse ? .6f : 0.f;
+        if (family == ScatteringKind::coated_diffuse)
+            coating.eta = {{{360, 1.5f}, {830, 1.5f}}, true};
+        else {
+            coating.surface.interface_eta = {{{360, 1.5f}, {830, 1.5f}}, true};
+            coating.eta = {{{360, .3f}, {830, .3f}}, true};
+            coating.k = {{{360, 3.f}, {830, 3.f}}, true};
+        }
+        plane(coating_scene, 3);
+        for (auto &triangle : coating_scene.geometry.meshes[0].triangles)
+            std::swap(triangle[1], triangle[2]);
+        enlarge(coating_scene);
+        case_context = family == ScatteringKind::coated_diffuse
+                           ? "appearance/coated diffuse backside oblique"
+                           : "appearance/coated conductor backside oblique";
+        prepare(coating_scene);
+        const auto coated_backside = guide(coating_scene, oblique_cfg, library);
+        need(coated_backside.counters.failure == 0 &&
+                 coated_backside.counters.layered_approximation == pixels,
+             "Backside oblique coating approximation accounting");
+        const double attenuation = (1 - interface_fresnel) * (1 - interface_fresnel);
+        for (unsigned c = 0; c < 3; ++c) {
+            close(coated_backside.texture[3][4 * center + c],
+                  family == ScatteringKind::coated_diffuse ? attenuation * .6 : 0, .002,
+                  "Independent backside coating exterior-Fresnel substrate oracle");
+            close(coated_backside.texture[4][4 * center + c],
+                  interface_fresnel + (family == ScatteringKind::coated_conductor
+                                           ? attenuation * fresnel(cosine, .3 / 1.5, 3. / 1.5)
+                                           : 0),
+                  .002, "Independent backside coating exterior-Fresnel specular oracle");
+        }
+    }
+    case_context = "appearance/reject signed temporal policy combination";
+    auto forbidden = cfg;
+    forbidden.flags |= gw::signed_temporal;
+    need((guide(scene, forbidden, library).counters.failure & gw::invalid_config) != 0,
+         "Appearance guides must reject signed temporal correspondence");
+}
 void counter_sizes(const std::string &library) {
     for (const unsigned size : {1u, 31u, 32u, 33u}) {
         width = size;
@@ -577,22 +809,6 @@ void continuity_alignment(const std::string &library) {
     auto result = guide(scene, config(camera(r), camera(r)), library);
     need(result.continuity == std::vector<std::uint32_t>{0, 0, 0, 1},
          "Multi-mesh indexed continuity ranges and repeated transformed instances");
-}
-void prepare_guide_texture_context(RenderScene &scene) {
-    const std::array<double, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    // Validation requires no frame entries for untextured diffuse instances.
-    // Rebuild after geometry/material changes instead of retaining old tables.
-    scene.instance_texture_frames.assign(scene.geometry.instances.size(), {});
-    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
-        if (!instance_uses_texture_context(scene, i))
-            continue;
-        auto &xf = scene.instance_surface_transforms[i];
-        xf.shape = xf.placement = identity;
-        need(prepare_texture_triangle_frames(scene.geometry.meshes[i], xf.shape, xf.placement,
-                                             scene.instance_texture_frames[i])
-                 .empty(),
-             "Appearance fixture texture context");
-    }
 }
 void protection_cases(const std::string &library, bool validate_only = false) {
     const auto r = raster();
@@ -871,8 +1087,13 @@ int main(int argc, char **argv) {
             protection_cases(argv[1]);
             case_context = "general guides";
             cases(argv[1]);
+            case_context = "appearance guides";
+            appearance_cases(argv[1]);
+            case_context = "continuity alignment";
             continuity_alignment(argv[1]);
+            case_context = "transformed spatial guides";
             transformed_spatial_guides(argv[1]);
+            case_context = "color counter sizes";
             counter_sizes(argv[1]);
             std::cout << "Reconstruction guide native validation passed\n";
             return 0;

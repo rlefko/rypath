@@ -1,6 +1,7 @@
 # Explicit diagnostic tools; ordinary builds acquire no new dependency.
 if(RYPATH_ENABLE_METAL)
-    add_executable(rypath_reconstruction_diagnostics src/reconstruction_diagnostics.mm)
+    add_executable(rypath_reconstruction_diagnostics src/reconstruction_diagnostics.mm
+        src/metalfx_conditioning.mm)
     set_target_properties(rypath_reconstruction_diagnostics PROPERTIES
         OUTPUT_NAME rypath-reconstruction-diagnostics
         RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}"
