@@ -20,6 +20,7 @@
 #include "intersection.h"
 #include "masked_intersection.h"
 #include "medium.h"
+#include "opaque_shadow.h"
 #include "replay_sampler.h"
 #include "scattering.h"
 #include "surface_detail.h"
@@ -1558,14 +1559,18 @@ struct SurfaceAlpha {
     }
 };
 
-static SurfaceHit visible_shadow(thread MixedIntersector &trace, ray incoming,
-                                 instance_acceleration_structure scene,
-                                 MixedIntersectionTable table, thread SurfaceAlpha &alpha) {
+static OpaqueShadowResult visible_shadow(thread MixedIntersector &trace, ray incoming,
+                                         instance_acceleration_structure scene,
+                                         MixedIntersectionTable table, thread SurfaceAlpha &alpha) {
+    if (native_opaque_shadows_enabled())
+        return native_opaque_shadow(incoming, scene, all_visible);
     if (alpha_enabled) {
         alpha.incoming = incoming;
-        return trace_masked_surface(incoming, scene, all_visible, alpha, true);
+        const auto hit = trace_masked_surface(incoming, scene, all_visible, alpha, true);
+        return {hit.type != intersection_type::none, hit.valid};
     }
-    return trace_shadow(trace, incoming, scene, all_visible, table);
+    const auto hit = trace_shadow(trace, incoming, scene, all_visible, table);
+    return {hit.type != intersection_type::none, hit.valid};
 }
 
 struct ConnectionTransmission {
@@ -1678,8 +1683,7 @@ connection_transmission(thread MixedIntersector &shadow, ray incoming,
         return medium_connection(incoming, scene, table, alpha, materials, data, medium, distant,
                                  fixed_endpoint);
     const auto hit = visible_shadow(shadow, incoming, scene, table, alpha);
-    return {hit.type == intersection_type::none ? 1.0f : 0.0f,
-            hit.valid ? wire::success : wire::invalid_arithmetic};
+    return {hit.occluded ? 0.0f : 1.0f, hit.valid ? wire::success : wire::invalid_arithmetic};
 }
 
 struct BumpEvaluator {

@@ -86,6 +86,18 @@ image against the direct sample kernel built with that same profile, including
 empty geometry, demo geometry, scalar and packet paths; it does not require
 native and compensated images to agree at numerical edge cases.
 
+`--shadow-traversal query|opaque-auto` selects Boolean shadow traversal, with
+`query` as the default. Eligible native triangle scenes can opt into the
+[opaque intersector specialization](geometry.md#opt-in-opaque-boolean-shadows).
+The immutable session build result reports requested/effective mode, eligibility
+and its reason. JSON records these in `settings.shadow_traversal_requested`,
+`shadow_traversal_effective`, `opaque_shadow_eligible`,
+`opaque_shadow_eligibility_reason` and `shadow_traversal_fallback_reason`.
+Before a successful build, effective mode and eligibility are `null`.
+`shadow_traversal_frames` counts completed measured benchmark frames by effective
+mode, excluding warmup. These are frame counts; there is no per-ray instrumentation.
+A fallback keeps query traversal without changing the intersection profile.
+
 ## Initial M4 Max evidence
 
 On 2026-11-22, implementation `1c1d7bb` passed the frame-session tests in Release

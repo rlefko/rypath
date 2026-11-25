@@ -4,6 +4,7 @@
 #include <metal_stdlib>
 
 #include "intersection.h"
+#include "opaque_shadow.h"
 
 using namespace metal;
 using namespace metal::raytracing;
@@ -309,4 +310,16 @@ kernel void rypath_triangle_extended_probe(const device uint4 *inputs [[buffer(0
         output[4 * index + i] =
             uint4(uint(v.mantissa), as_type<uint>(v.exponent), uint(v.negative), uint(v.valid));
     }
+}
+
+// Fixed-ray validation of the production Boolean helper; no transport state.
+kernel void rypath_opaque_shadow_probe(instance_acceleration_structure scene [[buffer(0)]],
+                                       const device Ray *rays [[buffer(1)]],
+                                       device uint *result [[buffer(2)]],
+                                       constant uint &count [[buffer(3)]],
+                                       uint lane [[thread_position_in_grid]]) {
+    if (lane >= count)
+        return;
+    const auto shadow = native_opaque_shadow(native_ray(rays[lane]), scene, wire::all_visible);
+    result[lane] = shadow.valid ? uint(shadow.occluded) : wire::invalid_hit;
 }
