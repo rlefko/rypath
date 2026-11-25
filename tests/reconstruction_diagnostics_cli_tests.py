@@ -52,6 +52,11 @@ def main():
             (["--reference-samples", "1024", "--seed", "99", "--estimator", "area1"], "static independent"),
             (["--reference-samples", "1024", "--seed", "99", "--estimator", "area2"], "static independent"),
             (["--reference-samples", "1024", "--seed", "99", "--estimator", "area4"], "static independent"),
+            (["--variance-policy", "other"], "variance policy"),
+            (["--variance-prefilter", "on"], "requires"),
+            (["--variance-policy", "conservative", "--variance-prefilter", "on"], "requires"),
+            (["--strict-spatial-segments", "true"], "on or off"),
+            (["--save-online-mean", "on", "--motion-offset", "0.1"], "static"),
             (["--unknown", "1"], "Unknown"),
             (["--seed"], "missing"),
         ]

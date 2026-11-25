@@ -64,6 +64,8 @@ struct Options {
     fs::path capture_path;
     std::optional<rypath::ReconstructionMode> reconstruction;
     bool guide_cache = false;
+    rypath::SpatialVariancePolicy variance_policy = rypath::SpatialVariancePolicy::paired;
+    bool variance_prefilter = false, strict_spatial_segments = false;
     std::uint32_t output_width = 0, output_height = 0;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
     rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
@@ -95,6 +97,11 @@ const char *profile_name(rypath::IntersectionProfile profile) {
 }
 const char *execution_name(rypath::FrameExecution execution) {
     return execution == rypath::FrameExecution::wavefront ? "wavefront" : "megakernel";
+}
+const char *variance_policy_name(rypath::SpatialVariancePolicy policy) {
+    return policy == rypath::SpatialVariancePolicy::center         ? "center"
+           : policy == rypath::SpatialVariancePolicy::conservative ? "conservative"
+                                                                   : "paired";
 }
 const char *area_output_name(rypath::FrameAreaOutput output) {
     return output == rypath::FrameAreaOutput::selected ? "selected" : "conditional-mean";
@@ -132,6 +139,9 @@ const char *usage =
     "  [--profile-stages] [--capture-frame N --capture-path FRAME.gputrace]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
     "  [--reconstruction none|raw-rgb|metalfx|temporal (default: none)]\n"
+    "  [--variance-policy paired|center|conservative (temporal only)]\n"
+    "  [--variance-prefilter on|off (center variance only)]\n"
+    "  [--strict-spatial-segments on|off (temporal only)]\n"
     "  [--guide-cache on|off (default: on for temporal/metalfx, off otherwise)]\n"
     "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
     "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
@@ -175,6 +185,20 @@ std::string parse(int argc, char **argv, Options &o) {
         } else if (key == "--output-height") {
             if (!integer(value, o.output_height) || !o.output_height)
                 return "invalid output height";
+        } else if (key == "--variance-policy") {
+            if (value == "paired")
+                o.variance_policy = rypath::SpatialVariancePolicy::paired;
+            else if (value == "center")
+                o.variance_policy = rypath::SpatialVariancePolicy::center;
+            else if (value == "conservative")
+                o.variance_policy = rypath::SpatialVariancePolicy::conservative;
+            else
+                return "variance policy must be paired, center, or conservative";
+        } else if (key == "--variance-prefilter" || key == "--strict-spatial-segments") {
+            if (value != "on" && value != "off")
+                return std::string(key) + " must be on or off";
+            (key == "--variance-prefilter" ? o.variance_prefilter : o.strict_spatial_segments) =
+                value == "on";
         } else if (key == "--guide-cache") {
             if (value != "on" && value != "off")
                 return "guide cache must be on or off";
@@ -291,6 +315,13 @@ std::string parse(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if ((seen.contains("--variance-policy") || seen.contains("--variance-prefilter") ||
+         seen.contains("--strict-spatial-segments")) &&
+        o.reconstruction != rypath::ReconstructionMode::temporal)
+        return "variance and spatial segment options require temporal reconstruction";
+    if (seen.contains("--variance-prefilter") &&
+        o.variance_policy != rypath::SpatialVariancePolicy::center)
+        return "variance prefilter requires center variance policy";
     if (!seen.contains("--guide-cache"))
         o.guide_cache = o.reconstruction == rypath::ReconstructionMode::temporal ||
                         o.reconstruction == rypath::ReconstructionMode::metalfx;
@@ -678,6 +709,10 @@ struct Report {
             << "},\"settings\":{\"width\":" << options.width << ",\"height\":" << options.height
             << ",\"reconstruction\":" << quote(reconstruction_name(options.reconstruction))
             << ",\"guide_cache\":" << (options.guide_cache ? "true" : "false")
+            << ",\"variance_policy\":" << quote(variance_policy_name(options.variance_policy))
+            << ",\"variance_prefilter\":" << (options.variance_prefilter ? "true" : "false")
+            << ",\"strict_spatial_segments\":"
+            << (options.strict_spatial_segments ? "true" : "false")
             << ",\"internal_width\":" << options.width << ",\"internal_height\":" << options.height
             << ",\"output_width\":" << options.output_width
             << ",\"output_height\":" << options.output_height
@@ -1196,6 +1231,9 @@ int run(const Options &options) {
                                      .mode = *options.reconstruction,
                                      .output_width = options.output_width,
                                      .output_height = options.output_height,
+                                     .spatial_variance_policy = options.variance_policy,
+                                     .strict_spatial_segments = options.strict_spatial_segments,
+                                     .variance_prefilter = options.variance_prefilter,
                                      .cache_surface_guides = options.guide_cache});
                                 report.reconstruction_startup_seconds = seconds(creation_start);
                                 if (stream.status != rypath::GeometryStatus::success ||

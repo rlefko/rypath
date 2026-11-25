@@ -3,6 +3,7 @@
 #include "reconstruction_camera.hpp"
 #include "reconstruction_guide_wire.h"
 #include "rgb_spectrum.hpp"
+#include "texture_footprint.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -16,9 +17,10 @@ namespace {
 using namespace rypath;
 namespace gw = reconstruction_guide_wire;
 namespace rc = reconstruction;
+std::string case_context;
 void need(bool x, const std::string &why) {
     if (!x)
-        throw std::runtime_error(why);
+        throw std::runtime_error(case_context.empty() ? why : case_context + ": " + why);
 }
 void close(double actual, double expected, double tolerance, const std::string &label) {
     need(std::isfinite(actual) && std::abs(actual - expected) <= tolerance,
@@ -132,8 +134,8 @@ float half(unsigned short h) {
 }
 struct Captured {
     gw::Counters counters{};
-    std::array<std::vector<float>, 9> texture;
-    std::vector<std::uint32_t> identity;
+    std::array<std::vector<float>, 13> texture;
+    std::vector<std::uint32_t> identity, continuity;
     FrameCapture raw_before, raw_after;
 };
 Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &library,
@@ -155,6 +157,8 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     auto acquired = MetalFrameAccess::acquire(*submitted.frame);
     need(acquired.status == FrameStatus::complete && acquired.lease, acquired.diagnostic);
     auto &lease = *acquired.lease;
+    need(lease.reconstruction_groups() == nil,
+         "Ordinary scene/frame preparation must not build continuity");
     std::array<std::unique_ptr<MetalFramePipeline>, 4> pipeline;
     const std::array<NSString *, 4> names{
         @"rypath_reconstruction_guide_contract", @"rypath_reconstruction_guide_reset",
@@ -183,7 +187,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     std::memcpy(&actual, contract.contents, sizeof(actual));
     need(actual.version == gw::contract && actual.config_bytes == 368 &&
              actual.counters_bytes == 64 && actual.node_bytes == 16 && actual.nodes == 16 &&
-             actual.argument_count == 13,
+             actual.argument_count == gw::continuity_id + 1,
          "Native reconstruction guide contract");
     const auto spectral = nodes();
     auto config_buffer = [device newBufferWithBytes:&cfg
@@ -201,24 +205,28 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     need(config_buffer != nil && node_buffer != nil && counters != nil && arguments != nil,
          "Guide input buffers");
     const bool signed_color = (cfg.flags & gw::signed_temporal) != 0;
-    const std::array<MTLPixelFormat, 9> format{signed_color ? MTLPixelFormatRGBA32Float
-                                                            : MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatR32Float,
-                                               MTLPixelFormatRG16Float,
-                                               MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatRGBA16Float,
-                                               MTLPixelFormatR16Float,
-                                               MTLPixelFormatR32Float,
-                                               MTLPixelFormatRGBA32Uint};
-    const std::array<unsigned, 9> channels{4, 1, 2, 4, 4, 4, 1, 1, 4};
+    const std::array<MTLPixelFormat, 13> format{signed_color ? MTLPixelFormatRGBA32Float
+                                                             : MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatR32Float,
+                                                MTLPixelFormatRG16Float,
+                                                MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatRGBA16Float,
+                                                MTLPixelFormatR16Float,
+                                                MTLPixelFormatR32Float,
+                                                MTLPixelFormatRGBA32Uint,
+                                                MTLPixelFormatRGBA32Float,
+                                                MTLPixelFormatRGBA32Float,
+                                                MTLPixelFormatR32Uint,
+                                                MTLPixelFormatR32Uint};
+    const std::array<unsigned, 13> channels{4, 1, 2, 4, 4, 4, 1, 1, 4, 4, 4, 1, 1};
     const auto component_bytes = [&](unsigned i) {
         return i == 1 || i >= 7 || (i == 0 && signed_color) ? 4u : 2u;
     };
-    std::array<id<MTLTexture>, 9> texture{};
-    std::array<id<MTLBuffer>, 9> readback{};
-    std::array<NSUInteger, 9> row_bytes{};
-    for (unsigned i = 0; i < 9; ++i) {
+    std::array<id<MTLTexture>, 13> texture{};
+    std::array<id<MTLBuffer>, 13> readback{};
+    std::array<NSUInteger, 13> row_bytes{};
+    for (unsigned i = 0; i < 13; ++i) {
         auto d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format[i]
                                                                     width:width
                                                                    height:height
@@ -237,10 +245,19 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     [argument_encoder setBuffer:lease.raw_xyz() offset:0 atIndex:gw::raw_xyz_id];
     [argument_encoder setBuffer:node_buffer offset:0 atIndex:gw::nodes_id];
     [argument_encoder setBuffer:counters offset:0 atIndex:gw::counters_id];
-    for (unsigned i = 0; i < 9; ++i)
+    for (unsigned i = 0; i < 13; ++i)
         [argument_encoder setTexture:texture[i] atIndex:gw::color_id + i];
+    need(lease.prepare_reconstruction_groups().empty(),
+         "Lazy reconstruction continuity preparation");
+    auto continuity = lease.reconstruction_groups();
+    out.continuity.resize(continuity.length / sizeof(std::uint32_t));
+    std::memcpy(out.continuity.data(), continuity.contents, continuity.length);
+    need(lease.prepare_reconstruction_groups().empty() &&
+             lease.reconstruction_groups() == continuity,
+         "Continuity metadata must be prepared once per immutable scene");
+    [argument_encoder setBuffer:lease.reconstruction_groups() offset:0 atIndex:gw::continuity_id];
     const auto resources = [&](id<MTLComputeCommandEncoder> e) {
-        for (auto b : {config_buffer, node_buffer, lease.raw_xyz()})
+        for (auto b : {config_buffer, node_buffer, lease.raw_xyz(), lease.reconstruction_groups()})
             [e useResource:b usage:MTLResourceUsageRead];
         [e useResource:counters usage:MTLResourceUsageRead | MTLResourceUsageWrite];
         for (auto t : texture)
@@ -250,7 +267,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     need(command != nil, "Guide command");
     auto initialize = [command blitCommandEncoder];
     need(initialize != nil, "Initialize guide outputs for explicit failure cases");
-    for (unsigned i = 0; i < 9; ++i)
+    for (unsigned i = 0; i < 13; ++i)
         [initialize copyFromBuffer:readback[i]
                       sourceOffset:0
                  sourceBytesPerRow:row_bytes[i]
@@ -297,7 +314,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
     [encoder endEncoding];
     auto blit = [command blitCommandEncoder];
     need(blit != nil, "Guide readback encoder");
-    for (unsigned i = 0; i < 9; ++i)
+    for (unsigned i = 0; i < 13; ++i)
         [blit copyFromTexture:texture[i]
                          sourceSlice:0
                          sourceLevel:0
@@ -316,7 +333,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
          "Guide execution: " + error(command.error));
     std::memcpy(&out.counters, counters.contents, sizeof(out.counters));
     out.identity.resize(std::size_t(pixels) * 4);
-    for (unsigned i = 0; i < 9; ++i) {
+    for (unsigned i = 0; i < 13; ++i) {
         out.texture[i].resize(std::size_t(pixels) * channels[i]);
         const auto *bytes = static_cast<const unsigned char *>(readback[i].contents);
         for (std::size_t y = 0; y < height; ++y)
@@ -324,6 +341,10 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
                 if (i == 8) {
                     std::memcpy(&out.identity[y * width * 4 + x], bytes + y * row_bytes[i] + x * 4,
                                 4);
+                } else if (i == 12) {
+                    std::uint32_t value;
+                    std::memcpy(&value, bytes + y * row_bytes[i] + x * 4, 4);
+                    out.texture[i][y * width + x] = float(value);
                 } else if (component_bytes(i) == 4) {
                     float value;
                     std::memcpy(&value, bytes + y * row_bytes[i] + x * 4, 4);
@@ -488,6 +509,211 @@ void counter_sizes(const std::string &library) {
              "Nonfinite color contributes no success counters in a partial group");
     }
 }
+void transformed_spatial_guides(const std::string &library) {
+    // A nonuniform scale plus shear maps local z=0 to the plane with normal
+    // (-.5,.25,1). Test both a local origin and a large exactly represented
+    // camera/instance translation; expected guides remain camera-relative.
+    for (const GeometryPoint origin : {GeometryPoint{0, 0, 0}, GeometryPoint{4096, -8192, 16384}}) {
+        auto r = raster();
+        r.origin = origin;
+        auto scene = base(r);
+        GeometryMesh mesh;
+        mesh.positions = {{-16, -16, 0}, {16, -16, 0}, {0, 16, 0}};
+        mesh.triangles = {{0, 1, 2}};
+        scene.geometry.meshes.push_back(mesh);
+        // Local z is zero on every vertex. Keep its world-x coefficient zero
+        // so the inverse is dyadic, avoiding unrelated native inverse-transform
+        // cancellation at large origins without changing the tested world plane.
+        GeometryTransform transform{
+            {2, .25f, 0, origin.x + .25f, 0, .5f, 0, origin.y + .125f, 1, 0, 1, origin.z + 4.f}};
+        scene.geometry.instances.push_back({0, transform});
+        scene.instance_materials.push_back(0);
+        scene.instance_emissions.push_back(no_area_emission);
+        scene.instance_surface_transforms.emplace_back();
+        const auto now = camera(r);
+        auto cfg = config(now, now);
+        cfg.flags |= gw::signed_temporal;
+        const auto out = guide(scene, cfg, library);
+        need(out.counters.failure == 0 && out.counters.completed == pixels &&
+                 out.counters.background == 0,
+             "Transformed/rebased triangle guides complete");
+        constexpr std::array<double, 3> plane_normal{-.5, .25, 1};
+        const double normal_length = std::sqrt(1.3125);
+        // n dot (.25,.125,4) = 3.90625. Use authored raster basis directly,
+        // independent of shader transforms, CPU Camera rays and hit helpers.
+        for (unsigned p = 0; p < pixels; ++p) {
+            const double u = (double(p % width) + .5) / width,
+                         v = (double(p / width) + .5) / height;
+            const std::array<double, 3> ray{double(r.corner.x) + u * r.dx.x + v * r.dy.x,
+                                            double(r.corner.y) + u * r.dx.y + v * r.dy.y,
+                                            double(r.corner.z) + u * r.dx.z + v * r.dy.z};
+            const double parameter = 3.90625 / (-.5 * ray[0] + .25 * ray[1] + ray[2]);
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                close(out.texture[9][4 * p + axis], ray[axis] * parameter, 2e-4,
+                      "Independent transformed/rebased camera-relative position");
+                close(out.texture[10][4 * p + axis], plane_normal[axis] / normal_length, 2e-6,
+                      "Independent inverse-transpose geometric normal");
+            }
+            close(out.texture[9][4 * p + 3], 0, 0, "Spatial position padding");
+            close(out.texture[10][4 * p + 3], 0, 0, "Geometric normal padding");
+        }
+    }
+}
+void continuity_alignment(const std::string &library) {
+    auto r = raster();
+    auto scene = base(r);
+    plane(scene, 3);
+    plane(scene, 6);
+    scene.geometry.meshes[1].positions[3].z = 6.1f;
+    auto &matrix = scene.geometry.instances[1].transform.values;
+    matrix[0] = 1e-5f;
+    matrix[5] = 1e5f;
+    matrix[10] = 1e3f;
+    // Reused mesh instance must retain the same packed group range.
+    scene.geometry.instances.push_back(scene.geometry.instances[0]);
+    scene.instance_materials.push_back(0);
+    scene.instance_emissions.push_back(no_area_emission);
+    scene.instance_surface_transforms.emplace_back();
+    auto result = guide(scene, config(camera(r), camera(r)), library);
+    need(result.continuity == std::vector<std::uint32_t>{0, 0, 0, 1},
+         "Multi-mesh indexed continuity ranges and repeated transformed instances");
+}
+void prepare_guide_texture_context(RenderScene &scene) {
+    const std::array<double, 16> identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    // Validation requires no frame entries for untextured diffuse instances.
+    // Rebuild after geometry/material changes instead of retaining old tables.
+    scene.instance_texture_frames.assign(scene.geometry.instances.size(), {});
+    for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
+        if (!instance_uses_texture_context(scene, i))
+            continue;
+        auto &xf = scene.instance_surface_transforms[i];
+        xf.shape = xf.placement = identity;
+        need(prepare_texture_triangle_frames(scene.geometry.meshes[i], xf.shape, xf.placement,
+                                             scene.instance_texture_frames[i])
+                 .empty(),
+             "Appearance fixture texture context");
+    }
+}
+void protection_cases(const std::string &library, bool validate_only = false) {
+    const auto r = raster();
+    auto cfg = config(camera(r), camera(r));
+    cfg.flags = gw::signed_temporal;
+    unsigned validated = 0;
+    auto check = [&](RenderScene scene, bool expected, const std::string &label) {
+        case_context = "primary spatial protection/" + label;
+        plane(scene, 3);
+        // Non-diffuse materials require the same texture context as transport,
+        // even when no image texture is present. Diffuse-only fixtures retain
+        // the existing no-frame-table contract.
+        if (std::any_of(scene.materials.begin(), scene.materials.end(), [](const auto &m) {
+                return m.scattering != ScatteringKind::diffuse &&
+                       m.scattering != ScatteringKind::null_interface;
+            }))
+            prepare_guide_texture_context(scene);
+        const auto diagnostic = validate_render_scene(scene);
+        need(diagnostic.empty(), "Guide fixture: " + diagnostic);
+        ++validated;
+        if (validate_only)
+            return;
+        const auto result = guide(scene, cfg, library);
+        need(result.counters.failure == 0, label + " guide generation");
+        for (const auto value : result.texture[12])
+            need(value == float(expected), label + " primary spatial protection");
+        need(result.raw_before.raw_xyz == result.raw_after.raw_xyz,
+             label + " must preserve raw transport");
+    };
+    auto diffuse = base(r);
+    check(diffuse, false, "Diffuse");
+    auto delta = diffuse.materials[0];
+    delta.scattering = ScatteringKind::dielectric;
+    delta.constant = 0; // Dielectrics carry IOR, never diffuse reflectance.
+    delta.eta = {{{360, 1.5f}, {830, 1.5f}}, true};
+    auto smooth = diffuse;
+    smooth.materials[0] = delta;
+    check(smooth, true, "Smooth dielectric");
+    smooth.materials[0].eta = {{{360, 1.f}, {830, 1.f}}, true};
+    check(smooth, true, "Index-matched delta transmission");
+    for (float amount : {0.f, .25f, 1.f}) {
+        auto mixed = diffuse;
+        auto root = diffuse.materials[0];
+        root.scattering = ScatteringKind::mix;
+        root.surface.first_material = 1;
+        root.surface.second_material = 2;
+        root.surface.mix_amount = amount;
+        mixed.materials = {root, diffuse.materials[0], delta};
+        check(mixed, amount > 0, "Mix positive leaf");
+        std::swap(mixed.materials[1], mixed.materials[2]);
+        check(mixed, amount < 1, "Mix opposite positive leaf");
+    }
+    auto coat = diffuse;
+    coat.materials[0] = delta;
+    coat.materials[0].scattering = ScatteringKind::coated_diffuse;
+    coat.materials[0].constant = .37f; // Explicit coated diffuse substrate.
+    check(coat, true, "Smooth coating mixed RGB");
+    coat.materials[0].u_roughness = coat.materials[0].v_roughness = .2f;
+    check(coat, false, "Rough constant-pair IOR coating remains filterable");
+    auto rough = smooth;
+    rough.materials[0] = delta;
+    rough.materials[0].u_roughness = rough.materials[0].v_roughness = .2f;
+    check(rough, false, "Rough constant-pair IOR glass remains filterable");
+    rough.materials[0].eta.extend_endpoints = false;
+    check(rough, false, "Full-domain constant pair needs no endpoint extension");
+    rough.materials[0].eta = {{{500, 1.5f}, {600, 1.5f}}, true};
+    check(rough, false, "Short constant pair with extension remains filterable");
+    rough.materials[0].eta.extend_endpoints = false;
+    check(rough, true, "Short unextended pair has off-domain delta transmission");
+    auto short_coat = coat;
+    short_coat.materials[0].eta = rough.materials[0].eta;
+    check(short_coat, true, "Short unextended coating pair has unknown delta support");
+    short_coat.materials[0].eta.extend_endpoints = true;
+    check(short_coat, false, "Extended constant coating pair remains filterable");
+    rough.materials[0].eta = {{{360, 1.f}, {550, 1.5f}, {830, 1.f}}, true};
+    check(rough, true, "Off-550 index-matched transmission");
+    for (float amount : {0.f, 1e-30f}) {
+        case_context = amount == 0 ? "primary spatial protection/zero-weight null mixture"
+                                   : "primary spatial protection/positive-weight null mixture";
+        auto mixed = diffuse;
+        auto root = diffuse.materials[0];
+        auto null = diffuse.materials[0];
+        root.scattering = ScatteringKind::mix;
+        root.surface.first_material = 1;
+        root.surface.second_material = 2;
+        root.surface.mix_amount = amount;
+        null.scattering = ScatteringKind::null_interface;
+        mixed.materials = {root, diffuse.materials[0], null};
+        need(validate_render_scene(mixed).find("Mix materials cannot contain null boundaries") !=
+                 std::string::npos,
+             "Null mix remains explicitly unsupported even at zero weight");
+    }
+    for (bool shared : {false, true}) {
+        auto graph = diffuse;
+        const unsigned levels = shared ? 10 : 64;
+        graph.materials.assign(levels + 1, diffuse.materials[0]);
+        for (unsigned i = 0; i < levels; ++i) {
+            auto &m = graph.materials[i];
+            m.scattering = ScatteringKind::mix;
+            m.surface.mix_amount = .5f;
+            m.surface.first_material = i + 1;
+            m.surface.second_material = shared ? i + 1 : levels;
+        }
+        check(graph, shared,
+              shared ? "Shared diffuse DAG has bounded unknown support"
+                     : "64-level diffuse chain stays unprotected");
+    }
+    auto sky = base(r);
+    case_context = "primary spatial protection/sky";
+    need(validate_render_scene(sky).empty(), "Sky fixture must validate");
+    ++validated;
+    if (validate_only) {
+        std::cout << "Primary protection CPU fixture validation: " << validated
+                  << " valid fixtures and two expected null-mix rejections passed\n";
+        return;
+    }
+    const auto background = guide(sky, cfg, library);
+    need(background.counters.failure == 0, "Sky guide generation");
+    for (const auto value : background.texture[12])
+        need(value == 0, "Sky must remain spatially supported");
+}
 void cases(const std::string &library) {
     const auto original = raster(), moved = raster({.origin_x = .3f, .yaw = .2f});
     const auto old_camera = camera(original), current = camera(moved);
@@ -624,7 +850,12 @@ void cases(const std::string &library) {
 int main(int argc, char **argv) {
     @autoreleasepool {
         try {
-            need(argc == 2, "Usage: reconstruction-guide-tests LIBRARY.metallib");
+            need(argc == 2,
+                 "Usage: reconstruction-guide-tests LIBRARY.metallib | --validate-fixtures");
+            if (std::string(argv[1]) == "--validate-fixtures") {
+                protection_cases("", true);
+                return 0;
+            }
             const auto device = query_metal_device();
 #ifdef RYPATH_ALLOW_NO_METAL_DEVICE
             if (device.status == MetalStatus::no_device)
@@ -636,7 +867,12 @@ int main(int argc, char **argv) {
                 return 77;
 #endif
             need(device.device.compute_ray_tracing, "Guide tests require compute ray tracing");
+            case_context = "primary spatial protection";
+            protection_cases(argv[1]);
+            case_context = "general guides";
             cases(argv[1]);
+            continuity_alignment(argv[1]);
+            transformed_spatial_guides(argv[1]);
             counter_sizes(argv[1]);
             std::cout << "Reconstruction guide native validation passed\n";
             return 0;

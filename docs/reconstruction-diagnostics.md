@@ -14,7 +14,8 @@ Snapshots own their CPU bytes; they do not expose mutable GPU resources. The
 ordinary pipeline performs no snapshot dispatches or readbacks.
 
 The current raw frame is one fresh estimate, not a progressive sample average.
-The separate static `raw-online-mean` is an average over the recorded frames.
+The static online-mean summary averages the recorded frames; its full
+`raw-online-mean` plane requires `--save-online-mean on` (off by default).
 MetalFX receives clamped half RGB; the signed stream receives unclipped float RGB.
 Guide and variance fields retain their actual half/float/integer representation.
 Source identities, sample indices, resets and input/output hashes accompany results.
@@ -53,14 +54,30 @@ is a JSON object with a `snapshots` array naming ordered `temporal-0.json`,
 transport frame to acquire the device and pipelines, then filters captured
 inputs directly. Matching-settings replay must reproduce captured output exactly;
 `--replay-spatial 0..5` can instead identify a deliberate spatial-pass ablation.
+Schema 3 requires the actual spatial position, geometric normal, connected group
+and primary spatial-protection textures. Schema 1 and 2 inputs must be recaptured.
+
+`--variance-policy paired|center|conservative`, `--variance-prefilter on|off`, and
+`--strict-spatial-segments on|off` select explicit signed-filter experiments.
+Defaults retain paired variance, no prefilter and no expensive raster-segment
+checks. The prefilter requires center variance. Replay records every setting;
+changing a recorded setting requires its explicit option and marks the result
+as an ablation. Temporal-only and MetalFX outputs remain separate arms.
 
 Default `--capture-mode final` records per-frame hashes and region means, and
-retains final full-resolution RGB planes plus diagnostic metadata. Internal
-texture hashes without archived payloads are explicitly marked unavailable for
+retains final full-resolution RGB planes plus diagnostic metadata. When the final
+sequence frame is selected for capture, its signed spatial arm also archives
+`input.spatial_protection` as one tight native little-endian R32Uint mask, with
+width, height, byte length and SHA256 in the existing texture record. Earlier
+selected compact frames retain only mask metadata; this does not enable full
+replay. The mask permits exact protected-pixel comparison with the separately
+retained temporal-only RGB. Internal texture hashes without archived payloads are explicitly marked unavailable for
 replay. An optional ROI file has `{"regions":{"name":[x0,y0,x1,y1]}}`, using
 exclusive upper coordinates. Default whole-image means are not feature-quality
 gates. Both modes enforce a shared 8 GiB artifact-root limit; an individual
 internal snapshot is limited to 1 GiB. No historical artifacts are deleted.
+Identical RGB planes within a case share a payload; consumers must follow each
+descriptor's `path` and verify its hash instead of deriving a filename.
 
 Independent references require explicit seeds disjoint from candidate seeds.
 `--reference-samples 1024` renders a static raw reference batch;
@@ -109,3 +126,10 @@ output. `--area-output selected` retains the selected-output ablation. These
 settings and the cold/warm full-replay evaluation counts are recorded explicitly;
 independent references remain separate. Historical validation below predates this
 adapted integration; current combined validation is pending.
+
+
+Current snapshots use schema 3 and temporal wire version 3. They archive the
+required `input.spatial_protection` R32Uint primary-material flag with the other
+quantized inputs and record `primary-prepared-delta-v1` provenance. Replay rejects
+older snapshots instead of substituting a missing flag. The schema-2 replay
+evidence above describes the earlier implementation.

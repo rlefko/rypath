@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "reconstruction_camera.hpp"
+#include "reconstruction_continuity.hpp"
 #include "reconstruction_guide_cache.hpp"
 
 #include <cmath>
@@ -118,6 +119,32 @@ void guide_key_dependencies() {
     }
 }
 int main() try {
+    {
+        rypath::GeometryMesh mesh;
+        mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}};
+        mesh.triangles = {{0, 1, 2}, {2, 1, 3}};
+        auto groups = rypath::reconstruction_continuity(mesh);
+        require(groups[0] == groups[1], "Indexed coplanar adjacency must join");
+        mesh.positions[3].z = .001f;
+        groups = rypath::reconstruction_continuity(mesh);
+        require(groups[0] != groups[1], "Crease must split anchored planes");
+        mesh.positions[3].z = 0;
+        mesh.positions.insert(mesh.positions.end(), {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}});
+        mesh.triangles.push_back({4, 5, 6});
+        groups = rypath::reconstruction_continuity(mesh);
+        require(groups[0] != groups[2], "Coincident positions must never weld topology");
+        mesh.triangles.push_back({2, 1, 3});
+        groups = rypath::reconstruction_continuity(mesh);
+        require(groups[0] != groups[1] && groups[1] != groups[3],
+                "Nonmanifold and duplicate faces must split");
+        // Three gently bent bands: a chain cannot grow tolerance from one face to the next.
+        mesh.positions = {{0, 0, 0}, {0, 1, 0},        {1, 0, 0},
+                          {1, 1, 0}, {2, 0, 0.00001f}, {2, 1, 0.00001f}};
+        mesh.triangles = {{0, 2, 1}, {1, 2, 3}, {2, 4, 3}, {3, 4, 5}};
+        groups = rypath::reconstruction_continuity(mesh);
+        require(groups[0] == groups[1] && groups[0] != groups[2],
+                "Stable anchor rejects transitive bending");
+    }
     guide_key_dependencies();
     using namespace rypath;
     const rc::CameraConfig config{4, 2, .25, {}};

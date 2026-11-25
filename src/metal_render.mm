@@ -23,6 +23,7 @@
 #include "packet_dispatch.hpp"
 #include "packet_spectrum_shared.h"
 #include "packet_wire.h"
+#include "reconstruction_continuity.hpp"
 #include "render_wire.h"
 #include "rgb_spectrum.hpp"
 #include "sobol_shared.h"
@@ -478,6 +479,9 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> instances = nil;
     id<MTLBuffer> positions = nil;
     id<MTLBuffer> triangles = nil;
+    id<MTLBuffer> reconstruction_groups = nil;
+    std::mutex reconstruction_groups_mutex;
+    std::uint64_t reconstruction_preparation_limit = 8ull << 30;
     std::uint32_t native_hint_mode = 0;
     bool opaque_shadows = false;
     std::size_t packet_payload_bytes = packet_wire::workspace_bytes;
@@ -1215,6 +1219,8 @@ struct MetalRenderScene::Impl {
 
     std::string upload_shading(const RenderScene &scene, const GeometryData &geometry_data) {
         const auto &meshes = geometry_data.meshes;
+        reconstruction_preparation_limit =
+            std::min<std::uint64_t>(scene.preparation_byte_limit, 8ull << 30);
         std::vector<std::size_t> vertex_offsets(meshes.size());
         std::vector<std::size_t> triangle_offsets(meshes.size());
         std::vector<std::size_t> patch_offsets(meshes.size());
@@ -2394,6 +2400,71 @@ render_wire::Parameters MetalFrameLease::guide_parameters() const {
     p.pixel_begin = 0;
     p.pixel_count = p.lane_count = frame.info.width * frame.info.height;
     return p;
+}
+std::string MetalFrameLease::prepare_reconstruction_groups() const {
+    if (!impl_)
+        return "Reconstruction continuity requires a live frame lease";
+    auto &renderer = *impl_->frame->retention->renderer->impl_;
+    std::lock_guard lock(renderer.reconstruction_groups_mutex);
+    if (renderer.reconstruction_groups)
+        return {};
+    // Immutable shared resident geometry supplies topology on demand. Ordinary
+    // offline scene construction does no continuity work and retains no copies.
+    const auto face_count = renderer.triangles.length / sizeof(wire::Triangle);
+    const auto vertex_count = renderer.positions.length / sizeof(wire::Point);
+    const std::uint64_t output_bytes = face_count * sizeof(std::uint32_t);
+    // Includes map nodes/edge vectors, face planes, adjacency, mesh copies,
+    // queues, groups and simultaneous Metal upload. Conservative STL allowance.
+    const std::uint64_t peak_bytes = 768ull * face_count + 64ull * vertex_count + 65536;
+    const auto budget = renderer.device.recommendedMaxWorkingSetSize
+                            ? std::min<std::uint64_t>(renderer.reconstruction_preparation_limit,
+                                                      renderer.device.recommendedMaxWorkingSetSize)
+                            : renderer.reconstruction_preparation_limit;
+    if (output_bytes > renderer.device.maxBufferLength || peak_bytes > budget)
+        return "Reconstruction continuity preparation exceeds resource budget";
+    try {
+        std::vector<std::uint32_t> groups(face_count, 0xffffffffu);
+        const auto *instances = static_cast<const wire::Instance *>(renderer.instances.contents);
+        const auto *triangles = static_cast<const wire::Triangle *>(renderer.triangles.contents);
+        const auto *positions = static_cast<const wire::Point *>(renderer.positions.contents);
+        std::map<std::uint32_t, bool> prepared;
+        for (std::uint32_t i = 0; i < renderer.parameters.instance_count; ++i) {
+            const auto &instance = instances[i];
+            if (!instance.triangle_count || !prepared.emplace(instance.triangle_begin, true).second)
+                continue;
+            GeometryMesh mesh;
+            mesh.triangles.reserve(instance.triangle_count);
+            std::uint32_t local_vertices = 0;
+            for (std::uint32_t t = 0; t < instance.triangle_count; ++t) {
+                const auto &triangle = triangles[instance.triangle_begin + t];
+                mesh.triangles.push_back(
+                    {triangle.vertices[0], triangle.vertices[1], triangle.vertices[2]});
+                for (auto vertex : triangle.vertices)
+                    local_vertices = std::max(local_vertices, vertex + 1);
+            }
+            mesh.positions.reserve(local_vertices);
+            for (std::uint32_t v = 0; v < local_vertices; ++v) {
+                const auto p = positions[instance.vertex_begin + v];
+                mesh.positions.push_back({p.x, p.y, p.z});
+            }
+            const auto local = reconstruction_continuity(mesh);
+            std::copy(local.begin(), local.end(), groups.begin() + instance.triangle_begin);
+        }
+        auto buffer = upload(renderer.device, groups);
+        if (!buffer || buffer.allocatedSize > output_bytes + 65536)
+            return "Reconstruction continuity allocation failed or exceeded estimate";
+        renderer.reconstruction_groups = buffer;
+    } catch (const std::bad_alloc &) {
+        return "Reconstruction continuity host allocation failed";
+    }
+    return {};
+}
+id<MTLBuffer> MetalFrameLease::reconstruction_groups() const {
+    if (!impl_)
+        return nil;
+    auto &renderer = *impl_->frame->retention->renderer->impl_;
+    std::lock_guard lock(renderer.reconstruction_groups_mutex);
+    return renderer.reconstruction_groups;
 }
 std::string MetalFrameLease::bind_guides(id<MTLComputeCommandEncoder> encoder,
                                          const MetalFramePipeline &pipeline,

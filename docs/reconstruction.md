@@ -115,7 +115,8 @@ frame. Raw XYZ, sampling, reconstruction settings, and temporal recurrence are
 unchanged.
 
 The cache owns the existing single set of depth, motion, diffuse/specular albedo,
-normal, roughness, previous depth and identity textures. Output slots and temporal
+normal, roughness, previous depth and identity textures, plus temporal-only
+camera-relative position, geometric normal and indexed continuity-group textures. Output slots and temporal
 history banks remain independent. The explicit fieldwise key covers the resolved
 full-film pinhole parameters bound by `bind_guides`, all texture parameters
 (including sample scale and camera footprints), and the complete current/previous
@@ -132,7 +133,8 @@ eligibility. Hits preserve logical surface counts while freshly computing color,
 conversion counts and color-range diagnostics. `guide_cache_hit` and
 `generated_surface_pixels` distinguish reused guides from executed surface work.
 
-The matched-stream test compares all eight guide textures byte for byte, output,
+The matched-stream test compares all eleven temporal guide textures byte for byte
+(the three temporal-only fields are empty for MetalFX), output,
 logical counters, history decisions and raw preservation across static/cap,
 translation/rotation holds, reset/epoch, lens, texture-camera, medium, session
 authorization and recovery cases.
@@ -164,7 +166,7 @@ Temporal lookup uses current-to-previous motion without clamping offscreen
 coordinates. Stored instance, primitive, primitive kind and resolved material
 must match. Expected **previous-camera** depth and world normal reject mismatched
 surfaces. Sky uses its own identity and rotation-only motion. Primitive matching
-is deliberately conservative at triangle boundaries. Disoccluded pixels start
+remains deliberately conservative for temporal correspondence at triangle boundaries. Disoccluded pixels start
 fresh. Defocus, media, transmission and mixed-material fallbacks trigger a
 whole-frame temporal reset on camera changes; a stationary camera can still
 accumulate same-pixel estimates. All mixes are conservative reset candidates
@@ -179,7 +181,49 @@ limit uses exact replacement without subtracting the previous value. Unrepresent
 intermediate arithmetic fails visibly instead of clipping HDR samples. A cold neighborhood
 estimate supplies spatial noise guidance while temporal history is short.
 Five à-trous passes use steps 1, 2, 4, 8 and 16 with normalized nonnegative
-geometry, albedo and chromatic-noise weights. The center remains eligible.
+geometry, albedo and chromatic-noise weights. Spatial support separately permits
+triangles within the same instance, resolved material and connected indexed
+coplanar group. Groups follow manifold shared indexed edges, never position
+welding; every group's plane and tolerance are anchored to its seed triangle,
+preventing transitive bending. Duplicate/nonmanifold faces and disconnected or
+coincident sheets remain separate. Camera-relative hit positions and full-float
+geometric normals supply symmetric point-to-plane checks; shading normals and
+albedo retain appearance edges. Curved patches and analytic primitives retain the
+existing exact-primitive reversed-depth/shading-normal weights; planar joins apply
+only to triangles. The optional `strict_spatial_segments` experiment (default
+**false**) additionally checks intervening raster guide pixels for dilated taps.
+Its cost requires measurement before adoption. Default endpoint support cannot
+distinguish a visible hole within one connected coplanar group; subpixel gaps are
+also limited by the deterministic center-ray guide representation.
+
+Continuity metadata is prepared lazily only when temporal reconstruction is
+requested, using
+immutable resident geometry. Ordinary offline scene construction does no topology
+preparation and retains no extra geometry copies. Raw-RGB and MetalFX modes do
+not prepare continuity or allocate the three new spatial guide textures. Preparation preflights a
+conservative peak allowance (768 bytes per resident triangle, 64 per resident
+vertex and 64 KiB overhead) against the scene preparation limit, an 8 GiB cap and
+the device working-set recommendation. The shared GPU group buffer is also
+charged to reconstruction's owned-resource estimate. Allocation failures return
+an explicit diagnostic.
+
+The signed chromatic exponential retains its squared-distance form and original
+absolute `1e-4` denominator floor. `SpatialVariancePolicy::paired` remains the
+default, using `4 * (center_variance + neighbor_variance) + 1e-4` per channel.
+The explicit `center` experiment uses only center variance; it can reject outward
+halo tails while attenuating the uncertain bright center itself. The explicit
+`conservative` experiment uses componentwise minimum center/neighbor variance,
+requiring compatibility in both directions. These are our SVGF-inspired RGB
+adaptations, not the paper's exact luminance weighting or a published quality claim.
+The fixed floor limits exposure equivariance near zero variance.
+
+The separately selected `variance_prefilter` option (default **false**) is accepted
+only with the center policy, keeping policy ablations unambiguous. It applies a
+separable `[1,2,1]` Gaussian times geometry/appearance weights to the 3x3 guidance
+variance proxy. Incremental normalized means avoid overflowing a raw variance sum
+when its normalized average is finite. Original temporal moments, propagated
+spatial variance and pre-spatial temporal history remain independent.
+The center remains eligible; signed radiance and history are never clipped.
 Temporal history stores the pre-spatial result, preventing recurrent spatial blur.
 The API allows zero spatial passes for the independent temporal recurrence oracle.
 
@@ -188,6 +232,24 @@ and data-dependent spatial weights can blur or bias output. Signed captures
 retain negative values; only the separate display consumer maps them to its
 nonnegative gamut. Correctness tests and reference-image quality qualification
 are separate requirements.
+
+The current signed repair adds 129x129 impulse/sign/constant/HDR and exposure
+fixtures and explicit paired/center/conservative signal-retention metrics,
+oblique-plane triangulation invariance, disconnected close-layer and
+strict-mode visible-gap rejection, curved-surface oracle comparisons, lazy
+multi-mesh metadata alignment, finite HDR Gaussian guidance, plus portable
+indexed-topology checks. Noise-free narrow HDR and transient-signal fixtures are
+synthetic filter checks; they do not establish physical caustic/reflection quality.
+
+On 2026-11-23, the current signed implementation through `2497261` passed the
+focused Debug camera, raw, MetalFX, signed, guide and temporal-filter tests on
+M4 Max with Metal API validation. The transformed-guide fixture uses an exact
+dyadic inverse while retaining the same world-space plane and numerical tolerance.
+Finite extreme positions that overflow a plane residual are rejected explicitly.
+The exposure oracle retains the production variance floor; exact exposure
+homogeneity is not claimed for that fixed floor. Independent review found no
+remaining source blocker. Native scene-quality qualification remains separate;
+paired variance is still the default pending that evidence.
 
 ## Headless measurement and capture
 
@@ -290,3 +352,60 @@ Primary platform references: Apple's [MetalFX integration session](https://devel
 [temporal denoised scaler](https://developer.apple.com/documentation/metalfx/mtlfxtemporaldenoisedscaler),
 [roughness guide](https://developer.apple.com/documentation/metalfx/mtlfxtemporaldenoisedscalerbase/roughnesstexture),
 and [GPU feature limits](https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf).
+
+## Primary delta detail protection
+
+Pavilion's pool ripples survive temporal averaging but are erased by the earlier
+five-pass spatial filter: almost identical primary normals can reflect very
+different parts of the scene. Primary geometry alone does not establish
+correspondence for that reflected detail. [NRD's integration guidance](https://github.com/NVIDIA-RTX/NRD/blob/master/README.md#interaction-with-primary-surface-replacements)
+describes secondary-hit and virtual-surface data for this problem, alongside
+separate diffuse/specular signals. The policy below is a conservative fallback
+for our combined signed RGB, not an implementation of NRD or those secondary
+correspondence methods.
+
+Signed spatial reconstruction consumes a separate `R32Uint` primary-material
+protection guide (0 or 1). A protected center copies its source mean and variance
+exactly in every spatial pass; unprotected centers reject protected taps in the
+cold local-variance proxy, variance prefilter and spatial stencil. Temporal
+correspondence and accumulation retain their existing rules. Zero through five
+spatial passes therefore retain the same temporal-only RGB at protected pixels.
+The raw spectral estimator and its accumulation are unchanged.
+
+Eligibility follows prepared BSDF semantics, rather than the maximum-roughness
+appearance proxy. Smooth conductors, solid and thin dielectrics, glTF delta
+reflection, and smooth coating interfaces or conductor substrates protect the
+combined RGB as potential primary/secondary detail. Smooth index-matched
+transmission is included. Reflection potential is conservative across wavelength
+and incidence: a zero Fresnel value at one sample does not remove protection.
+The existing scalar-graph contract makes mix weights and roughness independent
+of wavelength; one bounded material-tree walk at 550 nm ORs positive-weight leaves.
+The walk stops after 256 entered nodes; unresolved shared-DAG support
+conservatively protects the pixel. This budget fallback describes unknown
+support, not an observed delta contribution. Exactly zero-weight mix branches
+are excluded. Null boundaries pass through visibility; null-containing mixes
+remain explicitly unsupported by scene validation. The classifier treats a null
+leaf as potential delta transmission if that restriction is relaxed in the future.
+
+Primary eligibility is retained independently of secondary appearance normal
+replacements. Combined coated/mixed RGB may consequently retain more noise,
+including diffuse contributions. A two-knot equal-value IOR is proven constant
+only with endpoint extension or coverage of the full 360–830 nm domain; ordinary
+rough constant-IOR glass and coatings remain filterable. Other spectral curves
+or textured dielectric IOR are conservatively protected even with rough
+microfacets: an unsampled wavelength may be index matched and therefore transmit
+a delta event. This intentionally overprotects spectral IOR curves that never
+reach one.
+
+Sky and diffuse leaves remain spatially supported. Measured/Fourier table BSDFs
+expose continuous densities and remain unprotected; their reflected-feature
+correspondence is unknown. This fallback does not establish secondary-hit
+correspondence or guarantee preservation for glossy or moving reflections.
+Guide ABI 4 at this stage, temporal ABI 3 and snapshot schema 3 make the new required input
+explicit; older replay snapshots must be recaptured. Focused tests specify the
+new deterministic contracts. As inherited upstream evidence, on M4 Max production source `dad28bce1521` passes
+all seven focused reconstruction tests with Metal API validation, including
+protected reflection stripes, nonzero variance, material boundaries and guide
+classification. A separate 32×32 two-frame capture replays exactly and rejects
+schema-2 or missing-mask inputs. Native image-quality qualification is pending;
+earlier validation records remain historical.

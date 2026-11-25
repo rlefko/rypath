@@ -4,9 +4,11 @@
 #include "metal_frame_access.hpp"
 #include "metal_reconstruction_access.hpp"
 #include "pbrt_render.hpp"
+#include "reconstruction_guide_wire.h"
 #include "render_identity.hpp"
 #include "resource_limits.hpp"
 #include "temporal_denoiser.hpp"
+#include "temporal_denoiser_wire.h"
 #import <Foundation/Foundation.h>
 #include <algorithm>
 #include <bit>
@@ -79,6 +81,43 @@ float finite_float(const std::string &value) {
     require(input.eof() && !input.fail() && std::isfinite(x), "Invalid finite float");
     return x;
 }
+SpatialVariancePolicy variance_policy(std::string_view value) {
+    if (value == "paired")
+        return SpatialVariancePolicy::paired;
+    if (value == "center")
+        return SpatialVariancePolicy::center;
+    if (value == "conservative")
+        return SpatialVariancePolicy::conservative;
+    throw std::runtime_error("Variance policy must be paired, center, or conservative");
+}
+std::string_view variance_policy_name(SpatialVariancePolicy policy) {
+    switch (policy) {
+    case SpatialVariancePolicy::paired:
+        return "paired";
+    case SpatialVariancePolicy::center:
+        return "center";
+    case SpatialVariancePolicy::conservative:
+        return "conservative";
+    }
+    throw std::runtime_error("Unknown spatial variance policy");
+}
+bool on_off(std::string_view value) {
+    require(value == "on" || value == "off", "Boolean options require on or off");
+    return value == "on";
+}
+NSDictionary *signed_configuration(SpatialVariancePolicy policy, bool prefilter, bool strict,
+                                   std::uint32_t spatial) {
+    return @{
+        @"variance_policy" : ns(variance_policy_name(policy)),
+        @"variance_prefilter" : @(prefilter),
+        @"strict_spatial_segments" : @(strict),
+        @"spatial_iterations" : @(spatial),
+        @"history_limit" : @64,
+        @"spatial_protection_policy" : @"primary-prepared-delta-v1",
+        @"guide_wire_version" : @(reconstruction_guide_wire::contract),
+        @"temporal_wire_version" : @(temporal_denoiser_wire::version)
+    };
+}
 NSData *read_file(const fs::path &path, std::uint64_t maximum,
                   std::optional<std::uint64_t> exact = {}) {
     require(fs::is_regular_file(fs::symlink_status(path)), "Input must be a regular file");
@@ -105,6 +144,8 @@ void help() {
            "  --capture-mode final|replay --capture-frames N,N --roi-file FILE\n"
            "  --motion-offset X | --reference-samples 1024|4096 --seed N [--reference-offset X]\n"
            "  --replay-list FILE [--replay-spatial 0..5] --resource-profile NAME\n"
+           "  --variance-policy paired|center|conservative --variance-prefilter on|off\n"
+           "  --strict-spatial-segments on|off --save-online-mean on|off\n"
            "Native diagnostic captures only; output directory must be fresh, artifact root capped "
            "at 8 GiB.\n";
 }
@@ -120,6 +161,10 @@ struct Options {
     std::set<std::uint64_t> captures;
     std::uint32_t replay_spatial = 5;
     std::string capture_mode = "final";
+    SpatialVariancePolicy spatial_variance_policy = SpatialVariancePolicy::paired;
+    bool variance_prefilter = false, strict_spatial_segments = false, save_online_mean = false;
+    bool variance_policy_explicit = false, variance_prefilter_explicit = false,
+         strict_spatial_segments_explicit = false, replay_spatial_explicit = false;
 };
 std::string_view area_output_name(FrameAreaOutput output) {
     return output == FrameAreaOutput::selected ? "selected" : "conditional-mean";
@@ -145,6 +190,17 @@ Options parse(int argc, char **argv) {
             o.replay_list = value;
         else if (key == "--roi-file")
             o.roi_file = value;
+        else if (key == "--variance-policy") {
+            o.spatial_variance_policy = variance_policy(value);
+            o.variance_policy_explicit = true;
+        } else if (key == "--variance-prefilter") {
+            o.variance_prefilter = on_off(value);
+            o.variance_prefilter_explicit = true;
+        } else if (key == "--strict-spatial-segments") {
+            o.strict_spatial_segments = on_off(value);
+            o.strict_spatial_segments_explicit = true;
+        } else if (key == "--save-online-mean")
+            o.save_online_mean = on_off(value);
         else if (key == "--capture-mode") {
             require(value == "final" || value == "replay", "Capture mode must be final or replay");
             o.capture_mode = value;
@@ -190,9 +246,10 @@ Options parse(int argc, char **argv) {
                     o.frames = n;
                 else if (key == "--reference-samples")
                     o.reference_samples = n;
-                else if (key == "--replay-spatial")
+                else if (key == "--replay-spatial") {
                     o.replay_spatial = n;
-                else
+                    o.replay_spatial_explicit = true;
+                } else
                     throw std::runtime_error("Unknown option: " + key);
             }
         }
@@ -219,6 +276,11 @@ Options parse(int argc, char **argv) {
                 (!o.reference_samples && !o.motion_offset && !o.reference_offset),
             "Replay cannot combine reference or motion options");
     require(o.replay_spatial <= 5, "Replay spatial count exceeds five");
+    require(!o.variance_prefilter || o.spatial_variance_policy == SpatialVariancePolicy::center,
+            "--variance-prefilter on requires --variance-policy center");
+    require(!o.save_online_mean ||
+                (!o.motion_offset && !o.reference_samples && o.replay_list.empty()),
+            "--save-online-mean on requires a static diagnostic fanout run");
     if (o.captures.empty())
         o.captures.insert(o.frames - 1);
     if (o.capture_mode == "replay") {
@@ -238,6 +300,7 @@ Options parse(int argc, char **argv) {
 
 class Output {
     fs::path root_, directory_;
+    std::map<std::pair<std::string, std::size_t>, std::string> rgb_payloads_;
 
   public:
     explicit Output(const Options &o) {
@@ -273,6 +336,19 @@ class Output {
         out.close();
         require(bool(out), "Output write failed");
         return digest_hex(sha256({static_cast<const std::uint8_t *>(data), size}));
+    }
+    struct RGBPayload {
+        std::string path, hash;
+        bool alias = false;
+    };
+    RGBPayload rgb_payload(const std::string &name, const void *data, std::size_t size) {
+        const auto hash = digest_hex(sha256({static_cast<const std::uint8_t *>(data), size}));
+        const auto key = std::pair{hash, size};
+        if (const auto existing = rgb_payloads_.find(key); existing != rgb_payloads_.end())
+            return {existing->second, hash, true};
+        require(bytes(name, data, size) == hash, "RGB payload hash changed during write");
+        rgb_payloads_.emplace(key, name);
+        return {name, hash, false};
     }
     void json(const std::string &name, id value) {
         NSError *error = nil;
@@ -312,18 +388,24 @@ std::size_t pixel_bytes(MTLPixelFormat format) {
 }
 NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snapshot,
                             std::string prefix, std::uint64_t frame, const Options &o, bool reset,
-                            std::uint32_t spatial) {
+                            const ReconstructionConfig &config) {
     require(snapshot.diagnostic.empty(), snapshot.diagnostic);
     NSMutableArray *textures = [NSMutableArray array];
     for (const auto &texture : snapshot.textures) {
         require(texture.bytes.size() ==
                     std::uint64_t(texture.width) * texture.height * pixel_bytes(texture.format),
                 "Snapshot size mismatch");
-        const bool archive =
+        const bool replay_input =
             o.capture_mode == "replay" && prefix.starts_with("temporal-") &&
             (texture.name.starts_with("input.") || texture.name == "temporal.mean" ||
              texture.name == "temporal.variance" || texture.name == "temporal.count" ||
              texture.name == "output");
+        // Compact captures retain one mask, not a full replay sequence. The
+        // existing texture descriptor records its shape, format and SHA256.
+        const bool final_protection = o.capture_mode == "final" && frame == o.frames - 1 &&
+                                      prefix.starts_with("temporal-") &&
+                                      texture.name == "input.spatial_protection";
+        const bool archive = replay_input || final_protection;
         std::string filename = prefix + "." + texture.name + ".bin";
         auto hash = digest_hex(sha256(
             {reinterpret_cast<const std::uint8_t *>(texture.bytes.data()), texture.bytes.size()}));
@@ -342,12 +424,19 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
         }];
     }
     NSDictionary *metadata = @{
-        @"schema" : @1,
+        @"schema" : @3,
         @"frame" : @(frame),
         @"seed" : @(o.seed),
         @"epoch" : @(snapshot.info.source.epoch),
         @"reset_history" : @(reset),
-        @"spatial_iterations" : @(spatial),
+        @"spatial_iterations" : @(config.spatial_iterations),
+        @"variance_policy" : ns(variance_policy_name(config.spatial_variance_policy)),
+        @"variance_prefilter" : @(config.variance_prefilter),
+        @"strict_spatial_segments" : @(config.strict_spatial_segments),
+        @"spatial_protection_policy" : @"primary-prepared-delta-v1",
+        @"guide_wire_version" : @(reconstruction_guide_wire::contract),
+        @"temporal_wire_version" : @(temporal_denoiser_wire::version),
+        @"signed_configuration_applicable" : @(config.mode == ReconstructionMode::temporal),
         @"history_limit" : @64,
         @"full_replay_inputs" : @(o.capture_mode == "replay" && prefix.starts_with("temporal-")),
         @"scene" : ns(fs::absolute(o.scene).string()),
@@ -396,12 +485,16 @@ void save_rgb(Output &out, std::string prefix, const std::vector<std::array<floa
     for (const auto &pixel : rgb)
         for (float value : pixel)
             require(std::isfinite(value), "Nonfinite RGB metric plane");
-    auto hash = out.bytes(prefix + ".bin", rgb.data(), rgb.size() * sizeof(rgb[0]));
+    const auto size = rgb.size() * sizeof(rgb[0]);
+    const auto payload = out.rgb_payload(prefix + ".bin", rgb.data(), size);
     out.json(
         prefix + ".json", @{
             @"schema" : @1,
-            @"path" : ns(prefix + ".bin"),
-            @"sha256" : ns(hash),
+            @"path" : ns(payload.path),
+            @"sha256" : ns(payload.hash),
+            @"byte_length" : @(size),
+            @"payload_alias" : @(payload.alias),
+            @"payload_alias_of" : payload.alias ? (id)ns(payload.path) : (id)NSNull.null,
             @"width" : @(o.width),
             @"height" : @(o.height),
             @"channels" : @3,
@@ -476,8 +569,14 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
     arms[1].config.spatial_iterations = 0;
     arms[2].name = "metalfx";
     arms[2].config.mode = ReconstructionMode::metalfx;
-    for (auto &arm : arms)
+    for (auto &arm : arms) {
         arm.config.capture_diagnostics = true;
+        if (arm.config.mode == ReconstructionMode::temporal) {
+            arm.config.spatial_variance_policy = o.spatial_variance_policy;
+            arm.config.variance_prefilter = o.variance_prefilter;
+            arm.config.strict_spatial_segments = o.strict_spatial_segments;
+        }
+    }
     std::vector<std::array<double, 3>> mean(std::uint64_t(o.width) * o.height);
     NSMutableArray *captures = [NSMutableArray array];
     NSMutableArray *series = [NSMutableArray array];
@@ -539,14 +638,18 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                     @"regions" : region_means(result.linear_rgb, regions, o),
                     @"raw_regions" : region_means(raw_rgb, regions, o),
                     @"history_accepted" : @(info.history_accepted),
-                    @"history_rejected" : @(info.history_rejected)
+                    @"history_rejected" : @(info.history_rejected),
+                    @"signed_configuration_applicable" :
+                        @(arm.config.mode == ReconstructionMode::temporal),
+                    @"reconstruction_configuration" : signed_configuration(
+                        arm.config.spatial_variance_policy, arm.config.variance_prefilter,
+                        arm.config.strict_spatial_segments, arm.config.spatial_iterations)
                 }];
                 if (o.captures.contains(frame)) {
                     auto snapshot =
                         MetalReconstructionStreamProbe::capture_diagnostics(*arm.stream);
                     std::string prefix = arm.name + "-" + std::to_string(frame);
-                    save_snapshot(out, snapshot, prefix, frame, o, info.history_reset,
-                                  arm.config.spatial_iterations);
+                    save_snapshot(out, snapshot, prefix, frame, o, info.history_reset, arm.config);
                     save_rgb(out, prefix + "-RGB", result.linear_rgb, o,
                              "full native reconstruction output");
                     if (arm.name == "temporal") {
@@ -562,8 +665,23 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
     for (std::size_t p = 0; p < mean.size(); ++p)
         for (unsigned c = 0; c < 3; ++c)
             rgb[p][c] = mean[p][c];
-    if (!o.motion_offset)
-        save_rgb(out, "raw-online-mean", rgb, o, "signed raw mean across static frames");
+    if (!o.motion_offset) {
+        const auto hash = digest_hex(sha256(
+            {reinterpret_cast<const std::uint8_t *>(rgb.data()), rgb.size() * sizeof(rgb[0])}));
+        out.json(
+            "raw-online-mean-summary.json", @{
+                @"schema" : @1,
+                @"frames" : @(o.frames),
+                @"width" : @(o.width),
+                @"height" : @(o.height),
+                @"sha256" : ns(hash),
+                @"payload_requested" : @(o.save_online_mean),
+                @"regions" : region_means(rgb, regions, o),
+                @"role" : @"signed online raw mean across static frames"
+            });
+        if (o.save_online_mean)
+            save_rgb(out, "raw-online-mean", rgb, o, "signed raw mean across static frames");
+    }
     out.json(
         "series.json", @{
             @"schema" : @1,
@@ -618,25 +736,46 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
     NSDictionary *list = load_json(o.replay_list);
     NSArray *paths = array(list[@"snapshots"]);
     require(paths.count && paths.count <= 128, "Replay requires 1..128 ordered snapshots");
+    const auto first_record = load_json(o.replay_list.parent_path() / string(paths[0]));
+    require(integer(first_record[@"schema"]) == 3,
+            "Replay requires schema 3 primary spatial-protection guides; recapture older inputs");
+    require(integer(first_record[@"guide_wire_version"]) == reconstruction_guide_wire::contract &&
+                string(first_record[@"spatial_protection_policy"]) == "primary-prepared-delta-v1",
+            "Replay primary guide/protection contract differs from current implementation");
+    require(integer(first_record[@"temporal_wire_version"]) == temporal_denoiser_wire::version,
+            "Replay temporal wire version differs from the current spatial guide contract");
     auto dummy = render(session, 0, o, scene.value);
     auto acquired = MetalFrameAccess::acquire(*dummy);
     require(acquired.lease != nullptr, acquired.diagnostic);
-    auto built =
-        TemporalDenoiser::create(*acquired.lease, {.width = o.width,
-                                                   .height = o.height,
-                                                   .history_limit = 64,
-                                                   .spatial_iterations = o.replay_spatial});
+    auto built = TemporalDenoiser::create(*acquired.lease,
+                                          {.width = o.width,
+                                           .height = o.height,
+                                           .history_limit = 64,
+                                           .spatial_iterations = o.replay_spatial,
+                                           .variance_prefilter = o.variance_prefilter,
+                                           .spatial_variance_policy = o.spatial_variance_policy,
+                                           .strict_spatial_segments = o.strict_spatial_segments});
     require(built.denoiser != nullptr, built.diagnostic);
     std::uint64_t ordinal = 0, validated = 0;
     std::optional<std::uint64_t> recorded_spatial, recorded_seed, previous_epoch;
+    std::optional<SpatialVariancePolicy> recorded_policy;
+    std::optional<bool> recorded_prefilter, recorded_strict;
     const std::set<std::string> input_names{
-        "input.color",           "input.depth",  "input.motion",         "input.diffuse_albedo",
-        "input.specular_albedo", "input.normal", "input.previous_depth", "input.identity"};
+        "input.color",          "input.depth",           "input.motion",
+        "input.diffuse_albedo", "input.specular_albedo", "input.normal",
+        "input.previous_depth", "input.identity",        "input.spatial_position",
+        "input.spatial_normal", "input.spatial_group",   "input.spatial_protection"};
     for (id relative : paths)
         @autoreleasepool {
             fs::path path = o.replay_list.parent_path() / string(relative);
             NSDictionary *record = load_json(path);
-            require(integer(record[@"schema"]) == 1, "Unsupported replay schema");
+            require(integer(record[@"schema"]) == 3,
+                    "Replay requires schema 3 spatial-protection guides on every frame");
+            require(integer(record[@"guide_wire_version"]) == reconstruction_guide_wire::contract &&
+                        string(record[@"spatial_protection_policy"]) == "primary-prepared-delta-v1",
+                    "Replay primary guide/protection contract changed within sequence");
+            require(integer(record[@"temporal_wire_version"]) == temporal_denoiser_wire::version,
+                    "Replay temporal wire version changed within sequence");
             require(integer(record[@"history_limit"]) == 64, "Replay requires history_limit64");
             require(boolean(record[@"full_replay_inputs"]),
                     "Replay requires complete full-frame quantized inputs captured with "
@@ -645,6 +784,11 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
             const bool reset = boolean(record[@"reset_history"]);
             const auto spatial = integer(record[@"spatial_iterations"]),
                        seed = integer(record[@"seed"]), epoch = integer(record[@"epoch"]);
+            const auto policy = variance_policy(string(record[@"variance_policy"]));
+            const bool prefilter = boolean(record[@"variance_prefilter"]),
+                       strict = boolean(record[@"strict_spatial_segments"]);
+            require(!prefilter || policy == SpatialVariancePolicy::center,
+                    "Recorded variance prefilter requires center policy");
             require(spatial <= 5, "Invalid recorded spatial count");
             require(frame == ordinal && (ordinal || reset),
                     "Replay must start reset at frame zero and remain contiguous");
@@ -654,10 +798,31 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
                     "Recorded spatial configuration changed within replay");
             require(!recorded_seed || *recorded_seed == seed,
                     "Recorded seed changed within replay");
+            require(!recorded_policy || *recorded_policy == policy,
+                    "Recorded variance policy changed within replay");
+            require(!recorded_prefilter || *recorded_prefilter == prefilter,
+                    "Recorded variance prefilter changed within replay");
+            require(!recorded_strict || *recorded_strict == strict,
+                    "Recorded strict spatial segments changed within replay");
+            require(spatial == o.replay_spatial || o.replay_spatial_explicit,
+                    "Changing recorded spatial count requires explicit --replay-spatial ablation");
+            require(
+                policy == o.spatial_variance_policy || o.variance_policy_explicit,
+                "Changing recorded variance policy requires explicit --variance-policy ablation");
+            require(prefilter == o.variance_prefilter || o.variance_prefilter_explicit,
+                    "Changing recorded prefilter requires explicit --variance-prefilter ablation");
+            require(strict == o.strict_spatial_segments || o.strict_spatial_segments_explicit,
+                    "Changing recorded strict segments requires explicit --strict-spatial-segments "
+                    "ablation");
             recorded_spatial = spatial;
             recorded_seed = seed;
+            recorded_policy = policy;
+            recorded_prefilter = prefilter;
+            recorded_strict = strict;
             previous_epoch = epoch;
-            const bool baseline = spatial == o.replay_spatial;
+            const bool baseline =
+                spatial == o.replay_spatial && policy == o.spatial_variance_policy &&
+                prefilter == o.variance_prefilter && strict == o.strict_spatial_segments;
             std::map<std::string, id<MTLTexture>> textures;
             NSArray *entries = array(record[@"textures"]);
             require(entries.count <= 128, "Too many replay texture entries");
@@ -741,6 +906,10 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
                                           .normal = get("normal"),
                                           .previous_depth = get("previous_depth"),
                                           .identity = get("identity"),
+                                          .spatial_position = get("spatial_position"),
+                                          .spatial_normal = get("spatial_normal"),
+                                          .spatial_group = get("spatial_group"),
+                                          .spatial_protection = get("spatial_protection"),
                                           .output = output,
                                           .reset_history = reset};
             require(inputs.color.pixelFormat == MTLPixelFormatRGBA32Float,
@@ -776,7 +945,7 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
             replay_options.seed = seed;
             save_rgb(out, "replay-" + std::to_string(ordinal), rgb, replay_options,
                      baseline ? "exact baseline signed temporal replay"
-                              : "signed temporal spatial-count ablation");
+                              : "signed temporal explicit configuration ablation");
             ++ordinal;
         }
     out.json(
@@ -787,6 +956,15 @@ void replay(const Options &o, const Scene &scene, FrameSession &session, Output 
             @"recorded_spatial_iterations" : @(*recorded_spatial),
             @"recorded_seed" : @(*recorded_seed),
             @"spatial_ablation" : @(*recorded_spatial != o.replay_spatial),
+            @"variance_policy_ablation" : @(*recorded_policy != o.spatial_variance_policy),
+            @"variance_prefilter_ablation" : @(*recorded_prefilter != o.variance_prefilter),
+            @"strict_spatial_segments_ablation" : @(*recorded_strict != o.strict_spatial_segments),
+            @"recorded_variance_policy" : ns(variance_policy_name(*recorded_policy)),
+            @"recorded_variance_prefilter" : @(*recorded_prefilter),
+            @"recorded_strict_spatial_segments" : @(*recorded_strict),
+            @"replay_configuration" :
+                signed_configuration(o.spatial_variance_policy, o.variance_prefilter,
+                                     o.strict_spatial_segments, o.replay_spatial),
             @"exact_baseline_validated_frames" : @(validated),
             @"dummy_transport_frames" : @1
         });
@@ -860,6 +1038,14 @@ int main(int argc, char **argv) {
                     @"source_identity" : ns(digest_hex(render_identity(scene.value, settings))),
                     @"resource_profile" : ns(resource_profile_name(options.resource_profile)),
                     @"build_description" : ns(RYPATH_BUILD_DESCRIPTION),
+                    @"signed_reconstruction_configuration" : signed_configuration(
+                        options.spatial_variance_policy, options.variance_prefilter,
+                        options.strict_spatial_segments,
+                        options.replay_list.empty() ? 5u : options.replay_spatial),
+                    @"signed_configuration_applicable" : @(options.reference_samples == 0),
+                    @"save_online_mean" : @(options.save_online_mean),
+                    @"metric_payload_deduplication" :
+                        @"within-case SHA256 and byte length; descriptor path resolves aliases",
                     @"reference_offset" : options.reference_offset
                         ? (id) @(*options.reference_offset)
                         : (id)NSNull.null,

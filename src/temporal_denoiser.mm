@@ -62,6 +62,8 @@ struct TemporalDenoiser::Impl {
     id<MTLDevice> device = nil;
     id<MTLBuffer> counters = nil;
     std::uint32_t width = 0, height = 0, history_limit = 0, iterations = 0;
+    bool variance_prefilter = false, strict_spatial_segments = false;
+    SpatialVariancePolicy spatial_variance_policy = SpatialVariancePolicy::paired;
     std::array<History, 2> history;
     std::array<Spatial, 2> spatial;
     std::array<std::unique_ptr<MetalFramePipeline>, 5> pipelines;
@@ -83,7 +85,12 @@ std::uint64_t TemporalDenoiser::owned_resource_bytes(std::uint32_t width, std::u
 }
 TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
                                                       const TemporalDenoiserConfig &config) {
-    const auto [width, height, history_limit, spatial_iterations, capture_diagnostics] = config;
+    const auto [width, height, history_limit, spatial_iterations, variance_prefilter,
+                spatial_variance_policy, strict_spatial_segments, capture_diagnostics] = config;
+    if (static_cast<unsigned>(spatial_variance_policy) > 2u ||
+        (variance_prefilter && spatial_variance_policy != SpatialVariancePolicy::center))
+        return {.diagnostic =
+                    "Variance prefilter requires center policy; variance policy must be valid"};
     if (!lease.device())
         return {.diagnostic = "Temporal denoiser requires a Metal device"};
     const auto bytes = owned_resource_bytes(width, height, capture_diagnostics);
@@ -104,6 +111,9 @@ TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
     impl->height = height;
     impl->history_limit = history_limit;
     impl->iterations = spatial_iterations;
+    impl->variance_prefilter = variance_prefilter;
+    impl->spatial_variance_policy = spatial_variance_policy;
+    impl->strict_spatial_segments = strict_spatial_segments;
     const std::array<NSString *, 5> entries{
         @"rypath_temporal_denoiser_reset", @"rypath_temporal_denoiser_accumulate",
         @"rypath_temporal_denoiser_spatial", @"rypath_temporal_denoiser_finish",
@@ -137,7 +147,7 @@ TemporalDenoiserCreateResult TemporalDenoiser::create(MetalFrameLease &lease,
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
     if (contract.version != tw::version || contract.config_bytes != sizeof(tw::Config) ||
         contract.counters_bytes != sizeof(tw::Counters) ||
-        contract.texture_count != tw::output_id + 1u ||
+        contract.texture_count != tw::spatial_protection_id + 1u ||
         std::any_of(std::begin(contract.reserved), std::end(contract.reserved),
                     [](auto word) { return word != 0; }))
         return {.diagnostic =
@@ -199,7 +209,7 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
         const char *name;
         unsigned index;
     };
-    const std::array<Binding, 9> bindings{
+    const std::array<Binding, 13> bindings{
         {{inputs.color, MTLPixelFormatRGBA32Float, "color", tw::color_id},
          {inputs.depth, MTLPixelFormatR32Float, "depth", tw::depth_id},
          {inputs.motion, MTLPixelFormatRG16Float, "motion", tw::motion_id},
@@ -208,6 +218,13 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
          {inputs.normal, MTLPixelFormatRGBA16Float, "normal", tw::normal_id},
          {inputs.previous_depth, MTLPixelFormatR32Float, "previous depth", tw::previous_depth_id},
          {inputs.identity, MTLPixelFormatRGBA32Uint, "identity", tw::identity_id},
+         {inputs.spatial_position, MTLPixelFormatRGBA32Float, "spatial position",
+          tw::spatial_position_id},
+         {inputs.spatial_normal, MTLPixelFormatRGBA32Float, "spatial normal",
+          tw::spatial_normal_id},
+         {inputs.spatial_protection, MTLPixelFormatR32Uint, "spatial protection",
+          tw::spatial_protection_id},
+         {inputs.spatial_group, MTLPixelFormatR32Uint, "spatial group", tw::spatial_group_id},
          {inputs.output, MTLPixelFormatRGBA32Float, "output", tw::output_id}}};
     for (std::size_t i = 0; i < bindings.size(); ++i) {
         const auto &binding = bindings[i];
@@ -275,7 +292,9 @@ std::string TemporalDenoiser::encode(id<MTLCommandBuffer> command,
                       1,
                       impl_->iterations,
                       tw::version,
-                      0};
+                      (impl_->variance_prefilter ? 1u : 0u) |
+                          (impl_->strict_spatial_segments ? 2u : 0u) |
+                          (static_cast<unsigned>(impl_->spatial_variance_policy) << 2u)};
     dispatch(0, config, true);
     if (split_encoders) {
         destination_mean = impl_->spatial[0].mean;
