@@ -98,13 +98,17 @@ checks. This changes execution only; pixel arithmetic, texture writes, temporal
 recurrences and the raw estimator are unchanged. Surface-guide approximation and
 pass-through counters retain their existing per-event accounting.
 
-## Optional exact surface-guide reuse
+## Exact surface-guide reuse
 
 `ReconstructionConfig::cache_surface_guides` and benchmark `--guide-cache on|off`
-select a stream-local surface-guide cache. The default remains **off** pending
-hardware qualification. This changes execution only: fresh XYZ-to-RGB conversion
-and all selected temporal/spatial passes still execute every frame. Raw XYZ,
-sampling, reconstruction settings, and temporal recurrence are unchanged.
+select a stream-local surface-guide cache. The API default is **on** after the
+[static and phased motion qualification](core-performance.md). The benchmark
+defaults on for temporal/MetalFX and off for none/raw-RGB; explicit on/off wins
+regardless of option order. Explicit on requires a surface-guide mode. The viewer
+uses the API default for temporal/MetalFX. This changes execution only: fresh
+XYZ-to-RGB conversion and all selected temporal/spatial passes still execute every
+frame. Raw XYZ, sampling, reconstruction settings, and temporal recurrence are
+unchanged.
 
 The cache owns the existing single set of depth, motion, diffuse/specular albedo,
 normal, roughness, previous depth and identity textures. Output slots and temporal
@@ -203,15 +207,23 @@ Tone mapping and display exposure are separate consumers.
 
 ## Validation boundary
 
-The SIMD counter-aggregation working tree based on `4b1cc65` passes the five
+The initial SIMD counter-aggregation working tree based on `4b1cc65` passed five
 focused Debug checks (`metal.reconstruction_raw`, `metal.reconstruction_temporal`,
 `metal.reconstruction_signed`, `metal.reconstruction_guides`, and
 `metal.temporal_denoiser`) with Metal API validation on M4 Max, macOS 26.6,
-Xcode 26.6 and SDK 26.5. New fixtures cover widths 1, 31, 32 and 33, padded color
-dispatch, exact success/history totals, multi-pixel counter overflow, nonfinite
-input and failure recovery. The portable camera test also passes. This is
-correctness evidence; Release/sanitizer checks and performance measurements for
-this change remain separate from the historical results below.
+Xcode 26.6 and SDK 26.5. Its fixtures covered widths 1, 31, 32 and 33, padded
+color dispatch, exact success/history totals, multi-pixel counter overflow,
+nonfinite input and failure recovery. The portable camera test also passed.
+This is historical correctness evidence.
+
+Later integrated source `54fa952` passes 14 focused checks in each of Release and
+ASan/UBSan with Metal API validation and no skips; see the
+[integrated correctness record](core-performance.md#integrated-correctness-checks)
+for the scope and test durations. The
+[mechanical counter comparison](core-performance.md#reconstruction-counter-qualification)
+establishes no meaningful performance gain, with no measured regression
+approaching the declared 3% limit. It changes execution only, preserving the raw
+estimator and reconstruction recurrences.
 
 The signed fallback implementation `a6705bd` adds six focused reconstruction checks
 on M4 Max with Metal API validation. Debug, Release and ASan/UBSan pass in

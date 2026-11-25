@@ -98,6 +98,15 @@ Before a successful build, effective mode and eligibility are `null`.
 mode, excluding warmup. These are frame counts; there is no per-ray instrumentation.
 A fallback keeps query traversal without changing the intersection profile.
 
+Surface-guide reuse defaults on in `ReconstructionConfig`. The benchmark resolves
+its default after parsing: temporal and MetalFX modes enable it, while raw-RGB
+and no reconstruction leave it off. `--guide-cache on|off` overrides that default
+regardless of option order; explicit on requires temporal or MetalFX. JSON
+`settings.guide_cache` records the resolved setting. Fresh color conversion and
+filtering still execute every frame, and raw sampling is unchanged. See
+[guide reuse](reconstruction.md#exact-surface-guide-reuse) for invalidation and
+[qualification](core-performance.md) for the static/motion evidence and limits.
+
 ## Initial M4 Max evidence
 
 On 2026-11-22, implementation `1c1d7bb` passed the frame-session tests in Release

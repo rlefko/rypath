@@ -642,11 +642,13 @@ void surface_cache_pair(ReconstructionMode mode) {
         source_complete(*input);
         const auto raw = input->capture();
         if (!cached) {
-            auto build =
-                build_reconstruction_stream(*input, {.mode = mode, .cache_surface_guides = true});
+            auto build = build_reconstruction_stream(*input, {.mode = mode});
             require(build.stream != nullptr, build.diagnostic);
             cached = std::move(build.stream);
-            control = stream(*input, mode);
+            auto reference =
+                build_reconstruction_stream(*input, {.mode = mode, .cache_surface_guides = false});
+            require(reference.stream != nullptr, reference.diagnostic);
+            control = std::move(reference.stream);
         }
         auto a = submit(*cached, *input, reset), b = submit(*control, *input, reset);
         const auto ai = a->wait(), bi = b->wait();
