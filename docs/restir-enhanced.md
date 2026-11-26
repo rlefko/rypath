@@ -23,7 +23,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Reciprocal spatial work sharing, §3 | Reciprocal stencil and shared reverse targets; not the paper's pairing textures |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
 | Contribution-path reservoir, §§2.3 and 6.1 | Opt-in finite-depth `(U,j)` with fresh local selection; full or selected-prefix replay |
-| Hybrid reconnection and Jacobian, Eq. 2 | Missing; imported keys still retrace complete paths |
+| Hybrid reconnection and Jacobian, Eq. 2 | Missing; imported keys use full or selected-prefix replay |
 | Dual-footprint eligibility, Eq. 5 | Missing |
 | Forced NEE endpoint reconnection, §6.2.3 | Missing |
 | Selective shift-pair compaction, §6.2.2 | Missing; ordinary wavefront compaction is a different operation |
@@ -76,7 +76,7 @@ requires four-wavelength hero transport, packed one-event wavefront Area replay,
 and finite authored depth 0 through 65. The default `summed` domain is retained.
 Unsupported combinations fail explicitly.
 
-Fresh paths evaluate the original full transport tree and select an atom with
+Fresh paths evaluate the original full transport path and select an atom with
 probability `t_j/S`, where `S=sum(t_j)`. The initial normalizer is `S`, not one or
 `S/slot_count`. Inactive atoms retain the positive target floor. Imports, temporal
 memoization, reverse targets and MCMC keep the same `j`; a wavelength mutation

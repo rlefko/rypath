@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-// Included by render.metal. Contribution mode retains complete replay; it does
-// not implement a hybrid shift, cached suffix or selected-prefix shortcut.
+// Included by render.metal. Contribution mode supports full and selected-prefix
+// replay; it does not implement a hybrid shift or cached suffix.
 #include "../src/area_stencil_shared.h"
 #include "../src/area_wire.h"
 #include "../src/mutation_shared.h"
