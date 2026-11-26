@@ -388,6 +388,8 @@ std::string encode_exr(const ExrImageView &image, const ExrWrite &write,
             if (name.empty() || name.size() > 255 || name.find('\0') != std::string::npos ||
                 value.find('\0') != std::string::npos || value.size() > INT_MAX)
                 throw Failure{"EXR: invalid output string attribute"};
+            if (name.size() > 31)
+                check(exr_set_longname_support(context.value, 1));
             check(exr_attr_set_string(context.value, part, name.c_str(), value.c_str()));
         }
         check(exr_write_header(context.value));
