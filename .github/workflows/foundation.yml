@@ -123,9 +123,22 @@ jobs:
             python3 scripts/analyze_metal.py build/debug/compile_commands.json "$source"
           done
       - name: Run Debug and Metal tests
+        id: metal_tests
         run: |
           ./build/debug/rypath --metal-info
           ctest --preset debug --verbose
+      - name: Diagnose failed hosted Metal pipeline
+        if: ${{ failure() && steps.metal_tests.outcome == 'failure' }}
+        run: |
+          python3 scripts/diagnose_hero_pipeline.py --build-dir build/debug --output-dir "$RUNNER_TEMP/hero-pipeline-diagnostics"
+      - name: Retain hosted Metal failure artifacts
+        if: ${{ always() && steps.metal_tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: hero-pipeline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hero-pipeline-diagnostics
+          if-no-files-found: error
+          retention-days: 14
 
   codeql:
     name: CodeQL C++ analysis

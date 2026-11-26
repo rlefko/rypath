@@ -15,6 +15,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 namespace {
 using namespace rypath;
@@ -110,6 +111,8 @@ std::string pipeline_failure(const char *stage, id<MTLDevice> device, NSString *
 }
 id<MTLComputePipelineState> pipeline(id<MTLDevice> device, id<MTLLibrary> library, NSString *name,
                                      bool families) {
+    std::cout << "Current hero pipeline begin: entry=" << utf8(name)
+              << "; families=" << (families ? "enabled" : "disabled") << std::endl;
     auto values = [MTLFunctionConstantValues new];
     for (unsigned i = 0; i <= 18; ++i) {
         const bool value = i == 0 || families;
@@ -125,6 +128,8 @@ id<MTLComputePipelineState> pipeline(id<MTLDevice> device, id<MTLLibrary> librar
     error = nil;
     auto result = [device newComputePipelineStateWithFunction:function error:&error];
     need(result != nil, pipeline_failure("pipeline creation", device, name, families, error));
+    std::cout << "Current hero pipeline ready: entry=" << utf8(name)
+              << "; families=" << (families ? "enabled" : "disabled") << std::endl;
     return result;
 }
 template <class T> id<MTLBuffer> upload(id<MTLDevice> device, const std::vector<T> &data) {
@@ -172,7 +177,8 @@ void finish(id<MTLCommandBuffer> command, id<MTLBuffer> output, unsigned count,
     }
     need(result[count] == 0xa5a5a5a5u, label + " output guard");
 }
-int run(const char *path) {
+enum class Mode { all, preparation_only, sampling_only };
+int run(const char *path, Mode mode) {
     auto device = MTLCreateSystemDefaultDevice();
 #ifdef RYPATH_ALLOW_NO_METAL_DEVICE
     if (!device)
@@ -205,26 +211,42 @@ int run(const char *path) {
                                   options:MTLResourceStorageModeShared];
     auto queue = [device newCommandQueue];
     need(queue && rgb, "Current hero resources");
-    for (bool families : {true, false}) {
-        const unsigned count = 4224;
-        auto state = pipeline(device, library, @"rypath_hero_current_differential", families);
-        auto output = [device newBufferWithLength:(count + 1) * 4
-                                          options:MTLResourceStorageModeShared];
-        need(output != nil, "Current hero output");
-        std::memset(output.contents, 0xa5, output.length);
-        auto command = [queue commandBuffer];
-        auto encoder = [command computeCommandEncoder];
-        need(command && encoder, "Current hero command");
-        [encoder setComputePipelineState:state];
-        [encoder setBuffer:output offset:0 atIndex:0];
-        [encoder setBuffer:measured offset:0 atIndex:1];
-        [encoder setBuffer:fourier offset:0 atIndex:2];
-        [encoder setBuffer:rgb offset:0 atIndex:3];
-        [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-        [encoder endEncoding];
-        finish(command, output, count,
-               families ? "Current hero enabled families" : "Current hero disabled families");
+    if (mode != Mode::preparation_only) {
+        for (bool families : {true, false}) {
+            // finish() waits and checks every output before temporary command
+            // and compiler objects are released ahead of the next pipeline.
+            @autoreleasepool {
+                const unsigned count = 4224;
+                auto state =
+                    pipeline(device, library, @"rypath_hero_current_differential", families);
+                auto output = [device newBufferWithLength:(count + 1) * 4
+                                                  options:MTLResourceStorageModeShared];
+                need(output != nil, "Current hero output");
+                std::memset(output.contents, 0xa5, output.length);
+                auto command = [queue commandBuffer];
+                auto encoder = [command computeCommandEncoder];
+                need(command && encoder, "Current hero command");
+                [encoder setComputePipelineState:state];
+                [encoder setBuffer:output offset:0 atIndex:0];
+                [encoder setBuffer:measured offset:0 atIndex:1];
+                [encoder setBuffer:fourier offset:0 atIndex:2];
+                [encoder setBuffer:rgb offset:0 atIndex:3];
+                [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [encoder endEncoding];
+                finish(command, output, count,
+                       families ? "Current hero enabled families"
+                                : "Current hero disabled families");
+                std::cout << "Current hero sampling passed: families="
+                          << (families ? "enabled" : "disabled") << "; cases=" << count
+                          << std::endl;
+            }
+        }
+    }
+    if (mode == Mode::sampling_only) {
+        std::cout << "Current hero: 8448 native sampling/evaluation differentials passed"
+                  << std::endl;
+        return 0;
     }
     // Real preparation fixtures share the original image lookup, graph and
     // scalar material preparation. Last cases invalidate companions only.
@@ -355,16 +377,30 @@ int run(const char *path) {
         threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
     finish(command, output, count, "Current hero preparation", true);
-    std::cout << "Current hero: 8448 native sampling/evaluation differentials and 84 preparation "
-                 "fixtures passed\n";
+    std::cout << "Current hero preparation passed: cases=" << count << std::endl;
+    if (mode == Mode::all)
+        std::cout
+            << "Current hero: 8448 native sampling/evaluation differentials and 84 preparation "
+               "fixtures passed\n";
     return 0;
 }
 } // namespace
 int main(int argc, char **argv) {
     @autoreleasepool {
         try {
-            need(argc == 2, "Usage: hero-current-probe LIBRARY");
-            return run(argv[1]);
+            constexpr const char *usage =
+                "Usage: hero-current-probe [--preparation-only|--sampling-only] LIBRARY";
+            need(argc == 2 || argc == 3, usage);
+            Mode mode = Mode::all;
+            if (argc == 3) {
+                const std::string_view option = argv[1];
+                need(option == "--preparation-only" || option == "--sampling-only", usage);
+                mode =
+                    option == "--preparation-only" ? Mode::preparation_only : Mode::sampling_only;
+            }
+            const char *path = argv[argc - 1];
+            need(path[0] != '\0' && !std::string_view(path).starts_with("--"), usage);
+            return run(path, mode);
         } catch (const std::exception &e) {
             std::cerr << e.what() << '\n';
             return 1;

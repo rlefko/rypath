@@ -87,6 +87,14 @@ Library, pipeline, allocation, command, and output failures never qualify as an
 availability skip. Some sandboxes hide the device, so real hardware acceptance
 must run in a process with GPU access.
 
+If the hosted test step fails, CI retains the hero arithmetic probe executable,
+library, generated-source hashes and original CTest logs. A diagnostic collector
+records toolchain/compiler logs and runs preparation-only and sampling-only modes
+in separate fresh processes. Each mode retains its original fixtures and checks;
+neither replaces the mandatory combined test or changes the failed job result.
+This can distinguish preceding in-process pipeline activity from failure of an
+isolated entry point, but does not reset persistent driver/compiler caches.
+
 MetalFX temporal denoising is separately capability-gated: it requires the
 macOS 26 API in the build SDK and runtime, plus a supported device. Reconstruction
 tests require it by default. Hosted CI explicitly sets
