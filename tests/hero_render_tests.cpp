@@ -808,6 +808,371 @@ void contribution_multileaf_mean() {
              "Independent-seed multileaf summed/contribution mean smoke gate");
     }
 }
+FrameConfig enhanced_config() {
+    auto c = contribution_config();
+    c.area_path_domain = FrameAreaPathDomain::enhanced;
+    return c;
+}
+ContributionCapture enhanced_capture(FrameSession &frames, const FrameConfig &c, unsigned depth,
+                                     unsigned ordinal, std::uint64_t label,
+                                     std::optional<FrameCamera> camera = {}) {
+    auto submitted =
+        frames.submit({.sample_index = label, .epoch = 73, .camera = std::move(camera)});
+    need(submitted.status == GeometryStatus::success && submitted.frame && !submitted.busy,
+         submitted.diagnostic);
+    auto info = submitted.frame->wait();
+    need(info.status == FrameStatus::complete, info.diagnostic);
+    const auto pixels = std::uint64_t(c.width) * c.height;
+    const bool history = ordinal != 0;
+    const auto logical = pixels * ((history ? 7u : 5u) + c.mutation_steps);
+    need(info.width == c.width && info.height == c.height && info.sample_index == label &&
+             info.epoch == 73 && info.area_serial == ordinal &&
+             info.history_generation == std::uint64_t(ordinal) + 1 &&
+             info.area_path_domain == FrameAreaPathDomain::enhanced &&
+             info.contribution_replay == c.contribution_replay &&
+             info.contribution_depth == depth && info.canonical_transport_version == 1 &&
+             info.fresh_discovery_version == 1 && info.history_used == history &&
+             info.temporal_candidates == (history ? 2u : 1u) && info.spatial_candidates == 5 &&
+             info.completed_samples == pixels && info.fresh_candidates == pixels &&
+             info.logical_evaluations == logical && info.completed_evaluations >= pixels &&
+             info.completed_evaluations + info.analytic_null_evaluations +
+                     info.cached_evaluations ==
+                 logical &&
+             info.cached_evaluations == 0 && !info.temporal_evaluation_cache_used &&
+             info.mutation_policy == c.mutation_policy && info.area_stencil == c.area_stencil &&
+             info.mutation_attempts == pixels * c.mutation_steps &&
+             info.mutation_accepts <= info.mutation_attempts && info.command_count > 0,
+         "Enhanced identity, canonical law, disabled effective cache and physical/null accounting");
+    auto image = submitted.frame->capture();
+    need(image.status == GeometryStatus::success && image.width == c.width &&
+             image.height == c.height && image.raw_xyz.size() == pixels,
+         image.diagnostic);
+    for (const auto &xyz : image.raw_xyz)
+        for (float value : xyz)
+            need(std::isfinite(value) && value >= 0, "Enhanced finite physical XYZ");
+    return {std::move(image), std::move(info)};
+}
+void enhanced_black() {
+    for (unsigned depth : {0u, 65u}) {
+        auto scene = depth == 0 ? early_emission(false) : deep(65);
+        scene.area_emissions[0].radiance.fill(0);
+        frames(scene);
+        auto full_config = enhanced_config();
+        full_config.cache_temporal_evaluations = false;
+        auto prefix_config = full_config;
+        prefix_config.contribution_replay = FrameContributionReplay::prefix;
+        prefix_config.cache_temporal_evaluations = true;
+        prefix_config.capacity = 7;
+        prefix_config.quantum = 1;
+        auto full = session(scene, full_config), prefix = session(scene, prefix_config);
+        for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
+            const auto a = enhanced_capture(*full, full_config, depth, ordinal, high_sample);
+            const auto b = enhanced_capture(*prefix, prefix_config, depth, ordinal, high_sample);
+            exact(a.image, b.image);
+            const auto pixels = std::uint64_t(full_config.width) * full_config.height;
+            need(a.info.completed_evaluations == pixels && b.info.completed_evaluations == pixels &&
+                     a.info.analytic_null_evaluations == a.info.logical_evaluations - pixels &&
+                     b.info.analytic_null_evaluations == b.info.logical_evaluations - pixels &&
+                     a.info.mutation_accepts == 0 && b.info.mutation_accepts == 0,
+                 "All-black still walks fresh, keeps structural history and null mutation self");
+            for (const auto &xyz : a.image.raw_xyz)
+                for (float value : xyz)
+                    need(std::bit_cast<std::uint32_t>(value) == 0,
+                         "All-black null publishes canonical positive zero");
+        }
+    }
+}
+void enhanced_scheduling() {
+    const std::array scenes{
+        contribution_nee_only(), contribution_nee_only(true), dispersive(),
+        early_emission(true),    contribution_crossings(),    contribution_nee_only(false, true)};
+    for (std::size_t fixture = 0; fixture < scenes.size(); ++fixture) {
+        std::cout << "Enhanced full/prefix fixture=" << fixture << std::endl;
+        const auto &scene = scenes[fixture];
+        auto full_config = enhanced_config();
+        full_config.cache_temporal_evaluations = false;
+        auto prefix_config = full_config;
+        prefix_config.contribution_replay = FrameContributionReplay::prefix;
+        auto wide_config = prefix_config;
+        wide_config.cache_temporal_evaluations = true;
+        wide_config.capacity = 7;
+        wide_config.quantum = 1;
+        auto full = session(scene, full_config), prefix = session(scene, prefix_config),
+             wide = session(scene, wide_config);
+        const std::uint64_t labels[] = {high_sample, high_sample, high_sample + 1};
+        for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+            const auto a =
+                enhanced_capture(*full, full_config, scene.max_depth, ordinal, labels[ordinal]);
+            const auto b =
+                enhanced_capture(*prefix, prefix_config, scene.max_depth, ordinal, labels[ordinal]);
+            const auto d =
+                enhanced_capture(*wide, wide_config, scene.max_depth, ordinal, labels[ordinal]);
+            exact(a.image, b.image);
+            exact(a.image, d.image);
+            need(a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
+                     a.info.area_stencil_offsets == d.info.area_stencil_offsets &&
+                     a.info.mutation_accepts == b.info.mutation_accepts &&
+                     a.info.mutation_accepts == d.info.mutation_accepts &&
+                     a.info.completed_evaluations == b.info.completed_evaluations &&
+                     a.info.completed_evaluations == d.info.completed_evaluations &&
+                     a.info.analytic_null_evaluations == b.info.analytic_null_evaluations &&
+                     a.info.analytic_null_evaluations == d.info.analytic_null_evaluations,
+                 "Enhanced execution, queue and requested-cache controls retain decisions");
+            need(std::any_of(a.image.raw_xyz.begin(), a.image.raw_xyz.end(),
+                             [](const auto &xyz) { return xyz[1] > 0; }),
+                 "Enhanced fixture exercises positive endpoint or NEE");
+        }
+    }
+}
+void enhanced_single_endpoint() {
+    // D0 has one atom. Deep matched-eta1 sheets have beta1 and no outer gate;
+    // the later-dispersion fixture's only emitter precedes collapse. These
+    // isolate canonical atom preservation from discovery/WRS variance.
+    for (const auto &scene : {early_emission(false), deep(65), early_emission(true)}) {
+        auto c = enhanced_config();
+        c.width = c.height = 1;
+        c.mutation_steps = 0;
+        c.cache_temporal_evaluations = false;
+        auto control = c;
+        control.area_path_domain = FrameAreaPathDomain::summed;
+        auto summed = session(scene, control), enhanced = session(scene, c);
+        const auto a = contribution_capture(*summed, control, scene.max_depth, 0, high_sample);
+        const auto b = enhanced_capture(*enhanced, c, scene.max_depth, 0, high_sample);
+        for (unsigned k = 0; k < 3; ++k) {
+            const double x = a.image.raw_xyz[0][k], y = b.image.raw_xyz[0][k];
+            const double tolerance = 64 * double(std::numeric_limits<float>::epsilon()) *
+                                     std::max(std::abs(x), std::abs(y));
+            need(std::abs(x - y) <= tolerance,
+                 "Enhanced single emitter retains depth and pre-collapse radiance");
+        }
+        need(a.image.raw_xyz[0][1] > 0 && b.image.raw_xyz[0][1] > 0,
+             "Enhanced single-emitter witness is positive");
+    }
+}
+void enhanced_null_transitions() {
+    const auto scene = early_emission(false);
+    auto c = enhanced_config();
+    c.mutation_steps = 0;
+    auto prefix_config = c;
+    prefix_config.contribution_replay = FrameContributionReplay::prefix;
+    prefix_config.capacity = 7;
+    auto full = session(scene, c), prefix = session(scene, prefix_config);
+    for (unsigned ordinal = 0; ordinal < 4; ++ordinal) {
+        const bool black = ordinal == 0 || ordinal == 3;
+        FrameCamera camera{.camera = scene.camera,
+                           .camera_medium = scene.camera_medium,
+                           .raster_camera = scene.raster_camera,
+                           .perspective_lens = scene.perspective_lens,
+                           .texture_camera = scene.texture_camera};
+        need(camera.raster_camera.has_value(), "Null-transition camera is explicit");
+        camera.raster_camera->origin.x = black ? 100.f : 0.f;
+        const auto a = enhanced_capture(*full, c, 0, ordinal, high_sample, camera);
+        const auto b = enhanced_capture(*prefix, prefix_config, 0, ordinal, high_sample, camera);
+        exact(a.image, b.image);
+        const auto pixels = std::uint64_t(c.width) * c.height;
+        if (ordinal == 1)
+            need(a.info.completed_evaluations == 6 * pixels &&
+                     a.info.analytic_null_evaluations == pixels,
+                 "History-null keeps fresh-real reverse evaluation structurally active");
+        if (ordinal == 3)
+            need(a.info.completed_evaluations == 2 * pixels &&
+                     a.info.analytic_null_evaluations == 5 * pixels,
+                 "Fresh-null preserves real-history forward evaluation");
+        for (const auto &xyz : a.image.raw_xyz)
+            need(black ? xyz[0] == 0 && xyz[1] == 0 && xyz[2] == 0 : xyz[1] > 0,
+                 "Camera miss/emitter transitions actually change canonical support");
+    }
+}
+void enhanced_mean_contrast(const RenderScene &scene, std::string_view label,
+                            std::optional<float> analytic_radiance = {}) {
+    // Replication is by32 independent run seeds, never by correlated pixels.
+    // Same predeclared5 empiricalSE +128epsilon criterion for both contrasts.
+    constexpr unsigned repeats = 32;
+    std::array<std::array<double, 3>, repeats> differences{};
+    std::array<double, 3> reference_mean{}, candidate_mean{};
+    std::array<std::array<double, 3>, repeats> reference_samples{}, candidate_samples{};
+    for (unsigned n = 0; n < repeats; ++n) {
+        auto c = enhanced_config();
+        c.seed = seed + 7919ull * n;
+        c.mutation_steps = 0;
+        c.cache_temporal_evaluations = false;
+        auto control = c;
+        control.area_path_domain = FrameAreaPathDomain::summed;
+        auto reference = session(scene, control), candidate = session(scene, c);
+        const auto a = contribution_capture(*reference, control, scene.max_depth, 0, high_sample);
+        const auto b = enhanced_capture(*candidate, c, scene.max_depth, 0, high_sample);
+        std::array<double, 3> x{}, y{};
+        for (std::size_t p = 0; p < a.image.raw_xyz.size(); ++p)
+            for (unsigned k = 0; k < 3; ++k) {
+                x[k] += double(a.image.raw_xyz[p][k]) / double(a.image.raw_xyz.size());
+                y[k] += double(b.image.raw_xyz[p][k]) / double(b.image.raw_xyz.size());
+            }
+        for (unsigned k = 0; k < 3; ++k) {
+            differences[n][k] = y[k] - x[k];
+            reference_samples[n][k] = x[k];
+            candidate_samples[n][k] = y[k];
+            reference_mean[k] += x[k] / repeats;
+            candidate_mean[k] += y[k] / repeats;
+        }
+        std::cout << std::setprecision(17) << "enhanced_contrast=" << label << " seed=" << c.seed
+                  << " summed_XYZ=" << x[0] << ',' << x[1] << ',' << x[2]
+                  << " enhanced_XYZ=" << y[0] << ',' << y[1] << ',' << y[2] << std::endl;
+    }
+    for (unsigned k = 0; k < 3; ++k) {
+        double delta = 0, variance = 0;
+        for (const auto &d : differences)
+            delta += d[k] / repeats;
+        for (const auto &d : differences)
+            variance += (d[k] - delta) * (d[k] - delta) / double(repeats - 1);
+        const double se = std::sqrt(variance / repeats);
+        const double arithmetic =
+            128 * double(std::numeric_limits<float>::epsilon()) *
+            std::max(std::abs(reference_mean[k]), std::abs(candidate_mean[k]));
+        const double bound = 5 * se + arithmetic;
+        std::cout << "enhanced_mean contrast=" << label << " replicates=" << repeats
+                  << " channel=" << k << " summed=" << reference_mean[k]
+                  << " enhanced=" << candidate_mean[k] << " signed_delta=" << delta
+                  << " empirical_SE=" << se << " bound=" << bound << std::endl;
+        need(std::isfinite(se) && std::abs(delta) <= bound,
+             "Enhanced independent-seed multileaf matched-model mean smoke gate");
+    }
+    if (analytic_radiance) {
+        std::array<double, 3> expected{};
+        // Sensor uses nearest-integer-nm CIE, not a linear interpolant. Endpoint
+        // bins cover half a nanometer on the360..830 continuous interval.
+        for (unsigned wavelength = 360; wavelength <= 830; ++wavelength) {
+            const auto cie = pbrt_cie_xyz(wavelength);
+            const double width = wavelength == 360 || wavelength == 830 ? .5 : 1;
+            for (unsigned k = 0; k < 3; ++k)
+                expected[k] += width * double(float(cie[k])) * *analytic_radiance;
+        }
+        for (unsigned arm = 0; arm < 2; ++arm)
+            for (unsigned k = 0; k < 3; ++k) {
+                const auto &values = arm == 0 ? reference_samples : candidate_samples;
+                const double mean = arm == 0 ? reference_mean[k] : candidate_mean[k];
+                double variance = 0;
+                for (const auto &value : values)
+                    variance += (value[k] - mean) * (value[k] - mean) / double(repeats - 1);
+                const double se = std::sqrt(variance / repeats);
+                const double arithmetic = 128 * double(std::numeric_limits<float>::epsilon()) *
+                                          std::max(std::abs(mean), std::abs(expected[k]));
+                const double bound = 5 * se + arithmetic;
+                // D2 is an analytic truncation negative, not a third renderer
+                // contrast or a claim that32 replicates always resolve its gap.
+                const double D2 = expected[k] * (.21875 / .234375);
+                std::cout << "enhanced_analytic contrast=" << label
+                          << " arm=" << (arm == 0 ? "summed" : "enhanced") << " channel=" << k
+                          << " mean=" << mean << " expected_D3=" << expected[k]
+                          << " negative_D2=" << D2 << " empirical_SE=" << se << " bound=" << bound
+                          << std::endl;
+                need(std::isfinite(se) && std::abs(mean - expected[k]) <= bound,
+                     "Closed-cavity mean agrees with finite-depth analytic transport");
+            }
+    }
+}
+RenderScene enhanced_cavity() {
+    auto scene = base();
+    scene.max_depth = 3;
+    SpectralMaterial material;
+    material.kind = SpectralMaterialKind::constant;
+    material.constant = .5f;
+    scene.materials.push_back(material);
+    AreaEmission source;
+    source.radiance.fill(.125f);
+    source.two_sided = true;
+    scene.area_emissions.push_back(source);
+    // Six EXACTLY closed quads, all inward normals, camera strictly inside.
+    // The cyclic tangent basis has positive axis normal before winding reversal.
+    for (unsigned axis = 0; axis < 3; ++axis)
+        for (int sign : {-1, 1}) {
+            GeometryMesh mesh;
+            constexpr int corners[4][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+            for (const auto &corner : corners) {
+                std::array<float, 3> point{};
+                point[axis] = float(sign) * 4;
+                point[(axis + 1) % 3] = float(corner[0]) * 4;
+                point[(axis + 2) % 3] = float(corner[1]) * 4;
+                mesh.positions.push_back({point[0], point[1], point[2]});
+            }
+            mesh.triangles = sign < 0 ? std::vector<std::array<unsigned, 3>>{{0, 1, 2}, {0, 2, 3}}
+                                      : std::vector<std::array<unsigned, 3>>{{0, 2, 1}, {0, 3, 2}};
+            // Independent winding guard: cross(edge1,edge2) points to origin.
+            const auto &triangle = mesh.triangles[0];
+            const auto &a = mesh.positions[triangle[0]], &b = mesh.positions[triangle[1]],
+                       &c = mesh.positions[triangle[2]];
+            const std::array<float, 3> u{b.x - a.x, b.y - a.y, b.z - a.z};
+            const std::array<float, 3> v{c.x - a.x, c.y - a.y, c.z - a.z};
+            const std::array<float, 3> n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                                         u[0] * v[1] - u[1] * v[0]};
+            need(n[axis] * float(sign) < 0, "Cavity face normal must point inward");
+            const auto index = unsigned(scene.geometry.meshes.size());
+            scene.geometry.meshes.push_back(std::move(mesh));
+            scene.geometry.instances.push_back({index, {}});
+            scene.instance_materials.push_back(0);
+            scene.instance_emissions.push_back(0);
+            scene.instance_surface_transforms.emplace_back();
+        }
+    frames(scene);
+    return scene;
+}
+void enhanced_mean() {
+    auto scene = diffuse();
+    scene.max_depth = 1;
+    for (unsigned i = 0; i < scene.point_lights[0].intensity.size(); ++i)
+        scene.point_lights[0].intensity[i] = i < 200 ? 4.f : .25f;
+    frames(scene);
+    enhanced_mean_contrast(scene, "D1-point-environment");
+    // Every interior ray hits another diffuse wall. At second surface beta=.5
+    // with eta1, so an effective discovery gate is possible; later atoms remain
+    // positive. Mean agreement cannot establish that this gate actually ran.
+    // Ideal radiance: L*(1+rho+rho^2+rho^3)=.234375; D2=.21875.
+    std::cout << "enhanced_cavity rho=.5 emission=.125 D3_radiance=.234375"
+                 " D2_negative=.21875 gate_execution_requires_separate_probe"
+              << std::endl;
+    enhanced_mean_contrast(enhanced_cavity(), "D3-closed-cavity", .234375f);
+}
+void enhanced_rejections() {
+    const auto reject = [](const RenderScene &scene, const FrameConfig &c) {
+        const auto result = build_frame_session(scene, c);
+        need(result.status == GeometryStatus::failure && !result.session &&
+                 !result.diagnostic.empty(),
+             "Unsupported Enhanced configuration fails before frame work");
+    };
+    auto c = enhanced_config();
+    auto depth = diffuse();
+    depth.max_depth = 66;
+    reject(depth, c);
+    for (auto spectral : {SpectralTransport::scalar, SpectralTransport::packet}) {
+        auto scene = diffuse();
+        scene.spectral_transport = spectral;
+        reject(scene, c);
+    }
+    auto invalid = c;
+    invalid.estimator = FrameEstimator::independent;
+    reject(diffuse(), invalid);
+    invalid = c;
+    invalid.execution = FrameExecution::megakernel;
+    reject(diffuse(), invalid);
+    for (auto layout : {FramePacketLayout::hot_cold, FramePacketLayout::split_trace}) {
+        invalid = c;
+        invalid.packet_layout = layout;
+        reject(diffuse(), invalid);
+    }
+    for (unsigned events : {2u, 4u}) {
+        invalid = c;
+        invalid.packet_events = events;
+        reject(diffuse(), invalid);
+    }
+}
+void enhanced_controls() {
+    enhanced_rejections();
+    enhanced_black();
+    enhanced_single_endpoint();
+    enhanced_null_transitions();
+    enhanced_scheduling();
+    enhanced_mean();
+}
+
 void contribution_controls() {
     contribution_rejections();
     contribution_single_endpoint();
@@ -820,7 +1185,9 @@ int main(int argc, char **argv) {
     try {
         const bool contribution_only =
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
-        need(argc == 1 || contribution_only, "Expected optional --contribution-only");
+        const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
+        need(argc == 1 || contribution_only || enhanced_only,
+             "Expected optional --contribution-only or --enhanced");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -836,6 +1203,11 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_only) {
+            enhanced_controls();
+            std::cout << "Enhanced canonical null/support/physical/scheduling controls passed\n";
+            return 0;
+        }
         if (contribution_only) {
             contribution_controls();
             std::cout

@@ -12,8 +12,9 @@ struct AreaPathDomainContext {
     std::uint32_t mode = 0, depth = 0;
     float target_scale = 1;
     std::uint32_t replay = 0;
+    std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
 };
-static_assert(sizeof(AreaPathDomainContext) == 16, "Area path-domain context has no padding");
+static_assert(sizeof(AreaPathDomainContext) == 24, "Area path-domain context has no padding");
 inline bool same_area_path_domain_context(const AreaPathDomainContext &a,
                                           const AreaPathDomainContext &b) {
     return std::memcmp(&a, &b, sizeof(a)) == 0;
@@ -125,5 +126,16 @@ inline bool valid_area_evaluation_accounting(std::uint64_t pixels, bool history,
     const auto expected_cached = cache_used && history ? 2 * pixels : 0;
     return (!cache_used || history) && logical == expected && cached == expected_cached &&
            completed == expected - expected_cached;
+}
+// Enhanced memoization is initially disabled. Null completions are observed
+// publications, never inferred from an absent/cached phase.
+inline bool valid_enhanced_area_evaluation_accounting(std::uint64_t pixels, bool history,
+                                                      std::uint32_t mutations, bool cache_used,
+                                                      std::uint64_t physical, std::uint64_t cached,
+                                                      std::uint64_t analytic_null,
+                                                      std::uint64_t logical) {
+    const auto expected = logical_area_evaluations(pixels, history, mutations);
+    return !cache_used && cached == 0 && logical == expected && physical >= pixels &&
+           physical <= expected && analytic_null == expected - physical;
 }
 } // namespace rypath

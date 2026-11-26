@@ -10,6 +10,9 @@
 #endif
     if (state.complete)
         return;
+#if RYPATH_PACKET_EVENT_ENHANCED
+    sink.begin_event();
+#endif
     const constant auto &p = *r.alpha.parameters;
     thread auto &sample = state.sample;
     thread auto &lambda = state.lambda;
@@ -271,6 +274,17 @@
             sample.status = wire::emergency_depth;
             break;
         }
+#if RYPATH_PACKET_EVENT_CONTRIBUTION
+        // A selected arrival endpoint does not depend on this surface's future
+        // collapse, roulette or direction sample. Keep full/fresh collectors on
+        // their original path, including collectors that request both atoms.
+        const uint selected_event_slot = 2u * (count - 2u);
+        const bool selected_event_only = sink.stop_after(count - 2u) &&
+                                         (sink.wanted(selected_event_slot) !=
+                                          sink.wanted(selected_event_slot + 1u));
+        if (selected_event_only && sink.wanted(selected_event_slot))
+            break;
+#endif
         const auto draws =
             random(r, sample, index, (mode == Mode::Radiance ? 4u : 69u) + count - 2, replay);
         const float3 sampled_wo_local = v.frame.local(v.wo);
@@ -283,11 +297,21 @@
                 break;
             }
             direct_density = state.hero.density;
+#if RYPATH_PACKET_EVENT_ENHANCED
+            direct_allowed = sink.continue_discovery(beta, state.hero, count - 1);
+#else
             direct_allowed = hero_continue(beta, state.hero, count - 1, sample_uniform(p, draws.w));
+#endif
             direct_beta = beta;
             current.connectible = hero_connectible(current.bsdf);
             if (!direct_allowed)
                 break;
+#if RYPATH_PACKET_EVENT_CONTRIBUTION
+            // Direct lighting consumes the conditional beta/density and current
+            // incoming local direction, but never the unused continuation.
+            if (selected_event_only && sink.wanted(selected_event_slot + 1u))
+                break;
+#endif
             const auto proposed = hero_sample_current(
                 current.bsdf, sampled_wo_local, sample_uniform(p, draws.x), uniform2(p, draws.yz),
                 v.seed, mode);
@@ -416,7 +440,9 @@
             if (sink.wanted(endpoint_slot)) {
                 const auto endpoint = hero_endpoint(r, sample, lambda, pt, previous, before, count,
                                                       previous_density);
+#if !RYPATH_PACKET_EVENT_ENHANCED
                 state.radiance += endpoint;
+#endif
                 if (sample.status == wire::success)
                     sink.add(endpoint_slot, endpoint, lambda);
             }
@@ -424,13 +450,14 @@
                 sink.wanted(endpoint_slot + 1u)) {
                 const auto direct = hero_direct(r, sample, lambda, index, pt, previous, count,
                                                   direct_beta, direct_density, replay);
+#if !RYPATH_PACKET_EVENT_ENHANCED
                 state.radiance += direct;
+#endif
                 if (sample.status == wire::success)
                     sink.add(endpoint_slot + 1u, direct, lambda);
             }
-            // A fixed atom needs no later transport. Keep all original
-            // continuation/collapse/roulette work THROUGH this event unchanged.
-            // Fresh WRS and the full-replay oracle never take this early stop.
+            // A fixed atom needs no later transport. Fresh WRS and the
+            // full-replay oracle never take this early stop.
             if (sink.stop_after(count - 2u))
                 state.complete = true;
 #else

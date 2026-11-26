@@ -148,7 +148,7 @@ const char *usage =
     "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
-    "  [--area-path-domain summed|contribution (Area only; default: summed)]\n"
+    "  [--area-path-domain summed|contribution|enhanced (Area only; default: summed)]\n"
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
     "  [--area-contribution-replay full|prefix (contribution only; default: full)]\n"
     "  [--spectral-transport auto|scalar|packet|hero (default: auto)]\n"
@@ -300,8 +300,10 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.area_path_domain = rypath::FrameAreaPathDomain::summed;
             else if (value == "contribution")
                 o.area_path_domain = rypath::FrameAreaPathDomain::contribution;
+            else if (value == "enhanced")
+                o.area_path_domain = rypath::FrameAreaPathDomain::enhanced;
             else
-                return "area path domain must be summed or contribution";
+                return "area path domain must be summed, contribution, or enhanced";
         } else if (key == "--area-contribution-replay") {
             if (value == "full")
                 o.contribution_replay = rypath::FrameContributionReplay::full;
@@ -412,9 +414,9 @@ std::string parse(int argc, char **argv, Options &o) {
     if (seen.contains("--area-path-domain") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area path domain requires area-replay estimator";
     if (seen.contains("--area-contribution-replay") &&
-        o.area_path_domain != rypath::FrameAreaPathDomain::contribution)
+        !rypath::frame_area_contribution_family(o.area_path_domain))
         return "area contribution replay requires contribution path domain";
-    if (o.area_path_domain == rypath::FrameAreaPathDomain::contribution) {
+    if (rypath::frame_area_contribution_family(o.area_path_domain)) {
         if (o.execution != rypath::FrameExecution::wavefront ||
             o.packet_layout != rypath::FramePacketLayout::packed || o.packet_events != 1)
             return "contribution path domain requires packed wavefront state and one event";
@@ -704,9 +706,11 @@ struct Observation : rypath::FrameStatisticsSample {
     std::optional<rypath::FrameCamera> camera;
     std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0,
                   command_count = 0, area_serial = 0, history_generation = 0,
-                  completed_evaluations = 0, cached_evaluations = 0, logical_evaluations = 0,
-                  fresh_candidates = 0, mutation_attempts = 0, mutation_accepts = 0;
+                  completed_evaluations = 0, cached_evaluations = 0, analytic_null_evaluations = 0,
+                  logical_evaluations = 0, fresh_candidates = 0, mutation_attempts = 0,
+                  mutation_accepts = 0;
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
+    std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
     bool history_used = false, temporal_evaluation_cache_used = false;
     rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::legacy;
     rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::adjacent;
@@ -892,22 +896,26 @@ struct Report {
             << ",\"requested_area_contribution_replay\":"
             << quote(rypath::frame_contribution_replay_name(options.contribution_replay))
             << ",\"area_contribution_replay\":"
-            << quote(options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+            << quote(rypath::frame_area_contribution_family(options.area_path_domain)
                          ? rypath::frame_contribution_replay_name(options.contribution_replay)
                          : "not-applicable")
             << ",\"effective_area_contribution_replay\":"
             << (area_path_domain_effective &&
-                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                        rypath::frame_area_contribution_family(options.area_path_domain)
                     ? quote(rypath::frame_contribution_replay_name(options.contribution_replay))
                     : "null")
+            << ",\"canonical_transport_version\":"
+            << rypath::frame_area_canonical_version(options.area_path_domain)
+            << ",\"fresh_discovery_version\":"
+            << rypath::frame_area_discovery_version(options.area_path_domain)
             << ",\"contribution_depth\":"
             << (area_path_domain_effective &&
-                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                        rypath::frame_area_contribution_family(options.area_path_domain)
                     ? std::to_string(max_depth)
                     : "null")
             << ",\"contribution_slot_count\":"
             << (area_path_domain_effective &&
-                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                        rypath::frame_area_contribution_family(options.area_path_domain)
                     ? std::to_string(2u * max_depth + 1u)
                     : "null")
             << ",\"area_contract\":"
@@ -923,11 +931,16 @@ struct Report {
                          ? area_output_name(options.area_output)
                          : "not-applicable")
             << ",\"area_target\":"
-            << quote(options.estimator == rypath::FrameEstimator::area_replay ? "quarter-l1-v1"
-                                                                              : "none")
+            << quote(options.estimator == rypath::FrameEstimator::area_replay
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "quarter-l1-zero-v1"
+                                : "quarter-l1-v1")
+                         : "none")
             << ",\"area_source_mis\":"
             << quote(options.estimator == rypath::FrameEstimator::area_replay
-                         ? "source-target-mis-v1"
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "enhanced-source-target-mis-v1"
+                                : "source-target-mis-v1")
                          : "none")
             << ",\"area_temporal_reuse\":"
             << (options.estimator == rypath::FrameEstimator::area_replay ? 20 : 0)
@@ -938,7 +951,8 @@ struct Report {
             << (options.cache_temporal_evaluations ? "true" : "false")
             << ",\"area_temporal_cache\":"
             << (options.estimator == rypath::FrameEstimator::area_replay &&
-                        options.cache_temporal_evaluations
+                        options.cache_temporal_evaluations &&
+                        options.area_path_domain != rypath::FrameAreaPathDomain::enhanced
                     ? "true"
                     : "false")
             << ",\"target_scale\":" << options.target_scale
@@ -1073,10 +1087,11 @@ struct Report {
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
                 << ",\"command_count\":" << f.command_count << ",\"area_serial\":" << f.area_serial
                 << ",\"area_contribution_replay\":"
-                << (f.complete &&
-                            options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                << (f.complete && rypath::frame_area_contribution_family(options.area_path_domain)
                         ? quote(rypath::frame_contribution_replay_name(f.contribution_replay))
                         : "null")
+                << ",\"canonical_transport_version\":" << f.canonical_transport_version
+                << ",\"fresh_discovery_version\":" << f.fresh_discovery_version
                 << ",\"history_used\":" << (f.history_used ? "true" : "false")
 
                 << ",\"area_mutation_policy\":"
@@ -1098,6 +1113,7 @@ struct Report {
                 << ",\"temporal_evaluation_cache_used\":"
                 << (f.temporal_evaluation_cache_used ? "true" : "false")
                 << ",\"completed_evaluations\":" << f.completed_evaluations
+                << ",\"analytic_null_evaluations\":" << f.analytic_null_evaluations
                 << ",\"cached_evaluations\":" << f.cached_evaluations
                 << ",\"logical_evaluations\":" << f.logical_evaluations
                 << ",\"fresh_candidates\":" << f.fresh_candidates << ",\"gpu_stages\":";
@@ -1272,7 +1288,7 @@ int run(const Options &options) {
         scene.integrator =
             scene.volume_transport ? rypath::IntegratorKind::volpath : rypath::IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
-        if (options.area_path_domain == rypath::FrameAreaPathDomain::contribution &&
+        if (rypath::frame_area_contribution_family(options.area_path_domain) &&
             scene.max_depth > 65)
             throw std::runtime_error(
                 "Contribution path domain requires finite authored depth from 0 to 65");
@@ -1283,7 +1299,7 @@ int run(const Options &options) {
             throw std::runtime_error(error);
         if (options.hero_wavelengths && scene.spectral_transport != rypath::SpectralTransport::hero)
             throw std::runtime_error("--hero-wavelengths requires effective hero transport");
-        if (options.area_path_domain == rypath::FrameAreaPathDomain::contribution &&
+        if (rypath::frame_area_contribution_family(options.area_path_domain) &&
             scene.spectral_transport != rypath::SpectralTransport::hero)
             throw std::runtime_error("Contribution path domain requires effective hero transport");
         if (options.hero_wavelengths)
@@ -1411,23 +1427,36 @@ int run(const Options &options) {
                     const auto pixels = std::uint64_t(options.width) * options.height;
                     const bool evaluation_counts =
                         options.estimator == rypath::FrameEstimator::area_replay
-                            ? rypath::valid_area_evaluation_accounting(
-                                  pixels, info.history_used, options.mutation_steps,
-                                  info.temporal_evaluation_cache_used, info.completed_evaluations,
-                                  info.cached_evaluations, info.logical_evaluations) &&
+                            ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                   ? rypath::valid_enhanced_area_evaluation_accounting(
+                                         pixels, info.history_used, options.mutation_steps,
+                                         info.temporal_evaluation_cache_used,
+                                         info.completed_evaluations, info.cached_evaluations,
+                                         info.analytic_null_evaluations, info.logical_evaluations)
+                                   : info.analytic_null_evaluations == 0 &&
+                                         rypath::valid_area_evaluation_accounting(
+                                             pixels, info.history_used, options.mutation_steps,
+                                             info.temporal_evaluation_cache_used,
+                                             info.completed_evaluations, info.cached_evaluations,
+                                             info.logical_evaluations)) &&
                                   (!info.temporal_evaluation_cache_used ||
                                    options.cache_temporal_evaluations)
                             : info.completed_evaluations == pixels &&
                                   info.cached_evaluations == 0 &&
+                                  info.analytic_null_evaluations == 0 &&
                                   info.logical_evaluations == pixels &&
                                   !info.temporal_evaluation_cache_used;
                     observation.complete =
                         info.status == rypath::FrameStatus::complete &&
                         info.completed_samples == pixels && evaluation_counts &&
                         info.area_path_domain == options.area_path_domain &&
+                        info.canonical_transport_version ==
+                            rypath::frame_area_canonical_version(options.area_path_domain) &&
+                        info.fresh_discovery_version ==
+                            rypath::frame_area_discovery_version(options.area_path_domain) &&
                         info.contribution_replay == options.contribution_replay &&
                         info.contribution_depth ==
-                            (options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                            (rypath::frame_area_contribution_family(options.area_path_domain)
                                  ? scene.max_depth
                                  : 0u);
                     observation.completed_samples = info.completed_samples;
@@ -1440,12 +1469,15 @@ int run(const Options &options) {
                     observation.area_stencil_offsets = info.area_stencil_offsets;
                     observation.area_serial = info.area_serial;
                     observation.contribution_replay = info.contribution_replay;
+                    observation.canonical_transport_version = info.canonical_transport_version;
+                    observation.fresh_discovery_version = info.fresh_discovery_version;
                     observation.history_used = info.history_used;
                     observation.history_generation = info.history_generation;
                     observation.temporal_candidates = info.temporal_candidates;
                     observation.spatial_candidates = info.spatial_candidates;
                     observation.completed_evaluations = info.completed_evaluations;
                     observation.cached_evaluations = info.cached_evaluations;
+                    observation.analytic_null_evaluations = info.analytic_null_evaluations;
                     observation.logical_evaluations = info.logical_evaluations;
                     observation.temporal_evaluation_cache_used =
                         info.temporal_evaluation_cache_used;
@@ -1587,16 +1619,22 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_path_domain_name(options.area_path_domain)
                          : "not-applicable"},
+                    {"rypath.area.canonical_transport_version",
+                     std::to_string(
+                         rypath::frame_area_canonical_version(options.area_path_domain))},
+                    {"rypath.area.fresh_discovery_version",
+                     std::to_string(
+                         rypath::frame_area_discovery_version(options.area_path_domain))},
                     {"rypath.area.contribution_replay",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? rypath::frame_contribution_replay_name(frame_info.contribution_replay)
                          : "not-applicable"},
                     {"rypath.area.contribution_depth",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(report.max_depth)
                          : "not-applicable"},
                     {"rypath.area.contribution_slot_count",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(2u * report.max_depth + 1u)
                          : "0"},
                     {"rypath.area.contract",
@@ -1613,12 +1651,17 @@ int run(const Options &options) {
                     {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
                                                ? area_output_name(options.area_output)
                                                : "not-applicable"},
-                    {"rypath.area.target", options.estimator == rypath::FrameEstimator::area_replay
-                                               ? "quarter-l1-v1"
-                                               : "none"},
+                    {"rypath.area.target",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "quarter-l1-zero-v1"
+                                : "quarter-l1-v1")
+                         : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
-                         ? "source-target-mis-v1"
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "enhanced-source-target-mis-v1"
+                                : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
                      options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
@@ -1648,12 +1691,23 @@ int run(const Options &options) {
                     {"rypath.area.history_used", frame_info.history_used ? "true" : "false"},
                     {"rypath.area.temporal_cache_requested",
                      options.cache_temporal_evaluations ? "true" : "false"},
+                    {"rypath.area.temporal_cache_enabled",
+                     options.cache_temporal_evaluations &&
+                             options.area_path_domain != rypath::FrameAreaPathDomain::enhanced
+                         ? "true"
+                         : "false"},
                     {"rypath.area.temporal_cache_used",
                      frame_info.temporal_evaluation_cache_used ? "true" : "false"},
                     {"rypath.area.generation", std::to_string(frame_info.history_generation)},
                     {"rypath.area.temporal_count", std::to_string(frame_info.temporal_candidates)},
                     {"rypath.area.spatial_count", std::to_string(frame_info.spatial_candidates)},
                     {"rypath.frame.evaluations", std::to_string(frame_info.completed_evaluations)},
+                    {"rypath.frame.analytic_null_evaluations",
+                     std::to_string(frame_info.analytic_null_evaluations)},
+                    {"rypath.frame.canonical_transport_version",
+                     std::to_string(frame_info.canonical_transport_version)},
+                    {"rypath.frame.fresh_discovery_version",
+                     std::to_string(frame_info.fresh_discovery_version)},
                     {"rypath.frame.cached_evaluations",
                      std::to_string(frame_info.cached_evaluations)},
                     {"rypath.frame.logical_evaluations",
@@ -1717,6 +1771,13 @@ int run(const Options &options) {
                      metalfx_guide_policy_name(options.metalfx_guide_policy)},
                     {"rypath.recon.reset", info.history_reset ? "true" : "false"},
                     {"rypath.recon.defocus", info.defocus_approximation ? "true" : "false"},
+                    {"rypath.frame.evaluations", std::to_string(info.source.completed_evaluations)},
+                    {"rypath.frame.analytic_null_evaluations",
+                     std::to_string(info.source.analytic_null_evaluations)},
+                    {"rypath.frame.cached_evaluations",
+                     std::to_string(info.source.cached_evaluations)},
+                    {"rypath.frame.logical_evaluations",
+                     std::to_string(info.source.logical_evaluations)},
                     {"rypath.frame.sample", std::to_string(info.source.sample_index)},
                     {"rypath.frame.epoch", std::to_string(info.source.epoch)},
                     {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
@@ -1728,16 +1789,22 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_path_domain_name(options.area_path_domain)
                          : "not-applicable"},
+                    {"rypath.area.canonical_transport_version",
+                     std::to_string(
+                         rypath::frame_area_canonical_version(options.area_path_domain))},
+                    {"rypath.area.fresh_discovery_version",
+                     std::to_string(
+                         rypath::frame_area_discovery_version(options.area_path_domain))},
                     {"rypath.area.contribution_replay",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? rypath::frame_contribution_replay_name(info.source.contribution_replay)
                          : "not-applicable"},
                     {"rypath.area.contribution_depth",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(report.max_depth)
                          : "not-applicable"},
                     {"rypath.area.contribution_slot_count",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(2u * report.max_depth + 1u)
                          : "0"},
                     {"rypath.area.contract",
@@ -1747,12 +1814,17 @@ int run(const Options &options) {
                     {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
                                                ? area_output_name(options.area_output)
                                                : "not-applicable"},
-                    {"rypath.area.target", options.estimator == rypath::FrameEstimator::area_replay
-                                               ? "quarter-l1-v1"
-                                               : "none"},
+                    {"rypath.area.target",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "quarter-l1-zero-v1"
+                                : "quarter-l1-v1")
+                         : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
-                         ? "source-target-mis-v1"
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "enhanced-source-target-mis-v1"
+                                : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
                      options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},

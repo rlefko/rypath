@@ -18,6 +18,7 @@ struct SharedSceneFrameSessions {
 struct FrameSessionTestAccess {
     // Ordinary build_frame_session validates/builds the first session. The
     // second uses the exact same renderer; only the cache flag may differ.
+    // Enhanced reports both cache requests as effectively disabled initially.
     // Callers must serialize both sessions, including their GPU consumers.
     static SharedSceneFrameSessions
     build_shared_scene(const RenderScene &, const FrameConfig &, const FrameConfig &,

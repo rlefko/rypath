@@ -27,7 +27,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Dual-footprint eligibility, Eq. 5 | Missing |
 | Forced NEE endpoint reconnection, §6.2.3 | Missing |
 | Selective shift-pair compaction, §6.2.2 | Missing; ordinary wavefront compaction is a different operation |
-| Initial-only external roulette, §6.2.4 | Missing |
+| Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
 | Reservoir reprojection and dual motion, §6.4 | Missing; denoiser motion vectors do not implement this |
 | Duplication maps, §5 | Missing; adaptive confidence introduces bias and must remain a separately labeled option |
 
@@ -64,7 +64,8 @@ forecast for M4 Max or for our spectral/coated-material model.
    Keep raw accumulation, denoised output and display transforms separate.
 
 The finite-depth contribution representation is a foundation, not a claim that
-reconnection, external roulette, or the complete Enhanced algorithm is present.
+reconnection or the complete Enhanced algorithm is present. External roulette
+is available only in the separate Enhanced domain below.
 Unbounded-depth support requires its own declared measure and sampling contract;
 it must not be implemented by an unreported truncation.
 
@@ -133,6 +134,63 @@ FLOAT images match bitwise in all four scenes. These ratios compare replay
 policies within the new contribution domain;
 they are not speedups over the merged summed-domain renderer and do not qualify
 sustained performance or the new domain's scene-level quality.
+
+## Canonical Enhanced domain
+
+`--area-path-domain enhanced` is an opt-in estimator domain with the same finite
+0–65 depth and hero/packed-one-event requirements. It is not yet the complete
+paper implementation. Each canonical contribution omits outer path roulette;
+coating's internal walk roulette remains part of the material estimator. Fresh
+paths discover those contributions using independent roulette entropy. An
+observed atom has selection score `alpha/a`, where `a` is its discovery
+probability. Arrival emission uses the probability before the current gate;
+NEE uses the probability after it. Killed future atoms are unobserved, not padded
+with artificial black contributions. Imports and mutations evaluate the same
+canonical atom without these discovery gates.
+
+Exactly represented zero XYZ has zero target. All-zero discovery publishes an
+explicit null reservoir with zero normalizer, not an invented black atom. Its
+proposal domain remains structurally present in both sides of resampling MIS.
+A zero destination target receives zero mapped score and complementary canonical
+coverage. Null mutations are self transitions; invalid arithmetic still fails
+the frame. Positive targets retain the existing magnitude/floor policy.
+
+The actual gate is a 24-bit dyadic probability. The stored product of at most
+64 probabilities is rounded FLOAT, with the stated `gamma64` relative error
+bound; this is not an exact floating-point Horvitz–Thompson claim. A pre-draw
+unit-survival choice prevents the product entering an unsupported range. It
+never clips an observed weight. Enhanced temporal memoization is initially off;
+logical, physical and analytic-null evaluation accounting are reported separately.
+
+Release validation on M4 Max for this stage passes the shared arithmetic,
+context, CLI, queue, Enhanced rendering and selected-prefix controls. The GPU
+prefix probe retains all 2,227 cases and adds 16 selected-event controls plus six
+actual Enhanced discovery cases, including independent spectral projection and
+a two-dispatch 104-byte state round trip. Queue tests cover poisoned null state,
+capacity two/seven, refill, invalid tags and duplicate completion. Rendering
+controls cover depth zero/65, coatings, dispersion, null transitions and full
+versus prefix replay. The 32-seed depth-three closed diffuse cavity check compares
+against both summed transport and independent CIE/analytic radiance; its
+five-standard-error gate is a bias smoke test, not scene-quality qualification.
+
+Before this stage, the merged PR #78 runtime (`5fb7b24`, merged as `5194f8d`) was
+measured at native 1920×1080 with hero-visible transport, contribution-prefix
+Area reuse, one spectral-refresh mutation and signed temporal denoising. One
+static run per scene used eight warmup and 32 measured frames, seed 61002:
+
+| Scene | Mean complete frame | FPS |
+| --- | ---: | ---: |
+| Cornell | 870.52 ms | 1.149 |
+| Prism | 903.37 ms | 1.107 |
+| Pavilion day | 2537.72 ms | 0.394 |
+| Pavilion night | 2535.00 ms | 0.394 |
+
+All 160 submitted frames passed accounting and all eight final raw/reconstructed
+FLOAT captures were finite/native-resolution. Startup and export are excluded.
+These are the retained pre-Enhanced baseline, not new Enhanced measurements or
+converged reference images. PR #78 passed all 279 local Debug tests and all eight
+hosted checks before merging. Slower execution experiments remain archived and
+excluded from main.
 
 ## Retained measurements and limitations
 

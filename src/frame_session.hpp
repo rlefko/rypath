@@ -11,13 +11,24 @@ namespace rypath {
 enum class FrameExecution { megakernel, wavefront };
 enum class FramePacketLayout { packed, hot_cold, split_trace };
 enum class FrameEstimator { independent, area_replay };
-enum class FrameAreaPathDomain { summed, contribution };
+enum class FrameAreaPathDomain { summed = 0, contribution = 1, enhanced = 2 };
+inline constexpr bool frame_area_contribution_family(FrameAreaPathDomain domain) {
+    return domain == FrameAreaPathDomain::contribution || domain == FrameAreaPathDomain::enhanced;
+}
+inline constexpr std::uint32_t frame_area_canonical_version(FrameAreaPathDomain domain) {
+    return domain == FrameAreaPathDomain::enhanced ? 1u : 0u;
+}
+inline constexpr std::uint32_t frame_area_discovery_version(FrameAreaPathDomain domain) {
+    return domain == FrameAreaPathDomain::enhanced ? 1u : 0u;
+}
 inline constexpr const char *frame_area_path_domain_name(FrameAreaPathDomain domain) {
     switch (domain) {
     case FrameAreaPathDomain::summed:
         return "summed";
     case FrameAreaPathDomain::contribution:
         return "contribution";
+    case FrameAreaPathDomain::enhanced:
+        return "enhanced";
     }
     return "invalid";
 }
@@ -81,7 +92,8 @@ struct FrameConfig {
     // Opt-in finite contribution slots; summed preserves the full-path oracle.
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
     FrameContributionReplay contribution_replay = FrameContributionReplay::full;
-    // Strong importance proxy: L1(XYZ)/4 plus a positive scale-dependent floor.
+    // Nonzero importance: L1(XYZ)/4 plus a positive scale-dependent floor.
+    // Enhanced assigns exact zero XYZ a zero target; legacy retains the floor.
     // Source-aware MIS handles reuse; neither radiance nor weights are clipped.
     float target_scale = 1.f;
     // Conditional mean removes final spatial selection noise while preserving
@@ -128,14 +140,15 @@ struct FrameInfo {
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
     FrameContributionReplay contribution_replay = FrameContributionReplay::full;
     std::uint32_t contribution_depth = 0;
+    std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
     // Resolved immutable stencil, ordered d0.x, d0.y, d1.x, d1.y.
     std::array<std::int32_t, 4> area_stencil_offsets{};
     std::uint64_t history_generation = 0;
     // Per-pixel pool sizes, including cached fresh/center candidates.
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
-    // Full successful path evaluations; cached candidates add no evaluations.
+    // Physical path evaluations; analytic null owners and cached responses are separate.
     std::uint64_t completed_evaluations = 0, fresh_candidates = 0;
-    std::uint64_t cached_evaluations = 0, logical_evaluations = 0;
+    std::uint64_t cached_evaluations = 0, analytic_null_evaluations = 0, logical_evaluations = 0;
     std::uint64_t mutation_attempts = 0, mutation_accepts = 0;
     // Camera translation may upload rebased graph/surface records. Repeated
     // origins in the same free slot reuse those records without uploading.

@@ -8,7 +8,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 8,
+    contract = 9,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -82,6 +82,9 @@ struct Accumulator {
     render_wire::Point xyz;
     float target;
     Word selected_slot;
+    // Enhanced zero-score inputs still count as structurally present proposals.
+    // The positive-score categorical selector's count is a separate quantity.
+    Word logical_count;
 };
 enum Argument : Word {
     config_id,
@@ -103,7 +106,7 @@ struct Contract {
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
 static_assert(sizeof(Config) == 88 && sizeof(History) == 60 && sizeof(Temporal) == 64 &&
-                  sizeof(Accumulator) == 72 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
+                  sizeof(Accumulator) == 76 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath

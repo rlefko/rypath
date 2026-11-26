@@ -209,7 +209,9 @@ The [Enhanced ReSTIR sequence](restir-enhanced.md) adds a weighted contribution
 domain, selected-path replay and invertible reconnection before complete-pipeline
 quality/time qualification. Its target includes native 1080p, hero transport,
 Area reuse, one MCMC mutation and denoising: 20 FPS Cornell/Prism and 10+ FPS
-Pavilion. The merged acceleration stack (#74–77) does not satisfy those budgets.
+Pavilion. The merged acceleration stack and contribution-prefix runtime (#74–78) do not
+satisfy those budgets. The opt-in Enhanced canonical/discovery domain is the next
+validated foundation; owned reconnection and cached suffixes remain to be added.
 
 [Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
 reduces retained AS memory with bounded exact image controls; it establishes no

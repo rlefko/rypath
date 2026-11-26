@@ -4,8 +4,10 @@ The [Enhanced ReSTIR follow-up](restir-enhanced.md) targets native-1080p,
 Area reuse, one mutation and denoising at 20 FPS for Cornell/Prism and 10+ FPS
 for Pavilion day/night. The opt-in finite-depth contribution-path representation
 adds selected-prefix replay with exact bounded controls and retains full replay
-as its default oracle. Hybrid reconnection and the complete Enhanced algorithm
-remain unfinished. The frame-rate targets are unmet.
+as its default oracle. A separate opt-in Enhanced domain now evaluates canonical
+atoms without outer roulette and uses independently weighted discovery roulette
+for fresh paths. Hybrid reconnection and the complete Enhanced algorithm remain
+unfinished. The frame-rate targets are unmet.
 
 The [hero execution follow-up](hero-execution.md) combines exact temporal
 memoization with smaller current, historical and sampled-light state. Its short

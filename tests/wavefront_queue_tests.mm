@@ -4,22 +4,26 @@
 #include "bsdf_table_fixture.hpp"
 #include "metal_execution.hpp"
 #include "rgb_spectrum.hpp"
+#include "sobol_shared.h"
 #include "wavefront_wire.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstring>
+#include <initializer_list>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
 namespace aw = area_wire;
-static_assert(wf::contract == 14 && sizeof(wf::Contract) == 88 && sizeof(wf::Config) == 64);
+static_assert(wf::contract == 16 && sizeof(wf::Contract) == 96 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 8 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 88);
+static_assert(aw::contract == 9 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 88);
 static_assert(sizeof(contribution_wire::Evaluation) == 16);
 void require(bool value, const std::string &why) {
     if (!value)
@@ -31,23 +35,23 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(contract_pipeline != nil, why);
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v8 contract allocation");
+    require(contract_buffer != nil, "Area v9 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v8 contract encoder");
+    require(command && encoder, "Area v9 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v8 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v9 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 8 && contract.config_bytes == 88 && contract.history_bytes == 60 &&
-                contract.temporal_bytes == 64 && contract.accumulator_bytes == 72 &&
+    require(contract.version == 9 && contract.config_bytes == 88 && contract.history_bytes == 60 &&
+                contract.temporal_bytes == 64 && contract.accumulator_bytes == 76 &&
                 contract.replay_bytes == 32 && contract.counters_bytes == 112 &&
                 contract.contribution_evaluation_bytes == 16,
-            "Area v8 contract mismatch; stale Area v7 libraries are incompatible");
+            "Area v9 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
@@ -126,6 +130,272 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
         }
     }
 }
+// Real null ownership uses only the Enhanced sidecar. Invalid transport pools
+// make accidental initialization/load/store observable independently of pixels.
+void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue,
+                          const wf::Contract &contract) {
+    namespace cw = contribution_wire;
+    constexpr unsigned pixels = 7;
+    constexpr std::size_t guard = 256;
+    std::string why;
+    const auto constants_for = [](bool contribution, bool enhanced) {
+        auto values = [MTLFunctionConstantValues new];
+        const unsigned layout = 0, events = 1;
+        [values setConstantValue:&layout type:MTLDataTypeUInt atIndex:wf::packet_layout_constant];
+        [values setConstantValue:&events type:MTLDataTypeUInt atIndex:wf::packet_events_constant];
+        [values setConstantValue:&contribution
+                            type:MTLDataTypeBool
+                         atIndex:wf::contribution_mode_constant];
+        [values setConstantValue:&enhanced type:MTLDataTypeBool atIndex:wf::enhanced_mode_constant];
+        return values;
+    };
+    auto constants = constants_for(true, true);
+    const auto load = [&](NSString *entry) {
+        auto result = metal::load_pipeline(device, library, entry, why, nil, constants);
+        require(result != nil, "Enhanced null pipeline: " + why);
+        return result;
+    };
+    auto reset = load(@"rypath_wavefront_reset");
+    auto initialize = load(@"rypath_wavefront_initialize");
+    auto probe = load(@"rypath_wavefront_null_probe");
+    auto prepare = load(@"rypath_wavefront_prepare_refill");
+    auto refill = load(@"rypath_wavefront_refill");
+    auto advance = load(@"rypath_wavefront_advance");
+    auto function = metal::load_function(library, @"rypath_wavefront_initialize", why, constants);
+    require(function != nil, why);
+    auto argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
+    require(argument_encoder != nil, "Enhanced null argument encoder");
+    auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
+                                         options:MTLResourceStorageModeShared];
+    require(arguments != nil, "Enhanced null argument allocation");
+    auto tables = [device newBufferWithLength:sizeof(sobol::Tables) + 2 * guard
+                                      options:MTLResourceStorageModeShared];
+    auto environment = [device newBufferWithLength:3 * guard options:MTLResourceStorageModeShared];
+    require(tables && environment, "Enhanced null unused resources");
+    std::memset(tables.contents, 0xff, tables.length);
+    std::memset(environment.contents, 0xff, environment.length);
+    render_wire::Parameters parameters{};
+    parameters.width = parameters.pixel_count = parameters.lane_count = pixels;
+    parameters.height = 1;
+    parameters.model = render_wire::pbrt_model;
+    parameters.packet_transport = 2;
+    parameters.sampler_kind = render_wire::independent_sampler;
+    for (unsigned capacity : {2u, 7u}) {
+        const wf::Config config{
+            pixels,       capacity, 2,   render_wire::pbrt_model, 1,  1,  1,     0,
+            cw::enhanced, 0,        1.f, cw::prefix_replay,       11, 13, {0, 0}};
+        std::array<id<MTLBuffer>, wf::contribution_state_id + 1> buffers{};
+        std::array<std::size_t, wf::contribution_state_id + 1> lengths{};
+        lengths.fill(16);
+        lengths[wf::config_id] = sizeof(config);
+        lengths[wf::counters_id] = sizeof(wf::Counters);
+        lengths[wf::queue_in_id] = lengths[wf::queue_out_id] = lengths[wf::free_slots_id] =
+            capacity * sizeof(std::uint32_t);
+        lengths[wf::raw_xyz_id] = pixels * sizeof(render_wire::Point);
+        lengths[wf::done_id] = pixels * sizeof(std::uint32_t);
+        lengths[wf::current_dispatch_id] = lengths[wf::refill_dispatch_id] =
+            sizeof(wf::DispatchArguments);
+        lengths[wf::replay_input_id] = pixels * sizeof(rypath_replay::ReplayState);
+        lengths[wf::contribution_evaluation_id] = pixels * sizeof(cw::Evaluation);
+        lengths[wf::contribution_state_id] = capacity * contract.enhanced_state_bytes;
+        lengths[wf::scalar_state_id] = capacity * contract.scalar_bytes;
+        lengths[wf::packet_state_id] = capacity * contract.packet_bytes;
+        lengths[wf::packet_hot_id] = capacity * contract.hot_bytes;
+        lengths[wf::packet_cold_id] = capacity * contract.cold_bytes;
+        lengths[wf::packet_hit_id] = capacity * contract.hit_bytes;
+        lengths[wf::hero_state_id] = capacity * contract.hero_bytes;
+        lengths[wf::hero_cold_id] = capacity * contract.hero_cold_bytes;
+        for (unsigned i = 0; i < buffers.size(); ++i) {
+            buffers[i] = [device newBufferWithLength:lengths[i] + 2 * guard
+                                             options:MTLResourceStorageModeShared];
+            require(buffers[i] != nil, "Enhanced null guarded pool");
+        }
+        const auto data = [&](unsigned id) {
+            return static_cast<unsigned char *>(buffers[id].contents) + guard;
+        };
+        const auto unrelated = [](unsigned id) {
+            return id == wf::scalar_state_id || id == wf::packet_state_id ||
+                   id == wf::packet_hot_id || id == wf::packet_cold_id || id == wf::packet_hit_id ||
+                   id == wf::hero_state_id || id == wf::hero_cold_id || id == wf::cie_id;
+        };
+        const auto bind = [&] {
+            [argument_encoder setArgumentBuffer:arguments offset:0];
+            for (unsigned i = 0; i < buffers.size(); ++i)
+                [argument_encoder setBuffer:buffers[i] offset:guard atIndex:i];
+        };
+        const auto fresh = [&] {
+            for (unsigned i = 0; i < buffers.size(); ++i) {
+                std::memset(buffers[i].contents, 0xa5, buffers[i].length);
+                if (unrelated(i))
+                    std::memset(data(i), 0xff, lengths[i]);
+            }
+            std::memcpy(data(wf::config_id), &config, sizeof(config));
+            for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                const auto replay = rypath_replay::fresh({pixel, 17, 19, 23, 29});
+                require(rypath_replay::valid(replay), "Host fresh replay receipt");
+                std::memcpy(data(wf::replay_input_id) + pixel * sizeof(replay), &replay,
+                            sizeof(replay));
+                const cw::Evaluation request{cw::enhanced_null_slot, 0xffffffffu, 0.f, 0};
+                std::memcpy(data(wf::contribution_evaluation_id) + pixel * sizeof(request),
+                            &request, sizeof(request));
+            }
+            bind();
+        };
+        using Stage = std::pair<id<MTLComputePipelineState>, unsigned>;
+        const auto execute = [&](std::initializer_list<Stage> stages) {
+            auto command = [queue commandBuffer];
+            auto encoder = [command computeCommandEncoder];
+            require(command && encoder, "Enhanced null encoder");
+            [encoder setBuffer:arguments offset:0 atIndex:1];
+            [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
+            [encoder setBuffer:environment offset:guard atIndex:7];
+            [encoder setBuffer:tables offset:guard atIndex:12];
+            for (auto buffer : buffers)
+                [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+            for (const auto &[pipeline, count] : stages) {
+                [encoder setComputePipelineState:pipeline];
+                [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            [encoder endEncoding];
+            require(metal::complete(command, "Enhanced null ownership").empty(),
+                    "Enhanced null command failed");
+        };
+        const auto counters = [&] {
+            wf::Counters result{};
+            std::memcpy(&result, data(wf::counters_id), sizeof(result));
+            return result;
+        };
+        const auto guards = [&] {
+            for (unsigned i = 0; i < buffers.size(); ++i) {
+                const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
+                for (std::size_t j = 0; j < buffers[i].length; ++j) {
+                    if (j >= guard && j < guard + lengths[i]) {
+                        if (unrelated(i))
+                            require(bytes[j] == 0xff, "Null owner touched ray/BSDF/unused pool");
+                    } else
+                        require(bytes[j] == 0xa5, "Null owner touched a buffer guard");
+                }
+            }
+            require(std::memcmp(data(wf::config_id), &config, sizeof(config)) == 0,
+                    "Null owner changed immutable config");
+            for (auto buffer : {tables, environment}) {
+                const auto *bytes = static_cast<const unsigned char *>(buffer.contents);
+                for (std::size_t j = 0; j < buffer.length; ++j)
+                    require(bytes[j] == 0xff, "Null owner modified unused external resource");
+            }
+            for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                const auto replay = rypath_replay::fresh({pixel, 17, 19, 23, 29});
+                require(std::memcmp(data(wf::replay_input_id) + pixel * sizeof(replay), &replay,
+                                    sizeof(replay)) == 0,
+                        "Null owner modified canonical replay");
+            }
+        };
+        fresh();
+        execute({{reset, pixels}, {initialize, capacity}});
+        auto before = counters();
+        require(before.failure == 0 && before.current == capacity &&
+                    before.next_pixel == capacity && before.completed == 0 &&
+                    before.null_completed == 0,
+                "Null initialization must issue owners without completing or tracing");
+        guards();
+        unsigned rounds = 0;
+        while (before.completed != pixels) {
+            require(rounds < pixels, "Null owner refill failed to converge");
+            execute({{probe, capacity}, {prepare, 1}, {refill, capacity}, {advance, 1}});
+            const auto result = counters();
+            const auto completed = std::min(pixels, (rounds + 1) * capacity);
+            const auto issued = std::min(pixels, (rounds + 2) * capacity);
+            require(result.failure == 0 && result.completed == completed &&
+                        result.null_completed == completed && result.next_pixel == issued &&
+                        result.current == issued - completed && result.out == 0 &&
+                        result.free == 0 && result.refill_begin == 0 && result.rounds == rounds + 1,
+                    "Null owners must conserve completions through real refill/advance");
+            for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                cw::Evaluation evaluation{};
+                std::memcpy(&evaluation,
+                            data(wf::contribution_evaluation_id) + pixel * sizeof(evaluation),
+                            sizeof(evaluation));
+                require(evaluation.requested_slot == cw::enhanced_null_slot &&
+                            evaluation.selected_slot ==
+                                (pixel < completed ? cw::enhanced_null_slot : 0xffffffffu) &&
+                            std::bit_cast<std::uint32_t>(evaluation.normalizer) == 0 &&
+                            evaluation.ready == unsigned(pixel < completed),
+                        "Null result must publish ready exactly once with canonical zero");
+                std::uint32_t done;
+                std::memcpy(&done, data(wf::done_id) + pixel * sizeof(done), sizeof(done));
+                require(done == unsigned(pixel < completed), "Null done ownership mismatch");
+                for (std::size_t byte = 0; byte < sizeof(render_wire::Point); ++byte)
+                    require(data(wf::raw_xyz_id)[pixel * sizeof(render_wire::Point) + byte] ==
+                                (pixel < completed ? 0 : 0xa5),
+                            "Only completed null owners may publish raw zero");
+            }
+            guards();
+            std::swap(buffers[wf::queue_in_id], buffers[wf::queue_out_id]);
+            bind();
+            before = result;
+            ++rounds;
+        }
+        if (capacity != 2)
+            continue;
+        // Serial single-lane failures avoid a valid sibling racing publication.
+        // Every error must preserve zero physical/null completions and raw output.
+        for (unsigned fault = 0; fault < 6; ++fault) {
+            fresh();
+            if (fault == 0 || fault == 5) {
+                auto *request =
+                    reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                if (fault == 0)
+                    request[0].ready = 1; // Stale ready rejected before issuing transport.
+                else
+                    request[0].requested_slot = 1; // D0 has only slot0, plus the null tag.
+            }
+            execute({{reset, pixels}, {initialize, 1}});
+            if (fault != 0 && fault != 5) {
+                auto *request =
+                    reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                if (fault == 1)
+                    request[0].requested_slot = 0; // Changed after null owner capture.
+                else if (fault == 2)
+                    request[0].ready = 1; // A stale result cannot be consumed as pending.
+                else if (fault == 3)
+                    reinterpret_cast<std::uint32_t *>(data(wf::done_id))[0] = 1;
+                else {
+                    auto value = counters();
+                    value.null_completed = 1; // Isolate null>completed under Enhanced constants.
+                    value.out = capacity; // All other advance conservation predicates are valid.
+                    std::memcpy(data(wf::counters_id), &value, sizeof(value));
+                }
+                execute(fault == 4 ? std::initializer_list<Stage>{{advance, 1}}
+                                   : std::initializer_list<Stage>{{probe, 1}});
+            }
+            const auto result = counters();
+            const auto failure = fault == 3   ? wf::duplicate_sample
+                                 : fault == 4 ? wf::invalid_counters
+                                              : wf::invalid_sample;
+            require(result.failure == failure && result.completed == 0 &&
+                        result.null_completed == (fault == 4 ? 1u : 0u) && result.free == 0,
+                    "Invalid null owner must fail without fabricating completions");
+            for (std::size_t byte = 0; byte < lengths[wf::raw_xyz_id]; ++byte)
+                require(data(wf::raw_xyz_id)[byte] == 0xa5, "Failed null owner published raw");
+            guards();
+        }
+        for (const auto mode : {std::array{true, false}, std::array{false, true}}) {
+            fresh();
+            auto mismatch = metal::load_pipeline(device, library, @"rypath_wavefront_reset", why,
+                                                 nil, constants_for(mode[0], mode[1]));
+            require(mismatch != nil, why);
+            execute({{mismatch, pixels}});
+            const auto result = counters();
+            require(result.failure == wf::invalid_config && result.current == 0 &&
+                        result.next_pixel == 0 && result.completed == 0 &&
+                        result.null_completed == 0,
+                    "Enhanced function/buffer mode mismatch must claim no owner");
+            guards();
+        }
+    }
+}
 int run(const std::filesystem::path &path) {
     auto device = MTLCreateSystemDefaultDevice();
 #ifdef RYPATH_ALLOW_NO_METAL_DEVICE
@@ -157,14 +427,16 @@ int run(const std::filesystem::path &path) {
     area_disabled_wire(device, library, queue);
     const wf::Config config{4, 2, 0,     render_wire::pbrt_model, 32, 0, 1, 0, 0, 0, 0.f, 0,
                             0, 0, {0, 0}};
-    const std::array<wf::Counters, 7> cases{{
-        {2, 2, 0, 4, 2, 0, 7, 2}, // Valid two-owner continuation clears its range.
-        {2, 3, 0, 4, 1, 0, 7, 0}, // Output exceeds physical capacity.
-        {2, 1, 3, 4, 3, 0, 7, 0}, // Free list exceeds physical capacity.
-        {2, 0, 0, 4, 5, 0, 7, 0}, // More completions than pixels.
-        {2, 0, 0, 5, 4, 0, 7, 0}, // Allocator exceeds pixel domain.
-        {2, 0, 0, 4, 2, 0, 7, 0}, // Lost work cannot become an empty successful queue.
-        {2, 2, 0, 4, 2, wf::queue_overflow, 7, 0}, // Producer overflow stays sticky.
+    const std::array<wf::Counters, 9> cases{{
+        {2, 2, 0, 4, 2, 0, 7, 2, 0}, // Valid two-owner continuation clears its range.
+        {2, 3, 0, 4, 1, 0, 7, 0, 0}, // Output exceeds physical capacity.
+        {2, 1, 3, 4, 3, 0, 7, 0, 0}, // Free list exceeds physical capacity.
+        {2, 0, 0, 4, 5, 0, 7, 0, 0}, // More completions than pixels.
+        {2, 0, 0, 5, 4, 0, 7, 0, 0}, // Allocator exceeds pixel domain.
+        {2, 0, 0, 4, 2, 0, 7, 0, 0}, // Lost work cannot become an empty successful queue.
+        {2, 2, 0, 4, 2, wf::queue_overflow, 7, 0, 0}, // Producer overflow stays sticky.
+        {2, 2, 0, 4, 2, 0, 7, 0, 3},                  // Null completions exceed all completions.
+        {2, 2, 0, 4, 2, 0, 7, 0, 1}, // Legacy mode cannot publish null completions.
     }};
     for (std::size_t n = 0; n < cases.size(); ++n) {
         for (auto buffer : buffers)
@@ -190,7 +462,8 @@ int run(const std::filesystem::path &path) {
         require(result.failure == expected_failure && result.current == (n == 0 ? 2u : 0u) &&
                     result.out == 0 && result.free == 0 && result.refill_begin == 0 &&
                     result.rounds == 8 && result.completed == cases[n].completed &&
-                    result.next_pixel == cases[n].next_pixel,
+                    result.next_pixel == cases[n].next_pixel &&
+                    result.null_completed == cases[n].null_completed,
                 "Queue corruption must fail explicitly without inventing completions");
         for (unsigned i = 0; i < buffers.size(); ++i) {
             const auto written = i == wf::counters_id ? sizeof(wf::Counters)
@@ -205,19 +478,21 @@ int run(const std::filesystem::path &path) {
     }
     auto prepare = metal::load_pipeline(device, library, @"rypath_wavefront_prepare_refill", why);
     require(prepare != nil, why);
-    const std::array<wf::Counters, 12> refill_cases{{
-        {2, 0, 2, 2, 2, 0, 7, 0}, // Full refill owns [2,4).
-        {2, 0, 2, 3, 3, 0, 7, 0}, // Partial final range owns [3,4).
-        {2, 0, 2, 4, 4, 0, 7, 0}, // Exhausted domain claims nothing.
-        {2, 1, 1, 3, 2, 0, 7, 0}, // One continuing owner plus one new owner.
-        {2, 2, 0, 2, 0, 0, 7, 0}, // All owners continue; no free slots.
-        {0, 0, 0, 4, 4, 0, 7, 0}, // Extra encoded round after all work completed.
-        {2, 0, 3, 3, 3, 0, 7, 0}, // Invalid free count.
-        {2, 0, 2, 5, 5, 0, 7, 0}, // Invalid next owner.
-        {2, 0, 2, 2, 3, 0, 7, 0}, // Completions exceed issued owners.
-        {2, 0, 1, 3, 3, 0, 7, 0}, // Lost active owner.
-        {2, 1, 1, 3, 3, 0, 7, 0}, // Continuing count disagrees with issued work.
-        {2, 0, 2, 2, 2, wf::queue_overflow, 7, 0},
+    const std::array<wf::Counters, 14> refill_cases{{
+        {2, 0, 2, 2, 2, 0, 7, 0, 0}, // Full refill owns [2,4).
+        {2, 0, 2, 3, 3, 0, 7, 0, 0}, // Partial final range owns [3,4).
+        {2, 0, 2, 4, 4, 0, 7, 0, 0}, // Exhausted domain claims nothing.
+        {2, 1, 1, 3, 2, 0, 7, 0, 0}, // One continuing owner plus one new owner.
+        {2, 2, 0, 2, 0, 0, 7, 0, 0}, // All owners continue; no free slots.
+        {0, 0, 0, 4, 4, 0, 7, 0, 0}, // Extra encoded round after all work completed.
+        {2, 0, 3, 3, 3, 0, 7, 0, 0}, // Invalid free count.
+        {2, 0, 2, 5, 5, 0, 7, 0, 0}, // Invalid next owner.
+        {2, 0, 2, 2, 3, 0, 7, 0, 0}, // Completions exceed issued owners.
+        {2, 0, 1, 3, 3, 0, 7, 0, 0}, // Lost active owner.
+        {2, 1, 1, 3, 3, 0, 7, 0, 0}, // Continuing count disagrees with issued work.
+        {2, 0, 2, 2, 2, wf::queue_overflow, 7, 0, 0},
+        {2, 0, 2, 2, 2, 0, 7, 0, 3}, // Null count cannot exceed completions.
+        {2, 0, 2, 2, 2, 0, 7, 0, 1}, // Legacy null count is invalid.
     }};
     for (std::size_t n = 0; n < refill_cases.size(); ++n) {
         for (auto buffer : buffers)
@@ -248,6 +523,7 @@ int run(const std::filesystem::path &path) {
                 "Invalid range reservation must fail before claiming owners");
         require(result.completed == before.completed && result.current == before.current &&
                     result.out == before.out && result.rounds == before.rounds &&
+                    result.null_completed == before.null_completed &&
                     result.next_pixel ==
                         (valid ? before.next_pixel + expected_count : before.next_pixel) &&
                     result.free == (valid ? expected_count : before.free) &&
@@ -329,15 +605,16 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v14", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v16", why);
     require(contract_pipeline != nil,
-            "Wavefront v14 contract unavailable; rebuild the metallib: " + why);
+            "Wavefront v15 contract unavailable; rebuild the metallib: " + why);
     for (NSString *stale in @[
              @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
-             @"rypath_wavefront_contract_v13"
+             @"rypath_wavefront_contract_v13", @"rypath_wavefront_contract_v14",
+             @"rypath_wavefront_contract_v15"
          ])
         require([library newFunctionWithName:stale] == nil,
-                "Stale Wavefront stage entry must not advertise the v14 ABI");
+                "Stale Wavefront stage entry must not advertise the v15 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");
@@ -356,11 +633,14 @@ int run(const std::filesystem::path &path) {
     std::memcpy(&history_contract, contract_buffer.contents, sizeof(history_contract));
     require(history_contract.version == wf::contract && history_contract.hero_bytes &&
                 history_contract.hero_cold_bytes && history_contract.hot_bytes &&
-                history_contract.config_bytes == 64 && history_contract.counters_bytes == 32 &&
+                history_contract.config_bytes == 64 && history_contract.counters_bytes == 36 &&
                 history_contract.dispatch_bytes == 12 &&
                 history_contract.contribution_state_bytes == 80 &&
-                history_contract.contribution_state_alignment == 4,
+                history_contract.contribution_state_alignment == 4 &&
+                history_contract.enhanced_state_bytes == 104 &&
+                history_contract.enhanced_state_alignment == 4,
             "History storage contract mismatch");
+    enhanced_null_owners(device, library, queue, history_contract);
     constexpr std::uint32_t history_schema = 0x48535435u;
     auto layout_pipeline =
         metal::load_pipeline(device, library, @"rypath_hero_history_layout", why);

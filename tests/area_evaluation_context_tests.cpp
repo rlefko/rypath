@@ -23,7 +23,13 @@ int main() try {
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     const auto unknown_replay = static_cast<FrameContributionReplay>(2);
     need(std::string_view(frame_contribution_replay_name(unknown_replay)) == "invalid");
-    const AreaPathDomainContext domain{1, 65, 1.f, 0};
+    static_assert(static_cast<std::uint32_t>(FrameAreaPathDomain::enhanced) == 2);
+    need(std::string_view(frame_area_path_domain_name(FrameAreaPathDomain::enhanced)) ==
+         "enhanced");
+    need(frame_area_contribution_family(FrameAreaPathDomain::contribution));
+    need(frame_area_contribution_family(FrameAreaPathDomain::enhanced));
+    need(!frame_area_contribution_family(FrameAreaPathDomain::summed));
+    const AreaPathDomainContext domain{2, 65, 1.f, 0, 1, 1};
     need(same_area_path_domain_context(domain, domain));
     using DomainWords = std::array<std::uint32_t, sizeof(domain) / 4>;
     const auto domain_words = std::bit_cast<DomainWords>(domain);
@@ -107,6 +113,28 @@ int main() try {
                                                            physical, cached, logical + 1));
                 }
     need(!valid_area_evaluation_accounting(1, false, 0, true, 5, 0, 5));
+
+    // Enhanced uses actual completed-owner categories. Nulls cannot be inferred
+    // as cache hits, and cache is deliberately unavailable in this first domain.
+    for (bool history : {false, true})
+        for (unsigned mutations : {0u, 1u, 2u, 4u}) {
+            constexpr std::uint64_t pixels = 21;
+            const auto logical = logical_area_evaluations(pixels, history, mutations);
+            for (const auto nulls : {std::uint64_t(0), (logical - pixels) / 2, logical - pixels}) {
+                need(valid_enhanced_area_evaluation_accounting(pixels, history, mutations, false,
+                                                               logical - nulls, 0, nulls, logical));
+                need(!valid_enhanced_area_evaluation_accounting(
+                    pixels, history, mutations, true, logical - nulls, 0, nulls, logical));
+                need(!valid_enhanced_area_evaluation_accounting(
+                    pixels, history, mutations, false, logical - nulls, 1, nulls, logical));
+                need(!valid_enhanced_area_evaluation_accounting(
+                    pixels, history, mutations, false, logical - nulls, 0, nulls + 1, logical));
+            }
+            need(!valid_enhanced_area_evaluation_accounting(pixels, history, mutations, false,
+                                                            logical + 1, 0, 0, logical));
+            need(!valid_enhanced_area_evaluation_accounting(pixels, history, mutations, false, 0, 0,
+                                                            logical, logical));
+        }
     std::cout << "Exact Area evaluation context and physical/cached/logical accounting passed\n";
 } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

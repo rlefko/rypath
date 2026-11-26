@@ -5,11 +5,12 @@ namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 14,
+    contract = 16,
     default_capacity = 65536,
     packet_layout_constant = 23,
     packet_events_constant = 24,
-    contribution_mode_constant = 27
+    contribution_mode_constant = 27,
+    enhanced_mode_constant = 28
 };
 enum Failure : Word {
     invalid_config = 1u,
@@ -58,6 +59,7 @@ using Counter = Word;
 // reserve queue slots only; they are not a substitute for that synchronization.
 struct Counters {
     Counter current, out, free, next_pixel, completed, failure, rounds, refill_begin;
+    Counter null_completed;
 };
 struct DispatchArguments {
     Word x, y, z;
@@ -70,12 +72,13 @@ struct Contract {
     Word hero_bytes, hero_alignment, hero_hot_bytes, hero_hot_alignment;
     Word hero_cold_bytes, hero_cold_alignment;
     Word contribution_state_bytes, contribution_state_alignment;
+    Word enhanced_state_bytes, enhanced_state_alignment;
 };
-static_assert(sizeof(Config) == 64 && sizeof(Counters) == 32 && sizeof(DispatchArguments) == 12 &&
-                  sizeof(Contract) == 88,
+static_assert(sizeof(Config) == 64 && sizeof(Counters) == 36 && sizeof(DispatchArguments) == 12 &&
+                  sizeof(Contract) == 96,
               "Wavefront host/shader ABI");
 static_assert(contribution_evaluation_id == 18 && contribution_state_id == 19,
-              "Wavefront v14 contribution argument ABI");
+              "Wavefront v16 contribution argument ABI");
 } // namespace wavefront_wire
 } // namespace rypath
 

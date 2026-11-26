@@ -217,6 +217,24 @@ inline void packet_pt_step(thread Resources &r, thread HeroWalkState &state,
                            thread const rypath_replay::ReplayState *replay = nullptr) {
     packet_pt_step_compact_inplace(r, state, replay);
 }
+// Canonical Enhanced atoms omit outer transport roulette. Only the fresh sink
+// discovers atoms with its independent, accounted roulette law; coating walks
+// retain their original internal transport policy.
+template <typename State, typename Sink>
+[[clang::always_inline]] inline void
+packet_pt_step_enhanced(thread Resources &r, thread State &state,
+                        thread const rypath_replay::ReplayState *replay, thread Sink &sink) {
+    static_assert(State::compact_hero, "Enhanced events require hero transport");
+#define RYPATH_PACKET_EVENT_PRETRACED 0
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 1
+#define RYPATH_PACKET_EVENT_CONTRIBUTION 1
+#define RYPATH_PACKET_EVENT_ENHANCED 1
+#include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_ENHANCED
+#undef RYPATH_PACKET_EVENT_CONTRIBUTION
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
+#undef RYPATH_PACKET_EVENT_PRETRACED
+}
 inline void packet_pt_step_pretraced(thread Resources &r, thread HeroWalkState &state,
                                      thread const rypath_replay::ReplayState *replay,
                                      thread const SurfaceHit &pretraced) {
