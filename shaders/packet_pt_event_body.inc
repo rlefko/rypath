@@ -5,6 +5,9 @@
 #ifndef RYPATH_PACKET_EVENT_PRETRACED
 #error "Select the packet event hit source before including this body"
 #endif
+#ifndef RYPATH_PACKET_EVENT_REUSE_CURRENT
+#error "Select whether the compact hero event reuses current storage"
+#endif
     if (state.complete)
         return;
     const constant auto &p = *r.alpha.parameters;
@@ -64,7 +67,11 @@
         }
         if (hit.type == intersection_type::none) {
             if (mode == Mode::Radiance) {
+#if RYPATH_PACKET_EVENT_REUSE_CURRENT
+                thread typename State::Current &v = current;
+#else
                 typename State::Current v{};
+#endif
                 v.type = environment_vertex;
                 v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
                 v.light = p.environment_light;
@@ -75,7 +82,9 @@
                 v.beta = beta;
                 // PT does not consume stored BDPT MIS densities.
                 v.connectible = true;
+#if !RYPATH_PACKET_EVENT_REUSE_CURRENT
                 current = v;
+#endif
                 ++count;
             }
             break;
@@ -94,7 +103,11 @@
             sample.status = wire::invalid_hit;
             break;
         }
+#if RYPATH_PACKET_EVENT_REUSE_CURRENT
+        thread typename State::Current &v = current;
+#else
         typename State::Current v{};
+#endif
         v.type = surface_vertex;
         v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
         v.instance = hit.instance_id;
@@ -247,7 +260,9 @@
             sample.status = wire::invalid_arithmetic;
             break;
         }
+#if !RYPATH_PACKET_EVENT_REUSE_CURRENT
         current = v;
+#endif
         ++count;
         crossings = 0;
         if (count == capacity)

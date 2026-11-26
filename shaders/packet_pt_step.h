@@ -138,7 +138,9 @@ template <typename State>
 packet_pt_step(thread Resources &r, thread State &state,
                thread const rypath_replay::ReplayState *replay = nullptr) {
 #define RYPATH_PACKET_EVENT_PRETRACED 0
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 0
 #include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
 #undef RYPATH_PACKET_EVENT_PRETRACED
 }
 template <typename State>
@@ -147,8 +149,47 @@ packet_pt_step_pretraced(thread Resources &r, thread State &state,
                          thread const rypath_replay::ReplayState *replay,
                          thread const SurfaceHit &pretraced) {
 #define RYPATH_PACKET_EVENT_PRETRACED 1
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 0
 #include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
 #undef RYPATH_PACKET_EVENT_PRETRACED
+}
+// Only compact hero events reuse the local current vertex. The original
+// templates remain the unchanged legacy path and explicit out-of-place
+// HeroWalkState oracles. Only the compact outer event is inlined; its sampling
+// helpers keep their existing call boundaries.
+// current starts zeroed and is untouched before either mutually exclusive v site.
+template <typename State>
+[[clang::always_inline]] inline void
+packet_pt_step_compact_inplace(thread Resources &r, thread State &state,
+                               thread const rypath_replay::ReplayState *replay) {
+    static_assert(State::compact_hero, "In-place event requires compact hero storage");
+#define RYPATH_PACKET_EVENT_PRETRACED 0
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 1
+#include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
+#undef RYPATH_PACKET_EVENT_PRETRACED
+}
+template <typename State>
+[[clang::always_inline]] inline void
+packet_pt_step_pretraced_compact_inplace(thread Resources &r, thread State &state,
+                                         thread const rypath_replay::ReplayState *replay,
+                                         thread const SurfaceHit &pretraced) {
+    static_assert(State::compact_hero, "In-place event requires compact hero storage");
+#define RYPATH_PACKET_EVENT_PRETRACED 1
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 1
+#include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
+#undef RYPATH_PACKET_EVENT_PRETRACED
+}
+inline void packet_pt_step(thread Resources &r, thread HeroWalkState &state,
+                           thread const rypath_replay::ReplayState *replay = nullptr) {
+    packet_pt_step_compact_inplace(r, state, replay);
+}
+inline void packet_pt_step_pretraced(thread Resources &r, thread HeroWalkState &state,
+                                     thread const rypath_replay::ReplayState *replay,
+                                     thread const SurfaceHit &pretraced) {
+    packet_pt_step_pretraced_compact_inplace(r, state, replay, pretraced);
 }
 template <typename State>
 inline storage::Result packet_pt_result(const thread State &state, constant wire::Parameters &p) {
