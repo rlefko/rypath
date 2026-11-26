@@ -209,15 +209,17 @@ void stale_native_library(const std::filesystem::path &library) {
     FrameConfig config{.width = 1, .height = 1};
     config.execution = FrameExecution::megakernel;
     auto query = build_frame_session(scene, config, library);
-    available(query.status, query.diagnostic);
-    require(query.session != nullptr && query.shadow_traversal.effective == ShadowTraversal::query,
-            "Query mode still accepts the frozen native-capable library");
+    require(query.status == GeometryStatus::failure && !query.session &&
+                query.diagnostic.find("rypath_native_intersection_contract_v2") !=
+                    std::string::npos,
+            "Old native metadata library cannot publish a query frame session");
     config.shadow_traversal = ShadowTraversal::opaque_auto;
     auto opaque = build_frame_session(scene, config, library);
     require(opaque.status == GeometryStatus::failure && !opaque.session &&
                 opaque.shadow_traversal.effective == ShadowTraversal::query &&
-                opaque.diagnostic.find("bool function constant 22") != std::string::npos,
-            "Stale native library cannot publish effective opaque execution");
+                opaque.diagnostic.find("rypath_native_intersection_contract_v2") !=
+                    std::string::npos,
+            "Old native metadata library cannot publish opaque execution");
 }
 void render(const std::filesystem::path &library) {
     RenderScene scene;

@@ -161,8 +161,11 @@ the compensated profile. There is no compensated revalidation or recovery query
 in native mode. Failure to build or specialize native resources fails the build;
 it never selects the other profile. The existing offline progressive driver
 continues to use compensated traversal. Native render sessions require a separate
-version-1 shader handshake that executes function constant 21 and verifies that
-the native specialization is active; the offline checkpoint contract is unchanged.
+version-2 shader handshake (`rypath_native_intersection_contract_v2`) that executes
+function constant 21 and requires `[2, 1, 4, 52]`: version, active native profile,
+native triangle tag bytes and procedural record bytes. The obsolete native entry
+is absent, so mismatched hosts/libraries fail before native use. The compensated
+offline checkpoint contract is unchanged.
 Consumers must keep accumulated samples from different profiles separate.
 
 `metal.native_intersection_profile` supplies independent ordinary triangle and
@@ -185,6 +188,49 @@ oracle selects 601, and primitive 0 where the missing-neighbor oracle selects 1.
 See the [native-profile validation record](transport-regression-validation.md#opt-in-native-intersection-profile)
 for commands, repetitions and scope. This is separate from older inherited
 measurements and does not establish default-profile regression coverage.
+
+### Compact native triangle metadata
+
+Primary native triangles attach only their four-byte kind tag. The previous
+52-byte record also stored corners that the native primary query did not read.
+Original vertex/index buffers, primitive slots, zero-area miss classification,
+candidate validation and query ordering remain unchanged. Procedural primitives,
+compensated triangles and the separate compensated hint AS retain full records.
+This changes storage and construction work, not the intersection profile or estimator.
+
+Apple documents that [per-primitive data is copied into the AS](https://developer.apple.com/documentation/metal/improving-ray-tracing-data-access-using-per-primitive-data).
+Temporary upload buffers are released after construction; their bytes must not
+be counted again as retained AS storage. Preflight resource limits remain
+conservative. The native metadata contract explicitly separates the two layouts.
+
+The frozen implementation based on `1d8a406` passes the native-profile and opaque
+shadow Release GPU tests with Metal API validation in 112.29 seconds on M4 Max,
+macOS 26.6 and Xcode 26.6. New checks cover the versioned handshake and both host
+rejection paths, actual 4/52-byte builder records, exact full-hit and occlusion
+comparisons, miss/malformed/absent tags and output guards. Existing independent
+geometry, alpha, affine, mixed procedural and compensated-hint controls remain.
+
+An eight-run native 1920×1080 screen compares the retained compact-hero control
+with compact tags: two warmup plus three measured frames, seed 51001, hero4,
+Area-one spectral-refresh mutation, reciprocal16 reuse and signed temporal
+reconstruction. All 16 final raw/reconstructed FLOAT comparisons match the
+retained preoptimization baseline bit for bit. Retained AS allocation is:
+
+| Scene | Full records, bytes | Compact tags, bytes | Reduction |
+| --- | ---: | ---: | ---: |
+| Pavilion day | 1,127,115,776 | 808,414,784 | 28.28% |
+| Pavilion night | 1,127,532,672 | 808,712,640 | 28.28% |
+
+Pavilion build wall time falls from 0.198 to 0.141 seconds by day and 0.198 to
+0.144 seconds by night in this screen; these intervals exclude scene preparation
+and shader pipeline creation. Complete-frame rates remain essentially unchanged:
+day 0.32649 versus 0.32556 FPS, night 0.30019 versus 0.30006 FPS. Cornell and Prism
+also stay within 0.5% of their controls. This is a measured memory reduction,
+not an established rendering speedup or sustained/motion qualification.
+
+Binary/source hashes, reports and exact image audits are retained outside Git in
+`.cache/validation/hero-performance-implementation-001/native-tag-artifacts/`
+and `native-tag-screen/`. The receipt predates the later test-only EXR CI fix.
 
 Input validity does not guarantee that the resulting bounds, inverse transforms,
 or hit parameters are representable in Metal's float32 arithmetic. For example,

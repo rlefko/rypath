@@ -15,11 +15,14 @@ using rypath::geometry_wire::Word;
 namespace wire = rypath::geometry_wire;
 
 // Separate opt-in contract: offline checkpoint compatibility is unchanged.
-kernel void rypath_native_intersection_contract(device uint *result [[buffer(0)]]) {
-    result[0] = 1u;
+// Versioned entry prevents hosts and shader libraries with incompatible native
+// primitive metadata from silently accepting one another. Compensated geometry
+// has its original contract and full records.
+kernel void rypath_native_intersection_contract_v2(device uint *result [[buffer(0)]]) {
+    result[0] = wire::native_metadata_contract;
     result[1] = native_intersections_enabled() ? 1u : 0u;
-    result[2] = 0u;
-    result[3] = 0u;
+    result[2] = sizeof(wire::NativeTriangleTag);
+    result[3] = sizeof(wire::ProceduralRecord);
 }
 
 struct PatchAcceptance {

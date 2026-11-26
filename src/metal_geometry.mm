@@ -22,6 +22,7 @@ namespace rypath {
 namespace {
 
 using geometry_wire::Closest;
+using geometry_wire::NativeTriangleTag;
 using geometry_wire::Patch;
 using geometry_wire::ProceduralRecord;
 using geometry_wire::Ray;
@@ -377,6 +378,69 @@ id<MTLAccelerationStructure> build_hint_mesh(id<MTLDevice> device, id<MTLCommand
     }
     stats.shared_record_bytes += record_buffer.length;
     auto result = build_structure(device, queue, descriptor, @"rypath native triangle hint",
+                                  diagnostic, &stats, build_info, true, fast);
+    if (result)
+        ++stats.native_blas_count;
+    return result;
+}
+
+// Primary native AS data is intentionally separate from compensated hints:
+// their precise re-intersection needs corners, while this query reads only kind.
+id<MTLAccelerationStructure>
+build_native_triangle_mesh(id<MTLDevice> device, id<MTLCommandQueue> queue,
+                           const GeometryMesh &mesh, NativeHintStats &stats,
+                           std::string &diagnostic, AccelerationBuildInfo *build_info = nullptr,
+                           bool fast = false) {
+    if (!fits_buffer<GeometryPoint>(device, mesh.positions.size()) ||
+        !fits_buffer<std::array<Word, 3>>(device, mesh.triangles.size())) {
+        diagnostic = "Native primary vertex/index buffer exceeds device limit";
+        return nil;
+    }
+    if (!fits_buffer<NativeTriangleTag>(device, mesh.triangles.size())) {
+        diagnostic = "Native primary triangle tag buffer exceeds device limit";
+        return nil;
+    }
+    std::vector<NativeTriangleTag> tags;
+    tags.reserve(mesh.triangles.size());
+    for (const auto &indices : mesh.triangles) {
+        const bool has_area = triangle_has_area(
+            mesh.positions[indices[0]], mesh.positions[indices[1]], mesh.positions[indices[2]]);
+        tags.push_back({has_area ? geometry_wire::triangle : geometry_wire::miss});
+    }
+    auto record_buffer = upload(device, std::span<const NativeTriangleTag>{tags});
+    if (record_buffer == nil) {
+        diagnostic = "Native primary triangle tag allocation failed";
+        return nil;
+    }
+    auto vertices = upload(device, std::span<const GeometryPoint>{mesh.positions});
+    // Upload original indices directly. A native offer of a proven zero-area
+    // slot is rejected by its shared miss tag, so no CPU index copy is needed.
+    auto index_buffer = upload(device, std::span<const std::array<Word, 3>>{mesh.triangles});
+    if (vertices == nil || index_buffer == nil) {
+        diagnostic = "Native primary vertex/index allocation failed";
+        return nil;
+    }
+    auto triangle = [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    triangle.vertexBuffer = vertices;
+    triangle.vertexStride = sizeof(GeometryPoint);
+    triangle.vertexFormat = MTLAttributeFormatFloat3;
+    triangle.indexBuffer = index_buffer;
+    triangle.indexType = MTLIndexTypeUInt32;
+    triangle.triangleCount = mesh.triangles.size();
+    triangle.opaque = YES;
+    triangle.primitiveDataBuffer = record_buffer;
+    triangle.primitiveDataStride = sizeof(NativeTriangleTag);
+    triangle.primitiveDataElementSize = sizeof(NativeTriangleTag);
+    auto descriptor = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+    descriptor.geometryDescriptors = @[ triangle ];
+    stats.input_peak_bytes =
+        std::max(stats.input_peak_bytes, std::uint64_t(vertices.length + index_buffer.length));
+    if (record_buffer.length > UINT64_MAX - stats.shared_record_bytes) {
+        diagnostic = "Native primary shared record size overflow";
+        return nil;
+    }
+    stats.shared_record_bytes += record_buffer.length;
+    auto result = build_structure(device, queue, descriptor, @"rypath native primary triangles",
                                   diagnostic, &stats, build_info, true, fast);
     if (result)
         ++stats.native_blas_count;
@@ -767,7 +831,7 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
                 [profile_constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
                 // Require an explicit library contract before binding a native TLAS.
                 auto contract =
-                    metal::load_pipeline(device, library, @"rypath_native_intersection_contract",
+                    metal::load_pipeline(device, library, @"rypath_native_intersection_contract_v2",
                                          result.diagnostic, nil, profile_constants);
                 if (contract == nil)
                     return result;
@@ -791,8 +855,11 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
                     return result;
                 std::array<Word, 4> version{};
                 std::memcpy(version.data(), value.contents, sizeof(version));
-                if (version != std::array<Word, 4>{1u, 1u, 0u, 0u}) {
-                    result.diagnostic = "Native intersection shader contract mismatch";
+                if (version != std::array<Word, 4>{geometry_wire::native_metadata_contract, 1u,
+                                                   sizeof(NativeTriangleTag),
+                                                   sizeof(ProceduralRecord)}) {
+                    result.diagnostic =
+                        "Native triangle metadata shader contract mismatch; rebuild the metallib";
                     return result;
                 }
             }
@@ -840,16 +907,9 @@ GeometryBuildResult build_metal_geometry_with_hints(const GeometryData &geometry
                         id<MTLBuffer> records = nil;
                         id<MTLAccelerationStructure> structure = nil;
                         if (native && kind == PrimitiveKind::triangle) {
-                            // Reuse the tagged source records, without building a procedural BLAS.
-                            auto descriptor = triangle_descriptor(device, mesh, result.diagnostic);
-                            if (descriptor != nil) {
-                                records = ((MTLAccelerationStructureBoundingBoxGeometryDescriptor *)
-                                               descriptor)
-                                              .primitiveDataBuffer;
-                                structure = build_hint_mesh(device, impl->queue, mesh, records,
-                                                            impl->hint_stats, result.diagnostic,
-                                                            &completed_builds, fast_blas);
-                            }
+                            structure = build_native_triangle_mesh(
+                                device, impl->queue, mesh, impl->hint_stats, result.diagnostic,
+                                &completed_builds, fast_blas);
                         } else {
                             structure = build_mesh(
                                 device, impl->queue, mesh, kind, result.diagnostic,

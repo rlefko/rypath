@@ -424,7 +424,8 @@ add_custom_command(OUTPUT "${rypath_opaque_capability_air}"
     COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
         "-fmodules-cache-path=${rypath_metal_cache}" -c
         "${CMAKE_SOURCE_DIR}/tests/opaque_shadow_capability.metal" -o "${rypath_opaque_capability_air}"
-    DEPENDS "${CMAKE_SOURCE_DIR}/tests/opaque_shadow_capability.metal" VERBATIM)
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/opaque_shadow_capability.metal"
+        "${CMAKE_SOURCE_DIR}/src/checkpoint_contract.h" VERBATIM)
 add_custom_command(OUTPUT "${rypath_opaque_capability_library}"
     COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_opaque_capability_air}"
         -o "${rypath_opaque_capability_library}"

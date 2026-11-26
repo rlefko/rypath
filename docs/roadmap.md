@@ -205,6 +205,10 @@ guards, and project agent guidance. Large-corpus acquisition remains separately 
 
 ## Interactive pipeline
 
+[Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
+reduces retained AS memory with bounded exact image controls; it establishes no
+frame-rate gain. Further geometry work still needs complete-pipeline evidence.
+
 [Compact hero execution](hero-execution.md) and exact temporal evaluation reuse
 reduce the current full-replay workload without changing its estimator. The
 bounded native static screen preserves raw/reconstructed pixels, but the 10×

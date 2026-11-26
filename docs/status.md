@@ -9,6 +9,11 @@ The 10× speedup and native-1080p 20–30 FPS targets remain unmet; the short st
 screen does not qualify sustained or moving-camera performance. Further shader
 scheduling and contribution-path reconnection remain measured follow-up work.
 
+[Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
+reduces Pavilion retained AS memory by 28.28% with exact final raw/denoised controls.
+Its short screen establishes no rendering speedup; full procedural and compensated
+hint records remain unchanged.
+
 [Spectral noise controls](spectral-color-noise.md) add visible-CDF hero sampling
 and explicit spectral-refresh/reciprocal spatial reuse. At `2fa3266`, the bounded
 Cornell/Prism study improves Cornell strongly but fails Prism RGB-error gates,

@@ -67,7 +67,7 @@ bool verify_shader_contract(id<MTLDevice> device, id<MTLCommandQueue> queue, id<
         [constants setConstantValue:&native type:MTLDataTypeBool atIndex:21];
     }
     auto pipeline = metal::load_pipeline(device, library,
-                                         native ? @"rypath_native_intersection_contract"
+                                         native ? @"rypath_native_intersection_contract_v2"
                                                 : @"rypath_checkpoint_contract",
                                          diagnostic, nil, constants);
     if (pipeline == nil) {
@@ -76,7 +76,9 @@ bool verify_shader_contract(id<MTLDevice> device, id<MTLCommandQueue> queue, id<
         return false;
     }
     const std::array<std::uint32_t, 4> expected =
-        native ? std::array<std::uint32_t, 4>{1u, 1u, 0u, 0u}
+        native ? std::array<std::uint32_t, 4>{geometry_wire::native_metadata_contract, 1u,
+                                              sizeof(geometry_wire::NativeTriangleTag),
+                                              sizeof(geometry_wire::ProceduralRecord)}
                : std::array<std::uint32_t, 4>{
                      checkpoint_contract::renderer, checkpoint_contract::sampling,
                      checkpoint_contract::accumulation, checkpoint_contract::identity};
