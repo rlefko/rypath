@@ -212,7 +212,7 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v10", why);
     require(contract_pipeline != nil, why);
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];

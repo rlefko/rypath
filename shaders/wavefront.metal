@@ -295,7 +295,9 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
         wavefront_scalar(a, slot) = rypath_scalar::scalar_init(resources, pixel);
     }
 }
-kernel void rypath_wavefront_contract(device wf::Contract *out [[buffer(0)]]) {
+// Version the entry when its output grows: an older host must fail function
+// lookup before binding its shorter contract buffer to this kernel.
+kernel void rypath_wavefront_contract_v10(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),
