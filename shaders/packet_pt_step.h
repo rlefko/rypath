@@ -182,6 +182,21 @@ packet_pt_step_pretraced_compact_inplace(thread Resources &r, thread State &stat
 #undef RYPATH_PACKET_EVENT_REUSE_CURRENT
 #undef RYPATH_PACKET_EVENT_PRETRACED
 }
+// Captures individual hero technique contributions without changing their transport
+// evaluation or accumulation order. The sink owns independent contribution selection.
+template <typename State, typename Sink>
+[[clang::always_inline]] inline void
+packet_pt_step_contribution(thread Resources &r, thread State &state,
+                            thread const rypath_replay::ReplayState *replay, thread Sink &sink) {
+    static_assert(State::compact_hero, "Contribution events require hero transport");
+#define RYPATH_PACKET_EVENT_PRETRACED 0
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 1
+#define RYPATH_PACKET_EVENT_CONTRIBUTION 1
+#include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_CONTRIBUTION
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
+#undef RYPATH_PACKET_EVENT_PRETRACED
+}
 inline void packet_pt_step(thread Resources &r, thread HeroWalkState &state,
                            thread const rypath_replay::ReplayState *replay = nullptr) {
     packet_pt_step_compact_inplace(r, state, replay);

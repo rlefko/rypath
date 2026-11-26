@@ -11,6 +11,25 @@ int main() try {
         if (!ok)
             throw std::runtime_error("Exact Area evaluation context/accounting contract");
     };
+    const AreaPathDomainContext domain{1, 65, 1.f};
+    need(same_area_path_domain_context(domain, domain));
+    using DomainWords = std::array<std::uint32_t, sizeof(domain) / 4>;
+    const auto domain_words = std::bit_cast<DomainWords>(domain);
+    // Every mode/depth/scale word participates, including a one-bit scale
+    // change. Positivity/range validation is separate from exact identity.
+    for (std::size_t i = 0; i < domain_words.size(); ++i) {
+        for (const auto difference : {1u, 0x80000000u}) {
+            auto changed = domain_words;
+            changed[i] ^= difference;
+            need(!same_area_path_domain_context(domain,
+                                                std::bit_cast<AreaPathDomainContext>(changed)));
+        }
+    }
+    const AreaPathDomainContext summed{0, 0, 1.f}, depth_zero{1, 0, 1.f};
+    need(!same_area_path_domain_context(summed, depth_zero));
+    need(!same_area_path_domain_context(depth_zero, domain));
+    const AreaPathDomainContext positive_zero{1, 0, 0.f}, negative_zero{1, 0, -0.f};
+    need(!same_area_path_domain_context(positive_zero, negative_zero));
     render_wire::Parameters p{};
     render_wire::TextureParameters t{};
     need(same_area_evaluation_parameters(p, p, t, t));

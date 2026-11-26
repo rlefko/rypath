@@ -7,6 +7,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -493,9 +494,254 @@ void depth65() {
     auto frames = session(reaches, c);
     compare_sensor(capture(*frames, c, high_sample, false), full);
 }
+struct ContributionCapture {
+    FrameCapture image;
+    FrameInfo info;
+};
+ContributionCapture contribution_capture(FrameSession &session, const FrameConfig &c,
+                                         unsigned depth, unsigned ordinal,
+                                         std::uint64_t user_sample) {
+    auto submitted = session.submit({.sample_index = user_sample, .epoch = 73});
+    need(submitted.status == GeometryStatus::success && submitted.frame && !submitted.busy,
+         submitted.diagnostic);
+    auto info = submitted.frame->wait();
+    need(info.status == FrameStatus::complete, info.diagnostic);
+    const auto pixels = std::uint64_t(c.width) * c.height;
+    const bool history = ordinal != 0;
+    const auto logical = pixels * ((history ? 7u : 5u) + c.mutation_steps);
+    const auto cached = history && c.cache_temporal_evaluations ? 2 * pixels : 0;
+    need(info.width == c.width && info.height == c.height && info.sample_index == user_sample &&
+             info.epoch == 73 && info.area_serial == ordinal &&
+             info.history_generation == std::uint64_t(ordinal) + 1 &&
+             info.area_path_domain == c.area_path_domain &&
+             info.contribution_depth ==
+                 (c.area_path_domain == FrameAreaPathDomain::contribution ? depth : 0u) &&
+             info.history_used == history && info.temporal_candidates == (history ? 2u : 1u) &&
+             info.spatial_candidates == 5 && info.completed_samples == pixels &&
+             info.fresh_candidates == pixels && info.logical_evaluations == logical &&
+             info.completed_evaluations == logical - cached && info.cached_evaluations == cached &&
+             info.temporal_evaluation_cache_used == (cached != 0) &&
+             info.mutation_policy == c.mutation_policy && info.area_stencil == c.area_stencil &&
+             info.mutation_attempts == pixels * c.mutation_steps &&
+             info.mutation_accepts <= info.mutation_attempts && info.command_count > 0,
+         "Contribution Area identity/domain/serial/cache accounting");
+    auto image = submitted.frame->capture();
+    need(image.status == GeometryStatus::success && image.width == c.width &&
+             image.height == c.height && image.raw_xyz.size() == pixels,
+         image.diagnostic);
+    for (const auto &xyz : image.raw_xyz)
+        for (float value : xyz)
+            need(std::isfinite(value) && value >= 0, "Finite nonnegative contribution XYZ");
+    return {std::move(image), std::move(info)};
+}
+FrameConfig contribution_config() {
+    auto c = config(FrameEstimator::area_replay);
+    c.width = 4;
+    c.height = 2; // Capacity 7 must remain distinct from capacity 2.
+    c.area_path_domain = FrameAreaPathDomain::contribution;
+    c.mutation_policy = FrameMutationPolicy::spectral_refresh;
+    c.area_stencil = FrameAreaStencil::reciprocal16;
+    // Keep traversal deterministic when comparing scheduling and estimator domains.
+    c.intersection_profile = IntersectionProfile::compensated;
+    return c;
+}
+RenderScene contribution_coating() {
+    auto scene = early_emission(false);
+    scene.max_depth = 4;
+    scene.materials[0].scattering = ScatteringKind::coated_diffuse;
+    scene.materials[0].constant = .6f;
+    scene.materials[0].eta.knots = {{360, 1.5f}, {830, 1.5f}};
+    scene.materials[0].surface.albedo = .2f;
+    scene.materials[0].surface.samples = 2;
+    frames(scene);
+    return scene;
+}
+RenderScene contribution_crossings() {
+    auto scene = diffuse();
+    SpectralMaterial boundary;
+    boundary.scattering = ScatteringKind::null_interface;
+    scene.materials.push_back(boundary);
+    plane(scene, 1, false, 1);
+    plane(scene, 2, false, 0);
+    scene.area_emissions.emplace_back();
+    scene.area_emissions.back().radiance.fill(0);
+    scene.instance_emissions[2] = 0;
+    scene.texture_graph.nodes.emplace_back();
+    scene.instance_alpha_roots = {UINT32_MAX, UINT32_MAX, 0};
+    scene.instance_invisible_emitters = {0, 0, 1};
+    frames(scene);
+    return scene;
+}
+void contribution_rejections() {
+    const auto reject = [](const RenderScene &scene, const FrameConfig &c) {
+        const auto result = build_frame_session(scene, c);
+        need(result.status == GeometryStatus::failure && !result.session &&
+                 !result.diagnostic.empty(),
+             "Invalid contribution configuration must fail explicitly");
+    };
+    auto c = contribution_config();
+    auto too_deep = diffuse();
+    too_deep.max_depth = 66;
+    reject(too_deep, c);
+    for (auto spectral : {SpectralTransport::scalar, SpectralTransport::packet}) {
+        auto scene = diffuse();
+        scene.spectral_transport = spectral;
+        reject(scene, c);
+    }
+    auto independent = c;
+    independent.estimator = FrameEstimator::independent;
+    reject(diffuse(), independent);
+    auto mega = c;
+    mega.execution = FrameExecution::megakernel;
+    reject(diffuse(), mega);
+    for (auto layout : {FramePacketLayout::hot_cold, FramePacketLayout::split_trace}) {
+        auto invalid = c;
+        invalid.packet_layout = layout;
+        reject(diffuse(), invalid);
+    }
+    for (auto events : {2u, 4u}) {
+        auto invalid = c;
+        invalid.packet_events = events;
+        reject(diffuse(), invalid);
+    }
+}
+void contribution_scheduling() {
+    for (const auto &scene : {diffuse(), dispersive(), early_emission(true), contribution_coating(),
+                              contribution_crossings()}) {
+        auto reference_config = contribution_config();
+        reference_config.cache_temporal_evaluations = false;
+        auto cached_config = reference_config;
+        cached_config.cache_temporal_evaluations = true;
+        auto wide_config = cached_config;
+        wide_config.capacity = 7;
+        wide_config.quantum = 1;
+        auto reference = session(scene, reference_config), cached = session(scene, cached_config),
+             wide = session(scene, wide_config);
+        const std::uint64_t labels[] = {high_sample, high_sample, high_sample + 1};
+        for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+            const auto a = contribution_capture(*reference, reference_config, scene.max_depth,
+                                                ordinal, labels[ordinal]);
+            const auto b = contribution_capture(*cached, cached_config, scene.max_depth, ordinal,
+                                                labels[ordinal]);
+            const auto d =
+                contribution_capture(*wide, wide_config, scene.max_depth, ordinal, labels[ordinal]);
+            exact(a.image, b.image);
+            exact(a.image, d.image);
+            need(a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
+                     a.info.area_stencil_offsets == d.info.area_stencil_offsets &&
+                     a.info.mutation_accepts == b.info.mutation_accepts &&
+                     a.info.mutation_accepts == d.info.mutation_accepts,
+                 "Contribution queue/cache changes cannot change selection or mutation decisions");
+            need(std::any_of(a.image.raw_xyz.begin(), a.image.raw_xyz.end(),
+                             [](const auto &xyz) { return xyz[1] > 0; }),
+                 "Contribution fixture must retain positive physical radiance");
+        }
+    }
+}
+void contribution_single_endpoint() {
+    // D0 has exactly one slot, hence no local WRS selection noise. The longer
+    // witnesses also have only one nonzero atom. Their positive target floor is
+    // reduced in BOTH arms to isolate retained transport from rare zero-slot
+    // selections: 2^-40*1e-6 remains normal but is below FLOAT score resolution.
+    // The 64 epsilon gate covers the additional bounded score/readout roundings;
+    // it is a numerical allowance, not a statistical or percent-bias allowance.
+    for (const auto &scene : {early_emission(false), deep(65), early_emission(true)}) {
+        auto c = contribution_config();
+        c.width = c.height = 1;
+        c.target_scale = scene.max_depth == 0 ? 1.f : 0x1p-40f;
+        need(std::isnormal(c.target_scale) && std::isnormal(c.target_scale * 1e-6f),
+             "Analytic witness retains a normal positive support floor");
+        auto full_config = c;
+        full_config.area_path_domain = FrameAreaPathDomain::summed;
+        auto full = session(scene, full_config), atoms = session(scene, c);
+        for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
+            const auto a =
+                contribution_capture(*full, full_config, scene.max_depth, ordinal, high_sample);
+            const auto b = contribution_capture(*atoms, c, scene.max_depth, ordinal, high_sample);
+            for (unsigned channel = 0; channel < 3; ++channel) {
+                const double x = a.image.raw_xyz[0][channel], y = b.image.raw_xyz[0][channel];
+                const double tolerance = 64 * double(std::numeric_limits<float>::epsilon()) *
+                                         std::max(std::abs(x), std::abs(y));
+                need(std::abs(x - y) <= tolerance,
+                     "Single-endpoint contribution retains summed spectral radiance");
+            }
+            need(a.image.raw_xyz[0][1] > 0 && b.image.raw_xyz[0][1] > 0,
+                 "Depth0/depth65/earlier-emission contribution witness must be positive");
+        }
+    }
+}
+void contribution_multileaf_mean() {
+    // One diffuse bounce has distinct direct-point and environment atoms. Give
+    // the point source a different spectrum so selected atoms are not trivially
+    // proportional XYZ. Replication is over 32 INDEPENDENT RUN SEEDS, not the
+    // spatially correlated pixels or temporal frames. The predeclared 5 empirical
+    // SE gate (per XYZ channel) plus 128 epsilon rounding allowance is a bounded
+    // bias smoke test; neither normality nor an unbiasedness proof is claimed.
+    constexpr unsigned repeats = 32;
+    auto scene = diffuse();
+    scene.max_depth = 1;
+    for (unsigned i = 0; i < scene.point_lights[0].intensity.size(); ++i)
+        scene.point_lights[0].intensity[i] = i < 200 ? 4.f : .25f;
+    frames(scene);
+    std::array<std::array<double, 3>, repeats> differences{};
+    std::array<double, 3> summed_mean{}, contribution_mean{};
+    std::cout << std::setprecision(17);
+    for (unsigned n = 0; n < repeats; ++n) {
+        auto c = contribution_config();
+        c.seed = seed + 7919ull * n;
+        need(c.target_scale == 1.f, "Multileaf smoke keeps the default target scale");
+        auto full_config = c;
+        full_config.area_path_domain = FrameAreaPathDomain::summed;
+        auto full = session(scene, full_config), atoms = session(scene, c);
+        const auto a = contribution_capture(*full, full_config, scene.max_depth, 0, high_sample);
+        const auto b = contribution_capture(*atoms, c, scene.max_depth, 0, high_sample);
+        std::array<double, 3> x{}, y{};
+        for (std::size_t p = 0; p < a.image.raw_xyz.size(); ++p)
+            for (unsigned k = 0; k < 3; ++k) {
+                x[k] += double(a.image.raw_xyz[p][k]) / double(a.image.raw_xyz.size());
+                y[k] += double(b.image.raw_xyz[p][k]) / double(b.image.raw_xyz.size());
+            }
+        for (unsigned k = 0; k < 3; ++k) {
+            differences[n][k] = y[k] - x[k];
+            summed_mean[k] += x[k] / repeats;
+            contribution_mean[k] += y[k] / repeats;
+        }
+        std::cout << "contribution_seed seed=" << c.seed << " summed_XYZ=" << x[0] << ',' << x[1]
+                  << ',' << x[2] << " contribution_XYZ=" << y[0] << ',' << y[1] << ',' << y[2]
+                  << " signed_delta_XYZ=" << differences[n][0] << ',' << differences[n][1] << ','
+                  << differences[n][2] << '\n';
+    }
+    for (unsigned k = 0; k < 3; ++k) {
+        double delta = 0, variance = 0;
+        for (const auto &d : differences)
+            delta += d[k] / repeats;
+        for (const auto &d : differences)
+            variance += (d[k] - delta) * (d[k] - delta) / double(repeats - 1);
+        const double se = std::sqrt(variance / repeats);
+        const double arithmetic =
+            128 * double(std::numeric_limits<float>::epsilon()) *
+            std::max(std::abs(summed_mean[k]), std::abs(contribution_mean[k]));
+        const double bound = 5 * se + arithmetic;
+        std::cout << "contribution_mean replicates=" << repeats << " channel=" << k
+                  << " summed=" << summed_mean[k] << " contribution=" << contribution_mean[k]
+                  << " signed_delta=" << delta << " empirical_SE=" << se << " bound=" << bound
+                  << '\n';
+        need(std::isfinite(se) && std::abs(delta) <= bound,
+             "Independent-seed multileaf summed/contribution mean smoke gate");
+    }
+}
+void contribution_controls() {
+    contribution_rejections();
+    contribution_single_endpoint();
+    contribution_scheduling();
+    contribution_multileaf_mean();
+}
 } // namespace
-int main() {
+int main(int argc, char **argv) {
     try {
+        const bool contribution_only =
+            argc == 2 && std::string_view(argv[1]) == "--contribution-only";
+        need(argc == 1 || contribution_only, "Expected optional --contribution-only");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -511,6 +757,12 @@ int main() {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (contribution_only) {
+            contribution_controls();
+            std::cout
+                << "Hero contribution-domain accounting/physical/scheduling controls passed\n";
+            return 0;
+        }
         std::cout << "Hero native: diffuse backend comparison" << std::endl;
         offline_wavefront(diffuse());
         auto uniform = diffuse();

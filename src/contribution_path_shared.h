@@ -300,8 +300,8 @@ inline XYZResult readout(RYPATH_CONTRIBUTION_THREAD const Reservoir &r) {
 
 // This schema is metadata for (U,j). Future mutation/replay integration MUST
 // retain j while mutating U unless a separate slot proposal is derived; replay
-// must evaluate that same j, not draw another local contribution. No such
-// renderer integration or hybrid/invertible shift chart is implemented here.
+// must evaluate that same j, not draw another local contribution. Runtime full
+// replay uses this contract; a hybrid/invertible shift chart is a separate concern.
 static_assert(sizeof(Descriptor) == 16 && sizeof(XYZ) == 12, "Contribution slot ABI");
 } // namespace rypath_contribution_path
 #undef RYPATH_CONTRIBUTION_THREAD

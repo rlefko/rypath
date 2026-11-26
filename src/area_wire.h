@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "contribution_wire.h"
 #include "render_wire.h"
 #include "replay_shared.h"
 #include "reservoir_shared.h"
@@ -7,7 +8,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 7,
+    contract = 8,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -41,6 +42,8 @@ struct Config {
     Word mutation_steps;
     Word output_mode, mutation_policy, stencil, temporal_cache;
     int offset_x[2], offset_y[2];
+    // Immutable across this session/history domain. Summed mode requires depth0.
+    Word contribution_mode, contribution_depth;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -62,8 +65,8 @@ struct Counters {
 struct History {
     rypath_replay::ReplayState payload;
     float normalizer, target;
-    Word valid, reserved;
-    // Exact selected pre-weight F(payload); never the published conditional mean.
+    Word valid, selected_slot;
+    // Exact selected pre-weight F(payload[,j]); never the conditional mean.
     render_wire::Point xyz;
 };
 struct Temporal {
@@ -71,13 +74,14 @@ struct Temporal {
     float normalizer;
     render_wire::Point xyz;
     float target;
-    Word reserved[3];
+    Word selected_slot, reserved[2];
 };
 struct Accumulator {
     rypath_reservoir::State state;
     rypath_replay::ReplayState payload;
     render_wire::Point xyz;
     float target;
+    Word selected_slot;
 };
 enum Argument : Word {
     config_id,
@@ -89,16 +93,17 @@ enum Argument : Word {
     history_destination_id,
     raw_xyz_id,
     failure_id,
-    cross_targets_id
+    cross_targets_id,
+    contribution_evaluation_id
 };
 struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
-    Word accumulator_bytes, replay_bytes, counters_bytes, reserved;
+    Word accumulator_bytes, replay_bytes, counters_bytes, contribution_evaluation_bytes;
 };
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 80 && sizeof(History) == 60 && sizeof(Temporal) == 64 &&
-                  sizeof(Accumulator) == 68 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
+static_assert(sizeof(Config) == 88 && sizeof(History) == 60 && sizeof(Temporal) == 64 &&
+                  sizeof(Accumulator) == 72 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath

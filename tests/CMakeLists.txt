@@ -1700,6 +1700,29 @@ else()
 endif()
 
 if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_area_shared_scene_tests area_shared_scene_tests.cpp)
+    target_link_libraries(rypath_area_shared_scene_tests PRIVATE
+        rypath_metal_backend rypath_pbrt_render rypath_checkpoint)
+    target_compile_definitions(rypath_area_shared_scene_tests PRIVATE
+        RYPATH_BUILD_DESCRIPTION="${PROJECT_VERSION} ${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION} $<CONFIG> source=${rypath_source_digest} flags=${rypath_flags_digest}")
+    set_target_properties(rypath_area_shared_scene_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_area_shared_scene_tests)
+    add_test(NAME metal.area_shared_scene_cache COMMAND rypath_area_shared_scene_tests)
+    add_test(NAME metal.area_shared_scene_repeat COMMAND rypath_area_shared_scene_tests --pair off-off)
+    set_tests_properties(metal.area_shared_scene_cache metal.area_shared_scene_repeat
+        PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_area_shared_scene_tests PRIVATE
+                RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.area_shared_scene_cache metal.area_shared_scene_repeat
+                PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+endif()
+
+if(RYPATH_ENABLE_METAL)
     add_executable(rypath_area_math_probe area_math_probe.mm)
     target_link_libraries(rypath_area_math_probe PRIVATE "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
     set_target_properties(rypath_area_math_probe PROPERTIES OBJCXX_STANDARD 20
@@ -1741,11 +1764,13 @@ if(RYPATH_ENABLE_METAL)
         RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
     rypath_configure_host_target(rypath_hero_render_tests)
     add_test(NAME metal.hero_render COMMAND rypath_hero_render_tests)
+    add_test(NAME metal.hero_contribution COMMAND rypath_hero_render_tests --contribution-only)
+    set_tests_properties(metal.hero_contribution PROPERTIES TIMEOUT 900 ENVIRONMENT "MTL_DEBUG_LAYER=1")
     set_tests_properties(metal.hero_render PROPERTIES TIMEOUT 180 ENVIRONMENT "MTL_DEBUG_LAYER=1")
     foreach(capability IN ITEMS DEVICE RAY_TRACING)
         if(RYPATH_ALLOW_NO_METAL_${capability})
             target_compile_definitions(rypath_hero_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
-            set_tests_properties(metal.hero_render PROPERTIES SKIP_RETURN_CODE 77)
+            set_tests_properties(metal.hero_render metal.hero_contribution PROPERTIES SKIP_RETURN_CODE 77)
         endif()
     endforeach()
 endif()

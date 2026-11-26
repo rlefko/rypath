@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "contribution_decision_shared.h"
 #include "contribution_path_shared.h"
 
 #include <algorithm>
@@ -10,9 +11,11 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -117,6 +120,145 @@ std::vector<Outcome> enumerate(const Tree &tree) {
         current = std::move(next);
     }
     return current;
+}
+namespace decision = rypath_contribution_decision;
+using DecisionWords = std::array<std::uint32_t, 4>;
+DecisionWords decision_reference_philox(DecisionWords counter, std::array<std::uint32_t, 2> key) {
+    // Existing test-side reference from area_math_probe.mm, independently
+    // anchored by the pinned Random123 KATs below; no shared Philox calls.
+    for (unsigned round = 0; round < 10; ++round) {
+        const std::uint64_t a = std::uint64_t(counter[0]) * 0xd2511f53u;
+        const std::uint64_t b = std::uint64_t(counter[2]) * 0xcd9e8d57u;
+        counter = {std::uint32_t(b >> 32) ^ counter[1] ^ key[0], std::uint32_t(b),
+                   std::uint32_t(a >> 32) ^ counter[3] ^ key[1], std::uint32_t(a)};
+        key[0] += 0x9e3779b9u;
+        key[1] += 0xbb67ae85u;
+    }
+    return counter;
+}
+using DecisionAddress = std::array<std::uint32_t, 6>;
+DecisionAddress decision_address(decision::Identity identity, unsigned slot, unsigned ordinal) {
+    const auto c = decision::counter(identity, slot, ordinal);
+    const auto k = decision::key(identity);
+    return {c.x, c.y, c.z, c.w, k.x, k.y};
+}
+template <class T>
+concept HasSampleLabel = requires(T identity) { identity.sample_low; } || requires(T identity) {
+    identity.sample_high;
+} || requires(T identity) { identity.sample_index; };
+void contribution_decision_entropy() {
+    static_assert(!HasSampleLabel<decision::Identity> && sizeof(decision::Identity) == 20);
+    static_assert(
+        std::is_same_v<decltype(&decision::word),
+                       decision::Word (*)(decision::Identity, decision::Word, decision::Word)>);
+    static_assert(offsetof(decision::Identity, pixel) == 0 &&
+                  offsetof(decision::Identity, serial_low) == 4 &&
+                  offsetof(decision::Identity, serial_high) == 8 &&
+                  offsetof(decision::Identity, seed_low) == 12 &&
+                  offsetof(decision::Identity, seed_high) == 16);
+    static_assert(decision::maximum_depth == 65 && decision::maximum_slot == 130 &&
+                  decision::maximum_random_words == 9 && decision::word_stride == 16 &&
+                  m::maximum_random_words == decision::maximum_random_words);
+    // Published Random123 v1.14.0 tests/kat_vectors, pinned in
+    // third_party/random123/README.md; also used by replay_tests/area_math_probe.
+    need(decision_reference_philox({0, 0, 0, 0}, {0, 0}) ==
+             DecisionWords{0x6627e8d5u, 0xe169c58du, 0xbc57ac4cu, 0x9b00dbd8u},
+         "Decision independent zero Philox KAT");
+    need(decision_reference_philox({~0u, ~0u, ~0u, ~0u}, {~0u, ~0u}) ==
+             DecisionWords{0x408f276du, 0x41c83b0eu, 0xa20bc7c6u, 0x6d5451fdu},
+         "Decision independent maximum Philox KAT");
+    need(decision_reference_philox({0x243f6a88u, 0x85a308d3u, 0x13198a2eu, 0x03707344u},
+                                   {0xa4093822u, 0x299f31d0u}) ==
+             DecisionWords{0xd16cfe09u, 0x94fdccebu, 0x5001e420u, 0x24126ea1u},
+         "Decision independent pi Philox KAT");
+    struct Known {
+        decision::Identity identity;
+        unsigned slot, ordinal;
+        std::uint32_t word;
+    };
+    // Fixed fixtures computed with the above independent integer reference,
+    // using literal original shader counter/key tags rather than the new API.
+    const std::array<Known, 7> known{{{{0, 0, 0, 0x72736331u, 0x63707431u}, 0, 0, 0x6627e8d5u},
+                                      {{7, 0, 0, 17, 29}, 0, 0, 0xd8ed6746u},
+                                      {{7, 0, 1, 17, 29}, 0, 0, 0xc41ac3aeu},
+                                      {{7, ~0u, 1, 0xabcdef01u, 0x98765432u}, 130, 8, 0x48dd699au},
+                                      {{~0u, ~0u, ~0u, ~0u, ~0u}, 130, 8, 0x37780eb3u},
+                                      {{19, 0, 0, 51001, 0}, 6, 0, 0x8f3eb7e2u},
+                                      {{19, 1, 0, 51001, 0}, 6, 0, 0x7170a4b9u}}};
+    for (const auto &test : known) {
+        const auto &id = test.identity;
+        const DecisionWords counter{id.pixel, id.serial_low, id.serial_high,
+                                    test.slot * 16u + test.ordinal};
+        const std::array<std::uint32_t, 2> key{id.seed_low ^ 0x72736331u,
+                                               id.seed_high ^ 0x63707431u};
+        need(decision_reference_philox(counter, key)[0] == test.word,
+             "Frozen independent decision fixture");
+        need(decision::word(id, test.slot, test.ordinal) == test.word,
+             "Contribution decision known word");
+        need(decision_address(id, test.slot, test.ordinal) ==
+                 DecisionAddress{counter[0], counter[1], counter[2], counter[3], key[0], key[1]},
+             "Full-width decision counter/key fields");
+    }
+    need(decision::valid_parameters(0, 0, 8) && decision::valid_parameters(65, 130, 8),
+         "Decision valid parameter endpoints");
+    need(!decision::valid_parameters(0, 1, 0) && !decision::valid_parameters(66, 0, 0) &&
+             !decision::valid_parameters(~0u, 0, 0) && !decision::valid_address(131, 0) &&
+             !decision::valid_address(~0u, 0) && !decision::valid_address(0, 9) &&
+             !decision::valid_address(0, 16) && !decision::valid_address(0, ~0u),
+         "Decision invalid depth/slot/word bounds");
+    // The five identity fields remain separate: changing high serial, pixel or
+    // either seed cannot be lost through narrowing, OR packing or hashing.
+    const std::array<decision::Identity, 7> identities{{{0, 0, 0, 0, 0},
+                                                        {0, 1, 0, 0, 0},
+                                                        {0, 0, 1, 0, 0},
+                                                        {1, 0, 0, 0, 0},
+                                                        {0, 0, 0, 1, 0},
+                                                        {0, 0, 0, 0, 1},
+                                                        {~0u, ~0u, ~0u, ~0u, ~0u}}};
+    std::set<DecisionAddress> addresses;
+    for (const auto &id : identities)
+        for (unsigned j = 0; j <= 130; ++j)
+            for (unsigned ordinal = 0; ordinal < 9; ++ordinal) {
+                need(decision::valid_address(j, ordinal) &&
+                         addresses.insert(decision_address(id, j, ordinal)).second,
+                     "All bounded slot/word addresses are injective across identity fields");
+            }
+    need(addresses.size() == 7u * 131u * 9u, "Decision address enumeration cardinality");
+    // Domain separation is a COUNTER+KEY assertion, not an assertion that
+    // projected 32-bit random outputs cannot collide. Fixed seeds are held equal.
+    const decision::Identity id{19, ~0u, 1, 51001, 0x89abcdefu};
+    std::set<DecisionAddress> contribution;
+    for (unsigned j = 0; j <= 130; ++j)
+        for (unsigned ordinal = 0; ordinal < 9; ++ordinal)
+            contribution.insert(decision_address(id, j, ordinal));
+    for (unsigned phase = 0; phase <= 5; ++phase)
+        for (unsigned candidate = 0; candidate <= 4; ++candidate)
+            for (unsigned ordinal = 0; ordinal < 9; ++ordinal)
+                need(
+                    !contribution.contains({id.pixel, id.serial_low, id.serial_high,
+                                            phase * 128u + candidate * 16u + ordinal,
+                                            id.seed_low ^ 0x72737331u, id.seed_high ^ 0x61726531u}),
+                    "Contribution/Area selection stream separation");
+    for (unsigned step = 0; step < 4; ++step)
+        for (unsigned block = 0; block < 3; ++block)
+            need(!contribution.contains({id.pixel, id.serial_low, id.serial_high,
+                                         0x6d750000u + step * 256u + 32u + block, id.seed_low,
+                                         id.seed_high}),
+                 "Contribution/MH acceptance stream separation");
+    for (unsigned step = 0; step < 4; ++step)
+        need(!contribution.contains({id.pixel, id.serial_low, id.serial_high,
+                                     0x6d750000u + step * 256u + 16u, id.seed_low, id.seed_high}),
+             "Contribution/MH proposal stream separation");
+    for (auto domain : {rypath_replay::TailDomain::transport, rypath_replay::TailDomain::dielectric,
+                        rypath_replay::TailDomain::material, rypath_replay::TailDomain::medium})
+        need(!contribution.contains({id.pixel, id.serial_low, id.serial_high, std::uint32_t(domain),
+                                     id.seed_low, id.seed_high}),
+             "Contribution/replay tail stream separation");
+    for (auto domain : {rypath_replay::FreshDomain::tail_key, rypath_replay::FreshDomain::film,
+                        rypath_replay::FreshDomain::lens, rypath_replay::FreshDomain::wavelength})
+        need(!contribution.contains({id.pixel, id.serial_low, id.serial_high, std::uint32_t(domain),
+                                     id.seed_low, id.seed_high}),
+             "Contribution/replay coordinate stream separation");
 }
 void slots_and_failures() {
     const auto zero = descriptor(0);
@@ -473,12 +615,14 @@ void black_large_and_numerical_cases() {
 
 int main() {
     try {
+        contribution_decision_entropy();
         slots_and_failures();
         finite_tree_enumeration();
         generalized_fresh_MIS();
         nonuniform_long_stream();
         black_large_and_numerical_cases();
-        std::cout << "Contribution paths: counting slots, rational UCWs, signed trees, support and "
+        std::cout << "Contribution paths: serial decision entropy, counting slots, rational UCWs, "
+                     "signed trees, support and "
                      "fresh MIS checks passed\n";
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

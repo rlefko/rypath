@@ -411,11 +411,26 @@
         // Match offline t-major, s=0 then s=1 accumulation. Sampled-local pairs
         // have been finalized before f() is queried, including rejected events.
         if (hero) {
+#if RYPATH_PACKET_EVENT_CONTRIBUTION
+            const auto endpoint = hero_endpoint(r, sample, lambda, pt, previous, before, count,
+                                                  previous_density);
+            state.radiance += endpoint;
+            if (sample.status == wire::success)
+                sink.add(2u * (count - 2u), endpoint, lambda);
+            if (sample.status == wire::success && count < capacity && direct_allowed) {
+                const auto direct = hero_direct(r, sample, lambda, index, pt, previous, count,
+                                                  direct_beta, direct_density, replay);
+                state.radiance += direct;
+                if (sample.status == wire::success)
+                    sink.add(2u * (count - 2u) + 1u, direct, lambda);
+            }
+#else
             state.radiance += hero_endpoint(r, sample, lambda, pt, previous, before, count,
                                              previous_density);
             if (sample.status == wire::success && count < capacity && direct_allowed)
                 state.radiance += hero_direct(r, sample, lambda, index, pt, previous, count,
                                                direct_beta, direct_density, replay);
+#endif
         } else if constexpr (!State::compact_hero) {
             state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
             if (sample.status == wire::success && count < capacity)

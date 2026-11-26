@@ -80,6 +80,7 @@ struct Options {
     rypath::SpectralTransportSelection spectral_transport =
         rypath::SpectralTransportSelection::automatic;
     rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
+    rypath::FrameAreaPathDomain area_path_domain = rypath::FrameAreaPathDomain::summed;
     rypath::FrameAreaOutput area_output = rypath::FrameAreaOutput::conditional_mean;
     float target_scale = 1.f;
     std::uint32_t mutation_steps = 1;
@@ -146,6 +147,7 @@ const char *usage =
     "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
+    "  [--area-path-domain summed|contribution (Area only; default: summed)]\n"
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
     "  [--spectral-transport auto|scalar|packet|hero (default: auto)]\n"
     "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
@@ -153,7 +155,8 @@ const char *usage =
     "auto|adjacent|reciprocal16\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
-    "  [--packet-events 1|2|4 (default: 1)] [--packet-layout packed|hot-cold|split-trace]\n"
+    "  [--packet-events 1|2|4 (default: 1)] [--packet-layout "
+    "packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--motion-offset WORLD_X (measured quarters: hold A, translate, hold B, cut A)]\n"
     "  [--profile-stages] [--capture-frame N --capture-path FRAME.gputrace]\n"
@@ -290,6 +293,13 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.estimator = rypath::FrameEstimator::area_replay;
             else
                 return "invalid estimator: " + std::string(value);
+        } else if (key == "--area-path-domain") {
+            if (value == "summed")
+                o.area_path_domain = rypath::FrameAreaPathDomain::summed;
+            else if (value == "contribution")
+                o.area_path_domain = rypath::FrameAreaPathDomain::contribution;
+            else
+                return "area path domain must be summed or contribution";
         } else if (key == "--area-output") {
             if (value == "selected")
                 o.area_output = rypath::FrameAreaOutput::selected;
@@ -390,6 +400,16 @@ std::string parse(int argc, char **argv, Options &o) {
     }
     if (seen.contains("--area-output") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area output requires area-replay estimator";
+    if (seen.contains("--area-path-domain") && o.estimator != rypath::FrameEstimator::area_replay)
+        return "area path domain requires area-replay estimator";
+    if (o.area_path_domain == rypath::FrameAreaPathDomain::contribution) {
+        if (o.execution != rypath::FrameExecution::wavefront ||
+            o.packet_layout != rypath::FramePacketLayout::packed || o.packet_events != 1)
+            return "contribution path domain requires packed wavefront state and one event";
+        if (o.demo || o.spectral_transport == rypath::SpectralTransportSelection::scalar ||
+            o.spectral_transport == rypath::SpectralTransportSelection::packet)
+            return "contribution path domain requires a PBRT scene with effective hero transport";
+    }
     if ((seen.contains("--variance-policy") || seen.contains("--variance-prefilter") ||
          seen.contains("--strict-spatial-segments")) &&
         o.reconstruction != rypath::ReconstructionMode::temporal)
@@ -793,6 +813,7 @@ struct Report {
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
     bool packet_controls_effective = false;
+    bool area_path_domain_effective = false;
     std::vector<std::string> provenance;
     std::vector<fs::path> dependencies;
     std::vector<Observation> observations;
@@ -845,6 +866,26 @@ struct Report {
             << ",\"requested_area_stencil\":"
             << quote(rypath::frame_area_stencil_name(options.area_stencil))
             << ",\"estimator\":" << quote(estimator_name(options.estimator))
+            << ",\"requested_area_path_domain\":"
+            << quote(rypath::frame_area_path_domain_name(options.area_path_domain))
+            << ",\"area_path_domain\":"
+            << quote(options.estimator == rypath::FrameEstimator::area_replay
+                         ? rypath::frame_area_path_domain_name(options.area_path_domain)
+                         : "not-applicable")
+            << ",\"effective_area_path_domain\":"
+            << (area_path_domain_effective
+                    ? quote(rypath::frame_area_path_domain_name(options.area_path_domain))
+                    : "null")
+            << ",\"contribution_depth\":"
+            << (area_path_domain_effective &&
+                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                    ? std::to_string(max_depth)
+                    : "null")
+            << ",\"contribution_slot_count\":"
+            << (area_path_domain_effective &&
+                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                    ? std::to_string(2u * max_depth + 1u)
+                    : "null")
             << ",\"area_contract\":"
             << (options.estimator == rypath::FrameEstimator::area_replay
                     ? rypath::area_wire::contract
@@ -1202,6 +1243,10 @@ int run(const Options &options) {
         scene.integrator =
             scene.volume_transport ? rypath::IntegratorKind::volpath : rypath::IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
+        if (options.area_path_domain == rypath::FrameAreaPathDomain::contribution &&
+            scene.max_depth > 65)
+            throw std::runtime_error(
+                "Contribution path domain requires finite authored depth from 0 to 65");
         std::string spectral_provenance;
         if (const auto error = rypath::select_spectral_transport(scene, options.spectral_transport,
                                                                  &spectral_provenance);
@@ -1209,6 +1254,9 @@ int run(const Options &options) {
             throw std::runtime_error(error);
         if (options.hero_wavelengths && scene.spectral_transport != rypath::SpectralTransport::hero)
             throw std::runtime_error("--hero-wavelengths requires effective hero transport");
+        if (options.area_path_domain == rypath::FrameAreaPathDomain::contribution &&
+            scene.spectral_transport != rypath::SpectralTransport::hero)
+            throw std::runtime_error("Contribution path domain requires effective hero transport");
         if (options.hero_wavelengths)
             scene.hero_wavelengths = *options.hero_wavelengths;
         report.hero_wavelengths =
@@ -1259,6 +1307,7 @@ int run(const Options &options) {
         config.acceleration_build_policy = options.as_build;
         config.execution = options.execution;
         config.estimator = options.estimator;
+        config.area_path_domain = options.area_path_domain;
         config.area_output = options.area_output;
         config.cache_temporal_evaluations = options.cache_temporal_evaluations;
         config.target_scale = options.target_scale;
@@ -1275,6 +1324,9 @@ int run(const Options &options) {
             built.status == rypath::GeometryStatus::success && built.session &&
             rypath::uses_packet_transport(scene.spectral_transport) &&
             options.execution == rypath::FrameExecution::wavefront;
+        report.area_path_domain_effective =
+            built.status == rypath::GeometryStatus::success && built.session &&
+            options.estimator == rypath::FrameEstimator::area_replay;
         report.acceleration_build = built.acceleration_build;
         report.startup_seconds = seconds(start);
         report.device = built.device.name;
@@ -1339,8 +1391,14 @@ int run(const Options &options) {
                                   info.cached_evaluations == 0 &&
                                   info.logical_evaluations == pixels &&
                                   !info.temporal_evaluation_cache_used;
-                    observation.complete = info.status == rypath::FrameStatus::complete &&
-                                           info.completed_samples == pixels && evaluation_counts;
+                    observation.complete =
+                        info.status == rypath::FrameStatus::complete &&
+                        info.completed_samples == pixels && evaluation_counts &&
+                        info.area_path_domain == options.area_path_domain &&
+                        info.contribution_depth ==
+                            (options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                                 ? scene.max_depth
+                                 : 0u);
                     observation.completed_samples = info.completed_samples;
                     observation.gpu_stages = info.gpu_stages;
                     observation.path_work = info.path_work;
@@ -1493,6 +1551,18 @@ int run(const Options &options) {
                     {"rypath.frame.footprint_samples", "1"},
                     {"rypath.frame.execution", execution_name(options.execution)},
                     {"rypath.frame.estimator", estimator_name(options.estimator)},
+                    {"rypath.area.path_domain",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? rypath::frame_area_path_domain_name(options.area_path_domain)
+                         : "not-applicable"},
+                    {"rypath.area.contribution_depth",
+                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                         ? std::to_string(report.max_depth)
+                         : "not-applicable"},
+                    {"rypath.area.contribution_slot_count",
+                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                         ? std::to_string(2u * report.max_depth + 1u)
+                         : "0"},
                     {"rypath.area.contract",
                      std::to_string(options.estimator == rypath::FrameEstimator::area_replay
                                         ? rypath::area_wire::contract
@@ -1618,6 +1688,18 @@ int run(const Options &options) {
                     {"rypath.frame.seed", std::to_string(options.seed)},
                     {"rypath.frame.material_seed", std::to_string(options.material_seed)},
                     {"rypath.frame.estimator", estimator_name(options.estimator)},
+                    {"rypath.area.path_domain",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? rypath::frame_area_path_domain_name(options.area_path_domain)
+                         : "not-applicable"},
+                    {"rypath.area.contribution_depth",
+                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                         ? std::to_string(report.max_depth)
+                         : "not-applicable"},
+                    {"rypath.area.contribution_slot_count",
+                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                         ? std::to_string(2u * report.max_depth + 1u)
+                         : "0"},
                     {"rypath.area.contract",
                      std::to_string(options.estimator == rypath::FrameEstimator::area_replay
                                         ? rypath::area_wire::contract

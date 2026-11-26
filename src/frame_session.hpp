@@ -11,6 +11,16 @@ namespace rypath {
 enum class FrameExecution { megakernel, wavefront };
 enum class FramePacketLayout { packed, hot_cold, split_trace };
 enum class FrameEstimator { independent, area_replay };
+enum class FrameAreaPathDomain { summed, contribution };
+inline constexpr const char *frame_area_path_domain_name(FrameAreaPathDomain domain) {
+    switch (domain) {
+    case FrameAreaPathDomain::summed:
+        return "summed";
+    case FrameAreaPathDomain::contribution:
+        return "contribution";
+    }
+    return "invalid";
+}
 enum class FrameMutationPolicy { automatic, legacy, spectral_refresh };
 enum class FrameAreaStencil { automatic, adjacent, reciprocal16 };
 inline constexpr const char *frame_mutation_policy_name(FrameMutationPolicy policy) {
@@ -57,6 +67,8 @@ struct FrameConfig {
     std::uint32_t packet_events = 1;
     FramePacketLayout packet_layout = FramePacketLayout::packed;
     FrameEstimator estimator = FrameEstimator::independent;
+    // Opt-in finite contribution slots; summed preserves the full-path oracle.
+    FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
     // Strong importance proxy: L1(XYZ)/4 plus a positive scale-dependent floor.
     // Source-aware MIS handles reuse; neither radiance nor weights are clipped.
     float target_scale = 1.f;
@@ -101,6 +113,8 @@ struct FrameInfo {
     bool temporal_evaluation_cache_used = false;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;
     FrameAreaStencil area_stencil = FrameAreaStencil::adjacent;
+    FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
+    std::uint32_t contribution_depth = 0;
     // Resolved immutable stencil, ordered d0.x, d0.y, d1.x, d1.y.
     std::array<std::int32_t, 4> area_stencil_offsets{};
     std::uint64_t history_generation = 0;
@@ -151,6 +165,7 @@ struct FrameSubmitResult {
     std::unique_ptr<Frame> frame;
 };
 struct FrameSessionBuildResult;
+struct FrameSessionTestAccess;
 // Externally serialize submit(). A retained Frame reserves one of two slots,
 // including after completion. Frames survive session destruction safely.
 class FrameSession {
@@ -168,6 +183,7 @@ class FrameSession {
     explicit FrameSession(std::unique_ptr<Impl>);
     friend FrameSessionBuildResult build_frame_session(const RenderScene &, const FrameConfig &,
                                                        const std::filesystem::path &);
+    friend struct FrameSessionTestAccess;
 };
 struct FrameSessionBuildResult {
     GeometryStatus status = GeometryStatus::failure;
