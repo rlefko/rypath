@@ -6,12 +6,15 @@
 #include "texture_graph_wire.h"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 namespace {
 using namespace rypath;
@@ -20,8 +23,90 @@ void need(bool ok, const std::string &message) {
     if (!ok)
         throw std::runtime_error(message);
 }
-std::string why(NSError *e) {
-    return e ? e.localizedDescription.UTF8String : "No Metal diagnostic";
+std::string utf8(NSString *value) {
+    const char *characters = value.UTF8String;
+    return characters ? characters : "<nil>";
+}
+std::string bounded_description(id value) {
+    auto text = utf8([value description]);
+    constexpr std::size_t limit = 2048;
+    if (text.size() > limit) {
+        text.resize(limit);
+        text += "... [truncated]";
+    }
+    return text;
+}
+std::string why(NSError *error) {
+    if (!error)
+        return "NSError=nil; userInfo=<unavailable>";
+    std::ostringstream message;
+    std::array<NSError *, 4> visited{nil, nil, nil, nil};
+    for (unsigned depth = 0; depth < visited.size(); ++depth) {
+        if (depth)
+            message << "; underlying[" << depth << "] ";
+        visited[depth] = error;
+        message << "domain=" << utf8(error.domain) << "; code=" << error.code
+                << "; description=" << bounded_description(error.localizedDescription);
+        // Match the backend's bounded underlying-error reporting. Compiler
+        // details may live in userInfo; report known text keys without dumping
+        // arbitrary objects or an unbounded recursive NSError graph.
+        message << "; userInfo={";
+        bool separator = false;
+        for (NSString *key in @[
+                 NSLocalizedDescriptionKey, NSLocalizedFailureReasonErrorKey,
+                 NSLocalizedRecoverySuggestionErrorKey, NSDebugDescriptionErrorKey
+             ]) {
+            id value = error.userInfo[key];
+            if (!value)
+                continue;
+            message << (separator ? "; " : "") << utf8(key) << '=' << bounded_description(value);
+            separator = true;
+        }
+        message << "}; userInfoKeys=[";
+        unsigned keys = 0;
+        for (id key in error.userInfo) {
+            if (keys == 16) {
+                message << "; ... [truncated]";
+                break;
+            }
+            message << (keys++ ? "; " : "") << bounded_description(key);
+        }
+        message << ']';
+        id value = error.userInfo[NSUnderlyingErrorKey];
+        if (![value isKindOfClass:[NSError class]])
+            break;
+        auto underlying = static_cast<NSError *>(value);
+        if (std::find(visited.begin(), visited.end(), underlying) != visited.end()) {
+            message << "; underlying=<cycle>";
+            break;
+        }
+        if (depth + 1 == visited.size())
+            message << "; underlying=<depth limit>";
+        error = underlying;
+    }
+    return message.str();
+}
+std::string pipeline_failure(const char *stage, id<MTLDevice> device, NSString *entry,
+                             bool families, NSError *error) {
+    std::ostringstream message;
+    message << "Current hero " << stage << ": entry=" << utf8(entry)
+            << "; families=" << (families ? "enabled" : "disabled")
+            << "; function_constants={0=true,1..18=" << (families ? "true" : "false")
+            << ",20=false,25=true}; device=" << utf8(device.name)
+            << "; registry_id=" << device.registryID
+            << "; supports_raytracing=" << (device.supportsRaytracing ? "true" : "false");
+    if (@available(macOS 14.0, *))
+        message << "; gpu_architecture=" << utf8(device.architecture.name);
+#if defined(__arm64__)
+    message << "; host_architecture=arm64";
+#elif defined(__x86_64__)
+    message << "; host_architecture=x86_64";
+#else
+    message << "; host_architecture=other";
+#endif
+    message << "; os=" << utf8(NSProcessInfo.processInfo.operatingSystemVersionString) << "; "
+            << why(error);
+    return message.str();
 }
 id<MTLComputePipelineState> pipeline(id<MTLDevice> device, id<MTLLibrary> library, NSString *name,
                                      bool families) {
@@ -35,9 +120,11 @@ id<MTLComputePipelineState> pipeline(id<MTLDevice> device, id<MTLLibrary> librar
     [values setConstantValue:&yes type:MTLDataTypeBool atIndex:25];
     NSError *error = nil;
     auto function = [library newFunctionWithName:name constantValues:values error:&error];
-    need(function != nil, "Current hero function: " + why(error));
+    need(function != nil,
+         pipeline_failure("function specialization", device, name, families, error));
+    error = nil;
     auto result = [device newComputePipelineStateWithFunction:function error:&error];
-    need(result != nil, "Current hero pipeline: " + why(error));
+    need(result != nil, pipeline_failure("pipeline creation", device, name, families, error));
     return result;
 }
 template <class T> id<MTLBuffer> upload(id<MTLDevice> device, const std::vector<T> &data) {

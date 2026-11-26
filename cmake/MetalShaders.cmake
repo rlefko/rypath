@@ -437,13 +437,31 @@ set(rypath_hero_current_air "${rypath_runtime_directory}/CMakeFiles/rypath-hero-
 file(GLOB rypath_hero_current_headers CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/shaders/*.h" "${CMAKE_SOURCE_DIR}/shaders/*.inc"
     "${CMAKE_SOURCE_DIR}/shaders/*.metal" "${CMAKE_SOURCE_DIR}/src/*.h")
+# Preserve current probe/material bodies while omitting unrelated event kernels.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(rypath_current_probe_dir "${rypath_runtime_directory}/CMakeFiles/hero-current-probe")
+set(rypath_current_probe_generated
+    "${rypath_current_probe_dir}/current_probe.metal"
+    "${rypath_current_probe_dir}/current_render.metal"
+    "${rypath_current_probe_dir}/current_packet_transport.h"
+    "${rypath_current_probe_dir}/current_packet_pt_state.h"
+    "${rypath_current_probe_dir}/generation.json")
+add_custom_command(OUTPUT ${rypath_current_probe_generated}
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/generate_canonical_probe.py"
+        --kind current --render "${CMAKE_SOURCE_DIR}/shaders/render.metal"
+        --probe "${CMAKE_SOURCE_DIR}/tests/hero_current_probe.metal"
+        --output-dir "${rypath_current_probe_dir}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/generate_canonical_probe.py"
+        "${CMAKE_SOURCE_DIR}/shaders/render.metal"
+        "${CMAKE_SOURCE_DIR}/tests/hero_current_probe.metal" ${rypath_hero_current_headers}
+    VERBATIM)
 add_custom_command(OUTPUT "${rypath_hero_current_air}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
     COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
         "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
         "-I${CMAKE_SOURCE_DIR}/shaders" "-I${CMAKE_SOURCE_DIR}/src"
-        -c "${CMAKE_SOURCE_DIR}/tests/hero_current_probe.metal" -o "${rypath_hero_current_air}"
-    DEPENDS "${CMAKE_SOURCE_DIR}/tests/hero_current_probe.metal" ${rypath_hero_current_headers}
+        -c "${rypath_current_probe_dir}/current_probe.metal" -o "${rypath_hero_current_air}"
+    DEPENDS ${rypath_current_probe_generated} ${rypath_hero_current_headers}
     VERBATIM)
 add_custom_command(OUTPUT "${rypath_hero_current_library}"
     COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_hero_current_air}"
