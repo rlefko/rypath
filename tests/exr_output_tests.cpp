@@ -28,8 +28,11 @@ std::uint32_t word(const std::vector<std::uint8_t> &bytes, std::size_t offset) {
     return std::uint32_t(bytes[offset]) | std::uint32_t(bytes[offset + 1]) << 8 |
            std::uint32_t(bytes[offset + 2]) << 16 | std::uint32_t(bytes[offset + 3]) << 24;
 }
-bool has_string_attribute(const std::vector<std::uint8_t> &bytes, std::string_view key,
-                          std::string_view value) {
+struct StringAttribute {
+    std::string_view key, value;
+};
+bool has_string_attribute(const std::vector<std::uint8_t> &bytes,
+                          const StringAttribute &attribute) {
     std::size_t offset = 8;
     const auto text = [&]() {
         const auto begin = offset;
@@ -49,10 +52,10 @@ bool has_string_attribute(const std::vector<std::uint8_t> &bytes, std::string_vi
         const auto size = word(bytes, offset);
         offset += 4;
         require(size <= bytes.size() - offset, "truncated EXR attribute payload");
-        if (name == key)
+        if (name == attribute.key)
             return type == "string" &&
                    std::string_view(reinterpret_cast<const char *>(bytes.data() + offset), size) ==
-                       value;
+                       attribute.value;
         offset += size;
     }
 }
@@ -68,16 +71,18 @@ void check_metadata_names(const std::filesystem::path &directory, const Film &fi
         // Bit 10 of the version/flags word permits names longer than 31 bytes.
         require(((word(bytes, 4) & 0x400u) != 0) == (length > 31),
                 "EXR long-name flag does not match metadata requirements");
-        require(has_string_attribute(bytes, metadata.first, metadata.second),
+        require(has_string_attribute(bytes, {.key = metadata.first, .value = metadata.second}),
                 "EXR metadata key or value was truncated");
         const auto decoded = decode_exr(bytes);
-        require(decoded.value.has_value(), "EXR with boundary metadata did not decode");
-        require(decoded.value->width == film.width && decoded.value->height == film.height,
+        if (!decoded.value)
+            throw std::runtime_error("EXR with boundary metadata did not decode");
+        const auto &image = *decoded.value;
+        require(image.width == film.width && image.height == film.height,
                 "metadata changed image extent");
         if (reference.empty())
-            reference = decoded.value->floating_rgb;
+            reference = image.floating_rgb;
         else
-            require(decoded.value->floating_rgb == reference, "metadata changed FLOAT pixels");
+            require(image.floating_rgb == reference, "metadata changed FLOAT pixels");
     }
     const auto sentinel = read(path);
     for (const auto &metadata : {

@@ -75,6 +75,17 @@ bind that snapshot. The subsequent event experiment is identified separately bel
 These checks support the bounded execution changes. They do not establish
 convergence or universal image identity across scenes and schedules.
 
+Arithmetic test libraries derive their headers from the production sources while
+omitting unused renderer entrypoints and PT event code. The current-BSDF probe
+retains the exact state/helper prefix and both probe bodies, including generic
+material dispatch; the canonical full-context regression still uses the complete
+production translation unit. This keeps arithmetic coverage on compute devices
+without adding ray-tracing availability skips. Twelve generator admission and
+reversibility tests pass. The isolated canonical, full-context and current-BSDF
+Debug GPU checks pass in 42.47 seconds on M4 Max; hosted compiler acceptance is
+a separate CI check. Pipeline failures now retain entry, specialization, device
+and bounded driver-error diagnostics.
+
 ## Short native static screen
 
 The frozen screen uses native 1920×1080 on M4 Max, two warmup and three measured

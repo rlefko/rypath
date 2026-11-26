@@ -102,17 +102,19 @@ if(RYPATH_ENABLE_METAL)
     set(canonical_probe_dir "${CMAKE_CURRENT_BINARY_DIR}/canonical-probe")
     set(canonical_probe_source "${canonical_probe_dir}/canonical_probe.metal")
     set(canonical_render_source "${canonical_probe_dir}/canonical_render.metal")
+    set(canonical_transport_source "${canonical_probe_dir}/canonical_packet_transport.h")
     set(canonical_probe_manifest "${canonical_probe_dir}/generation.json")
     set(canonical_probe_air "${canonical_probe_dir}/canonical_probe.air")
     set(canonical_probe_library "${rypath_runtime_directory}/rypath-canonical-probe.metallib")
     add_custom_command(
-        OUTPUT "${canonical_probe_source}" "${canonical_render_source}" "${canonical_probe_manifest}"
+        OUTPUT "${canonical_probe_source}" "${canonical_render_source}" "${canonical_transport_source}" "${canonical_probe_manifest}"
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/generate_canonical_probe.py"
             --render "${CMAKE_SOURCE_DIR}/shaders/render.metal"
             --probe "${CMAKE_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
             --output-dir "${canonical_probe_dir}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/generate_canonical_probe.py"
             "${CMAKE_SOURCE_DIR}/shaders/render.metal"
+            "${CMAKE_SOURCE_DIR}/shaders/packet_transport.h"
             "${CMAKE_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
             ${rypath_render_shader_dependencies}
             "${CMAKE_CURRENT_SOURCE_DIR}/light_geometry_sampling_probe_wire.h"
@@ -125,7 +127,7 @@ if(RYPATH_ENABLE_METAL)
             -fno-fast-math -O1 -c "${canonical_probe_source}" -o "${canonical_probe_air}"
         COMMAND "${RYPATH_XCRUN}" --sdk macosx metal "${rypath_metal_min_version}"
             -o "${canonical_probe_library}" "${canonical_probe_air}"
-        DEPENDS "${canonical_probe_source}" "${canonical_render_source}" "${canonical_probe_manifest}"
+        DEPENDS "${canonical_probe_source}" "${canonical_render_source}" "${canonical_transport_source}" "${canonical_probe_manifest}"
             ${rypath_render_shader_dependencies}
             "${CMAKE_CURRENT_SOURCE_DIR}/light_geometry_sampling_probe_wire.h"
         VERBATIM
