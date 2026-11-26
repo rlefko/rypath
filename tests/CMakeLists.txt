@@ -2040,6 +2040,26 @@ if(RYPATH_ENABLE_METAL)
 endif()
 
 if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_contribution_prefix_probe contribution_prefix_probe.mm)
+    target_link_libraries(rypath_contribution_prefix_probe PRIVATE rypath_metal_backend)
+    target_compile_options(rypath_contribution_prefix_probe PRIVATE -fobjc-arc)
+    set_target_properties(rypath_contribution_prefix_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_contribution_prefix_probe)
+    add_dependencies(rypath_contribution_prefix_probe rypath_contribution_prefix_shader)
+    add_test(NAME metal.contribution_prefix COMMAND rypath_contribution_prefix_probe
+        "${rypath_contribution_prefix_library}")
+    set_tests_properties(metal.contribution_prefix PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE
+        ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_contribution_prefix_probe PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.contribution_prefix PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+endif()
+
+if(RYPATH_ENABLE_METAL)
     add_executable(rypath_hero_light_endpoint_probe hero_light_endpoint_probe.mm)
     target_link_libraries(rypath_hero_light_endpoint_probe PRIVATE rypath_metal_backend rypath_rgb_spectrum)
     target_compile_options(rypath_hero_light_endpoint_probe PRIVATE -fobjc-arc)

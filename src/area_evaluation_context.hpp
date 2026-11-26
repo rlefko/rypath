@@ -11,8 +11,9 @@ namespace rypath {
 struct AreaPathDomainContext {
     std::uint32_t mode = 0, depth = 0;
     float target_scale = 1;
+    std::uint32_t replay = 0;
 };
-static_assert(sizeof(AreaPathDomainContext) == 12, "Area path-domain context has no padding");
+static_assert(sizeof(AreaPathDomainContext) == 16, "Area path-domain context has no padding");
 inline bool same_area_path_domain_context(const AreaPathDomainContext &a,
                                           const AreaPathDomainContext &b) {
     return std::memcmp(&a, &b, sizeof(a)) == 0;

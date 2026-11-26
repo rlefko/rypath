@@ -17,7 +17,7 @@ namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
 namespace aw = area_wire;
-static_assert(wf::contract == 13 && sizeof(wf::Contract) == 88 && sizeof(wf::Config) == 64);
+static_assert(wf::contract == 14 && sizeof(wf::Contract) == 88 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
 static_assert(aw::contract == 8 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 88);
 static_assert(sizeof(contribution_wire::Evaluation) == 16);
@@ -329,12 +329,15 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v13", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v14", why);
     require(contract_pipeline != nil,
-            "Wavefront v13 contract unavailable; rebuild the metallib: " + why);
-    for (NSString *stale in @[ @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12" ])
+            "Wavefront v14 contract unavailable; rebuild the metallib: " + why);
+    for (NSString *stale in @[
+             @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
+             @"rypath_wavefront_contract_v13"
+         ])
         require([library newFunctionWithName:stale] == nil,
-                "Stale Wavefront stage entry must not advertise the v13 ABI");
+                "Stale Wavefront stage entry must not advertise the v14 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");

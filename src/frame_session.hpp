@@ -21,6 +21,17 @@ inline constexpr const char *frame_area_path_domain_name(FrameAreaPathDomain dom
     }
     return "invalid";
 }
+// Full traversal remains the oracle until selected-prefix replay is qualified.
+enum class FrameContributionReplay { full = 0, prefix = 1 };
+inline constexpr const char *frame_contribution_replay_name(FrameContributionReplay replay) {
+    switch (replay) {
+    case FrameContributionReplay::full:
+        return "full";
+    case FrameContributionReplay::prefix:
+        return "prefix";
+    }
+    return "invalid";
+}
 enum class FrameMutationPolicy { automatic, legacy, spectral_refresh };
 enum class FrameAreaStencil { automatic, adjacent, reciprocal16 };
 inline constexpr const char *frame_mutation_policy_name(FrameMutationPolicy policy) {
@@ -69,6 +80,7 @@ struct FrameConfig {
     FrameEstimator estimator = FrameEstimator::independent;
     // Opt-in finite contribution slots; summed preserves the full-path oracle.
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
+    FrameContributionReplay contribution_replay = FrameContributionReplay::full;
     // Strong importance proxy: L1(XYZ)/4 plus a positive scale-dependent floor.
     // Source-aware MIS handles reuse; neither radiance nor weights are clipped.
     float target_scale = 1.f;
@@ -114,6 +126,7 @@ struct FrameInfo {
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;
     FrameAreaStencil area_stencil = FrameAreaStencil::adjacent;
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
+    FrameContributionReplay contribution_replay = FrameContributionReplay::full;
     std::uint32_t contribution_depth = 0;
     // Resolved immutable stencil, ordered d0.x, d0.y, d1.x, d1.y.
     std::array<std::int32_t, 4> area_stencil_offsets{};

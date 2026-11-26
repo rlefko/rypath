@@ -6,6 +6,7 @@ namespace rypath {
 namespace contribution_wire {
 using Word = render_wire::Word;
 enum Mode : Word { summed = 0, contribution_path = 1 };
+enum Replay : Word { full_replay = 0, prefix_replay = 1 };
 // A request/result for one full replay. no_selection requests fresh local WRS;
 // otherwise requested_slot fixes j throughout destination replay or mutation.
 // Prepare writes {request,no_selection,0,0}; transport publishes ready=1 only

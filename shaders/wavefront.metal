@@ -65,13 +65,16 @@ inline bool wavefront_config_valid(constant WavefrontArguments &a) {
            c.packet_layout <= 2 && (c.packet_layout != 2 || c.packet_events == 1) &&
            (c.packet || (c.packet_events == 1 && c.packet_layout == 0)) &&
            c.packet_layout == wavefront_packet_layout() &&
-           c.packet_events == wavefront_packet_events() && c.reserved == 0 && c.reserved2[0] == 0 &&
-           c.reserved2[1] == 0 && c.contribution_mode == uint(wavefront_contribution()) &&
+           c.packet_events == wavefront_packet_events() &&
+           c.contribution_replay <= rypath::contribution_wire::prefix_replay &&
+           c.reserved2[0] == 0 && c.reserved2[1] == 0 &&
+           c.contribution_mode == uint(wavefront_contribution()) &&
            (wavefront_contribution()
                 ? (c.packet == 2 && c.replay_enabled == 1 && c.packet_layout == 0 &&
                    c.packet_events == 1 && c.contribution_depth <= 65 &&
                    rypath_reservoir::positive_normal(c.contribution_target_scale))
-                : (c.contribution_depth == 0 && as_type<uint>(c.contribution_target_scale) == 0 &&
+                : (c.contribution_replay == rypath::contribution_wire::full_replay &&
+                   c.contribution_depth == 0 && as_type<uint>(c.contribution_target_scale) == 0 &&
                    c.contribution_serial_low == 0 && c.contribution_serial_high == 0));
 }
 inline void wavefront_dispatch(device wf::DispatchArguments *args, uint count, uint group) {
@@ -325,7 +328,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
 }
 // Version the entry when its output grows: an older host must fail function
 // lookup before binding its shorter contract buffer to this kernel.
-kernel void rypath_wavefront_contract_v13(device wf::Contract *out [[buffer(0)]]) {
+kernel void rypath_wavefront_contract_v14(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),

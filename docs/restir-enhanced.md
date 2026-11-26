@@ -22,7 +22,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Contribution-aware resampling MIS | Source/destination target adaptation |
 | Reciprocal spatial work sharing, §3 | Reciprocal stencil and shared reverse targets; not the paper's pairing textures |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
-| Contribution-path reservoir, §§2.3 and 6.1 | Opt-in finite-depth `(U,j)` with fresh local selection; imports still use full replay |
+| Contribution-path reservoir, §§2.3 and 6.1 | Opt-in finite-depth `(U,j)` with fresh local selection; full or selected-prefix replay |
 | Hybrid reconnection and Jacobian, Eq. 2 | Missing; imported keys still retrace complete paths |
 | Dual-footprint eligibility, Eq. 5 | Missing |
 | Forced NEE endpoint reconnection, §6.2.3 | Missing |
@@ -81,7 +81,23 @@ probability `t_j/S`, where `S=sum(t_j)`. The initial normalizer is `S`, not one 
 `S/slot_count`. Inactive atoms retain the positive target floor. Imports, temporal
 memoization, reverse targets and MCMC keep the same `j`; a wavelength mutation
 fully reevaluates that atom. The fixed slot travels with its selected replay
-payload and weight. Mode, depth and target scale belong to history/cache identity.
+payload and weight. Mode, depth, target scale and replay policy belong to
+history/cache identity.
+
+`--area-contribution-replay full|prefix` is available only in the contribution
+domain; `full` remains the default oracle. Prefix replay retains all original
+continuation, hero-collapse, roulette and history work through the selected
+event. It evaluates only the requested endpoint or NEE term, then stops after
+that event. Omitted or unreachable slots remain zero. Fresh local selection still
+walks the full path and considers every slot. This reduces repeated transport;
+it is not hybrid reconnection or a cached suffix.
+
+The exact differential contract covers paths for which full replay succeeds.
+Prefix replay can succeed when an unselected term, later transport, or the full
+radiance sum would fail; those calculations are absent from the selected-atom
+evaluation. Failures encountered before or during selected evaluation remain
+failures. The control is explicit because this changes the execution failure
+domain; it does not silently turn encountered errors into zero radiance.
 
 Each atom retains the original technique MIS and four spectral likelihood
 weights. Projection uses all four original sensor wavelength PDFs, including for
@@ -97,6 +113,24 @@ crossings, repeated sample labels, queue capacities and cached replay. A 32-seed
 paired multileaf mean check uses one whole-frame difference per independent seed;
 its five-standard-error gate is a bias smoke test, not proof of unbiasedness or
 scene-quality qualification.
+
+The selected-prefix differential checks 2,227 pretraced fixed-slot cases at
+depths 0, 3 and 65, including 426 positive endpoints, 404 omitted-slot witnesses
+and 274 explicit full-failure/prefix-success partitions. It uses a synthetic
+sensor, disabled roulette, no AS traversal and zero NEE. Separate full-frame
+controls cover positive NEE, coatings, dispersion, early emission, null/invisible
+crossings and a procedural texture graph. All six fixtures preserve exact XYZ
+across full/prefix replay, cache settings, queue capacities and repeated labels.
+Image textures and emissive textures are not covered by that fixture set.
+
+A short native-1080p screen (seed 51001, two warmup and three measured frames per
+arm) uses hero-visible sampling, Area reuse, one spectral-refresh mutation and
+signed temporal denoising. Full contribution replay measures 0.798 FPS on Cornell
+and 0.960 FPS on Prism; selected-prefix replay measures 1.202 and 1.149 FPS.
+Final raw and reconstructed FLOAT images match bitwise in both scenes. These
+1.51×/1.20× ratios compare replay policies within the new contribution domain;
+they are not speedups over the merged summed-domain renderer and do not qualify
+sustained performance or the new domain's scene-level quality.
 
 ## Retained measurements and limitations
 

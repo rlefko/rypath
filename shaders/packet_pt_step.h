@@ -197,6 +197,22 @@ packet_pt_step_contribution(thread Resources &r, thread State &state,
 #undef RYPATH_PACKET_EVENT_REUSE_CURRENT
 #undef RYPATH_PACKET_EVENT_PRETRACED
 }
+// Pretraced differential entry for fixed-atom validation; transport equations
+// are shared with the production contribution walker.
+template <typename State, typename Sink>
+[[clang::always_inline]] inline void
+packet_pt_step_contribution_pretraced(thread Resources &r, thread State &state,
+                                      thread const rypath_replay::ReplayState *replay,
+                                      thread Sink &sink, const thread SurfaceHit &pretraced) {
+    static_assert(State::compact_hero, "Contribution events require hero transport");
+#define RYPATH_PACKET_EVENT_PRETRACED 1
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 1
+#define RYPATH_PACKET_EVENT_CONTRIBUTION 1
+#include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_CONTRIBUTION
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
+#undef RYPATH_PACKET_EVENT_PRETRACED
+}
 inline void packet_pt_step(thread Resources &r, thread HeroWalkState &state,
                            thread const rypath_replay::ReplayState *replay = nullptr) {
     packet_pt_step_compact_inplace(r, state, replay);

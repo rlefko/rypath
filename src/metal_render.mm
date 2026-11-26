@@ -2700,7 +2700,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v13", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v14", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
@@ -3187,22 +3187,22 @@ struct FrameSession::Impl {
             !allocate(b.arguments[0], wavefront->argument_encoder.encodedLength, true) ||
             !allocate(b.arguments[1], wavefront->argument_encoder.encodedLength, true))
             return "Wavefront slot allocation failed";
-        const wavefront_wire::Config cfg{config.width * config.height,
-                                         config.capacity,
-                                         r.parameters.packet_transport,
-                                         r.parameters.model,
-                                         config.group_width,
-                                         config.estimator == FrameEstimator::area_replay ? 1u : 0u,
-                                         config.packet_events,
-                                         static_cast<std::uint32_t>(config.packet_layout),
-                                         contribution ? contribution_wire::contribution_path
-                                                      : contribution_wire::summed,
-                                         contribution ? r.parameters.max_depth : 0u,
-                                         contribution ? config.target_scale : 0.f,
-                                         0,
-                                         0,
-                                         0,
-                                         {0, 0}};
+        const wavefront_wire::Config cfg{
+            config.width * config.height,
+            config.capacity,
+            r.parameters.packet_transport,
+            r.parameters.model,
+            config.group_width,
+            config.estimator == FrameEstimator::area_replay ? 1u : 0u,
+            config.packet_events,
+            static_cast<std::uint32_t>(config.packet_layout),
+            contribution ? contribution_wire::contribution_path : contribution_wire::summed,
+            contribution ? r.parameters.max_depth : 0u,
+            contribution ? config.target_scale : 0.f,
+            contribution ? static_cast<std::uint32_t>(config.contribution_replay) : 0u,
+            0,
+            0,
+            {0, 0}};
         std::memcpy(b.config.contents, &cfg, sizeof(cfg));
         std::memset(b.counters.contents, 0, b.counters.length);
         for (unsigned variant = 0; variant < 2; ++variant) {
@@ -3329,7 +3329,10 @@ struct FrameSession::Impl {
                               : contribution_wire::summed,
                           config.area_path_domain == FrameAreaPathDomain::contribution ? p.max_depth
                                                                                        : 0u,
-                          config.target_scale};
+                          config.target_scale,
+                          config.area_path_domain == FrameAreaPathDomain::contribution
+                              ? static_cast<std::uint32_t>(config.contribution_replay)
+                              : 0u};
         return {};
     }
     struct Runner : std::enable_shared_from_this<Runner> {
@@ -4057,6 +4060,9 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                        .epoch = request.epoch,
                        .camera_upload_bytes = camera_upload_bytes};
         frame->info.area_path_domain = c.area_path_domain;
+        frame->info.contribution_replay = c.area_path_domain == FrameAreaPathDomain::contribution
+                                              ? c.contribution_replay
+                                              : FrameContributionReplay::full;
         frame->info.contribution_depth =
             c.area_path_domain == FrameAreaPathDomain::contribution ? p.max_depth : 0;
         if (slot->raw == nil)
@@ -4348,6 +4354,16 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         result.diagnostic = "Invalid Area path domain";
         return result;
     }
+    if (config.contribution_replay != FrameContributionReplay::full &&
+        config.contribution_replay != FrameContributionReplay::prefix) {
+        result.diagnostic = "Invalid contribution replay mode";
+        return result;
+    }
+    if (config.contribution_replay == FrameContributionReplay::prefix &&
+        config.area_path_domain != FrameAreaPathDomain::contribution) {
+        result.diagnostic = "Prefix replay requires contribution path domain";
+        return result;
+    }
     if (config.area_path_domain == FrameAreaPathDomain::contribution) {
         if (config.estimator != FrameEstimator::area_replay ||
             config.execution != FrameExecution::wavefront) {
@@ -4462,9 +4478,9 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.capacity == b.capacity && a.quantum == b.quantum && a.group_width == b.group_width &&
         a.packet_events == b.packet_events && a.packet_layout == b.packet_layout &&
         a.estimator == b.estimator && a.area_path_domain == b.area_path_domain &&
-        a.target_scale == b.target_scale && a.area_output == b.area_output &&
-        a.mutation_steps == b.mutation_steps && a.mutation_policy == b.mutation_policy &&
-        a.area_stencil == b.area_stencil;
+        a.contribution_replay == b.contribution_replay && a.target_scale == b.target_scale &&
+        a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
+        a.mutation_policy == b.mutation_policy && a.area_stencil == b.area_stencil;
     if (!same) {
         result.diagnostic = "Shared-scene validation configurations differ beyond temporal cache";
         return result;

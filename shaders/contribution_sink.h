@@ -50,6 +50,16 @@ struct Sink {
     device const wf::Config &config;
     uint pixel;
 
+    bool selected_prefix() const thread {
+        return config.contribution_replay == cw::prefix_replay &&
+               state.requested_slot != cp::math::no_selection;
+    }
+    bool wanted(uint slot) const thread {
+        return !selected_prefix() || slot == state.requested_slot;
+    }
+    bool stop_after(uint depth) const thread {
+        return selected_prefix() && depth >= state.requested_slot / 2u;
+    }
     void append(cp::XYZ xyz, uint active) thread {
         if (state.failed)
             return;

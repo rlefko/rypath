@@ -52,7 +52,8 @@ void frames(RenderScene &scene) {
             transform.placement, scene.instance_texture_frames[i]);
         need(error.empty(), error);
     }
-    need(validate_render_scene(scene).empty(), "Invalid synthetic hero scene");
+    const auto diagnostic = validate_render_scene(scene);
+    need(diagnostic.empty(), "Invalid synthetic hero scene: " + diagnostic);
 }
 RenderScene base() {
     RenderScene scene;
@@ -514,6 +515,9 @@ ContributionCapture contribution_capture(FrameSession &session, const FrameConfi
              info.epoch == 73 && info.area_serial == ordinal &&
              info.history_generation == std::uint64_t(ordinal) + 1 &&
              info.area_path_domain == c.area_path_domain &&
+             info.contribution_replay == (c.area_path_domain == FrameAreaPathDomain::contribution
+                                              ? c.contribution_replay
+                                              : FrameContributionReplay::full) &&
              info.contribution_depth ==
                  (c.area_path_domain == FrameAreaPathDomain::contribution ? depth : 0u) &&
              info.history_used == history && info.temporal_candidates == (history ? 2u : 1u) &&
@@ -539,6 +543,7 @@ FrameConfig contribution_config() {
     c.width = 4;
     c.height = 2; // Capacity 7 must remain distinct from capacity 2.
     c.area_path_domain = FrameAreaPathDomain::contribution;
+    c.contribution_replay = FrameContributionReplay::full;
     c.mutation_policy = FrameMutationPolicy::spectral_refresh;
     c.area_stencil = FrameAreaStencil::reciprocal16;
     // Keep traversal deterministic when comparing scheduling and estimator domains.
@@ -638,6 +643,79 @@ void contribution_scheduling() {
         }
     }
 }
+RenderScene contribution_nee_only(bool coated = false, bool textured = false) {
+    auto scene = diffuse();
+    // No emissive surface or environment: a positive result witnesses NEE.
+    scene.environment.fill(0);
+    if (coated) {
+        scene.materials[0].scattering = ScatteringKind::coated_diffuse;
+        scene.materials[0].eta.knots = {{360, 1.5f}, {830, 1.5f}};
+        scene.materials[0].surface.albedo = .2f;
+        scene.materials[0].surface.samples = 2;
+    }
+    if (textured) {
+        namespace graph = texture_graph_wire;
+        // Same bounded procedural receiver pattern as area_frame_tests. This
+        // exercises texture coordinates and footprints without external assets.
+        scene.texture_graph.nodes = {
+            {.kind = graph::constant_node, .type = graph::spectrum, .values = {.2f}},
+            {.kind = graph::constant_node, .type = graph::spectrum, .values = {.8f}},
+            {.kind = graph::checkerboard, .type = graph::spectrum, .children = {0, 1}}};
+        auto &mapping = scene.texture_graph.nodes.back().mapping;
+        mapping.kind = graph::spatial;
+        mapping.texture_from_render[0] = 1.f / 1.75f;
+        mapping.texture_from_render[5] = 1.f / 2.5f;
+        mapping.texture_from_render[11] = .125f;
+        scene.materials[0].kind = SpectralMaterialKind::texture_graph;
+        scene.materials[0].constant = 0;
+        scene.materials[0].texture_root = 2;
+    }
+    frames(scene);
+    return scene;
+}
+void contribution_prefix_scheduling() {
+    const std::array scenes{
+        contribution_nee_only(), contribution_nee_only(true), dispersive(),
+        early_emission(true),    contribution_crossings(),    contribution_nee_only(false, true)};
+    for (std::size_t fixture = 0; fixture < scenes.size(); ++fixture) {
+        std::cout << "Hero contribution: prefix fixture " << fixture << std::endl;
+        const auto &scene = scenes[fixture];
+        auto full_config = contribution_config();
+        full_config.cache_temporal_evaluations = false;
+        auto prefix_config = full_config;
+        prefix_config.contribution_replay = FrameContributionReplay::prefix;
+        auto cached_config = prefix_config;
+        cached_config.cache_temporal_evaluations = true;
+        cached_config.capacity = 7;
+        cached_config.quantum = 1;
+        auto full = session(scene, full_config), prefix = session(scene, prefix_config),
+             cached = session(scene, cached_config);
+        const std::uint64_t labels[] = {high_sample, high_sample, high_sample + 1};
+        for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+            const auto a =
+                contribution_capture(*full, full_config, scene.max_depth, ordinal, labels[ordinal]);
+            const auto b = contribution_capture(*prefix, prefix_config, scene.max_depth, ordinal,
+                                                labels[ordinal]);
+            const auto d = contribution_capture(*cached, cached_config, scene.max_depth, ordinal,
+                                                labels[ordinal]);
+            exact(a.image, b.image);
+            exact(a.image, d.image);
+            need(a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
+                     a.info.area_stencil_offsets == d.info.area_stencil_offsets &&
+                     a.info.mutation_accepts == b.info.mutation_accepts &&
+                     a.info.mutation_accepts == d.info.mutation_accepts &&
+                     a.info.completed_evaluations == b.info.completed_evaluations &&
+                     a.info.cached_evaluations == b.info.cached_evaluations &&
+                     a.info.logical_evaluations == d.info.logical_evaluations,
+                 "Selected-prefix replay preserves imports, mutation and cache accounting");
+            need(std::any_of(a.image.raw_xyz.begin(), a.image.raw_xyz.end(),
+                             [](const auto &xyz) { return xyz[1] > 0; }),
+                 "Full/prefix fixture retains positive endpoint or direct radiance");
+        }
+        std::cout << "contribution_prefix_fixture=" << fixture
+                  << " exact_full_prefix_cache_queue_frames=3\n";
+    }
+}
 void contribution_single_endpoint() {
     // D0 has exactly one slot, hence no local WRS selection noise. The longer
     // witnesses also have only one nonzero atom. Their positive target floor is
@@ -734,6 +812,7 @@ void contribution_controls() {
     contribution_rejections();
     contribution_single_endpoint();
     contribution_scheduling();
+    contribution_prefix_scheduling();
     contribution_multileaf_mean();
 }
 } // namespace

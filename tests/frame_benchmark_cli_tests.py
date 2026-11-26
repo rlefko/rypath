@@ -24,6 +24,7 @@ assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--guide-cache on|off" in help_text
 assert "--area-output selected|conditional-mean" in help_text
 assert "--area-path-domain summed|contribution" in help_text
+assert "--area-contribution-replay full|prefix" in help_text
 assert "--area-temporal-cache on|off" in help_text
 assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
@@ -77,6 +78,7 @@ for option, values in (
     ("--spectral-transport", ("invalid", "2")),
     ("--area-output", ("invalid", "conditional_mean", "0")),
     ("--area-path-domain", ("invalid", "Contribution", "0")),
+    ("--area-contribution-replay", ("invalid", "Full", "0")),
     ("--area-temporal-cache", ("invalid", "On", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
@@ -165,6 +167,15 @@ base = ["--scene", "unused.pbrt", "--output", "x.json", "--estimator", "area-rep
 assert "missing value" in invoke([*base, "--area-path-domain"]).stderr
 assert "duplicate option" in invoke([*base, "--area-path-domain", "summed",
                                       "--area-path-domain", "contribution"]).stderr
+assert "missing value" in invoke([*base, "--area-contribution-replay"]).stderr
+assert "duplicate option" in invoke([*base, "--area-path-domain", "contribution",
+                                      "--area-contribution-replay", "full",
+                                      "--area-contribution-replay", "prefix"]).stderr
+for replay in ("full", "prefix"):
+    result = invoke([*base, "--area-contribution-replay", replay])
+    assert "requires contribution path domain" in result.stderr
+    result = invoke([*base, "--area-path-domain", "summed", "--area-contribution-replay", replay])
+    assert "requires contribution path domain" in result.stderr
 for extra in (["--execution", "megakernel"], ["--packet-layout", "hot-cold"],
               ["--packet-layout", "split-trace"],
               ["--packet-events", "2"], ["--packet-events", "4"]):
@@ -251,6 +262,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert data["capture_in_frame_timing"] is False
     assert data["settings"]["execution"] == "wavefront"
     assert data["settings"]["estimator"] == "independent"
+    assert data["settings"]["requested_area_contribution_replay"] == "full"
+    assert data["settings"]["area_contribution_replay"] == "not-applicable"
+    assert data["settings"]["effective_area_contribution_replay"] is None
     assert data["settings"]["requested_area_path_domain"] == "summed"
     assert data["settings"]["area_path_domain"] == "not-applicable"
     assert data["settings"]["effective_area_path_domain"] is None
@@ -423,6 +437,17 @@ with tempfile.TemporaryDirectory() as directory:
         assert selected["requested_area_path_domain"] == selected["area_path_domain"] == domain
         assert selected["effective_area_path_domain"] is None
         assert selected["contribution_depth"] is None and selected["contribution_slot_count"] is None
+    for replay in ("full", "prefix"):
+        for before in (True, False):
+            destination = root / f"contribution-replay-{replay}-{before}.json"
+            flag = ["--area-contribution-replay", replay]
+            domain = ["--area-path-domain", "contribution"]
+            invoke(["--scene", str(malformed), "--output", str(destination),
+                    "--estimator", "area-replay", "--spectral-transport", "hero",
+                    *(flag + domain if before else domain + flag)])
+            selected = json.loads(destination.read_text())["settings"]
+            assert selected["requested_area_contribution_replay"] == selected["area_contribution_replay"] == replay
+            assert selected["effective_area_contribution_replay"] is None
     assert settings["mutation_steps"] == 1 and settings["effective_mutation_steps"] == 1
     assert settings["area_target"] == "quarter-l1-v1"
     assert settings["area_source_mis"] == "source-target-mis-v1"
