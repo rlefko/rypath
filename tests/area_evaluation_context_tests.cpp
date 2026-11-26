@@ -19,8 +19,10 @@ int main() try {
     need(std::string_view(frame_contribution_replay_name(FrameContributionReplay::full)) == "full");
     need(std::string_view(frame_contribution_replay_name(FrameContributionReplay::prefix)) ==
          "prefix");
-    need(std::string_view(
-             frame_contribution_replay_name(static_cast<FrameContributionReplay>(2))) == "invalid");
+    // Deliberately exercise the API's invalid-enum name handling.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    const auto unknown_replay = static_cast<FrameContributionReplay>(2);
+    need(std::string_view(frame_contribution_replay_name(unknown_replay)) == "invalid");
     const AreaPathDomainContext domain{1, 65, 1.f, 0};
     need(same_area_path_domain_context(domain, domain));
     using DomainWords = std::array<std::uint32_t, sizeof(domain) / 4>;

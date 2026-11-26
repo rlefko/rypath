@@ -6,6 +6,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -32,6 +33,8 @@ void near(long double actual, long double expected, long double tolerance, const
 }
 struct Rational {
     std::int64_t n = 0, d = 1;
+    // Conventional rational construction takes ordered numerator/denominator arguments.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     Rational(std::int64_t numerator = 0, std::int64_t denominator = 1)
         : n(numerator), d(denominator) {
         need(d != 0, "Rational denominator");
@@ -46,7 +49,7 @@ struct Rational {
     friend Rational operator+(Rational a, Rational b) { return {a.n * b.d + b.n * a.d, a.d * b.d}; }
     friend Rational operator*(Rational a, Rational b) { return {a.n * b.n, a.d * b.d}; }
     friend bool operator==(Rational a, Rational b) { return a.n == b.n && a.d == b.d; }
-    long double value() const { return static_cast<long double>(n) / d; }
+    long double value() const { return static_cast<long double>(n) / static_cast<long double>(d); }
 };
 using V = std::array<long double, 3>;
 V vector(c::XYZ xyz) { return {xyz.x, xyz.y, xyz.z}; }
@@ -223,7 +226,8 @@ void contribution_decision_entropy() {
                          addresses.insert(decision_address(id, j, ordinal)).second,
                      "All bounded slot/word addresses are injective across identity fields");
             }
-    need(addresses.size() == 7u * 131u * 9u, "Decision address enumeration cardinality");
+    need(addresses.size() == std::size_t{7} * 131u * 9u,
+         "Decision address enumeration cardinality");
     // Domain separation is a COUNTER+KEY assertion, not an assertion that
     // projected 32-bit random outputs cannot collide. Fixed seeds are held equal.
     const decision::Identity id{19, ~0u, 1, 51001, 0x89abcdefu};
@@ -268,6 +272,8 @@ void slots_and_failures() {
          "No N_D contribution");
     need(c::make_descriptor(c::DepthMode::unbounded, 0).status == c::Status::unsupported_depth,
          "Unbounded depth is explicit and unsupported");
+    // Deliberately supply an unknown mode to test descriptor rejection.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     need(c::make_descriptor(c::DepthMode(0), 0).status == c::Status::invalid_descriptor,
          "Unknown depth mode");
     const auto largest = c::make_descriptor(c::DepthMode::finite, 0x7fffffffu);
@@ -343,9 +349,10 @@ void finite_tree_enumeration() {
         long double probability_mass = 0;
         for (const auto &outcome : enumerate(trees[u])) {
             const auto reservoir = c::finalize(outcome.state);
-            need(reservoir.status == c::Status::ok && reservoir.normalizer == sum,
+            need(reservoir.status == c::Status::ok &&
+                     reservoir.normalizer == static_cast<float>(sum),
                  "Normalizer is total target, with no division by slot count");
-            need(reservoir.target == toy_targets[u][reservoir.selected_slot],
+            need(reservoir.target == static_cast<float>(toy_targets[u][reservoir.selected_slot]),
                  "Selected target uses independent rational toy score");
             const auto output = c::readout(reservoir);
             need(output.status == c::Status::ok, "Signed vector readout");
