@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "frame_session.hpp"
+#include "frame_session_test_access.hpp"
 #include "hero_spectrum_shared.h"
 #include "replay_shared.h"
 #include <algorithm>
@@ -815,7 +816,9 @@ FrameConfig enhanced_config() {
 }
 ContributionCapture enhanced_capture(FrameSession &frames, const FrameConfig &c, unsigned depth,
                                      unsigned ordinal, std::uint64_t label,
-                                     std::optional<FrameCamera> camera = {}) {
+                                     std::optional<FrameCamera> camera = {},
+                                     std::unique_ptr<Frame> *retained = nullptr,
+                                     std::optional<bool> expected_cache = {}) {
     auto submitted =
         frames.submit({.sample_index = label, .epoch = 73, .camera = std::move(camera)});
     need(submitted.status == GeometryStatus::success && submitted.frame && !submitted.busy,
@@ -825,12 +828,15 @@ ContributionCapture enhanced_capture(FrameSession &frames, const FrameConfig &c,
     const auto pixels = std::uint64_t(c.width) * c.height;
     const bool history = ordinal != 0;
     const auto logical = pixels * ((history ? 7u : 5u) + c.mutation_steps);
+    const bool cache_used = expected_cache.value_or(history && c.cache_temporal_evaluations);
+    const auto cached = cache_used ? 2 * pixels : 0;
+    need(!cache_used || (history && c.cache_temporal_evaluations), "Cache expectation permission");
     need(info.width == c.width && info.height == c.height && info.sample_index == label &&
              info.epoch == 73 && info.area_serial == ordinal &&
              info.history_generation == std::uint64_t(ordinal) + 1 &&
              info.area_path_domain == FrameAreaPathDomain::enhanced &&
              info.contribution_replay == c.contribution_replay &&
-             info.contribution_depth == depth && info.canonical_transport_version == 1 &&
+             info.contribution_depth == depth && info.canonical_transport_version == 2 &&
              info.fresh_discovery_version == 1 && info.history_used == history &&
              info.temporal_candidates == (history ? 2u : 1u) && info.spatial_candidates == 5 &&
              info.completed_samples == pixels && info.fresh_candidates == pixels &&
@@ -838,11 +844,12 @@ ContributionCapture enhanced_capture(FrameSession &frames, const FrameConfig &c,
              info.completed_evaluations + info.analytic_null_evaluations +
                      info.cached_evaluations ==
                  logical &&
-             info.cached_evaluations == 0 && !info.temporal_evaluation_cache_used &&
+             info.cached_evaluations == cached &&
+             info.temporal_evaluation_cache_used == cache_used &&
              info.mutation_policy == c.mutation_policy && info.area_stencil == c.area_stencil &&
              info.mutation_attempts == pixels * c.mutation_steps &&
              info.mutation_accepts <= info.mutation_attempts && info.command_count > 0,
-         "Enhanced identity, canonical law, disabled effective cache and physical/null accounting");
+         "Enhanced identity, canonical law, exact cache permission and physical/null accounting");
     auto image = submitted.frame->capture();
     need(image.status == GeometryStatus::success && image.width == c.width &&
              image.height == c.height && image.raw_xyz.size() == pixels,
@@ -850,6 +857,8 @@ ContributionCapture enhanced_capture(FrameSession &frames, const FrameConfig &c,
     for (const auto &xyz : image.raw_xyz)
         for (float value : xyz)
             need(std::isfinite(value) && value >= 0, "Enhanced finite physical XYZ");
+    if (retained)
+        *retained = std::move(submitted.frame);
     return {std::move(image), std::move(info)};
 }
 void enhanced_black() {
@@ -872,7 +881,8 @@ void enhanced_black() {
             const auto pixels = std::uint64_t(full_config.width) * full_config.height;
             need(a.info.completed_evaluations == pixels && b.info.completed_evaluations == pixels &&
                      a.info.analytic_null_evaluations == a.info.logical_evaluations - pixels &&
-                     b.info.analytic_null_evaluations == b.info.logical_evaluations - pixels &&
+                     b.info.analytic_null_evaluations ==
+                         b.info.logical_evaluations - pixels - b.info.cached_evaluations &&
                      a.info.mutation_accepts == 0 && b.info.mutation_accepts == 0,
                  "All-black still walks fresh, keeps structural history and null mutation self");
             for (const auto &xyz : a.image.raw_xyz)
@@ -909,15 +919,19 @@ void enhanced_scheduling() {
                 enhanced_capture(*wide, wide_config, scene.max_depth, ordinal, labels[ordinal]);
             exact(a.image, b.image);
             exact(a.image, d.image);
-            need(a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
-                     a.info.area_stencil_offsets == d.info.area_stencil_offsets &&
-                     a.info.mutation_accepts == b.info.mutation_accepts &&
-                     a.info.mutation_accepts == d.info.mutation_accepts &&
-                     a.info.completed_evaluations == b.info.completed_evaluations &&
-                     a.info.completed_evaluations == d.info.completed_evaluations &&
-                     a.info.analytic_null_evaluations == b.info.analytic_null_evaluations &&
-                     a.info.analytic_null_evaluations == d.info.analytic_null_evaluations,
-                 "Enhanced execution, queue and requested-cache controls retain decisions");
+            need(
+                a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
+                    a.info.area_stencil_offsets == d.info.area_stencil_offsets &&
+                    a.info.mutation_accepts == b.info.mutation_accepts &&
+                    a.info.mutation_accepts == d.info.mutation_accepts &&
+                    a.info.completed_evaluations == b.info.completed_evaluations &&
+                    a.info.analytic_null_evaluations == b.info.analytic_null_evaluations &&
+                    d.info.completed_evaluations <= a.info.completed_evaluations &&
+                    d.info.analytic_null_evaluations <= a.info.analytic_null_evaluations &&
+                    (a.info.completed_evaluations - d.info.completed_evaluations) +
+                            (a.info.analytic_null_evaluations - d.info.analytic_null_evaluations) ==
+                        d.info.cached_evaluations,
+                "Enhanced execution, queue and requested-cache controls retain decisions");
             need(std::any_of(a.image.raw_xyz.begin(), a.image.raw_xyz.end(),
                              [](const auto &xyz) { return xyz[1] > 0; }),
                  "Enhanced fixture exercises positive endpoint or NEE");
@@ -966,8 +980,10 @@ void enhanced_null_transitions() {
                            .texture_camera = scene.texture_camera};
         need(camera.raster_camera.has_value(), "Null-transition camera is explicit");
         camera.raster_camera->origin.x = black ? 100.f : 0.f;
-        const auto a = enhanced_capture(*full, c, 0, ordinal, high_sample, camera);
-        const auto b = enhanced_capture(*prefix, prefix_config, 0, ordinal, high_sample, camera);
+        const auto a =
+            enhanced_capture(*full, c, 0, ordinal, high_sample, camera, nullptr, ordinal == 2);
+        const auto b = enhanced_capture(*prefix, prefix_config, 0, ordinal, high_sample, camera,
+                                        nullptr, ordinal == 2);
         exact(a.image, b.image);
         const auto pixels = std::uint64_t(c.width) * c.height;
         if (ordinal == 1)
@@ -1131,6 +1147,170 @@ void enhanced_mean() {
               << std::endl;
     enhanced_mean_contrast(enhanced_cavity(), "D3-closed-cavity", .234375f);
 }
+void enhanced_shared_scene_isolation() {
+    std::cout << "Enhanced shared-AS owned storage isolation" << std::endl;
+    auto c = enhanced_config();
+    c.contribution_replay = FrameContributionReplay::prefix;
+    c.cache_temporal_evaluations = false;
+    auto cached_config = c;
+    cached_config.cache_temporal_evaluations = true;
+    auto scene = contribution_nee_only();
+    scene.light_sampler = LightSamplerKind::uniform;
+    auto other_light = scene.point_lights[0];
+    other_light.position.x = -other_light.position.x;
+    scene.point_lights.push_back(other_light);
+    frames(scene); // Exactlytwo point masses: every positive selected N has h=.5.
+    auto pair = FrameSessionTestAccess::build_shared_scene(scene, c, cached_config);
+    need(pair.status == GeometryStatus::success && pair.sessions[0] && pair.sessions[1],
+         pair.diagnostic);
+    need(pair.shared_renderer && pair.independent_history && pair.independent_owned_records &&
+             pair.enhanced_record_arenas[0] != 0 && pair.enhanced_record_arenas[1] != 0 &&
+             pair.enhanced_record_arenas[0] != pair.enhanced_record_arenas[1] &&
+             pair.enhanced_evaluations[0] != 0 && pair.enhanced_evaluations[1] != 0 &&
+             pair.enhanced_evaluations[0] != pair.enhanced_evaluations[1],
+         "Shared AS must retain independent Enhanced record/evaluation/history owners");
+    std::unique_ptr<Frame> saved;
+    FrameCapture saved_image;
+    for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+        const auto a = enhanced_capture(*pair.sessions[0], c, scene.max_depth, ordinal, high_sample,
+                                        {}, ordinal == 0 ? &saved : nullptr);
+        const auto b = enhanced_capture(*pair.sessions[1], cached_config, scene.max_depth, ordinal,
+                                        high_sample);
+        exact(a.image, b.image);
+        need(
+            a.info.area_serial == b.info.area_serial &&
+                a.info.history_generation == b.info.history_generation &&
+                a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
+                b.info.completed_evaluations <= a.info.completed_evaluations &&
+                b.info.analytic_null_evaluations <= a.info.analytic_null_evaluations &&
+                (a.info.completed_evaluations - b.info.completed_evaluations) +
+                        (a.info.analytic_null_evaluations - b.info.analytic_null_evaluations) ==
+                    b.info.cached_evaluations &&
+                a.info.mutation_accepts == b.info.mutation_accepts,
+            "Interleaved shared-AS cacheoff/on retains nonunit-h selected responses and decisions");
+        if (ordinal == 0)
+            saved_image = a.image;
+        need(saved != nullptr, "First completed frame lease retained");
+        const auto recaptured = saved->capture();
+        need(recaptured.status == GeometryStatus::success, recaptured.diagnostic);
+        exact(saved_image, recaptured);
+        const auto info = saved->poll();
+        need(info.status == FrameStatus::complete && info.area_serial == 0 &&
+                 info.history_generation == 1 && info.sample_index == high_sample,
+             "Completed Frame output/receipt survives another session/frame advancing");
+    }
+}
+RenderScene enhanced_point_triangle_scene(LightSamplerKind sampler) {
+    auto scene = base();
+    scene.max_depth = 1;
+    scene.light_sampler = sampler;
+    SpectralMaterial receiver;
+    receiver.kind = SpectralMaterialKind::constant;
+    receiver.constant = .6f;
+    scene.materials.push_back(receiver);
+    SpectralMaterial black;
+    black.kind = SpectralMaterialKind::constant;
+    scene.materials.push_back(black);
+    const auto quad = [&](std::array<GeometryPoint, 4> points, unsigned material) {
+        GeometryMesh mesh;
+        mesh.positions.assign(points.begin(), points.end());
+        mesh.triangles = {{0, 2, 1}, {0, 3, 2}}; // Faces toward the camera / -Z.
+        const auto index = unsigned(scene.geometry.meshes.size());
+        scene.geometry.meshes.push_back(std::move(mesh));
+        scene.geometry.instances.push_back({index, {}});
+        scene.instance_materials.push_back(material);
+        scene.instance_emissions.push_back(no_area_emission);
+        scene.instance_surface_transforms.emplace_back();
+    };
+    quad({{{-1, -2, 3}, {1, -2, 3}, {1, 2, 3}, {-1, 2, 3}}}, 0);
+    // A distinct geometric normal, not a changed shading/normal-map model.
+    quad({{{3, -2, 2.75f}, {5, -2, 3.25f}, {5, 2, 3.25f}, {3, 2, 2.75f}}}, 0);
+    // Opaque black blocker hides both lights from the tilted panel. Camera rays
+    // at x=0 and x=4 miss it; the original flat panel sees both lights.
+    quad({{{2, -3, 2}, {3.4f, -3, 2}, {3.4f, 3, 2}, {2, 3, 2}}}, 1);
+    AreaEmission emitter;
+    emitter.radiance.fill(.75f);
+    emitter.two_sided = false;
+    scene.area_emissions.push_back(emitter);
+    GeometryMesh triangle;
+    triangle.positions = {{1, -1, 1}, {2, -1, 1}, {1, 1, 1}};
+    triangle.triangles = {{0, 1, 2}}; // +Z, toward the receiver, outside camera.
+    const auto index = unsigned(scene.geometry.meshes.size());
+    scene.geometry.meshes.push_back(std::move(triangle));
+    scene.geometry.instances.push_back({index, {}});
+    scene.instance_materials.push_back(1);
+    scene.instance_emissions.push_back(0);
+    scene.instance_surface_transforms.emplace_back();
+    PointLight light;
+    light.position = {.75f, .5f, 1};
+    light.intensity.fill(4);
+    scene.point_lights.push_back(light);
+    frames(scene);
+    return scene;
+}
+void enhanced_nee_visibility() {
+    for (auto sampler :
+         {LightSamplerKind::uniform, LightSamplerKind::power, LightSamplerKind::bvh}) {
+        std::cout << "Enhanced point/triangle visibility sampler=" << unsigned(sampler)
+                  << std::endl;
+        const auto scene = enhanced_point_triangle_scene(sampler);
+        auto full_config = enhanced_config();
+        full_config.mutation_steps = 0;
+        full_config.cache_temporal_evaluations = false;
+        auto prefix_config = full_config;
+        prefix_config.contribution_replay = FrameContributionReplay::prefix;
+        prefix_config.cache_temporal_evaluations = true;
+        prefix_config.capacity = 7;
+        prefix_config.quantum = 1;
+        auto full = session(scene, full_config), prefix = session(scene, prefix_config);
+        for (unsigned ordinal = 0; ordinal < 5; ++ordinal) {
+            FrameCamera camera{.camera = scene.camera,
+                               .camera_medium = scene.camera_medium,
+                               .raster_camera = scene.raster_camera,
+                               .perspective_lens = scene.perspective_lens,
+                               .texture_camera = scene.texture_camera};
+            need(camera.raster_camera.has_value(), "NEE transition camera explicit");
+            const bool occluded = ordinal == 2 || ordinal == 3;
+            const bool same_context = ordinal == 1 || ordinal == 3;
+            camera.raster_camera->origin.x = occluded ? 4.f : 0.f;
+            const auto a = enhanced_capture(*full, full_config, 1, ordinal, high_sample, camera,
+                                            nullptr, false);
+            const auto b = enhanced_capture(*prefix, prefix_config, 1, ordinal, high_sample, camera,
+                                            nullptr, same_context);
+            exact(a.image, b.image);
+            need(
+                a.info.mutation_accepts == 0 && b.info.mutation_accepts == 0 &&
+                    b.info.completed_evaluations <= a.info.completed_evaluations &&
+                    b.info.analytic_null_evaluations <= a.info.analytic_null_evaluations &&
+                    (a.info.completed_evaluations - b.info.completed_evaluations) +
+                            (a.info.analytic_null_evaluations - b.info.analytic_null_evaluations) ==
+                        b.info.cached_evaluations,
+                "Forced-NEE full/prefix retains visibility/null decisions");
+            for (const auto &xyz : a.image.raw_xyz)
+                need(occluded ? xyz[0] == 0 && xyz[1] == 0 && xyz[2] == 0 : xyz[1] > 0,
+                     "Point/triangle NEE actually changes positive to occluded and back");
+            if (ordinal == 2)
+                need(a.info.history_used &&
+                         a.info.completed_evaluations >
+                             std::uint64_t(full_config.width) * full_config.height &&
+                         a.info.analytic_null_evaluations > 0,
+                     "Real history is evaluated at an occluded destination, not deleted");
+        }
+    }
+}
+void enhanced_nee_controls() {
+    enhanced_nee_visibility();
+    // Each proposal policy gets its OWN32 independent seeds and predeclared
+    // 5SE+128epsilon gate. Never pool opposite signed biases across samplers.
+    for (auto sampler :
+         {LightSamplerKind::uniform, LightSamplerKind::power, LightSamplerKind::bvh}) {
+        const auto label = sampler == LightSamplerKind::uniform ? "D1-point-triangle-uniform"
+                           : sampler == LightSamplerKind::power ? "D1-point-triangle-power-alias"
+                                                                : "D1-point-triangle-BVH";
+        enhanced_mean_contrast(enhanced_point_triangle_scene(sampler), label);
+    }
+}
+
 void enhanced_rejections() {
     const auto reject = [](const RenderScene &scene, const FrameConfig &c) {
         const auto result = build_frame_session(scene, c);
@@ -1166,6 +1346,7 @@ void enhanced_rejections() {
 }
 void enhanced_controls() {
     enhanced_rejections();
+    enhanced_shared_scene_isolation();
     enhanced_black();
     enhanced_single_endpoint();
     enhanced_null_transitions();
@@ -1186,8 +1367,9 @@ int main(int argc, char **argv) {
         const bool contribution_only =
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
-        need(argc == 1 || contribution_only || enhanced_only,
-             "Expected optional --contribution-only or --enhanced");
+        const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
+        need(argc == 1 || contribution_only || enhanced_only || enhanced_nee,
+             "Expected optional --contribution-only, --enhanced or --enhanced-nee");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -1203,6 +1385,12 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_nee) {
+            enhanced_nee_controls();
+            std::cout
+                << "Enhanced point/triangle proposal-density and visibility controls passed\n";
+            return 0;
+        }
         if (enhanced_only) {
             enhanced_controls();
             std::cout << "Enhanced canonical null/support/physical/scheduling controls passed\n";

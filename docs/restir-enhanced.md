@@ -20,12 +20,13 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Mechanism | Current coverage |
 | --- | --- |
 | Contribution-aware resampling MIS | Source/destination target adaptation |
+| Confidence recurrence, §2.2 | Enhanced caps temporal input at 20 before MIS and sums structural spatial inputs |
 | Reciprocal spatial work sharing, §3 | Reciprocal stencil and shared reverse targets; not the paper's pairing textures |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
 | Contribution-path reservoir, §§2.3 and 6.1 | Opt-in finite-depth `(U,j)` with fresh local selection; full or selected-prefix replay |
 | Hybrid reconnection and Jacobian, Eq. 2 | Missing; imported keys use full or selected-prefix replay |
 | Dual-footprint eligibility, Eq. 5 | Missing |
-| Forced NEE endpoint reconnection, §6.2.3 | Missing |
+| Forced NEE endpoint reconnection, §6.2.3 | Enhanced owns triangle-area, positional/distant-mass and environment-direction endpoints; other shapes retain replay |
 | Selective shift-pair compaction, §6.2.2 | Missing; ordinary wavefront compaction is a different operation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
 | Reservoir reprojection and dual motion, §6.4 | Missing; denoiser motion vectors do not implement this |
@@ -159,8 +160,9 @@ The actual gate is a 24-bit dyadic probability. The stored product of at most
 64 probabilities is rounded FLOAT, with the stated `gamma64` relative error
 bound; this is not an exact floating-point Horvitz–Thompson claim. A pre-draw
 unit-survival choice prevents the product entering an unsupported range. It
-never clips an observed weight. Enhanced temporal memoization is initially off;
-logical, physical and analytic-null evaluation accounting are reported separately.
+never clips an observed weight. Exact temporal memoization requires identical
+complete evaluator contexts and unchanged pixel ownership. Logical, physical,
+cached and analytic-null evaluations are reported as disjoint categories.
 
 Release validation on M4 Max for this stage passes the shared arithmetic,
 context, CLI, queue, Enhanced rendering and selected-prefix controls. The GPU
@@ -191,6 +193,64 @@ These are the retained pre-Enhanced baseline, not new Enhanced measurements or
 converged reference images. PR #78 passed all 279 local Debug tests and all eight
 hosted checks before merging. Slower execution experiments remain archived and
 excluded from main.
+
+## Owned terminal-light stage
+
+The Enhanced canonical law is version 2. Its disjoint terminal NEE charts own a
+LightID and either triangle area coordinates, a positional/distant counting mass,
+or an environment direction in solid angle. Unsupported emitter shapes retain
+generic replay. An imported generic atom that belongs to an owned chart at its
+destination has zero mapped support; it does not silently change charts. The
+raw physical contribution reevaluates the fixed endpoint's emission, visibility,
+BSDF and original four-wavelength technique MIS. It never divides by a sampled
+light PDF and then multiplies that division back out.
+
+For nonzero canonical XYZ, the target is `L1(XYZ)/4 + h_eval*epsilon(scale)`;
+exact represented zero retains zero target. Fresh local scores are
+`target/(h_gen*a)`, where `h_gen` is the actual generated marginal endpoint
+density and `a` is discovery probability. The queried `h_eval` may differ in
+FLOAT from `h_gen`; replacing one with the other would change the estimator.
+This is a new numerical reference, not a claim of bit identity to legacy NEE.
+Scaled density arithmetic distinguishes a genuine zero-support cell from
+positive products that would underflow an ordinary FLOAT multiplication.
+
+Each selected record travels with its XYZ, target, normalizer and queried
+density. MCMC holds the endpoint and contribution-slot labels fixed, reevaluates
+spectral/residual coordinates, and retains the entire old tuple on rejection.
+One 48-byte record per pixel in each of four generation-owned banks avoids
+per-evaluation record copies. Session slots share one arena under the exclusive
+Area history lease; independent sessions never share writable arenas. This adds
+192 record bytes plus a 32-byte evaluation receipt per pixel. Published frame
+captures do not borrow mutable reservoir records.
+
+Enhanced confidence is separate from the reservoir normalizer and age. Fresh
+confidence is one, temporal input is capped at 20 before both MIS evaluations,
+and spatial output sums structurally present source confidences. Null selected
+samples retain their proposal domains. Out-of-bounds self aliases do not invent
+neighbors; duplicate valid stencil slots count per occurrence. There is no
+extra division by confidence and no duplication-dependent biased cap.
+
+Release GPU checks before memoization restoration passed the six physical
+fixtures and the independent multibounce mean check, plus three independent
+32-seed point/triangle mean contrasts for uniform, power-alias and BVH proposals.
+Visibility transitions exercise positive-to-occluded-to-positive history.
+The initial pure-Metal probe passed 130 record, geometry, physical-product,
+selection-density and environment-density cases, including positive scaled
+underflow and explicit invalid-data failures. Injected Area protocol tests check
+nonunit densities, capped confidence, null domains, accepted/rejected mutations,
+immutable banks and reciprocal-stencil boundaries against independent arithmetic.
+After restoring memoization, the physical/NEE controls also pass cache-off/on
+comparisons, including shared-AS sessions with nonunit density, null histories,
+and camera changes that require replay. The pure-Metal probe now passes 132
+cases, adding rejection of negative-subnormal triangle coordinates. The shared
+path/confidence/footprint/suffix/reprojection arithmetic, context accounting, CLI
+and injected queue protocol checks pass in Release. These are focused stage
+checks; final Debug publication checks are separate.
+These checks do not qualify four-scene quality, eliminate physical glints, or
+establish a speedup. Adaptive surface reconnection, suffix caching, shift-pair
+compaction, dual-motion integration and duplication diagnostics remain pending.
+The footprint, suffix-product and reprojection helpers are preparatory algebra;
+their presence alone is not runtime coverage of those mechanisms.
 
 ## Retained measurements and limitations
 

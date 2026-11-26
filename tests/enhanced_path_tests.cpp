@@ -351,6 +351,148 @@ void long_stream_and_readout() {
     need(p.status == e::Status::invalid_slot, "past fixed-domain observation fails");
 }
 
+void chart_densities() {
+    namespace r = rypath_reuse_mis;
+    constexpr r::Scaled unit{.5f, 1};
+    for (auto xyz : {e::XYZ{4, -2, 0}, e::XYZ{0x1p120f, -0x1p120f, 0},
+                     e::XYZ{std::numeric_limits<float>::denorm_min(), 0, 0}}) {
+        const auto expected = r::importance_target(xyz.x, xyz.y, xyz.z, 1);
+        const auto actual = e::target(xyz, 1, unit);
+        need(actual.status == expected.status && m::bits(actual.value) == m::bits(expected.value),
+             "Unit evaluation density preserves original target bits");
+        auto state = e::begin(descriptor(0), 1);
+        const auto old = e::prepare_update(state, 0, xyz, .5f);
+        const auto explicit_unit = e::prepare_update(state, 0, xyz, .5f, unit, unit);
+        need(m::bits(old.alpha) == m::bits(explicit_unit.alpha) &&
+                 m::bits(old.decision.score_sum) == m::bits(explicit_unit.decision.score_sum),
+             "Default chart densities preserve score bits");
+    }
+    const e::XYZ F{0x1p-18f, -0x1p-20f, 0};
+    for (auto h :
+         {r::Scaled{.5f, -1024}, r::Scaled{.75f, -20}, r::Scaled{.5f, 4}, r::Scaled{.5f, 100}}) {
+        const auto actual = e::target(F, 1, h);
+        const long double density = std::ldexp(static_cast<long double>(h.fraction), h.exponent);
+        const long double energy =
+            (std::abs(static_cast<long double>(F.x)) + std::abs(static_cast<long double>(F.y))) / 4;
+        const long double expected = energy + density * static_cast<long double>(1e-6f);
+        need(actual.status == m::Status::ok, "Scaled h need not materialize to FLOAT");
+        near(actual.value, expected, expected * 4e-7L, "Independent chart floor/energy target");
+    }
+    need(e::target({1, 0, 0}, 1, {.5f, 1024}).status == m::Status::arithmetic_failure,
+         "Huge chart floor fails instead of overflowing or clipping");
+    for (auto poison : {r::Scaled{0, 1}, r::Scaled{1, 0}, r::Scaled{-.5f, 1},
+                        r::Scaled{std::numeric_limits<float>::quiet_NaN(), 1},
+                        r::Scaled{.5f, std::numeric_limits<int>::max()},
+                        r::Scaled{.5f, std::numeric_limits<int>::min()}}) {
+        need(!e::valid_density(poison) && e::target({}, 1, poison).status != m::Status::ok,
+             "Even zero cannot bypass poisoned h before exponent arithmetic");
+        const auto state = e::begin(descriptor(0), 1);
+        need(e::prepare_update(state, 0, {}, 1, unit, poison).status != e::Status::ok,
+             "Zero observation still validates actual generation h");
+    }
+    auto state = e::begin(descriptor(0), 1);
+    auto update = e::prepare_update(state, 0, {2, 0, 0}, 1, {.5f, 4}, {.5f, 2});
+    need(update.status == e::Status::ok && update.decision.complete,
+         "Different source generation/query density is legal");
+    need(e::commit_update(state, update).status == e::Status::ok &&
+             state.score_sum < state.selected_target && e::valid_state(state),
+         "h_gen>1 legally produces Z below selected canonical target");
+    need(e::same_density(state.selected_h, {.5f, 4}), "Selected evaluation density retained");
+    const auto reservoir = e::finalize(state, e::StopReason::depth_end);
+    need(e::same_density(reservoir.selected_h, state.selected_h) &&
+             e::readout(reservoir).value.x == 1,
+         "Weighted chart response divides by source generation, not queried h");
+    auto stale = e::begin(descriptor(1), 1);
+    observe(stale, {0x1p80f, 0, 0}, 1);
+    update = e::prepare_update(stale, 1, {2, 0, 0}, 1, {.5f, 4}, {.5f, 2});
+    stale.selected_h = {.5f, 2};
+    need(e::valid_state(stale), "Absorbed floor leaves altered-h state numerically valid");
+    need(e::commit_update(stale, update).status == e::Status::invalid_state,
+         "Stale selected evaluation-density state fails");
+    auto changed = e::begin(descriptor(0), 1);
+    update = e::prepare_update(changed, 0, {2, 0, 0}, 1, unit, unit);
+    update.h_gen = {.5f, 2};
+    need(e::commit_update(changed, update).status == e::Status::invalid_state,
+         "Commit recomputes generation proposal score from retained density");
+    auto null = e::begin(descriptor(0), 1);
+    update = e::prepare_update(null, 0, {}, 1, {.5f, 100}, {.5f, -100});
+    need(e::commit_update(null, update).status == e::Status::ok && e::unit_density(null.selected_h),
+         "Null h remains canonical unit regardless of zero candidate's chart");
+    null.selected_h = {.5f, 2};
+    need(!e::valid_state(null), "Noncanonical null h invalid");
+    // MH acts on the CHART target. Here the old U targets would order the two
+    // states oppositely, so the negative control distinguishes actual policy.
+    const auto current = e::target({0x1p-18f, 0, 0}, 1, {.5f, 2});
+    const auto proposal = e::target({0x1p-18f, 0, 0}, 1, {.5f, 0});
+    const auto acceptance = r::prepare_normalizer_acceptance(.25f, current.value, proposal.value);
+    const auto wrong_current = e::target({0x1p-19f, 0, 0}, 1);
+    const auto wrong_proposal = e::target({0x1p-17f, 0, 0}, 1);
+    const auto wrong =
+        r::prepare_normalizer_acceptance(.25f, wrong_current.value, wrong_proposal.value);
+    need(acceptance.status == r::MutationStatus::ok && !acceptance.decision.complete &&
+             wrong.status == r::MutationStatus::ok && wrong.decision.complete &&
+             wrong.decision.selected,
+         "Fixed-label MH targets physical chart T, not old U target");
+}
+void chart_quadrature() {
+    namespace r = rypath_reuse_mis;
+    // Piecewise-constant continuous endpoint quadrature, NOT endpoint-average:
+    // widths1/3,2/3; actual h_gen2,1/2 => generation masses2/3,1/3.
+    // Correlated F=2,6 gives physical integral14/3; omitting hgen gives10/3.
+    constexpr std::array<float, 2> F{{2, 6}};
+    constexpr std::array<long double, 2> mass{{2.L / 3, 1.L / 3}};
+    constexpr std::array<r::Scaled, 2> generation{{{.5f, 2}, {.5f, 0}}};
+    constexpr std::array<r::Scaled, 2> evaluation{{{.5f, 4}, {.5f, 0}}};
+    long double physical = 0, omitted = 0;
+    for (unsigned point = 0; point < 2; ++point) {
+        auto state = e::begin(descriptor(0), 1);
+        auto p =
+            e::prepare_update(state, 0, {F[point], 0, 0}, 1, evaluation[point], generation[point]);
+        need(p.status == e::Status::ok && e::commit_update(state, p).status == e::Status::ok,
+             "Quadrature fresh candidate valid");
+        const auto out = e::readout(e::finalize(state, e::StopReason::depth_end));
+        need(out.status == e::Status::ok, "Quadrature weighted readout");
+        physical += mass[point] * out.value.x;
+        omitted += mass[point] * F[point];
+    }
+    near(physical, 14.L / 3, 2e-6L, "Endpoint-density correlated physical mean");
+    near(omitted, 10.L / 3, 1e-15L, "Omitted generation-density negative");
+    need(std::abs(physical - omitted) > 1, "Endpoint correlation makes missing h observable");
+    // Two atoms, independent endpoint draws, second observed with probability1/2.
+    // Enumerate source quadrature, discovery outcome and represented WRS decision.
+    // Expected sum is2*(14/3)=28/3; T_floor may differ by heval at either atom.
+    long double two_atom_mean = 0;
+    for (unsigned first = 0; first < 2; ++first)
+        for (unsigned second = 0; second < 2; ++second) {
+            auto source = e::begin(descriptor(1), 1);
+            auto initial = e::prepare_update(source, 0, {F[first], 0, 0}, 1, evaluation[first],
+                                             generation[first]);
+            need(e::commit_update(source, initial).status == e::Status::ok, "First chart atom");
+            const auto cut = e::readout(e::finalize(source, e::StopReason::rr_cut));
+            const auto next = e::prepare_update(source, 1, {F[second], 0, 0}, .5f,
+                                                evaluation[second], generation[second]);
+            need(next.status == e::Status::ok && !next.decision.complete, "Chart WRS second atom");
+            const long double select_new = probability(next.decision);
+            long double survived = 0;
+            for (unsigned word : {0u, 0xffffffffu}) {
+                auto state = source;
+                auto p = next;
+                for (unsigned ordinal = 0;
+                     !p.decision.complete && ordinal < m::maximum_random_words; ++ordinal)
+                    e::feed_random_word(p, word);
+                const auto result = e::commit_update(state, p);
+                need(result.status == e::Status::ok, "Commit chart WRS branch");
+                observe(state, {}, .5f);
+                const auto out = e::readout(e::finalize(state, e::StopReason::depth_end));
+                need(out.status == e::Status::ok, "Finalized chart WRS branch");
+                survived += (result.selected ? select_new : 1 - select_new) * out.value.x;
+            }
+            two_atom_mean += mass[first] * mass[second] * (.5L * cut.value.x + .5L * survived);
+        }
+    near(two_atom_mean, 28.L / 3, 1e-5L,
+         "Independent endpoint/discovery/WRS quadrature physical sum");
+}
+
 void discovery() {
     auto state = e::DiscoveryState{};
     auto p = e::prepare_gate(state, .1f);
@@ -439,6 +581,8 @@ int main() {
         pair_scores_and_negative_controls();
         future_padding_negative();
         long_stream_and_readout();
+        chart_densities();
+        chart_quadrature();
         discovery();
         std::cout << "Enhanced zero-aware canonical math tests passed\n";
         return 0;

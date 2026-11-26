@@ -933,13 +933,13 @@ struct Report {
             << ",\"area_target\":"
             << quote(options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "quarter-l1-zero-v1"
+                                ? "quarter-l1-owned-zero-v2"
                                 : "quarter-l1-v1")
                          : "none")
             << ",\"area_source_mis\":"
             << quote(options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "enhanced-source-target-mis-v1"
+                                ? "enhanced-confidence-source-target-mis-v2"
                                 : "source-target-mis-v1")
                          : "none")
             << ",\"area_temporal_reuse\":"
@@ -951,8 +951,7 @@ struct Report {
             << (options.cache_temporal_evaluations ? "true" : "false")
             << ",\"area_temporal_cache\":"
             << (options.estimator == rypath::FrameEstimator::area_replay &&
-                        options.cache_temporal_evaluations &&
-                        options.area_path_domain != rypath::FrameAreaPathDomain::enhanced
+                        options.cache_temporal_evaluations
                     ? "true"
                     : "false")
             << ",\"target_scale\":" << options.target_scale
@@ -1654,13 +1653,13 @@ int run(const Options &options) {
                     {"rypath.area.target",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "quarter-l1-zero-v1"
+                                ? "quarter-l1-owned-zero-v2"
                                 : "quarter-l1-v1")
                          : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "enhanced-source-target-mis-v1"
+                                ? "enhanced-confidence-source-target-mis-v2"
                                 : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
@@ -1692,10 +1691,7 @@ int run(const Options &options) {
                     {"rypath.area.temporal_cache_requested",
                      options.cache_temporal_evaluations ? "true" : "false"},
                     {"rypath.area.temporal_cache_enabled",
-                     options.cache_temporal_evaluations &&
-                             options.area_path_domain != rypath::FrameAreaPathDomain::enhanced
-                         ? "true"
-                         : "false"},
+                     options.cache_temporal_evaluations ? "true" : "false"},
                     {"rypath.area.temporal_cache_used",
                      frame_info.temporal_evaluation_cache_used ? "true" : "false"},
                     {"rypath.area.generation", std::to_string(frame_info.history_generation)},
@@ -1817,13 +1813,13 @@ int run(const Options &options) {
                     {"rypath.area.target",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "quarter-l1-zero-v1"
+                                ? "quarter-l1-owned-zero-v2"
                                 : "quarter-l1-v1")
                          : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "enhanced-source-target-mis-v1"
+                                ? "enhanced-confidence-source-target-mis-v2"
                                 : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",

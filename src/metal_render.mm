@@ -7,6 +7,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "enhanced_wire.h"
 #include "frame_session.hpp"
 #include "frame_session_test_access.hpp"
 #include "frame_wire.h"
@@ -61,6 +62,10 @@ static_assert(frame_area_canonical_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_canonical_law &&
               frame_area_discovery_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_discovery_law);
+static_assert(wavefront_wire::enhanced_records_id == 20 &&
+                  wavefront_wire::enhanced_evaluation_id == 21 &&
+                  area_wire::enhanced_records_id == 11 && area_wire::enhanced_evaluation_id == 12,
+              "Enhanced owned-record argument bindings");
 
 // Execute the contract in the actual loaded library. A matching entry-point
 // name alone cannot establish compatibility with a stale/custom metallib.
@@ -2202,6 +2207,7 @@ struct FrameWavefrontBuffers {
     id<MTLBuffer> packet_hot = nil, packet_cold = nil, packet_hit = nil;
     id<MTLBuffer> hero_state = nil, hero_cold = nil;
     id<MTLBuffer> contribution_evaluation = nil, contribution_state = nil;
+    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil;
     id<MTLBuffer> queue[2]{nil, nil};
     id<MTLBuffer> free_slots = nil, counters = nil, done = nil;
     id<MTLBuffer> current_dispatch = nil, refill_dispatch = nil;
@@ -2219,6 +2225,7 @@ struct FrameAreaBuffers {
     id<MTLBuffer> replay = nil, leaf = nil, accumulators = nil, temporal = nil, failure = nil;
     id<MTLBuffer> cross_targets = nil;
     id<MTLBuffer> contribution_evaluation = nil;
+    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil;
     id<MTLBuffer> config[area_wire::config_count]{};
     id<MTLBuffer> arguments[area_wire::config_count]{};
 };
@@ -2254,6 +2261,9 @@ static bool same_area_evaluation_context(const FrameAreaContext &a, const FrameA
 struct FrameAreaHistory {
     std::mutex mutex;
     id<MTLBuffer> banks[2]{nil, nil};
+    // One pending Area frame exclusively owns scratch banks 2/3. Slots borrow
+    // this arena; history banks 0/1 publish under the same completion token.
+    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil;
     FrameAreaContext contexts[2];
     bool pending = false, valid = false, epoch_known = false, serial_exhausted = false;
     std::uint64_t epoch = 0, generation = 0, next_serial = 0, pending_serial = 0;
@@ -2704,7 +2714,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v16", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v17", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
@@ -2747,7 +2757,9 @@ struct FrameSession::Impl {
             contract.hero_cold_bytes >= contract.cold_bytes ||
             !alignment_valid(contract.contribution_state_bytes,
                              contract.contribution_state_alignment) ||
-            !alignment_valid(contract.enhanced_state_bytes, contract.enhanced_state_alignment))
+            !alignment_valid(contract.enhanced_state_bytes, contract.enhanced_state_alignment) ||
+            contract.enhanced_record_bytes != sizeof(enhanced_wire::Record) ||
+            contract.enhanced_evaluation_bytes != sizeof(enhanced_wire::Evaluation))
             return "Metal wavefront shader contract mismatch; rebuild the metallib";
         // Verify the actual selected packet entry before reporting any policy
         // as effective. Older/unrelated libraries must not silently ignore the
@@ -2916,6 +2928,13 @@ struct FrameSession::Impl {
         // Area shares its evaluation buffer with wavefront; its accounting
         // replaces this sentinel rather than charging the full buffer twice.
         slot_bytes += contribution_state_bytes + 16;
+        // Area replaces these two independent-mode sentinels with one shared
+        // records/evaluation allocation for the entire history, not each slot.
+        if (slot_bytes > std::numeric_limits<std::uint64_t>::max() - 32)
+            return "Wavefront buffer byte count overflow";
+        slot_bytes += 32;
+        if (slot_bytes > (std::numeric_limits<std::uint64_t>::max() - cie.length) / 2)
+            return "Wavefront slots byte count overflow";
         const std::uint64_t total = 2 * std::uint64_t(slot_bytes) + cie.length;
         if (cold_bytes > r.device.maxBufferLength || hit_bytes > r.device.maxBufferLength ||
             state_allocation > r.device.maxBufferLength || raw_bytes > r.device.maxBufferLength ||
@@ -3017,17 +3036,60 @@ struct FrameSession::Impl {
                 ? pixels * sizeof(contribution_wire::Evaluation)
                 : 16;
         const auto arguments_bytes = area->argument_encoder.encodedLength;
-        const auto workspace_bytes =
-            replay_bytes + leaf_bytes + temporal_bytes + accumulator_bytes + cross_bytes +
-            evaluation_bytes + sizeof(area_wire::Counters) +
-            area_wire::config_count * (sizeof(area_wire::Config) + arguments_bytes);
-        const std::uint64_t total =
-            2 * (std::uint64_t(slot_bytes) - 32 - 16 + workspace_bytes) + 2 * history_bytes +
-            2 * (r.graph_nodes.length + r.surface_transforms.length) + cie.length;
+        const auto add_bytes = [](std::uint64_t &total, std::uint64_t bytes) {
+            if (bytes > std::numeric_limits<std::uint64_t>::max() - total)
+                return false;
+            total += bytes;
+            return true;
+        };
+        const auto product_bytes = [](std::uint64_t count, std::uint64_t stride,
+                                      std::uint64_t &bytes) {
+            if (stride && count > std::numeric_limits<std::uint64_t>::max() / stride)
+                return false;
+            bytes = count * stride;
+            return true;
+        };
+        const bool enhanced = config.area_path_domain == FrameAreaPathDomain::enhanced;
+        std::uint64_t enhanced_record_bytes = 16, enhanced_evaluation_bytes = 16;
+        if (enhanced &&
+            (!product_bytes(pixels, sizeof(enhanced_wire::Record), enhanced_record_bytes) ||
+             !product_bytes(enhanced_record_bytes, enhanced_wire::bank_count,
+                            enhanced_record_bytes) ||
+             !product_bytes(pixels, sizeof(enhanced_wire::Evaluation), enhanced_evaluation_bytes)))
+            return "Enhanced records/evaluation byte count overflow";
+        std::uint64_t workspace_bytes = 0;
+        for (const auto bytes :
+             {replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes, cross_bytes,
+              evaluation_bytes, std::uint64_t(sizeof(area_wire::Counters))})
+            if (!add_bytes(workspace_bytes, bytes))
+                return "Area workspace byte count overflow";
+        std::uint64_t argument_set_bytes = sizeof(area_wire::Config), all_arguments_bytes = 0;
+        if (!add_bytes(argument_set_bytes, arguments_bytes) ||
+            !product_bytes(area_wire::config_count, argument_set_bytes, all_arguments_bytes) ||
+            !add_bytes(workspace_bytes, all_arguments_bytes))
+            return "Area arguments byte count overflow";
+        // Replace the per-slot replay(32), contribution evaluation(16), and
+        // Enhanced records/evaluation(32) sentinels. The latter buffers belong
+        // to the history and are charged once, including in legacy Area mode.
+        constexpr std::uint64_t replaced_sentinels = 32 + 16 + 32;
+        if (slot_bytes < replaced_sentinels)
+            return "Area slot accounting underflow";
+        std::uint64_t per_slot_bytes = slot_bytes - replaced_sentinels;
+        std::uint64_t total = 0, bank_bytes = 0, context_bytes = 0;
+        if (!add_bytes(per_slot_bytes, workspace_bytes) ||
+            !product_bytes(2, per_slot_bytes, total) ||
+            !product_bytes(2, history_bytes, bank_bytes) || !add_bytes(total, bank_bytes) ||
+            !add_bytes(context_bytes, r.graph_nodes.length) ||
+            !add_bytes(context_bytes, r.surface_transforms.length) ||
+            !product_bytes(2, context_bytes, context_bytes) || !add_bytes(total, context_bytes) ||
+            !add_bytes(total, enhanced_record_bytes) ||
+            !add_bytes(total, enhanced_evaluation_bytes) || !add_bytes(total, cie.length))
+            return "Area slots/history byte count overflow";
         for (const auto bytes :
              {history_bytes, replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes,
-              cross_bytes, evaluation_bytes, std::uint64_t(arguments_bytes),
-              std::uint64_t(r.graph_nodes.length), std::uint64_t(r.surface_transforms.length)})
+              cross_bytes, evaluation_bytes, enhanced_record_bytes, enhanced_evaluation_bytes,
+              std::uint64_t(arguments_bytes), std::uint64_t(r.graph_nodes.length),
+              std::uint64_t(r.surface_transforms.length)})
             if (bytes > r.device.maxBufferLength)
                 return "Area buffer exceeds the device limit";
         if (total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
@@ -3040,6 +3102,14 @@ struct FrameSession::Impl {
             if (bank == nil)
                 return "Area history allocation failed";
         }
+        history->enhanced_records = [r.device newBufferWithLength:enhanced_record_bytes
+                                                          options:MTLResourceStorageModePrivate];
+        history->enhanced_evaluation = [r.device newBufferWithLength:enhanced_evaluation_bytes
+                                                             options:MTLResourceStorageModePrivate];
+        if (history->enhanced_records == nil || history->enhanced_evaluation == nil)
+            return "Enhanced owned-record storage allocation failed";
+        // Contents are produced/validated by Area prepare/finish, never cleared
+        // here or during slot reuse. Front publication is the validity boundary.
         return {};
     }
     std::string allocate_area(Slot &slot) {
@@ -3047,6 +3117,10 @@ struct FrameSession::Impl {
         if (!slot.area)
             slot.area = std::make_shared<FrameAreaBuffers>();
         auto &b = *slot.area;
+        if (!history || history->enhanced_records == nil || history->enhanced_evaluation == nil)
+            return "Area owned-record storage is unavailable";
+        b.enhanced_records = history->enhanced_records;
+        b.enhanced_evaluation = history->enhanced_evaluation;
         const auto allocate = [&](id<MTLBuffer> __strong &buffer, std::size_t bytes,
                                   bool shared = false) {
             if (buffer == nil)
@@ -3075,7 +3149,7 @@ struct FrameSession::Impl {
     }
     void configure_area(Slot &slot, id<MTLBuffer> raw, std::uint64_t serial, bool history_used,
                         bool temporal_cache, id<MTLBuffer> source, id<MTLBuffer> destination,
-                        rypath_area_stencil::Offsets offsets) {
+                        rypath_area_stencil::Offsets offsets, unsigned history_source_bank) {
         auto &b = *slot.area;
         if (frame_area_contribution_family(config.area_path_domain)) {
             // The free frame slot owns this shared config until completion.
@@ -3101,39 +3175,41 @@ struct FrameSession::Impl {
                                    : index >= area_wire::temporal_reverse_config ? 0u
                                    : index < 2                                   ? index
                                                                                  : index - 2;
-            const area_wire::Config cfg{config.width * config.height,
-                                        config.width,
-                                        config.height,
-                                        phase,
-                                        candidate,
-                                        history_used ? 1u : 0u,
-                                        static_cast<std::uint32_t>(serial),
-                                        static_cast<std::uint32_t>(serial >> 32),
-                                        static_cast<std::uint32_t>(config.seed),
-                                        static_cast<std::uint32_t>(config.seed >> 32),
-                                        config.target_scale,
-                                        config.mutation_steps,
-                                        config.area_output == FrameAreaOutput::conditional_mean
-                                            ? area_wire::conditional_mean_output
-                                            : area_wire::selected_output,
-                                        config.mutation_policy ==
-                                                FrameMutationPolicy::spectral_refresh
-                                            ? area_wire::spectral_refresh_mutation
-                                            : area_wire::legacy_mutation,
-                                        config.area_stencil == FrameAreaStencil::reciprocal16
-                                            ? area_wire::reciprocal16_stencil
-                                            : area_wire::adjacent_stencil,
-                                        temporal_cache ? 1u : 0u,
-                                        {offsets.first.x, offsets.second.x},
-                                        {offsets.first.y, offsets.second.y},
-                                        static_cast<std::uint32_t>(config.area_path_domain),
-                                        frame_area_contribution_family(config.area_path_domain)
-                                            ? renderer->impl_->parameters.max_depth
-                                            : 0u};
+            const area_wire::Config cfg{
+                config.width * config.height,
+                config.width,
+                config.height,
+                phase,
+                candidate,
+                history_used ? 1u : 0u,
+                static_cast<std::uint32_t>(serial),
+                static_cast<std::uint32_t>(serial >> 32),
+                static_cast<std::uint32_t>(config.seed),
+                static_cast<std::uint32_t>(config.seed >> 32),
+                config.target_scale,
+                config.mutation_steps,
+                config.area_output == FrameAreaOutput::conditional_mean
+                    ? area_wire::conditional_mean_output
+                    : area_wire::selected_output,
+                config.mutation_policy == FrameMutationPolicy::spectral_refresh
+                    ? area_wire::spectral_refresh_mutation
+                    : area_wire::legacy_mutation,
+                config.area_stencil == FrameAreaStencil::reciprocal16
+                    ? area_wire::reciprocal16_stencil
+                    : area_wire::adjacent_stencil,
+                temporal_cache ? 1u : 0u,
+                {offsets.first.x, offsets.second.x},
+                {offsets.first.y, offsets.second.y},
+                static_cast<std::uint32_t>(config.area_path_domain),
+                frame_area_contribution_family(config.area_path_domain)
+                    ? renderer->impl_->parameters.max_depth
+                    : 0u,
+                config.area_path_domain == FrameAreaPathDomain::enhanced ? history_source_bank
+                                                                         : 0u};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
-            const std::array<id<MTLBuffer>, 11> resources{b.config[index],
+            const std::array<id<MTLBuffer>, 13> resources{b.config[index],
                                                           b.replay,
                                                           b.leaf,
                                                           b.accumulators,
@@ -3143,13 +3219,17 @@ struct FrameSession::Impl {
                                                           raw,
                                                           b.failure,
                                                           b.cross_targets,
-                                                          b.contribution_evaluation};
+                                                          b.contribution_evaluation,
+                                                          b.enhanced_records,
+                                                          b.enhanced_evaluation};
             for (NSUInteger argument = 0; argument < resources.size(); ++argument)
                 [encoder setBuffer:resources[argument] offset:0 atIndex:argument];
         }
     }
     std::string allocate_wavefront(Slot &slot, id<MTLBuffer> raw, id<MTLBuffer> replay = nil,
-                                   id<MTLBuffer> contribution_evaluation = nil) {
+                                   id<MTLBuffer> contribution_evaluation = nil,
+                                   id<MTLBuffer> enhanced_records = nil,
+                                   id<MTLBuffer> enhanced_evaluation = nil) {
         auto &r = *renderer->impl_;
         if (!slot.wavefront)
             slot.wavefront = std::make_shared<FrameWavefrontBuffers>();
@@ -3166,6 +3246,14 @@ struct FrameSession::Impl {
             b.replay = replay;
         if (contribution_evaluation != nil)
             b.contribution_evaluation = contribution_evaluation;
+        if ((enhanced_records == nil) != (enhanced_evaluation == nil))
+            return "Wavefront owned-record bindings must be supplied together";
+        if (enhanced_records != nil) {
+            b.enhanced_records = enhanced_records;
+            b.enhanced_evaluation = enhanced_evaluation;
+        }
+        if (config.area_path_domain == FrameAreaPathDomain::enhanced && enhanced_records == nil)
+            return "Enhanced wavefront requires shared Area owned-record storage";
         const auto state_allocation = std::size_t(config.capacity) * state_bytes;
         const bool separated = config.packet_layout != FramePacketLayout::packed;
         const bool hero = r.parameters.packet_transport == 2;
@@ -3185,6 +3273,7 @@ struct FrameSession::Impl {
                           ? std::size_t(config.capacity) * wavefront->contract.hit_bytes
                           : 16) ||
             !allocate(b.replay, 32) || !allocate(b.contribution_evaluation, 16) ||
+            !allocate(b.enhanced_records, 16) || !allocate(b.enhanced_evaluation, 16) ||
             !allocate(b.contribution_state,
                       contribution ? std::size_t(config.capacity) *
                                          (config.area_path_domain == FrameAreaPathDomain::enhanced
@@ -3227,7 +3316,7 @@ struct FrameSession::Impl {
         for (unsigned variant = 0; variant < 2; ++variant) {
             auto encoder = wavefront->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[variant] offset:0];
-            const std::array<id<MTLBuffer>, 20> resources{b.config,
+            const std::array<id<MTLBuffer>, 22> resources{b.config,
                                                           b.scalar_state,
                                                           b.packet_state,
                                                           b.queue[variant],
@@ -3246,7 +3335,9 @@ struct FrameSession::Impl {
                                                           b.hero_state,
                                                           b.hero_cold,
                                                           b.contribution_evaluation,
-                                                          b.contribution_state};
+                                                          b.contribution_state,
+                                                          b.enhanced_records,
+                                                          b.enhanced_evaluation};
             for (NSUInteger index = 0; index < resources.size(); ++index)
                 [encoder setBuffer:resources[index] offset:0 atIndex:index];
         }
@@ -3650,10 +3741,11 @@ struct FrameSession::Impl {
                     if (!work.requested) {
                         work.requested = true;
                         work.status = "available: command-level path passes";
-                        work.state_pool_bytes = b.scalar_state.length + b.packet_state.length +
-                                                b.packet_hot.length + b.packet_cold.length +
-                                                b.packet_hit.length + b.hero_state.length +
-                                                b.hero_cold.length + b.contribution_state.length;
+                        work.state_pool_bytes =
+                            b.scalar_state.length + b.packet_state.length + b.packet_hot.length +
+                            b.packet_cold.length + b.packet_hit.length + b.hero_state.length +
+                            b.hero_cold.length + b.contribution_state.length +
+                            b.enhanced_records.length + b.enhanced_evaluation.length;
                     }
                 }
                 const bool reverse = history && area_leaf == area_wire::temporal_reverse_config &&
@@ -3682,11 +3774,26 @@ struct FrameSession::Impl {
                         [encoder useResource:resource usage:usage];
                 };
                 const auto read_write = MTLResourceUsageRead | MTLResourceUsageWrite;
-                for (auto buffer :
-                     {b.scalar_state, b.packet_state, b.queue[0], b.queue[1], b.free_slots,
-                      b.counters, b.done, b.current_dispatch, b.refill_dispatch, frame->raw,
-                      b.replay, b.packet_hot, b.packet_cold, b.packet_hit, b.hero_state,
-                      b.hero_cold, b.contribution_evaluation, b.contribution_state})
+                for (auto buffer : {b.scalar_state,
+                                    b.packet_state,
+                                    b.queue[0],
+                                    b.queue[1],
+                                    b.free_slots,
+                                    b.counters,
+                                    b.done,
+                                    b.current_dispatch,
+                                    b.refill_dispatch,
+                                    frame->raw,
+                                    b.replay,
+                                    b.packet_hot,
+                                    b.packet_cold,
+                                    b.packet_hit,
+                                    b.hero_state,
+                                    b.hero_cold,
+                                    b.contribution_evaluation,
+                                    b.contribution_state,
+                                    b.enhanced_records,
+                                    b.enhanced_evaluation})
                     use_resource(buffer, read_write);
                 use_resource(b.config, MTLResourceUsageRead);
                 use_resource(cie, MTLResourceUsageRead);
@@ -3737,7 +3844,8 @@ struct FrameSession::Impl {
                     auto &a = *frame->retention->area;
                     for (auto buffer :
                          {a.replay, a.leaf, a.accumulators, a.temporal, a.failure, a.cross_targets,
-                          a.contribution_evaluation, history_destination})
+                          a.contribution_evaluation, a.enhanced_records, a.enhanced_evaluation,
+                          history_destination})
                         use_resource(buffer, read_write);
                     use_resource(history_source, MTLResourceUsageRead);
                     for (auto buffer : a.config)
@@ -4150,7 +4258,9 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
             result.diagnostic = impl_->allocate_wavefront(
                 *slot, impl_->history ? slot->area->leaf : frame->raw,
                 impl_->history ? slot->area->replay : nil,
-                impl_->history ? slot->area->contribution_evaluation : nil);
+                impl_->history ? slot->area->contribution_evaluation : nil,
+                impl_->history ? slot->area->enhanced_records : nil,
+                impl_->history ? slot->area->enhanced_evaluation : nil);
             if (!result.diagnostic.empty())
                 return result;
             frame->retention->wavefront = slot->wavefront;
@@ -4217,7 +4327,6 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 frame->info.history_used = history.valid;
                 frame->info.temporal_evaluation_cache_used =
                     history.valid && c.cache_temporal_evaluations &&
-                    c.area_path_domain != FrameAreaPathDomain::enhanced &&
                     same_area_evaluation_context(history.contexts[history.front],
                                                  history.contexts[destination_index]);
                 frame->info.history_generation = history.generation;
@@ -4231,7 +4340,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 runner->history_destination = history.banks[runner->history_destination_index];
                 impl_->configure_area(*slot, frame->raw, serial, history.valid,
                                       frame->info.temporal_evaluation_cache_used,
-                                      runner->history_source, runner->history_destination, offsets);
+                                      runner->history_source, runner->history_destination, offsets,
+                                      history.front);
             }
 
             slot->active = frame->retention;
@@ -4567,10 +4677,26 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         for (auto left : first_history->banks)
             for (auto right : second_history->banks)
                 result.independent_history &= left != right;
-    if (!result.shared_renderer || !result.independent_history) {
+    if (first_history && second_history) {
+        result.enhanced_record_arenas = {
+            reinterpret_cast<std::uintptr_t>((__bridge void *)first_history->enhanced_records),
+            reinterpret_cast<std::uintptr_t>((__bridge void *)second_history->enhanced_records)};
+        result.enhanced_evaluations = {
+            reinterpret_cast<std::uintptr_t>((__bridge void *)first_history->enhanced_evaluation),
+            reinterpret_cast<std::uintptr_t>((__bridge void *)second_history->enhanced_evaluation)};
+        result.independent_owned_records =
+            first_history->enhanced_records != nil && first_history->enhanced_evaluation != nil &&
+            second_history->enhanced_records != nil && second_history->enhanced_evaluation != nil;
+        for (auto left : {first_history->enhanced_records, first_history->enhanced_evaluation})
+            for (auto right :
+                 {second_history->enhanced_records, second_history->enhanced_evaluation})
+                result.independent_owned_records &= left != right;
+    }
+    if (!result.shared_renderer || !result.independent_history ||
+        !result.independent_owned_records) {
         result.status = GeometryStatus::failure;
-        result.diagnostic =
-            "Shared-scene validation requires one renderer/AS and independent history";
+        result.diagnostic = "Shared-scene validation requires one renderer/AS and independent "
+                            "history/owned records";
         return result;
     }
     result.sessions[0] = std::move(first.session);

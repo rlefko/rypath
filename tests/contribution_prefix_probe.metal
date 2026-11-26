@@ -373,13 +373,13 @@ kernel void rypath_contribution_selected_event(
 
 // Actual Enhanced sink discovery/selection protocol, with known spectral terms.
 // This isolates weighting and observation order; it is not a transport/AS test.
-kernel void rypath_enhanced_discovery_witness(constant wire::Parameters &p [[buffer(0)]],
-                                              device const rypath::wavefront_wire::Config *configs
-                                              [[buffer(1)]],
-                                              device const wire::Point *cie [[buffer(2)]],
-                                              device uchar *sidecars [[buffer(3)]],
-                                              device uint *out [[buffer(4)]],
-                                              uint n [[thread_position_in_grid]]) {
+kernel void rypath_enhanced_discovery_witness(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *owned_evaluations [[buffer(6)]],
+    uint n [[thread_position_in_grid]]) {
     if (n >= 6)
         return;
     namespace er = rypath_enhanced_runtime;
@@ -390,9 +390,10 @@ kernel void rypath_enhanced_discovery_witness(constant wire::Parameters &p [[buf
     const bool imported = n == 4, black = n == 5, unit = n == 3 || black;
     const cw::Evaluation request{imported ? 5u : ep::fresh_slot, ep::fresh_slot, 0.f, 0};
     auto pool = reinterpret_cast<device er::State *>(sidecars);
-    pool[n] = er::begin(request, config, n);
+    const auto owned_request = owned_evaluations[n];
+    pool[n] = er::begin(request, config, n, owned_request);
     auto state = pool[n];
-    er::Sink sink{state, cie, p, config, n};
+    er::Sink sink{state, cie, p, config, n, records, owned_evaluations};
     Wavelengths lambda{};
     const float wavelengths[4] = {400, 500, 600, 700};
     const float pdfs[4] = {1, 2, 4, 8};
@@ -440,13 +441,13 @@ kernel void rypath_enhanced_discovery_witness(constant wire::Parameters &p [[buf
     out[32u * n + 26u] = second;
 }
 
-kernel void rypath_enhanced_discovery_finish(constant wire::Parameters &p [[buffer(0)]],
-                                             device const rypath::wavefront_wire::Config *configs
-                                             [[buffer(1)]],
-                                             device const wire::Point *cie [[buffer(2)]],
-                                             device uchar *sidecars [[buffer(3)]],
-                                             device uint *out [[buffer(4)]],
-                                             uint n [[thread_position_in_grid]]) {
+kernel void rypath_enhanced_discovery_finish(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *owned_evaluations [[buffer(6)]],
+    uint n [[thread_position_in_grid]]) {
     if (n >= 6)
         return;
     namespace er = rypath_enhanced_runtime;
@@ -456,13 +457,43 @@ kernel void rypath_enhanced_discovery_finish(constant wire::Parameters &p [[buff
     const cw::Evaluation request{n == 4 ? 5u : ep::fresh_slot, ep::fresh_slot, 0.f, 0};
     auto pool = reinterpret_cast<device er::State *>(sidecars);
     auto persisted = pool[n];
-    er::Sink final_sink{persisted, cie, p, config, n};
+    er::Sink final_sink{persisted, cie, p, config, n, records, owned_evaluations};
+    namespace ew = rypath::enhanced_wire;
+    const auto pending = owned_evaluations[n];
+    const ew::Reference expected_source =
+        n == 4 ? ew::Reference{ew::history_bank_0, n} : ew::absent();
+    const ew::Reference expected_result =
+        n == 4 ? expected_source : ew::Reference{ew::fresh_bank, n};
+    // First dispatch may select/store a generic record, but only finish can
+    // publish the owned evaluation. Both buffer stages are independently bound.
+    const bool owned_pending = pending.source.bank == expected_source.bank &&
+                               pending.source.pixel == expected_source.pixel &&
+                               pending.result.bank == expected_result.bank &&
+                               pending.result.pixel == expected_result.pixel &&
+                               as_type<uint>(pending.target_h_fraction) == 0 &&
+                               pending.target_h_exponent == 0 && pending.ready == 0 &&
+                               pending.reserved == 0;
     cw::Evaluation result{};
     float3 value(0);
     const bool finished = final_sink.finish(request, value, result);
+    const auto published = owned_evaluations[n];
+    cw::Evaluation duplicate_result{};
+    float3 duplicate_value(0);
+    const bool duplicate_finished = final_sink.finish(request, duplicate_value, duplicate_result);
+    const auto after_duplicate = owned_evaluations[n];
+    const bool unchanged = published.source.bank == after_duplicate.source.bank &&
+                           published.source.pixel == after_duplicate.source.pixel &&
+                           published.result.bank == after_duplicate.result.bank &&
+                           published.result.pixel == after_duplicate.result.pixel &&
+                           as_type<uint>(published.target_h_fraction) ==
+                               as_type<uint>(after_duplicate.target_h_fraction) &&
+                           published.target_h_exponent == after_duplicate.target_h_exponent &&
+                           published.ready == after_duplicate.ready &&
+                           published.reserved == after_duplicate.reserved;
     pool[n] = persisted;
     const uint base = 32u * n;
-    out[base] |= uint(!finished || persisted.failed);
+    out[base] |=
+        uint(!finished || persisted.failed || !owned_pending || duplicate_finished || !unchanged);
     out[base + 1] = result.requested_slot;
     out[base + 2] = result.selected_slot;
     out[base + 3] = result.ready;

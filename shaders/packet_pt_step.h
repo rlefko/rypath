@@ -34,6 +34,9 @@ template <> struct PTNeighbor<true> {
     using Type = HeroNeighbor;
 };
 #include "hero_pt_helpers.h"
+
+// Owned-light evaluation consumes the original hero technique helpers above.
+#include "enhanced_light.h"
 template <typename Previous, bool Compact = false> struct PTWalkState {
     enum { compact_hero = Compact };
     using Neighbor = typename PTNeighbor<Compact>::Type;

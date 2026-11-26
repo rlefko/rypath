@@ -19,12 +19,46 @@ enum : Word { null_slot = 0xfffffffeu, fresh_slot = 0xffffffffu, law_version = 1
 inline bool nonnegative(float value) {
     return (math::bits(value) & 0x7fffffffu) == 0 || math::positive_normal(value);
 }
-// Exact zero is decided from the represented XYZ, not a rounded magnitude sum.
-inline math::ScalarResult target(XYZ xyz, float scale) {
-    if (!cp::finite(xyz) || !math::positive_normal(scale))
+// Positive normalized densities remain scaled; do not materialize h. Bounds
+// keep every subsequent exponent sum/difference safely inside signed int.
+inline bool valid_density(reuse::Scaled h) {
+    return math::positive_normal(h.fraction) && h.fraction >= .5f && h.fraction < 1 &&
+           h.exponent >= -1024 && h.exponent <= 1024;
+}
+inline bool unit_density(reuse::Scaled h) {
+    return math::bits(h.fraction) == math::bits(.5f) && h.exponent == 1;
+}
+inline bool same_density(reuse::Scaled a, reuse::Scaled b) {
+    return math::bits(a.fraction) == math::bits(b.fraction) && a.exponent == b.exponent;
+}
+// Exact zero is decided from represented F_chart, not a rounded magnitude sum.
+// Nonzero target = quarterL1(F_chart) + h_eval*epsilon(scale). Actual fresh
+// generation density h_gen is separate and enters ONLY the fresh WRS score.
+inline math::ScalarResult target(XYZ xyz, float scale, reuse::Scaled h_eval = {.5f, 1}) {
+    if (!cp::finite(xyz) || !math::positive_normal(scale) || !valid_density(h_eval))
         return {0, math::Status::invalid_target};
-    return cp::zero(xyz) ? math::ScalarResult{0, math::Status::ok}
-                         : reuse::importance_target(xyz.x, xyz.y, xyz.z, scale);
+    if (cp::zero(xyz))
+        return {0, math::Status::ok};
+    if (unit_density(h_eval))
+        return reuse::importance_target(xyz.x, xyz.y, xyz.z, scale);
+    const reuse::Scaled minimum{.5f, -125};
+    auto floor = reuse::product(reuse::decompose_positive(scale), reuse::decompose_positive(1e-6f));
+    if (reuse::less(floor, minimum))
+        floor = minimum;
+    floor = reuse::product(floor, h_eval);
+    bool have = false;
+    reuse::Scaled energy{.5f, -125};
+    const float values[3] = {xyz.x, xyz.y, xyz.z};
+    for (unsigned i = 0; i < 3; ++i) {
+        const float magnitude = math::magnitude(values[i]);
+        if (math::bits(magnitude) == 0)
+            continue;
+        auto part = reuse::decompose_positive(magnitude);
+        part.exponent -= 2;
+        energy = have ? reuse::sum(energy, part) : part;
+        have = true;
+    }
+    return reuse::materialize(reuse::sum(floor, energy));
 }
 struct State {
     Descriptor descriptor;
@@ -32,6 +66,7 @@ struct State {
     Word observed = 0, selected_slot = null_slot;
     XYZ selected_xyz;
     Status status = Status::ok;
+    reuse::Scaled selected_h{.5f, 1};
 };
 inline State begin(Descriptor descriptor, float scale) {
     State s;
@@ -50,11 +85,11 @@ inline bool valid_state(RYPATH_ENHANCED_THREAD const State &s) {
         return false;
     if (s.selected_slot == null_slot)
         return math::bits(s.score_sum) == 0 && math::bits(s.selected_target) == 0 &&
-               cp::zero(s.selected_xyz);
+               cp::zero(s.selected_xyz) && unit_density(s.selected_h);
     if (!s.observed || s.selected_slot >= s.observed || !math::positive_normal(s.score_sum) ||
-        !math::positive_normal(s.selected_target) || s.score_sum < s.selected_target)
+        !math::positive_normal(s.selected_target) || !valid_density(s.selected_h))
         return false;
-    const auto t = target(s.selected_xyz, s.target_scale);
+    const auto t = target(s.selected_xyz, s.target_scale, s.selected_h);
     return t.status == math::Status::ok && math::bits(t.value) == math::bits(s.selected_target);
 }
 inline bool same_state(RYPATH_ENHANCED_THREAD const State &a,
@@ -69,7 +104,8 @@ inline bool same_state(RYPATH_ENHANCED_THREAD const State &a,
            math::bits(a.selected_target) == math::bits(b.selected_target) &&
            math::bits(a.selected_xyz.x) == math::bits(b.selected_xyz.x) &&
            math::bits(a.selected_xyz.y) == math::bits(b.selected_xyz.y) &&
-           math::bits(a.selected_xyz.z) == math::bits(b.selected_xyz.z);
+           math::bits(a.selected_xyz.z) == math::bits(b.selected_xyz.z) &&
+           same_density(a.selected_h, b.selected_h);
 }
 inline math::State selector(RYPATH_ENHANCED_THREAD const State &s) {
     return s.selected_slot == null_slot ? math::State{}
@@ -82,32 +118,39 @@ struct PreparedUpdate {
     float alpha = 0, probability = 0;
     Word index = fresh_slot;
     Status status = Status::ok;
+    reuse::Scaled h_eval{.5f, 1}, h_gen{.5f, 1};
 };
 inline PreparedUpdate prepare_update(RYPATH_ENHANCED_THREAD const State &s, Word index, XYZ xyz,
-                                     float probability) {
+                                     float probability, reuse::Scaled h_eval = {.5f, 1},
+                                     reuse::Scaled h_gen = {.5f, 1}) {
     PreparedUpdate p;
     p.source = s;
     p.xyz = xyz;
     p.index = index;
     p.probability = probability;
+    p.h_eval = h_eval;
+    p.h_gen = h_gen;
     if (s.status != Status::ok)
         p.status = s.status;
     else if (!valid_state(s))
         p.status = Status::invalid_state;
     else if (index != s.observed || index >= s.descriptor.slot_count)
         p.status = Status::invalid_slot;
-    else if (!math::positive_normal(probability) || probability > 1)
+    else if (!math::positive_normal(probability) || probability > 1 || !valid_density(h_eval) ||
+             !valid_density(h_gen))
         p.status = Status::invalid_value;
     else {
-        const auto t = target(xyz, s.target_scale);
+        const auto t = target(xyz, s.target_scale, h_eval);
         p.status = cp::numeric_status(t.status);
         p.alpha = t.value;
         if (p.status == Status::ok && p.alpha == 0) {
             p.xyz = {}; // Canonical null/zero observation, no selector entropy.
             p.decision.complete = true;
         } else if (p.status == Status::ok) {
-            const auto score = reuse::materialize(reuse::quotient(
-                reuse::decompose_positive(p.alpha), reuse::decompose_positive(probability)));
+            const auto a = reuse::decompose_positive(probability);
+            const auto proposal = unit_density(h_gen) ? a : reuse::product(h_gen, a);
+            const auto score =
+                reuse::materialize(reuse::quotient(reuse::decompose_positive(p.alpha), proposal));
             p.status = cp::numeric_status(score.status);
             if (p.status == Status::ok) {
                 p.decision = math::prepare_update(selector(s), score.value, 1.f);
@@ -131,7 +174,7 @@ inline UpdateResult commit_update(RYPATH_ENHANCED_THREAD State &s,
         s.status = p.status;
         return {false, s.status};
     }
-    const auto checked = prepare_update(s, p.index, p.xyz, p.probability);
+    const auto checked = prepare_update(s, p.index, p.xyz, p.probability, p.h_eval, p.h_gen);
     if (!valid_state(s) || !same_state(s, p.source) || checked.status != Status::ok ||
         math::bits(checked.alpha) != math::bits(p.alpha)) {
         s.status = Status::invalid_state;
@@ -162,6 +205,7 @@ inline UpdateResult commit_update(RYPATH_ENHANCED_THREAD State &s,
             s.selected_slot = p.index;
             s.selected_target = p.alpha; // Canonical alpha, NOT alpha/a.
             s.selected_xyz = p.xyz;
+            s.selected_h = p.h_eval;
         }
     } else if (p.decision.status != math::Status::ok || !p.decision.complete ||
                p.decision.words_used != 0 || p.decision.compared_bits != 0 || p.decision.selected ||
@@ -180,6 +224,7 @@ struct Reservoir {
     float normalizer = 0, target = 0;
     XYZ xyz;
     Status status = Status::ok;
+    reuse::Scaled selected_h{.5f, 1};
 };
 inline Reservoir finalize(RYPATH_ENHANCED_THREAD const State &s, StopReason stop) {
     Reservoir r;
@@ -200,6 +245,7 @@ inline Reservoir finalize(RYPATH_ENHANCED_THREAD const State &s, StopReason stop
         r.normalizer = s.score_sum;
         r.target = s.selected_target;
         r.xyz = s.selected_slot == null_slot ? XYZ{} : s.selected_xyz;
+        r.selected_h = s.selected_h;
     }
     return r;
 }
@@ -220,6 +266,8 @@ inline XYZResult readout(RYPATH_ENHANCED_THREAD const Reservoir &r) {
     if (r.status != Status::ok)
         return {{}, r.status};
     if (!cp::valid_descriptor(r.descriptor) || r.descriptor.maximum_depth > 65 ||
+        !valid_density(r.selected_h) ||
+        (r.selected_slot == null_slot && !unit_density(r.selected_h)) ||
         (r.selected_slot != null_slot && r.selected_slot >= r.descriptor.slot_count) ||
         (r.selected_slot == null_slot) != (r.normalizer == 0))
         return {{}, Status::invalid_state};
@@ -365,5 +413,7 @@ inline GateResult commit_gate(RYPATH_ENHANCED_THREAD DiscoveryState &s,
     ++s.gates;
     return {(word >> 8) < g.threshold, next, Status::ok};
 }
+static_assert(sizeof(State) == 60 && alignof(State) == 4 && sizeof(Reservoir) == 52,
+              "Enhanced chart-density state CPU/Metal layout");
 } // namespace rypath_enhanced_path
 #undef RYPATH_ENHANCED_THREAD

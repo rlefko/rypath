@@ -127,15 +127,18 @@ inline bool valid_area_evaluation_accounting(std::uint64_t pixels, bool history,
     return (!cache_used || history) && logical == expected && cached == expected_cached &&
            completed == expected - expected_cached;
 }
-// Enhanced memoization is initially disabled. Null completions are observed
-// publications, never inferred from an absent/cached phase.
+// Physical transport, cached responses and analytic null completions are
+// disjoint categories. A cached null response remains a cache hit, not a
+// fabricated wavefront completion. Every fresh owner executes physical work.
 inline bool valid_enhanced_area_evaluation_accounting(std::uint64_t pixels, bool history,
                                                       std::uint32_t mutations, bool cache_used,
                                                       std::uint64_t physical, std::uint64_t cached,
                                                       std::uint64_t analytic_null,
                                                       std::uint64_t logical) {
     const auto expected = logical_area_evaluations(pixels, history, mutations);
-    return !cache_used && cached == 0 && logical == expected && physical >= pixels &&
-           physical <= expected && analytic_null == expected - physical;
+    const auto expected_cached = cache_used && history ? 2 * pixels : 0;
+    return (!cache_used || history) && logical == expected && cached == expected_cached &&
+           physical >= pixels && physical <= expected - expected_cached &&
+           analytic_null == expected - expected_cached - physical;
 }
 } // namespace rypath

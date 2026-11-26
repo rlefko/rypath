@@ -2,6 +2,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "bsdf_table_fixture.hpp"
+#include "enhanced_wire.h"
 #include "metal_execution.hpp"
 #include "rgb_spectrum.hpp"
 #include "sobol_shared.h"
@@ -10,20 +11,27 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
 namespace aw = area_wire;
-static_assert(wf::contract == 16 && sizeof(wf::Contract) == 96 && sizeof(wf::Config) == 64);
+static_assert(wf::contract == 17 && sizeof(wf::Contract) == 104 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 9 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 88);
+static_assert(aw::contract == 11 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 92);
+static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
+              aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12);
+static_assert(sizeof(enhanced_wire::Record) == 48 && sizeof(enhanced_wire::Reference) == 8 &&
+              sizeof(enhanced_wire::Evaluation) == 32);
 static_assert(sizeof(contribution_wire::Evaluation) == 16);
 void require(bool value, const std::string &why) {
     if (!value)
@@ -35,27 +43,30 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(contract_pipeline != nil, why);
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v9 contract allocation");
+    require(contract_buffer != nil, "Area v11 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v9 contract encoder");
+    require(command && encoder, "Area v11 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v9 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v11 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 9 && contract.config_bytes == 88 && contract.history_bytes == 60 &&
-                contract.temporal_bytes == 64 && contract.accumulator_bytes == 76 &&
+    require(contract.version == 11 && contract.config_bytes == 92 && contract.history_bytes == 80 &&
+                contract.temporal_bytes == 84 && contract.accumulator_bytes == 96 &&
                 contract.replay_bytes == 32 && contract.counters_bytes == 112 &&
                 contract.contribution_evaluation_bytes == 16,
-            "Area v9 contract mismatch; stale Area libraries are incompatible");
+            "Area v11 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
-    require(function && reset && prepare, why);
+    auto merge = metal::load_pipeline(device, library, @"rypath_area_merge", why);
+    auto temporal_finish =
+        metal::load_pipeline(device, library, @"rypath_area_temporal_finish", why);
+    require(function && reset && prepare && merge && temporal_finish, why);
     auto argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
     require(argument_encoder != nil, "Area disabled argument encoder");
     auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
@@ -63,8 +74,8 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(arguments != nil, "Area disabled arguments allocation");
     [argument_encoder setArgumentBuffer:arguments offset:0];
     constexpr unsigned pixels = 4, guard = 256;
-    std::array<id<MTLBuffer>, aw::contribution_evaluation_id + 1> buffers{};
-    const std::array<std::size_t, aw::contribution_evaluation_id + 1> lengths{
+    std::array<id<MTLBuffer>, aw::enhanced_evaluation_id + 1> buffers{};
+    const std::array<std::size_t, aw::enhanced_evaluation_id + 1> lengths{
         sizeof(aw::Config) + guard,
         pixels * sizeof(rypath_replay::ReplayState) + guard,
         pixels * sizeof(render_wire::Point) + guard,
@@ -75,6 +86,8 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
         pixels * sizeof(render_wire::Point) + guard,
         sizeof(aw::Counters) + guard,
         pixels * sizeof(float) + guard,
+        16,
+        16,
         16};
     for (unsigned i = 0; i < buffers.size(); ++i) {
         buffers[i] = [device newBufferWithLength:lengths[i] options:MTLResourceStorageModeShared];
@@ -128,6 +141,53 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
                 require(bytes[j] == 0xa5,
                         "Area summed execution touched inactive contribution storage/guard");
         }
+        if (!invalid_depth) {
+            // Exercise production writes, not host value-initialization: the
+            // new confidence word remains the legacy zero sentinel after WRS.
+            const render_wire::Point leaf{1.f, 2.f, 3.f};
+            for (unsigned pixel = 0; pixel < pixels; ++pixel)
+                std::memcpy(static_cast<unsigned char *>(buffers[aw::leaf_xyz_id].contents) +
+                                pixel * sizeof(leaf),
+                            &leaf, sizeof(leaf));
+            command = [queue commandBuffer];
+            encoder = [command computeCommandEncoder];
+            require(command && encoder, "Legacy confidence encoder");
+            [encoder setBuffer:arguments offset:0 atIndex:1];
+            for (auto buffer : buffers)
+                [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+            for (auto stage : {merge, temporal_finish}) {
+                [encoder setComputePipelineState:stage];
+                [encoder dispatchThreads:MTLSizeMake(pixels, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            [encoder endEncoding];
+            require(metal::complete(command, "Legacy Area confidence").empty(),
+                    "Legacy confidence completion");
+            std::memcpy(&counters, buffers[aw::failure_id].contents, sizeof(counters));
+            require(counters.failure == 0, "Legacy confidence production failed");
+            for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                aw::Temporal temporal{};
+                aw::Accumulator accumulator{};
+                std::memcpy(&temporal,
+                            static_cast<const unsigned char *>(buffers[aw::temporal_id].contents) +
+                                pixel * sizeof(temporal),
+                            sizeof(temporal));
+                std::memcpy(
+                    &accumulator,
+                    static_cast<const unsigned char *>(buffers[aw::accumulators_id].contents) +
+                        pixel * sizeof(accumulator),
+                    sizeof(accumulator));
+                require(temporal.confidence == 0 && accumulator.confidence == 0,
+                        "Legacy production WRS must not manufacture Enhanced confidence");
+            }
+            for (unsigned id : {aw::contribution_evaluation_id, aw::enhanced_records_id,
+                                aw::enhanced_evaluation_id}) {
+                const auto *bytes = static_cast<const unsigned char *>(buffers[id].contents);
+                for (std::size_t j = 0; j < buffers[id].length; ++j)
+                    require(bytes[j] == 0xa5, "Legacy Area touched an inactive Enhanced sentinel");
+            }
+        }
     }
 }
 // Real null ownership uses only the Enhanced sidecar. Invalid transport pools
@@ -135,6 +195,7 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
 void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue,
                           const wf::Contract &contract) {
     namespace cw = contribution_wire;
+    namespace ew = enhanced_wire;
     constexpr unsigned pixels = 7;
     constexpr std::size_t guard = 256;
     std::string why;
@@ -184,8 +245,8 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
         const wf::Config config{
             pixels,       capacity, 2,   render_wire::pbrt_model, 1,  1,  1,     0,
             cw::enhanced, 0,        1.f, cw::prefix_replay,       11, 13, {0, 0}};
-        std::array<id<MTLBuffer>, wf::contribution_state_id + 1> buffers{};
-        std::array<std::size_t, wf::contribution_state_id + 1> lengths{};
+        std::array<id<MTLBuffer>, wf::enhanced_evaluation_id + 1> buffers{};
+        std::array<std::size_t, wf::enhanced_evaluation_id + 1> lengths{};
         lengths.fill(16);
         lengths[wf::config_id] = sizeof(config);
         lengths[wf::counters_id] = sizeof(wf::Counters);
@@ -198,6 +259,8 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
         lengths[wf::replay_input_id] = pixels * sizeof(rypath_replay::ReplayState);
         lengths[wf::contribution_evaluation_id] = pixels * sizeof(cw::Evaluation);
         lengths[wf::contribution_state_id] = capacity * contract.enhanced_state_bytes;
+        lengths[wf::enhanced_records_id] = ew::bank_count * pixels * sizeof(ew::Record);
+        lengths[wf::enhanced_evaluation_id] = pixels * sizeof(ew::Evaluation);
         lengths[wf::scalar_state_id] = capacity * contract.scalar_bytes;
         lengths[wf::packet_state_id] = capacity * contract.packet_bytes;
         lengths[wf::packet_hot_id] = capacity * contract.hot_bytes;
@@ -216,7 +279,8 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
         const auto unrelated = [](unsigned id) {
             return id == wf::scalar_state_id || id == wf::packet_state_id ||
                    id == wf::packet_hot_id || id == wf::packet_cold_id || id == wf::packet_hit_id ||
-                   id == wf::hero_state_id || id == wf::hero_cold_id || id == wf::cie_id;
+                   id == wf::hero_state_id || id == wf::hero_cold_id || id == wf::cie_id ||
+                   id == wf::enhanced_records_id;
         };
         const auto bind = [&] {
             [argument_encoder setArgumentBuffer:arguments offset:0];
@@ -238,6 +302,10 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                 const cw::Evaluation request{cw::enhanced_null_slot, 0xffffffffu, 0.f, 0};
                 std::memcpy(data(wf::contribution_evaluation_id) + pixel * sizeof(request),
                             &request, sizeof(request));
+                const ew::Reference reference{ew::history_bank_0, pixel};
+                const ew::Evaluation owned{reference, reference, 0.f, 0, 0, 0};
+                std::memcpy(data(wf::enhanced_evaluation_id) + pixel * sizeof(owned), &owned,
+                            sizeof(owned));
             }
             bind();
         };
@@ -323,6 +391,17 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                             std::bit_cast<std::uint32_t>(evaluation.normalizer) == 0 &&
                             evaluation.ready == unsigned(pixel < completed),
                         "Null result must publish ready exactly once with canonical zero");
+                ew::Evaluation owned{};
+                std::memcpy(&owned, data(wf::enhanced_evaluation_id) + pixel * sizeof(owned),
+                            sizeof(owned));
+                require(owned.source.bank == ew::history_bank_0 && owned.source.pixel == pixel &&
+                            owned.result.bank == ew::history_bank_0 &&
+                            owned.result.pixel == pixel &&
+                            std::bit_cast<std::uint32_t>(owned.target_h_fraction) ==
+                                std::bit_cast<std::uint32_t>(pixel < completed ? .5f : 0.f) &&
+                            owned.target_h_exponent == (pixel < completed ? 1 : 0) &&
+                            owned.ready == unsigned(pixel < completed) && owned.reserved == 0,
+                        "Null owner must publish unit h once without changing owned references");
                 std::uint32_t done;
                 std::memcpy(&done, data(wf::done_id) + pixel * sizeof(done), sizeof(done));
                 require(done == unsigned(pixel < completed), "Null done ownership mismatch");
@@ -341,32 +420,49 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
             continue;
         // Serial single-lane failures avoid a valid sibling racing publication.
         // Every error must preserve zero physical/null completions and raw output.
-        for (unsigned fault = 0; fault < 6; ++fault) {
+        for (unsigned fault = 0; fault < 16; ++fault) {
             fresh();
-            if (fault == 0 || fault == 5) {
-                auto *request =
-                    reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
-                if (fault == 0)
-                    request[0].ready = 1; // Stale ready rejected before issuing transport.
-                else
-                    request[0].requested_slot = 1; // D0 has only slot0, plus the null tag.
-            }
+            auto *request =
+                reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+            auto *owned = reinterpret_cast<ew::Evaluation *>(data(wf::enhanced_evaluation_id));
+            const bool fails_initialize = fault == 0 || (fault >= 5 && fault <= 12);
+            if (fault == 0)
+                request[0].ready = 1;
+            else if (fault == 5)
+                request[0].requested_slot = 1; // D0 has only slot0, plus the null tag.
+            else if (fault == 6)
+                owned[0].ready = 1;
+            else if (fault == 7)
+                owned[0].reserved = 1;
+            else if (fault == 8)
+                owned[0].source.bank = ew::bank_count;
+            else if (fault == 9)
+                owned[0].source.pixel = pixels;
+            else if (fault == 10)
+                owned[0].result.bank = ew::bank_count;
+            else if (fault == 11)
+                owned[0].result.pixel = pixels;
+            else if (fault == 12)
+                owned[0].target_h_exponent = 1; // Pending h is exactly the zero sentinel.
             execute({{reset, pixels}, {initialize, 1}});
-            if (fault != 0 && fault != 5) {
-                auto *request =
-                    reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+            if (!fails_initialize) {
                 if (fault == 1)
                     request[0].requested_slot = 0; // Changed after null owner capture.
                 else if (fault == 2)
-                    request[0].ready = 1; // A stale result cannot be consumed as pending.
+                    request[0].ready = 1;
                 else if (fault == 3)
                     reinterpret_cast<std::uint32_t *>(data(wf::done_id))[0] = 1;
-                else {
+                else if (fault == 4) {
                     auto value = counters();
                     value.null_completed = 1; // Isolate null>completed under Enhanced constants.
                     value.out = capacity; // All other advance conservation predicates are valid.
                     std::memcpy(data(wf::counters_id), &value, sizeof(value));
-                }
+                } else if (fault == 13)
+                    owned[0].ready = 1;
+                else if (fault == 14)
+                    owned[0].reserved = 1;
+                else if (fault == 15)
+                    owned[0].source.bank = ew::bank_count;
                 execute(fault == 4 ? std::initializer_list<Stage>{{advance, 1}}
                                    : std::initializer_list<Stage>{{probe, 1}});
             }
@@ -376,7 +472,8 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                                               : wf::invalid_sample;
             require(result.failure == failure && result.completed == 0 &&
                         result.null_completed == (fault == 4 ? 1u : 0u) && result.free == 0,
-                    "Invalid null owner must fail without fabricating completions");
+                    "Invalid null receipt must fail without completions at case " +
+                        std::to_string(fault));
             for (std::size_t byte = 0; byte < lengths[wf::raw_xyz_id]; ++byte)
                 require(data(wf::raw_xyz_id)[byte] == 0xa5, "Failed null owner published raw");
             guards();
@@ -396,6 +493,483 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
         }
     }
 }
+// Protocol fixture only: transport responses are injected after production
+// prepare. The scalar reference uses direct double MIS formulas, not shared
+// reservoir/target/confidence helpers or the GPU's categorical decisions.
+void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
+                            id<MTLCommandQueue> queue) {
+    namespace cw = contribution_wire;
+    namespace ew = enhanced_wire;
+    // Radius16 is the smallest authored reciprocal stencil; this extent
+    // gives it a real in-bounds edge without a large scene or more dispatches.
+    constexpr unsigned width = 17, height = 2, pixels = width * height;
+    constexpr std::size_t guard = 256;
+    std::string why;
+    const auto load = [&](NSString *name) {
+        auto value = metal::load_pipeline(device, library, name, why);
+        require(value != nil, "Area protocol pipeline: " + why);
+        return value;
+    };
+    auto reset = load(@"rypath_area_reset"), prepare = load(@"rypath_area_prepare");
+    auto merge = load(@"rypath_area_merge"), finish = load(@"rypath_area_temporal_finish");
+    auto spatial_begin = load(@"rypath_area_spatial_begin"),
+         finalize = load(@"rypath_area_finalize");
+    auto mutation_prepare = load(@"rypath_area_mutation_prepare");
+    auto mutation_finish = load(@"rypath_area_mutation_finish");
+    auto cache_evaluation = load(@"rypath_area_cache_evaluation");
+    auto function = metal::load_function(library, @"rypath_area_reset", why);
+    require(function != nil, why);
+    auto argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
+    require(argument_encoder != nil, "Area protocol argument encoder");
+    auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
+                                         options:MTLResourceStorageModeShared];
+    require(arguments != nil, "Area protocol arguments");
+    std::array<id<MTLBuffer>, aw::enhanced_evaluation_id + 1> buffers{};
+    const std::array<std::size_t, aw::enhanced_evaluation_id + 1> lengths{
+        sizeof(aw::Config),
+        pixels * sizeof(rypath_replay::ReplayState),
+        pixels * sizeof(render_wire::Point),
+        pixels * sizeof(aw::Accumulator),
+        pixels * sizeof(aw::Temporal),
+        pixels * sizeof(aw::History),
+        pixels * sizeof(aw::History),
+        pixels * sizeof(render_wire::Point),
+        sizeof(aw::Counters),
+        4 * pixels * sizeof(float),
+        pixels * sizeof(cw::Evaluation),
+        ew::bank_count * pixels * sizeof(ew::Record),
+        pixels * sizeof(ew::Evaluation)};
+    for (unsigned i = 0; i < buffers.size(); ++i) {
+        buffers[i] = [device newBufferWithLength:lengths[i] + 2 * guard
+                                         options:MTLResourceStorageModeShared];
+        require(buffers[i] != nil, "Area protocol guarded allocation");
+        std::memset(buffers[i].contents, 0xa5, buffers[i].length);
+    }
+    const auto data = [&](unsigned id) {
+        return static_cast<unsigned char *>(buffers[id].contents) + guard;
+    };
+    auto *temporal = reinterpret_cast<aw::Temporal *>(data(aw::temporal_id));
+    auto *accumulator = reinterpret_cast<aw::Accumulator *>(data(aw::accumulators_id));
+    auto *leaf = reinterpret_cast<render_wire::Point *>(data(aw::leaf_xyz_id));
+    auto *raw = reinterpret_cast<render_wire::Point *>(data(aw::raw_xyz_id));
+    auto *requests = reinterpret_cast<cw::Evaluation *>(data(aw::contribution_evaluation_id));
+    auto *evaluations = reinterpret_cast<ew::Evaluation *>(data(aw::enhanced_evaluation_id));
+    auto *records = reinterpret_cast<ew::Record *>(data(aw::enhanced_records_id));
+    const auto record_at = [&](ew::Reference ref) -> ew::Record & {
+        require(ref.bank < 4 && ref.pixel < pixels, "Area protocol record reference bounds");
+        return records[ref.bank * pixels + ref.pixel];
+    };
+    const auto same = [](const auto &a, const auto &b) {
+        static_assert(sizeof(a) == sizeof(b));
+        return std::memcmp(&a, &b, sizeof(a)) == 0;
+    };
+    const auto near = [](double actual, long double expected, const std::string &label) {
+        // At most five positive scores and vector terms, each with a bounded
+        // handful of rounded products/divisions. 64 epsilon covers their linear
+        // rounding bound; no threshold is derived from observed test output.
+        const auto tolerance =
+            64.L * std::numeric_limits<float>::epsilon() * std::max(1.L, std::abs(expected));
+        require(std::abs(static_cast<long double>(actual) - expected) <= tolerance,
+                label + ": actual=" + std::to_string(actual) +
+                    " expected=" + std::to_string(static_cast<double>(expected)));
+    };
+    const auto proxy = [](render_wire::Point xyz, double h) {
+        if (xyz.x == 0 && xyz.y == 0 && xyz.z == 0)
+            return 0.f;
+        const long double energy =
+            (std::abs(static_cast<long double>(xyz.x)) + std::abs(static_cast<long double>(xyz.y)) +
+             std::abs(static_cast<long double>(xyz.z))) /
+            4;
+        return static_cast<float>(energy + static_cast<long double>(1e-6f) * h);
+    };
+    const auto scale = [](float value) {
+        int exponent;
+        const auto fraction = std::frexp(value, &exponent);
+        return std::pair{fraction, exponent};
+    };
+    const auto descriptor = [](unsigned pixel, unsigned revision) {
+        if (pixel == 0)
+            return ew::empty_record();
+        return ew::Record{
+            ew::record_version,
+            ew::triangle_area,
+            100 + revision * 10 + pixel,
+            0,
+            pixel,
+            pixel + 3,
+            render_wire::triangle_primitive,
+            0,
+            {std::bit_cast<std::uint32_t>(.25f), std::bit_cast<std::uint32_t>(.5f), 0, 0}};
+    };
+    aw::Config config{};
+    config.pixel_count = pixels;
+    config.width = width;
+    config.height = height;
+    config.target_scale = 1;
+    config.output_mode = aw::conditional_mean_output;
+    config.contribution_mode = cw::enhanced;
+    config.contribution_depth = 1;
+    config.seed_low = 29;
+    render_wire::Parameters parameters{};
+    parameters.width = width;
+    parameters.height = height;
+    parameters.pixel_count = parameters.lane_count = pixels;
+    parameters.sampler_kind = render_wire::independent_sampler;
+    parameters.packet_transport = 2;
+    parameters.max_depth = 1;
+    parameters.seed_low = 31;
+    const auto bind = [&] {
+        [argument_encoder setArgumentBuffer:arguments offset:0];
+        for (unsigned i = 0; i < buffers.size(); ++i)
+            [argument_encoder setBuffer:buffers[i] offset:guard atIndex:i];
+    };
+    bind();
+    const auto dispatch = [&](id<MTLComputePipelineState> pipeline, unsigned count = pixels) {
+        std::memcpy(data(aw::config_id), &config, sizeof(config));
+        auto command = [queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        require(command && encoder, "Area protocol encoder");
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:arguments offset:0 atIndex:1];
+        [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
+        for (auto buffer : buffers)
+            [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        require(metal::complete(command, "Enhanced Area injected protocol").empty(),
+                "Area protocol command completion");
+        aw::Counters counters{};
+        std::memcpy(&counters, data(aw::failure_id), sizeof(counters));
+        require(counters.failure == 0,
+                "Area protocol failure phase=" + std::to_string(config.phase) +
+                    " candidate=" + std::to_string(config.candidate) +
+                    " source_line=" + std::to_string(counters.first_failure.source_line));
+        if (pipeline == merge || pipeline == mutation_finish)
+            for (unsigned p = 0; p < pixels; ++p)
+                require(requests[p].ready == 0 && evaluations[p].ready == 0,
+                        "Every successful merge/mutation consumes both receipts");
+        for (unsigned i = 0; i < buffers.size(); ++i) {
+            const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
+            for (std::size_t j = 0; j < guard; ++j)
+                require(bytes[j] == 0xa5 && bytes[guard + lengths[i] + j] == 0xa5,
+                        "Area protocol buffer guard changed");
+        }
+    };
+    const auto response = [&](unsigned pixel, render_wire::Point xyz, float h, unsigned slot,
+                              float fresh_Z = 0) {
+        require(requests[pixel].ready == 0 && evaluations[pixel].ready == 0,
+                "Area prepare must reset both response receipts");
+        leaf[pixel] = xyz;
+        requests[pixel].selected_slot = slot;
+        requests[pixel].normalizer = fresh_Z;
+        requests[pixel].ready = 1;
+        const auto [fraction, exponent] = scale(h);
+        evaluations[pixel].target_h_fraction = fraction;
+        evaluations[pixel].target_h_exponent = exponent;
+        evaluations[pixel].ready = 1;
+    };
+    const auto check_cached = [&](const auto *source) {
+        using Source = std::remove_cv_t<std::remove_reference_t<decltype(*source)>>;
+        std::array<Source, pixels> frozen{};
+        std::memcpy(frozen.data(), source, sizeof(frozen));
+        std::array<ew::Record, ew::bank_count * pixels> frozen_records{};
+        std::memcpy(frozen_records.data(), records, sizeof(frozen_records));
+        std::memset(leaf, 0xff, pixels * sizeof(*leaf));
+        config.temporal_cache = 1;
+        dispatch(cache_evaluation);
+        for (unsigned p = 0; p < pixels; ++p) {
+            require(same(leaf[p], source[p].xyz) && requests[p].ready == 1 &&
+                        requests[p].selected_slot == source[p].selected_slot &&
+                        requests[p].normalizer == 0 && evaluations[p].ready == 1 &&
+                        evaluations[p].reserved == 0 &&
+                        same(evaluations[p].source, source[p].record) &&
+                        same(evaluations[p].result, source[p].record) &&
+                        evaluations[p].target_h_fraction == source[p].target_h_fraction &&
+                        evaluations[p].target_h_exponent == source[p].target_h_exponent,
+                    "Exact temporal cache must publish the complete owned response");
+        }
+        require(
+            std::memcmp(frozen.data(), source, sizeof(frozen)) == 0 &&
+                std::memcmp(frozen_records.data(), records, sizeof(frozen_records)) == 0,
+            "Cache reads must preserve every source and owned record, including poisoned nulls");
+        config.temporal_cache = 0;
+        dispatch(prepare); // Restore the independent nonidentity replay fixture below.
+    };
+    // Cold all-null generation: every source domain still contributes M1.
+    config.phase = aw::fresh;
+    dispatch(reset, 1);
+    dispatch(prepare);
+    for (unsigned pixel = 0; pixel < pixels; ++pixel)
+        response(pixel, {}, 1, cw::enhanced_null_slot);
+    dispatch(merge);
+    dispatch(finish);
+    for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+        require(temporal[pixel].confidence == 1 && temporal[pixel].normalizer == 0 &&
+                    temporal[pixel].record.bank == ew::temporal_bank &&
+                    temporal[pixel].record.pixel == pixel &&
+                    same(record_at(temporal[pixel].record), ew::empty_record()),
+                "Cold null temporal must retain M1 and normalize its copied record");
+    }
+    const auto neighbor = [&](unsigned pixel, unsigned direction, bool duplicate) {
+        const int x = static_cast<int>(pixel % width), y = static_cast<int>(pixel / width);
+        const int dx = duplicate        ? ((direction & 1u) ? 16 : -16)
+                       : direction == 1 ? -1
+                       : direction == 2 ? 1
+                                        : 0;
+        const int dy = duplicate ? 0 : direction == 3 ? -1 : direction == 4 ? 1 : 0;
+        const int nx = x + dx, ny = y + dy;
+        return nx < 0 || nx >= int(width) || ny < 0 || ny >= int(height)
+                   ? pixel
+                   : static_cast<unsigned>(ny) * width + static_cast<unsigned>(nx);
+    };
+    const auto spatial = [&](bool duplicate) {
+        config.stencil = duplicate ? aw::reciprocal16_stencil : aw::adjacent_stencil;
+        config.offset_x[0] = config.offset_x[1] = duplicate ? 16 : 0;
+        config.offset_y[0] = config.offset_y[1] = 0;
+        config.phase = aw::spatial;
+        config.candidate = 0;
+        std::array<aw::Temporal, pixels> frozen{};
+        std::array<ew::Record, pixels> frozen_records{};
+        std::memcpy(frozen.data(), temporal, sizeof(frozen));
+        for (unsigned p = 0; p < pixels; ++p)
+            frozen_records[p] = record_at(frozen[p].record);
+        dispatch(spatial_begin);
+        for (unsigned direction = 1; direction <= 4; ++direction) {
+            config.candidate = direction;
+            dispatch(prepare);
+            for (unsigned p = 0; p < pixels; ++p) {
+                const auto s = neighbor(p, direction, duplicate);
+                const auto &source = frozen[s];
+                require(evaluations[p].source.bank == ew::temporal_bank &&
+                            evaluations[p].source.pixel == s,
+                        "Spatial prepare must use the declared source slot, including duplicates");
+                const float h = std::ldexp(source.target_h_fraction, source.target_h_exponent);
+                response(p, source.xyz, h, source.selected_slot);
+            }
+            dispatch(merge);
+        }
+        config.phase = aw::spatial_final;
+        config.candidate = 0;
+        dispatch(finalize);
+        const auto *history =
+            reinterpret_cast<const aw::History *>(data(aw::history_destination_id));
+        for (unsigned p = 0; p < pixels; ++p) {
+            // Each valid pair splits by confidence; boundary absence gives the
+            // center its full quarter-share. No deduplication of valid slots.
+            const auto &center = frozen[p];
+            long double expected_Z = 0;
+            std::array<long double, 3> expected_xyz{};
+            unsigned expected_M = center.confidence;
+            const auto add = [&](const aw::Temporal &source, long double score) {
+                expected_Z += score;
+                if (source.target > 0) {
+                    expected_xyz[0] += score * source.xyz.x / source.target;
+                    expected_xyz[1] += score * source.xyz.y / source.target;
+                    expected_xyz[2] += score * source.xyz.z / source.target;
+                }
+            };
+            for (unsigned direction = 1; direction <= 4; ++direction) {
+                const auto s = neighbor(p, direction, duplicate);
+                if (s == p)
+                    add(center, static_cast<long double>(center.normalizer) / 4);
+                else {
+                    const auto &other = frozen[s];
+                    expected_M += other.confidence;
+                    const long double denominator = center.confidence + other.confidence;
+                    add(center, static_cast<long double>(center.normalizer) * center.confidence /
+                                    denominator / 4);
+                    add(other, static_cast<long double>(other.normalizer) * other.confidence /
+                                   denominator / 4);
+                }
+            }
+            require(history[p].confidence == expected_M && history[p].valid == 1 &&
+                        history[p].record.bank == 1u - config.history_source_bank &&
+                        history[p].record.pixel == p,
+                    "Spatial M must count structural slots and normalize destination bank");
+            near(history[p].normalizer, expected_Z, "Spatial independent scalar MIS sum");
+            near(raw[p].x, expected_xyz[0], "Spatial independent signed X readout");
+            near(raw[p].y, expected_xyz[1], "Spatial independent signed Y readout");
+            near(raw[p].z, expected_xyz[2], "Spatial independent signed Z readout");
+            if (history[p].selected_slot == cw::enhanced_null_slot) {
+                require(expected_Z == 0 && same(record_at(history[p].record), ew::empty_record()),
+                        "All-null spatial publication must synthesize an empty record");
+            } else {
+                bool matched = false;
+                for (unsigned s = 0; s < pixels; ++s) {
+                    bool admitted = s == p;
+                    for (unsigned direction = 1; direction <= 4; ++direction)
+                        admitted |= neighbor(p, direction, duplicate) == s;
+                    if (admitted && same(history[p].payload, frozen[s].payload)) {
+                        matched |= history[p].selected_slot == frozen[s].selected_slot &&
+                                   same(history[p].xyz, frozen[s].xyz) &&
+                                   history[p].target == frozen[s].target &&
+                                   history[p].target_h_fraction == frozen[s].target_h_fraction &&
+                                   history[p].target_h_exponent == frozen[s].target_h_exponent &&
+                                   same(record_at(history[p].record), frozen_records[s]);
+                    }
+                }
+                require(matched,
+                        "Published payload/XYZ/target/h/record must be one admitted tuple");
+            }
+        }
+        require(std::memcmp(temporal, frozen.data(), sizeof(frozen)) == 0,
+                "Spatial reuse must never mutate the frozen temporal bank");
+        for (unsigned p = 0; p < pixels; ++p)
+            require(same(record_at(frozen[p].record), frozen_records[p]),
+                    "Spatial reuse must never mutate an unselected temporal record");
+    };
+    spatial(false);
+    // Feed a deliberately high structural input to exercise cap-before-MIS
+    // without a long history warmup. Its null draw does not remove that domain.
+    std::swap(buffers[aw::history_source_id], buffers[aw::history_destination_id]);
+    bind();
+    auto *old = reinterpret_cast<aw::History *>(data(aw::history_source_id));
+    for (unsigned p = 0; p < pixels; ++p) {
+        require(old[p].confidence == (p % width > 0 && p % width + 1 < width ? 4u : 3u),
+                "Cold adjacent M3/M4 witness");
+        old[p].confidence = 40 + p;
+        std::memset(&record_at(old[p].record), 0xff, sizeof(ew::Record));
+    }
+    config.history_source_bank = 1;
+    config.history_used = 1;
+    config.serial_low = 1;
+    config.mutation_steps = 1;
+    config.stencil = aw::adjacent_stencil;
+    config.phase = aw::fresh;
+    config.candidate = 0;
+    parameters.sample_low = 1;
+    dispatch(reset, 1);
+    dispatch(prepare);
+    std::array<render_wire::Point, pixels> fresh_xyz{};
+    std::array<float, pixels> fresh_h{}, fresh_alpha{}, fresh_Z{};
+    for (unsigned p = 0; p < pixels; ++p) {
+        fresh_h[p] = p == 0 || (p & 1u) ? 1.f : (p == 4 ? 4.f : 2.f);
+        fresh_xyz[p] = p & 1u ? render_wire::Point{}
+                              : render_wire::Point{float(4 + 2 * p), float(-2 - int(p)), 0};
+        fresh_alpha[p] = proxy(fresh_xyz[p], fresh_h[p]);
+        fresh_Z[p] = 2 * fresh_alpha[p];
+        response(p, fresh_xyz[p], fresh_h[p], p & 1u ? cw::enhanced_null_slot : 1u, fresh_Z[p]);
+        if (!(p & 1u))
+            record_at(evaluations[p].result) = descriptor(p, 0);
+    }
+    dispatch(merge);
+    config.phase = aw::temporal_reverse;
+    dispatch(prepare);
+    check_cached(temporal);
+    std::array<long double, pixels> temporal_Z{};
+    for (unsigned p = 0; p < pixels; ++p) {
+        const render_wire::Point inverse{fresh_xyz[p].x * .5f, fresh_xyz[p].y * .5f, 0};
+        const float h = p == 0 || (p & 1u) ? 1.f : 2 * fresh_h[p];
+        const float inverse_alpha = proxy(inverse, h);
+        response(p, inverse, h, p & 1u ? cw::enhanced_null_slot : 1u);
+        temporal_Z[p] = fresh_alpha[p] == 0
+                            ? 0
+                            : static_cast<long double>(fresh_Z[p]) * fresh_alpha[p] /
+                                  (fresh_alpha[p] + 20.L * inverse_alpha);
+    }
+    dispatch(merge);
+    for (unsigned p = 0; p < pixels; ++p)
+        near(accumulator[p].state.score_sum, temporal_Z[p], "Temporal cap-before-MIS coefficient");
+    config.phase = aw::temporal;
+    config.candidate = 1;
+    dispatch(prepare);
+    check_cached(old);
+    for (unsigned p = 0; p < pixels; ++p)
+        response(p, {}, 1, cw::enhanced_null_slot);
+    dispatch(merge);
+    dispatch(finish);
+    for (unsigned p = 0; p < pixels; ++p) {
+        require(temporal[p].confidence == 21 && temporal[p].record.bank == ew::temporal_bank &&
+                    temporal[p].record.pixel == p && temporal[p].target == fresh_alpha[p],
+                "Warm temporal retains capped-null history confidence and current target");
+        near(temporal[p].normalizer, temporal_Z[p], "Warm temporal independent normalizer");
+        if (!(p & 1u))
+            require(
+                temporal[p].target_h_fraction == scale(fresh_h[p]).first &&
+                    temporal[p].target_h_exponent == scale(fresh_h[p]).second &&
+                    same(record_at(temporal[p].record), descriptor(p, 0)),
+                "Fresh record/h must materialize in temporal without unit-density substitution");
+        else
+            require(same(record_at(temporal[p].record), ew::empty_record()),
+                    "Null temporal winner must not read poisoned source records");
+    }
+    std::array<aw::Temporal, pixels> before_mutation{};
+    std::array<ew::Record, pixels> before_records{};
+    std::memcpy(before_mutation.data(), temporal, sizeof(before_mutation));
+    for (unsigned p = 0; p < pixels; ++p)
+        before_records[p] = record_at(temporal[p].record);
+    // Mutation reuses fresh storage. Its old bytes cannot remain a dependency
+    // of the already materialized temporal source, including rejected proposals.
+    std::memset(records + ew::fresh_bank * pixels, 0xff, pixels * sizeof(ew::Record));
+    config.phase = aw::mutation;
+    config.candidate = 0;
+    dispatch(mutation_prepare);
+    std::array<rypath_replay::ReplayState, pixels> proposed_payloads{};
+    std::memcpy(proposed_payloads.data(), data(aw::replay_id), sizeof(proposed_payloads));
+    for (unsigned p = 0; p < pixels; ++p) {
+        const bool accept = p == 0 || p == 4;
+        const auto &source = before_mutation[p];
+        const render_wire::Point xyz =
+            accept ? render_wire::Point{source.xyz.x * 2, source.xyz.y * 2, 0}
+                   : render_wire::Point{};
+        const float h = accept ? fresh_h[p] * (p == 0 ? 1.f : 2.f) : 1.f;
+        response(p, xyz, h, source.selected_slot);
+        if (accept)
+            record_at(evaluations[p].result) = descriptor(p, 1);
+    }
+    dispatch(mutation_finish);
+    aw::Counters counters{};
+    std::memcpy(&counters, data(aw::failure_id), sizeof(counters));
+    require(counters.mutations == pixels && counters.accepted == 2,
+            "One MH attempt per domain, two guaranteed accepts, zero/null rejections");
+    for (unsigned p = 0; p < pixels; ++p) {
+        const bool accept = p == 0 || p == 4;
+        require(temporal[p].confidence == 21 && temporal[p].record.bank == ew::temporal_bank &&
+                    temporal[p].record.pixel == p,
+                "MH must preserve M and normalize accepted refs");
+        if (accept) {
+            const auto alpha = proxy(leaf[p], p == 0 ? fresh_h[p] : fresh_h[p] * 2);
+            const auto &source = before_mutation[p];
+            require(alpha > source.target, "Accepted MH fixture must be strictly uphill");
+            // Z is alpha*UCW. Uphill forward acceptance is 1, while the
+            // represented reverse probability is the rounded 24-bit mantissa
+            // ratio times the EXACT power-of-two exponent difference. Derive
+            // that probability independently, without production MIS helpers.
+            int old_exponent, new_exponent;
+            const long double old_fraction = std::frexp(source.target, &old_exponent);
+            const long double new_fraction = std::frexp(alpha, &new_exponent);
+            const float rounded_ratio = static_cast<float>(old_fraction / new_fraction);
+            const long double reverse_probability =
+                std::ldexp(static_cast<long double>(rounded_ratio), old_exponent - new_exponent);
+            require(reverse_probability > 0 && reverse_probability < 1,
+                    "Represented reverse MH probability must be nontrivial");
+            const auto expected_Z = static_cast<long double>(source.normalizer) *
+                                    reverse_probability * alpha / source.target;
+            // Production materializes its correction with intermediate FLOAT
+            // rounding; the existing 64-epsilon bound includes those 3 operations.
+            near(temporal[p].normalizer, expected_Z, "Accepted MH represented-dyadic normalizer");
+            const auto wrong_Z =
+                static_cast<long double>(source.normalizer) * alpha / source.target;
+            require(std::abs(wrong_Z - expected_Z) > 1024.L *
+                                                         std::numeric_limits<float>::epsilon() *
+                                                         std::max(1.L, std::abs(expected_Z)),
+                    "Negative control must reject treating stored Z as UCW");
+            const auto h = scale(p == 0 ? fresh_h[p] : fresh_h[p] * 2);
+            require(same(temporal[p].payload, proposed_payloads[p]) &&
+                        same(temporal[p].xyz, leaf[p]) && temporal[p].target == alpha &&
+                        temporal[p].target_h_fraction == h.first &&
+                        temporal[p].target_h_exponent == h.second &&
+                        same(record_at(temporal[p].record), descriptor(p, 1)),
+                    "Accepted mutation must publish its actual candidate tuple");
+        } else
+            require(same(temporal[p], before_mutation[p]) &&
+                        same(record_at(temporal[p].record), before_records[p]),
+                    "Rejected/zero/null mutation must retain source bytes and record");
+    }
+    spatial(false);
+    spatial(true); // Two identical valid reciprocal offsets are two structural slots.
+}
 int run(const std::filesystem::path &path) {
     auto device = MTLCreateSystemDefaultDevice();
 #ifdef RYPATH_ALLOW_NO_METAL_DEVICE
@@ -414,7 +988,7 @@ int run(const std::filesystem::path &path) {
     require(argument_encoder != nil, "Queue argument encoder");
     auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
                                          options:MTLResourceStorageModeShared];
-    std::array<id<MTLBuffer>, wf::contribution_state_id + 1> buffers{};
+    std::array<id<MTLBuffer>, wf::enhanced_evaluation_id + 1> buffers{};
     [argument_encoder setArgumentBuffer:arguments offset:0];
     for (unsigned i = 0; i < buffers.size(); ++i) {
         buffers[i] = [device newBufferWithLength:i >= wf::contribution_evaluation_id ? 16 : 256
@@ -605,16 +1179,16 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v16", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v17", why);
     require(contract_pipeline != nil,
-            "Wavefront v15 contract unavailable; rebuild the metallib: " + why);
+            "Wavefront v17 contract unavailable; rebuild the metallib: " + why);
     for (NSString *stale in @[
              @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
              @"rypath_wavefront_contract_v13", @"rypath_wavefront_contract_v14",
-             @"rypath_wavefront_contract_v15"
+             @"rypath_wavefront_contract_v15", @"rypath_wavefront_contract_v16"
          ])
         require([library newFunctionWithName:stale] == nil,
-                "Stale Wavefront stage entry must not advertise the v15 ABI");
+                "Stale Wavefront stage entry must not advertise the v17 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");
@@ -637,10 +1211,13 @@ int run(const std::filesystem::path &path) {
                 history_contract.dispatch_bytes == 12 &&
                 history_contract.contribution_state_bytes == 80 &&
                 history_contract.contribution_state_alignment == 4 &&
-                history_contract.enhanced_state_bytes == 104 &&
-                history_contract.enhanced_state_alignment == 4,
+                history_contract.enhanced_state_bytes == 120 &&
+                history_contract.enhanced_state_alignment == 4 &&
+                history_contract.enhanced_record_bytes == 48 &&
+                history_contract.enhanced_evaluation_bytes == 32,
             "History storage contract mismatch");
     enhanced_null_owners(device, library, queue, history_contract);
+    enhanced_area_protocol(device, library, queue);
     constexpr std::uint32_t history_schema = 0x48535435u;
     auto layout_pipeline =
         metal::load_pipeline(device, library, @"rypath_hero_history_layout", why);
@@ -694,8 +1271,8 @@ int run(const std::filesystem::path &path) {
         require(history_arguments != nil, "History storage arguments allocation");
         [history_arguments_encoder setArgumentBuffer:history_arguments offset:0];
         constexpr std::size_t guard_bytes = 256, slot_count = 7;
-        std::array<id<MTLBuffer>, wf::contribution_state_id + 1> history_buffers{};
-        std::array<std::size_t, wf::contribution_state_id + 1> strides{};
+        std::array<id<MTLBuffer>, wf::enhanced_evaluation_id + 1> history_buffers{};
+        std::array<std::size_t, wf::enhanced_evaluation_id + 1> strides{};
         strides[wf::packet_state_id] = history_contract.packet_bytes;
         strides[wf::packet_hot_id] = history_contract.hot_bytes;
         strides[wf::packet_cold_id] = history_contract.cold_bytes;

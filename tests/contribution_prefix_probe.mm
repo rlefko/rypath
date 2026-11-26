@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "enhanced_wire.h"
 #include "metal_execution.hpp"
 #include "render_wire.h"
 #include "wavefront_wire.h"
@@ -14,7 +15,7 @@ namespace {
 using namespace rypath;
 namespace w = render_wire;
 namespace wf = wavefront_wire;
-static_assert(wf::contract == 16 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 96);
+static_assert(wf::contract == 17 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 104);
 constexpr unsigned variants = 16, guard = 256, instances_count = 136;
 void need(bool ok, const std::string &why) {
     if (!ok)
@@ -390,13 +391,32 @@ int run(const std::filesystem::path &path) {
     auto discovery_finish =
         metal::load_pipeline(device, library, @"rypath_enhanced_discovery_finish", error);
     need(discovery_finish != nil, error);
-    constexpr unsigned discovery_count = 6, discovery_words = 32, enhanced_bytes = 104;
-    std::array<id<MTLBuffer>, 5> d{};
+    constexpr unsigned discovery_count = 6, discovery_words = 32, enhanced_bytes = 120;
+    std::array<id<MTLBuffer>, 7> d{};
     d[0] = allocate(sizeof(w::Parameters));
     d[1] = allocate(discovery_count * sizeof(wf::Config));
     d[2] = b[8]; // Same synthetic sensor, checked independently below.
     d[3] = allocate(discovery_count * enhanced_bytes + 2 * guard, true);
     d[4] = allocate(discovery_count * discovery_words * sizeof(std::uint32_t) + 2 * guard, true);
+    namespace ew = enhanced_wire;
+    d[5] = allocate(ew::bank_count * discovery_count * sizeof(ew::Record) + 2 * guard, true);
+    d[6] = allocate(discovery_count * sizeof(ew::Evaluation) + 2 * guard, true);
+    auto *owned_records =
+        reinterpret_cast<ew::Record *>(static_cast<unsigned char *>(d[5].contents) + guard);
+    auto *owned_evaluations =
+        reinterpret_cast<ew::Evaluation *>(static_cast<unsigned char *>(d[6].contents) + guard);
+    for (unsigned i = 0; i < discovery_count; ++i) {
+        const auto source = i == 4 ? ew::Reference{ew::history_bank_0, i} : ew::absent();
+        const auto result = i == 4 ? source : ew::Reference{ew::fresh_bank, i};
+        owned_evaluations[i] = {source, result, 0.f, 0, 0, 0};
+    }
+    owned_records[ew::history_bank_0 * discovery_count + 4] = ew::empty_record();
+    std::array<ew::Record, ew::bank_count * discovery_count> expected_records{};
+    std::memset(expected_records.data(), 0xa5, sizeof(expected_records));
+    expected_records[ew::history_bank_0 * discovery_count + 4] = ew::empty_record();
+    for (unsigned i = 0; i < discovery_count; ++i)
+        if (i != 4)
+            expected_records[ew::fresh_bank * discovery_count + i] = ew::empty_record();
     auto *dp = static_cast<w::Parameters *>(d[0].contents);
     *dp = *p;
     dp->width = dp->pixel_count = dp->lane_count = discovery_count;
@@ -473,6 +493,14 @@ int run(const std::filesystem::path &path) {
                  v[26] == gate2[i] && v[31] == i,
              context + " actual gate/observation/status/snapshot contract");
         need(v[1] == (imported ? 5u : fresh_slot), context + " request identity");
+        const auto &receipt = owned_evaluations[i];
+        const auto source = imported ? ew::Reference{ew::history_bank_0, i} : ew::absent();
+        const auto result = imported ? source : ew::Reference{ew::fresh_bank, i};
+        need(receipt.source.bank == source.bank && receipt.source.pixel == source.pixel &&
+                 receipt.result.bank == result.bank && receipt.result.pixel == result.pixel &&
+                 bits(receipt.target_h_fraction) == bits(.5f) && receipt.target_h_exponent == 1 &&
+                 receipt.ready == 1 && receipt.reserved == 0,
+             context + " complete owned receipt publishes unit h once after pending validation");
         const unsigned selected = v[2];
         long double expected_sum = 0;
         if (!imported && !black)
@@ -514,7 +542,9 @@ int run(const std::filesystem::path &path) {
                      context + " inactive XYZ fields remain initialized");
         }
     }
-    for (unsigned i : {3u, 4u}) {
+    need(std::memcmp(owned_records, expected_records.data(), sizeof(expected_records)) == 0,
+         "Enhanced generic/null records and untouched arena banks");
+    for (unsigned i : {3u, 4u, 5u, 6u}) {
         const auto *bytes = static_cast<const unsigned char *>(d[i].contents);
         for (unsigned k = 0; k < guard; ++k)
             need(bytes[k] == 0xa5 && bytes[d[i].length - guard + k] == 0xa5,
@@ -522,7 +552,8 @@ int run(const std::filesystem::path &path) {
     }
     std::cout << "6 actual Enhanced sink controls passed: first/second RR cutoff, both survive, "
                  "unit gates, fixed import, all-black null; independent alpha/a normalizer, "
-                 "selected XYZ/target, sensor PDFs and device state104 checks; no AS/transport\n";
+                 "selected XYZ/target, sensor PDFs and device state120 and owned-record/receipt "
+                 "checks; no AS/transport\n";
     return 0;
 }
 } // namespace

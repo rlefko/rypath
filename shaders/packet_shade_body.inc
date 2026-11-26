@@ -74,7 +74,7 @@ rypath_bdpt::packet_pt_step_pretraced(resources, state,
 #if RYPATH_PACKET_SHADE_HERO && !RYPATH_PACKET_SHADE_SEPARATED
 if (wavefront_enhanced()) {
     auto enhanced = reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
-    rypath_enhanced_runtime::Sink sink{enhanced, a.cie, p, *a.config, state.sample.pixel};
+    rypath_enhanced_runtime::Sink sink{enhanced, a.cie, p, *a.config, state.sample.pixel, a.enhanced_records, a.enhanced_evaluation};
     rypath_bdpt::packet_pt_step_enhanced(resources, state, &replay, sink);
     reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot] = enhanced;
     if (enhanced.failed) {
@@ -117,7 +117,7 @@ if (state.complete) {
 #if RYPATH_PACKET_SHADE_HERO && !RYPATH_PACKET_SHADE_SEPARATED
     if (wavefront_enhanced()) {
         auto enhanced = reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
-        rypath_enhanced_runtime::Sink sink{enhanced, a.cie, p, *a.config, pixel};
+        rypath_enhanced_runtime::Sink sink{enhanced, a.cie, p, *a.config, pixel, a.enhanced_records, a.enhanced_evaluation};
         const auto request = a.contribution_evaluation[pixel];
         rypath::contribution_wire::Evaluation evaluated;
         if (!sink.finish(request, value, evaluated)) {

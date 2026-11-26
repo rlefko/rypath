@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "contribution_wire.h"
+#include "enhanced_wire.h"
 #include "render_wire.h"
 #include "replay_shared.h"
 #include "reservoir_shared.h"
@@ -8,7 +9,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 9,
+    contract = 11,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -44,6 +45,7 @@ struct Config {
     int offset_x[2], offset_y[2];
     // Immutable across this session/history domain. Summed mode requires depth0.
     Word contribution_mode, contribution_depth;
+    Word history_source_bank;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -68,6 +70,11 @@ struct History {
     Word valid, selected_slot;
     // Exact selected pre-weight F(payload[,j]); never the conditional mean.
     render_wire::Point xyz;
+    // Structural Enhanced confidence; legacy records require the zero sentinel.
+    Word confidence;
+    enhanced_wire::Reference record;
+    float target_h_fraction;
+    int target_h_exponent;
 };
 struct Temporal {
     rypath_replay::ReplayState payload;
@@ -75,6 +82,10 @@ struct Temporal {
     render_wire::Point xyz;
     float target;
     Word selected_slot, reserved[2];
+    Word confidence;
+    enhanced_wire::Reference record;
+    float target_h_fraction;
+    int target_h_exponent;
 };
 struct Accumulator {
     rypath_reservoir::State state;
@@ -85,6 +96,10 @@ struct Accumulator {
     // Enhanced zero-score inputs still count as structurally present proposals.
     // The positive-score categorical selector's count is a separate quantity.
     Word logical_count;
+    Word confidence;
+    enhanced_wire::Reference record;
+    float target_h_fraction;
+    int target_h_exponent;
 };
 enum Argument : Word {
     config_id,
@@ -97,16 +112,22 @@ enum Argument : Word {
     raw_xyz_id,
     failure_id,
     cross_targets_id,
-    contribution_evaluation_id
+    contribution_evaluation_id,
+    enhanced_records_id,
+    enhanced_evaluation_id
 };
 struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
     Word accumulator_bytes, replay_bytes, counters_bytes, contribution_evaluation_bytes;
 };
+static_assert(__builtin_offsetof(History, confidence) == 60 &&
+                  __builtin_offsetof(Temporal, confidence) == 64 &&
+                  __builtin_offsetof(Accumulator, confidence) == 76,
+              "Area v10 structural confidence word offsets");
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 88 && sizeof(History) == 60 && sizeof(Temporal) == 64 &&
-                  sizeof(Accumulator) == 76 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
+static_assert(sizeof(Config) == 92 && sizeof(History) == 80 && sizeof(Temporal) == 84 &&
+                  sizeof(Accumulator) == 96 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath

@@ -108,6 +108,9 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/contribution_sink.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_sink.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_path_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_confidence_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_light.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_decision_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_path_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_decision_shared.h"
@@ -492,6 +495,22 @@ add_custom_command(OUTPUT "${rypath_contribution_prefix_library}"
         "${CMAKE_SOURCE_DIR}/tests/contribution_prefix_probe.metal"
     VERBATIM)
 add_custom_target(rypath_contribution_prefix_shader DEPENDS "${rypath_contribution_prefix_library}")
+
+# Owned terminal-light record/measure arithmetic; no ray-tracing device required.
+set(rypath_enhanced_light_library "${rypath_runtime_directory}/rypath-enhanced-light-probe.metallib")
+set(rypath_enhanced_light_air "${rypath_runtime_directory}/CMakeFiles/rypath-enhanced-light-probe.air")
+add_custom_command(OUTPUT "${rypath_enhanced_light_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/enhanced_light_probe.metal"
+        -o "${rypath_enhanced_light_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_enhanced_light_air}"
+        -o "${rypath_enhanced_light_library}"
+    DEPENDS ${rypath_hero_current_headers}
+        "${CMAKE_SOURCE_DIR}/tests/enhanced_light_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_enhanced_light_shader DEPENDS "${rypath_enhanced_light_library}")
 
 # Full-render-TU differential: genuine Vertex and compact current/light endpoints.
 set(rypath_hero_light_endpoint_library "${rypath_runtime_directory}/rypath-hero-light-endpoint.metallib")

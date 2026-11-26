@@ -4,15 +4,18 @@
 // replay; it does not implement a hybrid shift or cached suffix.
 #include "../src/area_stencil_shared.h"
 #include "../src/area_wire.h"
+#include "../src/enhanced_confidence_shared.h"
 #include "../src/enhanced_path_shared.h"
 #include "../src/mutation_shared.h"
 #include "../src/reuse_mis_shared.h"
 namespace aw = rypath::area_wire;
 namespace cw = rypath::contribution_wire;
+namespace ew = rypath::enhanced_wire;
 namespace reservoir = rypath_reservoir;
 namespace mutation = rypath_mutation;
 namespace reuse_mis = rypath_reuse_mis;
 namespace enhanced_path = rypath_enhanced_path;
+namespace confidence = rypath_enhanced_confidence;
 struct AreaArguments {
     device const aw::Config *config [[id(aw::config_id)]];
     device rypath_replay::ReplayState *replay [[id(aw::replay_id)]];
@@ -25,6 +28,8 @@ struct AreaArguments {
     device aw::Counters *counters [[id(aw::failure_id)]];
     device float *cross_targets [[id(aw::cross_targets_id)]];
     device cw::Evaluation *contribution_evaluation [[id(aw::contribution_evaluation_id)]];
+    device ew::Record *enhanced_records [[id(aw::enhanced_records_id)]];
+    device ew::Evaluation *enhanced_evaluation [[id(aw::enhanced_evaluation_id)]];
 };
 // The existing sticky flag atomic also selects the sole record writer. Other
 // lanes never read this record; command completion precedes every host read.
@@ -82,7 +87,8 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
         c.contribution_mode > cw::enhanced ||
         (c.contribution_mode == cw::summed && c.contribution_depth != 0) ||
         (c.contribution_mode != cw::summed && c.contribution_depth > 65) ||
-        (c.contribution_mode == cw::enhanced && c.temporal_cache) ||
+        (c.contribution_mode == cw::enhanced && c.history_source_bank > 1) ||
+        (c.contribution_mode != cw::enhanced && c.history_source_bank != 0) ||
         (c.stencil == aw::reciprocal16_stencil &&
          (!rypath_area_stencil::valid({c.offset_x[0], c.offset_y[0]}) ||
           !rypath_area_stencil::valid({c.offset_x[1], c.offset_y[1]}))) ||
@@ -98,6 +104,9 @@ inline bool area_contribution(constant AreaArguments &a) {
 inline bool area_enhanced(constant AreaArguments &a) {
     return a.config->contribution_mode == cw::enhanced;
 }
+inline bool area_confidence_valid(constant AreaArguments &a, uint value) {
+    return area_enhanced(a) ? confidence::valid_source({value, 1}) : value == 0;
+}
 inline bool area_zero(wire::Point xyz) {
     return ((as_type<uint>(xyz.x) | as_type<uint>(xyz.y) | as_type<uint>(xyz.z)) & 0x7fffffffu) ==
            0;
@@ -109,6 +118,41 @@ inline bool area_slot_valid(constant AreaArguments &a, uint slot) {
 }
 inline bool area_null(constant AreaArguments &a, uint slot) {
     return area_enhanced(a) && slot == cw::enhanced_null_slot;
+}
+inline bool area_owned_value_valid(constant AreaArguments &a, uint slot, ew::Reference record,
+                                   reuse_mis::Scaled h) {
+    if (!area_enhanced(a))
+        return record.bank == 0 && record.pixel == 0 && as_type<uint>(h.fraction) == 0 &&
+               h.exponent == 0;
+    return ew::valid(record, a.config->pixel_count) && enhanced_path::valid_density(h) &&
+           (!area_null(a, slot) || enhanced_path::unit_density(h));
+}
+inline bool area_same_reference(ew::Reference x, ew::Reference y) {
+    return x.bank == y.bank && x.pixel == y.pixel;
+}
+// Copy only on accepted owner publication, never as per-evaluation local state.
+// Null records are initialized without reading their potentially poisoned source.
+inline bool area_copy_record(constant AreaArguments &a, uint pixel, uint slot, ew::Reference source,
+                             ew::Reference destination) {
+    if (!area_enhanced(a))
+        return true;
+    if (!ew::valid(source, a.config->pixel_count) ||
+        !ew::valid(destination, a.config->pixel_count) || !area_slot_valid(a, slot)) {
+        AREA_FAIL(a, aw::invalid_payload);
+        return false;
+    }
+    ew::Record record = ew::empty_record();
+    if (!area_null(a, slot)) {
+        record = a.enhanced_records[ulong(source.bank) * a.config->pixel_count + source.pixel];
+        if (!rypath_bdpt::enhanced_light::valid_record(record, slot / 2u) ||
+            ((slot & 1u) == 0 && record.tag != ew::generic)) {
+            AREA_FAIL(a, aw::invalid_payload);
+            return false;
+        }
+    }
+    a.enhanced_records[ulong(destination.bank) * a.config->pixel_count + destination.pixel] =
+        record;
+    return true;
 }
 inline uint area_count(constant AreaArguments &a, const thread aw::Accumulator &accumulator) {
     return area_enhanced(a) ? accumulator.logical_count : accumulator.state.candidate_count;
@@ -159,8 +203,12 @@ inline uint4 area_state_values(const thread reservoir::State &state) {
                  state.candidate_count, state.selected_index);
 }
 inline bool area_history(constant AreaArguments &a, uint pixel, const thread aw::History &history) {
-    if (history.valid != 1 || !area_slot_valid(a, history.selected_slot) ||
-        !rypath_replay::valid(history.payload) ||
+    if (history.valid != 1 || !area_confidence_valid(a, history.confidence) ||
+        !area_owned_value_valid(a, history.selected_slot, history.record,
+                                {history.target_h_fraction, history.target_h_exponent}) ||
+        (area_enhanced(a) &&
+         (history.record.bank != a.config->history_source_bank || history.record.pixel != pixel)) ||
+        !area_slot_valid(a, history.selected_slot) || !rypath_replay::valid(history.payload) ||
         !area_selected_values(a, history.selected_slot, history.normalizer, history.target,
                               history.xyz)) {
         AREA_DETAIL(a, aw::invalid_payload, 0,
@@ -169,13 +217,42 @@ inline bool area_history(constant AreaArguments &a, uint pixel, const thread aw:
                     area_payload_head(history.payload), area_payload_tail(history.payload));
         return false;
     }
+    if (area_enhanced(a)) {
+        const auto target = enhanced_path::target(
+            {history.xyz.x, history.xyz.y, history.xyz.z}, a.config->target_scale,
+            {history.target_h_fraction, history.target_h_exponent});
+        if (target.status != reservoir::Status::ok ||
+            as_type<uint>(target.value) != as_type<uint>(history.target)) {
+            AREA_FAIL(a, aw::invalid_payload);
+            return false;
+        }
+    }
+    return true;
+}
+// Cap the temporal INPUT coefficient before either side's MIS evaluation.
+// A null selected reservoir is still a structurally present history domain.
+inline bool area_temporal_confidence(constant AreaArguments &a, uint pixel,
+                                     thread confidence::Temporal &result) {
+    confidence::Source previous{};
+    if (a.config->history_used) {
+        const auto source = a.history_source[pixel];
+        if (!area_history(a, pixel, source))
+            return false;
+        previous = {source.confidence, 1};
+    }
+    result = confidence::temporal(previous);
+    if (result.status != confidence::Status::ok) {
+        AREA_DETAIL(a, aw::invalid_value, result.status,
+                    uint4(previous.confidence, previous.present, 0, 0));
+        return false;
+    }
     return true;
 }
 inline bool area_target(constant AreaArguments &a, uint pixel, wire::Point xyz,
-                        thread float &target) {
+                        thread float &target, reuse_mis::Scaled h = {.5f, 1}) {
     const auto checked =
         area_enhanced(a)
-            ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale)
+            ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale, h)
             : reuse_mis::importance_target(xyz.x, xyz.y, xyz.z, a.config->target_scale);
     if (checked.status != reservoir::Status::ok) {
         AREA_DETAIL(a, aw::invalid_value, checked.status,
@@ -185,9 +262,53 @@ inline bool area_target(constant AreaArguments &a, uint pixel, wire::Point xyz,
     target = checked.value;
     return true;
 }
-inline void area_prepare_evaluation(constant AreaArguments &a, uint pixel, uint requested_slot) {
+inline void area_prepare_evaluation(constant AreaArguments &a, uint pixel, uint requested_slot,
+                                    ew::Reference source = ew::absent()) {
     if (area_contribution(a))
         a.contribution_evaluation[pixel] = {requested_slot, reservoir::no_selection, 0.f, 0};
+    if (area_enhanced(a)) {
+        const bool fresh = requested_slot == reservoir::no_selection;
+        const auto result = fresh || a.config->phase == aw::mutation
+                                ? ew::Reference{ew::fresh_bank, pixel}
+                                : source;
+        a.enhanced_evaluation[pixel] = {source, result, 0.f, 0, 0, 0};
+    }
+}
+inline bool area_owned_result(constant AreaArguments &a, uint pixel, thread ew::Reference &record,
+                              thread reuse_mis::Scaled &h) {
+    record = {0, 0};
+    h = {0, 0};
+    if (!area_enhanced(a))
+        return true; // Never read legacy's one-record sentinels.
+    const auto receipt = a.enhanced_evaluation[pixel];
+    const auto request = a.contribution_evaluation[pixel];
+    auto pending = receipt;
+    pending.target_h_fraction = 0;
+    pending.target_h_exponent = 0;
+    pending.ready = 0;
+    const bool fresh = request.requested_slot == reservoir::no_selection;
+    record = receipt.result;
+    h = {receipt.target_h_fraction, receipt.target_h_exponent};
+    if (receipt.ready != 1 || receipt.reserved != 0 || !area_slot_valid(a, request.selected_slot) ||
+        !rypath_enhanced_runtime::pending_owned(pending, a.config->pixel_count, pixel, fresh) ||
+        !area_owned_value_valid(a, request.selected_slot, record, h)) {
+        AREA_FAIL(a, aw::invalid_payload);
+        return false;
+    }
+    ew::Reference expected = ew::absent();
+    if (a.config->phase == aw::temporal)
+        expected = a.history_source[pixel].record;
+    else if (a.config->phase == aw::spatial)
+        expected = a.temporal[area_neighbor(a, pixel)].record;
+    else if (!fresh)
+        expected = a.temporal[pixel].record;
+    const auto result =
+        fresh || a.config->phase == aw::mutation ? ew::Reference{ew::fresh_bank, pixel} : expected;
+    if (!area_same_reference(receipt.source, expected) || !area_same_reference(record, result)) {
+        AREA_FAIL(a, aw::invalid_payload);
+        return false;
+    }
+    return true;
 }
 inline bool area_pending_evaluation(constant AreaArguments &a, uint pixel, uint requested_slot) {
     if (!area_contribution(a))
@@ -217,8 +338,9 @@ inline bool area_evaluated_slot(constant AreaArguments &a, uint pixel, bool fres
     const bool fresh_null = fresh && area_null(a, e.selected_slot);
     const bool normalizer_valid =
         fresh_null ? as_type<uint>(e.normalizer) == 0 && as_type<uint>(target) == 0
-        : fresh    ? reservoir::positive_normal(e.normalizer) && e.normalizer >= target
-                   : as_type<uint>(e.normalizer) == 0;
+        : fresh    ? reservoir::positive_normal(e.normalizer) &&
+                      (area_enhanced(a) || e.normalizer >= target)
+                : as_type<uint>(e.normalizer) == 0;
     if (e.ready != 1 || !area_slot_valid(a, e.selected_slot) || !request_valid ||
         (area_null(a, e.selected_slot) && as_type<uint>(target) != 0) || !normalizer_valid) {
         AREA_DETAIL(a, aw::invalid_payload, 0,
@@ -234,6 +356,8 @@ inline bool area_evaluated_slot(constant AreaArguments &a, uint pixel, bool fres
 inline void area_consume_evaluation(constant AreaArguments &a, uint pixel) {
     if (area_contribution(a))
         a.contribution_evaluation[pixel].ready = 0;
+    if (area_enhanced(a))
+        a.enhanced_evaluation[pixel].ready = 0;
 }
 // Separate decision stream. With phase<=5, candidate<=4 and ordinal<9 this
 // mixed-radix tag is injective. Pixel and the complete submission serial retain
@@ -248,14 +372,30 @@ inline uint area_selection_word(constant AreaArguments &a, uint pixel, uint ordi
 }
 inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumulator &accumulator,
                         const thread rypath_replay::ReplayState &payload, wire::Point xyz,
-                        float score, float target, uint selected_slot) {
-    if (!area_slot_valid(a, selected_slot) || !area_slot_valid(a, accumulator.selected_slot)) {
+                        float score, float target, uint selected_slot, uint source_confidence = 0,
+                        ew::Reference record = {0, 0}, reuse_mis::Scaled h = {0, 0}) {
+    if (!area_slot_valid(a, selected_slot) || !area_slot_valid(a, accumulator.selected_slot) ||
+        !area_owned_value_valid(a, selected_slot, record, h)) {
         AREA_DETAIL(a, aw::invalid_payload, 0,
                     uint4(selected_slot, accumulator.selected_slot,
                           accumulator.state.candidate_count, a.config->contribution_mode));
         return false;
     }
+    if (!area_enhanced(a) && (accumulator.confidence != 0 || source_confidence != 0)) {
+        AREA_FAIL(a, aw::invalid_value);
+        return false;
+    }
     if (area_enhanced(a)) {
+        // Score0/null does not delete its input domain. Only an absent boundary
+        // neighbor has confidence0; logical scheduling still observes that slot.
+        if (accumulator.confidence > confidence::maximum_confidence ||
+            !confidence::valid_source({source_confidence, uint(source_confidence != 0)}) ||
+            source_confidence > confidence::maximum_confidence - accumulator.confidence ||
+            (source_confidence == 0 && score != 0)) {
+            AREA_FAIL(a, aw::invalid_value);
+            return false;
+        }
+        accumulator.confidence += source_confidence;
         if (accumulator.logical_count >= aw::spatial_candidates || !reservoir::finite(score) ||
             score < 0 || !reservoir::finite(target) || target < 0 ||
             (score > 0 && (!reservoir::positive_normal(target) || area_null(a, selected_slot)))) {
@@ -267,6 +407,9 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
             accumulator.xyz = {0, 0, 0};
             accumulator.target = 0;
             accumulator.selected_slot = cw::enhanced_null_slot;
+            accumulator.record = record;
+            accumulator.target_h_fraction = .5f;
+            accumulator.target_h_exponent = 1;
         }
         if (score == 0) {
             ++accumulator.logical_count;
@@ -314,6 +457,9 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
         accumulator.xyz = xyz;
         accumulator.target = target;
         accumulator.selected_slot = selected_slot;
+        accumulator.record = record;
+        accumulator.target_h_fraction = h.fraction;
+        accumulator.target_h_exponent = h.exponent;
     }
     if (area_enhanced(a))
         ++accumulator.logical_count;
@@ -322,7 +468,10 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
 inline bool area_finish(constant AreaArguments &a, uint pixel,
                         const thread aw::Accumulator &accumulator, uint count,
                         thread float &normalizer) {
-    if (area_count(a, accumulator) != count || !rypath_replay::valid(accumulator.payload) ||
+    if (area_count(a, accumulator) != count || !area_confidence_valid(a, accumulator.confidence) ||
+        !area_owned_value_valid(a, accumulator.selected_slot, accumulator.record,
+                                {accumulator.target_h_fraction, accumulator.target_h_exponent}) ||
+        !rypath_replay::valid(accumulator.payload) ||
         !area_slot_valid(a, accumulator.selected_slot)) {
         AREA_DETAIL(a, aw::invalid_count, accumulator.state.status,
                     area_state_values(accumulator.state), uint4(count, 0, 0, 0),
@@ -345,7 +494,8 @@ inline bool area_finish(constant AreaArguments &a, uint pixel,
         return false;
     }
     float target;
-    if (!area_target(a, pixel, accumulator.xyz, target))
+    if (!area_target(a, pixel, accumulator.xyz, target,
+                     {accumulator.target_h_fraction, accumulator.target_h_exponent}))
         return false;
     if (target != accumulator.target) {
         AREA_DETAIL(a, aw::invalid_reservoir, 0,
@@ -361,11 +511,17 @@ inline bool area_finish(constant AreaArguments &a, uint pixel,
 inline bool area_temporal_valid(constant AreaArguments &a, uint pixel,
                                 const thread aw::Temporal &source) {
     float target = 0;
-    if (!rypath_replay::valid(source.payload) ||
+    if (!rypath_replay::valid(source.payload) || !area_confidence_valid(a, source.confidence) ||
+        !area_owned_value_valid(a, source.selected_slot, source.record,
+                                {source.target_h_fraction, source.target_h_exponent}) ||
+        (area_enhanced(a) && source.record.bank != ew::fresh_bank &&
+         source.record.bank != ew::temporal_bank) ||
         !area_selected_values(a, source.selected_slot, source.normalizer, source.target,
                               source.xyz) ||
         !area_slot_valid(a, source.selected_slot) || source.reserved[0] || source.reserved[1] ||
-        !area_target(a, pixel, source.xyz, target) || source.target != target) {
+        !area_target(a, pixel, source.xyz, target,
+                     {source.target_h_fraction, source.target_h_exponent}) ||
+        source.target != target) {
         AREA_DETAIL(a, aw::invalid_value, 0,
                     as_type<uint4>(float4(source.normalizer, source.target, target, source.xyz.x)),
                     uint4(as_type<uint>(source.xyz.y), as_type<uint>(source.xyz.z),
@@ -465,13 +621,13 @@ kernel void rypath_area_prepare(constant wire::Parameters &p [[buffer(0)]],
         if (!area_temporal_valid(a, pixel, source))
             return;
         a.replay[pixel] = source.payload;
-        area_prepare_evaluation(a, pixel, source.selected_slot);
+        area_prepare_evaluation(a, pixel, source.selected_slot, source.record);
     } else if (a.config->phase == aw::temporal) {
         const aw::History source = a.history_source[pixel];
         if (!area_history(a, pixel, source))
             return;
         a.replay[pixel] = source.payload;
-        area_prepare_evaluation(a, pixel, source.selected_slot);
+        area_prepare_evaluation(a, pixel, source.selected_slot, source.record);
     } else {
         if (a.config->candidate == 0) {
             AREA_FAIL(a, aw::invalid_config);
@@ -482,12 +638,47 @@ kernel void rypath_area_prepare(constant wire::Parameters &p [[buffer(0)]],
             return;
         }
         a.replay[pixel] = source.payload;
-        area_prepare_evaluation(a, pixel, source.selected_slot);
+        area_prepare_evaluation(a, pixel, source.selected_slot, source.record);
     }
 }
 // Host permits this kernel only when complete source/destination evaluator
 // contexts are bit-identical. Pixel ownership is unchanged (no reprojection).
 // prepare and merge still perform their original validation and score updates.
+template <typename Source>
+inline bool area_publish_cached(constant AreaArguments &a, uint pixel,
+                                const thread Source &source) {
+    if (!area_pending_evaluation(a, pixel, source.selected_slot))
+        return false;
+    if (area_enhanced(a)) {
+        auto receipt = a.enhanced_evaluation[pixel];
+        if (!rypath_enhanced_runtime::pending_owned(receipt, a.config->pixel_count, pixel, false) ||
+            !area_same_reference(receipt.source, source.record) ||
+            !area_same_reference(receipt.result, source.record)) {
+            AREA_FAIL(a, aw::invalid_payload);
+            return false;
+        }
+        // The cache is an evaluator substitute and must retain transport's
+        // record validation. Analytic nulls never read unused record bytes.
+        if (!area_null(a, source.selected_slot)) {
+            const auto record =
+                a.enhanced_records[ulong(source.record.bank) * a.config->pixel_count +
+                                   source.record.pixel];
+            if (!rypath_bdpt::enhanced_light::valid_record(record, source.selected_slot / 2u) ||
+                ((source.selected_slot & 1u) == 0 && record.tag != ew::generic)) {
+                AREA_FAIL(a, aw::invalid_payload);
+                return false;
+            }
+        }
+        receipt.target_h_fraction = source.target_h_fraction;
+        receipt.target_h_exponent = source.target_h_exponent;
+        receipt.ready = 1;
+        a.enhanced_evaluation[pixel] = receipt;
+    }
+    a.leaf_xyz[pixel] = source.xyz;
+    if (area_contribution(a))
+        a.contribution_evaluation[pixel] = {source.selected_slot, source.selected_slot, 0.f, 1};
+    return true;
+}
 kernel void rypath_area_cache_evaluation(constant AreaArguments &a [[buffer(1)]],
                                          uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a, pixel))
@@ -500,15 +691,15 @@ kernel void rypath_area_cache_evaluation(constant AreaArguments &a [[buffer(1)]]
         const auto fresh = a.temporal[pixel];
         if (!area_temporal_valid(a, pixel, fresh))
             return;
-        if (!area_pending_evaluation(a, pixel, fresh.selected_slot))
-            return;
-        a.leaf_xyz[pixel] = fresh.xyz;
-        if (area_contribution(a))
-            a.contribution_evaluation[pixel] = {fresh.selected_slot, fresh.selected_slot, 0.f, 1};
+        area_publish_cached(a, pixel, fresh);
     } else if (a.config->phase == aw::temporal) {
         const auto source = a.history_source[pixel];
         float target;
-        if (!area_history(a, pixel, source) || !area_target(a, pixel, source.xyz, target))
+        if (!area_history(a, pixel, source) ||
+            !area_target(a, pixel, source.xyz, target,
+                         area_enhanced(a)
+                             ? reuse_mis::Scaled{source.target_h_fraction, source.target_h_exponent}
+                             : reuse_mis::Scaled{.5f, 1}))
             return;
         if (as_type<uint>(target) != as_type<uint>(source.target)) {
             AREA_DETAIL(a, aw::invalid_value, 0,
@@ -516,11 +707,7 @@ kernel void rypath_area_cache_evaluation(constant AreaArguments &a [[buffer(1)]]
                         uint4(as_type<uint>(source.target), 0, 0, 0));
             return;
         }
-        if (!area_pending_evaluation(a, pixel, source.selected_slot))
-            return;
-        a.leaf_xyz[pixel] = source.xyz;
-        if (area_contribution(a))
-            a.contribution_evaluation[pixel] = {source.selected_slot, source.selected_slot, 0.f, 1};
+        area_publish_cached(a, pixel, source);
     } else {
         AREA_FAIL(a, aw::invalid_config);
     }
@@ -541,8 +728,12 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
     }
     aw::Accumulator accumulator{};
     auto xyz = a.leaf_xyz[pixel];
+    ew::Reference record{};
+    reuse_mis::Scaled h{};
+    if (!area_owned_result(a, pixel, record, h))
+        return;
     float target;
-    if (!area_target(a, pixel, xyz, target))
+    if (!area_target(a, pixel, xyz, target, h))
         return;
     uint selected_slot;
     float fresh_normalizer;
@@ -551,10 +742,14 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         return;
     float score = target;
     uint expected = 0;
+    uint source_confidence = 0;
     if (a.config->phase == aw::fresh) {
+        source_confidence = area_enhanced(a) ? 1u : 0u;
         if (area_contribution(a))
             score = fresh_normalizer;
-        a.temporal[pixel] = {payload, score, xyz, target, selected_slot, {0, 0}};
+        a.temporal[pixel] = {
+            payload,           score,  xyz,        target,    selected_slot, {0, 0},
+            source_confidence, record, h.fraction, h.exponent};
         if (a.config->history_used) {
             area_consume_evaluation(a, pixel);
             return; // Fresh score also needs this payload's previous-context target.
@@ -568,9 +763,20 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
                         area_payload_tail(payload));
             return;
         }
+        confidence::Temporal temporal_confidence{};
+        if (area_enhanced(a)) {
+            if (source.confidence != 1 ||
+                !area_temporal_confidence(a, pixel, temporal_confidence)) {
+                AREA_FAIL(a, aw::invalid_value);
+                return;
+            }
+            source_confidence = temporal_confidence.fresh.confidence;
+        }
         const auto checked =
-            area_enhanced(a) ? enhanced_path::canonical_score(source.normalizer, source.target,
-                                                              target, 1.f, 20.f)
+            area_enhanced(a)
+                ? enhanced_path::canonical_score(source.normalizer, source.target, target,
+                                                 float(temporal_confidence.fresh.confidence),
+                                                 float(temporal_confidence.history.confidence))
             : area_contribution(a)
                 ? reuse_mis::temporal_fresh_score(source.normalizer, source.target, target)
                 : reuse_mis::temporal_fresh_score(source.target, target);
@@ -582,6 +788,8 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         score = checked.value;
         xyz = source.xyz;
         target = source.target;
+        record = source.record;
+        h = {source.target_h_fraction, source.target_h_exponent};
     } else if (a.config->phase == aw::temporal) {
         const aw::History source = a.history_source[pixel];
         if (!area_history(a, pixel, source) || !area_same_payload(source.payload, payload) ||
@@ -593,9 +801,17 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         accumulator = a.accumulators[pixel];
         expected = 1;
+        confidence::Temporal temporal_confidence{};
+        if (area_enhanced(a)) {
+            if (!area_temporal_confidence(a, pixel, temporal_confidence))
+                return;
+            source_confidence = temporal_confidence.history.confidence;
+        }
         const auto checked =
             area_enhanced(a)
-                ? enhanced_path::pair_score({source.normalizer, source.target, target, 20.f, 1.f})
+                ? enhanced_path::pair_score({source.normalizer, source.target, target,
+                                             float(temporal_confidence.history.confidence),
+                                             float(temporal_confidence.fresh.confidence)})
                 : reuse_mis::temporal_history_score(source.normalizer, target, source.target);
         if (checked.status != reservoir::Status::ok) {
             AREA_DETAIL(
@@ -619,10 +835,20 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         accumulator = a.accumulators[pixel];
         expected = a.config->candidate - 1;
+        aw::Temporal center{};
+        const bool boundary = area_neighbor(a, pixel) == pixel;
+        if (area_enhanced(a)) {
+            center = a.temporal[pixel];
+            if (!area_temporal_valid(a, pixel, center))
+                return;
+            source_confidence = boundary ? 0u : source.confidence;
+        }
         const auto checked =
             area_enhanced(a)
-                ? enhanced_path::pair_score(
-                      {source.normalizer, source.target, target, 1.f, 1.f, .25f})
+                ? boundary ? reservoir::ScalarResult{0, reservoir::Status::ok}
+                           : enhanced_path::pair_score({source.normalizer, source.target, target,
+                                                        float(source.confidence),
+                                                        float(center.confidence), .25f})
                 : reuse_mis::spatial_pair_score(source.normalizer, target, source.target);
         if (checked.status != reservoir::Status::ok) {
             AREA_DETAIL(
@@ -645,7 +871,8 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
                     area_state_values(accumulator.state), uint4(expected, 0, 0, 0));
         return;
     }
-    if (!area_update(a, pixel, accumulator, payload, xyz, score, target, selected_slot))
+    if (!area_update(a, pixel, accumulator, payload, xyz, score, target, selected_slot,
+                     source_confidence, record, h))
         return;
     a.accumulators[pixel] = accumulator;
     area_consume_evaluation(a, pixel);
@@ -664,8 +891,30 @@ kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
     float normalizer;
     if (!area_finish(a, pixel, accumulator, count, normalizer))
         return;
-    a.temporal[pixel] = {accumulator.payload,       normalizer, accumulator.xyz, accumulator.target,
-                         accumulator.selected_slot, {0, 0}};
+    if (area_enhanced(a)) {
+        confidence::Temporal temporal_confidence{};
+        if (!area_temporal_confidence(a, pixel, temporal_confidence) ||
+            accumulator.confidence != temporal_confidence.output.confidence) {
+            AREA_FAIL(a, aw::invalid_count);
+            return;
+        }
+    }
+    ew::Reference record{};
+    if (area_enhanced(a)) {
+        record = {ew::temporal_bank, pixel};
+        if (!area_copy_record(a, pixel, accumulator.selected_slot, accumulator.record, record))
+            return;
+    }
+    a.temporal[pixel] = {accumulator.payload,
+                         normalizer,
+                         accumulator.xyz,
+                         accumulator.target,
+                         accumulator.selected_slot,
+                         {0, 0},
+                         accumulator.confidence,
+                         record,
+                         accumulator.target_h_fraction,
+                         accumulator.target_h_exponent};
 }
 kernel void rypath_area_spatial_begin(constant AreaArguments &a [[buffer(1)]],
                                       uint pixel [[thread_position_in_grid]]) {
@@ -700,6 +949,9 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
     if (!area_temporal_valid(a, pixel, center))
         return;
     float center_score = 0;
+    confidence::Spatial spatial_confidence{};
+    if (area_enhanced(a))
+        spatial_confidence = confidence::spatial_begin({center.confidence, 1});
     for (uint direction = 1; direction <= 4; ++direction) {
         const uint neighbor = area_neighbor_direction(a, pixel, direction);
         const uint opposite = rypath_area_stencil::inverse_slot(direction);
@@ -708,10 +960,26 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
             neighbor == pixel
                 ? center.target
                 : a.cross_targets[ulong(opposite - 1) * a.config->pixel_count + neighbor];
+        uint neighbor_confidence = 0;
+        if (area_enhanced(a) && neighbor != pixel) {
+            const auto source = a.temporal[neighbor];
+            if (!area_temporal_valid(a, pixel, source))
+                return;
+            neighbor_confidence = source.confidence;
+        }
+        if (area_enhanced(a) &&
+            confidence::add_neighbor(spatial_confidence,
+                                     {neighbor_confidence, uint(neighbor != pixel)}) !=
+                confidence::Status::ok) {
+            AREA_FAIL(a, aw::invalid_count);
+            return;
+        }
         const auto part =
             area_enhanced(a)
-                ? enhanced_path::canonical_score(center.normalizer, center.target, reverse_target,
-                                                 1.f, 1.f, .25f)
+                ? enhanced_path::canonical_score(
+                      center.normalizer, center.target, neighbor == pixel ? 0.f : reverse_target,
+                      float(center.confidence),
+                      neighbor == pixel ? 1.f : float(neighbor_confidence), .25f)
                 : reuse_mis::spatial_pair_score(center.normalizer, center.target, reverse_target);
         if (part.status != reservoir::Status::ok) {
             AREA_DETAIL(a, aw::invalid_value, part.status,
@@ -731,8 +999,15 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
         }
         center_score = sum.value;
     }
+    if (area_enhanced(a) &&
+        (spatial_confidence.status != confidence::Status::ok ||
+         accumulator.confidence != spatial_confidence.confidence - center.confidence)) {
+        AREA_FAIL(a, aw::invalid_count);
+        return;
+    }
     if (!area_update(a, pixel, accumulator, center.payload, center.xyz, center_score, center.target,
-                     center.selected_slot) ||
+                     center.selected_slot, area_enhanced(a) ? center.confidence : 0u, center.record,
+                     {center.target_h_fraction, center.target_h_exponent}) ||
         !area_add_output(a, pixel, center_score, center.xyz, center.target))
         return;
     float normalizer;
@@ -745,9 +1020,22 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
         a.raw_xyz[pixel] = weighted;
     }
     // Output marginalization never changes the selected sample reused later.
-    a.history_destination[pixel] = {accumulator.payload,       normalizer,
-                                    accumulator.target,        1,
-                                    accumulator.selected_slot, accumulator.xyz};
+    ew::Reference record{};
+    if (area_enhanced(a)) {
+        record = {1u - a.config->history_source_bank, pixel};
+        if (!area_copy_record(a, pixel, accumulator.selected_slot, accumulator.record, record))
+            return;
+    }
+    a.history_destination[pixel] = {accumulator.payload,
+                                    normalizer,
+                                    accumulator.target,
+                                    1,
+                                    accumulator.selected_slot,
+                                    accumulator.xyz,
+                                    accumulator.confidence,
+                                    record,
+                                    accumulator.target_h_fraction,
+                                    accumulator.target_h_exponent};
 }
 
 // The source cache always belongs to the CURRENT destination evaluation. Each
@@ -759,12 +1047,18 @@ inline mutation::MutationIdentity area_mutation_identity(constant AreaArguments 
 }
 inline bool area_mutation_source(constant AreaArguments &a, uint pixel,
                                  const thread aw::Temporal &source) {
-    const auto target = area_enhanced(a)
-                            ? enhanced_path::target({source.xyz.x, source.xyz.y, source.xyz.z},
-                                                    a.config->target_scale)
-                            : reuse_mis::importance_target(source.xyz.x, source.xyz.y, source.xyz.z,
-                                                           a.config->target_scale);
-    if (!rypath_replay::valid(source.payload) ||
+    const auto target =
+        area_enhanced(a)
+            ? enhanced_path::target({source.xyz.x, source.xyz.y, source.xyz.z},
+                                    a.config->target_scale,
+                                    {source.target_h_fraction, source.target_h_exponent})
+            : reuse_mis::importance_target(source.xyz.x, source.xyz.y, source.xyz.z,
+                                           a.config->target_scale);
+    if (!rypath_replay::valid(source.payload) || !area_confidence_valid(a, source.confidence) ||
+        !area_owned_value_valid(a, source.selected_slot, source.record,
+                                {source.target_h_fraction, source.target_h_exponent}) ||
+        (area_enhanced(a) && source.record.bank != ew::fresh_bank &&
+         source.record.bank != ew::temporal_bank) ||
         !area_selected_values(a, source.selected_slot, source.normalizer, source.target,
                               source.xyz) ||
         !area_slot_valid(a, source.selected_slot) || source.reserved[0] != 0 ||
@@ -827,7 +1121,7 @@ kernel void rypath_area_mutation_prepare(constant wire::Parameters &p [[buffer(0
         return;
     if (area_null(a, source.selected_slot)) {
         a.replay[pixel] = source.payload;
-        area_prepare_evaluation(a, pixel, source.selected_slot);
+        area_prepare_evaluation(a, pixel, source.selected_slot, source.record);
         return;
     }
     const auto proposal = area_mutation_proposal(a, pixel, source.payload);
@@ -835,7 +1129,7 @@ kernel void rypath_area_mutation_prepare(constant wire::Parameters &p [[buffer(0
         return;
     a.replay[pixel] = proposal.payload;
     // Symmetric mutation changes U only; j remains fixed on the counting domain.
-    area_prepare_evaluation(a, pixel, source.selected_slot);
+    area_prepare_evaluation(a, pixel, source.selected_slot, source.record);
 }
 kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
                                         uint pixel [[thread_position_in_grid]]) {
@@ -848,6 +1142,10 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
     const auto source = a.temporal[pixel];
     if (!area_mutation_source(a, pixel, source))
         return;
+    ew::Reference record{};
+    reuse_mis::Scaled h{};
+    if (!area_owned_result(a, pixel, record, h))
+        return;
     if (area_null(a, source.selected_slot)) {
         uint selected_slot;
         float unused_normalizer;
@@ -858,7 +1156,8 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
             AREA_FAIL(a, aw::invalid_mutation);
             return;
         }
-        (void)area_mutation_rejected(a, pixel);
+        if (area_mutation_rejected(a, pixel))
+            area_consume_evaluation(a, pixel);
         return; // A null realization has no atom to mutate; retain its domain.
     }
     const auto proposal = area_mutation_proposal(a, pixel, source.payload);
@@ -873,7 +1172,7 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
     const auto xyz = a.leaf_xyz[pixel];
     const auto target =
         area_enhanced(a)
-            ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale)
+            ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale, h)
             : reuse_mis::importance_target(xyz.x, xyz.y, xyz.z, a.config->target_scale);
     if (target.status != reservoir::Status::ok) {
         AREA_DETAIL(a, aw::invalid_mutation, target.status,
@@ -889,7 +1188,8 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
         return;
     }
     if (area_enhanced(a) && target.value == 0) {
-        (void)area_mutation_rejected(a, pixel);
+        if (area_mutation_rejected(a, pixel))
+            area_consume_evaluation(a, pixel);
         return; // Exact zero acceptance; no positive-target MH division or draw.
     }
     auto pending =
@@ -948,8 +1248,15 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
                                               result.normalizer)));
             return;
         }
-        a.temporal[pixel] = {proposal.payload, result.normalizer,    xyz,
-                             target.value,     source.selected_slot, {0, 0}};
+        ew::Reference destination{};
+        if (area_enhanced(a)) {
+            destination = {ew::temporal_bank, pixel};
+            if (!area_copy_record(a, pixel, selected_slot, record, destination))
+                return;
+        }
+        a.temporal[pixel] = {
+            proposal.payload, result.normalizer, xyz,         target.value, source.selected_slot,
+            {0, 0},           source.confidence, destination, h.fraction,   h.exponent};
     }
     // Rejection retains the exact old payload/Z/XYZ/target. The host always
     // launches every configured step, including after rejections/equal targets.

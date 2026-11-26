@@ -55,6 +55,9 @@ struct WavefrontArguments {
     device rypath::contribution_wire::Evaluation *contribution_evaluation
         [[id(wf::contribution_evaluation_id)]];
     device uchar *contribution_state [[id(wf::contribution_state_id)]];
+    device rypath::enhanced_wire::Record *enhanced_records [[id(wf::enhanced_records_id)]];
+    device rypath::enhanced_wire::Evaluation *enhanced_evaluation
+        [[id(wf::enhanced_evaluation_id)]];
 };
 inline void wavefront_fail(constant WavefrontArguments &a, uint failure) {
     atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
@@ -281,6 +284,18 @@ inline bool wavefront_complete_null(constant WavefrontArguments &a, uint slot) {
             wavefront_fail(a, wf::invalid_sample);
             return true;
         }
+        auto owned = a.enhanced_evaluation[pixel];
+        if (!rypath_enhanced_runtime::pending_owned(owned, a.config->pixel_count, pixel, false)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return true;
+        }
+        owned.target_h_fraction = .5f;
+        owned.target_h_exponent = 1;
+        owned.ready = 1;
+        if (owned.source.bank != owned.result.bank || owned.source.pixel != owned.result.pixel)
+            a.enhanced_records[ulong(owned.result.bank) * a.config->pixel_count +
+                               owned.result.pixel] = rypath::enhanced_wire::empty_record();
+        a.enhanced_evaluation[pixel] = owned;
         a.contribution_evaluation[pixel] = {pending.requested_slot, pending.requested_slot, 0.f, 1};
         wavefront_publish(a, pixel, float3(0));
         if (wavefront_failed(a))
@@ -317,7 +332,8 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
     }
     if (wavefront_enhanced()) {
         const auto request = a.contribution_evaluation[pixel];
-        const auto state = rypath_enhanced_runtime::begin(request, *a.config, pixel);
+        const auto owned = a.enhanced_evaluation[pixel];
+        const auto state = rypath_enhanced_runtime::begin(request, *a.config, pixel, owned);
         reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot] =
             state;
         if (state.failed) {
@@ -373,7 +389,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
 }
 // Version the entry when its output grows: an older host must fail function
 // lookup before binding its shorter contract buffer to this kernel.
-kernel void rypath_wavefront_contract_v16(device wf::Contract *out [[buffer(0)]]) {
+kernel void rypath_wavefront_contract_v17(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),
@@ -397,7 +413,9 @@ kernel void rypath_wavefront_contract_v16(device wf::Contract *out [[buffer(0)]]
             sizeof(rypath_contribution_runtime::State),
             alignof(rypath_contribution_runtime::State),
             sizeof(rypath_enhanced_runtime::State),
-            alignof(rypath_enhanced_runtime::State)};
+            alignof(rypath_enhanced_runtime::State),
+            sizeof(rypath::enhanced_wire::Record),
+            sizeof(rypath::enhanced_wire::Evaluation)};
 }
 kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
                                    uint lane [[thread_position_in_grid]]) {

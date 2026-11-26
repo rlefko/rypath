@@ -114,21 +114,32 @@ int main() try {
                 }
     need(!valid_area_evaluation_accounting(1, false, 0, true, 5, 0, 5));
 
-    // Enhanced uses actual completed-owner categories. Nulls cannot be inferred
-    // as cache hits, and cache is deliberately unavailable in this first domain.
+    // Enhanced uses disjoint completed-owner categories. Cached null responses
+    // do not also complete a physical or analytic-null wavefront owner.
     for (bool history : {false, true})
         for (unsigned mutations : {0u, 1u, 2u, 4u}) {
             constexpr std::uint64_t pixels = 21;
             const auto logical = logical_area_evaluations(pixels, history, mutations);
-            for (const auto nulls : {std::uint64_t(0), (logical - pixels) / 2, logical - pixels}) {
-                need(valid_enhanced_area_evaluation_accounting(pixels, history, mutations, false,
-                                                               logical - nulls, 0, nulls, logical));
-                need(!valid_enhanced_area_evaluation_accounting(
-                    pixels, history, mutations, true, logical - nulls, 0, nulls, logical));
-                need(!valid_enhanced_area_evaluation_accounting(
-                    pixels, history, mutations, false, logical - nulls, 1, nulls, logical));
-                need(!valid_enhanced_area_evaluation_accounting(
-                    pixels, history, mutations, false, logical - nulls, 0, nulls + 1, logical));
+            for (bool cache : {false, true}) {
+                const bool used = history && cache;
+                const auto cached = used ? 2 * pixels : 0;
+                const auto dispatched = logical - cached;
+                for (const auto nulls :
+                     {std::uint64_t(0), (dispatched - pixels) / 2, dispatched - pixels}) {
+                    const auto physical = dispatched - nulls;
+                    need(valid_enhanced_area_evaluation_accounting(
+                        pixels, history, mutations, used, physical, cached, nulls, logical));
+                    need(!valid_enhanced_area_evaluation_accounting(
+                        pixels, history, mutations, !used, physical, cached, nulls, logical));
+                    need(!valid_enhanced_area_evaluation_accounting(
+                        pixels, history, mutations, used, physical, cached + 1, nulls, logical));
+                    need(!valid_enhanced_area_evaluation_accounting(
+                        pixels, history, mutations, used, physical, cached, nulls + 1, logical));
+                    need(!valid_enhanced_area_evaluation_accounting(
+                        pixels, history, mutations, used, physical + 1, cached, nulls, logical));
+                    need(!valid_enhanced_area_evaluation_accounting(
+                        pixels, history, mutations, used, physical, cached, nulls, logical + 1));
+                }
             }
             need(!valid_enhanced_area_evaluation_accounting(pixels, history, mutations, false,
                                                             logical + 1, 0, 0, logical));

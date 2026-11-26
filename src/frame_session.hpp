@@ -16,7 +16,7 @@ inline constexpr bool frame_area_contribution_family(FrameAreaPathDomain domain)
     return domain == FrameAreaPathDomain::contribution || domain == FrameAreaPathDomain::enhanced;
 }
 inline constexpr std::uint32_t frame_area_canonical_version(FrameAreaPathDomain domain) {
-    return domain == FrameAreaPathDomain::enhanced ? 1u : 0u;
+    return domain == FrameAreaPathDomain::enhanced ? 2u : 0u;
 }
 inline constexpr std::uint32_t frame_area_discovery_version(FrameAreaPathDomain domain) {
     return domain == FrameAreaPathDomain::enhanced ? 1u : 0u;
@@ -99,7 +99,9 @@ struct FrameConfig {
     // Conditional mean removes final spatial selection noise while preserving
     // the same selected reservoir for subsequent reuse. Selected is an ablation.
     FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
-    // Exact temporal memoization; false provides a full-replay validation control.
+    // Exact temporal memoization only for complete identical evaluator contexts.
+    // Enhanced retains the selected owned record/scale; camera/context changes
+    // replay both directions. False provides a full-replay validation control.
     bool cache_temporal_evaluations = true;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;

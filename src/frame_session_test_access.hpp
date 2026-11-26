@@ -12,13 +12,17 @@ struct SharedSceneFrameSessions {
     std::array<std::unique_ptr<FrameSession>, 2> sessions;
     bool shared_renderer = false;
     bool independent_history = false;
+    // Opaque identities only: callers cannot mutate the shared owned-path
+    // storage or treat it as a completed-frame snapshot.
+    std::array<std::uintptr_t, 2> enhanced_record_arenas{}, enhanced_evaluations{};
+    bool independent_owned_records = false;
     ShadowTraversalSelection shadow_traversal{};
     AccelerationBuildInfo acceleration_build{};
 };
 struct FrameSessionTestAccess {
     // Ordinary build_frame_session validates/builds the first session. The
     // second uses the exact same renderer; only the cache flag may differ.
-    // Enhanced reports both cache requests as effectively disabled initially.
+    // Enhanced also uses exact caching when the complete evaluator context matches.
     // Callers must serialize both sessions, including their GPU consumers.
     static SharedSceneFrameSessions
     build_shared_scene(const RenderScene &, const FrameConfig &, const FrameConfig &,

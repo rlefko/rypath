@@ -448,8 +448,13 @@
             }
             if (sample.status == wire::success && count < capacity && direct_allowed &&
                 sink.wanted(endpoint_slot + 1u)) {
+#if RYPATH_PACKET_EVENT_ENHANCED
+                const auto direct = hero_direct_enhanced(r, sample, lambda, index, pt, previous, count,
+                                                          direct_beta, direct_density, replay, sink);
+#else
                 const auto direct = hero_direct(r, sample, lambda, index, pt, previous, count,
                                                   direct_beta, direct_density, replay);
+#endif
 #if !RYPATH_PACKET_EVENT_ENHANCED
                 state.radiance += direct;
 #endif

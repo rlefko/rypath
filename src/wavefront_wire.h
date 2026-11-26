@@ -5,7 +5,7 @@ namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 16,
+    contract = 17,
     default_capacity = 65536,
     packet_layout_constant = 23,
     packet_events_constant = 24,
@@ -40,7 +40,9 @@ enum Argument : Word {
     hero_state_id,
     hero_cold_id,
     contribution_evaluation_id,
-    contribution_state_id
+    contribution_state_id,
+    enhanced_records_id,
+    enhanced_evaluation_id
 };
 struct Config {
     Word pixel_count, capacity, packet, model;
@@ -73,12 +75,13 @@ struct Contract {
     Word hero_cold_bytes, hero_cold_alignment;
     Word contribution_state_bytes, contribution_state_alignment;
     Word enhanced_state_bytes, enhanced_state_alignment;
+    Word enhanced_record_bytes, enhanced_evaluation_bytes;
 };
 static_assert(sizeof(Config) == 64 && sizeof(Counters) == 36 && sizeof(DispatchArguments) == 12 &&
-                  sizeof(Contract) == 96,
+                  sizeof(Contract) == 104,
               "Wavefront host/shader ABI");
 static_assert(contribution_evaluation_id == 18 && contribution_state_id == 19,
-              "Wavefront v16 contribution argument ABI");
+              "Wavefront v17 contribution argument ABI");
 } // namespace wavefront_wire
 } // namespace rypath
 
