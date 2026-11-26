@@ -29,6 +29,13 @@ add_test(NAME cli.frame_benchmark COMMAND "${Python3_EXECUTABLE}"
 add_test(NAME cli.pipeline_qualification COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/pipeline_qualification_cli_tests.py"
     "$<TARGET_FILE:rypath_pipeline_qualification>")
+add_executable(rypath_contribution_path_tests contribution_path_tests.cpp)
+target_include_directories(rypath_contribution_path_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_contribution_path_tests)
+target_compile_options(rypath_contribution_path_tests PRIVATE
+    $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>)
+add_test(NAME render.contribution_path COMMAND rypath_contribution_path_tests)
+set_tests_properties(render.contribution_path PROPERTIES TIMEOUT 30)
 add_executable(rypath_area_evaluation_context_tests area_evaluation_context_tests.cpp)
 target_include_directories(rypath_area_evaluation_context_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_area_evaluation_context_tests)
