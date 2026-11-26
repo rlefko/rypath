@@ -127,8 +127,10 @@ A short native-1080p screen (seed 51001, two warmup and three measured frames pe
 arm) uses hero-visible sampling, Area reuse, one spectral-refresh mutation and
 signed temporal denoising. Full contribution replay measures 0.798 FPS on Cornell
 and 0.960 FPS on Prism; selected-prefix replay measures 1.202 and 1.149 FPS.
-Final raw and reconstructed FLOAT images match bitwise in both scenes. These
-1.51×/1.20× ratios compare replay policies within the new contribution domain;
+A matching Pavilion day/night screen measures full replay at 0.311/0.288 FPS
+and prefix replay at 0.421/0.419 FPS (1.35×/1.45×). Final raw and reconstructed
+FLOAT images match bitwise in all four scenes. These ratios compare replay
+policies within the new contribution domain;
 they are not speedups over the merged summed-domain renderer and do not qualify
 sustained performance or the new domain's scene-level quality.
 
