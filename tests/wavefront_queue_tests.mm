@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "bsdf_table_fixture.hpp"
 #include "metal_execution.hpp"
@@ -15,9 +16,115 @@
 namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
+namespace aw = area_wire;
+static_assert(wf::contract == 14 && sizeof(wf::Contract) == 88 && sizeof(wf::Config) == 64);
+static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
+static_assert(aw::contract == 8 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 88);
+static_assert(sizeof(contribution_wire::Evaluation) == 16);
 void require(bool value, const std::string &why) {
     if (!value)
         throw std::runtime_error(why);
+}
+void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
+    std::string why;
+    auto contract_pipeline = metal::load_pipeline(device, library, @"rypath_area_contract", why);
+    require(contract_pipeline != nil, why);
+    auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
+                                               options:MTLResourceStorageModeShared];
+    require(contract_buffer != nil, "Area v8 contract allocation");
+    std::memset(contract_buffer.contents, 0, contract_buffer.length);
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    require(command && encoder, "Area v8 contract encoder");
+    [encoder setComputePipelineState:contract_pipeline];
+    [encoder setBuffer:contract_buffer offset:0 atIndex:0];
+    [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder endEncoding];
+    require(metal::complete(command, "Area v8 contract").empty(), "Area contract completion");
+    aw::Contract contract{};
+    std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
+    require(contract.version == 8 && contract.config_bytes == 88 && contract.history_bytes == 60 &&
+                contract.temporal_bytes == 64 && contract.accumulator_bytes == 72 &&
+                contract.replay_bytes == 32 && contract.counters_bytes == 112 &&
+                contract.contribution_evaluation_bytes == 16,
+            "Area v8 contract mismatch; stale Area v7 libraries are incompatible");
+    auto function = metal::load_function(library, @"rypath_area_reset", why);
+    auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
+    auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
+    require(function && reset && prepare, why);
+    auto argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
+    require(argument_encoder != nil, "Area disabled argument encoder");
+    auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
+                                         options:MTLResourceStorageModeShared];
+    require(arguments != nil, "Area disabled arguments allocation");
+    [argument_encoder setArgumentBuffer:arguments offset:0];
+    constexpr unsigned pixels = 4, guard = 256;
+    std::array<id<MTLBuffer>, aw::contribution_evaluation_id + 1> buffers{};
+    const std::array<std::size_t, aw::contribution_evaluation_id + 1> lengths{
+        sizeof(aw::Config) + guard,
+        pixels * sizeof(rypath_replay::ReplayState) + guard,
+        pixels * sizeof(render_wire::Point) + guard,
+        pixels * sizeof(aw::Accumulator) + guard,
+        pixels * sizeof(aw::Temporal) + guard,
+        pixels * sizeof(aw::History) + guard,
+        pixels * sizeof(aw::History) + guard,
+        pixels * sizeof(render_wire::Point) + guard,
+        sizeof(aw::Counters) + guard,
+        pixels * sizeof(float) + guard,
+        16};
+    for (unsigned i = 0; i < buffers.size(); ++i) {
+        buffers[i] = [device newBufferWithLength:lengths[i] options:MTLResourceStorageModeShared];
+        require(buffers[i] != nil, "Area disabled pool allocation");
+        [argument_encoder setBuffer:buffers[i] offset:0 atIndex:i];
+    }
+    render_wire::Parameters parameters{};
+    parameters.width = parameters.height = 2;
+    parameters.pixel_count = pixels;
+    parameters.sampler_kind = render_wire::independent_sampler;
+    for (bool invalid_depth : {false, true}) {
+        for (auto buffer : buffers)
+            std::memset(buffer.contents, 0xa5, buffer.length);
+        aw::Config config{};
+        config.pixel_count = pixels;
+        config.width = config.height = 2;
+        config.phase = aw::fresh;
+        config.target_scale = 1;
+        config.contribution_mode = contribution_wire::summed;
+        config.contribution_depth = invalid_depth ? 1 : 0;
+        std::memcpy(buffers[aw::config_id].contents, &config, sizeof(config));
+        command = [queue commandBuffer];
+        encoder = [command computeCommandEncoder];
+        require(command && encoder, "Area disabled encoding");
+        [encoder setBuffer:arguments offset:0 atIndex:1];
+        [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
+        for (auto buffer : buffers)
+            [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+        [encoder setComputePipelineState:reset];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:prepare];
+        [encoder dispatchThreads:MTLSizeMake(pixels, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        require(metal::complete(command, "Area disabled contribution binding").empty(),
+                "Area disabled completion");
+        aw::Counters counters{};
+        std::memcpy(&counters, buffers[aw::failure_id].contents, sizeof(counters));
+        require(counters.failure == (invalid_depth ? aw::invalid_config : 0u) &&
+                    counters.mutations == 0 && counters.accepted == 0 && counters.reserved == 0,
+                "Area summed mode/depth validation");
+        for (unsigned i = 0; i < buffers.size(); ++i) {
+            const auto written = i == aw::config_id    ? sizeof(config)
+                                 : i == aw::failure_id ? sizeof(counters)
+                                 : i == aw::replay_id && !invalid_depth
+                                     ? pixels * sizeof(rypath_replay::ReplayState)
+                                     : 0;
+            const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
+            for (std::size_t j = written; j < buffers[i].length; ++j)
+                require(bytes[j] == 0xa5,
+                        "Area summed execution touched inactive contribution storage/guard");
+        }
+    }
 }
 int run(const std::filesystem::path &path) {
     auto device = MTLCreateSystemDefaultDevice();
@@ -37,16 +144,19 @@ int run(const std::filesystem::path &path) {
     require(argument_encoder != nil, "Queue argument encoder");
     auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
                                          options:MTLResourceStorageModeShared];
-    std::array<id<MTLBuffer>, wf::hero_cold_id + 1> buffers{};
+    std::array<id<MTLBuffer>, wf::contribution_state_id + 1> buffers{};
     [argument_encoder setArgumentBuffer:arguments offset:0];
     for (unsigned i = 0; i < buffers.size(); ++i) {
-        buffers[i] = [device newBufferWithLength:256 options:MTLResourceStorageModeShared];
+        buffers[i] = [device newBufferWithLength:i >= wf::contribution_evaluation_id ? 16 : 256
+                                         options:MTLResourceStorageModeShared];
         require(buffers[i] != nil, "Queue fault test allocation");
         [argument_encoder setBuffer:buffers[i] offset:0 atIndex:i];
     }
     auto queue = [device newCommandQueue];
     require(queue != nil && arguments != nil, "Queue fault test command resources");
-    const wf::Config config{4, 2, 0, render_wire::pbrt_model, 32, 0, 1, 0};
+    area_disabled_wire(device, library, queue);
+    const wf::Config config{4, 2, 0,     render_wire::pbrt_model, 32, 0, 1, 0, 0, 0, 0.f, 0,
+                            0, 0, {0, 0}};
     const std::array<wf::Counters, 7> cases{{
         {2, 2, 0, 4, 2, 0, 7, 2}, // Valid two-owner continuation clears its range.
         {2, 3, 0, 4, 1, 0, 7, 0}, // Output exceeds physical capacity.
@@ -161,6 +271,10 @@ int run(const std::filesystem::path &path) {
         {{0, 1}, {0, 2}, {0, 4}, {1, 1}, {1, 2}, {1, 4}, {2, 1}}};
     for (const auto &compiled : policies) {
         auto constants = [MTLFunctionConstantValues new];
+        const bool summed = false;
+        [constants setConstantValue:&summed
+                               type:MTLDataTypeBool
+                            atIndex:wf::contribution_mode_constant];
         [constants setConstantValue:&compiled[0]
                                type:MTLDataTypeUInt
                             atIndex:wf::packet_layout_constant];
@@ -170,50 +284,60 @@ int run(const std::filesystem::path &path) {
         auto reset =
             metal::load_pipeline(device, library, @"rypath_wavefront_reset", why, nil, constants);
         require(reset != nil, why);
-        for (const auto &requested : policies) {
-            for (auto buffer : buffers)
-                std::memset(buffer.contents, 0xa5, buffer.length);
-            auto cfg = config;
-            cfg.packet = 1;
-            cfg.packet_layout = requested[0];
-            cfg.packet_events = requested[1];
-            std::memcpy(buffers[wf::config_id].contents, &cfg, sizeof(cfg));
-            auto command = [queue commandBuffer];
-            auto encoder = [command computeCommandEncoder];
-            require(command != nil && encoder != nil, "Policy consistency encoding");
-            [encoder setComputePipelineState:reset];
-            [encoder setBuffer:arguments offset:0 atIndex:1];
-            for (auto buffer : buffers)
-                [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-            [encoder dispatchThreads:MTLSizeMake(cfg.pixel_count, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-            [encoder endEncoding];
-            require(metal::complete(command, "wavefront policy consistency").empty(),
-                    "Policy consistency dispatch");
-            wf::Counters result{};
-            std::memcpy(&result, buffers[wf::counters_id].contents, sizeof(result));
-            const bool matched = compiled == requested;
-            require(result.failure == (matched ? 0u : wf::invalid_config) &&
-                        result.current == (matched ? cfg.capacity : 0u) &&
-                        result.next_pixel == (matched ? cfg.capacity : 0u) &&
-                        result.completed == 0 && result.out == 0 && result.free == 0,
-                    "Policy mismatch must not claim or complete an owner");
-            for (unsigned i = 0; i < buffers.size(); ++i) {
-                const auto written = i == wf::counters_id ? sizeof(wf::Counters)
-                                     : i == wf::config_id ? sizeof(wf::Config)
-                                     : i == wf::done_id   ? cfg.pixel_count * sizeof(std::uint32_t)
-                                     : i == wf::current_dispatch_id || i == wf::refill_dispatch_id
-                                         ? sizeof(wf::DispatchArguments)
-                                         : 0;
-                const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
-                for (std::size_t j = written; j < buffers[i].length; ++j)
-                    require(bytes[j] == 0xa5, "Policy consistency touched unrelated storage");
+        for (unsigned packet : {1u, 2u}) {
+            for (const auto &requested : policies) {
+                for (auto buffer : buffers)
+                    std::memset(buffer.contents, 0xa5, buffer.length);
+                auto cfg = config;
+                cfg.packet = packet;
+                cfg.packet_layout = requested[0];
+                cfg.packet_events = requested[1];
+                std::memcpy(buffers[wf::config_id].contents, &cfg, sizeof(cfg));
+                auto command = [queue commandBuffer];
+                auto encoder = [command computeCommandEncoder];
+                require(command != nil && encoder != nil, "Policy consistency encoding");
+                [encoder setComputePipelineState:reset];
+                [encoder setBuffer:arguments offset:0 atIndex:1];
+                for (auto buffer : buffers)
+                    [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+                [encoder dispatchThreads:MTLSizeMake(cfg.pixel_count, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                [encoder endEncoding];
+                require(metal::complete(command, "wavefront policy consistency").empty(),
+                        "Policy consistency dispatch");
+                wf::Counters result{};
+                std::memcpy(&result, buffers[wf::counters_id].contents, sizeof(result));
+                const bool matched = compiled == requested;
+                require(result.failure == (matched ? 0u : wf::invalid_config) &&
+                            result.current == (matched ? cfg.capacity : 0u) &&
+                            result.next_pixel == (matched ? cfg.capacity : 0u) &&
+                            result.completed == 0 && result.out == 0 && result.free == 0,
+                        "Policy mismatch must not claim or complete an owner");
+                for (unsigned i = 0; i < buffers.size(); ++i) {
+                    const auto written =
+                        i == wf::counters_id ? sizeof(wf::Counters)
+                        : i == wf::config_id ? sizeof(wf::Config)
+                        : i == wf::done_id   ? cfg.pixel_count * sizeof(std::uint32_t)
+                        : i == wf::current_dispatch_id || i == wf::refill_dispatch_id
+                            ? sizeof(wf::DispatchArguments)
+                            : 0;
+                    const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
+                    for (std::size_t j = written; j < buffers[i].length; ++j)
+                        require(bytes[j] == 0xa5, "Policy consistency touched unrelated storage");
+                }
             }
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v10", why);
-    require(contract_pipeline != nil, why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v14", why);
+    require(contract_pipeline != nil,
+            "Wavefront v14 contract unavailable; rebuild the metallib: " + why);
+    for (NSString *stale in @[
+             @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
+             @"rypath_wavefront_contract_v13"
+         ])
+        require([library newFunctionWithName:stale] == nil,
+                "Stale Wavefront stage entry must not advertise the v14 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");
@@ -231,7 +355,11 @@ int run(const std::filesystem::path &path) {
     wf::Contract history_contract{};
     std::memcpy(&history_contract, contract_buffer.contents, sizeof(history_contract));
     require(history_contract.version == wf::contract && history_contract.hero_bytes &&
-                history_contract.hero_cold_bytes && history_contract.hot_bytes,
+                history_contract.hero_cold_bytes && history_contract.hot_bytes &&
+                history_contract.config_bytes == 64 && history_contract.counters_bytes == 32 &&
+                history_contract.dispatch_bytes == 12 &&
+                history_contract.contribution_state_bytes == 80 &&
+                history_contract.contribution_state_alignment == 4,
             "History storage contract mismatch");
     constexpr std::uint32_t history_schema = 0x48535435u;
     auto layout_pipeline =
@@ -286,15 +414,17 @@ int run(const std::filesystem::path &path) {
         require(history_arguments != nil, "History storage arguments allocation");
         [history_arguments_encoder setArgumentBuffer:history_arguments offset:0];
         constexpr std::size_t guard_bytes = 256, slot_count = 7;
-        std::array<id<MTLBuffer>, wf::hero_cold_id + 1> history_buffers{};
-        std::array<std::size_t, wf::hero_cold_id + 1> strides{};
+        std::array<id<MTLBuffer>, wf::contribution_state_id + 1> history_buffers{};
+        std::array<std::size_t, wf::contribution_state_id + 1> strides{};
         strides[wf::packet_state_id] = history_contract.packet_bytes;
         strides[wf::packet_hot_id] = history_contract.hot_bytes;
         strides[wf::packet_cold_id] = history_contract.cold_bytes;
         strides[wf::hero_state_id] = history_contract.hero_bytes;
         strides[wf::hero_cold_id] = history_contract.hero_cold_bytes;
         for (unsigned i = 0; i < history_buffers.size(); ++i) {
-            const auto bytes = strides[i] ? 2 * guard_bytes + slot_count * strides[i] : guard_bytes;
+            const auto bytes = strides[i] ? 2 * guard_bytes + slot_count * strides[i]
+                               : i >= wf::contribution_evaluation_id ? 16
+                                                                     : guard_bytes;
             history_buffers[i] = [device newBufferWithLength:bytes
                                                      options:MTLResourceStorageModeShared];
             require(history_buffers[i] != nil, "Guarded history pool allocation");
@@ -303,7 +433,8 @@ int run(const std::filesystem::path &path) {
                                           offset:strides[i] ? guard_bytes : 0
                                          atIndex:i];
         }
-        const wf::Config history_config{7, 7, 2, render_wire::pbrt_model, 1, 0, 1, layout};
+        const wf::Config history_config{
+            7, 7, 2, render_wire::pbrt_model, 1, 0, 1, layout, 0, 0, 0.f, 0, 0, 0, {0, 0}};
         std::memcpy(history_buffers[wf::config_id].contents, &history_config,
                     sizeof(history_config));
         auto history_result = [device newBufferWithLength:guard_bytes

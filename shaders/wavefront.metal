@@ -2,6 +2,7 @@
 #pragma once
 // Included after render.metal's scalar and packet definitions, never compiled separately.
 #include "../src/wavefront_wire.h"
+#include "contribution_sink.h"
 #include "frame_sensor.h"
 #include "packet_event_gate.h"
 namespace wf = rypath::wavefront_wire;
@@ -9,6 +10,12 @@ namespace wf = rypath::wavefront_wire;
 // Session pipelines always provide both values after the contract-6 handshake.
 constant uint rypath_wavefront_packet_layout [[function_constant(wf::packet_layout_constant)]];
 constant uint rypath_wavefront_packet_events [[function_constant(wf::packet_events_constant)]];
+constant bool rypath_wavefront_contribution [[function_constant(wf::contribution_mode_constant)]];
+inline bool wavefront_contribution() {
+    return is_function_constant_defined(rypath_wavefront_contribution)
+               ? rypath_wavefront_contribution
+               : false;
+}
 inline uint wavefront_packet_layout() {
     return is_function_constant_defined(rypath_wavefront_packet_layout)
                ? rypath_wavefront_packet_layout
@@ -39,6 +46,9 @@ struct WavefrontArguments {
     device const rypath_replay::ReplayState *replay_input [[id(wf::replay_input_id)]];
     device uchar *hero_state [[id(wf::hero_state_id)]];
     device uchar *hero_cold [[id(wf::hero_cold_id)]];
+    device rypath::contribution_wire::Evaluation *contribution_evaluation
+        [[id(wf::contribution_evaluation_id)]];
+    device uchar *contribution_state [[id(wf::contribution_state_id)]];
 };
 inline void wavefront_fail(constant WavefrontArguments &a, uint failure) {
     atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
@@ -55,7 +65,17 @@ inline bool wavefront_config_valid(constant WavefrontArguments &a) {
            c.packet_layout <= 2 && (c.packet_layout != 2 || c.packet_events == 1) &&
            (c.packet || (c.packet_events == 1 && c.packet_layout == 0)) &&
            c.packet_layout == wavefront_packet_layout() &&
-           c.packet_events == wavefront_packet_events();
+           c.packet_events == wavefront_packet_events() &&
+           c.contribution_replay <= rypath::contribution_wire::prefix_replay &&
+           c.reserved2[0] == 0 && c.reserved2[1] == 0 &&
+           c.contribution_mode == uint(wavefront_contribution()) &&
+           (wavefront_contribution()
+                ? (c.packet == 2 && c.replay_enabled == 1 && c.packet_layout == 0 &&
+                   c.packet_events == 1 && c.contribution_depth <= 65 &&
+                   rypath_reservoir::positive_normal(c.contribution_target_scale))
+                : (c.contribution_replay == rypath::contribution_wire::full_replay &&
+                   c.contribution_depth == 0 && as_type<uint>(c.contribution_target_scale) == 0 &&
+                   c.contribution_serial_low == 0 && c.contribution_serial_high == 0));
 }
 inline void wavefront_dispatch(device wf::DispatchArguments *args, uint count, uint group) {
     // Division plus remainder avoids the count+group-1 overflow.
@@ -243,7 +263,8 @@ inline bool wavefront_parameters(constant WavefrontArguments &a, constant wire::
         p.width == 0 || p.height == 0 || ulong(p.width) * p.height != a.config->pixel_count ||
         p.packet_transport != a.config->packet || p.model != a.config->model ||
         p.bidirectional != 0 ||
-        (a.config->replay_enabled && p.sampler_kind != wire::independent_sampler)) {
+        (a.config->replay_enabled && p.sampler_kind != wire::independent_sampler) ||
+        (wavefront_contribution() && p.max_depth != a.config->contribution_depth)) {
         wavefront_fail(a, wf::invalid_config);
         return false;
     }
@@ -256,6 +277,16 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
     if (a.config->replay_enabled) {
         replay = a.replay_input[pixel];
         if (!rypath_replay::valid(replay)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+    }
+    if (wavefront_contribution()) {
+        const auto request = a.contribution_evaluation[pixel];
+        const auto state = rypath_contribution_runtime::begin(request, *a.config);
+        reinterpret_cast<device rypath_contribution_runtime::State *>(a.contribution_state)[slot] =
+            state;
+        if (state.failed) {
             wavefront_fail(a, wf::invalid_sample);
             return;
         }
@@ -297,7 +328,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
 }
 // Version the entry when its output grows: an older host must fail function
 // lookup before binding its shorter contract buffer to this kernel.
-kernel void rypath_wavefront_contract_v10(device wf::Contract *out [[buffer(0)]]) {
+kernel void rypath_wavefront_contract_v14(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),
@@ -318,7 +349,8 @@ kernel void rypath_wavefront_contract_v10(device wf::Contract *out [[buffer(0)]]
             alignof(rypath_bdpt::PacketPTHot),
             sizeof(rypath_bdpt::HeroPrevious),
             alignof(rypath_bdpt::HeroPrevious),
-            {0, 0}};
+            sizeof(rypath_contribution_runtime::State),
+            alignof(rypath_contribution_runtime::State)};
 }
 kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
                                    uint lane [[thread_position_in_grid]]) {

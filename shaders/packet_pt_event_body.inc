@@ -411,11 +411,35 @@
         // Match offline t-major, s=0 then s=1 accumulation. Sampled-local pairs
         // have been finalized before f() is queried, including rejected events.
         if (hero) {
+#if RYPATH_PACKET_EVENT_CONTRIBUTION
+            const uint endpoint_slot = 2u * (count - 2u);
+            if (sink.wanted(endpoint_slot)) {
+                const auto endpoint = hero_endpoint(r, sample, lambda, pt, previous, before, count,
+                                                      previous_density);
+                state.radiance += endpoint;
+                if (sample.status == wire::success)
+                    sink.add(endpoint_slot, endpoint, lambda);
+            }
+            if (sample.status == wire::success && count < capacity && direct_allowed &&
+                sink.wanted(endpoint_slot + 1u)) {
+                const auto direct = hero_direct(r, sample, lambda, index, pt, previous, count,
+                                                  direct_beta, direct_density, replay);
+                state.radiance += direct;
+                if (sample.status == wire::success)
+                    sink.add(endpoint_slot + 1u, direct, lambda);
+            }
+            // A fixed atom needs no later transport. Keep all original
+            // continuation/collapse/roulette work THROUGH this event unchanged.
+            // Fresh WRS and the full-replay oracle never take this early stop.
+            if (sink.stop_after(count - 2u))
+                state.complete = true;
+#else
             state.radiance += hero_endpoint(r, sample, lambda, pt, previous, before, count,
                                              previous_density);
             if (sample.status == wire::success && count < capacity && direct_allowed)
                 state.radiance += hero_direct(r, sample, lambda, index, pt, previous, count,
                                                direct_beta, direct_density, replay);
+#endif
         } else if constexpr (!State::compact_hero) {
             state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
             if (sample.status == wire::success && count < capacity)

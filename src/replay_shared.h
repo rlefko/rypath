@@ -61,7 +61,11 @@ enum class FreshDomain : Word {
 };
 // Reserved for separate future decision generators. Selection/mutation entropy
 // must not be taken from a selected payload or its explicit coordinate words.
-enum class DecisionDomain : Word { selection = 0x72737331u, mutation = 0x72736d31u };
+enum class DecisionDomain : Word {
+    selection = 0x72737331u,
+    mutation = 0x72736d31u,
+    contribution = 0x72736331u
+};
 
 inline Words4 philox(Words4 counter, Words2 key) {
     constexpr Word m0 = 0xd2511f53u, m1 = 0xcd9e8d57u;

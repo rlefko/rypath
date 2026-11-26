@@ -5,10 +5,11 @@ namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 10,
+    contract = 14,
     default_capacity = 65536,
     packet_layout_constant = 23,
-    packet_events_constant = 24
+    packet_events_constant = 24,
+    contribution_mode_constant = 27
 };
 enum Failure : Word {
     invalid_config = 1u,
@@ -36,11 +37,17 @@ enum Argument : Word {
     packet_hit_id,
     replay_input_id,
     hero_state_id,
-    hero_cold_id
+    hero_cold_id,
+    contribution_evaluation_id,
+    contribution_state_id
 };
 struct Config {
     Word pixel_count, capacity, packet, model;
     Word group_width, replay_enabled, packet_events, packet_layout;
+    Word contribution_mode, contribution_depth;
+    float contribution_target_scale;
+    Word contribution_replay; // full 0 / prefix 1; summed mode requires 0.
+    Word contribution_serial_low, contribution_serial_high, reserved2[2];
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -61,10 +68,16 @@ struct Contract {
     Word hot_bytes, hot_alignment, cold_bytes, cold_alignment;
     Word hit_bytes, hit_alignment;
     Word hero_bytes, hero_alignment, hero_hot_bytes, hero_hot_alignment;
-    Word hero_cold_bytes, hero_cold_alignment, reserved[2];
+    Word hero_cold_bytes, hero_cold_alignment;
+    Word contribution_state_bytes, contribution_state_alignment;
 };
-static_assert(sizeof(Config) == 32 && sizeof(Counters) == 32 && sizeof(DispatchArguments) == 12 &&
+static_assert(sizeof(Config) == 64 && sizeof(Counters) == 32 && sizeof(DispatchArguments) == 12 &&
                   sizeof(Contract) == 88,
               "Wavefront host/shader ABI");
+static_assert(contribution_evaluation_id == 18 && contribution_state_id == 19,
+              "Wavefront v14 contribution argument ABI");
 } // namespace wavefront_wire
 } // namespace rypath
+
+static_assert(__builtin_offsetof(rypath::wavefront_wire::Config, contribution_replay) == 44,
+              "Contribution replay consumes the original offset 44 reserved word");

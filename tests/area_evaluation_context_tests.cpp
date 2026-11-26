@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "area_evaluation_context.hpp"
+#include "frame_session.hpp"
 #include <array>
 #include <bit>
 #include <iostream>
 #include <stdexcept>
+#include <string_view>
 
 int main() try {
     using namespace rypath;
@@ -11,6 +13,39 @@ int main() try {
         if (!ok)
             throw std::runtime_error("Exact Area evaluation context/accounting contract");
     };
+    static_assert(FrameConfig{}.contribution_replay == FrameContributionReplay::full);
+    static_assert(static_cast<std::uint32_t>(FrameContributionReplay::full) == 0 &&
+                  static_cast<std::uint32_t>(FrameContributionReplay::prefix) == 1);
+    need(std::string_view(frame_contribution_replay_name(FrameContributionReplay::full)) == "full");
+    need(std::string_view(frame_contribution_replay_name(FrameContributionReplay::prefix)) ==
+         "prefix");
+    // Deliberately exercise the API's invalid-enum name handling.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    const auto unknown_replay = static_cast<FrameContributionReplay>(2);
+    need(std::string_view(frame_contribution_replay_name(unknown_replay)) == "invalid");
+    const AreaPathDomainContext domain{1, 65, 1.f, 0};
+    need(same_area_path_domain_context(domain, domain));
+    using DomainWords = std::array<std::uint32_t, sizeof(domain) / 4>;
+    const auto domain_words = std::bit_cast<DomainWords>(domain);
+    // Every mode/depth/scale/replay word participates, including a one-bit scale
+    // change. Positivity/range validation is separate from exact identity.
+    for (std::size_t i = 0; i < domain_words.size(); ++i) {
+        for (const auto difference : {1u, 0x80000000u}) {
+            auto changed = domain_words;
+            changed[i] ^= difference;
+            need(!same_area_path_domain_context(domain,
+                                                std::bit_cast<AreaPathDomainContext>(changed)));
+        }
+    }
+    const AreaPathDomainContext summed{0, 0, 1.f}, depth_zero{1, 0, 1.f};
+    need(!same_area_path_domain_context(summed, depth_zero));
+    need(!same_area_path_domain_context(depth_zero, domain));
+    auto prefix = domain;
+    prefix.replay = 1;
+    need(!same_area_path_domain_context(domain, prefix));
+    need(same_area_path_domain_context(prefix, prefix));
+    const AreaPathDomainContext positive_zero{1, 0, 0.f}, negative_zero{1, 0, -0.f};
+    need(!same_area_path_domain_context(positive_zero, negative_zero));
     render_wire::Parameters p{};
     render_wire::TextureParameters t{};
     need(same_area_evaluation_parameters(p, p, t, t));

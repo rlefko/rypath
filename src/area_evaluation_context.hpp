@@ -6,6 +6,18 @@
 #include <cstring>
 
 namespace rypath {
+// Immutable contribution measure/target configuration. Camera changes permit
+// replay, but changing this domain requires invalidating the old history.
+struct AreaPathDomainContext {
+    std::uint32_t mode = 0, depth = 0;
+    float target_scale = 1;
+    std::uint32_t replay = 0;
+};
+static_assert(sizeof(AreaPathDomainContext) == 16, "Area path-domain context has no padding");
+inline bool same_area_path_domain_context(const AreaPathDomainContext &a,
+                                          const AreaPathDomainContext &b) {
+    return std::memcmp(&a, &b, sizeof(a)) == 0;
+}
 // These records contain only scalar words, Point and arrays. Summing every
 // member size makes whole-record binary comparison independent of padding.
 static_assert(

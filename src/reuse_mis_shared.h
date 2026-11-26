@@ -169,6 +169,21 @@ inline ScalarResult temporal_fresh_score(float current_target, float previous_ta
         product(decompose_positive(previous_target_at_fresh), decompose_positive(20.f));
     return materialize(quotient(product(current, current), sum(current, previous)));
 }
+// A locally resampled canonical input has UCW=fresh_Z/current_target rather
+// than one. The two-argument overload above deliberately retains its original
+// operation sequence and bits for the existing whole-path canonical sample.
+inline ScalarResult temporal_fresh_score(float fresh_Z, float current_target,
+                                         float previous_target_at_fresh) {
+    if (!math::positive_normal(fresh_Z))
+        return {0, Status::invalid_candidate};
+    if (!math::positive_normal(current_target) || !math::positive_normal(previous_target_at_fresh))
+        return {0, Status::invalid_target};
+    const auto current = decompose_positive(current_target);
+    const auto previous =
+        product(decompose_positive(previous_target_at_fresh), decompose_positive(20.f));
+    return materialize(
+        quotient(product(decompose_positive(fresh_Z), current), sum(current, previous)));
+}
 inline ScalarResult temporal_history_score(float history_Z, float current_target,
                                            float previous_target) {
     if (!math::positive_normal(history_Z))

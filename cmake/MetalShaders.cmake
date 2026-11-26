@@ -105,6 +105,10 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scalar_lighting.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scalar_transport.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/wavefront.metal"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/contribution_sink.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_path_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_decision_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/frame_sensor.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/wavefront_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/replay_sampler.h"
@@ -469,6 +473,22 @@ add_custom_command(OUTPUT "${rypath_hero_current_library}"
         -o "${rypath_hero_current_library}"
     DEPENDS "${rypath_hero_current_air}" VERBATIM)
 add_custom_target(rypath_hero_current_shader DEPENDS "${rypath_hero_current_library}")
+
+# Fixed-contribution prefix differential against an independent full collector.
+set(rypath_contribution_prefix_library "${rypath_runtime_directory}/rypath-contribution-prefix-probe.metallib")
+set(rypath_contribution_prefix_air "${rypath_runtime_directory}/CMakeFiles/rypath-contribution-prefix-probe.air")
+add_custom_command(OUTPUT "${rypath_contribution_prefix_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/contribution_prefix_probe.metal"
+        -o "${rypath_contribution_prefix_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_contribution_prefix_air}"
+        -o "${rypath_contribution_prefix_library}"
+    DEPENDS ${rypath_hero_current_headers}
+        "${CMAKE_SOURCE_DIR}/tests/contribution_prefix_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_contribution_prefix_shader DEPENDS "${rypath_contribution_prefix_library}")
 
 # Full-render-TU differential: genuine Vertex and compact current/light endpoints.
 set(rypath_hero_light_endpoint_library "${rypath_runtime_directory}/rypath-hero-light-endpoint.metallib")
