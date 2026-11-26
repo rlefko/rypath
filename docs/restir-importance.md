@@ -78,6 +78,17 @@ changes supply exact memoization, not a new target or reuse estimator. GPU
 cache-on/off raw-bit qualification and performance measurements must identify
 the source revision; historical measurements below predate this cache.
 
+A retained Release cache build (source fingerprint `9882bbd7ca98…`) passes the
+focused Area, temporal-cache and mutation checks with Metal API validation
+(32.25 seconds, test duration). This receipt precedes the EXR metadata correction.
+The paired cache control checks exact raw XYZ bits through static contexts,
+camera/lens changes and cuts; failure recovery preserves only successfully
+published history. Physical plus cached evaluation counts equal the original
+logical work. A separate receipt records fourteen passing portable runner tests,
+including both contract versions and inconsistent cache accounting. The cumulative native cache/compact-state
+screen is recorded separately in [hero execution](hero-execution.md); its speedup
+must not be attributed to this cache alone.
+
 For four fixed neighbor slots `j`, spatial scores are
 
 ```text

@@ -17,9 +17,10 @@ not its slot, queue order or command buffer. The primary texture footprint uses
 the session's fixed sample budget.
 
 Scalar paths have separate intersection and shading dispatches. Packet paths
-trace and shade one event per dispatch. They retain the latest full vertex and
-the preceding vertex's position/type; the current event stays local until its
-endpoint and direct contributions consume that history. Null and invisible
+trace and shade one event per dispatch. Classic packet state retains the latest
+full Vertex; compact hero state retains a prepared HeroPrevious endpoint. Both
+retain the preceding endpoint's position/type. The current event stays local
+until endpoint and direct contributions consume that history. Null and invisible
 boundaries preserve it. Direct-light visibility runs inside shading. This version
 has no material sorting or separate shadow queue. Scalar homogeneous-medium
 state, null-boundary progress, packet wavelength termination and eta-aware
@@ -38,6 +39,26 @@ Two frame slots retain their resources through GPU completion and handle
 release. A retained frame survives destruction of its session. Resource sizing
 uses a shader-reported state ABI and checked allocation budgets. Raw images stay
 on the GPU; explicit capture waits for completion and performs a separate copy.
+
+## Current contract-10 layouts
+
+The shader handshake reports separate classic-packet and compact-hero layouts.
+The host validates their sizes/alignments and allocates only the selected pools.
+
+| Execution storage | Packed state, bytes | Hot state, bytes | Retained endpoint, bytes |
+| --- | ---: | ---: | ---: |
+| Classic packet | 1,344 | 336 | Vertex: 1,008 |
+| Compact hero | 560 | 336 | HeroPrevious: 224 |
+
+The compact local current event is 496 bytes, its prepared BSDF is 104 bytes,
+and its sampled-light endpoint is 256 bytes. Prepared values stay frozen for
+history queries; scene materials/textures are not re-evaluated there. The
+[hero execution record](hero-execution.md) defines the storage and validation.
+Versioned `rypath_wavefront_contract_v10` lookup rejects stale host/library pairs
+in both directions before issuing samples.
+
+The measurements and contract-4/6/7/8 layout records below are historical; their
+reported sizes remain evidence for those revisions, not the current allocation.
 
 ## Reproducible comparisons
 
@@ -196,12 +217,12 @@ paths. Scalar transport and megakernel execution reject nondefault packet
 controls instead of silently ignoring them.
 
 `FrameConfig.packet_layout` and `--packet-layout packed|hot-cold|split-trace`
-select storage/execution. `packed` retains the default full per-slot state.
+select storage/execution. `packed` retains the selected per-slot state.
 `hot-cold` stores ray/sample/wavelength/throughput/radiance/progress state apart
-from the complete frozen latest Vertex and assembles the original thread state
-for shading. The Vertex retains all prepared scattering lanes and scene-table
-pointers: represented directional PDFs still evaluate the prepared BSDF using
-neighbor geometry, rather than substituting the sampled PDF.
+from the retained endpoint and assembles thread state for shading. Classic
+packet execution retains a full Vertex; compact hero execution uses
+HeroPrevious. Both retain prepared scattering values and scene-table pointers:
+represented directional PDFs evaluate that BSDF using neighbor geometry.
 
 `split-trace` uses the same separate pools and adds a per-slot checked hit buffer.
 A separate trace dispatch reads only hot state and publishes the hit plus any
@@ -211,8 +232,8 @@ consumer barriers publish hit and hot-state writes before shading; refill fully
 initializes hot and cold owner state before slot reuse. Only the selected large
 pools are allocated; other argument bindings use small sentinels. The shader
 handshake reports each allocation's size/alignment, and host per-buffer and total
-working-set checks include the selected pools. Wavefront contract 8 rejects older
-libraries and validates the current fixed-entry policy mapping.
+working-set checks include the selected pools. Wavefront contract 10 validates
+these layouts and the fixed-entry policy mapping before sample issuance.
 
 Reports retain requested packet settings and effective settings (null when no
 packet execution applies), and raw captures record both controls. These are
@@ -226,12 +247,13 @@ triangle/bilinear-patch receivers. Native intersections cover all seven policies
 at capacity seventeen; compensated intersections cover each layout with one
 event. Both use high absolute sample indices, the existing direct-sample sensor
 oracle tolerance, and bitwise same-profile policy comparisons. These additional
-alpha/mixed-geometry/profile controls pass in all three presets; the later
-contract-8 record supplies current correctness evidence. The original bounded
-record below predates these additions. The tests require actual GPU execution;
+alpha/mixed-geometry/profile controls passed in all three presets for the
+historical contract-8 implementation. Current hero layout receipts are in the
+[execution record](hero-execution.md). The original bounded record below predates
+these additions. The tests require actual GPU execution;
 building them alone supplies no hardware equivalence evidence.
 
-### Bounded packet-policy correctness evidence
+### Historical bounded packet-policy correctness evidence
 
 On November 23, 2026, Debug source digest
 `e7b53300244884b27a848d7e69cc82812f36167e1847eb9ce3b7bf89c1750d32`
@@ -387,14 +409,15 @@ and source/file provenance are frozen separately as
 `core-speed-001/frozen-packet-restored`; qualification against the original
 frozen workload remains required before claiming the default regression fixed.
 
-### Contract-8 fixed-entry experiment
+### Historical contract-8 fixed-entry experiment
 
 The contract-7 restoration retained the original ordinary event and packed1 shade
 body. Its measured default control matched the pre-packet control, while the six
 shared-entry alternatives remained slower. Those results and frozen artifacts
 remain retained; they do not establish a benefit for an experimental policy.
 
-Contract 8 replaces the shared experimental shade entry with seven named entries.
+At that retained revision, contract 8 replaced the shared experimental shade entry
+with seven named entries.
 A single `packet_shade_body.inc` expands literal layout, event-count, and hit-source
 paths: packed policies access the packed pool directly, separated policies call
 unconditional hot/cold accessors, and split trace calls only the pretraced event.
@@ -403,8 +426,8 @@ retain constants 23/24 and immutable configuration checks; the host still verifi
 opaque-shadow constant 22 on the actual selected shade entry. Contract 8 rejects
 older libraries before loading this entry map. No policy defaults change.
 
-Source expansion checks retain the original `f0d8494` ordinary event's 2,733 body
-tokens and the packed1 kernel's 409 tokens. Both shared body includes participate
+At that revision, source expansion checks retained the original `f0d8494` ordinary
+event's 2,733 body tokens and the packed1 kernel's 409 tokens. Both shared body includes participate
 in shader dependencies and the actual source fingerprint. This checks source
 structure and numerical ordering, not generated code, occupancy, or performance.
 Fresh validation evidence is retained outside Git under

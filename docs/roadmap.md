@@ -205,6 +205,13 @@ guards, and project agent guidance. Large-corpus acquisition remains separately 
 
 ## Interactive pipeline
 
+[Compact hero execution](hero-execution.md) and exact temporal evaluation reuse
+reduce the current full-replay workload without changing its estimator. The
+bounded native static screen preserves raw/reconstructed pixels, but the 10×
+and 20–30 FPS goals remain open. Complete static/motion qualification and further
+reductions in shader spill traffic precede broader adoption; contribution-path
+reconnection requires its own derivation and numerical validation.
+
 [Hero wavelength PT](hero-wavelength.md) supplies explicit shared-path spectral
 sampling for eligible vacuum PT scenes. Automatic adoption awaits broader
 quality/cost qualification and resolution of the retained Prism mean warning.
