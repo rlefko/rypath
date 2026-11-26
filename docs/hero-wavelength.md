@@ -8,11 +8,14 @@ and display transforms.
 
 ## Sampling contract
 
-A uniform hero wavelength lies in [360, 830) nm. Three companions are offset by
-one quarter of that interval with periodic wrapping. All four retain their
-original sensor density, 1/470 per nm, throughout the path. The hero selects the
-direction; each supported material evaluates the physical numerator and proposal
-density at every active wavelength.
+The default hero sampler uses PBRT's visible-sensitivity inverse CDF on
+[360, 830] nm. Four wavelengths are separated by quarters in probability space;
+integer shifts preserve every point of the renderer's 24-bit uniform lattice.
+Each lane retains its own wavelength PDF through sensor conversion.
+`--hero-wavelengths uniform` preserves the original equal-nanometer control.
+The hero selects the direction; each supported material evaluates the physical
+numerator and proposal density at every active wavelength. See the
+[spectral noise repair](spectral-color-noise.md) for the derivation and qualification.
 
 The implementation follows the paper's cumulative balance construction. For
 prefix likelihoods P[k] and physical path numerator F[j], the running mixture
@@ -41,7 +44,7 @@ claim of four-wavelength coating proposals.
 
 `--spectral-transport auto|scalar|packet|hero` selects the mode in the renderer,
 frame benchmark, reconstruction diagnostics and qualification tools. The viewer
-uses automatic selection, which preserves the prior scalar/packet policy.
+also exposes these controls; automatic selection preserves the prior scalar/packet policy.
 Hero is explicit for vacuum PT/volpath scenes with depth at most 65. BDPT retains
 the existing packet implementation; active media and greater depths retain their
 supported alternatives. Declared nonzero media conservatively prohibit explicit
@@ -62,10 +65,10 @@ output uses an 80-byte result per lane rather than allocating legacy camera and
 light path arrays. Wavefront scheduling and Area replay use the same estimator.
 Metal function constants remove the unused spectral estimator from production
 pipelines, while standalone probes retain runtime mode selection.
-All wavelength draws remain part of the replay tape. Renderer contract 28 and
-sampling contract 10 invalidate incompatible checkpoints.
+All wavelength draws remain part of the replay tape. Renderer contract 29 and
+sampling contract 11 invalidate incompatible checkpoints.
 
-## Validation scope
+## Historical renderer 28 validation scope
 
 Independent portable tests enumerate small joint wavelength/path distributions,
 including wavelength-dependent direct-light proposals, black hero channels,

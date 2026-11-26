@@ -193,6 +193,35 @@ inline Update collapse(const RYPATH_HERO_THREAD Density &prefix, Vector beta) {
     out.valid = true;
     return out;
 }
+// Renderer uniforms are on the 24-bit lattice. Integer cyclic shifts preserve
+// every point exactly (float addition followed by wrap does not). Stratification
+// is in probability, not nanometers: each lane has the same marginal q(lambda).
+inline float shifted_cdf(float u, unsigned lane) {
+    const unsigned coordinate = unsigned(u * 16777216.f);
+    return float((coordinate + lane * 4194304u) & 0x00ffffffu) * 0x1p-24f;
+}
+inline rypath_packet_spectrum::Wavelengths sample_visible(float u) {
+    rypath_packet_spectrum::Wavelengths out{};
+    if (!(u >= 0 && u < 1)) {
+        for (unsigned k = 0; k < 4; ++k)
+            out.lambda[k] = out.pdf[k] = NAN;
+        return out;
+    }
+    for (unsigned k = 0; k < 4; ++k) {
+        const float shifted = shifted_cdf(u, k);
+        // PBRT v4's fitted visible inverse CDF and its matching PDF. Endpoint
+        // projection handles rounding of the fitted constants, not path values.
+        float wavelength =
+            538 - 138.888889f * rypath_packet_spectrum::atanh(.85691062f - 1.82750197f * shifted);
+        if (wavelength < 360)
+            wavelength = 360;
+        if (wavelength > 830)
+            wavelength = 830;
+        out.lambda[k] = wavelength;
+        out.pdf[k] = rypath_packet_spectrum::visible_pdf(wavelength);
+    }
+    return out;
+}
 inline rypath_packet_spectrum::Wavelengths sample_uniform(float u) {
     rypath_packet_spectrum::Wavelengths out{};
     if (!(u >= 0 && u < 1)) {

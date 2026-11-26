@@ -13,7 +13,7 @@ kernel void rypath_mutation_math_probe(device const mp::Query *queries [[buffer(
     const rypath_replay::ReplayState source = q.source;
     const mh::MutationIdentity identity = q.identity;
     mp::Result result{};
-    result.proposal = mh::propose(source, q.entropy, q.scale);
+    result.proposal = mh::propose(source, q.entropy, mh::Policy(q.policy), q.scale);
     const auto counter = mh::decision_counter(identity, q.step, mh::Entropy::proposal, 0);
     result.counter = counter.value;
     result.counter_status = uint(counter.status);

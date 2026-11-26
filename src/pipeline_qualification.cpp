@@ -75,6 +75,9 @@ std::string optional_number(std::optional<double> value) {
     return stream.str();
 }
 struct Options {
+    std::optional<HeroWavelengthSampling> hero_wavelengths;
+    FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
+    FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir;
     std::uint32_t width = 320, height = 180, frames = 32, seeds = 8;
@@ -96,6 +99,9 @@ const char *reconstructed_kind(ReconstructionMode mode) {
 const char *usage =
     "Usage: rypath-pipeline-qualification --scene SCENE.pbrt --output-dir FRESH\n"
     "  --spectral-transport auto|scalar|packet|hero (default: auto)\n"
+    "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
+    "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
+    "auto|adjacent|reciprocal16\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
@@ -113,7 +119,30 @@ Options parse(int argc, char **argv) {
         require(i + 1 < argc && !std::string_view(argv[i + 1]).starts_with("--"),
                 "Missing qualification option value");
         const std::string_view value = argv[++i];
-        if (key == "--spectral-transport") {
+        if (key == "--hero-wavelengths") {
+            o.hero_wavelengths = parse_hero_wavelength_sampling(value);
+            if (!o.hero_wavelengths)
+                throw std::runtime_error("Hero wavelengths must be uniform or visible");
+        } else if (key == "--area-mutation-policy") {
+            if (value == "auto")
+                o.mutation_policy = FrameMutationPolicy::automatic;
+            else if (value == "legacy")
+                o.mutation_policy = FrameMutationPolicy::legacy;
+            else if (value == "spectral-refresh")
+                o.mutation_policy = FrameMutationPolicy::spectral_refresh;
+            else
+                throw std::runtime_error(
+                    "Area mutation policy must be auto, legacy, or spectral-refresh");
+        } else if (key == "--area-stencil") {
+            if (value == "auto")
+                o.area_stencil = FrameAreaStencil::automatic;
+            else if (value == "adjacent")
+                o.area_stencil = FrameAreaStencil::adjacent;
+            else if (value == "reciprocal16")
+                o.area_stencil = FrameAreaStencil::reciprocal16;
+            else
+                throw std::runtime_error("Area stencil must be auto, adjacent, or reciprocal16");
+        } else if (key == "--spectral-transport") {
             const auto selection = parse_spectral_transport(value);
             if (!selection)
                 throw std::runtime_error(
@@ -403,6 +432,10 @@ Scene load_scene(const Options &o) {
     const auto spectral_error =
         select_spectral_transport(scene, o.spectral_transport, &spectral_provenance);
     require(spectral_error.empty(), spectral_error);
+    if (o.hero_wavelengths && scene.spectral_transport != SpectralTransport::hero)
+        throw std::runtime_error("--hero-wavelengths requires effective hero transport");
+    if (o.hero_wavelengths)
+        scene.hero_wavelengths = *o.hero_wavelengths;
     result.provenance.push_back(spectral_provenance);
     result.provenance.push_back("all arms and reference use native wavefront, independent tape, "
                                 "fixed footprint_samples=1, material_seed=0, unexposed output");
@@ -767,6 +800,8 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
     auto config = configuration(o, aggregate.seed);
     config.estimator = mutations < 0 ? FrameEstimator::independent : FrameEstimator::area_replay;
     config.mutation_steps = mutations < 0 ? 0 : unsigned(mutations);
+    config.mutation_policy = o.mutation_policy;
+    config.area_stencil = o.area_stencil;
     config.area_output = o.area_output;
     auto renderer = session(scene.value, config, device);
     aggregate.session_startup = elapsed(startup);
@@ -867,6 +902,19 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"area_source_mis\":"
                  << quote(mutations < 0 ? "none" : "source-target-mis-v1")
                  << ",\"area_temporal_reuse\":" << (mutations < 0 ? 0 : 20)
+
+                 << ",\"requested_area_mutation_policy\":"
+                 << quote(frame_mutation_policy_name(o.mutation_policy))
+                 << ",\"requested_area_stencil\":" << quote(frame_area_stencil_name(o.area_stencil))
+                 << ",\"area_mutation_policy\":"
+                 << quote(mutations < 0 ? "not-applicable"
+                                        : frame_mutation_policy_name(raw_info->mutation_policy))
+                 << ",\"area_stencil\":"
+                 << quote(mutations < 0 ? "not-applicable"
+                                        : frame_area_stencil_name(raw_info->area_stencil))
+                 << ",\"area_stencil_offsets\":[" << raw_info->area_stencil_offsets[0] << ','
+                 << raw_info->area_stencil_offsets[1] << ',' << raw_info->area_stencil_offsets[2]
+                 << ',' << raw_info->area_stencil_offsets[3] << ']'
                  << ",\"area_serial\":" << raw_info->area_serial
                  << ",\"history_generation\":" << raw_info->history_generation
                  << ",\"history_used\":" << (raw_info->history_used ? "true" : "false")
@@ -954,6 +1002,33 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                                             mutations < 0 ? "0" : "20");
                     attributes.emplace_back("rypath.area.mutation_steps",
                                             std::to_string(mutations < 0 ? 0 : mutations));
+                    attributes.emplace_back("rypath.hero.requested",
+                                            o.hero_wavelengths
+                                                ? hero_wavelength_sampling_name(*o.hero_wavelengths)
+                                                : "default");
+                    attributes.emplace_back(
+                        "rypath.hero.effective",
+                        scene.value.spectral_transport == SpectralTransport::hero
+                            ? hero_wavelength_sampling_name(scene.value.hero_wavelengths)
+                            : "not-applicable");
+                    attributes.emplace_back("rypath.area.requested_mutation",
+                                            frame_mutation_policy_name(o.mutation_policy));
+                    attributes.emplace_back("rypath.area.requested_stencil",
+                                            frame_area_stencil_name(o.area_stencil));
+                    attributes.emplace_back(
+                        "rypath.area.mutation_policy",
+                        mutations < 0 ? "not-applicable"
+                                      : frame_mutation_policy_name(raw_info->mutation_policy));
+                    attributes.emplace_back("rypath.area.stencil",
+                                            mutations < 0
+                                                ? "not-applicable"
+                                                : frame_area_stencil_name(raw_info->area_stencil));
+                    attributes.emplace_back(
+                        "rypath.area.stencil_offsets",
+                        std::to_string(raw_info->area_stencil_offsets[0]) + "," +
+                            std::to_string(raw_info->area_stencil_offsets[1]) + "," +
+                            std::to_string(raw_info->area_stencil_offsets[2]) + "," +
+                            std::to_string(raw_info->area_stencil_offsets[3]));
                     output.exr(stem + "-raw.exr", raw_image, o, attributes);
                     attributes.front().second = reconstructed_kind(o.reconstruction);
                     output.exr(stem + "-" + reconstruction_name(o.reconstruction) + "-denoised.exr",
@@ -1162,6 +1237,14 @@ int run(const Options &o) {
                  << settings_json(o) << ",\"source_identity\":" << quote(source_id)
                  << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"sensor_model\":"
                  << quote(scene.value.model == RenderModel::pbrt ? "pbrt" : "demo")
+
+                 << ",\"requested_hero_wavelengths\":"
+                 << quote(o.hero_wavelengths ? hero_wavelength_sampling_name(*o.hero_wavelengths)
+                                             : "default")
+                 << ",\"hero_wavelengths\":"
+                 << quote(scene.value.spectral_transport == SpectralTransport::hero
+                              ? hero_wavelength_sampling_name(scene.value.hero_wavelengths)
+                              : "not-applicable")
                  << ",\"spectral_transport\":"
                  << quote(spectral_transport_name(scene.value.spectral_transport))
                  << ",\"max_depth\":" << scene.value.max_depth

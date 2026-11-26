@@ -341,6 +341,7 @@ struct Parameters {
     Word infinite_lights_begin = 0;
     Word infinite_light_count = 0;
     Word environment_light = 0xffffffffu;
+    Word hero_wavelengths = 0;
 };
 struct Sample {
     Word status;
@@ -430,7 +431,8 @@ static_assert(sizeof(Emitter) == 12 && alignof(Emitter) == 4 &&
                   __builtin_offsetof(Emitter, primitive) == 4 &&
                   __builtin_offsetof(Emitter, kind) == 8,
               "render emitter layout");
-static_assert(sizeof(Parameters) == 364 && alignof(Parameters) == 4 &&
+static_assert(sizeof(Parameters) == 368 && alignof(Parameters) == 4 &&
+                  __builtin_offsetof(Parameters, hero_wavelengths) == 364 &&
                   __builtin_offsetof(Parameters, zsobol_log_spp) == 256 &&
                   __builtin_offsetof(Parameters, gaussian_width) == 260 &&
                   __builtin_offsetof(Parameters, gaussian_height) == 264 &&

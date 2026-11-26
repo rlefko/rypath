@@ -305,6 +305,121 @@ void scaled_balance_contribution() {
     }
 }
 
+// Independent wavelength-space quadrature. Smooth spectral responses exercise
+// constant, broad and narrow-band energy without using the sampler's PDF as an
+// integration measure. This is a sensor-weight check, not a scene-quality claim.
+enum class ResponseShape { constant, broad, narrow };
+long double response(long double lambda, ResponseShape shape) {
+    const long double t = (lambda - 360) / 470;
+    switch (shape) {
+    case ResponseShape::constant:
+        return 1;
+    case ResponseShape::broad:
+        return .1L + t * t;
+    case ResponseShape::narrow: {
+        const long double z = (lambda - 455) / 12;
+        return std::exp(-z * z / 2);
+    }
+    }
+    throw std::runtime_error("Unknown response shape");
+}
+void visible_quadrature() {
+    constexpr std::array shapes{ResponseShape::constant, ResponseShape::broad,
+                                ResponseShape::narrow};
+    constexpr unsigned count = 131072;
+    Exact integral{}, estimate{}, wrong{};
+    for (unsigned n = 0; n < count; ++n) {
+        const auto wavelengths = h::sample_visible((float(n) + .5f) / count);
+        const long double lambda = 360 + 470.L * (n + .5L) / count;
+        for (unsigned c = 0; c < 3; ++c) {
+            integral[c] += 470.L * response(lambda, shapes[c]) / count;
+            for (unsigned k = 0; k < 4; ++k) {
+                estimate[c] +=
+                    response(wavelengths.lambda[k], shapes[c]) / (4.L * count * wavelengths.pdf[k]);
+                wrong[c] += 470.L * response(wavelengths.lambda[k], shapes[c]) / (4.L * count);
+            }
+        }
+    }
+    for (unsigned c = 0; c < 3; ++c)
+        near(estimate[c], integral[c], "Visible sensor agrees with wavelength quadrature", 2e-5L);
+    need(std::abs(wrong[1] - integral[1]) > .05L * integral[1] &&
+             std::abs(wrong[2] - integral[2]) > .05L * integral[2],
+         "Quadrature detects retaining uniform wavelength weights");
+}
+void visible_cyclic_paths() {
+    // Four cyclic techniques have equal density in u, even when their nm PDFs
+    // differ. Enumerate both scattering events and all four actual heroes;
+    // weight each sensor lane by its own q exactly once.
+    long double measured = 0, expected = 0, wrong = 0;
+    constexpr unsigned count = 4096;
+    for (unsigned n = 0; n < count; ++n) {
+        const auto w = h::sample_visible((float(n) + .5f) / count);
+        V a{}, b{}, f{};
+        for (unsigned k = 0; k < 4; ++k) {
+            const float t = (w.lambda[k] - 360) / 470;
+            a[k] = .1f + .8f * t;
+            b[k] = .8f - .6f * t;
+            f[k] = .2f + t * t;
+            expected += f[k] / (4.L * count * w.pdf[k]);
+        }
+        for (unsigned x = 0; x < 2; ++x) {
+            V px{}, nx{};
+            for (unsigned k = 0; k < 4; ++k) {
+                px[k] = x ? a[k] : 1 - a[k];
+                nx[k] = .5f * f[k];
+            }
+            const auto prefix = h::advance(h::initial_density(), ones(), nx, px);
+            need(prefix.valid, "Visible cyclic first event");
+            for (unsigned y = 0; y < 2; ++y) {
+                V py{}, ny{.5f, .5f, .5f, .5f};
+                for (unsigned k = 0; k < 4; ++k)
+                    py[k] = y ? b[k] : 1 - b[k];
+                const auto path = h::advance(prefix.density, prefix.beta, ny, py);
+                need(path.valid, "Visible cyclic second event");
+                for (unsigned hero = 0; hero < 4; ++hero)
+                    for (unsigned k = 0; k < 4; ++k) {
+                        const long double probability = px[hero] * (long double)py[hero] / 4;
+                        measured += probability * path.beta[k] / (4.L * count * w.pdf[k]);
+                        wrong += probability * path.beta[k] * 470 / (4.L * count);
+                    }
+            }
+        }
+    }
+    near(measured, expected, "Nonuniform wavelength cyclic full-path estimator");
+    need(std::abs(wrong - expected) > .05L * expected,
+         "Cyclic-path oracle detects wrong wavelength measure");
+}
+void visible_lattice() {
+    // Exhaust all 2^24 representable renderer inputs: no endpoint is duplicated
+    // or dropped by a cyclic quarter shift, including the final lattice point.
+    for (unsigned n = 0; n < 16777216u; ++n) {
+        const float u = float(n) * 0x1p-24f;
+        for (unsigned k = 0; k < 4; ++k) {
+            const auto shifted = h::shifted_cdf(u, k);
+            const unsigned expected = (n + k * 4194304u) % 16777216u;
+            need(shifted == float(expected) * 0x1p-24f, "Exact cyclic24-bit CDF shift");
+        }
+    }
+    for (unsigned n = 0; n < 16384; ++n) {
+        const float u = float(n) / 16384;
+        const auto w = h::sample_visible(u);
+        for (unsigned k = 0; k < 4; ++k) {
+            const long double v = std::fmod((long double)u + k / 4.L, 1.L);
+            const auto lambda = 538 - 138.888889L * std::atanh(.85691062L - 1.82750197L * v);
+            near(w.lambda[k], lambda, "Visible inverse CDF independent precision", 3e-6L);
+            const auto c = std::cosh(.0072L * (w.lambda[k] - 538));
+            near(w.pdf[k], .0039398042L / (c * c), "Visible PDF independent precision");
+            need(w.lambda[k] >= 360 && w.lambda[k] <= 830 && w.pdf[k] > 0,
+                 "Visible bounds and positive finite density");
+        }
+    }
+    for (float u : {-1.f, 1.f, INFINITY, NAN}) {
+        const auto w = h::sample_visible(u);
+        for (unsigned k = 0; k < 4; ++k)
+            need(!std::isfinite(w.lambda[k]) && !std::isfinite(w.pdf[k]),
+                 "Invalid visible uniform rejects");
+    }
+}
 void boundaries_and_rejections() {
     for (unsigned i = 0; i < 16384; ++i) {
         const float u = float(i) / 16384;
@@ -354,6 +469,9 @@ int main() {
         numeric_conversion();
         scaled_balance_contribution();
         boundaries_and_rejections();
+        visible_lattice();
+        visible_quadrature();
+        visible_cyclic_paths();
         std::cout << "Hero spectrum: independent finite-path/MIS/Dirac/support/wavelength checks "
                      "passed\n";
         return 0;

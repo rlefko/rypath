@@ -222,12 +222,14 @@ MutationOracle decide(float normalizer, float old_target, float new_target,
     const float correction = uphill ? represented_product / small : small / represented_product;
     return {true, normalizer * correction};
 }
-void single_pixel_oracle() {
+void single_pixel_oracle(FrameMutationPolicy policy = FrameMutationPolicy::legacy) {
     unsigned wavelength_moves = 0;
     for (std::uint64_t seed : {1ull, 19317ull, 0x913b6a1f7957c251ull, 0xabcdef0135792468ull}) {
         std::optional<Output> selected;
         for (auto mode : {FrameAreaOutput::selected, FrameAreaOutput::conditional_mean}) {
             auto c = settings(4);
+            c.mutation_policy = policy;
+            c.area_stencil = FrameAreaStencil::reciprocal16;
             c.width = c.height = 1;
             c.seed = seed;
             c.area_output = mode;
@@ -244,7 +246,10 @@ void single_pixel_oracle() {
                                               unsigned(seed >> 32)};
                 const auto entropy = mh::decision_words(id, step, mh::Entropy::proposal);
                 need(entropy.status == mh::Status::ok, "CPU proposal entropy");
-                const auto proposed = mh::propose(payload, entropy.value);
+                const auto proposed = mh::propose(payload, entropy.value,
+                                                  policy == FrameMutationPolicy::spectral_refresh
+                                                      ? mh::Policy::spectral_refresh
+                                                      : mh::Policy::legacy);
                 need(proposed.status == mh::Status::ok, "CPU proposal");
                 const auto decision =
                     decide(normalizer, target(sensor(payload), c.target_scale),
@@ -391,6 +396,7 @@ int main() {
         need(d.device.compute_ray_tracing, "Mutation frame tests require compute ray tracing");
         accounting();
         single_pixel_oracle();
+        single_pixel_oracle(FrameMutationPolicy::spectral_refresh);
         means(sky(), "Scalar sky");
         means(edge(), "DOF edge");
         means(indirect(), "Indirect NEE");

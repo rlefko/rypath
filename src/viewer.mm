@@ -163,8 +163,17 @@ void set_parameter(pbrt::Descriptor &d, const std::string &name,
         d.effective_authored.push_back(i);
 }
 RenderScene load_scene(const viewer::Options &options) {
-    if (options.demo)
-        return make_demo_scene();
+    if (options.demo) {
+        auto scene = make_demo_scene();
+        const auto error = select_spectral_transport(scene, options.spectral_transport);
+        if (!error.empty())
+            throw std::runtime_error(error);
+        if (options.hero_wavelengths && scene.spectral_transport != SpectralTransport::hero)
+            throw std::runtime_error("--hero-wavelengths requires effective hero transport");
+        if (options.hero_wavelengths)
+            scene.hero_wavelengths = *options.hero_wavelengths;
+        return scene;
+    }
     auto checked = pbrt::check(options.scene);
     if (checked.exit_code() || !checked.scene) {
         std::cerr << pbrt::report(checked);
@@ -213,8 +222,8 @@ RenderScene load_scene(const viewer::Options &options) {
             set_parameter(d, "maxcomponentvalue", {});
         }
     }
-    auto translated = pbrt::translate(checked, {options.scene.string()}, {},
-                                      SpectralTransportSelection::automatic);
+    auto translated =
+        pbrt::translate(checked, {options.scene.string()}, {}, options.spectral_transport);
     for (const auto &d : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(d);
     for (const auto &p : translated.provenance)
@@ -224,10 +233,14 @@ RenderScene load_scene(const viewer::Options &options) {
     auto scene = std::move(*translated.scene);
 
     std::string spectral_provenance;
-    if (const auto error = select_spectral_transport(scene, SpectralTransportSelection::automatic,
-                                                     &spectral_provenance);
+    if (const auto error =
+            select_spectral_transport(scene, options.spectral_transport, &spectral_provenance);
         !error.empty())
         throw std::runtime_error(error);
+    if (options.hero_wavelengths && scene.spectral_transport != SpectralTransport::hero)
+        throw std::runtime_error("--hero-wavelengths requires effective hero transport");
+    if (options.hero_wavelengths)
+        scene.hero_wavelengths = *options.hero_wavelengths;
     std::cout << spectral_provenance << '\n';
     return scene;
 }
@@ -344,6 +357,8 @@ class ViewerState {
         config.intersection_profile = IntersectionProfile::native;
         config.execution = FrameExecution::wavefront;
         config.estimator = options.estimator;
+        config.mutation_policy = options.mutation_policy;
+        config.area_stencil = options.area_stencil;
         config.mutation_steps =
             options.estimator == FrameEstimator::area_replay ? options.mutation_steps : 0;
         auto built = build_frame_session(scene, config);
@@ -648,6 +663,28 @@ class ViewerState {
             {"rypath.epoch", std::to_string(info.source.epoch)},
             {"rypath.seed", std::to_string(options.seed)},
             {"rypath.estimator", estimator_name()},
+            {"rypath.hero.requested",
+             options.hero_wavelengths
+                 ? std::string(hero_wavelength_sampling_name(*options.hero_wavelengths))
+                 : "default"},
+            {"rypath.hero.effective",
+             scene.spectral_transport == SpectralTransport::hero
+                 ? std::string(hero_wavelength_sampling_name(scene.hero_wavelengths))
+                 : "not-applicable"},
+            {"rypath.area.requested_mutation", frame_mutation_policy_name(options.mutation_policy)},
+            {"rypath.area.requested_stencil", frame_area_stencil_name(options.area_stencil)},
+            {"rypath.area.mutation_policy",
+             options.estimator == FrameEstimator::area_replay
+                 ? frame_mutation_policy_name(info.source.mutation_policy)
+                 : "not-applicable"},
+            {"rypath.area.stencil", options.estimator == FrameEstimator::area_replay
+                                        ? frame_area_stencil_name(info.source.area_stencil)
+                                        : "not-applicable"},
+            {"rypath.area.stencil_offsets",
+             std::to_string(info.source.area_stencil_offsets[0]) + "," +
+                 std::to_string(info.source.area_stencil_offsets[1]) + "," +
+                 std::to_string(info.source.area_stencil_offsets[2]) + "," +
+                 std::to_string(info.source.area_stencil_offsets[3])},
             {"rypath.area.contract",
              std::to_string(options.estimator == FrameEstimator::area_replay ? area_wire::contract
                                                                              : 0)},

@@ -114,6 +114,10 @@ Scene load_scene(const Options &o) {
     const auto spectral_error =
         select_spectral_transport(scene, o.spectral_transport, &spectral_provenance);
     require(spectral_error.empty(), spectral_error);
+    if (o.hero_wavelengths && scene.spectral_transport != SpectralTransport::hero)
+        throw std::runtime_error("--hero-wavelengths requires effective hero transport");
+    if (o.hero_wavelengths)
+        scene.hero_wavelengths = *o.hero_wavelengths;
     result.provenance.push_back(spectral_provenance);
     result.provenance.push_back("all arms and reference use native wavefront, independent tape, "
                                 "fixed footprint_samples=1, material_seed=0, unexposed output");

@@ -319,7 +319,8 @@ std::string render_sampler_description(const rypath::RenderSettings &settings,
 
 Metadata render_metadata(const rypath::RenderSettings &settings, std::string scene,
                          std::string profile, const rypath::RenderScene &render_scene,
-                         std::string overrides) {
+                         std::string overrides,
+                         std::optional<rypath::HeroWavelengthSampling> hero_wavelengths) {
     std::ostringstream exposure;
     exposure << std::setprecision(std::numeric_limits<double>::max_digits10)
              << render_scene.exposure;
@@ -344,6 +345,15 @@ Metadata render_metadata(const rypath::RenderSettings &settings, std::string sce
                       {"rypath.spectralMode", std::string(rypath::spectral_transport_name(
                                                   render_scene.spectral_transport))},
                       {"rypath.overrides", std::move(overrides)}};
+    metadata.emplace_back(
+        "rypath.hero.requested",
+        hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(*hero_wavelengths))
+                         : "default");
+    metadata.emplace_back(
+        "rypath.hero.effective",
+        render_scene.spectral_transport == rypath::SpectralTransport::hero
+            ? std::string(rypath::hero_wavelength_sampling_name(render_scene.hero_wavelengths))
+            : "not-applicable");
     if (render_scene.perspective_lens) {
         std::ostringstream camera;
         camera.imbue(std::locale::classic());
@@ -419,6 +429,7 @@ const char *output_description(const std::filesystem::path &path, rypath::ExrPre
 int render_demo(int argc, char *argv[]) {
     rypath::RenderSettings settings;
     auto spectral_transport = rypath::SpectralTransportSelection::automatic;
+    std::optional<rypath::HeroWavelengthSampling> hero_wavelengths;
     rypath::CheckpointOptions checkpoints;
     std::filesystem::path output;
     std::set<std::string_view> seen;
@@ -438,6 +449,10 @@ int render_demo(int argc, char *argv[]) {
                 return render_error(diagnostic);
         } else if (option == "--output") {
             output = value;
+        } else if (option == "--hero-wavelengths") {
+            hero_wavelengths = rypath::parse_hero_wavelength_sampling(value);
+            if (!hero_wavelengths)
+                return render_error("--hero-wavelengths requires uniform or visible");
         } else if (option == "--spectral-transport") {
             const auto selection = rypath::parse_spectral_transport(value);
             if (!selection)
@@ -485,8 +500,13 @@ int render_demo(int argc, char *argv[]) {
             rypath::select_spectral_transport(scene, spectral_transport, &spectral_provenance);
         !error.empty())
         return render_error(error);
+    if (hero_wavelengths && scene.spectral_transport != rypath::SpectralTransport::hero)
+        return render_error("--hero-wavelengths requires effective hero transport");
+    if (hero_wavelengths)
+        scene.hero_wavelengths = *hero_wavelengths;
     std::cout << spectral_provenance << '\n';
-    const auto metadata = render_metadata(settings, "demo-v1", "demo-v1", scene, "output path");
+    const auto metadata =
+        render_metadata(settings, "demo-v1", "demo-v1", scene, "output path", hero_wavelengths);
     std::cout << "Output: " << output.string() << " ("
               << output_description(output, rypath::ExrPrecision::float32) << ")\n";
     const auto job = rypath::run_render_job(scene, settings, checkpoints, output, {},
@@ -520,6 +540,7 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
     std::uint64_t batch_size = 8;
     std::int32_t material_seed = 0;
     auto spectral_transport = rypath::SpectralTransportSelection::automatic;
+    std::optional<rypath::HeroWavelengthSampling> hero_wavelengths;
     auto resource_profile = rypath::ResourceProfile::standard;
     std::set<std::string_view> seen;
     for (int index = 3; index < argc; index += 2) {
@@ -543,6 +564,10 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
         } else if (option == "--material-seed") {
             if (!parse_integer(std::string_view{argv[index + 1]}, material_seed))
                 return fail("--material-seed must be a signed 32-bit integer");
+        } else if (option == "--hero-wavelengths") {
+            hero_wavelengths = rypath::parse_hero_wavelength_sampling(argv[index + 1]);
+            if (!hero_wavelengths)
+                return fail("--hero-wavelengths requires uniform or visible");
         } else if (option == "--spectral-transport") {
             const auto selection = rypath::parse_spectral_transport(argv[index + 1]);
             if (!selection)
@@ -628,6 +653,10 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
         return fail("PBRT translation returned no render scene");
     }
     auto &scene = owned_scene.value();
+    if (hero_wavelengths && scene.spectral_transport != rypath::SpectralTransport::hero)
+        return fail("--hero-wavelengths requires effective hero transport");
+    if (hero_wavelengths)
+        scene.hero_wavelengths = *hero_wavelengths;
     if (!raw_output.empty()) {
         auto protected_paths = inputs;
         protected_paths.push_back(output);
@@ -720,7 +749,8 @@ int render_pbrt(int argc, char *argv[], rypath::RenderTimings *timings = nullptr
     auto metadata =
         render_metadata(settings, entry.string(), "pbrt-spectral-v1", scene,
                         output.extension() == ".exr" ? "Film.filename; batch size"
-                                                     : "Film.filename; Film.savefp16; batch size");
+                                                     : "Film.filename; Film.savefp16; batch size",
+                        hero_wavelengths);
     std::string translation_provenance;
     for (const auto &item : translated.provenance) {
         if (!translation_provenance.empty())
@@ -784,6 +814,7 @@ int main(int argc, char *argv[]) {
                      "              [--stl-colors auto|viscam|magics]\n"
                      "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
                      "           [--spectral-transport auto|scalar|packet|hero]\n"
+                     "           [--hero-wavelengths uniform|visible]\n"
                      "           [--resource-profile standard|large] [--raw-output PATH.exr] "
                      "[--timings PATH.json]\n"
                      "           [--material-seed 0]\n"

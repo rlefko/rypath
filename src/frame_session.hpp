@@ -10,6 +10,30 @@ namespace rypath {
 enum class FrameExecution { megakernel, wavefront };
 enum class FramePacketLayout { packed, hot_cold, split_trace };
 enum class FrameEstimator { independent, area_replay };
+enum class FrameMutationPolicy { automatic, legacy, spectral_refresh };
+enum class FrameAreaStencil { automatic, adjacent, reciprocal16 };
+inline constexpr const char *frame_mutation_policy_name(FrameMutationPolicy policy) {
+    switch (policy) {
+    case FrameMutationPolicy::automatic:
+        return "auto";
+    case FrameMutationPolicy::legacy:
+        return "legacy";
+    case FrameMutationPolicy::spectral_refresh:
+        return "spectral-refresh";
+    }
+    return "invalid";
+}
+inline constexpr const char *frame_area_stencil_name(FrameAreaStencil stencil) {
+    switch (stencil) {
+    case FrameAreaStencil::automatic:
+        return "auto";
+    case FrameAreaStencil::adjacent:
+        return "adjacent";
+    case FrameAreaStencil::reciprocal16:
+        return "reciprocal16";
+    }
+    return "invalid";
+}
 enum class FrameAreaOutput { selected, conditional_mean };
 struct FrameConfig {
     bool profile_stages = false;
@@ -40,6 +64,9 @@ struct FrameConfig {
     FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;
+    // Automatic retains the legacy/adjacent defaults until a quality decision.
+    FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
+    FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
 };
 struct FrameCamera {
     RenderCamera camera;
@@ -67,6 +94,10 @@ struct FrameInfo {
     std::uint64_t command_count = 0;
     std::uint64_t area_serial = 0;
     bool history_used = false;
+    FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;
+    FrameAreaStencil area_stencil = FrameAreaStencil::adjacent;
+    // Resolved immutable stencil, ordered d0.x, d0.y, d1.x, d1.y.
+    std::array<std::int32_t, 4> area_stencil_offsets{};
     std::uint64_t history_generation = 0;
     // Per-pixel pool sizes, including cached fresh/center candidates.
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;

@@ -9,7 +9,7 @@ struct Query {
     rypath_mutation::MutationIdentity identity;
     rypath_mutation::ProposalScale scale;
     float weight, source_target, proposal_target;
-    Word step, word_count, acceptance_ordinal, requested_steps;
+    Word step, word_count, acceptance_ordinal, requested_steps, policy;
     Word words[9];
 };
 struct Result {
@@ -23,5 +23,5 @@ struct Result {
     float prepared_weight, final_weight;
     Word final_status, accepted, words_used, valid_step_count;
 };
-static_assert(sizeof(Query) == 140 && sizeof(Result) == 208, "Mutation math probe CPU/MSL ABI");
+static_assert(sizeof(Query) == 144 && sizeof(Result) == 208, "Mutation math probe CPU/MSL ABI");
 } // namespace mutation_probe

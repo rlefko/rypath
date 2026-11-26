@@ -1,6 +1,7 @@
 # ReSTIR importance sampling repair
 
-Area contract 5 retains contract 4's radiance-like target and source-target MIS,
+Area contract 6 adds [spectral mutation and reciprocal stencil controls](spectral-color-noise.md).
+It retains contract 5's numerical behavior and contract 4's radiance-like target and source-target MIS,
 which replaced the contract-3 bounded target and equal-weight reuse. The former target varied by
 at most ten percent, so it intentionally surrendered most of the importance
 selection that motivates ReSTIR. Its historical correctness and timing results
@@ -115,7 +116,7 @@ The renderer does not drop a candidate, clamp it, or silently retry.
 The schedule evaluates `(5+n)*pixels` complete paths after a reset and
 `(7+n)*pixels` with history, for `n` mutations. One fresh path per pixel remains
 distinct from replay work. Benchmark, qualification, diagnostics and viewer EXR
-provenance record contract 5, `quarter-l1-v1`, `source-target-mis-v1`, temporal
+provenance record contract 6, `quarter-l1-v1`, `source-target-mis-v1`, temporal
 coefficient 20 and the output mode. Independent output records these as
 inapplicable. Benchmark and diagnostics accept `--area-output selected` or
 `--area-output conditional-mean`; the qualification driver applies it only to

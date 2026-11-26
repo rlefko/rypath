@@ -33,8 +33,8 @@ and return 1. A failed batch never contributes samples. A previous published
 checkpoint remains usable; work after that checkpoint may have to be recomputed.
 An already complete checkpoint can publish an image without acquiring a GPU.
 
-The current revision uses file format 3, identity 12, renderer 27,
-sampling 9 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
+The current revision uses file format 3, identity 12, renderer 29,
+sampling 11 and accumulation 2. Sampling 7 separates Halton BDPT light sequences
 across the full Film instead of repeating them every 128 pixels. Format 3 adds
 the signed 32-bit material seed after
 the sampler randomization in metadata. Earlier formats and contracts are rejected
@@ -264,3 +264,9 @@ geometry, integrator, spectral transport, film clamp and finite-clamp exposure.
 Resource profiles are execution limits and do not change effective scene identity.
 See [Pavilion transport](pavilion-validation.md) for normalization and deterministic
 reduction order. Earlier format and contract versions are rejected explicitly.
+
+Renderer 29 / sampling 11 adds visible-CDF hero wavelength sampling and effective
+wavelength-policy identity. Renderer 28 / sampling 10 introduced explicit hero
+transport. Earlier checkpoint contracts remain incompatible. Area contract 6
+separately records spectral-refresh mutation and reciprocal-stencil configuration;
+resident reuse histories are not offline checkpoints.

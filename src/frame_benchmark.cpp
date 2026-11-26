@@ -72,6 +72,9 @@ struct Options {
     float metalfx_exposure = 1;
     std::uint32_t output_width = 0, output_height = 0;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
+    std::optional<rypath::HeroWavelengthSampling> hero_wavelengths;
+    rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::automatic;
+    rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::automatic;
     rypath::SpectralTransportSelection spectral_transport =
         rypath::SpectralTransportSelection::automatic;
     rypath::FrameEstimator estimator = rypath::FrameEstimator::independent;
@@ -143,6 +146,9 @@ const char *usage =
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
     "  [--spectral-transport auto|scalar|packet|hero (default: auto)]\n"
+    "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
+    "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
+    "auto|adjacent|reciprocal16\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--packet-events 1|2|4 (default: 1)] [--packet-layout packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
@@ -246,6 +252,29 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.reconstruction = rypath::ReconstructionMode::temporal;
             else
                 return "invalid reconstruction mode: " + std::string(value);
+        } else if (key == "--hero-wavelengths") {
+            o.hero_wavelengths = rypath::parse_hero_wavelength_sampling(value);
+            if (!o.hero_wavelengths)
+                throw std::runtime_error("Hero wavelengths must be uniform or visible");
+        } else if (key == "--area-mutation-policy") {
+            if (value == "auto")
+                o.mutation_policy = rypath::FrameMutationPolicy::automatic;
+            else if (value == "legacy")
+                o.mutation_policy = rypath::FrameMutationPolicy::legacy;
+            else if (value == "spectral-refresh")
+                o.mutation_policy = rypath::FrameMutationPolicy::spectral_refresh;
+            else
+                throw std::runtime_error(
+                    "Area mutation policy must be auto, legacy, or spectral-refresh");
+        } else if (key == "--area-stencil") {
+            if (value == "auto")
+                o.area_stencil = rypath::FrameAreaStencil::automatic;
+            else if (value == "adjacent")
+                o.area_stencil = rypath::FrameAreaStencil::adjacent;
+            else if (value == "reciprocal16")
+                o.area_stencil = rypath::FrameAreaStencil::reciprocal16;
+            else
+                throw std::runtime_error("Area stencil must be auto, adjacent, or reciprocal16");
         } else if (key == "--spectral-transport") {
             const auto selection = rypath::parse_spectral_transport(value);
             if (!selection)
@@ -640,6 +669,9 @@ struct Observation : rypath::FrameStatisticsSample {
                   mutation_accepts = 0;
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
     bool history_used = false;
+    rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::legacy;
+    rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::adjacent;
+    std::array<std::int32_t, 4> area_stencil_offsets{};
     rypath::GPUStageDiagnostics gpu_stages;
     rypath::FrameStatisticsSample pipeline;
     std::optional<rypath::ReconstructionInfo> reconstruction;
@@ -720,7 +752,7 @@ struct Report {
     Options options;
     rypath::AccelerationBuildInfo acceleration_build;
     std::string diagnostic, device, architecture, integrator, os, source_identity,
-        spectral_transport;
+        spectral_transport, hero_wavelengths;
     std::uint64_t registry_id = 0, warmup_completed = 0, frames_completed = 0;
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
@@ -767,6 +799,15 @@ struct Report {
             << ",\"seed\":" << options.seed << ",\"material_seed\":" << options.material_seed
             << ",\"execution\":" << quote(execution_name(options.execution))
             << ",\"spectral_transport\":" << quote(spectral_transport)
+            << ",\"requested_hero_wavelengths\":"
+            << quote(options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
+                                                    *options.hero_wavelengths))
+                                              : "default")
+            << ",\"hero_wavelengths\":" << quote(hero_wavelengths)
+            << ",\"requested_area_mutation_policy\":"
+            << quote(rypath::frame_mutation_policy_name(options.mutation_policy))
+            << ",\"requested_area_stencil\":"
+            << quote(rypath::frame_area_stencil_name(options.area_stencil))
             << ",\"estimator\":" << quote(estimator_name(options.estimator))
             << ",\"area_contract\":"
             << (options.estimator == rypath::FrameEstimator::area_replay
@@ -924,6 +965,18 @@ struct Report {
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
                 << ",\"command_count\":" << f.command_count << ",\"area_serial\":" << f.area_serial
                 << ",\"history_used\":" << (f.history_used ? "true" : "false")
+
+                << ",\"area_mutation_policy\":"
+                << quote(options.estimator == rypath::FrameEstimator::area_replay
+                             ? rypath::frame_mutation_policy_name(f.mutation_policy)
+                             : "not-applicable")
+                << ",\"area_stencil\":"
+                << quote(options.estimator == rypath::FrameEstimator::area_replay
+                             ? rypath::frame_area_stencil_name(f.area_stencil)
+                             : "not-applicable")
+                << ",\"area_stencil_offsets\":[" << f.area_stencil_offsets[0] << ','
+                << f.area_stencil_offsets[1] << ',' << f.area_stencil_offsets[2] << ','
+                << f.area_stencil_offsets[3] << ']'
                 << ",\"history_generation\":" << f.history_generation
                 << ",\"temporal_candidates\":" << f.temporal_candidates
                 << ",\"spatial_candidates\":" << f.spatial_candidates
@@ -1105,6 +1158,14 @@ int run(const Options &options) {
                                                                  &spectral_provenance);
             !error.empty())
             throw std::runtime_error(error);
+        if (options.hero_wavelengths && scene.spectral_transport != rypath::SpectralTransport::hero)
+            throw std::runtime_error("--hero-wavelengths requires effective hero transport");
+        if (options.hero_wavelengths)
+            scene.hero_wavelengths = *options.hero_wavelengths;
+        report.hero_wavelengths =
+            scene.spectral_transport == rypath::SpectralTransport::hero
+                ? rypath::hero_wavelength_sampling_name(scene.hero_wavelengths)
+                : "not-applicable";
         report.provenance.push_back(spectral_provenance);
         report.spectral_transport =
             std::string(rypath::spectral_transport_name(scene.spectral_transport));
@@ -1152,6 +1213,8 @@ int run(const Options &options) {
         config.area_output = options.area_output;
         config.target_scale = options.target_scale;
         config.mutation_steps = options.mutation_steps;
+        config.mutation_policy = options.mutation_policy;
+        config.area_stencil = options.area_stencil;
         config.capacity = options.capacity;
         config.quantum = options.quantum;
         config.group_width = options.group_width;
@@ -1225,6 +1288,9 @@ int run(const Options &options) {
                     observation.gpu_stages = info.gpu_stages;
                     observation.camera_upload_bytes = info.camera_upload_bytes;
                     observation.command_count = info.command_count;
+                    observation.mutation_policy = info.mutation_policy;
+                    observation.area_stencil = info.area_stencil;
+                    observation.area_stencil_offsets = info.area_stencil_offsets;
                     observation.area_serial = info.area_serial;
                     observation.history_used = info.history_used;
                     observation.history_generation = info.history_generation;
@@ -1389,6 +1455,28 @@ int run(const Options &options) {
                     {"rypath.area.temporal_reuse",
                      options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
                     {"rypath.area.serial", std::to_string(frame_info.area_serial)},
+                    {"rypath.hero.requested",
+                     options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
+                                                    *options.hero_wavelengths))
+                                              : "default"},
+                    {"rypath.hero.effective", report.hero_wavelengths},
+                    {"rypath.area.requested_mutation",
+                     rypath::frame_mutation_policy_name(options.mutation_policy)},
+                    {"rypath.area.requested_stencil",
+                     rypath::frame_area_stencil_name(options.area_stencil)},
+                    {"rypath.area.mutation_policy",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? rypath::frame_mutation_policy_name(frame_info.mutation_policy)
+                         : "not-applicable"},
+                    {"rypath.area.stencil",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? rypath::frame_area_stencil_name(frame_info.area_stencil)
+                         : "not-applicable"},
+                    {"rypath.area.stencil_offsets",
+                     std::to_string(frame_info.area_stencil_offsets[0]) + "," +
+                         std::to_string(frame_info.area_stencil_offsets[1]) + "," +
+                         std::to_string(frame_info.area_stencil_offsets[2]) + "," +
+                         std::to_string(frame_info.area_stencil_offsets[3])},
                     {"rypath.area.history_used", frame_info.history_used ? "true" : "false"},
                     {"rypath.area.generation", std::to_string(frame_info.history_generation)},
                     {"rypath.area.temporal_count", std::to_string(frame_info.temporal_candidates)},
@@ -1481,6 +1569,28 @@ int run(const Options &options) {
                                         ? options.mutation_steps
                                         : 0)},
                     {"rypath.area.serial", std::to_string(info.source.area_serial)},
+                    {"rypath.hero.requested",
+                     options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
+                                                    *options.hero_wavelengths))
+                                              : "default"},
+                    {"rypath.hero.effective", report.hero_wavelengths},
+                    {"rypath.area.requested_mutation",
+                     rypath::frame_mutation_policy_name(options.mutation_policy)},
+                    {"rypath.area.requested_stencil",
+                     rypath::frame_area_stencil_name(options.area_stencil)},
+                    {"rypath.area.mutation_policy",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? rypath::frame_mutation_policy_name(info.source.mutation_policy)
+                         : "not-applicable"},
+                    {"rypath.area.stencil",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? rypath::frame_area_stencil_name(info.source.area_stencil)
+                         : "not-applicable"},
+                    {"rypath.area.stencil_offsets",
+                     std::to_string(info.source.area_stencil_offsets[0]) + "," +
+                         std::to_string(info.source.area_stencil_offsets[1]) + "," +
+                         std::to_string(info.source.area_stencil_offsets[2]) + "," +
+                         std::to_string(info.source.area_stencil_offsets[3])},
                     {"rypath.internal.width", std::to_string(options.width)},
                     {"rypath.internal.height", std::to_string(options.height)},
                     {"rypath.output.width", std::to_string(image.width)},

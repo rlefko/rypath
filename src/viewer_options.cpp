@@ -25,6 +25,9 @@ const char *usage() {
            "  --mode temporal|metalfx|raw  (default: temporal, native resolution)\n"
            "  --reconstruction temporal|metalfx|raw-rgb  alternate option spelling\n"
            "  --estimator independent|area-replay  (default: independent)\n"
+           "  --spectral-transport auto|scalar|packet|hero --hero-wavelengths uniform|visible\n"
+           "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
+           "auto|adjacent|reciprocal16\n"
            "  --mutations 0|1|2|4  (default: 1 for Area; independent uses zero)\n"
            "  --frames N  exit after N completed pipeline frames; omitted means unlimited\n"
            "  --seed 1 --exposure 0 --near-plane .001 --capture-dir DIR (default: "
@@ -77,6 +80,33 @@ std::string parse_options(int argc, char **argv, Options &o) {
         } else if (key == "--seed") {
             if (!integer(value, o.seed))
                 return "invalid seed";
+        } else if (key == "--spectral-transport") {
+            const auto parsed = parse_spectral_transport(value);
+            if (!parsed)
+                return "spectral transport must be auto, scalar, packet, or hero";
+            o.spectral_transport = *parsed;
+        } else if (key == "--hero-wavelengths") {
+            o.hero_wavelengths = parse_hero_wavelength_sampling(value);
+            if (!o.hero_wavelengths)
+                return "hero wavelengths must be uniform or visible";
+        } else if (key == "--area-mutation-policy") {
+            if (value == "auto")
+                o.mutation_policy = FrameMutationPolicy::automatic;
+            else if (value == "legacy")
+                o.mutation_policy = FrameMutationPolicy::legacy;
+            else if (value == "spectral-refresh")
+                o.mutation_policy = FrameMutationPolicy::spectral_refresh;
+            else
+                return "area mutation policy must be auto, legacy, or spectral-refresh";
+        } else if (key == "--area-stencil") {
+            if (value == "auto")
+                o.area_stencil = FrameAreaStencil::automatic;
+            else if (value == "adjacent")
+                o.area_stencil = FrameAreaStencil::adjacent;
+            else if (value == "reciprocal16")
+                o.area_stencil = FrameAreaStencil::reciprocal16;
+            else
+                return "area stencil must be auto, adjacent, or reciprocal16";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 (o.mutation_steps != 0 && o.mutation_steps != 1 && o.mutation_steps != 2 &&

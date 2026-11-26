@@ -456,6 +456,7 @@ string(CONCAT help_text
     "              [--stl-colors auto|viscam|magics]\n"
     "       rypath --render-pbrt SCENE --output IMAGE.{png,exr} [--batch-size 8]\n"
     "           [--spectral-transport auto|scalar|packet|hero]\n"
+    "           [--hero-wavelengths uniform|visible]\n"
     "           [--resource-profile standard|large] [--raw-output PATH.exr] [--timings PATH.json]\n"
     "           [--material-seed 0]\n"
     "       rypath --render-demo --output PATH [--width 256] [--height 192]\n"
@@ -1945,6 +1946,7 @@ endif()
 
 add_executable(rypath_viewer_options_tests viewer_options_tests.cpp ../src/viewer_options.cpp)
 target_include_directories(rypath_viewer_options_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(rypath_viewer_options_tests PRIVATE rypath_render)
 rypath_configure_host_target(rypath_viewer_options_tests)
 add_test(NAME viewer.options COMMAND rypath_viewer_options_tests)
 

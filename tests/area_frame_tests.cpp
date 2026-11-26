@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_stencil_shared.h"
 #include "frame_session.hpp"
 #include "replay_shared.h"
 
@@ -445,6 +446,76 @@ std::array<float, 3> fresh_sky(unsigned pixel, const FrameConfig &settings) {
                               unsigned(settings.seed), unsigned(settings.seed >> 32)});
     const auto xyz = pbrt_cie_xyz(360.f + 470.f * rypath_replay::uniform(payload.wavelength));
     return {float(xyz[0]) * 470.f, float(xyz[1]) * 470.f, float(xyz[2]) * 470.f};
+}
+void reciprocal16_policy_oracles() {
+    auto c = config();
+    c.width = 35;
+    c.height = 19;
+    c.area_stencil = FrameAreaStencil::reciprocal16;
+    c.mutation_policy = FrameMutationPolicy::spectral_refresh;
+    c.capacity = 128;
+    auto session = build(sky(), c);
+    auto frame = submit(*session);
+    const auto output = complete(*frame, c, false);
+    const auto d = output.info.area_stencil_offsets;
+    const auto expected_offsets = rypath_area_stencil::draw(
+        unsigned(output.info.area_serial), unsigned(output.info.area_serial >> 32),
+        unsigned(c.seed), unsigned(c.seed >> 32));
+    require(d == std::array<std::int32_t, 4>{expected_offsets.first.x, expected_offsets.first.y,
+                                             expected_offsets.second.x,
+                                             expected_offsets.second.y} &&
+                output.info.area_stencil == FrameAreaStencil::reciprocal16 &&
+                output.info.mutation_policy == FrameMutationPolicy::spectral_refresh,
+            "Immutable completion records resolved policy and full-serial stencil");
+    unsigned nonself = 0;
+    for (unsigned pixel = 0; pixel < c.width * c.height; ++pixel) {
+        const auto center = fresh_sky(pixel, c);
+        std::array<unsigned, 4> neighbors{};
+        for (unsigned slot = 0; slot < 4; ++slot) {
+            const int sign = slot % 2 ? -1 : 1;
+            const int x = int(pixel % c.width) + sign * d[(slot / 2) * 2];
+            const int y = int(pixel / c.width) + sign * d[(slot / 2) * 2 + 1];
+            neighbors[slot] = x >= 0 && y >= 0 && x < int(c.width) && y < int(c.height)
+                                  ? unsigned(y) * c.width + unsigned(x)
+                                  : pixel;
+            nonself += neighbors[slot] != pixel;
+        }
+        for (unsigned channel = 0; channel < 3; ++channel) {
+            double expected = .5 * center[channel];
+            for (const auto neighbor : neighbors)
+                expected += .125 * fresh_sky(neighbor, c)[channel];
+            require(
+                std::abs(output.image.raw_xyz[pixel][channel] - expected) <=
+                    3e-6 + 3e-5 * std::abs(expected),
+                "Area0 reciprocal16 cold output versus independent signed mapping analytic oracle");
+        }
+    }
+    require(nonself > 0, "Reciprocal16 analytic fixture exercises nonself cross-target planes");
+    frame.reset();
+    session.reset();
+    c.mutation_steps = 1;
+    c.width = 19;
+    c.height = 17;
+    c.capacity = 17;
+    c.quantum = 1;
+    auto wide = c;
+    wide.capacity = 2048;
+    wide.quantum = 8;
+    wide.group_width = 64;
+    auto a = build(sky(), c), b = build(sky(), wide);
+    for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+        // Repeated sample indices must still draw fresh serial-based stencils;
+        // epoch reset discards history without resetting either decision stream.
+        const auto epoch = ordinal < 2 ? 7u : 8u;
+        auto af = submit(*a, high_sample, epoch), bf = submit(*b, high_sample, epoch);
+        const auto x = complete(*af, c, ordinal == 1), y = complete(*bf, wide, ordinal == 1);
+        require(x.info.area_serial == y.info.area_serial &&
+                    x.info.area_stencil_offsets == y.info.area_stencil_offsets &&
+                    x.info.mutation_accepts == y.info.mutation_accepts,
+                "Area1 reciprocal16 scheduling preserves accepted serial, stencil and mutation "
+                "decisions");
+        paired(x.image, y.image);
+    }
 }
 void reciprocal_edges_and_output_modes() {
     require(FrameConfig{}.area_output == FrameAreaOutput::conditional_mean,
@@ -902,6 +973,17 @@ void rejected_configs() {
                     !result.diagnostic.empty(),
                 "Invalid area support floor rejected");
     }
+    for (const bool mutation : {false, true}) {
+        auto invalid = config();
+        if (mutation)
+            invalid.mutation_policy = static_cast<FrameMutationPolicy>(99);
+        else
+            invalid.area_stencil = static_cast<FrameAreaStencil>(99);
+        const auto result = build_frame_session(sky(), invalid);
+        require(result.status == GeometryStatus::failure && !result.session &&
+                    !result.diagnostic.empty(),
+                "Unknown Area mutation/stencil policy rejects before submission");
+    }
     auto invalid_output = config();
     invalid_output.area_output = static_cast<FrameAreaOutput>(99);
     const auto output = build_frame_session(sky(), invalid_output);
@@ -940,6 +1022,7 @@ int main() {
         scheduling(fog(true));
         failure_preserves_history();
         reciprocal_edges_and_output_modes();
+        reciprocal16_policy_oracles();
         retained_source_context();
         statistical_means(sky(false), 1);
         statistical_means(emitter(true), .7f);

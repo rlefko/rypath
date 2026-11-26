@@ -134,6 +134,15 @@ std::vector<Case> cases() {
         t.q.requested_steps = n;
         out.push_back(t);
     }
+    for (unsigned block = 0; block < 4; ++block)
+        for (unsigned global = 0; global < 2; ++global)
+            for (unsigned word : {0u, 0xffffffffu, 0x12345678u}) {
+                auto t = make(1, {1, 1}, true);
+                t.label = "Spectral refresh full-word and self oracle";
+                t.q.policy = unsigned(mh::Policy::spectral_refresh);
+                t.q.entropy = {block | (global ? 0x80000000u : 0), 3, word, 91};
+                out.push_back(t);
+            }
     return out;
 }
 std::string why(NSError *e) {
@@ -197,6 +206,10 @@ class Probe {
 };
 rr::ReplayState proposal(const mp::Query &q) {
     auto expected = q.source;
+    if (q.policy == unsigned(mh::Policy::spectral_refresh) && (q.entropy.x & 0x80000000u)) {
+        expected.wavelength = q.entropy.z;
+        return expected;
+    }
     const auto mask = (1u << q.scale.magnitude_bits) - 1;
     const unsigned m0 = (1 + (q.entropy.z & mask)) << q.scale.shift, m1 = (1 + (q.entropy.w & mask))
                                                                           << q.scale.shift;
@@ -229,7 +242,11 @@ void check(const Case &t, const mp::Result &r) {
     if (t.proposal_status == mh::Status::ok) {
         const auto expected = proposal(q);
         need(std::memcmp(&expected, &r.proposal.payload, sizeof(expected)) == 0 &&
-                 unsigned(r.proposal.block) == (q.entropy.x & 3),
+                 unsigned(r.proposal.block) ==
+                     ((q.policy == unsigned(mh::Policy::spectral_refresh) &&
+                       (q.entropy.x & 0x80000000u))
+                          ? unsigned(mh::Block::wavelength)
+                          : (q.entropy.x & 3)),
              t.label + ": independent modular proposal payload");
     }
     const bool step = q.step < 4;
