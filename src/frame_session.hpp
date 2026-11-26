@@ -63,6 +63,8 @@ struct FrameConfig {
     // Conditional mean removes final spatial selection noise while preserving
     // the same selected reservoir for subsequent reuse. Selected is an ablation.
     FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
+    // Exact temporal memoization; false provides a full-replay validation control.
+    bool cache_temporal_evaluations = true;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;
     // Automatic retains the legacy/adjacent defaults until a quality decision.
@@ -96,6 +98,7 @@ struct FrameInfo {
     std::uint64_t command_count = 0;
     std::uint64_t area_serial = 0;
     bool history_used = false;
+    bool temporal_evaluation_cache_used = false;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;
     FrameAreaStencil area_stencil = FrameAreaStencil::adjacent;
     // Resolved immutable stencil, ordered d0.x, d0.y, d1.x, d1.y.
@@ -105,6 +108,7 @@ struct FrameInfo {
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
     // Full successful path evaluations; cached candidates add no evaluations.
     std::uint64_t completed_evaluations = 0, fresh_candidates = 0;
+    std::uint64_t cached_evaluations = 0, logical_evaluations = 0;
     std::uint64_t mutation_attempts = 0, mutation_accepts = 0;
     // Camera translation may upload rebased graph/surface records. Repeated
     // origins in the same free slot reuse those records without uploading.

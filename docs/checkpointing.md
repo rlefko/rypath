@@ -267,6 +267,7 @@ reduction order. Earlier format and contract versions are rejected explicitly.
 
 Renderer 29 / sampling 11 adds visible-CDF hero wavelength sampling and effective
 wavelength-policy identity. Renderer 28 / sampling 10 introduced explicit hero
-transport. Earlier checkpoint contracts remain incompatible. Area contract 6
-separately records spectral-refresh mutation and reciprocal-stencil configuration;
+transport. Earlier checkpoint contracts remain incompatible. Area contract 7
+adds exact static temporal memoization to contract 6's spectral-refresh mutation
+and reciprocal-stencil configuration;
 resident reuse histories are not offline checkpoints.

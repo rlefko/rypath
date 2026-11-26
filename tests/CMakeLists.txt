@@ -29,6 +29,11 @@ add_test(NAME cli.frame_benchmark COMMAND "${Python3_EXECUTABLE}"
 add_test(NAME cli.pipeline_qualification COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/pipeline_qualification_cli_tests.py"
     "$<TARGET_FILE:rypath_pipeline_qualification>")
+add_executable(rypath_area_evaluation_context_tests area_evaluation_context_tests.cpp)
+target_include_directories(rypath_area_evaluation_context_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_area_evaluation_context_tests)
+add_test(NAME frame.area_evaluation_context COMMAND rypath_area_evaluation_context_tests)
+
 add_executable(rypath_frame_statistics_tests frame_statistics_tests.cpp)
 target_include_directories(rypath_frame_statistics_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_frame_statistics_tests)
@@ -1672,11 +1677,12 @@ set_target_properties(rypath_area_frame_tests PROPERTIES
 rypath_configure_host_target(rypath_area_frame_tests)
 if(RYPATH_ENABLE_METAL)
     add_test(NAME metal.area_frame COMMAND rypath_area_frame_tests)
-    set_tests_properties(metal.area_frame PROPERTIES TIMEOUT 300 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    add_test(NAME metal.area_temporal_cache COMMAND rypath_area_frame_tests --cache-only)
+    set_tests_properties(metal.area_frame metal.area_temporal_cache PROPERTIES TIMEOUT 300 ENVIRONMENT "MTL_DEBUG_LAYER=1")
     foreach(capability DEVICE RAY_TRACING)
         if(RYPATH_ALLOW_NO_METAL_${capability})
             target_compile_definitions(rypath_area_frame_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
-            set_tests_properties(metal.area_frame PROPERTIES SKIP_RETURN_CODE 77)
+            set_tests_properties(metal.area_frame metal.area_temporal_cache PROPERTIES SKIP_RETURN_CODE 77)
         endif()
     endforeach()
 else()

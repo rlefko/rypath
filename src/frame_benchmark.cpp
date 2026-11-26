@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_evaluation_context.hpp"
 #include "area_wire.h"
 #include "frame_benchmark_motion.hpp"
 #include "frame_session.hpp"
@@ -60,6 +61,7 @@ template <typename T> bool integer(std::string_view value, T &result) {
 struct Options {
     fs::path scene, output, capture, preview, reconstructed_capture;
     bool demo = false, profile_stages = false;
+    bool cache_temporal_evaluations = true;
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
@@ -150,6 +152,7 @@ const char *usage =
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
     "auto|adjacent|reciprocal16\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
+    "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
     "  [--packet-events 1|2|4 (default: 1)] [--packet-layout packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--motion-offset WORLD_X (measured quarters: hold A, translate, hold B, cut A)]\n"
@@ -294,6 +297,10 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.area_output = rypath::FrameAreaOutput::conditional_mean;
             else
                 return "area output must be selected or conditional-mean";
+        } else if (key == "--area-temporal-cache") {
+            if (value != "on" && value != "off")
+                return "area temporal cache must be on or off";
+            o.cache_temporal_evaluations = value == "on";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
@@ -665,10 +672,10 @@ struct Observation : rypath::FrameStatisticsSample {
     std::optional<rypath::FrameCamera> camera;
     std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0,
                   command_count = 0, area_serial = 0, history_generation = 0,
-                  completed_evaluations = 0, fresh_candidates = 0, mutation_attempts = 0,
-                  mutation_accepts = 0;
+                  completed_evaluations = 0, cached_evaluations = 0, logical_evaluations = 0,
+                  fresh_candidates = 0, mutation_attempts = 0, mutation_accepts = 0;
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
-    bool history_used = false;
+    bool history_used = false, temporal_evaluation_cache_used = false;
     rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::legacy;
     rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::adjacent;
     std::array<std::int32_t, 4> area_stencil_offsets{};
@@ -862,6 +869,13 @@ struct Report {
             << ",\"mutation_steps\":" << options.mutation_steps << ",\"effective_mutation_steps\":"
             << (options.estimator == rypath::FrameEstimator::area_replay ? options.mutation_steps
                                                                          : 0)
+            << ",\"requested_area_temporal_cache\":"
+            << (options.cache_temporal_evaluations ? "true" : "false")
+            << ",\"area_temporal_cache\":"
+            << (options.estimator == rypath::FrameEstimator::area_replay &&
+                        options.cache_temporal_evaluations
+                    ? "true"
+                    : "false")
             << ",\"target_scale\":" << options.target_scale
             << ",\"fresh_paths_per_pixel_per_frame\":1"
             << ",\"capacity\":" << options.capacity << ",\"effective_capacity\":"
@@ -1011,7 +1025,11 @@ struct Report {
                 << ",\"spatial_candidates\":" << f.spatial_candidates
                 << ",\"mutation_attempts\":" << f.mutation_attempts
                 << ",\"mutation_accepts\":" << f.mutation_accepts
+                << ",\"temporal_evaluation_cache_used\":"
+                << (f.temporal_evaluation_cache_used ? "true" : "false")
                 << ",\"completed_evaluations\":" << f.completed_evaluations
+                << ",\"cached_evaluations\":" << f.cached_evaluations
+                << ",\"logical_evaluations\":" << f.logical_evaluations
                 << ",\"fresh_candidates\":" << f.fresh_candidates << ",\"gpu_stages\":";
             write_stages(out, f.gpu_stages);
             out << ",\"path_work\":";
@@ -1242,6 +1260,7 @@ int run(const Options &options) {
         config.execution = options.execution;
         config.estimator = options.estimator;
         config.area_output = options.area_output;
+        config.cache_temporal_evaluations = options.cache_temporal_evaluations;
         config.target_scale = options.target_scale;
         config.mutation_steps = options.mutation_steps;
         config.mutation_policy = options.mutation_policy;
@@ -1308,13 +1327,20 @@ int run(const Options &options) {
                     const auto info = submitted.frame->wait();
                     observation.cpu_seconds = seconds(frame_start);
                     const auto pixels = std::uint64_t(options.width) * options.height;
-                    const auto evaluations =
+                    const bool evaluation_counts =
                         options.estimator == rypath::FrameEstimator::area_replay
-                            ? (info.history_used ? 7u : 5u) + options.mutation_steps
-                            : 1u;
+                            ? rypath::valid_area_evaluation_accounting(
+                                  pixels, info.history_used, options.mutation_steps,
+                                  info.temporal_evaluation_cache_used, info.completed_evaluations,
+                                  info.cached_evaluations, info.logical_evaluations) &&
+                                  (!info.temporal_evaluation_cache_used ||
+                                   options.cache_temporal_evaluations)
+                            : info.completed_evaluations == pixels &&
+                                  info.cached_evaluations == 0 &&
+                                  info.logical_evaluations == pixels &&
+                                  !info.temporal_evaluation_cache_used;
                     observation.complete = info.status == rypath::FrameStatus::complete &&
-                                           info.completed_samples == pixels &&
-                                           info.completed_evaluations == pixels * evaluations;
+                                           info.completed_samples == pixels && evaluation_counts;
                     observation.completed_samples = info.completed_samples;
                     observation.gpu_stages = info.gpu_stages;
                     observation.path_work = info.path_work;
@@ -1329,6 +1355,10 @@ int run(const Options &options) {
                     observation.temporal_candidates = info.temporal_candidates;
                     observation.spatial_candidates = info.spatial_candidates;
                     observation.completed_evaluations = info.completed_evaluations;
+                    observation.cached_evaluations = info.cached_evaluations;
+                    observation.logical_evaluations = info.logical_evaluations;
+                    observation.temporal_evaluation_cache_used =
+                        info.temporal_evaluation_cache_used;
                     observation.mutation_attempts = info.mutation_attempts;
                     observation.mutation_accepts = info.mutation_accepts;
                     observation.fresh_candidates = info.fresh_candidates;
@@ -1510,10 +1540,18 @@ int run(const Options &options) {
                          std::to_string(frame_info.area_stencil_offsets[2]) + "," +
                          std::to_string(frame_info.area_stencil_offsets[3])},
                     {"rypath.area.history_used", frame_info.history_used ? "true" : "false"},
+                    {"rypath.area.temporal_cache_requested",
+                     options.cache_temporal_evaluations ? "true" : "false"},
+                    {"rypath.area.temporal_cache_used",
+                     frame_info.temporal_evaluation_cache_used ? "true" : "false"},
                     {"rypath.area.generation", std::to_string(frame_info.history_generation)},
                     {"rypath.area.temporal_count", std::to_string(frame_info.temporal_candidates)},
                     {"rypath.area.spatial_count", std::to_string(frame_info.spatial_candidates)},
                     {"rypath.frame.evaluations", std::to_string(frame_info.completed_evaluations)},
+                    {"rypath.frame.cached_evaluations",
+                     std::to_string(frame_info.cached_evaluations)},
+                    {"rypath.frame.logical_evaluations",
+                     std::to_string(frame_info.logical_evaluations)},
                     {"rypath.frame.fresh_candidates", std::to_string(frame_info.fresh_candidates)},
                     {"rypath.frame.capacity", std::to_string(options.capacity)},
                     {"rypath.frame.effective_capacity",

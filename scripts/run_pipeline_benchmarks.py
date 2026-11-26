@@ -169,7 +169,16 @@ def inspect_report(report, expected, frames, warmup):
             raise ValueError(f"Missing actual history accounting: {index}")
         evaluations = 1 if expected["estimator"] == "independent" else (
             (7 if row["history_used"] else 5) + expected["effective_mutation_steps"])
-        if row.get("completed_evaluations") != expected["width"] * expected["height"] * evaluations:
+        pixels = expected["width"] * expected["height"]
+        logical = pixels * evaluations
+        cache_used = row.get("temporal_evaluation_cache_used")
+        if not isinstance(cache_used, bool) or (cache_used and (
+                expected["estimator"] != "area-replay" or not row["history_used"] or
+                report["settings"].get("area_temporal_cache") is not True)):
+            raise ValueError(f"Invalid exact temporal cache permission: {index}")
+        cached = 2 * pixels if cache_used else 0
+        if (row.get("completed_evaluations") != logical - cached or
+                row.get("cached_evaluations") != cached or row.get("logical_evaluations") != logical):
             raise ValueError(f"Source-MIS evaluation count mismatch: {index}")
     for name in ("summary", "pipeline_summary"):
         metric = report[name]["cpu_wall"]
@@ -255,7 +264,7 @@ def main(argv=None):
     manifest = {"schema": 1, "complete": False, "started": utc(), "requested_runs": len(plan),
                 "requested_frames_per_run": a.frames, "requested_warmup_per_run": a.warmup,
                 "primary_reconstruction": a.reconstruction,
-                "area_contract": 6, "area_output": a.area_output,
+                "area_contract": 7, "area_output": a.area_output,
                 "area_target": "quarter-l1-v1", "area_source_mis": "source-target-mis-v1",
                 "area_temporal_reuse": 20,
                 "quiescence": "Caller must ensure no competing GPU work; not automatically verified",
@@ -284,7 +293,9 @@ def main(argv=None):
                         "execution": "wavefront", "intersection_profile": "native", "target_scale": 1,
                         "estimator": run["estimator"], "effective_mutation_steps": run["mutations"],
                         "reconstruction": run["reconstruction"], "footprint_samples": 1,
-                        "area_contract": 6 if run["estimator"] == "area-replay" else 0,
+                        "area_contract": 7 if run["estimator"] == "area-replay" else 0,
+                        "requested_area_temporal_cache": True,
+                        "area_temporal_cache": run["estimator"] == "area-replay",
                         "area_output": a.area_output if run["estimator"] == "area-replay" else "not-applicable",
                         "area_target": "quarter-l1-v1" if run["estimator"] == "area-replay" else "none",
                         "area_source_mis": "source-target-mis-v1" if run["estimator"] == "area-replay" else "none",

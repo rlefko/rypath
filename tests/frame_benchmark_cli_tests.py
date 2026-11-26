@@ -22,6 +22,7 @@ assert "--as-build default|fast-blas|fast-tlas|fast-all" in help_text
 assert "--reconstruction none|raw-rgb|metalfx|temporal" in help_text
 assert "--guide-cache on|off" in help_text
 assert "--area-output selected|conditional-mean" in help_text
+assert "--area-temporal-cache on|off" in help_text
 assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
              "--strict-spatial-segments on|off", "--metalfx-guide-policy primary|appearance",
@@ -73,6 +74,7 @@ for option, values in (
     ("--packet-layout", ("invalid",)),
     ("--spectral-transport", ("invalid", "2")),
     ("--area-output", ("invalid", "conditional_mean", "0")),
+    ("--area-temporal-cache", ("invalid", "On", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
@@ -382,12 +384,20 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 6
+    assert settings["area_contract"] == 7
     assert settings["mutation_steps"] == 1 and settings["effective_mutation_steps"] == 1
     assert settings["area_target"] == "quarter-l1-v1"
     assert settings["area_source_mis"] == "source-target-mis-v1"
     assert settings["area_temporal_reuse"] == 20
     assert settings["area_output"] == "conditional-mean"
+    assert settings["requested_area_temporal_cache"] and settings["area_temporal_cache"]
+    for enabled in ("on", "off"):
+        destination = root / f"area-temporal-cache-{enabled}.json"
+        invoke(["--scene", str(malformed), "--output", str(destination),
+                "--estimator", "area-replay", "--area-temporal-cache", enabled])
+        cache_settings = json.loads(destination.read_text())["settings"]
+        assert cache_settings["requested_area_temporal_cache"] == (enabled == "on")
+        assert cache_settings["area_temporal_cache"] == (enabled == "on")
     assert settings["target_scale"] == 0.125 and settings["fresh_paths_per_pixel_per_frame"] == 1
     for count in (0, 1, 2, 4):
         destination = root / f"area-mutations-{count}.json"
@@ -401,6 +411,6 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 6
+        assert settings["area_contract"] == 7
         assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")

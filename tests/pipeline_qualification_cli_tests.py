@@ -54,7 +54,8 @@ settings = {'width': w, 'height': h, 'output_width': w, 'output_height': h, 'see
  'material_seed': 0, 'execution': 'wavefront', 'intersection_profile': 'native', 'target_scale': 1,
  'estimator': args['--estimator'], 'effective_mutation_steps': int(args['--mutations']),
  'reconstruction': mode, 'footprint_samples': 1,
- 'area_contract': 6 if args['--estimator'] == 'area-replay' else 0,
+ 'area_contract': 7 if args['--estimator'] == 'area-replay' else 0,
+ 'requested_area_temporal_cache': True, 'area_temporal_cache': args['--estimator'] == 'area-replay',
  'area_output': args.get('--area-output', 'conditional-mean') if args['--estimator'] == 'area-replay' else 'not-applicable',
  'area_target': 'quarter-l1-v1' if args['--estimator'] == 'area-replay' else 'none',
  'area_source_mis': 'source-target-mis-v1' if args['--estimator'] == 'area-replay' else 'none',
@@ -72,6 +73,13 @@ report = {'status': 'complete', 'exit_code': 0, 'diagnostic': '', 'settings': se
              'completed_evaluations': w*h*(1 if args['--estimator'] == 'independent' else
                  ((7 if i > 0 else 5)+int(args['--mutations'])))} for i in range(n + warmup)],
  'summary': metric, 'pipeline_summary': metric}
+for row in report['frames']:
+    row['temporal_evaluation_cache_used'] = row['history_used']
+    row['logical_evaluations'] = row['completed_evaluations']
+    row['cached_evaluations'] = 2*w*h if row['history_used'] else 0
+    row['completed_evaluations'] -= row['cached_evaluations']
+if os.environ.get('RYPATH_FAKE_BAD_CACHE') == '1':
+    report['frames'][0]['temporal_evaluation_cache_used'] = True
 if os.environ.get('RYPATH_FAKE_OLD_COUNTS') == '1':
     for row in report['frames']:
         if row['history_used']: row['completed_evaluations'] -= w*h
@@ -116,7 +124,7 @@ Path(args['--output']).write_text(json.dumps(report))
                 assert manifest["complete"] and summary["complete"]
                 assert manifest["primary_reconstruction"] == summary["primary_reconstruction"] == expected
                 assert manifest["area_output"] == summary["area_output"] == area_output
-                assert manifest["area_contract"] == summary["area_contract"] == 6
+                assert manifest["area_contract"] == summary["area_contract"] == 7
                 assert summary["area_source_mis"] == "source-target-mis-v1"
                 assert len(manifest["runs"]) == 13
                 modes = [row["reconstruction"] for row in manifest["runs"]]
@@ -143,7 +151,8 @@ Path(args['--output']).write_text(json.dumps(report))
             manifest = json.loads((destination / "manifest.json").read_text())
             assert not manifest["complete"] and len(manifest["runs"]) == 1
             assert "reconstruction" in manifest["failure"]
-            for kind, expected_failure in (("LEGACY_AREA", "area_contract"), ("OLD_COUNTS", "evaluation count")):
+            for kind, expected_failure in (("LEGACY_AREA", "area_contract"), ("OLD_COUNTS", "evaluation count"),
+                                           ("BAD_CACHE", "cache permission")):
                 destination = root / ("rejected-" + kind)
                 with patch.dict(os.environ, {"RYPATH_FAKE_" + kind: "1"}):
                     assert invoke(base + ["--output-dir", str(destination)]) == 1
@@ -301,7 +310,7 @@ def qualification_checks(executable):
                                 object_pairs_hook=unique_object)
             assert report["complete"] is False
             assert report["schema"] == 2
-            assert report["settings"]["area_contract"] == 6
+            assert report["settings"]["area_contract"] == 7
             assert report["settings"]["area_output"] == "conditional-mean"
             assert report["settings"]["area_target"] == "quarter-l1-v1"
             assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
@@ -319,7 +328,7 @@ def qualification_checks(executable):
         assert result.returncode != 0
         selected = json.loads((destination / "summary.json").read_text())
         assert selected["schema"] == 2 and selected["settings"]["area_output"] == "selected"
-        assert selected["settings"]["area_contract"] == 6
+        assert selected["settings"]["area_contract"] == 7
     print("Qualification CLI and failure publication checks passed")
 
 

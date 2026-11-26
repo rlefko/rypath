@@ -213,7 +213,8 @@ FrameCapture capture(FrameSession &session, const FrameConfig &c, std::uint64_t 
     if (c.estimator == FrameEstimator::area_replay) {
         need(info.history_used == history && info.temporal_candidates == (history ? 2u : 1u) &&
                  info.spatial_candidates == 5 && info.history_generation == (history ? 2u : 1u) &&
-                 info.completed_evaluations == pixels * ((history ? 7u : 5u) + c.mutation_steps) &&
+                 info.completed_evaluations + info.cached_evaluations ==
+                     pixels * ((history ? 7u : 5u) + c.mutation_steps) &&
                  info.mutation_attempts == pixels * c.mutation_steps &&
                  info.mutation_accepts <= info.mutation_attempts,
              "Hero Area replay/mutation accounting");

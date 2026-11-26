@@ -2,6 +2,7 @@
 
 #include "metal_render.hpp"
 #include "analytic.hpp"
+#include "area_evaluation_context.hpp"
 #include "area_stencil_shared.h"
 #include "area_wire.h"
 #include "bsdf_table.hpp"
@@ -2212,7 +2213,7 @@ struct FrameAreaBuffers {
     id<MTLBuffer> arguments[area_wire::config_count]{};
 };
 struct FrameAreaPrograms {
-    id<MTLComputePipelineState> reset = nil, prepare = nil, merge = nil;
+    id<MTLComputePipelineState> reset = nil, prepare = nil, merge = nil, cache_evaluation = nil;
     id<MTLComputePipelineState> temporal_finish = nil, spatial_begin = nil, finalize = nil;
     id<MTLComputePipelineState> mutation_prepare = nil, mutation_finish = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
@@ -2225,6 +2226,19 @@ struct FrameAreaContext {
     wire::TextureParameters texture{};
     id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
 };
+// History never crosses sessions: scene geometry, materials, spectra, image
+// data, environment, CIE/sampling tables and specialized pipelines are immutable
+// on this renderer. Compare the complete mutable evaluation context by content.
+static bool same_area_evaluation_context(const FrameAreaContext &a, const FrameAreaContext &b) {
+    const auto same_buffer = [](id<MTLBuffer> x, id<MTLBuffer> y) {
+        if (x == nil || y == nil)
+            return x == y;
+        return same_area_evaluation_bytes(x.contents, x.length, y.contents, y.length);
+    };
+    return same_area_evaluation_parameters(a.parameters, b.parameters, a.texture, b.texture) &&
+           same_buffer(a.graph_nodes, b.graph_nodes) &&
+           same_buffer(a.surface_transforms, b.surface_transforms);
+}
 struct FrameAreaHistory {
     std::mutex mutex;
     id<MTLBuffer> banks[2]{nil, nil};
@@ -2893,6 +2907,9 @@ struct FrameSession::Impl {
         area->prepare = load(@"rypath_area_prepare");
         if (area->prepare == nil)
             return error;
+        area->cache_evaluation = load(@"rypath_area_cache_evaluation");
+        if (area->cache_evaluation == nil)
+            return error;
         area->merge = load(@"rypath_area_merge");
         if (area->merge == nil)
             return error;
@@ -2911,9 +2928,9 @@ struct FrameSession::Impl {
         area->finalize = load(@"rypath_area_finalize");
         if (area->finalize == nil)
             return error;
-        for (auto pipeline :
-             {area->reset, area->prepare, area->merge, area->temporal_finish, area->spatial_begin,
-              area->finalize, area->mutation_prepare, area->mutation_finish})
+        for (auto pipeline : {area->reset, area->prepare, area->merge, area->cache_evaluation,
+                              area->temporal_finish, area->spatial_begin, area->finalize,
+                              area->mutation_prepare, area->mutation_finish})
             if (config.group_width > metal::group_width(r.device, pipeline))
                 return "Area group width exceeds a pipeline or device limit";
         auto function = metal::load_function(library, @"rypath_area_reset", error);
@@ -2983,7 +3000,7 @@ struct FrameSession::Impl {
         return {};
     }
     void configure_area(Slot &slot, id<MTLBuffer> raw, std::uint64_t serial, bool history_used,
-                        id<MTLBuffer> source, id<MTLBuffer> destination,
+                        bool temporal_cache, id<MTLBuffer> source, id<MTLBuffer> destination,
                         rypath_area_stencil::Offsets offsets) {
         auto &b = *slot.area;
         std::memset(b.failure.contents, 0, b.failure.length);
@@ -3023,7 +3040,7 @@ struct FrameSession::Impl {
                                         config.area_stencil == FrameAreaStencil::reciprocal16
                                             ? area_wire::reciprocal16_stencil
                                             : area_wire::adjacent_stencil,
-                                        0,
+                                        temporal_cache ? 1u : 0u,
                                         {offsets.first.x, offsets.second.x},
                                         {offsets.first.y, offsets.second.y}};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
@@ -3213,6 +3230,7 @@ struct FrameSession::Impl {
         int area_merge = -1;
         bool area_reset = true, area_finalizing = false;
         std::uint32_t leaf_completed = 0;
+        std::uint64_t pending_cached_evaluations = 0;
         MetalRenderScene::Impl *renderer = nullptr; // retained by frame's resource lease
         FrameConfig config;
         wire::Parameters parameters{};
@@ -3271,6 +3289,8 @@ struct FrameSession::Impl {
                 << " accepted=" << counters.accepted << " reserved=" << counters.reserved
                 << " area_leaf=" << area_leaf << " area_merge=" << area_merge
                 << " completed_evaluations=" << frame->info.completed_evaluations
+                << " cached_evaluations=" << frame->info.cached_evaluations
+                << " logical_evaluations=" << frame->info.logical_evaluations
                 << " first={site=shaders/area_reuse.metal:" << record.source_line
                 << " pixel=" << record.pixel << " phase=" << record.phase
                 << " candidate=" << record.candidate
@@ -3313,8 +3333,11 @@ struct FrameSession::Impl {
                     error = "Area history generation exhausted";
                 else {
                     std::lock_guard frame_lock(frame->info_mutex);
-                    if (frame->info.completed_evaluations !=
-                        pixels * ((frame->info.history_used ? 7u : 5u) + config.mutation_steps))
+                    if (!valid_area_evaluation_accounting(
+                            pixels, frame->info.history_used, config.mutation_steps,
+                            frame->info.temporal_evaluation_cache_used,
+                            frame->info.completed_evaluations, frame->info.cached_evaluations,
+                            frame->info.logical_evaluations))
                         error = "Area evaluation accounting mismatch";
                     else {
                         history->front = history_destination_index;
@@ -3399,6 +3422,10 @@ struct FrameSession::Impl {
             {
                 std::lock_guard lock(frame->info_mutex);
                 frame->info.completed_evaluations += counters.completed - leaf_completed;
+                frame->info.cached_evaluations += pending_cached_evaluations;
+                pending_cached_evaluations = 0;
+                frame->info.logical_evaluations =
+                    frame->info.completed_evaluations + frame->info.cached_evaluations;
                 if (!history)
                     frame->info.completed_samples = counters.completed;
                 if (counters.completed == pixels) {
@@ -3464,7 +3491,8 @@ struct FrameSession::Impl {
                                                 b.packet_hit.length;
                     }
                 }
-                const bool reverse = history && area_leaf == area_wire::temporal_reverse_config;
+                const bool reverse = history && area_leaf == area_wire::temporal_reverse_config &&
+                                     !frame->info.temporal_evaluation_cache_used;
                 const auto &evaluation_parameters =
                     reverse ? source_context.parameters : parameters;
                 const auto &evaluation_texture = reverse ? source_context.texture : texture;
@@ -3588,6 +3616,26 @@ struct FrameSession::Impl {
                             }
                         }
                         area_merge = -1;
+                        if (previous == 0 && frame->info.temporal_evaluation_cache_used) {
+                            // Preserve the exact prepare/merge/finish order and RNG
+                            // addresses. Only the identical-context leaf walks vanish.
+                            for (unsigned cached :
+                                 std::array<unsigned, 2>{area_wire::temporal_reverse_config, 1u}) {
+                                area_dispatch(area_programs->prepare, cached, pixels,
+                                              "area.prepare");
+                                area_dispatch(area_programs->cache_evaluation, cached, pixels,
+                                              "area.cache_evaluation");
+                                area_dispatch(area_programs->merge, cached, pixels, "area.merge");
+                            }
+                            area_dispatch(area_programs->temporal_finish, 1, pixels,
+                                          "area.temporal_finish");
+                            if (config.mutation_steps == 0)
+                                area_dispatch(area_programs->spatial_begin, 2, pixels,
+                                              "area.spatial_begin");
+                            pending_cached_evaluations += 2 * pixels;
+                            area_leaf =
+                                config.mutation_steps ? area_wire::mutation_config_begin : 3;
+                        }
                     }
                     if (area_finalizing)
                         area_dispatch(area_programs->finalize, area_wire::spatial_finalize_config,
@@ -3987,6 +4035,10 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 frame->info.area_stencil_offsets = {offsets.first.x, offsets.first.y,
                                                     offsets.second.x, offsets.second.y};
                 frame->info.history_used = history.valid;
+                frame->info.temporal_evaluation_cache_used =
+                    history.valid && c.cache_temporal_evaluations &&
+                    same_area_evaluation_context(history.contexts[history.front],
+                                                 history.contexts[destination_index]);
                 frame->info.history_generation = history.generation;
                 frame->info.temporal_candidates = history.valid ? 2 : 1;
                 frame->info.spatial_candidates = area_wire::spatial_candidates;
@@ -3997,6 +4049,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 runner->history_destination_index = destination_index;
                 runner->history_destination = history.banks[runner->history_destination_index];
                 impl_->configure_area(*slot, frame->raw, serial, history.valid,
+                                      frame->info.temporal_evaluation_cache_used,
                                       runner->history_source, runner->history_destination, offsets);
             }
 
@@ -4110,7 +4163,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                           ? FrameStatus::failed
                           : FrameStatus::complete;
                   if (info.status == FrameStatus::complete)
-                      info.completed_evaluations = info.fresh_candidates = status.completed;
+                      info.logical_evaluations = info.completed_evaluations =
+                          info.fresh_candidates = status.completed;
                   if (info.status == FrameStatus::failed) {
                       invalidate_gpu_stages(info.gpu_stages, "invalid: frame validation failed");
                       info.diagnostic =
