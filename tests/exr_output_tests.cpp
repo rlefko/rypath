@@ -2,11 +2,13 @@
 #include "image_output.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <unistd.h>
 
 namespace {
@@ -18,6 +20,80 @@ void require(bool condition, const char *reason) {
 std::vector<std::uint8_t> read(const std::filesystem::path &path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>{input}, {}};
+}
+// Inspect the serialized header independently of the image decoder, which does
+// not expose arbitrary metadata. EXR words and attribute lengths are little endian.
+std::uint32_t word(const std::vector<std::uint8_t> &bytes, std::size_t offset) {
+    require(offset <= bytes.size() && bytes.size() - offset >= 4, "truncated EXR header word");
+    return std::uint32_t(bytes[offset]) | std::uint32_t(bytes[offset + 1]) << 8 |
+           std::uint32_t(bytes[offset + 2]) << 16 | std::uint32_t(bytes[offset + 3]) << 24;
+}
+struct StringAttribute {
+    std::string_view key, value;
+};
+bool has_string_attribute(const std::vector<std::uint8_t> &bytes,
+                          const StringAttribute &attribute) {
+    std::size_t offset = 8;
+    const auto text = [&]() {
+        const auto begin = offset;
+        while (offset < bytes.size() && bytes[offset] != 0)
+            ++offset;
+        require(offset < bytes.size(), "unterminated EXR header string");
+        const std::string_view result(reinterpret_cast<const char *>(bytes.data() + begin),
+                                      offset - begin);
+        ++offset;
+        return result;
+    };
+    for (;;) {
+        const auto name = text();
+        if (name.empty())
+            return false;
+        const auto type = text();
+        const auto size = word(bytes, offset);
+        offset += 4;
+        require(size <= bytes.size() - offset, "truncated EXR attribute payload");
+        if (name == attribute.key)
+            return type == "string" &&
+                   std::string_view(reinterpret_cast<const char *>(bytes.data() + offset), size) ==
+                       attribute.value;
+        offset += size;
+    }
+}
+void check_metadata_names(const std::filesystem::path &directory, const Film &film) {
+    const auto path = directory / "metadata.exr";
+    std::vector<float> reference;
+    for (std::size_t length : {31, 32, 255}) {
+        const std::pair<std::string, std::string> metadata{std::string(length, 'k'),
+                                                           "complete attribute value"};
+        require(write_exr(film, path, ExrPrecision::float32, std::span{&metadata, 1}).empty(),
+                "valid metadata name boundary was rejected");
+        const auto bytes = read(path);
+        // Bit 10 of the version/flags word permits names longer than 31 bytes.
+        require(((word(bytes, 4) & 0x400u) != 0) == (length > 31),
+                "EXR long-name flag does not match metadata requirements");
+        require(has_string_attribute(bytes, {.key = metadata.first, .value = metadata.second}),
+                "EXR metadata key or value was truncated");
+        const auto decoded = decode_exr(bytes);
+        if (!decoded.value)
+            throw std::runtime_error("EXR with boundary metadata did not decode");
+        const auto &image = *decoded.value;
+        require(image.width == film.width && image.height == film.height,
+                "metadata changed image extent");
+        if (reference.empty())
+            reference = image.floating_rgb;
+        else
+            require(image.floating_rgb == reference, "metadata changed FLOAT pixels");
+    }
+    const auto sentinel = read(path);
+    for (const auto &metadata : {
+             std::pair<std::string, std::string>{std::string(256, 'k'), "too long"},
+             {std::string("key\0suffix", 10), "embedded NUL"},
+             {std::string(32, 'k'), std::string("value\0suffix", 12)},
+         }) {
+        require(!write_exr(film, path, ExrPrecision::float32, std::span{&metadata, 1}).empty(),
+                "invalid metadata was accepted");
+        require(read(path) == sentinel, "invalid metadata replaced existing destination");
+    }
 }
 void check(const std::filesystem::path &directory) {
     const auto path = directory / "result.exr";
@@ -94,6 +170,7 @@ void check(const std::filesystem::path &directory) {
                         (precision == ExrPrecision::half ? 0.004 : 0.000001),
                     "linear output projection changed");
     }
+    check_metadata_names(directory, film);
     require(film == original, "writer mutated raw film");
     // Output width exceeds the decoder input default; output must not inherit it.
     auto wide = make_film(4097, 1);

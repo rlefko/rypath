@@ -1975,3 +1975,7 @@ if(RYPATH_ENABLE_METAL)
         endif()
     endforeach()
 endif()
+
+add_test(NAME infrastructure.hero_performance_runner COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hero_performance_runner_tests.py")
+set_tests_properties(infrastructure.hero_performance_runner PROPERTIES TIMEOUT 30)

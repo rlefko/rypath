@@ -1,5 +1,11 @@
 # Project status
 
+The [hero performance follow-up](hero-performance.md) adds command-level path-work
+diagnostics and paired native-1080p timing. The frozen Area-one baseline is about
+0.30 FPS for Cornell/Prism and 0.14 FPS for Pavilion in short stationary controls.
+Exact shader optimizations and reconnection remain under validation; no speedup
+or 10× qualification is established by the diagnostic changes.
+
 [Spectral noise controls](spectral-color-noise.md) add visible-CDF hero sampling
 and explicit spectral-refresh/reciprocal spatial reuse. At `2fa3266`, the bounded
 Cornell/Prism study improves Cornell strongly but fails Prism RGB-error gates,

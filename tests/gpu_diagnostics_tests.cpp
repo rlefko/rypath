@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "frame_work_diagnostics.hpp"
 #include "gpu_diagnostics.hpp"
 #include <cstdlib>
 #include <iostream>
@@ -39,5 +40,25 @@ int main() {
     for (unsigned i = 0; i < 100; ++i)
         add_gpu_stage(bounded, std::to_string(i), 1, 2);
     require(bounded.stages.size() == 64 && !bounded.complete);
+    FrameWorkDiagnostics work;
+    add_frame_work(work, "fresh", 0, 8, 10, 2, .1, .01, .001, true);
+    require(work.passes.empty());
+    work.requested = true;
+    add_frame_work(work, "fresh", 0, 8, 10, 2, .1, 0, .001, true);
+    add_frame_work(work, "fresh", 0, 8, 11, 0, .2, .01, .002, true);
+    add_frame_work(work, "spatial", 1, 8, 21, 0, .3, .02, .003, true);
+    require(work.passes.size() == 2 && work.passes[0].commands == 2 &&
+            work.passes[0].encoded_rounds == 16 && work.passes[0].completed_evaluations == 21 &&
+            work.passes[0].boundary_active_sum == 2 && work.passes[0].boundary_active_max == 2 &&
+            std::abs(work.passes[0].gpu_seconds - .3) < 1e-15);
+    add_frame_work(work, "finalize", 0, 0, 0, 0, 0, 0, .001, false);
+    require(!work.complete && !work.passes[0].gpu_time_valid);
+    add_frame_work(work, "spatial", 2, 8, 21, 0, .3, .02, .003, true);
+    require(!work.passes.back().gpu_time_valid);
+    FrameWorkDiagnostics capped;
+    capped.requested = true;
+    for (unsigned i = 0; i < 13; ++i)
+        add_frame_work(capped, "mutation", i, 8, 0, 0, .1, 0, 0, true);
+    require(capped.passes.size() == 12 && !capped.complete);
     std::cout << "GPU stage diagnostics checks passed\n";
 }
