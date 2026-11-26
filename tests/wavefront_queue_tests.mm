@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "bsdf_table.hpp"
+#include "bsdf_table_fixture.hpp"
 #include "metal_execution.hpp"
+#include "rgb_spectrum.hpp"
 #include "wavefront_wire.h"
 
 #include <array>
+#include <bit>
 #include <cstring>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace {
@@ -32,7 +37,7 @@ int run(const std::filesystem::path &path) {
     require(argument_encoder != nil, "Queue argument encoder");
     auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
                                          options:MTLResourceStorageModeShared];
-    std::array<id<MTLBuffer>, wf::replay_input_id + 1> buffers{};
+    std::array<id<MTLBuffer>, wf::hero_cold_id + 1> buffers{};
     [argument_encoder setArgumentBuffer:arguments offset:0];
     for (unsigned i = 0; i < buffers.size(); ++i) {
         buffers[i] = [device newBufferWithLength:256 options:MTLResourceStorageModeShared];
@@ -206,6 +211,296 @@ int run(const std::filesystem::path &path) {
             }
         }
     }
+    auto contract_pipeline =
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract", why);
+    require(contract_pipeline != nil, why);
+    auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
+                                               options:MTLResourceStorageModeShared];
+    require(contract_buffer != nil, "History contract allocation");
+    std::memset(contract_buffer.contents, 0, contract_buffer.length);
+    auto contract_command = [queue commandBuffer];
+    auto contract_encoder = [contract_command computeCommandEncoder];
+    require(contract_command != nil && contract_encoder != nil, "History contract encoder");
+    [contract_encoder setComputePipelineState:contract_pipeline];
+    [contract_encoder setBuffer:contract_buffer offset:0 atIndex:0];
+    [contract_encoder dispatchThreads:MTLSizeMake(1, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [contract_encoder endEncoding];
+    require(metal::complete(contract_command, "history storage contract").empty(),
+            "History contract dispatch");
+    wf::Contract history_contract{};
+    std::memcpy(&history_contract, contract_buffer.contents, sizeof(history_contract));
+    require(history_contract.version == wf::contract && history_contract.hero_bytes &&
+                history_contract.hero_cold_bytes && history_contract.hot_bytes,
+            "History storage contract mismatch");
+    constexpr std::uint32_t history_schema = 0x48535435u;
+    auto layout_pipeline =
+        metal::load_pipeline(device, library, @"rypath_hero_history_layout", why);
+    require(layout_pipeline != nil, why);
+    auto layout_buffer = [device newBufferWithLength:12 * sizeof(std::uint32_t)
+                                             options:MTLResourceStorageModeShared];
+    require(layout_buffer != nil, "History layout allocation");
+    std::memset(layout_buffer.contents, 0xa5, layout_buffer.length);
+    auto layout_command = [queue commandBuffer];
+    auto layout_encoder = [layout_command computeCommandEncoder];
+    require(layout_command != nil && layout_encoder != nil, "History layout encoder");
+    [layout_encoder setComputePipelineState:layout_pipeline];
+    [layout_encoder setBuffer:layout_buffer offset:0 atIndex:0];
+    [layout_encoder dispatchThreads:MTLSizeMake(1, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [layout_encoder endEncoding];
+    require(metal::complete(layout_command, "history layout").empty(), "History layout dispatch");
+    std::array<std::uint32_t, 12> history_layout{};
+    std::memcpy(history_layout.data(), layout_buffer.contents, layout_buffer.length);
+    require(history_layout[0] == history_schema && history_layout[11] == sizeof(std::uint32_t),
+            "History layout diagnostic schema/bool ABI mismatch");
+    for (std::uint32_t history_case = 0; history_case < 6; ++history_case) {
+        const std::uint32_t layout = history_case % 3;
+        const bool fixed = history_case >= 3;
+        MTLFunctionConstantValues *constants = [MTLFunctionConstantValues new];
+        const std::uint32_t events = 1;
+        [constants setConstantValue:&layout
+                               type:MTLDataTypeUInt
+                            atIndex:wf::packet_layout_constant];
+        [constants setConstantValue:&events
+                               type:MTLDataTypeUInt
+                            atIndex:wf::packet_events_constant];
+        // Fixed shade entries receive scene constants only. Exercise the same
+        // explicit layout helpers with constants 23/24 absent, including split.
+        NSString *write_entry = !fixed        ? @"rypath_hero_history_write"
+                                : layout == 0 ? @"rypath_hero_history_write_packed"
+                                              : @"rypath_hero_history_write_separated";
+        NSString *read_entry = !fixed        ? @"rypath_hero_history_read"
+                               : layout == 0 ? @"rypath_hero_history_read_packed"
+                                             : @"rypath_hero_history_read_separated";
+        auto policy = fixed ? nil : constants;
+        auto write_function = metal::load_function(library, write_entry, why, policy);
+        require(write_function != nil, why);
+        auto write_pipeline = metal::load_pipeline(device, library, write_entry, why, nil, policy);
+        auto read_pipeline = metal::load_pipeline(device, library, read_entry, why, nil, policy);
+        require(write_pipeline != nil && read_pipeline != nil, why);
+        auto history_arguments_encoder = [write_function newArgumentEncoderWithBufferIndex:1];
+        require(history_arguments_encoder != nil, "History storage argument encoder");
+        auto history_arguments = [device newBufferWithLength:history_arguments_encoder.encodedLength
+                                                     options:MTLResourceStorageModeShared];
+        require(history_arguments != nil, "History storage arguments allocation");
+        [history_arguments_encoder setArgumentBuffer:history_arguments offset:0];
+        constexpr std::size_t guard_bytes = 256, slot_count = 7;
+        std::array<id<MTLBuffer>, wf::hero_cold_id + 1> history_buffers{};
+        std::array<std::size_t, wf::hero_cold_id + 1> strides{};
+        strides[wf::packet_state_id] = history_contract.packet_bytes;
+        strides[wf::packet_hot_id] = history_contract.hot_bytes;
+        strides[wf::packet_cold_id] = history_contract.cold_bytes;
+        strides[wf::hero_state_id] = history_contract.hero_bytes;
+        strides[wf::hero_cold_id] = history_contract.hero_cold_bytes;
+        for (unsigned i = 0; i < history_buffers.size(); ++i) {
+            const auto bytes = strides[i] ? 2 * guard_bytes + slot_count * strides[i] : guard_bytes;
+            history_buffers[i] = [device newBufferWithLength:bytes
+                                                     options:MTLResourceStorageModeShared];
+            require(history_buffers[i] != nil, "Guarded history pool allocation");
+            std::memset(history_buffers[i].contents, 0xa5, bytes);
+            [history_arguments_encoder setBuffer:history_buffers[i]
+                                          offset:strides[i] ? guard_bytes : 0
+                                         atIndex:i];
+        }
+        const wf::Config history_config{7, 7, 2, render_wire::pbrt_model, 1, 0, 1, layout};
+        std::memcpy(history_buffers[wf::config_id].contents, &history_config,
+                    sizeof(history_config));
+        auto history_result = [device newBufferWithLength:guard_bytes
+                                                  options:MTLResourceStorageModeShared];
+        require(history_result != nil, "History result allocation");
+        std::memset(history_result.contents, 0xa5, history_result.length);
+        const auto check_guards = [&] {
+            for (unsigned i = 0; i < history_buffers.size(); ++i) {
+                const bool written_pool = layout == 0
+                                              ? i == wf::hero_state_id
+                                              : i == wf::packet_hot_id || i == wf::hero_cold_id;
+                const auto *bytes = static_cast<const unsigned char *>(history_buffers[i].contents);
+                for (std::size_t j = 0; j < history_buffers[i].length; ++j) {
+                    if (i == wf::config_id && j < sizeof(history_config))
+                        continue;
+                    if (written_pool && j >= guard_bytes &&
+                        j < guard_bytes + slot_count * strides[i]) {
+                        const auto slot = (j - guard_bytes) / strides[i];
+                        if (slot == 1 || slot == 3 || slot == 5)
+                            continue;
+                    }
+                    require(bytes[j] == 0xa5,
+                            "History storage touched a guard, unused owner or inactive pool");
+                }
+            }
+            require(std::memcmp(history_buffers[wf::config_id].contents, &history_config,
+                                sizeof(history_config)) == 0,
+                    "History storage modified immutable configuration");
+        };
+        const auto check_dielectric_bytes = [&] {
+            // Slot three contains two active dielectric lanes. Derive their
+            // dyadic fixture values independently, without a host Prepared type.
+            constexpr unsigned slot = 3;
+            const auto pool = layout == 0 ? wf::hero_state_id : wf::hero_cold_id;
+            const auto previous_offset = layout == 0 ? history_layout[1] : 0;
+            const auto bsdf_offset = previous_offset + history_layout[2];
+            require(bsdf_offset + history_layout[3] + 2 * history_layout[6] <= strides[pool],
+                    "History raw dielectric witness exceeds owner stride");
+            const auto *owner = static_cast<const unsigned char *>(history_buffers[pool].contents) +
+                                guard_bytes + slot * strides[pool];
+            const auto read_word = [&](std::size_t offset) {
+                std::uint32_t word;
+                std::memcpy(&word, owner + offset, sizeof(word));
+                return word;
+            };
+            require(read_word(bsdf_offset + history_layout[4]) == 2 &&
+                        read_word(bsdf_offset + history_layout[5]) == 3,
+                    "Host raw dielectric tag/mask mismatch");
+            for (unsigned lane = 0; lane < 2; ++lane) {
+                const float f = float(lane + slot * 16) + .125f;
+                const std::array expected{f + 6, f + 7, f + 8};
+                const auto parameters = bsdf_offset + history_layout[3] + lane * history_layout[6];
+                for (unsigned field = 0; field < expected.size(); ++field) {
+                    const auto actual = read_word(parameters + history_layout[7 + field]);
+                    const auto wanted = std::bit_cast<std::uint32_t>(expected[field]);
+                    if (actual != wanted) {
+                        std::ostringstream message;
+                        message << "Host raw dielectric mismatch: layout=" << layout
+                                << ", fixed=" << fixed << ", lane=" << lane << ", field=" << field
+                                << std::hex << ", expected/actual=0x" << wanted << "/0x" << actual;
+                        require(false, message.str());
+                    }
+                }
+                const auto actual = read_word(parameters + history_layout[10]);
+                require(actual == unsigned(bool(lane & 2)),
+                        "Host raw dielectric smooth word mismatch: layout=" +
+                            std::to_string(layout) + ", fixed=" + std::to_string(fixed) +
+                            ", lane=" + std::to_string(lane) + ", word=" + std::to_string(actual));
+            }
+        };
+        // A completed command publishes the write before a distinct read dispatch;
+        // there is no thread-local freeze/expand shortcut between the two kernels.
+        for (unsigned phase = 0; phase < 2; ++phase) {
+            auto history_command = [queue commandBuffer];
+            auto history_encoder = [history_command computeCommandEncoder];
+            require(history_command != nil && history_encoder != nil, "History storage encoder");
+            [history_encoder setComputePipelineState:phase == 0 ? write_pipeline : read_pipeline];
+            [history_encoder setBuffer:history_arguments offset:0 atIndex:1];
+            if (phase != 0)
+                [history_encoder setBuffer:history_result offset:0 atIndex:0];
+            for (auto buffer : history_buffers)
+                [history_encoder useResource:buffer
+                                       usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+            [history_encoder dispatchThreads:MTLSizeMake(3, 1, 1)
+                       threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+            [history_encoder endEncoding];
+            require(metal::complete(history_command,
+                                    phase == 0 ? "hero history write" : "hero history read")
+                        .empty(),
+                    "History storage dispatch");
+            check_guards();
+            check_dielectric_bytes();
+        }
+        const auto *results = static_cast<const std::uint32_t *>(history_result.contents);
+        constexpr std::array fields{"position",
+                                    "geometric normal",
+                                    "shading normal",
+                                    "frame",
+                                    "vertex metadata",
+                                    "frozen BSDF",
+                                    "forward area density",
+                                    "reverse area density",
+                                    "preceding geometry",
+                                    "sample identity/status",
+                                    "sample scalars",
+                                    "sample random words",
+                                    "wavelengths",
+                                    "hero density",
+                                    "previous hero density",
+                                    "lens/filter",
+                                    "radiance",
+                                    "beta",
+                                    "ray origin",
+                                    "ray direction",
+                                    "ray PDF",
+                                    "ray interval",
+                                    "roulette",
+                                    "hero state",
+                                    "absolute sample index",
+                                    "path counts",
+                                    "completion"};
+        constexpr unsigned result_words = 12;
+        for (unsigned i = 0; i < 3; ++i) {
+            const auto *result = results + result_words * i;
+            require(result[11] == history_schema, "History result diagnostic schema mismatch");
+            if (result[0] == 0)
+                continue;
+            std::ostringstream message;
+            message << "Persistent history mismatch: layout=" << layout << ", fixed=" << fixed
+                    << ", slot=" << 2 * i + 1 << ", fields=";
+            for (unsigned field = 0; field < fields.size(); ++field)
+                if (result[0] & (1u << field))
+                    message << fields[field] << "; ";
+            message << std::hex << "mask=0x" << result[0] << ", forward expected/actual=0x"
+                    << result[1] << "/0x" << result[2] << ", reverse expected/actual=0x"
+                    << result[3] << "/0x" << result[4] << ", BSDF kind expected/actual=0x"
+                    << result[5] << "/0x" << result[6] << ", active mask=0x" << result[7];
+            message << "; host raw dielectric words match both active lanes";
+            require(false, message.str());
+        }
+        const auto *result_bytes = static_cast<const unsigned char *>(history_result.contents);
+        for (std::size_t j = 3 * result_words * sizeof(std::uint32_t); j < history_result.length;
+             ++j)
+            require(result_bytes[j] == 0xa5, "History read touched the result guard");
+    }
+    MTLFunctionConstantValues *families = [MTLFunctionConstantValues new];
+    const bool enabled = true;
+    for (unsigned constant : {5u, 6u, 7u, 9u, 13u, 14u, 15u, 16u, 17u})
+        [families setConstantValue:&enabled type:MTLDataTypeBool atIndex:constant];
+    auto differential = metal::load_pipeline(device, library, @"rypath_hero_frozen_differential",
+                                             why, nil, families);
+    require(differential != nil, why);
+    const auto fixture_directory =
+        std::filesystem::temp_directory_path() /
+        ("rypath-frozen-hero-" +
+         std::to_string(reinterpret_cast<std::uintptr_t>((__bridge void *)device)));
+    std::filesystem::create_directories(fixture_directory);
+    const auto measured_path = fixture_directory / "measured.bsdf";
+    const auto fourier_path = fixture_directory / "fourier.bsdf";
+    table_fixture::write(measured_path, table_fixture::measured());
+    table_fixture::write(fourier_path, table_fixture::fourier(3, true, 1, true));
+    const auto measured_table = read_bsdf_table(measured_path, BsdfTableKind::measured);
+    const auto fourier_table = read_bsdf_table(fourier_path, BsdfTableKind::fourier);
+    std::filesystem::remove_all(fixture_directory);
+    require(measured_table.table && fourier_table.table, "Frozen differential fixtures");
+    auto measured = [device newBufferWithBytes:measured_table.table->words.data()
+                                        length:measured_table.table->words.size() * 4
+                                       options:MTLResourceStorageModeShared];
+    auto fourier = [device newBufferWithBytes:fourier_table.table->words.data()
+                                       length:fourier_table.table->words.size() * 4
+                                      options:MTLResourceStorageModeShared];
+    const auto rgb_values = srgb_reconstruction_table();
+    auto rgb = [device newBufferWithBytes:rgb_values.data()
+                                   length:rgb_values.size() * sizeof(float)
+                                  options:MTLResourceStorageModeShared];
+    auto differential_result = [device newBufferWithLength:480 * sizeof(std::uint32_t)
+                                                   options:MTLResourceStorageModeShared];
+    require(measured && fourier && rgb && differential_result, "Frozen differential buffers");
+    std::memset(differential_result.contents, 0, differential_result.length);
+    auto differential_command = [queue commandBuffer];
+    auto differential_encoder = [differential_command computeCommandEncoder];
+    require(differential_command && differential_encoder, "Frozen differential encoder");
+    [differential_encoder setComputePipelineState:differential];
+    [differential_encoder setBuffer:differential_result offset:0 atIndex:0];
+    [differential_encoder setBuffer:measured offset:0 atIndex:1];
+    [differential_encoder setBuffer:fourier offset:0 atIndex:2];
+    [differential_encoder setBuffer:rgb offset:0 atIndex:3];
+    [differential_encoder dispatchThreads:MTLSizeMake(480, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [differential_encoder endEncoding];
+    require(metal::complete(differential_command, "frozen hero differential").empty(),
+            "Frozen differential dispatch");
+    const auto *differential_values =
+        static_cast<const std::uint32_t *>(differential_result.contents);
+    for (unsigned i = 0; i < 480; ++i)
+        require(differential_values[i] == 1,
+                "Frozen hero evaluation mismatch at case " + std::to_string(i));
     std::cout
         << "Wavefront queue corruption, range reservation and sticky overflow checks passed\n";
     return 0;

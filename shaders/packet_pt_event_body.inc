@@ -36,7 +36,7 @@
     bool terminated = true;
     // Keep the current event local until its endpoint/direct contributions have
     // consumed both historical endpoints. It need not survive another dispatch.
-    Vertex current{};
+    typename State::Current current{};
     do {
         if (count >= capacity || !nonzero(beta))
             break;
@@ -64,7 +64,7 @@
         }
         if (hit.type == intersection_type::none) {
             if (mode == Mode::Radiance) {
-                Vertex v{};
+                typename State::Current v{};
                 v.type = environment_vertex;
                 v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
                 v.light = p.environment_light;
@@ -94,7 +94,7 @@
             sample.status = wire::invalid_hit;
             break;
         }
-        Vertex v{};
+        typename State::Current v{};
         v.type = surface_vertex;
         v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
         v.instance = hit.instance_id;
@@ -209,7 +209,7 @@
                  material_auxiliary(material, r.alpha.material_data, p.material_data_words),
                  incoming.direction)) ||
             !scattering_frame(frame, v.frame) ||
-            !prepare_packet(r, material, context, lambda, beta, v.bsdf,
+            !prepare_event_bsdf(r, material, context, lambda, beta, v.bsdf,
                              hero ? state.hero.active_mask : 15u)) {
             sample.status = wire::invalid_arithmetic;
             break;
@@ -236,8 +236,11 @@
         const auto words = material_words(r, sample, material_index, count - 1, mode, replay);
         v.seed = words.w;
         v.beta = beta;
-        v.connectible = hero ? hero_connectible(v.bsdf) : !rypath_packet::delta_only(v.bsdf);
-        const Vertex prev = state.latest;
+        if constexpr (State::compact_hero)
+            v.connectible = hero_connectible(v.bsdf);
+        else
+            v.connectible = hero ? hero_connectible(v.bsdf) : !rypath_packet::delta_only(v.bsdf);
+        const thread auto &prev = state.latest;
         const float sampled_area_pdf = convert_density(pdf, prev, v);
         // Retain sampled-area validation even when PT skips unused BDPT storage.
         if (!isfinite(sampled_area_pdf) || sampled_area_pdf < 0) {
@@ -270,7 +273,7 @@
             current.connectible = hero_connectible(current.bsdf);
             if (!direct_allowed)
                 break;
-            const auto proposed = rypath_hero_scattering::sample(
+            const auto proposed = hero_sample_current(
                 current.bsdf, sampled_wo_local, sample_uniform(p, draws.x), uniform2(p, draws.yz),
                 v.seed, mode);
             continuation.wi = proposed.wi;
@@ -302,7 +305,7 @@
                         (rypath_hero::bits(beta[k]) & 0x7fffffffu))
                         state.hero.active_mask |= 1u << k;
             }
-        } else {
+        } else if constexpr (!State::compact_hero) {
             continuation = rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
                                                   uniform2(p, draws.yz), v.seed, mode);
         }
@@ -383,9 +386,9 @@
     state.complete =
         terminated || sample.status != wire::success || count >= capacity || !nonzero(beta);
     if (count != old_count && sample.status == wire::success) {
-        const Vertex pt = current;
-        const Vertex previous = state.latest;
-        Vertex before{};
+        const thread auto &pt = current;
+        const thread auto &previous = state.latest;
+        typename State::Neighbor before{};
         if (count > 2) {
             before.type = state.preceding_type;
             before.point.position = state.preceding_position;
@@ -398,7 +401,7 @@
             if (sample.status == wire::success && count < capacity && direct_allowed)
                 state.radiance += hero_direct(r, sample, lambda, index, pt, previous, count,
                                                direct_beta, direct_density, replay);
-        } else {
+        } else if constexpr (!State::compact_hero) {
             state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
             if (sample.status == wire::success && count < capacity)
                 state.radiance +=
@@ -415,5 +418,5 @@
         // their normals are therefore never needed as a later preceding endpoint.
         state.preceding_position = state.latest.point.position;
         state.preceding_type = state.latest.type;
-        state.latest = current;
+        hero_store_previous(state.latest, current);
     }

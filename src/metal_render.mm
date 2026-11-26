@@ -2193,6 +2193,7 @@ RenderSamplesResult MetalRenderScene::sample(const RenderRequest &request, Rende
 struct FrameWavefrontBuffers {
     id<MTLBuffer> config = nil, scalar_state = nil, packet_state = nil;
     id<MTLBuffer> packet_hot = nil, packet_cold = nil, packet_hit = nil;
+    id<MTLBuffer> hero_state = nil, hero_cold = nil;
     id<MTLBuffer> queue[2]{nil, nil};
     id<MTLBuffer> free_slots = nil, counters = nil, done = nil;
     id<MTLBuffer> current_dispatch = nil, refill_dispatch = nil;
@@ -2725,7 +2726,14 @@ struct FrameSession::Impl {
             !alignment_valid(contract.packet_bytes, contract.packet_alignment) ||
             !alignment_valid(contract.hot_bytes, contract.hot_alignment) ||
             !alignment_valid(contract.cold_bytes, contract.cold_alignment) ||
-            !alignment_valid(contract.hit_bytes, contract.hit_alignment) || contract.reserved[0] ||
+            !alignment_valid(contract.hit_bytes, contract.hit_alignment) ||
+            !alignment_valid(contract.hero_bytes, contract.hero_alignment) ||
+            !alignment_valid(contract.hero_hot_bytes, contract.hero_hot_alignment) ||
+            !alignment_valid(contract.hero_cold_bytes, contract.hero_cold_alignment) ||
+            contract.hero_hot_bytes != contract.hot_bytes ||
+            contract.hero_hot_alignment != contract.hot_alignment ||
+            contract.hero_bytes >= contract.packet_bytes ||
+            contract.hero_cold_bytes >= contract.cold_bytes || contract.reserved[0] ||
             contract.reserved[1])
             return "Metal wavefront shader contract mismatch; rebuild the metallib";
         // Verify the actual selected packet entry before reporting any policy
@@ -2831,12 +2839,16 @@ struct FrameSession::Impl {
         config.capacity =
             std::min<std::uint64_t>(config.capacity, std::uint64_t(config.width) * config.height);
         const bool separated = config.packet_layout != FramePacketLayout::packed;
-        state_bytes = r.parameters.packet_transport
+        const bool hero = r.parameters.packet_transport == 2;
+        state_bytes = hero ? (separated ? contract.hero_hot_bytes : contract.hero_bytes)
+                      : r.parameters.packet_transport
                           ? (separated ? contract.hot_bytes : contract.packet_bytes)
                           : contract.scalar_bytes;
         const std::uint64_t state_allocation = std::uint64_t(config.capacity) * state_bytes;
         const std::uint64_t cold_bytes =
-            separated ? std::uint64_t(config.capacity) * contract.cold_bytes : 16;
+            separated ? std::uint64_t(config.capacity) *
+                            (hero ? contract.hero_cold_bytes : contract.cold_bytes)
+                      : 16;
         const std::uint64_t hit_bytes = config.packet_layout == FramePacketLayout::split_trace
                                             ? std::uint64_t(config.capacity) * contract.hit_bytes
                                             : 16;
@@ -2851,6 +2863,7 @@ struct FrameSession::Impl {
                      2 * sizeof(wavefront_wire::DispatchArguments) + 2 * argument_bytes +
                      r.graph_nodes.length + r.surface_transforms.length;
         slot_bytes += cold_bytes + hit_bytes + 16; // Alternative layout sentinels/pools.
+        slot_bytes += 32;                          // Inactive hero/packet pool sentinels.
         slot_bytes += 32; // Independent replay sentinel; Area replaces it with full replay input.
         const std::uint64_t total = 2 * std::uint64_t(slot_bytes) + cie.length;
         if (cold_bytes > r.device.maxBufferLength || hit_bytes > r.device.maxBufferLength ||
@@ -3070,18 +3083,24 @@ struct FrameSession::Impl {
             b.replay = replay;
         const auto state_allocation = std::size_t(config.capacity) * state_bytes;
         const bool separated = config.packet_layout != FramePacketLayout::packed;
-        if (!allocate(b.packet_hot, separated ? state_allocation : 16) ||
-            !allocate(b.packet_cold,
-                      separated ? std::size_t(config.capacity) * wavefront->contract.cold_bytes
-                                : 16) ||
+        const bool hero = r.parameters.packet_transport == 2;
+        if (!allocate(b.hero_state, hero && !separated ? state_allocation : 16) ||
+            !allocate(b.hero_cold, hero && separated ? std::size_t(config.capacity) *
+                                                           wavefront->contract.hero_cold_bytes
+                                                     : 16) ||
+            !allocate(b.packet_hot, separated ? state_allocation : 16) ||
+            !allocate(b.packet_cold, separated && !hero ? std::size_t(config.capacity) *
+                                                              wavefront->contract.cold_bytes
+                                                        : 16) ||
             !allocate(b.packet_hit,
                       config.packet_layout == FramePacketLayout::split_trace
                           ? std::size_t(config.capacity) * wavefront->contract.hit_bytes
                           : 16) ||
             !allocate(b.replay, 32) || !allocate(b.config, sizeof(wavefront_wire::Config), true) ||
             !allocate(b.scalar_state, r.parameters.packet_transport ? 16 : state_allocation) ||
-            !allocate(b.packet_state,
-                      r.parameters.packet_transport && !separated ? state_allocation : 16) ||
+            !allocate(b.packet_state, r.parameters.packet_transport && !hero && !separated
+                                          ? state_allocation
+                                          : 16) ||
             !allocate(b.queue[0], std::size_t(config.capacity) * 4) ||
             !allocate(b.queue[1], std::size_t(config.capacity) * 4) ||
             !allocate(b.free_slots, std::size_t(config.capacity) * 4) ||
@@ -3105,7 +3124,7 @@ struct FrameSession::Impl {
         for (unsigned variant = 0; variant < 2; ++variant) {
             auto encoder = wavefront->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[variant] offset:0];
-            const std::array<id<MTLBuffer>, 16> resources{b.config,
+            const std::array<id<MTLBuffer>, 18> resources{b.config,
                                                           b.scalar_state,
                                                           b.packet_state,
                                                           b.queue[variant],
@@ -3120,7 +3139,9 @@ struct FrameSession::Impl {
                                                           b.packet_hot,
                                                           b.packet_cold,
                                                           b.packet_hit,
-                                                          b.replay};
+                                                          b.replay,
+                                                          b.hero_state,
+                                                          b.hero_cold};
             for (NSUInteger index = 0; index < resources.size(); ++index)
                 [encoder setBuffer:resources[index] offset:0 atIndex:index];
         }
@@ -3488,7 +3509,8 @@ struct FrameSession::Impl {
                         work.status = "available: command-level path passes";
                         work.state_pool_bytes = b.scalar_state.length + b.packet_state.length +
                                                 b.packet_hot.length + b.packet_cold.length +
-                                                b.packet_hit.length;
+                                                b.packet_hit.length + b.hero_state.length +
+                                                b.hero_cold.length;
                     }
                 }
                 const bool reverse = history && area_leaf == area_wire::temporal_reverse_config &&
@@ -3517,10 +3539,10 @@ struct FrameSession::Impl {
                         [encoder useResource:resource usage:usage];
                 };
                 const auto read_write = MTLResourceUsageRead | MTLResourceUsageWrite;
-                for (auto buffer :
-                     {b.scalar_state, b.packet_state, b.queue[0], b.queue[1], b.free_slots,
-                      b.counters, b.done, b.current_dispatch, b.refill_dispatch, frame->raw,
-                      b.replay, b.packet_hot, b.packet_cold, b.packet_hit})
+                for (auto buffer : {b.scalar_state, b.packet_state, b.queue[0], b.queue[1],
+                                    b.free_slots, b.counters, b.done, b.current_dispatch,
+                                    b.refill_dispatch, frame->raw, b.replay, b.packet_hot,
+                                    b.packet_cold, b.packet_hit, b.hero_state, b.hero_cold})
                     use_resource(buffer, read_write);
                 use_resource(b.config, MTLResourceUsageRead);
                 use_resource(cie, MTLResourceUsageRead);

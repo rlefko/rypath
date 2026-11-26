@@ -50,9 +50,14 @@ inline float remap_zero(float p) { return p == 0 ? 1 : p; }
 inline bool nonzero(float4 v) { return any(v > 0); }
 inline bool finite_nonnegative(float4 v) { return all(isfinite(v)) && all(v >= 0); }
 inline uint light_count(constant wire::Parameters &p) { return p.light_count; }
-inline bool infinite(const thread Vertex &v) { return v.type == environment_vertex; }
-inline bool on_surface(const thread Vertex &v) { return any(v.point.geometric_normal != 0); }
-inline float convert_density(float pdf, const thread Vertex &from, const thread Vertex &to) {
+template <typename Endpoint> inline bool infinite(const thread Endpoint &v) {
+    return v.type == environment_vertex;
+}
+template <typename Endpoint> inline bool on_surface(const thread Endpoint &v) {
+    return any(v.point.geometric_normal != 0);
+}
+template <typename From, typename To>
+inline float convert_density(float pdf, const thread From &from, const thread To &to) {
     // Preserve invalid evaluated densities before geometric support early-outs.
     if (!isfinite(pdf) || pdf < 0)
         return NAN;
@@ -68,7 +73,7 @@ inline float convert_density(float pdf, const thread Vertex &from, const thread 
         pdf *= abs(dot(to.point.geometric_normal, d * rsqrt(d2)));
     return pdf / d2;
 }
-inline float3 offset(const thread Vertex &v, float3 direction) {
+template <typename Endpoint> inline float3 offset(const thread Endpoint &v, float3 direction) {
     if (!on_surface(v))
         return v.point.position;
     const float3 n = dot(direction, v.point.geometric_normal) < 0 ? -v.point.geometric_normal
@@ -190,12 +195,14 @@ inline float2 sample_area_uv(const thread Resources &r, const thread wire::Emitt
     auto alpha = r.alpha;
     return rypath_light_geometry::area_uv_sample(alpha, emitter, u);
 }
-inline float area_pdf(const thread Resources &r, const thread Vertex &v) {
+template <typename Endpoint>
+inline float area_pdf(const thread Resources &r, const thread Endpoint &v) {
     auto alpha = r.alpha;
     const wire::Emitter emitter{v.instance, v.primitive, v.kind};
     return rypath_light_geometry::area_pdf(alpha, emitter, v.uv, v.point);
 }
-inline bool emitted(thread Resources &r, const thread Vertex &v, float3 direction,
+template <typename Endpoint>
+inline bool emitted(thread Resources &r, const thread Endpoint &v, float3 direction,
                     const thread Wavelengths &lambda, thread float4 &radiance) {
     const constant auto &p = *r.alpha.parameters;
     if (infinite(v)) {
@@ -253,8 +260,9 @@ inline float4 distant_radiance(const thread Resources &r, uint index,
                   light->radiance[dense_index(lambda.lambda[2])],
                   light->radiance[dense_index(lambda.lambda[3])]);
 }
-inline float light_origin_pdf(const thread Resources &r, const thread Vertex &v,
-                              const thread Vertex &next) {
+template <typename Endpoint, typename Next>
+inline float light_origin_pdf(const thread Resources &r, const thread Endpoint &v,
+                              const thread Next &next) {
     const constant auto &p = *r.alpha.parameters;
     const float selection = rypath_light_sampling::pmf(
         p, r.alpha.material_data, {next.point.position, next.point.shading_normal}, v.light);
@@ -365,7 +373,8 @@ inline float4 importance_f_cos(const thread Vertex &v, float3 direction) {
 
 // Each shadow segment excludes just its sampled endpoints. A nearer root of the
 // same analytic primitive remains a blocker; no primitive-wide exclusion exists.
-inline bool visible(thread Resources &r, const thread Vertex &a, const thread Vertex &b,
+template <typename From, typename To>
+inline bool visible(thread Resources &r, const thread From &a, const thread To &b,
                     thread wire::Sample &sample) {
     if (r.alpha.parameters->instance_count == 0)
         return true;
@@ -435,7 +444,8 @@ inline bool visible(thread Resources &r, const thread Vertex &a, const thread Ve
     return false;
 }
 
-inline bool sample_light_point(thread Resources &r, uint selected, float2 u, thread Vertex &v,
+template <typename Endpoint>
+inline bool sample_light_point(thread Resources &r, uint selected, float2 u, thread Endpoint &v,
                                bool sample_position = true) {
     const constant auto &p = *r.alpha.parameters;
     v = {};
@@ -456,8 +466,9 @@ inline bool sample_light_point(thread Resources &r, uint selected, float2 u, thr
     return surface(r, v.uv, emitter.instance, emitter.primitive, emitter.kind,
                    PointSource::area_sample, v.point);
 }
-inline bool sample_li(thread Resources &r, const thread Vertex &reference,
-                      const thread Wavelengths &lambda, float4 u, thread Vertex &v,
+template <typename Reference, typename Endpoint>
+inline bool sample_li(thread Resources &r, const thread Reference &reference,
+                      const thread Wavelengths &lambda, float4 u, thread Endpoint &v,
                       thread float3 &direction, thread float &pdf) {
     const constant auto &p = *r.alpha.parameters;
     const auto choice = rypath_light_sampling::sample(
@@ -724,8 +735,9 @@ inline bool endpoint_emission(thread Resources &r, const thread Vertex &v,
     // environment is queried along the original outward ray.
     return emitted(r, v, normalize(delta), lambda, radiance);
 }
-inline float direct_pdf(const thread Resources &r, const thread Vertex &from,
-                        const thread Vertex &light) {
+template <typename From, typename Light>
+inline float direct_pdf(const thread Resources &r, const thread From &from,
+                        const thread Light &light) {
     const float selection =
         rypath_light_sampling::pmf(*r.alpha.parameters, r.alpha.material_data,
                                    {from.point.position, from.point.shading_normal}, light.light);

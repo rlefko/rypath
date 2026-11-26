@@ -116,6 +116,10 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/src/hero_spectrum_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_scattering.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_pt_helpers.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_pt_state.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_frozen_bsdf.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_current_bsdf.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_current_vertex.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_stencil_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
@@ -425,3 +429,23 @@ add_custom_command(OUTPUT "${rypath_opaque_capability_library}"
         -o "${rypath_opaque_capability_library}"
     DEPENDS "${rypath_opaque_capability_air}" VERBATIM)
 add_custom_target(rypath_opaque_capability_shader DEPENDS "${rypath_opaque_capability_library}")
+
+# Isolated current-event compact BSDF candidate: full native preparation is the oracle.
+set(rypath_hero_current_library "${rypath_runtime_directory}/rypath-hero-current-probe.metallib")
+set(rypath_hero_current_air "${rypath_runtime_directory}/CMakeFiles/rypath-hero-current-probe.air")
+file(GLOB rypath_hero_current_headers CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/shaders/*.h" "${CMAKE_SOURCE_DIR}/shaders/*.inc"
+    "${CMAKE_SOURCE_DIR}/shaders/*.metal" "${CMAKE_SOURCE_DIR}/src/*.h")
+add_custom_command(OUTPUT "${rypath_hero_current_air}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        "-I${CMAKE_SOURCE_DIR}/shaders" "-I${CMAKE_SOURCE_DIR}/src"
+        -c "${CMAKE_SOURCE_DIR}/tests/hero_current_probe.metal" -o "${rypath_hero_current_air}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/hero_current_probe.metal" ${rypath_hero_current_headers}
+    VERBATIM)
+add_custom_command(OUTPUT "${rypath_hero_current_library}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_hero_current_air}"
+        -o "${rypath_hero_current_library}"
+    DEPENDS "${rypath_hero_current_air}" VERBATIM)
+add_custom_target(rypath_hero_current_shader DEPENDS "${rypath_hero_current_library}")

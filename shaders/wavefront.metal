@@ -37,6 +37,8 @@ struct WavefrontArguments {
     device rypath_bdpt::Vertex *packet_cold [[id(wf::packet_cold_id)]];
     device rypath_bdpt::PacketPTHit *packet_hit [[id(wf::packet_hit_id)]];
     device const rypath_replay::ReplayState *replay_input [[id(wf::replay_input_id)]];
+    device uchar *hero_state [[id(wf::hero_state_id)]];
+    device uchar *hero_cold [[id(wf::hero_cold_id)]];
 };
 inline void wavefront_fail(constant WavefrontArguments &a, uint failure) {
     atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
@@ -60,6 +62,16 @@ inline void wavefront_dispatch(device wf::DispatchArguments *args, uint count, u
     args->x = group == 0 ? 1 : max(1u, count / group + uint(count % group != 0));
     args->y = args->z = 1;
 }
+// Union-containing payloads use dedicated opaque buffers: MSL argument-buffer
+// reflection rejects unions even behind a typed pointer. Never alias packet pools.
+inline device rypath_bdpt::HeroPTState &wavefront_hero_persistent(constant WavefrontArguments &a,
+                                                                  uint slot) {
+    return reinterpret_cast<device rypath_bdpt::HeroPTState *>(a.hero_state)[slot];
+}
+inline device rypath_bdpt::HeroPrevious &wavefront_hero_cold(constant WavefrontArguments &a,
+                                                             uint slot) {
+    return reinterpret_cast<device rypath_bdpt::HeroPrevious *>(a.hero_cold)[slot];
+}
 inline device rypath_scalar::ScalarState &wavefront_scalar(constant WavefrontArguments &a,
                                                            uint slot) {
     return reinterpret_cast<device rypath_scalar::ScalarState *>(a.scalar_state)[slot];
@@ -67,6 +79,87 @@ inline device rypath_scalar::ScalarState &wavefront_scalar(constant WavefrontArg
 inline device rypath_bdpt::PacketPTState &wavefront_packet(constant WavefrontArguments &a,
                                                            uint slot) {
     return reinterpret_cast<device rypath_bdpt::PacketPTState *>(a.packet_state)[slot];
+}
+template <typename State>
+inline rypath_bdpt::PacketPTHot wavefront_packet_hot(const thread State &state) {
+    rypath_bdpt::PacketPTHot hot;
+    hot.preceding_position = state.preceding_position;
+    hot.preceding_type = state.preceding_type;
+    hot.sample = state.sample;
+    hot.lambda = state.lambda;
+    hot.radiance = state.radiance;
+    hot.beta = state.beta;
+    hot.ray_origin = state.ray_origin;
+    hot.ray_direction = state.ray_direction;
+    hot.pdf = state.pdf;
+    hot.ray_min_distance = state.ray_min_distance;
+    hot.ray_max_distance = state.ray_max_distance;
+    hot.roulette_eta = state.roulette_eta;
+    hot.hero = state.hero;
+    hot.index = state.index;
+    hot.count = state.count;
+    hot.crossings = state.crossings;
+    hot.complete = state.complete;
+    return hot;
+}
+inline rypath_bdpt::PacketPTState wavefront_load_packet(constant WavefrontArguments &a, uint slot) {
+    return wavefront_packet(a, slot);
+}
+template <bool Separated>
+inline rypath_bdpt::HeroWalkState wavefront_load_hero_layout(constant WavefrontArguments &a,
+                                                             uint slot) {
+    const auto hot = Separated ? a.packet_hot[slot] : wavefront_hero_persistent(a, slot).hot;
+    rypath_bdpt::HeroWalkState state;
+    state.latest =
+        Separated ? wavefront_hero_cold(a, slot) : wavefront_hero_persistent(a, slot).latest;
+    state.preceding_position = hot.preceding_position;
+    state.preceding_type = hot.preceding_type;
+    state.sample = hot.sample;
+    state.lambda = hot.lambda;
+    state.radiance = hot.radiance;
+    state.beta = hot.beta;
+    state.ray_origin = hot.ray_origin;
+    state.ray_direction = hot.ray_direction;
+    state.pdf = hot.pdf;
+    state.ray_min_distance = hot.ray_min_distance;
+    state.ray_max_distance = hot.ray_max_distance;
+    state.roulette_eta = hot.roulette_eta;
+    state.hero = hot.hero;
+    state.index = hot.index;
+    state.count = hot.count;
+    state.crossings = hot.crossings;
+    state.complete = hot.complete;
+    return state;
+}
+inline rypath_bdpt::HeroWalkState wavefront_load_hero_packed(constant WavefrontArguments &a,
+                                                             uint slot) {
+    return wavefront_load_hero_layout<false>(a, slot);
+}
+inline rypath_bdpt::HeroWalkState wavefront_load_hero_separated(constant WavefrontArguments &a,
+                                                                uint slot) {
+    return wavefront_load_hero_layout<true>(a, slot);
+}
+// Initialization/refill pipelines receive policy constants. Fixed shade entries
+// select the explicit helpers instead, since their layout constants are unset.
+inline rypath_bdpt::HeroWalkState wavefront_load_hero(constant WavefrontArguments &a, uint slot) {
+    return wavefront_packet_layout() == 0 ? wavefront_load_hero_packed(a, slot)
+                                          : wavefront_load_hero_separated(a, slot);
+}
+inline void wavefront_store_hero_packed(constant WavefrontArguments &a, uint slot,
+                                        const thread rypath_bdpt::HeroWalkState &state) {
+    wavefront_hero_persistent(a, slot) = {state.latest, wavefront_packet_hot(state)};
+}
+inline void wavefront_store_packet_separated(constant WavefrontArguments &a, uint slot,
+                                             const thread rypath_bdpt::HeroWalkState &state) {
+    a.packet_hot[slot] = wavefront_packet_hot(state);
+    wavefront_hero_cold(a, slot) = state.latest;
+}
+inline void wavefront_store_packet(constant WavefrontArguments &a, uint slot,
+                                   const thread rypath_bdpt::HeroWalkState &state) {
+    if (wavefront_packet_layout() == 0)
+        wavefront_store_hero_packed(a, slot, state);
+    else
+        wavefront_store_packet_separated(a, slot, state);
 }
 inline rypath_bdpt::PacketPTState wavefront_load_packet_separated(constant WavefrontArguments &a,
                                                                   uint slot) {
@@ -94,24 +187,7 @@ inline rypath_bdpt::PacketPTState wavefront_load_packet_separated(constant Wavef
 }
 inline void wavefront_store_packet_separated(constant WavefrontArguments &a, uint slot,
                                              const thread rypath_bdpt::PacketPTState &state) {
-    rypath_bdpt::PacketPTHot hot;
-    hot.preceding_position = state.preceding_position;
-    hot.preceding_type = state.preceding_type;
-    hot.sample = state.sample;
-    hot.lambda = state.lambda;
-    hot.radiance = state.radiance;
-    hot.beta = state.beta;
-    hot.ray_origin = state.ray_origin;
-    hot.ray_direction = state.ray_direction;
-    hot.pdf = state.pdf;
-    hot.ray_min_distance = state.ray_min_distance;
-    hot.ray_max_distance = state.ray_max_distance;
-    hot.roulette_eta = state.roulette_eta;
-    hot.hero = state.hero;
-    hot.index = state.index;
-    hot.count = state.count;
-    hot.crossings = state.crossings;
-    hot.complete = state.complete;
+    const auto hot = wavefront_packet_hot(state);
     a.packet_hot[slot] = hot;
     a.packet_cold[slot] = state.latest;
 }
@@ -197,11 +273,19 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
         auto lambda = rypath_bdpt::packet_wavelengths(p, sample_uniform(p, sample.random_words[2]));
         sample.wavelength = lambda.lambda[0];
         const ray incoming = primary_ray(p, sample);
-        rypath_bdpt::PacketPTState state;
-        rypath_bdpt::packet_pt_initialize(
-            state, sample, lambda, incoming,
-            rypath_bdpt::camera_pdf(p, incoming.origin, incoming.direction), index, p);
-        wavefront_store_packet(a, slot, state);
+        if (a.config->packet == 2) {
+            rypath_bdpt::HeroWalkState state;
+            rypath_bdpt::packet_pt_initialize(
+                state, sample, lambda, incoming,
+                rypath_bdpt::camera_pdf(p, incoming.origin, incoming.direction), index, p);
+            wavefront_store_packet(a, slot, state);
+        } else {
+            rypath_bdpt::PacketPTState state;
+            rypath_bdpt::packet_pt_initialize(
+                state, sample, lambda, incoming,
+                rypath_bdpt::camera_pdf(p, incoming.origin, incoming.direction), index, p);
+            wavefront_store_packet(a, slot, state);
+        }
     } else {
         rypath_scalar::ScalarResources resources{};
         resources.p = &p;
@@ -226,6 +310,12 @@ kernel void rypath_wavefront_contract(device wf::Contract *out [[buffer(0)]]) {
             alignof(rypath_bdpt::Vertex),
             sizeof(rypath_bdpt::PacketPTHit),
             alignof(rypath_bdpt::PacketPTHit),
+            sizeof(rypath_bdpt::HeroPTState),
+            alignof(rypath_bdpt::HeroPTState),
+            sizeof(rypath_bdpt::PacketPTHot),
+            alignof(rypath_bdpt::PacketPTHot),
+            sizeof(rypath_bdpt::HeroPrevious),
+            alignof(rypath_bdpt::HeroPrevious),
             {0, 0}};
 }
 kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
@@ -607,4 +697,441 @@ kernel void rypath_wavefront_advance(constant WavefrontArguments &a [[buffer(1)]
     atomic_fetch_add_explicit(&a.counters->rounds, 1u, memory_order_relaxed);
     wavefront_dispatch(a.current_dispatch, count, a.config->group_width);
     wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);
+}
+
+// Test-only layout witness lets the host inspect persisted scalar bytes
+// independently of the thread-side aggregate comparison and union accesses.
+kernel void rypath_hero_history_layout(device uint *out [[buffer(0)]]) {
+    using namespace rypath_bdpt;
+    out[0] = 0x48535435u;
+    out[1] = __builtin_offsetof(HeroPTState, latest);
+    out[2] = __builtin_offsetof(HeroPrevious, bsdf);
+    out[3] = __builtin_offsetof(HeroFrozenBSDF, payload);
+    out[4] = __builtin_offsetof(HeroFrozenBSDF, kind);
+    out[5] = __builtin_offsetof(HeroFrozenBSDF, active_mask);
+    out[6] = sizeof(rypath_dielectric::Parameters);
+    out[7] = __builtin_offsetof(rypath_dielectric::Parameters, eta);
+    out[8] = __builtin_offsetof(rypath_dielectric::Parameters, alpha_x);
+    out[9] = __builtin_offsetof(rypath_dielectric::Parameters, alpha_y);
+    out[10] = 3 * sizeof(uint); // The wire stores a canonical 0/1 word.
+    out[11] = sizeof(uint);
+}
+
+// Deterministic ABI probe: use actual shader Prepared (including frozen table
+// pointers), frames and history conversion, without scene/material preparation.
+inline bool hero_history_same_conductor(const thread rypath_conductor::Parameters &a,
+                                        const thread rypath_conductor::Parameters &b) {
+    return a.eta == b.eta && a.k == b.k && a.alpha_x == b.alpha_x && a.alpha_y == b.alpha_y &&
+           a.smooth == b.smooth;
+}
+inline bool hero_history_same_dielectric(const thread rypath_dielectric::Parameters &a,
+                                         const thread rypath_dielectric::Parameters &b) {
+    return a.eta == b.eta && a.alpha_x == b.alpha_x && a.alpha_y == b.alpha_y &&
+           a.smooth == b.smooth;
+}
+template <typename State>
+inline State hero_history_sentinel(uint slot, device const uint *table,
+                                   device const float *rgb_table) {
+    using namespace rypath_bdpt;
+    const uint mask = slot == 1 ? 1u : slot == 3 ? 3u : 15u;
+    State state{};
+    Vertex original{};
+    original.point.position = float3(1.25f, -2.5f, 3.75f) + float(slot);
+    original.point.geometric_normal = float3(.1f, .2f, .3f);
+    original.point.shading_normal = float3(.4f, .5f, .6f);
+    original.frame = {float3(1, 2, 3), float3(4, 5, 6), float3(7, 8, 9)};
+    original.type = slot == 1 ? camera_vertex : surface_vertex;
+    original.seed = 0xfedcba98u + slot;
+    original.path_id = 65 + slot;
+    original.delta = slot != 3;
+    original.bsdf.active_mask = mask;
+    for (uint k = 0; k < 4; ++k) {
+        thread auto &p = original.bsdf.lane[k];
+        const float f = float(k + slot * 16) + .125f;
+        p.kind = slot == 1 ? 0u : slot == 3 ? 2u : 7u;
+        p.reflectance = f;
+        p.transmittance = f + 1;
+        p.wavelength = f + 400;
+        p.conductor = {f + 2, f + 3, f + 4, f + 5, bool(k & 1)};
+        p.dielectric = {f + 6, f + 7, f + 8, bool(k & 2)};
+        p.layered = {p.dielectric, p.conductor, bool(k & 1), f + 9,  f + 10,
+                     f + 11,       f + 12,      k + 16,      k + 32, int(k) - 9};
+        p.gltf = {f + 13, f + 14, f + 15, f + 16};
+        p.table = table + k;
+        p.rgb_table = rgb_table + k;
+    }
+    hero_store_previous(state.latest, original);
+    state.preceding_position = float3(slot + 1, slot + 2, slot + 3);
+    state.preceding_type = slot == 1 ? surface_vertex : camera_vertex;
+    state.sample.status = slot + 20;
+    state.sample.pixel = slot + 30;
+    state.sample.sample_low = slot + 40;
+    state.sample.sample_high = slot + 50;
+    state.sample.wavelength = slot + 60.25f;
+    state.sample.radiance = slot + 70.25f;
+    state.sample.scatterings = slot + 80;
+    for (uint k = 0; k < 4; ++k) {
+        state.sample.random_words[k] = 0xfedcba98u + slot + k;
+        state.lambda.lambda[k] = 400 + slot + k * 10;
+        state.lambda.pdf[k] = .125f + float(slot + k);
+        state.hero.density.lane[k] = {.25f + .125f * float(k), int(slot + k)};
+        state.hero.previous.lane[k] = {.125f + .125f * float(k), -int(slot + k)};
+        state.hero.eta_scale[k] = float(slot + k + 2);
+    }
+    for (uint k = 0; k < 2; ++k) {
+        state.sample.lens_words[k] = 0x87654321u + slot + k;
+        state.sample.filter_offsets[k] = float(slot + k) + .5f;
+    }
+    state.radiance = float4(1, 2, 3, 4) + float(slot);
+    state.beta = float4(5, 6, 7, 8) + float(slot);
+    state.ray_origin = float3(9, 10, 11) + float(slot);
+    state.ray_direction = float3(12, 13, 14) + float(slot);
+    state.pdf = float(slot) + .25f;
+    state.ray_min_distance = float(slot) + .5f;
+    state.ray_max_distance = float(slot) + 100.75f;
+    state.roulette_eta = {float(slot) + 1.25f, slot != 3};
+    state.hero.active_mask = slot == 1 ? 15u : slot == 3 ? 1u : 3u;
+    state.hero.roulette_enabled = slot != 5;
+    state.index = (ulong(0xfedcba98u) << 32) | ulong(0x87654321u + slot);
+    state.count = 65 + slot;
+    state.crossings = 100 + slot;
+    state.complete = slot != 1;
+    return state;
+}
+inline bool hero_frozen_fields_match(const thread rypath_packet::Prepared &original,
+                                     const thread rypath_bdpt::HeroFrozenBSDF &restored) {
+    // Derive the expected tag independently instead of freezing another union
+    // aggregate inside the comparison. Every active payload field is checked
+    // directly against its original scalar Prepared below.
+    const uint kind = original.lane[0].kind;
+    const bool coated = kind == 5 || kind == 6;
+    const bool unsupported =
+        !rypath_hero_scattering::valid_structure(original) ||
+        (coated && (original.active_mask != 1 || !rypath_packet::compatible(original)));
+    const uint expected_kind = unsupported ? 0xffffffffu : kind;
+    if (restored.kind != expected_kind || restored.active_mask != original.active_mask)
+        return false;
+    bool valid = true;
+    for (uint k = 0; k < 4; ++k) {
+        if (!(original.active_mask & (1u << k)))
+            continue;
+        const thread auto &a = original.lane[k];
+        switch (restored.kind) {
+        case 0:
+            valid = valid && a.reflectance == rypath_bdpt::hero_frozen_diffuse(restored, k);
+            break;
+        case 1:
+            valid = valid && hero_history_same_conductor(
+                                 a.conductor, rypath_bdpt::hero_frozen_conductor(restored, k));
+            break;
+        case 2:
+            valid = valid && hero_history_same_dielectric(
+                                 a.dielectric, rypath_bdpt::hero_frozen_dielectric(restored, k));
+            break;
+        case 3:
+            valid = valid && a.dielectric.eta == rypath_bdpt::hero_frozen_thin_eta(restored, k);
+            break;
+        case 4: {
+            const auto b = rypath_bdpt::hero_frozen_transmission(restored, k);
+            valid = valid && a.reflectance == b.reflectance && a.transmittance == b.transmittance;
+            break;
+        }
+        case 5:
+        case 6: {
+            const auto b = rypath_bdpt::hero_frozen_coated(restored);
+            valid = valid && hero_history_same_conductor(a.layered.conductor, b.conductor) &&
+                    hero_history_same_dielectric(a.layered.interface, b.interface) &&
+                    a.layered.conductor_base == b.conductor_base &&
+                    a.layered.reflectance == b.reflectance && a.layered.thickness == b.thickness &&
+                    a.layered.albedo == b.albedo && a.layered.g == b.g &&
+                    a.layered.max_depth == b.max_depth && a.layered.samples == b.samples &&
+                    a.layered.material_seed == b.material_seed;
+            break;
+        }
+        case 7:
+        case 8: {
+            const auto b = rypath_bdpt::hero_frozen_table(restored, k);
+            valid = valid && a.table == b.table && a.rgb_table == b.rgb_table &&
+                    a.wavelength == b.wavelength;
+            break;
+        }
+        case 11: {
+            const auto b = rypath_bdpt::hero_frozen_gltf(restored, k);
+            valid = valid && a.gltf.color == b.color && a.gltf.metallic == b.metallic &&
+                    a.gltf.alpha == b.alpha &&
+                    a.gltf.specular_probability == b.specular_probability;
+            break;
+        }
+        }
+    }
+    return valid;
+}
+// Twelve words per owner: failure groups, density bits, material tags/mask,
+// and the first mismatching dielectric lane/field with its original values.
+inline void hero_history_diagnostics(const thread rypath_bdpt::PacketPTState &expected,
+                                     const thread rypath_bdpt::HeroWalkState &actual,
+                                     device uint *out) {
+    using namespace rypath_bdpt;
+    const thread auto &original = expected.latest;
+    const thread auto &restored = actual.latest;
+    uint failures = 0;
+#define RYPATH_HISTORY_CHECK(bit, condition)                                                       \
+    if (!(condition))                                                                              \
+    failures |= 1u << bit
+    RYPATH_HISTORY_CHECK(0, all(restored.point.position == original.point.position));
+    RYPATH_HISTORY_CHECK(1,
+                         all(restored.point.geometric_normal == original.point.geometric_normal));
+    RYPATH_HISTORY_CHECK(2, all(restored.point.shading_normal == original.point.shading_normal));
+    RYPATH_HISTORY_CHECK(3, all(restored.frame.x == original.frame.x) &&
+                                all(restored.frame.y == original.frame.y) &&
+                                all(restored.frame.z == original.frame.z));
+    RYPATH_HISTORY_CHECK(4, restored.type == original.type && restored.seed == original.seed &&
+                                restored.path_id == original.path_id &&
+                                restored.delta == original.delta &&
+                                restored.bsdf.active_mask == original.bsdf.active_mask);
+    RYPATH_HISTORY_CHECK(5, hero_frozen_fields_match(original.bsdf, restored.bsdf));
+    // Both area-density directions require the previous geometric normal;
+    // represented scattering also retains the preceding position in hot state.
+    Vertex current{};
+    current.type = surface_vertex;
+    current.point.position = float3(4, 8, 12);
+    current.point.geometric_normal = float3(.7f, .8f, .9f);
+    const float forward_expected = convert_density(.25f, original, current);
+    const float forward_actual = convert_density(.25f, restored, current);
+    const float reverse_expected = convert_density(.75f, current, original);
+    const float reverse_actual = convert_density(.75f, current, restored);
+    RYPATH_HISTORY_CHECK(6, forward_actual == forward_expected);
+    RYPATH_HISTORY_CHECK(7, reverse_actual == reverse_expected);
+    RYPATH_HISTORY_CHECK(8, all(expected.preceding_position == actual.preceding_position) &&
+                                expected.preceding_type == actual.preceding_type);
+    RYPATH_HISTORY_CHECK(9, expected.sample.status == actual.sample.status &&
+                                expected.sample.pixel == actual.sample.pixel &&
+                                expected.sample.sample_low == actual.sample.sample_low &&
+                                expected.sample.sample_high == actual.sample.sample_high);
+    RYPATH_HISTORY_CHECK(10, expected.sample.wavelength == actual.sample.wavelength &&
+                                 expected.sample.radiance == actual.sample.radiance &&
+                                 expected.sample.scatterings == actual.sample.scatterings);
+    for (uint k = 0; k < 4; ++k) {
+        RYPATH_HISTORY_CHECK(11, expected.sample.random_words[k] == actual.sample.random_words[k]);
+        RYPATH_HISTORY_CHECK(12, expected.lambda.lambda[k] == actual.lambda.lambda[k] &&
+                                     expected.lambda.pdf[k] == actual.lambda.pdf[k]);
+        RYPATH_HISTORY_CHECK(
+            13, expected.hero.density.lane[k].fraction == actual.hero.density.lane[k].fraction &&
+                    expected.hero.density.lane[k].exponent == actual.hero.density.lane[k].exponent);
+        RYPATH_HISTORY_CHECK(14, expected.hero.previous.lane[k].fraction ==
+                                         actual.hero.previous.lane[k].fraction &&
+                                     expected.hero.previous.lane[k].exponent ==
+                                         actual.hero.previous.lane[k].exponent);
+    }
+    for (uint k = 0; k < 2; ++k)
+        RYPATH_HISTORY_CHECK(15, expected.sample.lens_words[k] == actual.sample.lens_words[k] &&
+                                     expected.sample.filter_offsets[k] ==
+                                         actual.sample.filter_offsets[k]);
+    RYPATH_HISTORY_CHECK(16, all(expected.radiance == actual.radiance));
+    RYPATH_HISTORY_CHECK(17, all(expected.beta == actual.beta));
+    RYPATH_HISTORY_CHECK(18, all(expected.ray_origin == actual.ray_origin));
+    RYPATH_HISTORY_CHECK(19, all(expected.ray_direction == actual.ray_direction));
+    RYPATH_HISTORY_CHECK(20, expected.pdf == actual.pdf);
+    RYPATH_HISTORY_CHECK(21, expected.ray_min_distance == actual.ray_min_distance &&
+                                 expected.ray_max_distance == actual.ray_max_distance);
+    RYPATH_HISTORY_CHECK(22, expected.roulette_eta.value == actual.roulette_eta.value &&
+                                 expected.roulette_eta.enabled == actual.roulette_eta.enabled);
+    RYPATH_HISTORY_CHECK(23, all(expected.hero.eta_scale == actual.hero.eta_scale) &&
+                                 expected.hero.active_mask == actual.hero.active_mask &&
+                                 expected.hero.roulette_enabled == actual.hero.roulette_enabled);
+    RYPATH_HISTORY_CHECK(24, expected.index == actual.index);
+    RYPATH_HISTORY_CHECK(25,
+                         expected.count == actual.count && expected.crossings == actual.crossings);
+    RYPATH_HISTORY_CHECK(26, expected.complete == actual.complete);
+#undef RYPATH_HISTORY_CHECK
+    out[0] = failures;
+    out[1] = as_type<uint>(forward_expected);
+    out[2] = as_type<uint>(forward_actual);
+    out[3] = as_type<uint>(reverse_expected);
+    out[4] = as_type<uint>(reverse_actual);
+    out[5] = hero_freeze_bsdf(original.bsdf).kind;
+    out[6] = restored.bsdf.kind;
+    out[7] = restored.bsdf.active_mask;
+    uint material_field = 0, material_expected = 0, material_actual = 0;
+    if (original.bsdf.lane[0].kind == 2 && restored.bsdf.kind == 2) {
+        for (uint k = 0; k < 4; ++k) {
+            if (!(original.bsdf.active_mask & (1u << k)))
+                continue;
+            const thread auto &a = original.bsdf.lane[k].dielectric;
+            const auto b = hero_frozen_dielectric(restored.bsdf, k);
+            const uint expected_words[4] = {as_type<uint>(a.eta), as_type<uint>(a.alpha_x),
+                                            as_type<uint>(a.alpha_y), uint(a.smooth)};
+            const uint actual_words[4] = {as_type<uint>(b.eta), as_type<uint>(b.alpha_x),
+                                          as_type<uint>(b.alpha_y), uint(b.smooth)};
+            for (uint field = 0; field < 4; ++field)
+                if (expected_words[field] != actual_words[field] && material_field == 0) {
+                    material_field = 1 + k * 4 + field;
+                    material_expected = expected_words[field];
+                    material_actual = actual_words[field];
+                }
+        }
+    }
+    out[8] = material_field;
+    out[9] = material_expected;
+    out[10] = material_actual;
+    out[11] = 0x48535435u;
+}
+// Separate dispatches force publication through real typed device pools. Odd
+// slots leave a full guarded owner before, between and after the three writes.
+kernel void rypath_hero_history_write(constant WavefrontArguments &a [[buffer(1)]],
+                                      uint lane [[thread_position_in_grid]]) {
+    if (lane >= 3)
+        return;
+    const uint slot = 2 * lane + 1;
+    const auto state = hero_history_sentinel<rypath_bdpt::HeroWalkState>(
+        slot, a.queue_in, reinterpret_cast<device const float *>(a.queue_out));
+    wavefront_store_packet(a, slot, state);
+}
+kernel void rypath_hero_history_read(constant WavefrontArguments &a [[buffer(1)]],
+                                     device uint *out [[buffer(0)]],
+                                     uint lane [[thread_position_in_grid]]) {
+    if (lane >= 3)
+        return;
+    const uint slot = 2 * lane + 1;
+    const auto expected = hero_history_sentinel<rypath_bdpt::PacketPTState>(
+        slot, a.queue_in, reinterpret_cast<device const float *>(a.queue_out));
+    const auto actual = wavefront_load_hero(a, slot);
+    hero_history_diagnostics(expected, actual, out + 12 * lane);
+}
+
+template <bool Separated>
+inline void hero_history_write_fixed(constant WavefrontArguments &a, uint lane) {
+    if (lane >= 3)
+        return;
+    const uint slot = 2 * lane + 1;
+    const auto state = hero_history_sentinel<rypath_bdpt::HeroWalkState>(
+        slot, a.queue_in, reinterpret_cast<device const float *>(a.queue_out));
+    if (Separated)
+        wavefront_store_packet_separated(a, slot, state);
+    else
+        wavefront_store_hero_packed(a, slot, state);
+}
+template <bool Separated>
+inline void hero_history_read_fixed(constant WavefrontArguments &a, device uint *out, uint lane) {
+    if (lane >= 3)
+        return;
+    const uint slot = 2 * lane + 1;
+    const auto expected = hero_history_sentinel<rypath_bdpt::PacketPTState>(
+        slot, a.queue_in, reinterpret_cast<device const float *>(a.queue_out));
+    const auto actual =
+        Separated ? wavefront_load_hero_separated(a, slot) : wavefront_load_hero_packed(a, slot);
+    hero_history_diagnostics(expected, actual, out + 12 * lane);
+}
+kernel void rypath_hero_history_write_packed(constant WavefrontArguments &a [[buffer(1)]],
+                                             uint lane [[thread_position_in_grid]]) {
+    hero_history_write_fixed<false>(a, lane);
+}
+kernel void rypath_hero_history_read_packed(constant WavefrontArguments &a [[buffer(1)]],
+                                            device uint *out [[buffer(0)]],
+                                            uint lane [[thread_position_in_grid]]) {
+    hero_history_read_fixed<false>(a, out, lane);
+}
+kernel void rypath_hero_history_write_separated(constant WavefrontArguments &a [[buffer(1)]],
+                                                uint lane [[thread_position_in_grid]]) {
+    hero_history_write_fixed<true>(a, lane);
+}
+kernel void rypath_hero_history_read_separated(constant WavefrontArguments &a [[buffer(1)]],
+                                               device uint *out [[buffer(0)]],
+                                               uint lane [[thread_position_in_grid]]) {
+    hero_history_read_fixed<true>(a, out, lane);
+}
+
+// Differential reference uses the original full Prepared evaluator; compact
+// queries call native families directly and preserve validity as well as PDFs.
+kernel void rypath_hero_frozen_differential(device uint *out [[buffer(0)]],
+                                            device const uint *measured [[buffer(1)]],
+                                            device const uint *fourier [[buffer(2)]],
+                                            device const float *rgb [[buffer(3)]],
+                                            uint index [[thread_position_in_grid]]) {
+    using namespace rypath_bdpt;
+    if (index >= 480)
+        return;
+    const uint kinds[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 11};
+    const uint kind = kinds[index / 48];
+    const uint mask_index = (index / 16) % 3;
+    const uint mask = mask_index == 0 ? 1u : mask_index == 1 ? 3u : 15u;
+    const uint variant = index % 8;
+    const Mode mode = (index & 8u) ? Mode::Importance : Mode::Radiance;
+    Vertex v{};
+    v.type = surface_vertex;
+    v.point.position = float3(1, 2, 3);
+    v.point.geometric_normal = float3(0, 0, 1);
+    v.point.shading_normal = float3(0, 0, 1);
+    v.frame = {float3(1, 0, 0), float3(0, 1, 0), float3(0, 0, 1)};
+    v.seed = 0xfedcba98u + index;
+    v.bsdf.active_mask = mask;
+    for (uint k = 0; k < 4; ++k) {
+        thread auto &p = v.bsdf.lane[k];
+        p.kind = kind;
+        p.reflectance = .125f * float(k + 1);
+        p.transmittance = .0625f * float(4 - k);
+        p.wavelength = 410 + 80 * k;
+        p.conductor = {1.25f + float(k), 2.5f + float(k), .2f + .03f * float(k), .3f, variant == 1};
+        p.dielectric = {variant == 2 ? 1.f : 1.25f + .125f * float(k), .2f, .3f, variant == 1};
+        p.layered = {{1.5f, .2f, .3f, false},
+                     {1.5f, 2.5f, .2f, .3f, false},
+                     kind == 6,
+                     .5f,
+                     .1f,
+                     variant == 3 ? .25f : 0.f,
+                     .125f,
+                     3,
+                     2,
+                     79};
+        // The legacy coated compatibility check rejects NaN roughness even
+        // at tangent directions where the layered evaluator returns early.
+        if ((kind == 5 || kind == 6) && variant == 6)
+            p.layered.interface.alpha_x = NAN;
+        p.gltf = {.125f * float(k + 1), .25f, variant == 1 ? 0.f : .2f, .5f};
+        p.table = kind == 7 ? measured : fourier;
+        p.rgb_table = rgb;
+    }
+    const auto frozen = hero_freeze_previous(v);
+    float3 wo = normalize(float3(.3f, .2f, 1));
+    float3 wi = normalize(float3(-.2f, .1f, 1));
+    if (variant == 3)
+        wi.z = -wi.z;
+    if (variant == 4)
+        wo = normalize(float3(1, .1f, 0x1p-20f));
+    if (variant == 5) {
+        wo.z = -wo.z;
+        wi.z = -wi.z;
+    }
+    if (variant == 6)
+        wo = float3(1, 0, 0);
+    if (variant == 7)
+        wi = -wo;
+    const auto reference = rypath_hero_scattering::evaluate(v.bsdf, wo, wi, v.seed, mode);
+    const auto compact = hero_frozen_evaluate(frozen.bsdf, wo, wi, v.seed, mode);
+    bool valid = hero_frozen_fields_match(v.bsdf, frozen.bsdf) && reference.valid == compact.valid;
+    if (kind == 7 || kind == 8) {
+        // These address-only sentinels are never dereferenced: verify distinct
+        // per-lane pointers independently of the valid shared-table queries.
+        auto pointers = v.bsdf;
+        for (uint k = 0; k < 4; ++k) {
+            pointers.lane[k].table += k;
+            pointers.lane[k].rgb_table += k;
+        }
+        const auto frozen_pointers = hero_freeze_bsdf(pointers);
+        valid = valid && hero_frozen_fields_match(pointers, frozen_pointers);
+    }
+    if (reference.valid)
+        valid = valid && all(as_type<uint4>(reference.f) == as_type<uint4>(compact.f)) &&
+                all(as_type<uint4>(reference.pdf) == as_type<uint4>(compact.pdf));
+    Vertex before{}, next{};
+    before.type = surface_vertex;
+    before.point.position = v.point.position + wo;
+    next.type = variant == 7 ? environment_vertex : surface_vertex;
+    next.point.position = v.point.position + wi;
+    next.point.geometric_normal = -wi;
+    const auto original_pdf = hero_represented_pdf(v, before, next);
+    const auto frozen_pdf = hero_represented_pdf(frozen, before, next);
+    valid = valid && ((all(isnan(original_pdf)) && all(isnan(frozen_pdf))) ||
+                      all(as_type<uint4>(original_pdf) == as_type<uint4>(frozen_pdf)));
+    out[index] = uint(valid);
 }

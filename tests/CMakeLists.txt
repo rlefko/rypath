@@ -1642,7 +1642,7 @@ endif()
 
 if(RYPATH_ENABLE_METAL)
     add_executable(rypath_wavefront_queue_tests wavefront_queue_tests.mm)
-    target_link_libraries(rypath_wavefront_queue_tests PRIVATE rypath_metal_backend "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    target_link_libraries(rypath_wavefront_queue_tests PRIVATE rypath_metal_backend rypath_bsdf_tables rypath_rgb_spectrum "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
     set_target_properties(rypath_wavefront_queue_tests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
     target_compile_options(rypath_wavefront_queue_tests PRIVATE -fobjc-arc)
     rypath_configure_host_target(rypath_wavefront_queue_tests)
@@ -1985,3 +1985,21 @@ endif()
 add_test(NAME infrastructure.hero_performance_runner COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/hero_performance_runner_tests.py")
 set_tests_properties(infrastructure.hero_performance_runner PROPERTIES TIMEOUT 30)
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_hero_current_probe hero_current_probe.mm)
+    target_link_libraries(rypath_hero_current_probe PRIVATE rypath_bsdf_tables rypath_rgb_spectrum
+        "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_hero_current_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_hero_current_probe PRIVATE -fobjc-arc
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+    rypath_configure_host_target(rypath_hero_current_probe)
+    add_dependencies(rypath_hero_current_probe rypath_hero_current_shader)
+    add_test(NAME metal.hero_current COMMAND rypath_hero_current_probe "${rypath_hero_current_library}")
+    set_tests_properties(metal.hero_current PROPERTIES TIMEOUT 120 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_hero_current_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.hero_current PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()

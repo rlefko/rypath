@@ -10,12 +10,38 @@
 // helpers and write it back afterward. Resources/SurfaceAlpha are reconstructed
 // per dispatch; they are never stored here. Vertex Prepared retains immutable
 // scene table pointers, which must remain valid through command completion.
+#include "hero_current_bsdf.h"
+#include "hero_current_vertex.h"
+#include "hero_frozen_bsdf.h"
+// Older geometry enters represented PDFs only through type/position/normal.
+struct HeroNeighbor {
+    struct Point {
+        float3 position, geometric_normal;
+    } point;
+    uint type;
+};
+inline bool infinite(const thread HeroNeighbor &v) { return v.type == environment_vertex; }
+template <bool Compact> struct PTCurrent {
+    using Type = Vertex;
+};
+template <> struct PTCurrent<true> {
+    using Type = HeroCurrentVertex;
+};
+template <bool Compact> struct PTNeighbor {
+    using Type = Vertex;
+};
+template <> struct PTNeighbor<true> {
+    using Type = HeroNeighbor;
+};
 #include "hero_pt_helpers.h"
-struct PacketPTState {
+template <typename Previous, bool Compact = false> struct PTWalkState {
+    enum { compact_hero = Compact };
+    using Neighbor = typename PTNeighbor<Compact>::Type;
+    using Current = typename PTCurrent<Compact>::Type;
     // PT retains only its latest frozen BSDF/frame. The older endpoint enters
     // represented_scattering_pdf only through type and position: a continuing
     // walk contains camera/surface history, never a terminal environment vertex.
-    Vertex latest;
+    Previous latest;
     float3 preceding_position;
     uint preceding_type;
     wire::Sample sample;
@@ -29,6 +55,7 @@ struct PacketPTState {
     uint count, crossings;
     bool complete;
 };
+using PacketPTState = PTWalkState<Vertex>;
 // Hot tracing/publication state. The full frozen Vertex lives in a separate cold pool.
 struct PacketPTHot {
     float3 preceding_position;
@@ -53,7 +80,9 @@ static_assert(alignof(PacketPTState) <= 16 && alignof(PacketPTHot) <= 16 &&
                   alignof(PacketPTHit) <= 16 &&
                   sizeof(PacketPTHot) + sizeof(Vertex) == sizeof(PacketPTState),
               "Packet PT split-state ABI/alignment");
-inline void packet_pt_initialize(thread PacketPTState &state, const thread wire::Sample &sample,
+#include "hero_pt_state.h"
+template <typename State>
+inline void packet_pt_initialize(thread State &state, const thread wire::Sample &sample,
                                  const thread Wavelengths &lambda, ray incoming, float pdf,
                                  ulong index, constant wire::Parameters &p) {
     state = {};
@@ -68,7 +97,7 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
     state.beta = 1;
     state.roulette_eta = {};
     state.count = 1;
-    thread auto &endpoint = state.latest;
+    typename State::Current endpoint{};
     endpoint.type = camera_vertex;
     endpoint.path_id = 0;
     endpoint.point.position = incoming.origin;
@@ -76,6 +105,7 @@ inline void packet_pt_initialize(thread PacketPTState &state, const thread wire:
     endpoint.point.shading_normal = unpack(p.camera_normal);
     endpoint.beta = 1;
     endpoint.connectible = true;
+    hero_store_previous(state.latest, endpoint);
     if (sample.status != wire::success || packet_bidirectional_enabled(p) ||
         p.camera_medium != 0xffffffffu || !all(isfinite(incoming.origin)) ||
         !all(isfinite(incoming.direction)) || !isfinite(pdf) || pdf < 0) {
@@ -103,23 +133,25 @@ inline SurfaceHit packet_pt_trace(thread Resources &r, thread wire::Sample &samp
 
 // The ordinary function expands to f0d8494's original body and statement order.
 // Only the split variant replaces event tracing; all event arithmetic is shared.
+template <typename State>
 [[clang::noinline]] inline void
-packet_pt_step(thread Resources &r, thread PacketPTState &state,
+packet_pt_step(thread Resources &r, thread State &state,
                thread const rypath_replay::ReplayState *replay = nullptr) {
 #define RYPATH_PACKET_EVENT_PRETRACED 0
 #include "packet_pt_event_body.inc"
 #undef RYPATH_PACKET_EVENT_PRETRACED
 }
+template <typename State>
 [[clang::noinline]] inline void
-packet_pt_step_pretraced(thread Resources &r, thread PacketPTState &state,
+packet_pt_step_pretraced(thread Resources &r, thread State &state,
                          thread const rypath_replay::ReplayState *replay,
                          thread const SurfaceHit &pretraced) {
 #define RYPATH_PACKET_EVENT_PRETRACED 1
 #include "packet_pt_event_body.inc"
 #undef RYPATH_PACKET_EVENT_PRETRACED
 }
-inline storage::Result packet_pt_result(const thread PacketPTState &state,
-                                        constant wire::Parameters &p) {
+template <typename State>
+inline storage::Result packet_pt_result(const thread State &state, constant wire::Parameters &p) {
     storage::Result result{};
     result.status = state.complete ? state.sample.status : wire::invalid_arithmetic;
     result.pixel = state.sample.pixel;
