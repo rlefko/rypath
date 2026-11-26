@@ -31,6 +31,7 @@ struct Vertex {
 };
 static_assert(sizeof(Vertex) <= storage::vertex_bytes && alignof(Vertex) <= 16,
               "Packet vertex exceeds checked opaque workspace slot");
+#include "hero_light_endpoint.h"
 struct Resources {
     SurfaceAlpha alpha;
     const device wire::SpectralKnot *knots;

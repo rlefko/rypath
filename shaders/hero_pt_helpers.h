@@ -191,7 +191,7 @@ inline float4 hero_direct(thread Resources &r, thread wire::Sample &sample,
     if (pt.type != surface_vertex || !pt.connectible)
         return 0;
     const constant auto &p = *r.alpha.parameters;
-    Vertex sampled{};
+    typename HeroDirectEndpoint<Current>::Type sampled{};
     float3 direction;
     float sampled_pdf = 0;
     if (!sample_li(r, pt, lambda, uniforms4(p, random(r, sample, index, 133 + t - 2, replay)),

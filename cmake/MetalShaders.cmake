@@ -116,6 +116,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/src/hero_spectrum_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_scattering.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_pt_helpers.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_light_endpoint.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_pt_state.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_frozen_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_current_bsdf.h"
@@ -449,3 +450,20 @@ add_custom_command(OUTPUT "${rypath_hero_current_library}"
         -o "${rypath_hero_current_library}"
     DEPENDS "${rypath_hero_current_air}" VERBATIM)
 add_custom_target(rypath_hero_current_shader DEPENDS "${rypath_hero_current_library}")
+
+# Full-render-TU differential: genuine Vertex and compact current/light endpoints.
+set(rypath_hero_light_endpoint_library "${rypath_runtime_directory}/rypath-hero-light-endpoint.metallib")
+set(rypath_hero_light_endpoint_air "${rypath_runtime_directory}/CMakeFiles/rypath-hero-light-endpoint.air")
+add_custom_command(OUTPUT "${rypath_hero_light_endpoint_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_light_endpoint_probe.metal"
+        -o "${rypath_hero_light_endpoint_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_hero_light_endpoint_air}"
+        -o "${rypath_hero_light_endpoint_library}"
+    DEPENDS ${rypath_render_shader_dependencies}
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_light_endpoint.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_light_endpoint_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_hero_light_endpoint_shader DEPENDS "${rypath_hero_light_endpoint_library}")

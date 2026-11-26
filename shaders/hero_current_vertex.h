@@ -21,6 +21,17 @@ struct HeroCurrentVertex {
 static_assert(sizeof(HeroCurrentVertex) == 496 && alignof(HeroCurrentVertex) == 16 &&
                   sizeof(HeroCurrentVertex) + 512 == sizeof(Vertex),
               "Hero current event removes only the full Prepared payload");
+// Retain the full-size light oracle in legacy hero controls. Only the compact
+// hero event uses a sampled light without scattering material or frame state.
+template <typename Current> struct HeroDirectEndpoint {
+    using Type = Vertex;
+};
+template <> struct HeroDirectEndpoint<HeroCurrentVertex> {
+    using Type = HeroLightEndpoint;
+};
+static_assert(sizeof(HeroDirectEndpoint<HeroCurrentVertex>::Type) == 256 &&
+                  sizeof(HeroDirectEndpoint<Vertex>::Type) == sizeof(Vertex),
+              "Compact sampled-light storage must preserve the legacy control");
 inline bool prepare_event_bsdf(const thread Resources &r, const device wire::Material &material,
                                graph_wire::Context context, thread Wavelengths &lambda,
                                thread float4 &beta, thread rypath_packet::Prepared &out,
