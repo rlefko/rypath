@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""CPU contracts for the five-entrypoint compilation boundary."""
+"""CPU contracts for the production-bound arithmetic compilation boundaries."""
 
 import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import generate_canonical_probe as generator
 
@@ -17,26 +18,35 @@ class CanonicalProbeGenerationTests(unittest.TestCase):
     def setUp(self):
         self.render = (ROOT / 'shaders/render.metal').read_bytes()
         self.probe = (ROOT / 'shaders/light_geometry_sampling_probe.metal').read_bytes()
+        self.transport = (ROOT / 'shaders/packet_transport.h').read_bytes()
 
     def test_exact_production_transform_is_reversible(self):
-        render, probe, render_edits, probe_edits = generator.transform_details(self.render, self.probe)
+        (render, probe, transport, render_edits, probe_edits,
+         transport_edits) = generator.transform_details(self.render, self.probe, self.transport)
         for original, derived, edits in ((self.render, render, render_edits),
-                                         (self.probe, probe, probe_edits)):
+                                         (self.probe, probe, probe_edits),
+                                         (self.transport, transport, transport_edits)):
             self.assertEqual(original.count(b'\n'), derived.count(b'\n'))
             for edit in reversed(edits):
                 derived = derived.replace(edit['replacement'], edit['original'], 1)
             self.assertEqual(derived, original)
         self.assertEqual(generator.kernels(render), [])
         self.assertEqual(tuple(row[0] for row in generator.kernels(probe)), generator.PROBE_KERNELS)
-        self.assertEqual(len(render_edits), 14)
+        self.assertEqual(len(render_edits), 15)
+        self.assertEqual(len(transport_edits), 1)
         self.assertEqual(len(probe_edits), 2)
         # All five executed kernel bodies remain exact production source slices.
         original_rows = {name: self.probe[begin:end]
                          for name, begin, end in generator.kernels(self.probe)}
         for name, begin, end in generator.kernels(probe):
             self.assertEqual(probe[begin:end], original_rows[name])
-        for include in (b'#include "packet_transport.h"', b'#include "scalar_transport.h"'):
-            self.assertIn(include, render)
+        self.assertIn(generator.ISOLATED_TRANSPORT, render)
+        self.assertIn(b'#include "scalar_transport.h"', render)
+        self.assertNotIn(generator.TRANSPORT, render)
+        self.assertNotIn(generator.PT_STEP, transport)
+        # Every transport helper byte is retained; the sole omission is the
+        # original final include, with a reversible line-preserving marker.
+        self.assertTrue(transport.startswith(self.transport[:self.transport.index(generator.PT_STEP)]))
         self.assertNotIn(b'namespace strategy_context21', probe)
 
     def test_balanced_scanner_ignores_literals_and_comments(self):
@@ -72,7 +82,39 @@ kernel void real() { const char *s = "} /* kernel \\\"";
         ]
         for render, probe in mutations:
             with self.subTest(render_len=len(render), probe_len=len(probe)), self.assertRaises(ValueError):
-                generator.transform(render, probe)
+                generator.transform(render, probe, self.transport)
+
+    def test_transport_boundary_drift_fails(self):
+        variants = [self.transport.replace(generator.PT_STEP, b''),
+                    self.transport + generator.PT_STEP,
+                    self.transport + b'// new text after reviewed boundary\n',
+                    self.transport.replace(generator.PT_STEP, b'#include "renamed_step.h"\n'),
+                    self.transport + b'kernel void hidden() {}\n']
+        for transport in variants:
+            with self.subTest(transport=transport[-80:]), self.assertRaises(ValueError):
+                generator.transform(self.render, self.probe, transport)
+        for render in (self.render.replace(generator.TRANSPORT, b''),
+                       self.render.replace(generator.TRANSPORT, generator.TRANSPORT * 2),
+                       self.render + generator.ISOLATED_TRANSPORT):
+            with self.subTest(render=render[-80:]), self.assertRaises(ValueError):
+                generator.transform(render, self.probe, self.transport)
+
+    def test_transitive_pt_reintroduction_fails_before_outputs(self):
+        render = ROOT / 'shaders/render.metal'
+        probe = ROOT / 'shaders/light_geometry_sampling_probe.metal'
+        target = (ROOT / 'shaders/packet_scattering.h').resolve()
+        original_read = Path.read_bytes
+
+        def reintroduce(path):
+            data = original_read(path)
+            return data + generator.PT_STEP if path.resolve() == target else data
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'derived'
+            with mock.patch.object(Path, 'read_bytes', reintroduce):
+                with self.assertRaisesRegex(ValueError, 'PT-step escaped'):
+                    generator.generate(render, probe, output)
+            self.assertFalse(output.exists())
 
     def test_real_files_and_hash_manifest(self):
         render = ROOT / 'shaders/render.metal'
@@ -81,7 +123,7 @@ kernel void real() { const char *s = "} /* kernel \\\"";
             output = Path(directory) / 'derived'
             generator.generate(render, probe, output)
             record = json.loads((output / 'generation.json').read_text())
-            self.assertEqual(record['schema'], 2)
+            self.assertEqual(record['schema'], 3)
             self.assertEqual(record['entrypoints'], list(generator.PROBE_KERNELS))
             for name, digest in record['generated_files'].items():
                 self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest)
@@ -89,6 +131,13 @@ kernel void real() { const char *s = "} /* kernel \\\"";
                 self.assertTrue(record[field])
                 for path, digest in record[field].items():
                     self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), digest)
+            self.assertIn(str((ROOT / 'shaders/packet_transport.h').resolve()), record['source_files'])
+            self.assertNotIn(str((ROOT / 'shaders/packet_pt_step.h').resolve()),
+                             record['retained_helper_files'])
+            self.assertNotIn(str((ROOT / 'shaders/hero_current_bsdf.h').resolve()),
+                             record['retained_helper_files'])
+            self.assertIn('canonical_packet_transport.h', record['generated_files'])
+            self.assertEqual(len(record['edits']['transport']), 1)
             self.assertFalse(record['numeric_or_capability_policy_changes'])
         self.assertEqual(render.read_bytes(), self.render)
         self.assertEqual(probe.read_bytes(), self.probe)
@@ -122,6 +171,69 @@ kernel void real() { const char *s = "} /* kernel \\\"";
                     generator.helper_closure(render, probe, source, b'')
             self.assertEqual(generator.helper_closure(
                 render, probe, b'/*\n#include "absent.h"\n*/\n', b''), {})
+
+
+class CurrentProbeGenerationTests(unittest.TestCase):
+    def setUp(self):
+        self.paths = (ROOT / 'shaders/render.metal', ROOT / 'tests/hero_current_probe.metal',
+                      ROOT / 'shaders/packet_transport.h', ROOT / 'shaders/packet_pt_step.h')
+        self.sources = tuple(p.read_bytes() for p in self.paths)
+
+    def test_exact_current_sources_and_prefix_are_reversible(self):
+        result = generator.transform_current_details(*self.sources)
+        for original, derived, edits in zip(self.sources, result[:4], result[4:]):
+            self.assertEqual(original.count(b'\n'), derived.count(b'\n'))
+            for edit in reversed(edits):
+                derived = derived.replace(edit['replacement'], edit['original'], 1)
+            self.assertEqual(derived, original)
+        self.assertEqual(generator.kernels(result[0]), [])
+        original_rows = {name: self.sources[1][begin:end]
+                         for name, begin, end in generator.kernels(self.sources[1])}
+        self.assertEqual(tuple(original_rows), generator.CURRENT_KERNELS)
+        for name, begin, end in generator.kernels(result[1]):
+            self.assertEqual(result[1][begin:end], original_rows[name])
+        end = self.sources[3].index(generator.STATE_END) + len(generator.STATE_END)
+        self.assertTrue(result[3].startswith(self.sources[3][:end]))
+        self.assertNotIn(b'packet_pt_initialize(', result[3])
+        self.assertNotIn(b'packet_pt_event_body.inc', result[3])
+        self.assertIn(generator.CURRENT_STATE, result[2])
+
+    def test_current_boundary_drift_fails(self):
+        render, probe, transport, step = self.sources
+        variants = [(render, probe, transport, step.replace(generator.STATE_END, b'')),
+                    (render, probe, transport, step + generator.STATE_END),
+                    (render, probe, transport, step.replace(generator.STATE_NEXT, b'renamed(')),
+                    (render, probe, transport, step.replace(
+                        generator.STATE_END, b'inline void packet_pt_trace() {}\n' + generator.STATE_END)),
+                    (render, probe, transport, step.replace(
+                        generator.STATE_END, b'#include "packet_pt_event_body.inc"\n' + generator.STATE_END)),
+                    (render, probe + b'kernel void hidden() {}\n', transport, step),
+                    (render, probe.replace(generator.CURRENT_PROBE_RENDER, b''), transport, step),
+                    (render, probe, transport + generator.PT_STEP, step)]
+        for sources in variants:
+            with self.subTest(lengths=tuple(map(len, sources))), self.assertRaises(ValueError):
+                generator.transform_current_details(*sources)
+
+    def test_current_manifest_and_retained_material_state_closure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'derived'
+            generator.generate_current(self.paths[0], self.paths[1], output)
+            record = json.loads((output / 'generation.json').read_text())
+            self.assertEqual(record['entrypoints'], list(generator.CURRENT_KERNELS))
+            self.assertEqual(len(record['source_files']), 4)
+            for name, digest in record['generated_files'].items():
+                self.assertEqual(hashlib.sha256((output / name).read_bytes()).hexdigest(), digest)
+            for field in ('source_files', 'retained_helper_files'):
+                for path, digest in record[field].items():
+                    self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), digest)
+            closure = {Path(p).name for p in record['retained_helper_files']}
+            self.assertIn('hero_current_bsdf.h', closure)
+            self.assertIn('hero_frozen_bsdf.h', closure)
+            self.assertIn('hero_pt_state.h', closure)
+            self.assertNotIn('packet_pt_step.h', closure)
+            self.assertNotIn('packet_pt_event_body.inc', closure)
+            self.assertFalse(record['numeric_or_capability_policy_changes'])
+        self.assertEqual(tuple(p.read_bytes() for p in self.paths), self.sources)
 
 
 if __name__ == '__main__':

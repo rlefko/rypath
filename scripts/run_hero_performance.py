@@ -58,7 +58,9 @@ def plan_runs(a):
     return plan
 
 
-def settings(run):
+def settings(run, area_contract=7):
+    if type(area_contract) is not int or area_contract not in (6, 7):
+        raise ValueError('Expected Area contract must be 6 or 7')
     return dict(width=1920, height=1080, internal_width=1920, internal_height=1080,
                 output_width=1920, output_height=1080, seed=run['seed'], material_seed=0,
                 resource_profile='large' if run['scene'].startswith('pavilion') else 'standard',
@@ -68,7 +70,7 @@ def settings(run):
                 requested_area_stencil='reciprocal16', effective_mutation_steps=1, mutation_steps=1,
                 reconstruction='temporal', variance_policy='conservative', variance_prefilter=False,
                 strict_spatial_segments=False, guide_cache=True, footprint_samples=1,
-                area_contract=6, area_output='conditional-mean', area_target='quarter-l1-v1',
+                area_contract=area_contract, area_output='conditional-mean', area_target='quarter-l1-v1',
                 area_source_mis='source-target-mis-v1', area_temporal_reuse=20,
                 capacity=65536, effective_capacity=65536, quantum=8, group_width=32,
                 packet_events=1, packet_layout='packed', profile_stages=False,
@@ -77,7 +79,7 @@ def settings(run):
 
 
 def command(a, run, report, capture_paths):
-    expected = settings(run)
+    expected = settings(run, getattr(a, run['arm']+'_area_contract', 7))
     cmd = [str(getattr(a, run['arm'])), '--scene', str(a.scenes[run['scene']]),
            '--output', str(report), '--frames', str(a.frames), '--warmup', str(a.warmup)]
     options = {'width': 1920, 'height': 1080, 'output-width': 1920, 'output-height': 1080,
@@ -126,6 +128,19 @@ def inspect_report(report, expected, frames, warmup, offset):
         raise ValueError('Missing scene/asset source identity')
     if len(report['frames']) != frames+warmup:
         raise ValueError('Missing frame observations')
+    contract = expected['area_contract']
+    if type(contract) is not int or contract not in (6, 7):
+        raise ValueError('Expected Area contract must be 6 or 7')
+    permission = False
+    if contract == 7:
+        requested = report['settings'].get('requested_area_temporal_cache')
+        permission = report['settings'].get('area_temporal_cache')
+        if type(requested) is not bool or type(permission) is not bool or requested != permission:
+            raise ValueError('Cache permission settings must be matching booleans')
+    else:
+        for key in ('requested_area_temporal_cache', 'area_temporal_cache'):
+            if key in report['settings'] and report['settings'][key] is not False:
+                raise ValueError('Area contract 6 cannot enable temporal evaluation cache')
     pixels = expected['width'] * expected['height']
     times = []
     observed = {name: {kind: [] for kind in ('cpu_wall', 'GPU')}
@@ -140,8 +155,24 @@ def inspect_report(report, expected, frames, warmup, offset):
             raise ValueError('Missing history accounting')
         logical = pixels*((7 if row['history_used'] else 5)+1)
         actual = integer(row.get('completed_evaluations'), 'completed_evaluations')
-        cached = integer(row.get('cached_evaluations', 0), 'cached_evaluations')
-        nominal = integer(row.get('logical_evaluations', logical), 'logical_evaluations')
+        if contract == 7:
+            used = row.get('temporal_evaluation_cache_used')
+            if type(used) is not bool:
+                raise ValueError('Cache used flag must be boolean')
+            cached = integer(row.get('cached_evaluations'), 'cached_evaluations')
+            nominal = integer(row.get('logical_evaluations'), 'logical_evaluations')
+            if used and (not permission or not row['history_used']):
+                raise ValueError('Cache hit requires permission and history')
+            if cached != (2*pixels if used else 0):
+                raise ValueError('Cache count must equal two evaluations per pixel on a hit')
+        else:
+            used = row.get('temporal_evaluation_cache_used', False)
+            if used is not False:
+                raise ValueError('Area contract 6 cannot report a cache hit')
+            cached = integer(row.get('cached_evaluations', 0), 'cached_evaluations')
+            nominal = integer(row.get('logical_evaluations', logical), 'logical_evaluations')
+            if cached != 0:
+                raise ValueError('Area contract 6 cached evaluations must be zero')
         if actual+cached != logical or nominal != logical:
             raise ValueError(f'Evaluation accounting mismatch at frame {i}')
         if integer(row.get('mutation_attempts'), 'mutation_attempts') != pixels:
@@ -231,6 +262,9 @@ def paired_summary(runs):
                     continue
                 b, c = (arms[arm]['benchmark'] for arm in ARMS)
                 comparisons.append(dict(seed=seed, actual_order=arms['baseline']['pair_order'],
+                    execution_contracts={arm:{'area_contract':arms[arm]['benchmark']['settings']['area_contract'],
+                        'area_temporal_cache':arms[arm]['benchmark']['settings'].get('area_temporal_cache',False)}
+                        for arm in ARMS},
                     baseline={k:b[k] for k in ('fps','median_seconds','p95_seconds')},
                     candidate={k:c[k] for k in ('fps','median_seconds','p95_seconds')},
                     candidate_over_baseline={k:c[k]/b[k] for k in ('fps','median_seconds','p95_seconds')}))
@@ -246,6 +280,8 @@ def arguments(argv):
     for arm in ARMS:
         p.add_argument('--'+arm, type=Path, required=True)
         p.add_argument('--'+arm+'-revision', help='Optional supplied source revision; hashes bind actual artifacts')
+        p.add_argument('--'+arm+'-area-contract', type=int, choices=(6, 7), default=7,
+                       help='Expected Area wire contract; 6 permits the prior uncached executable (default: 7)')
     for scene in SCENES:
         p.add_argument('--'+scene, type=Path, required=True)
     p.add_argument('--motion-offset', action='append', default=[], metavar='SCENE=FLOAT')
@@ -313,6 +349,7 @@ def main(argv=None):
         environment_overrides=ENV, captures_enabled=not a.skip_captures,
         timing_scope='complete pipeline frame CPU wall, excluding warmup/startup and post-loop captures',
         quiescence='Caller must ensure no competing GPU work; not verified',
+        allowed_execution_difference='Area 6/7 temporal evaluation cache only; matched transport, MIS, mutation and reconstruction settings',
         artifact_binding='executable and adjacent metallib SHA-256 before and after each run')
     code = 1
     try:
@@ -320,7 +357,8 @@ def main(argv=None):
             signal.signal(s,cancellation.request)
         manifest['artifacts'] = {arm:dict(binary=identity(getattr(a,arm)),
             metallib=identity(getattr(a,arm).parent/'rypath.metallib'),
-            supplied_revision=getattr(a,arm+'_revision')) for arm in ARMS}
+            supplied_revision=getattr(a,arm+'_revision'),
+            expected_area_contract=getattr(a,arm+'_area_contract')) for arm in ARMS}
         manifest['inputs'] = {name:identity(path) for name,path in a.scenes.items()}
         manifest['platform'] = platform.platform()
         manifest['python'] = sys.version
@@ -366,7 +404,8 @@ def main(argv=None):
                 with report_path.open() as stream:
                     parsed = json.load(stream,parse_constant=reject_constant)
                 offset = a.offsets[scene] if run['mode']=='motion' else None
-                row['benchmark'] = inspect_report(parsed,settings(run),a.frames,a.warmup,offset)
+                row['benchmark'] = inspect_report(parsed,
+                    settings(run, getattr(a,arm+'_area_contract')),a.frames,a.warmup,offset)
                 source = row['benchmark']['source_identity']
                 # Scene preparation includes the seed in its source identity.
                 # Match both arms and poses within each scene/seed pair.

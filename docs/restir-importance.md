@@ -1,6 +1,7 @@
 # ReSTIR importance sampling repair
 
-Area contract 6 adds [spectral mutation and reciprocal stencil controls](spectral-color-noise.md).
+Area contract 7 memoizes exact static temporal evaluations and retains contract 6's
+[spectral mutation and reciprocal stencil controls](spectral-color-noise.md).
 It retains contract 5's numerical behavior and contract 4's radiance-like target and source-target MIS,
 which replaced the contract-3 bounded target and equal-weight reuse. The former target varied by
 at most ten percent, so it intentionally surrendered most of the importance
@@ -53,6 +54,40 @@ buffers are owned with the history bank; reusable frame-slot buffers cannot
 stand in for that context. Publication swaps context and reservoir together.
 A failed same-epoch attempt retains prior history. An epoch change invalidates
 eligibility before any potentially failing context allocation.
+
+When source and destination evaluator contexts are binary-identical, the reverse
+fresh evaluation uses the already computed current fresh leaf, and the forward
+history evaluation uses the prior selected leaf stored with its replay payload.
+The stored XYZ is the exact unweighted selected path value, separate from the
+published conditional mean. All temporal scoring, arithmetic order, reservoir
+random addresses and selection remain unchanged. Motion alone does not authorize
+memoization: any camera/lens/filter/spectral/material/texture/seed or destination
+mapping difference falls back to both complete walks. Scene data and specialized
+pipelines are immutable within a session; all mutable parameter words (except
+output sample labels) and owned graph/surface buffer contents must match exactly.
+History and cached leaf publication remain transactional on successful completion.
+The selected XYZ adds twelve bytes per pixel to each of the two history banks;
+exact mapping-content comparison also adds host work when checking eligibility.
+
+`FrameInfo` and frame-benchmark receipts distinguish physical
+`completed_evaluations`, `cached_evaluations`, and their sum
+`logical_evaluations`. Warm identical contexts replace two complete walks per
+pixel; cold frames and changed contexts retain their original physical work.
+`--area-temporal-cache off` provides a full-replay differential control. These
+changes supply exact memoization, not a new target or reuse estimator. GPU
+cache-on/off raw-bit qualification and performance measurements must identify
+the source revision; historical measurements below predate this cache.
+
+A retained Release cache build (source fingerprint `9882bbd7ca98…`) passes the
+focused Area, temporal-cache and mutation checks with Metal API validation
+(32.25 seconds, test duration). This receipt precedes the EXR metadata correction.
+The paired cache control checks exact raw XYZ bits through static contexts,
+camera/lens changes and cuts; failure recovery preserves only successfully
+published history. Physical plus cached evaluation counts equal the original
+logical work. A separate receipt records fourteen passing portable runner tests,
+including both contract versions and inconsistent cache accounting. The cumulative native cache/compact-state
+screen is recorded separately in [hero execution](hero-execution.md); its speedup
+must not be attributed to this cache alone.
 
 For four fixed neighbor slots `j`, spatial scores are
 

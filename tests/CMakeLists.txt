@@ -29,6 +29,11 @@ add_test(NAME cli.frame_benchmark COMMAND "${Python3_EXECUTABLE}"
 add_test(NAME cli.pipeline_qualification COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/pipeline_qualification_cli_tests.py"
     "$<TARGET_FILE:rypath_pipeline_qualification>")
+add_executable(rypath_area_evaluation_context_tests area_evaluation_context_tests.cpp)
+target_include_directories(rypath_area_evaluation_context_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_area_evaluation_context_tests)
+add_test(NAME frame.area_evaluation_context COMMAND rypath_area_evaluation_context_tests)
+
 add_executable(rypath_frame_statistics_tests frame_statistics_tests.cpp)
 target_include_directories(rypath_frame_statistics_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_frame_statistics_tests)
@@ -97,17 +102,19 @@ if(RYPATH_ENABLE_METAL)
     set(canonical_probe_dir "${CMAKE_CURRENT_BINARY_DIR}/canonical-probe")
     set(canonical_probe_source "${canonical_probe_dir}/canonical_probe.metal")
     set(canonical_render_source "${canonical_probe_dir}/canonical_render.metal")
+    set(canonical_transport_source "${canonical_probe_dir}/canonical_packet_transport.h")
     set(canonical_probe_manifest "${canonical_probe_dir}/generation.json")
     set(canonical_probe_air "${canonical_probe_dir}/canonical_probe.air")
     set(canonical_probe_library "${rypath_runtime_directory}/rypath-canonical-probe.metallib")
     add_custom_command(
-        OUTPUT "${canonical_probe_source}" "${canonical_render_source}" "${canonical_probe_manifest}"
+        OUTPUT "${canonical_probe_source}" "${canonical_render_source}" "${canonical_transport_source}" "${canonical_probe_manifest}"
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/generate_canonical_probe.py"
             --render "${CMAKE_SOURCE_DIR}/shaders/render.metal"
             --probe "${CMAKE_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
             --output-dir "${canonical_probe_dir}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/generate_canonical_probe.py"
             "${CMAKE_SOURCE_DIR}/shaders/render.metal"
+            "${CMAKE_SOURCE_DIR}/shaders/packet_transport.h"
             "${CMAKE_SOURCE_DIR}/shaders/light_geometry_sampling_probe.metal"
             ${rypath_render_shader_dependencies}
             "${CMAKE_CURRENT_SOURCE_DIR}/light_geometry_sampling_probe_wire.h"
@@ -120,7 +127,7 @@ if(RYPATH_ENABLE_METAL)
             -fno-fast-math -O1 -c "${canonical_probe_source}" -o "${canonical_probe_air}"
         COMMAND "${RYPATH_XCRUN}" --sdk macosx metal "${rypath_metal_min_version}"
             -o "${canonical_probe_library}" "${canonical_probe_air}"
-        DEPENDS "${canonical_probe_source}" "${canonical_render_source}" "${canonical_probe_manifest}"
+        DEPENDS "${canonical_probe_source}" "${canonical_render_source}" "${canonical_transport_source}" "${canonical_probe_manifest}"
             ${rypath_render_shader_dependencies}
             "${CMAKE_CURRENT_SOURCE_DIR}/light_geometry_sampling_probe_wire.h"
         VERBATIM
@@ -1600,7 +1607,8 @@ if(RYPATH_ENABLE_METAL)
     set_target_properties(rypath_native_intersection_profile_tests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
     target_compile_options(rypath_native_intersection_profile_tests PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
     rypath_configure_host_target(rypath_native_intersection_profile_tests)
-    add_test(NAME metal.native_intersection_profile COMMAND rypath_native_intersection_profile_tests "${rypath_metal_library}")
+    add_dependencies(rypath_native_intersection_profile_tests rypath_opaque_capability_shader)
+    add_test(NAME metal.native_intersection_profile COMMAND rypath_native_intersection_profile_tests "${rypath_metal_library}" "${rypath_opaque_capability_library}")
     set_tests_properties(metal.native_intersection_profile PROPERTIES TIMEOUT 120)
     if(RYPATH_ALLOW_NO_METAL_DEVICE)
         target_compile_definitions(rypath_native_intersection_profile_tests PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
@@ -1637,7 +1645,7 @@ endif()
 
 if(RYPATH_ENABLE_METAL)
     add_executable(rypath_wavefront_queue_tests wavefront_queue_tests.mm)
-    target_link_libraries(rypath_wavefront_queue_tests PRIVATE rypath_metal_backend "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    target_link_libraries(rypath_wavefront_queue_tests PRIVATE rypath_metal_backend rypath_bsdf_tables rypath_rgb_spectrum "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
     set_target_properties(rypath_wavefront_queue_tests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
     target_compile_options(rypath_wavefront_queue_tests PRIVATE -fobjc-arc)
     rypath_configure_host_target(rypath_wavefront_queue_tests)
@@ -1672,11 +1680,12 @@ set_target_properties(rypath_area_frame_tests PROPERTIES
 rypath_configure_host_target(rypath_area_frame_tests)
 if(RYPATH_ENABLE_METAL)
     add_test(NAME metal.area_frame COMMAND rypath_area_frame_tests)
-    set_tests_properties(metal.area_frame PROPERTIES TIMEOUT 300 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    add_test(NAME metal.area_temporal_cache COMMAND rypath_area_frame_tests --cache-only)
+    set_tests_properties(metal.area_frame metal.area_temporal_cache PROPERTIES TIMEOUT 300 ENVIRONMENT "MTL_DEBUG_LAYER=1")
     foreach(capability DEVICE RAY_TRACING)
         if(RYPATH_ALLOW_NO_METAL_${capability})
             target_compile_definitions(rypath_area_frame_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
-            set_tests_properties(metal.area_frame PROPERTIES SKIP_RETURN_CODE 77)
+            set_tests_properties(metal.area_frame metal.area_temporal_cache PROPERTIES SKIP_RETURN_CODE 77)
         endif()
     endforeach()
 else()
@@ -1979,3 +1988,40 @@ endif()
 add_test(NAME infrastructure.hero_performance_runner COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/hero_performance_runner_tests.py")
 set_tests_properties(infrastructure.hero_performance_runner PROPERTIES TIMEOUT 30)
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_hero_current_probe hero_current_probe.mm)
+    target_link_libraries(rypath_hero_current_probe PRIVATE rypath_bsdf_tables rypath_rgb_spectrum
+        "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+    set_target_properties(rypath_hero_current_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    target_compile_options(rypath_hero_current_probe PRIVATE -fobjc-arc
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+    rypath_configure_host_target(rypath_hero_current_probe)
+    add_dependencies(rypath_hero_current_probe rypath_hero_current_shader)
+    add_test(NAME metal.hero_current COMMAND rypath_hero_current_probe "${rypath_hero_current_library}")
+    set_tests_properties(metal.hero_current PROPERTIES TIMEOUT 120 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_hero_current_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.hero_current PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_hero_light_endpoint_probe hero_light_endpoint_probe.mm)
+    target_link_libraries(rypath_hero_light_endpoint_probe PRIVATE rypath_metal_backend rypath_rgb_spectrum)
+    target_compile_options(rypath_hero_light_endpoint_probe PRIVATE -fobjc-arc)
+    set_target_properties(rypath_hero_light_endpoint_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_hero_light_endpoint_probe)
+    add_dependencies(rypath_hero_light_endpoint_probe rypath_hero_light_endpoint_shader)
+    add_test(NAME metal.hero_light_endpoint COMMAND rypath_hero_light_endpoint_probe
+        "${rypath_hero_light_endpoint_library}")
+    set_tests_properties(metal.hero_light_endpoint PROPERTIES TIMEOUT 60 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability IN ITEMS DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_hero_light_endpoint_probe PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.hero_light_endpoint PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
+endif()

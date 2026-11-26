@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_evaluation_context.hpp"
 #include "frame_session.hpp"
 #include "mutation_shared.h"
 #include <algorithm>
@@ -108,7 +109,9 @@ Output finish(Frame &frame, const FrameConfig &c, bool history, bool black = fal
              i.spatial_candidates == 5 && i.fresh_candidates == n,
          "Mutation retains temporal/spatial/fresh accounting");
     need(i.mutation_attempts == n * c.mutation_steps && i.mutation_accepts <= i.mutation_attempts &&
-             i.completed_evaluations == n * ((history ? 7u : 5u) + c.mutation_steps),
+             valid_area_evaluation_accounting(
+                 n, history, c.mutation_steps, i.temporal_evaluation_cache_used,
+                 i.completed_evaluations, i.cached_evaluations, i.logical_evaluations),
          "Every fixed mutation attempt adds exactly one full replay evaluation");
     if (black)
         need(i.mutation_accepts == i.mutation_attempts, "Black unit targets accept every proposal");

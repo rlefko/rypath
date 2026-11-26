@@ -21,9 +21,25 @@ inline bool hero_connectible(const thread rypath_packet::Prepared &bsdf) {
             return true;
     return false;
 }
+inline bool hero_connectible(const thread HeroFrozenBSDF &bsdf) {
+    return hero_current_connectible(bsdf);
+}
 inline bool hero_prepare_future(thread HeroTrack &track, thread float4 &beta,
                                 thread rypath_packet::Prepared &bsdf) {
     if (rypath_hero_scattering::requires_single_hero(bsdf) && track.active_mask != 1) {
+        const auto collapsed = rypath_hero::collapse(track.density, beta);
+        if (!collapsed.valid)
+            return false;
+        track.density = collapsed.density;
+        beta = collapsed.beta;
+        track.active_mask = 1;
+    }
+    bsdf.active_mask = track.active_mask;
+    return true;
+}
+inline bool hero_prepare_future(thread HeroTrack &track, thread float4 &beta,
+                                thread HeroFrozenBSDF &bsdf) {
+    if (hero_current_requires_single(bsdf) && track.active_mask != 1) {
         const auto collapsed = rypath_hero::collapse(track.density, beta);
         if (!collapsed.valid)
             return false;
@@ -80,16 +96,25 @@ inline void hero_account_eta(thread HeroTrack &track, float4 eta, bool transmiss
         track.eta_scale[k] = lane.value;
     }
 }
-inline float4 hero_represented_pdf(const thread Vertex &v, const thread Vertex &previous,
-                                   const thread Vertex &next) {
+inline rypath_hero_scattering::Evaluation
+hero_history_evaluate(const thread rypath_packet::Prepared &p, float3 wo, float3 wi, uint seed) {
+    return rypath_hero_scattering::evaluate(p, wo, wi, seed);
+}
+inline rypath_hero_scattering::Evaluation hero_history_evaluate(const thread HeroFrozenBSDF &p,
+                                                                float3 wo, float3 wi, uint seed) {
+    return hero_frozen_evaluate(p, wo, wi, seed);
+}
+template <typename V, typename Previous, typename Next>
+inline float4 hero_represented_pdf(const thread V &v, const thread Previous &previous,
+                                   const thread Next &next) {
     const float3 before = infinite(previous) ? -previous.point.geometric_normal
                                              : previous.point.position - v.point.position;
     const float3 after =
         infinite(next) ? -next.point.geometric_normal : next.point.position - v.point.position;
     if (all(before == 0) || all(after == 0))
         return 0;
-    const auto e = rypath_hero_scattering::evaluate(v.bsdf, v.frame.local(normalize(before)),
-                                                    v.frame.local(normalize(after)), v.seed);
+    const auto e = hero_history_evaluate(v.bsdf, v.frame.local(normalize(before)),
+                                         v.frame.local(normalize(after)), v.seed);
     return e.valid ? e.pdf : float4(NAN);
 }
 inline float4 hero_weight(thread wire::Sample &sample, const thread rypath_hero::Density &prefix,
@@ -110,12 +135,43 @@ inline float4 hero_weight(thread wire::Sample &sample, const thread rypath_hero:
     }
     return result.value;
 }
+template <typename Previous, typename Light>
+inline float hero_history_light_pdf(const thread Resources &r, const thread Previous &from,
+                                    const thread Light &light) {
+    const float selection =
+        rypath_light_sampling::pmf(*r.alpha.parameters, r.alpha.material_data,
+                                   {from.point.position, from.point.shading_normal}, light.light);
+    if (infinite(light))
+        return environment_pdf(r, -light.point.geometric_normal) * selection;
+    const float3 delta = light.point.position - from.point.position;
+    const float d2 = dot(delta, delta);
+    if (!(d2 > 0))
+        return 0;
+    if (!on_surface(light))
+        return 0;
+    auto alpha = r.alpha;
+    const wire::Emitter emitter{light.instance, light.primitive, light.kind};
+    return selection * rypath_light_geometry::pdf(alpha, emitter, from.point.position,
+                                                  from.point.shading_normal, light.uv, light.point);
+}
+template <typename Current, typename Previous, typename Before>
 inline float4 hero_endpoint(thread Resources &r, thread wire::Sample &sample,
-                            const thread Wavelengths &lambda, const thread Vertex &pt,
-                            const thread Vertex &previous, const thread Vertex &before, uint t,
+                            const thread Wavelengths &lambda, const thread Current &pt,
+                            const thread Previous &previous, const thread Before &before, uint t,
                             const thread rypath_hero::Density &previous_density) {
     float4 radiance;
-    if (!endpoint_emission(r, pt, previous, lambda, radiance)) {
+    bool emission_valid;
+    if (infinite(pt))
+        emission_valid = emitted(r, pt, -pt.point.geometric_normal, lambda, radiance);
+    else {
+        const float3 delta = previous.point.position - pt.point.position;
+        if (all(delta == 0)) {
+            radiance = 0;
+            emission_valid = true;
+        } else
+            emission_valid = emitted(r, pt, normalize(delta), lambda, radiance);
+    }
+    if (!emission_valid) {
         sample.status = wire::invalid_arithmetic;
         return 0;
     }
@@ -123,18 +179,19 @@ inline float4 hero_endpoint(thread Resources &r, thread wire::Sample &sample,
     if (t <= 2 || previous.delta || !nonzero(value))
         return value;
     const float4 bsdf_pdf = hero_represented_pdf(previous, before, pt);
-    const float light_pdf = direct_pdf(r, previous, pt);
+    const float light_pdf = hero_history_light_pdf(r, previous, pt);
     return hero_weight(sample, previous_density, value, bsdf_pdf, float4(light_pdf));
 }
+template <typename Current, typename Previous>
 inline float4 hero_direct(thread Resources &r, thread wire::Sample &sample,
-                          const thread Wavelengths &lambda, ulong index, const thread Vertex &pt,
-                          const thread Vertex &before, uint t, float4 beta,
+                          const thread Wavelengths &lambda, ulong index, const thread Current &pt,
+                          const thread Previous &before, uint t, float4 beta,
                           const thread rypath_hero::Density &prefix,
                           thread const rypath_replay::ReplayState *replay = nullptr) {
     if (pt.type != surface_vertex || !pt.connectible)
         return 0;
     const constant auto &p = *r.alpha.parameters;
-    Vertex sampled{};
+    typename HeroDirectEndpoint<Current>::Type sampled{};
     float3 direction;
     float sampled_pdf = 0;
     if (!sample_li(r, pt, lambda, uniforms4(p, random(r, sample, index, 133 + t - 2, replay)),
@@ -145,9 +202,9 @@ inline float4 hero_direct(thread Resources &r, thread wire::Sample &sample,
     }
     if (!(sampled_pdf > 0) || !nonzero(sampled.beta))
         return 0;
-    const auto evaluation = rypath_hero_scattering::evaluate(
-        pt.bsdf, pt.pair_valid ? pt.sampled_wo_local : pt.frame.local(pt.wo),
-        pt.frame.local(direction), pt.seed);
+    const auto evaluation =
+        hero_evaluate_current(pt.bsdf, pt.pair_valid ? pt.sampled_wo_local : pt.frame.local(pt.wo),
+                              pt.frame.local(direction), pt.seed);
     if (!evaluation.valid) {
         sample.status = wire::invalid_arithmetic;
         return 0;

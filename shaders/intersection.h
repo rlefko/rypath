@@ -226,7 +226,7 @@ inline SurfaceHit trace_validated_surface(metal::raytracing::ray ray,
             if (native_intersections_enabled()) {
                 // The hardware predicate and binary32 result define this profile.
                 // Do not validate or replace it with the compensated predicate.
-                auto record = static_cast<const device rypath::geometry_wire::ProceduralRecord *>(
+                auto record = static_cast<const device rypath::geometry_wire::NativeTriangleTag *>(
                     query.get_candidate_primitive_data());
                 if (!record || (record->kind != rypath::geometry_wire::triangle &&
                                 record->kind != rypath::geometry_wire::miss)) {

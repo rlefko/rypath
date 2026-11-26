@@ -4,13 +4,28 @@
     !defined(RYPATH_PACKET_SHADE_PRETRACED)
 #error "Select the fixed packet shade policy before including this body"
 #endif
+#ifndef RYPATH_PACKET_SHADE_HERO
+if (rypath_bdpt::hero_enabled(p)) {
+#define RYPATH_PACKET_SHADE_HERO 1
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_HERO
+} else {
+#define RYPATH_PACKET_SHADE_HERO 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_HERO
+}
+#else
 uint slot;
 if (!wavefront_slot(a, lane, slot))
     return;
-#if RYPATH_PACKET_SHADE_SEPARATED
+#if RYPATH_PACKET_SHADE_HERO && RYPATH_PACKET_SHADE_SEPARATED
+auto state = wavefront_load_hero_separated(a, slot);
+#elif RYPATH_PACKET_SHADE_HERO
+auto state = wavefront_load_hero_packed(a, slot);
+#elif RYPATH_PACKET_SHADE_SEPARATED
 auto state = wavefront_load_packet_separated(a, slot);
 #else
-auto state = wavefront_packet(a, slot);
+auto state = wavefront_load_packet(a, slot);
 #endif
 const GraphResources graph{
     graph_nodes,
@@ -60,8 +75,10 @@ for (uint event = 0; event < RYPATH_PACKET_SHADE_EVENTS && !state.complete; ++ev
 #endif
 #if RYPATH_PACKET_SHADE_SEPARATED
 wavefront_store_packet_separated(a, slot, state);
+#elif RYPATH_PACKET_SHADE_HERO
+wavefront_store_hero_packed(a, slot, state);
 #else
-wavefront_packet(a, slot) = state;
+wavefront_store_packet(a, slot, state);
 #endif
 if (state.complete) {
     const auto result = rypath_bdpt::packet_pt_result(state, p);
@@ -77,3 +94,5 @@ if (state.complete) {
 } else {
     wavefront_append(a, &a.counters->out, a.queue_out, slot);
 }
+
+#endif // RYPATH_PACKET_SHADE_HERO

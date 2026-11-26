@@ -1,10 +1,18 @@
 # Project status
 
-The [hero performance follow-up](hero-performance.md) adds command-level path-work
-diagnostics and paired native-1080p timing. The frozen Area-one baseline is about
-0.30 FPS for Cornell/Prism and 0.14 FPS for Pavilion in short stationary controls.
-Exact shader optimizations and reconnection remain under validation; no speedup
-or 10× qualification is established by the diagnostic changes.
+The [hero execution follow-up](hero-execution.md) combines exact temporal
+memoization with smaller current, historical and sampled-light state. Its short
+native-1080p Area-one screen retains exact final raw/reconstructed FLOAT pixels
+in Cornell, Prism and Pavilion day/night. Command-level diagnostics and the
+paired timing protocol are in [hero performance](hero-performance.md).
+The 10× speedup and native-1080p 20–30 FPS targets remain unmet; the short static
+screen does not qualify sustained or moving-camera performance. Further shader
+scheduling and contribution-path reconnection remain measured follow-up work.
+
+[Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
+reduces Pavilion retained AS memory by 28.28% with exact final raw/denoised controls.
+Its short screen establishes no rendering speedup; full procedural and compensated
+hint records remain unchanged.
 
 [Spectral noise controls](spectral-color-noise.md) add visible-CDF hero sampling
 and explicit spectral-refresh/reciprocal spatial reuse. At `2fa3266`, the bounded

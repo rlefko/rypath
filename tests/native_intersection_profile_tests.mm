@@ -47,6 +47,234 @@ GeometryMesh triangle(float z) {
     mesh.triangles = {{0, 0, 0}, {0, 1, 2}};
     return mesh;
 }
+void metadata_contract(const std::filesystem::path &path, const std::filesystem::path &legacy) {
+    static_assert(sizeof(wire::NativeTriangleTag) == 4 && alignof(wire::NativeTriangleTag) == 4);
+    static_assert(sizeof(wire::ProceduralRecord) == 52);
+    auto device = MTLCreateSystemDefaultDevice();
+    if (!device)
+        available(GeometryStatus::no_device, "Native metadata contract requires Metal");
+    std::string why;
+    auto library = metal::load_library(device, path, why);
+    require(library != nil, why);
+    require(![library.functionNames containsObject:@"rypath_native_intersection_contract"],
+            "New library cannot advertise the obsolete 52-byte native contract");
+    auto queue = [device newCommandQueue];
+    for (bool enabled : {false, true}) {
+        auto constants = [[MTLFunctionConstantValues alloc] init];
+        [constants setConstantValue:&enabled type:MTLDataTypeBool atIndex:21];
+        auto pipeline = metal::load_pipeline(
+            device, library, @"rypath_native_intersection_contract_v2", why, nil, constants);
+        require(pipeline != nil, why);
+        auto output = [device newBufferWithLength:8 * sizeof(wire::Word)
+                                          options:MTLResourceStorageModeShared];
+        require(output != nil && queue != nil, "Native metadata handshake resources");
+        std::memset(output.contents, 0xa5, output.length);
+        auto command = [queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        require(command != nil && encoder != nil, "Native metadata handshake encoder");
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:output offset:0 atIndex:0];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        require(metal::complete(command, "native metadata contract").empty(),
+                "Native metadata handshake dispatch");
+        std::array<wire::Word, 8> words{};
+        std::memcpy(words.data(), output.contents, sizeof(words));
+        require(std::equal(words.begin(), words.begin() + 4,
+                           std::array<wire::Word, 4>{2, enabled ? 1u : 0u, 4, 52}.begin()),
+                "Native metadata handshake version/profile/tag/compensated layout");
+        require(std::all_of(words.begin() + 4, words.end(),
+                            [](auto word) { return word == 0xa5a5a5a5u; }),
+                "Native metadata contract output guard");
+    }
+    if (!legacy.empty()) {
+        GeometryData g{{triangle(0)}, {{0, {}}}};
+        auto geometry = build_metal_geometry(g, legacy, {profile});
+        require(geometry.status == GeometryStatus::failure && !geometry.scene &&
+                    geometry.diagnostic.find("rypath_native_intersection_contract_v2") !=
+                        std::string::npos,
+                "Geometry builder rejects old native library before publishing an AS");
+        RenderScene scene;
+        scene.model = RenderModel::pbrt;
+        scene.raster_camera = RasterCamera{{}, {0, 0, 1}, {.1f, 0, 0}, {0, .1f, 0}};
+        // Empty geometry bypasses the geometry-builder handshake, so this
+        // separately reaches the renderer host's own native contract check.
+        auto renderer = build_metal_renderer(scene, legacy, RenderBuildOptions{profile});
+        require(renderer.status == GeometryStatus::failure && !renderer.scene &&
+                    renderer.diagnostic.find("rypath_native_intersection_contract_v2") !=
+                        std::string::npos,
+                "Renderer rejects old native library before sample ownership");
+    }
+    const GeometryData g{{{}, triangle(0)}, {{0, {}}, {1, {}}}};
+    auto native = build_metal_geometry(g, path, {profile});
+    available(native.status, native.diagnostic);
+    require(
+        MetalGeometryAccess::hint_stats(*native.scene).shared_record_bytes == 2 * 4,
+        "Primary native metadata has four bytes per original triangle, including zero-area slot");
+    auto hints = build_metal_geometry_with_hints(g, path, true);
+    available(hints.status, hints.diagnostic);
+    require(MetalGeometryAccess::has_hint(*hints.scene) &&
+                MetalGeometryAccess::hint_stats(*hints.scene).shared_record_bytes == 2 * 52,
+            "Compensated native hints retain full 52-byte corner records");
+}
+id<MTLAccelerationStructure> manual_structure(id<MTLDevice> device, id<MTLCommandQueue> queue,
+                                              MTLAccelerationStructureDescriptor *descriptor) {
+    const auto sizes = [device accelerationStructureSizesWithDescriptor:descriptor];
+    auto structure = [device newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+    auto scratch = [device newBufferWithLength:std::max<NSUInteger>(1, sizes.buildScratchBufferSize)
+                                       options:MTLResourceStorageModePrivate];
+    auto command = [queue commandBuffer];
+    auto encoder = [command accelerationStructureCommandEncoder];
+    require(structure && scratch && command && encoder, "Manual native metadata AS resources");
+    [encoder buildAccelerationStructure:structure
+                             descriptor:descriptor
+                          scratchBuffer:scratch
+                    scratchBufferOffset:0];
+    [encoder endEncoding];
+    require(metal::complete(command, "manual native metadata AS").empty(),
+            "Manual native metadata AS build");
+    return structure;
+}
+void metadata_candidates(const std::filesystem::path &path) {
+    // Build the same native triangle with different metadata widths/tags, then
+    // invoke the production query. This isolates metadata from hardware geometry.
+    const GeometryData geometry{{triangle(0)}, {{0, {}}}};
+    auto built = build_metal_geometry(geometry, path, {profile});
+    available(built.status, built.diagnostic);
+    auto device = MetalGeometryAccess::device(*built.scene);
+    auto queue = MetalGeometryAccess::queue(*built.scene);
+    std::string why;
+    auto library = metal::load_library(device, path, why);
+    require(library != nil, why);
+    auto constants = [[MTLFunctionConstantValues alloc] init];
+    const bool enabled = true;
+    [constants setConstantValue:&enabled type:MTLDataTypeBool atIndex:21];
+    auto intersection = metal::load_patch_intersection(library, why);
+    auto pipeline =
+        metal::load_pipeline(device, library, @"rypath_closest_hits", why, intersection, constants);
+    require(pipeline != nil, why);
+    auto table = metal::make_intersection_table(pipeline, intersection, why);
+    require(table != nil, why);
+    auto shadow_pipeline =
+        metal::load_pipeline(device, library, @"rypath_occlusion", why, intersection, constants);
+    require(shadow_pipeline != nil, why);
+    auto shadow_table = metal::make_intersection_table(shadow_pipeline, intersection, why);
+    require(shadow_table != nil, why);
+    const auto &mesh = geometry.meshes[0];
+    auto vertices = [device newBufferWithBytes:mesh.positions.data()
+                                        length:mesh.positions.size() * sizeof(GeometryPoint)
+                                       options:MTLResourceStorageModeShared];
+    auto indices = [device newBufferWithBytes:mesh.triangles.data()
+                                       length:mesh.triangles.size() * sizeof(mesh.triangles[0])
+                                      options:MTLResourceStorageModeShared];
+    // All rays hit primitive1, while the zero-area primitive0 preserves ordinal.
+    const std::array<wire::Ray, 3> rays{{{{0, 0, 3}, {0, 0, -2}, 0, 10},
+                                         {{0, 0, -3}, {0, 0, 2}, 0, 10},
+                                         {{1, 0, 3}, {0, 0, -2}, 0, 10}}};
+    auto input = [device newBufferWithBytes:rays.data()
+                                     length:sizeof(rays)
+                                    options:MTLResourceStorageModeShared];
+    std::array<wire::Closest, rays.size()> reference{};
+    for (unsigned variant = 0; variant < 5; ++variant) {
+        const std::size_t stride =
+            variant == 1 ? sizeof(wire::ProceduralRecord) : sizeof(wire::NativeTriangleTag);
+        auto records = [device newBufferWithLength:mesh.triangles.size() * stride
+                                           options:MTLResourceStorageModeShared];
+        require(vertices && indices && input && records, "Native metadata fixture buffers");
+        // Deliberately poison unused corner bytes. Native semantics cannot depend
+        // on them; only compensated hints retain and consume the full record.
+        std::memset(records.contents, 0xa5, records.length);
+        const wire::Word kind = variant == 2   ? wire::miss
+                                : variant == 3 ? wire::bilinear_patch
+                                               : wire::triangle;
+        const wire::Word miss = wire::miss;
+        std::memcpy(records.contents, &miss, sizeof(miss));
+        std::memcpy(static_cast<unsigned char *>(records.contents) + stride, &kind, sizeof(kind));
+        auto triangles = [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+        triangles.vertexBuffer = vertices;
+        triangles.vertexStride = sizeof(GeometryPoint);
+        triangles.vertexFormat = MTLAttributeFormatFloat3;
+        triangles.indexBuffer = indices;
+        triangles.indexType = MTLIndexTypeUInt32;
+        triangles.triangleCount = mesh.triangles.size();
+        triangles.opaque = YES;
+        if (variant != 4) {
+            triangles.primitiveDataBuffer = records;
+            triangles.primitiveDataStride = stride;
+            triangles.primitiveDataElementSize = stride;
+        }
+        auto bottom_descriptor = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+        bottom_descriptor.geometryDescriptors = @[ triangles ];
+        auto bottom = manual_structure(device, queue, bottom_descriptor);
+        MTLAccelerationStructureInstanceDescriptor instance{};
+        instance.transformationMatrix.columns[0] = MTLPackedFloat3Make(1, 0, 0);
+        instance.transformationMatrix.columns[1] = MTLPackedFloat3Make(0, 1, 0);
+        instance.transformationMatrix.columns[2] = MTLPackedFloat3Make(0, 0, 1);
+        instance.mask = wire::all_visible;
+        auto instances = [device newBufferWithBytes:&instance
+                                             length:sizeof(instance)
+                                            options:MTLResourceStorageModeShared];
+        auto top_descriptor = [MTLInstanceAccelerationStructureDescriptor descriptor];
+        top_descriptor.instancedAccelerationStructures = @[ bottom ];
+        top_descriptor.instanceCount = 1;
+        top_descriptor.instanceDescriptorBuffer = instances;
+        top_descriptor.instanceDescriptorStride = sizeof(instance);
+        auto top = manual_structure(device, queue, top_descriptor);
+        auto output = [device newBufferWithLength:(rays.size() + 1) * sizeof(wire::Closest)
+                                          options:MTLResourceStorageModeShared];
+        auto shadow = [device newBufferWithLength:(rays.size() + 1) * sizeof(wire::Word)
+                                          options:MTLResourceStorageModeShared];
+        require(output != nil && shadow != nil, "Native metadata output");
+        std::memset(output.contents, 0xa5, output.length);
+        std::memset(shadow.contents, 0xa5, shadow.length);
+        auto command = [queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        require(command && encoder, "Native metadata query command");
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:input offset:0 atIndex:0];
+        [encoder setBuffer:output offset:0 atIndex:1];
+        const wire::Word count = rays.size();
+        [encoder setBytes:&count length:sizeof(count) atIndex:2];
+        [encoder setAccelerationStructure:top atBufferIndex:3];
+        [encoder setIntersectionFunctionTable:table atBufferIndex:4];
+        [encoder useResource:bottom usage:MTLResourceUsageRead];
+        [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder setComputePipelineState:shadow_pipeline];
+        [encoder setBuffer:shadow offset:0 atIndex:1];
+        [encoder setIntersectionFunctionTable:shadow_table atBufferIndex:4];
+        [encoder dispatchThreads:MTLSizeMake(count + 1, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        require(metal::complete(command, "native metadata candidates").empty(),
+                "Native metadata candidate query");
+        const auto *hits = static_cast<const wire::Closest *>(output.contents);
+        const auto *occluded = static_cast<const wire::Word *>(shadow.contents);
+        for (unsigned i = 0; i < rays.size(); ++i) {
+            require(occluded[i] == (variant < 2    ? 1u
+                                    : variant == 2 ? 0u
+                                                   : wire::invalid_hit),
+                    "Native metadata preserves Boolean shadows and visible tag failures");
+            if (variant == 0) {
+                reference[i] = hits[i];
+                require(hits[i].kind == wire::triangle && hits[i].instance == 0 &&
+                            hits[i].geometry == 0 && hits[i].primitive == 1 && hits[i].t == 1.5f &&
+                            hits[i].u == (i == 2 ? .375f : .25f) && hits[i].v == .25f,
+                        "Four-byte native triangle preserves analytic full-hit identity");
+            } else if (variant == 1) {
+                require(std::memcmp(&hits[i], &reference[i], sizeof(wire::Closest)) == 0,
+                        "Four-byte and 52-byte metadata produce exact native full-hit records");
+            } else {
+                require(hits[i].kind == (variant == 2 ? wire::miss : wire::invalid_hit),
+                        "Native miss tags skip and malformed/absent tags fail visibly");
+            }
+        }
+        require(occluded[rays.size()] == 0xa5a5a5a5u, "Native metadata shadow output guard");
+        const auto *bytes = static_cast<const unsigned char *>(output.contents);
+        for (std::size_t i = sizeof(reference); i < output.length; ++i)
+            require(bytes[i] == 0xa5, "Native metadata query output guard");
+    }
+}
 void ordinary(const std::filesystem::path &library) {
     const std::array<GeometryTransform, 4> transforms{
         {{},
@@ -368,6 +596,8 @@ int main(int argc, char **argv) {
         try {
             const std::filesystem::path library = argc > 1 ? argv[1] : "";
             ordinary(library);
+            metadata_contract(library, argc > 2 ? argv[2] : "");
+            metadata_candidates(library);
             callbacks(library);
             render_contracts(library);
             witnesses(library);

@@ -12,7 +12,7 @@ namespace reuse_mis = rypath_reuse_mis;
 struct AreaArguments {
     device const aw::Config *config [[id(aw::config_id)]];
     device rypath_replay::ReplayState *replay [[id(aw::replay_id)]];
-    device const wire::Point *leaf_xyz [[id(aw::leaf_xyz_id)]];
+    device wire::Point *leaf_xyz [[id(aw::leaf_xyz_id)]];
     device aw::Accumulator *accumulators [[id(aw::accumulators_id)]];
     device aw::Temporal *temporal [[id(aw::temporal_id)]];
     device const aw::History *history_source [[id(aw::history_source_id)]];
@@ -49,7 +49,7 @@ inline void area_fail_at(constant AreaArguments &a, uint failure, uint pixel, ui
         uint4(a.config->mutation_steps, a.config->output_mode,
               as_type<uint>(a.config->target_scale), a.config->seed_low),
         uint4(a.config->seed_high, a.config->mutation_policy, a.config->stencil,
-              a.config->reserved));
+              a.config->temporal_cache));
 }
 #define AREA_FAIL(a, flag) area_fail_at(a, flag, pixel, __LINE__)
 #define AREA_DETAIL(a, flag, status, ...)                                                          \
@@ -73,7 +73,7 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
         !reservoir::positive_normal(c.target_scale) ||
         c.output_mode > aw::conditional_mean_output ||
         c.mutation_policy > aw::spectral_refresh_mutation || c.stencil > aw::reciprocal16_stencil ||
-        c.reserved ||
+        c.temporal_cache > 1 || (c.temporal_cache && !c.history_used) ||
         (c.stencil == aw::reciprocal16_stencil &&
          (!rypath_area_stencil::valid({c.offset_x[0], c.offset_y[0]}) ||
           !rypath_area_stencil::valid({c.offset_x[1], c.offset_y[1]}))) ||
@@ -345,6 +345,38 @@ kernel void rypath_area_prepare(constant wire::Parameters &p [[buffer(0)]],
         a.replay[pixel] = source.payload;
     }
 }
+// Host permits this kernel only when complete source/destination evaluator
+// contexts are bit-identical. Pixel ownership is unchanged (no reprojection).
+// prepare and merge still perform their original validation and score updates.
+kernel void rypath_area_cache_evaluation(constant AreaArguments &a [[buffer(1)]],
+                                         uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= a.config->pixel_count || !area_config(a, pixel))
+        return;
+    if (!a.config->temporal_cache) {
+        AREA_FAIL(a, aw::invalid_config);
+        return;
+    }
+    if (a.config->phase == aw::temporal_reverse) {
+        const auto fresh = a.temporal[pixel];
+        if (!area_temporal_valid(a, pixel, fresh))
+            return;
+        a.leaf_xyz[pixel] = fresh.xyz;
+    } else if (a.config->phase == aw::temporal) {
+        const auto source = a.history_source[pixel];
+        float target;
+        if (!area_history(a, pixel, source) || !area_target(a, pixel, source.xyz, target))
+            return;
+        if (as_type<uint>(target) != as_type<uint>(source.target)) {
+            AREA_DETAIL(a, aw::invalid_value, 0,
+                        as_type<uint4>(float4(source.xyz.x, source.xyz.y, source.xyz.z, target)),
+                        uint4(as_type<uint>(source.target), 0, 0, 0));
+            return;
+        }
+        a.leaf_xyz[pixel] = source.xyz;
+    } else {
+        AREA_FAIL(a, aw::invalid_config);
+    }
+}
 kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
                               uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a, pixel))
@@ -537,7 +569,8 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
         a.raw_xyz[pixel] = weighted;
     }
     // Output marginalization never changes the selected sample reused later.
-    a.history_destination[pixel] = {accumulator.payload, normalizer, accumulator.target, 1, 0};
+    a.history_destination[pixel] = {accumulator.payload, normalizer, accumulator.target, 1, 0,
+                                    accumulator.xyz};
 }
 
 // The source cache always belongs to the CURRENT destination evaluation. Each

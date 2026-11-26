@@ -39,6 +39,15 @@ struct Analytic {
     float height;
 };
 
+// Native primary triangle queries consume only this prefix. Compensated
+// geometry and its supplementary native hint AS retain ProceduralRecord below.
+enum : Word { native_metadata_contract = 2u };
+struct NativeTriangleTag {
+    Word kind;
+};
+static_assert(sizeof(NativeTriangleTag) == 4 && alignof(NativeTriangleTag) == 4,
+              "Native primary triangle tag ABI");
+
 // The first word tags each native bounding-box primitive. A miss tag preserves
 // the slot of a proven zero-area triangle without offering it to the predicate.
 // The existing Patch shading ABI and record size remain unchanged.

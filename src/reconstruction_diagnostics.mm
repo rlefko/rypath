@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_evaluation_context.hpp"
 #include "area_wire.h"
 #include "frame_benchmark_motion.hpp"
 #include "metal_frame_access.hpp"
@@ -528,6 +529,10 @@ NSDictionary *save_snapshot(Output &out, const MetalReconstructionSnapshot &snap
                                                                         : @"none",
         @"area_temporal_reuse" : @(o.estimator == FrameEstimator::area_replay ? 20 : 0),
         @"source_evaluations" : @(snapshot.info.source.completed_evaluations),
+        @"source_cached_evaluations" : @(snapshot.info.source.cached_evaluations),
+        @"source_logical_evaluations" : @(snapshot.info.source.logical_evaluations),
+        @"source_temporal_evaluation_cache_used" :
+            @(snapshot.info.source.temporal_evaluation_cache_used),
         @"history_accepted" : @(snapshot.info.history_accepted),
         @"history_rejected" : @(snapshot.info.history_rejected)
     };
@@ -546,10 +551,14 @@ std::unique_ptr<Frame> render(FrameSession &session, std::uint64_t sample, const
     auto info = submitted.frame->wait();
     require(info.status == FrameStatus::complete, info.diagnostic);
     const auto pixels = std::uint64_t(o.width) * o.height;
-    const auto evaluations = o.estimator == FrameEstimator::area_replay
-                                 ? (info.history_used ? 7u : 5u) + o.mutation_steps
-                                 : 1u;
-    require(info.completed_samples == pixels && info.completed_evaluations == pixels * evaluations,
+    const bool evaluation_counts =
+        o.estimator == FrameEstimator::area_replay
+            ? valid_area_evaluation_accounting(
+                  pixels, info.history_used, o.mutation_steps, info.temporal_evaluation_cache_used,
+                  info.completed_evaluations, info.cached_evaluations, info.logical_evaluations)
+            : info.completed_evaluations == pixels && info.cached_evaluations == 0 &&
+                  info.logical_evaluations == pixels && !info.temporal_evaluation_cache_used;
+    require(info.completed_samples == pixels && evaluation_counts,
             "Diagnostic source-MIS path accounting mismatch");
     return std::move(submitted.frame);
 }
@@ -744,6 +753,10 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                     @"area_temporal_reuse" : @(o.estimator == FrameEstimator::area_replay ? 20 : 0),
                     @"source_completed_samples" : @(info.source.completed_samples),
                     @"source_evaluations" : @(info.source.completed_evaluations),
+                    @"source_cached_evaluations" : @(info.source.cached_evaluations),
+                    @"source_logical_evaluations" : @(info.source.logical_evaluations),
+                    @"source_temporal_evaluation_cache_used" :
+                        @(info.source.temporal_evaluation_cache_used),
                     @"source_fresh_candidates" : @(info.source.fresh_candidates),
                     @"source_mutation_attempts" : @(info.source.mutation_attempts),
                     @"source_mutation_accepts" : @(info.source.mutation_accepts),
@@ -831,6 +844,10 @@ void fanout(const Options &o, const Scene &scene, FrameSession &session, Output 
                             @"reset_history" : @(conditioned.history_reset),
                             @"source_completed_samples" : @(info.source.completed_samples),
                             @"source_evaluations" : @(info.source.completed_evaluations),
+                            @"source_cached_evaluations" : @(info.source.cached_evaluations),
+                            @"source_logical_evaluations" : @(info.source.logical_evaluations),
+                            @"source_temporal_evaluation_cache_used" :
+                                @(info.source.temporal_evaluation_cache_used),
                             @"source_fresh_candidates" : @(info.source.fresh_candidates),
                             @"source_mutation_attempts" : @(info.source.mutation_attempts),
                             @"source_mutation_accepts" : @(info.source.mutation_accepts),

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_evaluation_context.hpp"
 #include "area_stencil_shared.h"
 #include "frame_session.hpp"
 #include "replay_shared.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -189,8 +191,10 @@ Completed complete(Frame &frame, const FrameConfig &settings, bool history) {
     if (settings.estimator == FrameEstimator::area_replay) {
         require(info.history_used == history && info.temporal_candidates == (history ? 2u : 1u) &&
                     info.spatial_candidates == 5 &&
-                    info.completed_evaluations ==
-                        pixels * ((history ? 7u : 5u) + settings.mutation_steps),
+                    valid_area_evaluation_accounting(
+                        pixels, history, settings.mutation_steps,
+                        info.temporal_evaluation_cache_used, info.completed_evaluations,
+                        info.cached_evaluations, info.logical_evaluations),
                 "Area full-replay evaluation and per-pixel pool accounting");
         require(info.mutation_attempts == pixels * settings.mutation_steps &&
                     info.mutation_accepts <= info.mutation_attempts,
@@ -658,6 +662,59 @@ void retained_source_context() {
     auto available = submit(*retained, high_sample, 7, camera(scene));
     complete(*available, settings, true);
 }
+void exact_temporal_evaluation_cache() {
+    // Selected output and conditional mean must cache the same pre-weight leaf,
+    // including when the final spatial reservoir selected a neighbor's payload.
+    for (auto transport :
+         {SpectralTransport::scalar, SpectralTransport::packet, SpectralTransport::hero})
+        for (auto output : {FrameAreaOutput::selected, FrameAreaOutput::conditional_mean}) {
+            auto scene = patterned_receiver();
+            scene.spectral_transport = transport;
+            scene.filter = {PixelFilterKind::gaussian, 1.5f, 1.5f, .5f};
+            scene.perspective_lens = PerspectiveLens{.1f, 4, {1, 0, 0}, {0, 1, 0}};
+            auto enabled = config();
+            enabled.area_output = output;
+            enabled.mutation_steps = output == FrameAreaOutput::selected ? 0u : 1u;
+            auto disabled = enabled;
+            disabled.cache_temporal_evaluations = false;
+            auto cached = build(scene, enabled), replayed = build(scene, disabled);
+            for (unsigned ordinal = 0; ordinal < 8; ++ordinal) {
+                auto pose = camera(scene);
+                if (ordinal >= 2)
+                    pose.raster_camera->origin.x += .125f;
+                if (ordinal >= 4)
+                    pose.perspective_lens->radius = .2f;
+                const bool cut = ordinal == 6;
+                const bool history = ordinal != 0 && !cut;
+                const bool hit = ordinal == 1 || ordinal == 3 || ordinal == 5 || ordinal == 7;
+                const auto epoch = ordinal >= 6 ? 8u : 7u;
+                auto a = submit(*cached, high_sample + ordinal, epoch, pose);
+                auto b = submit(*replayed, high_sample + ordinal, epoch, pose);
+                const auto x = complete(*a, enabled, history);
+                const auto y = complete(*b, disabled, history);
+                require(
+                    x.info.temporal_evaluation_cache_used == hit &&
+                        !y.info.temporal_evaluation_cache_used &&
+                        x.info.cached_evaluations ==
+                            (hit ? 2ull * enabled.width * enabled.height : 0) &&
+                        y.info.cached_evaluations == 0 &&
+                        x.info.logical_evaluations == y.info.logical_evaluations &&
+                        x.info.completed_evaluations + x.info.cached_evaluations ==
+                            y.info.completed_evaluations,
+                    "Cache hits require exact contexts; motion/lens changes and cuts replay fully");
+                require(x.info.mutation_attempts == y.info.mutation_attempts &&
+                            x.info.mutation_accepts == y.info.mutation_accepts &&
+                            x.info.area_serial == y.info.area_serial &&
+                            x.info.history_generation == y.info.history_generation,
+                        "Memoization preserves mutation decisions and reservoir identities");
+                for (std::size_t pixel = 0; pixel < x.image.raw_xyz.size(); ++pixel)
+                    for (unsigned c = 0; c < 3; ++c)
+                        require(std::bit_cast<std::uint32_t>(x.image.raw_xyz[pixel][c]) ==
+                                    std::bit_cast<std::uint32_t>(y.image.raw_xyz[pixel][c]),
+                                "Exact cache on/off raw XYZ bits differ");
+            }
+        }
+}
 void failure_preserves_history() {
     auto scene = sky();
     scene.volume_transport = true;
@@ -692,6 +749,8 @@ void failure_preserves_history() {
     require(good.info.area_serial == info.area_serial + 1 &&
                 good.info.history_generation == old.info.history_generation + 1,
             "Recovery imports the last successful history and advances identity exactly once");
+    require(good.info.temporal_evaluation_cache_used,
+            "Failed context never replaces the last successful evaluation cache");
     paired(first->capture(), old.image);
     first.reset();
     auto cut_failure = submit(*session, high_sample, 8, active);
@@ -998,8 +1057,10 @@ void rejected_configs() {
 }
 #endif
 } // namespace
-int main() {
+int main(int argc, char **argv) {
     try {
+        require(argc == 1 || (argc == 2 && std::string_view(argv[1]) == "--cache-only"),
+                "Usage: area-frame-tests [--cache-only]");
 #if RYPATH_TEST_AREA_METAL
         const auto device = query_metal_device();
 #ifdef RYPATH_ALLOW_NO_METAL_DEVICE
@@ -1012,6 +1073,11 @@ int main() {
             return 77;
 #endif
         require(device.device.compute_ray_tracing, "Area replay tests require compute ray tracing");
+        if (argc == 2) {
+            exact_temporal_evaluation_cache();
+            std::cout << "Exact temporal evaluation cache GPU validation passed\n";
+            return 0;
+        }
         rejected_configs();
         independent_oracle();
         black_and_identity();

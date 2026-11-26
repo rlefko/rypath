@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_evaluation_context.hpp"
 #include "area_wire.h"
 #include "frame_session.hpp"
 #include "image_output.hpp"
@@ -821,11 +822,17 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
             auto raw = frame(*renderer, sample, pixels, camera, pose.epoch);
             raw_info = raw->poll();
             const auto raw_wall = elapsed(start);
-            require(raw_info->fresh_candidates == pixels &&
-                        raw_info->completed_evaluations ==
-                            pixels * (mutations < 0 ? 1u
-                                                    : (raw_info->history_used ? 7u : 5u) +
-                                                          unsigned(mutations)),
+            const bool evaluation_counts =
+                mutations < 0
+                    ? raw_info->completed_evaluations == pixels &&
+                          raw_info->cached_evaluations == 0 &&
+                          raw_info->logical_evaluations == pixels &&
+                          !raw_info->temporal_evaluation_cache_used
+                    : valid_area_evaluation_accounting(
+                          pixels, raw_info->history_used, unsigned(mutations),
+                          raw_info->temporal_evaluation_cache_used, raw_info->completed_evaluations,
+                          raw_info->cached_evaluations, raw_info->logical_evaluations);
+            require(raw_info->fresh_candidates == pixels && evaluation_counts,
                     "Evaluation arm path accounting mismatch");
             require(raw_info->mutation_attempts ==
                             pixels * (mutations < 0 ? 0u : unsigned(mutations)) &&
@@ -891,6 +898,10 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"completed_samples\":" << raw_info->completed_samples
                  << ",\"fresh_candidates\":" << raw_info->fresh_candidates
                  << ",\"completed_evaluations\":" << raw_info->completed_evaluations
+                 << ",\"cached_evaluations\":" << raw_info->cached_evaluations
+                 << ",\"logical_evaluations\":" << raw_info->logical_evaluations
+                 << ",\"temporal_evaluation_cache_used\":"
+                 << (raw_info->temporal_evaluation_cache_used ? "true" : "false")
                  << ",\"mutation_attempts\":" << raw_info->mutation_attempts
                  << ",\"mutation_accepts\":" << raw_info->mutation_accepts
                  << ",\"raw_commands\":" << raw_info->command_count
