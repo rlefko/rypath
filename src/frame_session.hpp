@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "frame_work_diagnostics.hpp"
 #include "gpu_diagnostics.hpp"
 #include "metal_render.hpp"
 
@@ -85,6 +86,7 @@ struct FrameRequest {
 enum class FrameStatus { pending, complete, failed };
 struct FrameInfo {
     GPUStageDiagnostics gpu_stages{};
+    FrameWorkDiagnostics path_work{};
     std::uint32_t width = 0, height = 0;
     std::uint64_t sample_index = 0, epoch = 0;
     FrameStatus status = FrameStatus::pending;

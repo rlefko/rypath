@@ -228,6 +228,9 @@ execution, and no performance claim should use a captured frame. The JSON record
 the selected frame/path and profiling setting. Capture support and trace contents
 require a separate hardware smoke check; portable tests do not establish them.
 
+Wavefront stage profiles also expose [per-pass path work](hero-performance.md#path-work-diagnostics),
+including complete replay counts and command-boundary queue observations.
+
 ### Initial stage-diagnostics validation
 
 On November 23, 2026, an M4 Max reports stage-boundary sampling support and no

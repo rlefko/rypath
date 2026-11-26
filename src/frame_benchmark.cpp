@@ -673,12 +673,41 @@ struct Observation : rypath::FrameStatisticsSample {
     rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::adjacent;
     std::array<std::int32_t, 4> area_stencil_offsets{};
     rypath::GPUStageDiagnostics gpu_stages;
+    rypath::FrameWorkDiagnostics path_work;
     rypath::FrameStatisticsSample pipeline;
     std::optional<rypath::ReconstructionInfo> reconstruction;
     double reconstruction_wall_seconds = 0;
     bool reconstruction_started = false;
     std::string diagnostic;
 };
+void write_path_work(std::ostream &out, const rypath::FrameWorkDiagnostics &d) {
+    out << "{\"requested\":" << (d.requested ? "true" : "false")
+        << ",\"complete\":" << (d.complete ? "true" : "false") << ",\"status\":" << quote(d.status)
+        << ",\"state_pool_bytes\":" << d.state_pool_bytes << ",\"passes\":[";
+    bool first = true;
+    for (const auto &p : d.passes) {
+        if (!first)
+            out << ',';
+        first = false;
+        out << "{\"kind\":" << quote(p.kind) << ",\"index\":" << p.index
+            << ",\"commands\":" << p.commands << ",\"encoded_rounds\":" << p.encoded_rounds
+            << ",\"completed_evaluations\":" << p.completed_evaluations
+            << ",\"boundary_active_sum\":" << p.boundary_active_sum
+            << ",\"boundary_active_max\":" << p.boundary_active_max
+            << ",\"encode_seconds\":" << p.encode_seconds << ",\"gpu_seconds\":";
+        if (p.gpu_time_valid)
+            out << p.gpu_seconds;
+        else
+            out << "null";
+        out << ",\"inter_command_seconds\":";
+        if (p.gpu_time_valid)
+            out << p.inter_command_seconds;
+        else
+            out << "null";
+        out << '}';
+    }
+    out << "]}";
+}
 void write_stages(std::ostream &out, const rypath::GPUStageDiagnostics &d) {
     out << "{\"requested\":" << (d.requested ? "true" : "false")
         << ",\"complete\":" << (d.complete ? "true" : "false") << ",\"status\":" << quote(d.status)
@@ -985,6 +1014,8 @@ struct Report {
                 << ",\"completed_evaluations\":" << f.completed_evaluations
                 << ",\"fresh_candidates\":" << f.fresh_candidates << ",\"gpu_stages\":";
             write_stages(out, f.gpu_stages);
+            out << ",\"path_work\":";
+            write_path_work(out, f.path_work);
             out << ",\"cpu_wall_seconds\":" << f.cpu_seconds << ",\"gpu_seconds\":";
             if (f.gpu_seconds)
                 out << *f.gpu_seconds;
@@ -1286,6 +1317,7 @@ int run(const Options &options) {
                                            info.completed_evaluations == pixels * evaluations;
                     observation.completed_samples = info.completed_samples;
                     observation.gpu_stages = info.gpu_stages;
+                    observation.path_work = info.path_work;
                     observation.camera_upload_bytes = info.camera_upload_bytes;
                     observation.command_count = info.command_count;
                     observation.mutation_policy = info.mutation_policy;

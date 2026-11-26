@@ -3221,6 +3221,38 @@ struct FrameSession::Impl {
         unsigned variant = 0;
         bool first = true, all_gpu_times_valid = true;
         double gpu_seconds = 0;
+        double previous_gpu_end = 0, last_encode_seconds = 0;
+
+        void record_work(id<MTLCommandBuffer> command, std::uint64_t completed,
+                         std::uint32_t active) {
+            if (!config.profile_stages)
+                return;
+            const char *kind = !history ? "independent" : "fresh";
+            std::uint32_t index = 0;
+            if (history) {
+                if (area_finalizing)
+                    kind = "finalize";
+                else if (area_leaf == area_wire::temporal_reverse_config)
+                    kind = "temporal-reverse";
+                else if (area_leaf == 1)
+                    kind = "temporal-forward";
+                else if (area_leaf >= area_wire::mutation_config_begin) {
+                    kind = "mutation";
+                    index = area_leaf - area_wire::mutation_config_begin;
+                } else if (area_leaf >= 3) {
+                    kind = "spatial";
+                    index = area_leaf - 3;
+                }
+            }
+            const double begin = command.GPUStartTime, end = command.GPUEndTime;
+            const bool valid =
+                all_gpu_times_valid && (previous_gpu_end == 0 || begin >= previous_gpu_end);
+            const double gap = previous_gpu_end == 0 ? 0 : begin - previous_gpu_end;
+            previous_gpu_end = end;
+            std::lock_guard lock(frame->info_mutex);
+            add_frame_work(frame->info.path_work, kind, index, area_finalizing ? 0 : config.quantum,
+                           completed, active, end - begin, gap, last_encode_seconds, valid);
+        }
 
         bool area_failed() const {
             if (!history)
@@ -3317,6 +3349,7 @@ struct FrameSession::Impl {
                 frame->info.diagnostic = std::move(diagnostic);
                 frame->info.gpu_time_valid = false;
                 invalidate_gpu_stages(frame->info.gpu_stages, "invalid: frame failed");
+                invalidate_frame_work(frame->info.path_work, "invalid: frame failed");
             }
             frame->completed.notify_all();
         }
@@ -3341,6 +3374,7 @@ struct FrameSession::Impl {
                 return;
             }
             if (history && area_finalizing) {
+                record_work(command, 0, 0);
                 complete_area();
                 return;
             }
@@ -3361,6 +3395,7 @@ struct FrameSession::Impl {
                 fail("GPU replay completion counter regressed");
                 return;
             }
+            record_work(command, counters.completed - leaf_completed, counters.current);
             {
                 std::lock_guard lock(frame->info_mutex);
                 frame->info.completed_evaluations += counters.completed - leaf_completed;
@@ -3413,8 +3448,22 @@ struct FrameSession::Impl {
         }
         void launch() {
             @autoreleasepool {
+                const auto encode_start = config.profile_stages
+                                              ? std::chrono::steady_clock::now()
+                                              : std::chrono::steady_clock::time_point{};
                 auto &r = *renderer;
                 auto &b = *frame->retention->wavefront;
+                if (config.profile_stages) {
+                    std::lock_guard lock(frame->info_mutex);
+                    auto &work = frame->info.path_work;
+                    if (!work.requested) {
+                        work.requested = true;
+                        work.status = "available: command-level path passes";
+                        work.state_pool_bytes = b.scalar_state.length + b.packet_state.length +
+                                                b.packet_hot.length + b.packet_cold.length +
+                                                b.packet_hit.length;
+                    }
+                }
                 const bool reverse = history && area_leaf == area_wire::temporal_reverse_config;
                 const auto &evaluation_parameters =
                     reverse ? source_context.parameters : parameters;
@@ -3590,6 +3639,10 @@ struct FrameSession::Impl {
                       self->finished(finished_command);
                   }
                 }];
+                if (config.profile_stages)
+                    last_encode_seconds = std::chrono::duration<double>(
+                                              std::chrono::steady_clock::now() - encode_start)
+                                              .count();
                 [command commit];
             }
         }
