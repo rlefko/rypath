@@ -35,10 +35,15 @@ def fixture(expected, frames=8, warmup=1, offset=None, cached=False):
                  area_stencil='reciprocal16',phase=phase,motion_offset=motion,
                  cpu_wall_seconds=.015,gpu_seconds=.01,pipeline_gpu_seconds=.015,
                  pipeline_cpu_wall_seconds=.02)
-        if cached:
-            row.update(completed_evaluations=logical-pixels,cached_evaluations=pixels,
-                       logical_evaluations=logical)
+        if expected['area_contract'] == 7:
+            used = cached and row['history_used']
+            row.update(completed_evaluations=logical-(2*pixels if used else 0),
+                       cached_evaluations=2*pixels if used else 0,
+                       logical_evaluations=logical, temporal_evaluation_cache_used=used)
         rows.append(row)
+    expected=copy.deepcopy(expected)
+    if expected['area_contract'] == 7:
+        expected.update(requested_area_temporal_cache=True, area_temporal_cache=True)
     metric=dict(count=frames,median_seconds=.02,p95_seconds=.02)
     return dict(status='complete',exit_code=0,settings=expected,
                 requested_frames=frames,completed_frames=frames,requested_warmup=warmup,
@@ -63,6 +68,73 @@ class RunnerTests(unittest.TestCase):
         for cached in (False,True):
             result=runner.inspect_report(fixture(self.expected,cached=cached),self.expected,8,1,None)
             self.assertEqual(result['fps'],50)
+
+    def test_contract7_cache_flags_and_counts_are_strict(self):
+        pixels=1920*1080
+        mutations=[
+            lambda r:r['settings'].update(area_temporal_cache=1),
+            lambda r:r['settings'].update(requested_area_temporal_cache=0),
+            lambda r:r['settings'].pop('requested_area_temporal_cache'),
+            lambda r:r['settings'].update(area_temporal_cache=False),
+            lambda r:r['frames'][1].update(temporal_evaluation_cache_used=1),
+            lambda r:r['frames'][1].pop('temporal_evaluation_cache_used'),
+            lambda r:r['frames'][1].update(cached_evaluations=True),
+            lambda r:r['frames'][1].update(logical_evaluations=8*pixels+1),
+            lambda r:r['frames'][1].update(cached_evaluations=pixels,
+                                          completed_evaluations=7*pixels),
+            lambda r:r['frames'][0].update(temporal_evaluation_cache_used=True,
+                                          cached_evaluations=2*pixels,
+                                          completed_evaluations=4*pixels),
+            lambda r:r['frames'][1].update(temporal_evaluation_cache_used=False),
+            lambda r:r['frames'][1].pop('cached_evaluations'),
+            lambda r:r['frames'][1].pop('logical_evaluations')]
+        for mutate in mutations:
+            report=fixture(self.expected,cached=True)
+            mutate(report)
+            with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                runner.inspect_report(report,self.expected,8,1,None)
+
+    def test_disabled_cache_permission_requires_no_hit(self):
+        report=fixture(self.expected)
+        report['settings'].update(requested_area_temporal_cache=False,area_temporal_cache=False)
+        runner.inspect_report(report,self.expected,8,1,None)
+        report=fixture(self.expected,cached=True)
+        report['settings'].update(requested_area_temporal_cache=False,area_temporal_cache=False)
+        with self.assertRaisesRegex(ValueError,'permission and history'):
+            runner.inspect_report(report,self.expected,8,1,None)
+
+    def test_contract6_legacy_fields_and_zero_counts(self):
+        expected=runner.settings(dict(scene='cornell',seed=1),6)
+        report=fixture(expected)
+        runner.inspect_report(report,expected,8,1,None)
+        row=report['frames'][1]
+        row.update(cached_evaluations=0,logical_evaluations=8*1920*1080,
+                   temporal_evaluation_cache_used=False)
+        runner.inspect_report(report,expected,8,1,None)
+        for field,value in [('cached_evaluations',1),('cached_evaluations',False),
+                            ('temporal_evaluation_cache_used',True),
+                            ('temporal_evaluation_cache_used',0)]:
+            corrupt=copy.deepcopy(report)
+            corrupt['frames'][1][field]=value
+            with self.assertRaises(ValueError):
+                runner.inspect_report(corrupt,expected,8,1,None)
+
+    def test_contract_expectation_is_explicit_and_bounded(self):
+        with tempfile.TemporaryDirectory() as d:
+            args=self.setup_paths(d,'static')
+            a=runner.arguments(args)
+            self.assertEqual((a.baseline_area_contract,a.candidate_area_contract),(7,7))
+            a=runner.arguments(args+['--baseline-area-contract','6'])
+            self.assertEqual((a.baseline_area_contract,a.candidate_area_contract),(6,7))
+            with self.assertRaises(SystemExit):
+                runner.arguments(args+['--candidate-area-contract','8'])
+        for contract in (5,8,True):
+            with self.assertRaises(ValueError): runner.settings(dict(scene='cornell',seed=1),contract)
+        expected=runner.settings(dict(scene='cornell',seed=1))
+        report=fixture(expected)
+        report['settings']['area_contract']=6
+        with self.assertRaisesRegex(ValueError,'area_contract'):
+            runner.inspect_report(report,expected,8,1,None)
 
     def test_reject_corrupt_counts_settings_times_and_motion(self):
         changes=[lambda r:r['frames'][0].update(completed_evaluations=True),
@@ -144,13 +216,15 @@ class RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             args=self.setup_paths(d)
             args[args.index('--seeds')+1]='1,2,3'
+            args += ['--baseline-area-contract','6','--candidate-area-contract','7']
             calls=[]
             def popen(cmd,**kw):
                 calls.append((cmd,kw))
                 def option(name): return cmd[cmd.index('--'+name)+1]
                 scene=Path(option('scene')).stem
                 run=dict(scene=scene,seed=int(option('seed')))
-                report=fixture(runner.settings(run),offset=float(option('motion-offset'))
+                contract=6 if Path(cmd[0]).parent.name=='baseline' else 7
+                report=fixture(runner.settings(run,contract),offset=float(option('motion-offset'))
                                if '--motion-offset' in cmd else None,cached=True)
                 report['source_identity']='scene-assets-seed-'+str(run['seed'])
                 Path(option('output')).write_text(json.dumps(report))
@@ -170,6 +244,10 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(len(manifest['runs']),48)
             self.assertTrue(all(len(scene['pairs'])==3 for scene in summary['scenes']))
             self.assertEqual(len(summary['scenes']),8)
+            for scene in summary['scenes']:
+                for pair in scene['pairs']:
+                    self.assertEqual(pair['execution_contracts']['baseline']['area_contract'],6)
+                    self.assertEqual(pair['execution_contracts']['candidate']['area_contract'],7)
             self.assertTrue(all(len(r['captures'])==2 for r in manifest['runs']))
             self.assertTrue(all(kw['env']['MTL_SHADER_VALIDATION']=='0' and
                                 'METAL_CAPTURE' not in kw['env'] for _,kw in calls))

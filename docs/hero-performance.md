@@ -107,6 +107,17 @@ aggregate. `--frames`, `--warmup`, `--seeds`, `--modes static`, and
 `--skip-captures` allow explicitly bounded screening; a short screen does not
 replace qualification.
 
+The per-arm `--baseline-area-contract` and `--candidate-area-contract` options
+accept only `6` or `7` and default to `7`. For a pre-cache baseline, pass
+`--baseline-area-contract 6 --candidate-area-contract 7`. The manifest and paired
+results record these expectations and identify temporal evaluation caching as an
+allowed execution-only difference; transport, MIS, mutation and reconstruction
+settings stay matched. Contract 7 reports must supply boolean cache permission
+and use flags, with exactly two cached evaluations per pixel on a permitted hit
+with history. Actual plus cached evaluations must equal the logical count.
+Contract 6 accepts the prior reports with absent cache fields and zero cached
+work. Choosing a contract changes report validation, not the renderer CLI.
+
 On the profiling revision, eight API-validated 64×48 runs (plain PT and Area with
 zero, one, or four mutations, two frames each, baseline/candidate) retain exact
 raw FLOAT pixel bits. Per-pass command and completed-evaluation sums agree with
