@@ -17,9 +17,11 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 namespace {
 using namespace rypath;
@@ -819,6 +821,18 @@ void contribution_multileaf_mean() {
              "Independent-seed multileaf summed/contribution mean smoke gate");
     }
 }
+// These diagnostics intentionally compare every stored wire byte, including floating
+// representations, rather than accepting numerical equality or ignoring padding.
+// Span byte views preserve that oracle and check both buffer extents before reading.
+template <class T> bool equal_wire_bytes(const std::vector<T> &a, const std::vector<T> &b) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    return std::ranges::equal(std::as_bytes(std::span(a)), std::as_bytes(std::span(b)));
+}
+RasterCamera &require_raster_camera(FrameCamera &camera) {
+    if (!camera.raster_camera)
+        throw std::runtime_error("Enhanced control requires an explicit raster camera");
+    return *camera.raster_camera;
+}
 FrameConfig enhanced_config() {
     auto c = contribution_config();
     c.area_path_domain = FrameAreaPathDomain::enhanced;
@@ -922,7 +936,8 @@ void enhanced_event_count_controls() {
                          "Each physical terminal evaluation invokes packet step exactly once");
                     if (pass.kind == "fresh") {
                         ++fresh;
-                        need(pass.packet_step_invocations == control.width * control.height,
+                        need(pass.packet_step_invocations ==
+                                 std::uint64_t(control.width) * control.height,
                              "Fresh leaf count resets on each frame");
                     } else if (pass.kind == "spatial") {
                         need(pass.index < 4, "Spatial invocation row index");
@@ -1064,7 +1079,7 @@ void enhanced_null_transitions() {
                            .perspective_lens = scene.perspective_lens,
                            .texture_camera = scene.texture_camera};
         need(camera.raster_camera.has_value(), "Null-transition camera is explicit");
-        camera.raster_camera->origin.x = black ? 100.f : 0.f;
+        require_raster_camera(camera).origin.x = black ? 100.f : 0.f;
         const auto a =
             enhanced_capture(*full, c, 0, ordinal, high_sample, camera, nullptr, ordinal == 2);
         const auto b = enhanced_capture(*prefix, prefix_config, 0, ordinal, high_sample, camera,
@@ -1354,7 +1369,7 @@ void enhanced_snapshot_failed_attempt() {
                      .perspective_lens = scene.perspective_lens,
                      .texture_camera = scene.texture_camera};
     need(miss.raster_camera.has_value(), "Failure camera has explicit raster rays");
-    miss.raster_camera->origin.x = 100.f;
+    require_raster_camera(miss).origin.x = 100.f;
     auto failed = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = miss});
     need(failed.status == GeometryStatus::success && failed.frame && !failed.busy,
          failed.diagnostic);
@@ -1470,7 +1485,7 @@ void enhanced_suffix_context_controls() {
                       .perspective_lens = scene.perspective_lens,
                       .texture_camera = scene.texture_camera};
     need(moved.raster_camera.has_value(), "Allocator fixture has explicit raster rays");
-    moved.raster_camera->origin.x += .0625f;
+    require_raster_camera(moved).origin.x += .0625f;
     for (unsigned ordinal = 0; ordinal < 4; ++ordinal) {
         enhanced_capture(*candidate, c, scene.max_depth, ordinal, high_sample,
                          ordinal < 2 ? std::optional<FrameCamera>{} : moved);
@@ -1482,7 +1497,7 @@ void enhanced_suffix_context_controls() {
              "Static A/B contexts reuse exact identities across allocator exhaustion");
     }
     auto third = moved;
-    third.raster_camera->origin.x += .0625f;
+    require_raster_camera(third).origin.x += .0625f;
     auto rejected = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = third});
     need(rejected.status == GeometryStatus::failure && !rejected.frame && !rejected.busy &&
              rejected.diagnostic.find("suffix context identity exhausted") != std::string::npos,
@@ -1527,7 +1542,7 @@ void enhanced_suffix_failed_context() {
                      .perspective_lens = scene.perspective_lens,
                      .texture_camera = scene.texture_camera};
     need(miss.raster_camera.has_value(), "Failure context has explicit raster rays");
-    miss.raster_camera->origin.x = 100.f;
+    require_raster_camera(miss).origin.x = 100.f;
     auto failed = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = miss});
     need(failed.status == GeometryStatus::success && failed.frame && !failed.busy,
          failed.diagnostic);
@@ -1656,7 +1671,7 @@ void enhanced_suffix_conductor() {
                       .perspective_lens = scene.perspective_lens,
                       .texture_camera = scene.texture_camera};
     need(moved.raster_camera.has_value(), "Conductor suffix fixture has a raster camera");
-    moved.raster_camera->origin.x += .0625f;
+    require_raster_camera(moved).origin.x += .0625f;
     constexpr unsigned pixels = 17u * 17u;
     std::array<std::uint64_t, 3> hits{};
     std::uint64_t misses = 0, records = 0, previous_context = 0;
@@ -1694,15 +1709,12 @@ void enhanced_suffix_conductor() {
                  y.epoch == b.info.epoch && x.front_bank == y.front_bank &&
                  x.history.size() == pixels && y.history.size() == pixels &&
                  x.temporal.size() == pixels && y.temporal.size() == pixels &&
-                 x.records.size() == enhanced_wire::bank_count * pixels &&
-                 y.records.size() == enhanced_wire::bank_count * pixels &&
+                 x.records.size() == std::size_t(enhanced_wire::bank_count) * pixels &&
+                 y.records.size() == std::size_t(enhanced_wire::bank_count) * pixels &&
                  !x.suffix_cache_enabled && x.suffix_context == 0 && y.suffix_cache_enabled &&
                  y.suffix_context != 0 && x.enhanced_suffix.empty() && y.enhanced_suffix.empty(),
              "Rough conductor snapshots retain exact publication identity and actual cache state");
-        need(std::memcmp(x.history.data(), y.history.data(), pixels * sizeof(area_wire::History)) ==
-                     0 &&
-                 std::memcmp(x.temporal.data(), y.temporal.data(),
-                             pixels * sizeof(area_wire::Temporal)) == 0,
+        need(equal_wire_bytes(x.history, y.history) && equal_wire_bytes(x.temporal, y.temporal),
              "Rough conductor suffix reuse preserves complete history and temporal tuples");
         const auto compare_record = [&](enhanced_wire::Reference ref) {
             if (enhanced_wire::absent(ref))
@@ -1784,7 +1796,7 @@ void duplication_snapshot_oracle(const EnhancedSessionSnapshot &snapshot, const 
              std::equal(snapshot.duplication_counts.begin(), snapshot.duplication_counts.end(),
                         expected.counts.begin()),
          "Owned exact count map and coverage agree with independent oracle");
-    const double mean = valid ? double(expected.sum) / (288. * valid) : 0;
+    const double mean = valid ? double(expected.sum) / (288. * double(valid)) : 0;
     need(std::isfinite(info.duplication.mean_d) &&
              std::abs(info.duplication.mean_d - mean) <= 4 * std::numeric_limits<double>::epsilon(),
          "Duplication mean converts integer counts using fixed288 denominator");
@@ -1960,7 +1972,7 @@ void enhanced_atlas_execution_controls() {
                       .raster_camera = scene.raster_camera,
                       .perspective_lens = scene.perspective_lens,
                       .texture_camera = scene.texture_camera};
-    moved.raster_camera->origin.x += .0625f;
+    require_raster_camera(moved).origin.x += .0625f;
     for (unsigned frame = 0; frame < 3; ++frame) {
         const auto camera =
             frame == 2 ? std::optional<FrameCamera>(moved) : std::optional<FrameCamera>{};
@@ -2017,8 +2029,8 @@ void enhanced_atlas_mean_controls() {
         std::array<double, 3> xm{}, ym{};
         for (unsigned p = 0; p < x.image.raw_xyz.size(); ++p)
             for (unsigned k = 0; k < 3; ++k) {
-                xm[k] += double(x.image.raw_xyz[p][k]) / x.image.raw_xyz.size();
-                ym[k] += double(y.image.raw_xyz[p][k]) / y.image.raw_xyz.size();
+                xm[k] += double(x.image.raw_xyz[p][k]) / double(x.image.raw_xyz.size());
+                ym[k] += double(y.image.raw_xyz[p][k]) / double(y.image.raw_xyz.size());
             }
         for (unsigned k = 0; k < 3; ++k) {
             differences[run][k] = ym[k] - xm[k];
@@ -2094,7 +2106,7 @@ FrameCamera motion_pan(const RenderScene &scene) {
                        .perspective_lens = scene.perspective_lens,
                        .texture_camera = scene.texture_camera};
     need(camera.raster_camera.has_value(), "Motion fixture has raster camera");
-    camera.raster_camera->origin.x += 1;
+    require_raster_camera(camera).origin.x += 1;
     return camera;
 }
 ContributionCapture motion_capture(FrameSession &session, std::optional<FrameCamera> camera = {},
@@ -2228,10 +2240,7 @@ void enhanced_motion_static_controls() {
                 y.geometry_generation == b.info.history_generation && y.geometry.size() == 49 &&
                 y.motion_map_generated == (frame == 0) &&
                 y.donors.size() == (frame == 0 ? 49u : 0u) &&
-                std::memcmp(x.history.data(), y.history.data(),
-                            x.history.size() * sizeof(area_wire::History)) == 0 &&
-                std::memcmp(x.temporal.data(), y.temporal.data(),
-                            x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+                equal_wire_bytes(x.history, y.history) && equal_wire_bytes(x.temporal, y.temporal),
             "Static identity exposes paired geometry generation and exact history/temporal tuples");
         if (frame == 0) {
             geometry_front = y.geometry_front;
@@ -2243,8 +2252,7 @@ void enhanced_motion_static_controls() {
             need(y.geometry_front == geometry_front && b.info.enhanced_geometry_generated == 0 &&
                      b.info.enhanced_geometry_reused == 49 &&
                      b.info.enhanced_motion_routes == std::array<std::uint64_t, 4>{} &&
-                     std::memcmp(first_geometry.data(), y.geometry.data(),
-                                 49 * sizeof(enhanced_motion_wire::Geometry)) == 0,
+                     equal_wire_bytes(first_geometry, y.geometry),
                  "Static identity reuses immutable geometry without inventing donor work");
         }
         const auto compare_record = [&](enhanced_wire::Reference ref) {
@@ -2404,8 +2412,8 @@ void enhanced_motion_mean_controls() {
             for (unsigned k = 0; k < 3; ++k) {
                 need(std::isfinite(a.image.raw_xyz[p][k]) && std::isfinite(b.image.raw_xyz[p][k]),
                      "Moving motion raw values finite");
-                x[k] += double(a.image.raw_xyz[p][k]) / a.image.raw_xyz.size();
-                y[k] += double(b.image.raw_xyz[p][k]) / b.image.raw_xyz.size();
+                x[k] += double(a.image.raw_xyz[p][k]) / double(a.image.raw_xyz.size());
+                y[k] += double(b.image.raw_xyz[p][k]) / double(b.image.raw_xyz.size());
             }
         for (unsigned k = 0; k < 3; ++k) {
             differences[run][k] = y[k] - x[k];
@@ -2495,7 +2503,7 @@ void enhanced_pair_compaction_controls() {
                                       .texture_camera = scene.texture_camera};
                     need(moved.raster_camera.has_value(),
                          "Pair fixture has explicit raster camera");
-                    moved.raster_camera->origin.x += .0625f;
+                    require_raster_camera(moved).origin.x += .0625f;
                     std::uint64_t compacted = 0, physical = 0;
                     for (unsigned frame = 0; frame < 4; ++frame) {
                         const auto camera = frame >= 2 ? std::optional<FrameCamera>(moved)
@@ -2595,7 +2603,7 @@ void enhanced_suffix_controls() {
                           .perspective_lens = scene.perspective_lens,
                           .texture_camera = scene.texture_camera};
         need(moved.raster_camera.has_value(), "Suffix fixture has an explicit raster camera");
-        moved.raster_camera->origin.x += .0625f;
+        require_raster_camera(moved).origin.x += .0625f;
         std::uint64_t previous_context = 0;
         for (unsigned frame = 0; frame < 8; ++frame) {
             const auto camera = frame == 2 || frame == 3 ? std::optional<FrameCamera>(moved)
@@ -2623,8 +2631,9 @@ void enhanced_suffix_controls() {
             need(x.status == GeometryStatus::success && y.status == GeometryStatus::success,
                  x.diagnostic + y.diagnostic);
             need(x.enhanced_suffix.empty() && x.suffix_context == 0 &&
-                     y.enhanced_suffix.size() == 4u * 17u * 17u && y.suffix_context != 0 &&
-                     x.history.size() == y.history.size() && x.temporal.size() == y.temporal.size(),
+                     y.enhanced_suffix.size() == std::size_t(4) * 17 * 17 &&
+                     y.suffix_context != 0 && x.history.size() == y.history.size() &&
+                     x.temporal.size() == y.temporal.size(),
                  "Disabled cache has a sentinel; enabled snapshot owns all four banks");
             need(std::memcmp(x.history.data(), y.history.data(),
                              x.history.size() * sizeof(area_wire::History)) == 0 &&
@@ -2816,7 +2825,7 @@ void enhanced_nee_visibility() {
             need(camera.raster_camera.has_value(), "NEE transition camera explicit");
             const bool occluded = ordinal == 2 || ordinal == 3;
             const bool same_context = ordinal == 1 || ordinal == 3;
-            camera.raster_camera->origin.x = occluded ? 4.f : 0.f;
+            require_raster_camera(camera).origin.x = occluded ? 4.f : 0.f;
             const auto a = enhanced_capture(*full, full_config, 1, ordinal, high_sample, camera,
                                             nullptr, false);
             const auto b = enhanced_capture(*prefix, prefix_config, 1, ordinal, high_sample, camera,
@@ -2942,12 +2951,13 @@ void enhanced_fresh_only_controls() {
                     // serials remain identical. The middle case changes camera.
                     std::optional<FrameCamera> camera;
                     if (ordinal == 1) {
-                        camera = FrameCamera{.camera = scene.camera,
-                                             .camera_medium = scene.camera_medium,
-                                             .raster_camera = scene.raster_camera,
-                                             .perspective_lens = scene.perspective_lens,
-                                             .texture_camera = scene.texture_camera};
-                        camera->raster_camera->origin.x += .125f;
+                        FrameCamera moved{.camera = scene.camera,
+                                          .camera_medium = scene.camera_medium,
+                                          .raster_camera = scene.raster_camera,
+                                          .perspective_lens = scene.perspective_lens,
+                                          .texture_camera = scene.texture_camera};
+                        require_raster_camera(moved).origin.x += .125f;
+                        camera = std::move(moved);
                     }
                     FrameRequest request{high_sample + ordinal, 73u + ordinal, camera};
                     auto full = pair.sessions[0]->submit(request);
@@ -3041,7 +3051,7 @@ void enhanced_fresh_only_controls() {
                      .raster_camera = failure_scene.raster_camera,
                      .perspective_lens = failure_scene.perspective_lens,
                      .texture_camera = failure_scene.texture_camera};
-    miss.raster_camera->origin.x = 100.f;
+    require_raster_camera(miss).origin.x = 100.f;
     auto failed = recovery->submit({high_sample, 74, miss});
     need(failed.status == GeometryStatus::success && failed.frame, failed.diagnostic);
     const auto failure = failed.frame->wait();
