@@ -221,6 +221,32 @@ light. This requires a suitable signal from transport rather than dividing
 the combined spectral image by a primary RGB guide.
 [Spatiotemporal Variance-Guided Filtering](https://research.nvidia.com/labs/rtr/publication/schied2017spatiotemporal/)
 
+## Pavilion night highlight persistence
+
+We traced a fixed screen-space grid on the roof, stone and reflected lights in
+a 104-frame static sequence at native 1080p, seed 61002. The instrumented run
+captured signed linear RGB from the retained raw and reconstructed frame. It
+uses one shared spatial map, fixed Area cap 20 and a signed denoiser with a
+64-frame history and five spatial passes. Each reference pixel averages four
+independent 64-SPP batches. The trace readbacks are excluded from throughput
+comparisons.
+
+In the first roof patch, mean raw luminance jumped from 0.0273 to 1.1007 on
+frame 5. By frame 104, mean raw luminance was 0.0307 against a 0.0292
+reference. The signed reconstruction still measured 0.1223. Applying the
+denoiser's nominal temporal weights directly to the recorded raw samples gave
+0.1232. A second roof patch showed a similar decay after frame 59. These two
+traces identify a large signal already present before reconstruction and
+quantify how long the temporal filter retained it. They do not identify the
+individual path that first produced it.
+
+At one separate stone pixel, the final raw RGB was approximately
+`(19.9, 8.4, -1.4)`, and the denoised result was `(534.7, 225.2, -38.6)`.
+The independent reference at that pixel was near black. Whole-frame averages
+conceal these localized errors. The reflected pool light remains a separate
+quality check because suppressing bright samples can also remove authored
+detail.
+
 ## Other execution experiments
 
 An exact shortcut for supported primary paths ending at a light passed

@@ -1,27 +1,26 @@
 # Project status
 
-The [zero-mutation performance study](zero-mutation-performance.md) measures
-fresh spectral paths, reciprocal spatial reuse and reconstruction separately.
-The native budgets are 50 ms for Cornell/Prism and 100 ms for Pavilion. The
-stochastic spatial estimators and fixed temporal-confidence controls are opt-in.
+The native-1080p Enhanced Area pipeline supports zero or more corrected
+mutations, visible-hero spectral transport, Metal hardware traversal and
+either signed temporal reconstruction or native MetalFX. Its optional
+one-map spatial estimator roughly halves frame time against exhaustive
+four-map reuse on the M4 Max. The 50 ms Cornell/Prism and 100 ms Pavilion
+budgets remain open. Fresh spectral path evaluation alone exceeds them.
+[Zero-mutation performance study](zero-mutation-performance.md)
 
-The [Enhanced ReSTIR implementation](restir-enhanced.md) supports native-1080p
-Area reuse with zero or more corrected mutations and denoising. Its opt-in finite-depth domain includes weighted fresh
-discovery, strict confidence, supported terminal/interior reconnection, bounded
-spectral suffix caching and selected-null compaction. Native static exactness and
-timing screens pass execution checks, but caching/compaction gains are limited
-and scene dependent. Camera-only dual-motion reprojection now passes focused
-CPU/GPU, mapped-domain and frame-publication controls plus a four-scene native
-motion smoke; motion quality qualification remains open. Paired Gaussian spatial textures now pass
-independent integer, GPU, rendered-frame and actual CLI controls; duplication
-diagnostics pass focused off/on exactness, provenance and publication controls.
-The original paired-atlas zero-mutation native screen completes Cornell, Prism
-and Pavilion day, but fails Pavilion night at sample 38. The numerical recovery
-below completes that sequence; the original failed study remains preserved.
-The lower-resolution static quality diagnostic below is complete; native
-quality/time qualification remains follow-up work. This is not the
-complete paper implementation; no Pavilion highlight repair is established,
-and the frame-rate targets are unmet.
+The finite-depth Enhanced implementation includes reciprocal Gaussian spatial
+maps, camera-only dual-motion reprojection, owned terminal and interior
+reconnection on supported surfaces, bounded spectral suffix caching and
+selected-null compaction. The chapter on the estimator records the paper
+mechanisms covered and the material-dependent fallbacks.
+[Enhanced ReSTIR implementation](restir-enhanced.md)
+
+Native comparisons against independent references show persistent bright
+patches on the Pavilion night roof and stone. A 104-frame trace captured a
+large raw luminance excursion followed by a longer-lived signed reconstruction.
+The pool reflection and day textures require separate checks when evaluating
+changes to denoising or reservoir confidence.
+[Highlight and texture measurements](zero-mutation-performance.md#pavilion-night-highlight-persistence)
 
 Cold expansion arithmetic repairs a reproduced Enhanced geometric-cancellation
 failure. Its 185 GPU geometry controls pass, and the formerly failing native
