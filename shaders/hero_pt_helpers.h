@@ -154,11 +154,21 @@ inline float hero_history_light_pdf(const thread Resources &r, const thread Prev
     return selection * rypath_light_geometry::pdf(alpha, emitter, from.point.position,
                                                   from.point.shading_normal, light.uv, light.point);
 }
-template <typename Current, typename Previous, typename Before>
-inline float4 hero_endpoint(thread Resources &r, thread wire::Sample &sample,
-                            const thread Wavelengths &lambda, const thread Current &pt,
-                            const thread Previous &previous, const thread Before &before, uint t,
-                            const thread rypath_hero::Density &previous_density) {
+// The default observer is erased by specialization. Enhanced captures a selected
+// atom synchronously, while the original helper's coefficients are still live.
+struct HeroNoCapture {
+    float4 plain(float4 term) const thread { return term; }
+    float4 endpoint(float4 term, float4, float4, float, float3, uint) const thread { return term; }
+    float4 direct(float4 term, float4, float4, float, float4, float, uint, bool) const thread {
+        return term;
+    }
+};
+template <typename Current, typename Previous, typename Before, typename Capture>
+inline float4 hero_endpoint_observed(thread Resources &r, thread wire::Sample &sample,
+                                     const thread Wavelengths &lambda, const thread Current &pt,
+                                     const thread Previous &previous, const thread Before &before,
+                                     uint t, const thread rypath_hero::Density &previous_density,
+                                     thread Capture &capture) {
     float4 radiance;
     bool emission_valid;
     if (infinite(pt))
@@ -173,23 +183,40 @@ inline float4 hero_endpoint(thread Resources &r, thread wire::Sample &sample,
     }
     if (!emission_valid) {
         sample.status = wire::invalid_arithmetic;
-        return 0;
+        return capture.plain(float4(0));
     }
     const float4 value = pt.beta * radiance;
     if (t <= 2 || previous.delta || !nonzero(value))
-        return value;
+        return capture.plain(value);
     const float4 bsdf_pdf = hero_represented_pdf(previous, before, pt);
     const float light_pdf = hero_history_light_pdf(r, previous, pt);
-    return hero_weight(sample, previous_density, value, bsdf_pdf, float4(light_pdf));
+    const float4 term = hero_weight(sample, previous_density, value, bsdf_pdf, float4(light_pdf));
+    // Preserve the represented-geometry query's normalization, not the sampled
+    // outgoing ray. Immediate post-pivot E recomputes this PDF with new wo.
+    const float3 after =
+        infinite(pt) ? -pt.point.geometric_normal : pt.point.position - previous.point.position;
+    const float3 direction = all(after == 0) ? float3(0) : normalize(after);
+    return capture.endpoint(term, radiance, bsdf_pdf, light_pdf, direction,
+                            previous.bsdf.active_mask);
 }
-template <typename Current, typename Previous>
-inline float4 hero_direct(thread Resources &r, thread wire::Sample &sample,
-                          const thread Wavelengths &lambda, ulong index, const thread Current &pt,
-                          const thread Previous &before, uint t, float4 beta,
-                          const thread rypath_hero::Density &prefix,
-                          thread const rypath_replay::ReplayState *replay = nullptr) {
+template <typename Current, typename Previous, typename Before>
+inline float4 hero_endpoint(thread Resources &r, thread wire::Sample &sample,
+                            const thread Wavelengths &lambda, const thread Current &pt,
+                            const thread Previous &previous, const thread Before &before, uint t,
+                            const thread rypath_hero::Density &previous_density) {
+    HeroNoCapture capture;
+    return hero_endpoint_observed(r, sample, lambda, pt, previous, before, t, previous_density,
+                                  capture);
+}
+template <typename Current, typename Previous, typename Capture>
+inline float4 hero_direct_observed(thread Resources &r, thread wire::Sample &sample,
+                                   const thread Wavelengths &lambda, ulong index,
+                                   const thread Current &pt, const thread Previous &before, uint t,
+                                   float4 beta, const thread rypath_hero::Density &prefix,
+                                   thread Capture &capture,
+                                   thread const rypath_replay::ReplayState *replay = nullptr) {
     if (pt.type != surface_vertex || !pt.connectible)
-        return 0;
+        return capture.plain(float4(0));
     const constant auto &p = *r.alpha.parameters;
     typename HeroDirectEndpoint<Current>::Type sampled{};
     float3 direction;
@@ -198,24 +225,37 @@ inline float4 hero_direct(thread Resources &r, thread wire::Sample &sample,
                    sampled, direction, sampled_pdf) ||
         !isfinite(sampled_pdf) || sampled_pdf < 0) {
         sample.status = wire::invalid_arithmetic;
-        return 0;
+        return capture.plain(float4(0));
     }
     if (!(sampled_pdf > 0) || !nonzero(sampled.beta))
-        return 0;
+        return capture.plain(float4(0));
     const auto evaluation =
         hero_evaluate_current(pt.bsdf, pt.pair_valid ? pt.sampled_wo_local : pt.frame.local(pt.wo),
                               pt.frame.local(direction), pt.seed);
     if (!evaluation.valid) {
         sample.status = wire::invalid_arithmetic;
-        return 0;
+        return capture.plain(float4(0));
     }
-    const float4 value =
-        beta * evaluation.f * sampled.beta * abs(dot(pt.point.shading_normal, direction));
+    const float cosine = abs(dot(pt.point.shading_normal, direction));
+    const float4 value = beta * evaluation.f * sampled.beta * cosine;
     if (!nonzero(value) || !visible(r, pt, sampled, sample))
-        return 0;
+        return capture.plain(float4(0));
     if (sampled.delta_light)
-        return value;
+        return capture.direct(value, evaluation.f, sampled.beta, cosine, float4(0), 0,
+                              pt.bsdf.active_mask, true);
     sampled_pdf = direct_pdf(r, pt, sampled);
     const float4 bsdf_pdf = hero_represented_pdf(pt, before, sampled);
-    return hero_weight(sample, prefix, value, float4(sampled_pdf), bsdf_pdf);
+    const float4 term = hero_weight(sample, prefix, value, float4(sampled_pdf), bsdf_pdf);
+    return capture.direct(term, evaluation.f, sampled.beta, cosine, bsdf_pdf, sampled_pdf,
+                          pt.bsdf.active_mask, false);
+}
+template <typename Current, typename Previous>
+inline float4 hero_direct(thread Resources &r, thread wire::Sample &sample,
+                          const thread Wavelengths &lambda, ulong index, const thread Current &pt,
+                          const thread Previous &before, uint t, float4 beta,
+                          const thread rypath_hero::Density &prefix,
+                          thread const rypath_replay::ReplayState *replay = nullptr) {
+    HeroNoCapture capture;
+    return hero_direct_observed(r, sample, lambda, index, pt, before, t, beta, prefix, capture,
+                                replay);
 }

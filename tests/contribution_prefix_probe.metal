@@ -379,6 +379,7 @@ kernel void rypath_enhanced_discovery_witness(
     device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
     device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
     device rypath::enhanced_wire::Evaluation *owned_evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
     uint n [[thread_position_in_grid]]) {
     if (n >= 6)
         return;
@@ -393,7 +394,7 @@ kernel void rypath_enhanced_discovery_witness(
     const auto owned_request = owned_evaluations[n];
     pool[n] = er::begin(request, config, n, owned_request);
     auto state = pool[n];
-    er::Sink sink{state, cie, p, config, n, records, owned_evaluations};
+    er::Sink sink{state, cie, p, config, n, records, owned_evaluations, suffixes};
     Wavelengths lambda{};
     const float wavelengths[4] = {400, 500, 600, 700};
     const float pdfs[4] = {1, 2, 4, 8};
@@ -447,6 +448,7 @@ kernel void rypath_enhanced_discovery_finish(
     device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
     device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
     device rypath::enhanced_wire::Evaluation *owned_evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
     uint n [[thread_position_in_grid]]) {
     if (n >= 6)
         return;
@@ -457,7 +459,7 @@ kernel void rypath_enhanced_discovery_finish(
     const cw::Evaluation request{n == 4 ? 5u : ep::fresh_slot, ep::fresh_slot, 0.f, 0};
     auto pool = reinterpret_cast<device er::State *>(sidecars);
     auto persisted = pool[n];
-    er::Sink final_sink{persisted, cie, p, config, n, records, owned_evaluations};
+    er::Sink final_sink{persisted, cie, p, config, n, records, owned_evaluations, suffixes};
     namespace ew = rypath::enhanced_wire;
     const auto pending = owned_evaluations[n];
     const ew::Reference expected_source =
@@ -559,6 +561,7 @@ kernel void rypath_enhanced_hybrid_sink_witness(
     device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
     device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
     device rypath::enhanced_wire::Evaluation *evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
     uint n [[thread_position_in_grid]]) {
     if (n >= hybrid_sink_probe::count)
         return;
@@ -571,7 +574,7 @@ kernel void rypath_enhanced_hybrid_sink_witness(
                                  0};
     const auto pending = evaluations[n];
     auto state = er::begin(request, config, n, pending);
-    er::Sink sink{state, cie, p, config, n, records, evaluations};
+    er::Sink sink{state, cie, p, config, n, records, evaluations, suffixes};
     rypath_bdpt::Wavelengths lambda{};
     for (uint k = 0; k < 4; ++k) {
         lambda.lambda[k] = 400 + 100 * k;
@@ -613,6 +616,7 @@ kernel void rypath_enhanced_hybrid_sink_finish(
     device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
     device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
     device rypath::enhanced_wire::Evaluation *evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
     uint n [[thread_position_in_grid]]) {
     if (n >= hybrid_sink_probe::count)
         return;
@@ -622,7 +626,7 @@ kernel void rypath_enhanced_hybrid_sink_finish(
     namespace cw = rypath::contribution_wire;
     const device auto &config = configs[n];
     auto state = reinterpret_cast<device er::State *>(sidecars)[n];
-    er::Sink sink{state, cie, p, config, n, records, evaluations};
+    er::Sink sink{state, cie, p, config, n, records, evaluations, suffixes};
     const cw::Evaluation request{hp::imported(n) ? hp::slot(n) : ep::fresh_slot, ep::fresh_slot, 0,
                                  0};
     cw::Evaluation result{};
@@ -657,4 +661,49 @@ kernel void rypath_enhanced_hybrid_sink_finish(
     out[base + 29] = as_type<uint>(state.selection.score_sum.fraction);
     out[base + 30] = as_type<uint>(state.selection.score_sum.exponent);
     out[base + 31] = state.selection.selected_slot;
+}
+
+// Actual capture permissions and append-only writes. No transport, WRS or
+// readout equations are reproduced here; the host checks every arena byte.
+kernel void rypath_enhanced_suffix_ownership(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config &config [[buffer(1)]],
+    device rypath::enhanced_wire::Evaluation *evaluations [[buffer(2)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(3)]],
+    device uint *out [[buffer(4)]], constant uint &which [[buffer(5)]]) {
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace ew = rypath::enhanced_wire;
+    const bool fresh = which != 1 && which != 2 && which != 3 && which != 7 && which != 9;
+    const rypath::contribution_wire::Evaluation request{fresh ? ep::fresh_slot : 5u, ep::fresh_slot,
+                                                        0.f, 0};
+    const auto owned = evaluations[0];
+    auto state = er::begin(request, config, 0, owned);
+    er::Sink sink{state, nullptr, p, config, 0, nullptr, evaluations, suffixes};
+    out[0] = er::pending_owned(owned, config.pixel_count, 0, fresh);
+    out[1] = er::suffix_capture_owned(owned, config.pixel_count, 0, fresh);
+    out[2] = state.failed;
+    bool activated = false;
+    if (!state.failed) {
+        state.hybrid.first.selected = 2;
+        state.hybrid.first.next = 3;
+        activated = sink.activate_hybrid(hybrid_sink_probe::interior(1), {.5f, 1}, {.5f, 1});
+    }
+    out[3] = activated;
+    out[4] = sink.suffix_capture_index();
+    if (which >= 10) {
+        state.suffix_count = which == 10 ? 1u : 2u;
+        state.suffix_coverage = which == 10 ? 0xffu : 0xffffu;
+    }
+    // Overflow must preserve the earlier selected entry, including its header.
+    if (which < 10)
+        sink.invalidate_suffix();
+    const bool staged =
+        sink.stage_suffix(float4(1, 2, 4, 8), float4(.5f, .25f, .125f, .0625f), 15, true);
+    sink.advance_suffix(staged, 15);
+    out[5] = staged;
+    out[6] = state.suffix_count;
+    out[7] = state.suffix_coverage;
+    out[8] = state.failed;
+    out[9] = sink.has_interior();
 }

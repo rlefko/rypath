@@ -10,6 +10,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -1356,6 +1357,418 @@ void enhanced_hybrid_controls() {
     // Exactly the old fixed32-seed ensemble and unchanged5SE+128epsilon gates.
     enhanced_mean_contrast(scene, "D3-hybrid-17x17", .234375f, true);
 }
+EnhancedSuffixContextState suffix_state(FrameSession &session) {
+    auto state = FrameSessionTestAccess::suffix_context_state(session);
+    need(state.status == GeometryStatus::success, state.diagnostic);
+    return state;
+}
+void enhanced_suffix_context_controls() {
+    auto scene = enhanced_cavity();
+    auto c = enhanced_config();
+    c.width = c.height = 17;
+    c.capacity = 289;
+    c.mutation_steps = 0;
+    c.cache_temporal_evaluations = false;
+    c.contribution_replay = FrameContributionReplay::prefix;
+    auto candidate = session(scene, c);
+    constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+    need(FrameSessionTestAccess::seed_next_suffix_context(*candidate, 0).status ==
+             GeometryStatus::failure,
+         "Zero suffix context seed is rejected without consuming pristine state");
+    auto seeded = FrameSessionTestAccess::seed_next_suffix_context(*candidate, maximum - 1);
+    need(seeded.status == GeometryStatus::success && seeded.next_context == maximum - 1 &&
+             !seeded.exhausted && seeded.next_serial == 0 && !seeded.committed_serial,
+         "Pristine suffix allocator accepts MAX-1 exactly");
+    need(FrameSessionTestAccess::seed_next_suffix_context(*candidate, maximum).status ==
+             GeometryStatus::failure,
+         "Suffix allocator cannot be reseeded");
+    FrameCamera moved{.camera = scene.camera,
+                      .camera_medium = scene.camera_medium,
+                      .raster_camera = scene.raster_camera,
+                      .perspective_lens = scene.perspective_lens,
+                      .texture_camera = scene.texture_camera};
+    need(moved.raster_camera.has_value(), "Allocator fixture has explicit raster rays");
+    moved.raster_camera->origin.x += .0625f;
+    for (unsigned ordinal = 0; ordinal < 4; ++ordinal) {
+        enhanced_capture(*candidate, c, scene.max_depth, ordinal, high_sample,
+                         ordinal < 2 ? std::optional<FrameCamera>{} : moved);
+        const auto state = suffix_state(*candidate);
+        need(state.contexts[state.front] == (ordinal < 2 ? maximum - 1 : maximum) &&
+                 state.next_context == maximum && state.exhausted == (ordinal >= 2) &&
+                 state.generation == ordinal + 1 && state.next_serial == ordinal + 1 &&
+                 state.committed_serial == ordinal,
+             "Static A/B contexts reuse exact identities across allocator exhaustion");
+    }
+    auto third = moved;
+    third.raster_camera->origin.x += .0625f;
+    auto rejected = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = third});
+    need(rejected.status == GeometryStatus::failure && !rejected.frame && !rejected.busy &&
+             rejected.diagnostic.find("suffix context identity exhausted") != std::string::npos,
+         "New C context fails visibly before accepting a serial at exhaustion");
+    const auto exhausted = suffix_state(*candidate);
+    need(exhausted.valid && exhausted.exhausted && exhausted.contexts[exhausted.front] == maximum &&
+             exhausted.next_context == maximum && exhausted.next_serial == 4 &&
+             exhausted.pending_serial == 3 && exhausted.committed_serial == 3 &&
+             exhausted.generation == 4,
+         "Rejected context cannot wrap the token or advance serial/history publication");
+    enhanced_capture(*candidate, c, scene.max_depth, 4, high_sample, moved);
+    const auto reused = suffix_state(*candidate);
+    need(reused.contexts[reused.front] == maximum && reused.exhausted &&
+             reused.next_context == maximum && reused.next_serial == 5 && reused.generation == 5,
+         "Committed B remains usable after rejecting a new exhausted context");
+    std::cout << "suffix_context overflow/static-reuse controls passed\n";
+}
+void enhanced_suffix_failed_context() {
+    // Reuse the accepted asynchronous sensor-overflow fixture, not a preflight error.
+    auto scene = early_emission(false);
+    scene.light_sampler = LightSamplerKind::uniform;
+    scene.area_emissions[0].radiance.fill(1e30f);
+    scene.environment.fill(std::numeric_limits<float>::max());
+    frames(scene);
+    auto c = enhanced_config();
+    c.width = c.height = 17;
+    c.capacity = 289;
+    c.mutation_steps = 0;
+    c.cache_temporal_evaluations = false;
+    c.contribution_replay = FrameContributionReplay::prefix;
+    auto candidate = session(scene, c);
+    constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+    const auto seeded = FrameSessionTestAccess::seed_next_suffix_context(*candidate, maximum - 1);
+    need(seeded.status == GeometryStatus::success, seeded.diagnostic);
+    const auto first = enhanced_capture(*candidate, c, 0, 0, high_sample);
+    const auto before = suffix_state(*candidate);
+    need(before.contexts[before.front] == maximum - 1 && !before.exhausted,
+         "Successful A owns MAX-1 before asynchronous failure");
+    FrameCamera miss{.camera = scene.camera,
+                     .camera_medium = scene.camera_medium,
+                     .raster_camera = scene.raster_camera,
+                     .perspective_lens = scene.perspective_lens,
+                     .texture_camera = scene.texture_camera};
+    need(miss.raster_camera.has_value(), "Failure context has explicit raster rays");
+    miss.raster_camera->origin.x = 100.f;
+    auto failed = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = miss});
+    need(failed.status == GeometryStatus::success && failed.frame && !failed.busy,
+         failed.diagnostic);
+    const auto bad = failed.frame->wait();
+    need(bad.status == FrameStatus::failed && !bad.diagnostic.empty() && bad.command_count > 0 &&
+             bad.area_serial == 1 && bad.history_generation == first.info.history_generation,
+         "Actual asynchronous B failure consumes its serial without committing history");
+    const auto after = suffix_state(*candidate);
+    need(after.front == before.front && after.valid && after.exhausted &&
+             after.contexts[after.front] == maximum - 1 &&
+             after.contexts[after.front ^ 1] == maximum && after.next_context == maximum &&
+             after.next_serial == 2 && after.pending_serial == 1 && after.committed_serial == 0 &&
+             after.generation == before.generation,
+         "Failed B consumes MAX exactly and retains successful front A identity");
+    need(FrameSessionTestAccess::snapshot_enhanced(*candidate, 0).status ==
+                 GeometryStatus::failure &&
+             FrameSessionTestAccess::snapshot_enhanced(*candidate, 1).status ==
+                 GeometryStatus::failure,
+         "Allocator diagnostics do not weaken failed-attempt full-snapshot rejection");
+    failed.frame.reset();
+    auto retry = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = miss});
+    need(retry.status == GeometryStatus::failure && !retry.frame && !retry.busy &&
+             retry.diagnostic.find("suffix context identity exhausted") != std::string::npos,
+         "Failed B retry cannot reuse an uncommitted identity after exhaustion");
+    const auto rejected = suffix_state(*candidate);
+    need(rejected.next_serial == 2 && rejected.pending_serial == 1 &&
+             rejected.committed_serial == 0 && rejected.generation == 1 && rejected.exhausted &&
+             rejected.contexts[rejected.front] == maximum - 1,
+         "Rejected retry preserves allocator exhaustion and committed publication");
+    auto recovered = candidate->submit({.sample_index = high_sample, .epoch = 73});
+    need(recovered.status == GeometryStatus::success && recovered.frame && !recovered.busy,
+         recovered.diagnostic);
+    const auto good = recovered.frame->wait();
+    need(good.status == FrameStatus::complete && good.area_serial == 2 && good.history_used &&
+             good.history_generation == 2,
+         "Original A recovers with one new successful generation after failed B");
+    const auto final = suffix_state(*candidate);
+    need(final.contexts[final.front] == maximum - 1 && final.exhausted &&
+             final.next_context == maximum && final.next_serial == 3 && final.generation == 2 &&
+             final.committed_serial == 2,
+         "Recovery reuses committed A without wrapping or reminting a context token");
+    const auto snapshot = FrameSessionTestAccess::snapshot_enhanced(*candidate, 2);
+    need(snapshot.status == GeometryStatus::success && snapshot.suffix_context == maximum - 1,
+         snapshot.diagnostic);
+    std::cout << "suffix_context asynchronous-failure/exhaustion controls passed\n";
+}
+void enhanced_suffix_full_inactive() {
+    const auto scene = enhanced_cavity();
+    auto off = enhanced_config();
+    off.width = off.height = 17;
+    off.capacity = 289;
+    off.contribution_replay = FrameContributionReplay::full;
+    off.cache_temporal_evaluations = false;
+    off.enhanced_suffix_cache = false;
+    auto on = off;
+    on.enhanced_suffix_cache = true;
+    auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+    need(pair.status == GeometryStatus::success && pair.shared_renderer &&
+             pair.independent_history && pair.independent_owned_records &&
+             pair.independent_suffix_storage,
+         pair.diagnostic);
+    need(FrameSessionTestAccess::seed_next_suffix_context(*pair.sessions[1], 7).status ==
+                 GeometryStatus::failure &&
+             FrameSessionTestAccess::suffix_context_state(*pair.sessions[1]).status ==
+                 GeometryStatus::failure,
+         "Full oracle cannot enable the prefix allocator through its test bridge");
+    for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
+        auto a = enhanced_capture(*pair.sessions[0], off, scene.max_depth, ordinal, high_sample);
+        auto b = enhanced_capture(*pair.sessions[1], on, scene.max_depth, ordinal, high_sample);
+        exact(a.image, b.image);
+        need(!a.info.enhanced_suffix_cache && !b.info.enhanced_suffix_cache &&
+                 a.info.enhanced_suffix_hits == std::array<std::uint64_t, 3>{} &&
+                 b.info.enhanced_suffix_hits == std::array<std::uint64_t, 3>{} &&
+                 a.info.enhanced_suffix_misses == 0 && b.info.enhanced_suffix_misses == 0 &&
+                 a.info.mutation_accepts == b.info.mutation_accepts,
+             "Full replay keeps requested suffix on inactive with zero cache work");
+        const auto x = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], ordinal, true);
+        const auto y = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], ordinal, true);
+        need(x.status == GeometryStatus::success && y.status == GeometryStatus::success,
+             x.diagnostic + y.diagnostic);
+        need(!x.suffix_cache_enabled && !y.suffix_cache_enabled && x.suffix_context == 0 &&
+                 y.suffix_context == 0 && x.enhanced_suffix.empty() && y.enhanced_suffix.empty() &&
+                 x.history.size() == y.history.size() && x.temporal.size() == y.temporal.size(),
+             "Both full replay arms expose token zero and no suffix tape");
+        need(std::memcmp(x.history.data(), y.history.data(),
+                         x.history.size() * sizeof(area_wire::History)) == 0 &&
+                 std::memcmp(x.temporal.data(), y.temporal.data(),
+                             x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+             "Inactive full-mode flag preserves exact published history and temporal tuples");
+    }
+    std::cout << "suffix_full inactive on/off shared-AS controls passed\n";
+}
+void enhanced_suffix_conductor() {
+    auto scene = enhanced_cavity();
+    scene.max_depth = 6;
+    auto &material = scene.materials[0];
+    material = SpectralMaterial{};
+    material.kind = SpectralMaterialKind::constant;
+    material.scattering = ScatteringKind::conductor;
+    material.eta.knots = {{360, .8f}, {500, 1.2f}, {830, 1.8f}};
+    material.k.knots = {{360, 3.5f}, {500, 2.5f}, {830, 1.5f}};
+    material.eta.extend_endpoints = material.k.extend_endpoints = true;
+    material.u_roughness = material.v_roughness = .5f;
+    material.remap_roughness = false;
+    // Rough conductor evaluation uses the authored surface frame table even
+    // though eta/k are constant across each wall's spatial coordinates.
+    frames(scene);
+    auto off = enhanced_config();
+    off.width = off.height = 17;
+    off.capacity = 37;
+    off.seed = 51001;
+    off.mutation_steps = 1;
+    off.contribution_replay = FrameContributionReplay::prefix;
+    off.cache_temporal_evaluations = false;
+    off.enhanced_suffix_cache = false;
+    auto on = off;
+    on.enhanced_suffix_cache = true;
+    auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+    need(pair.status == GeometryStatus::success && pair.shared_renderer &&
+             pair.independent_history && pair.independent_owned_records &&
+             pair.independent_suffix_storage,
+         pair.diagnostic);
+    FrameCamera moved{.camera = scene.camera,
+                      .camera_medium = scene.camera_medium,
+                      .raster_camera = scene.raster_camera,
+                      .perspective_lens = scene.perspective_lens,
+                      .texture_camera = scene.texture_camera};
+    need(moved.raster_camera.has_value(), "Conductor suffix fixture has a raster camera");
+    moved.raster_camera->origin.x += .0625f;
+    constexpr unsigned pixels = 17u * 17u;
+    std::array<std::uint64_t, 3> hits{};
+    std::uint64_t misses = 0, records = 0, previous_context = 0;
+    for (unsigned frame = 0; frame < 4; ++frame) {
+        const auto camera =
+            frame >= 2 ? std::optional<FrameCamera>(moved) : std::optional<FrameCamera>{};
+        std::cout << "suffix_conductor_begin seed=" << off.seed << " frame=" << frame << " arm=off"
+                  << std::endl;
+        const auto a =
+            enhanced_capture(*pair.sessions[0], off, scene.max_depth, frame, high_sample, camera);
+        std::cout << "suffix_conductor_begin seed=" << off.seed << " frame=" << frame << " arm=on"
+                  << std::endl;
+        const auto b =
+            enhanced_capture(*pair.sessions[1], on, scene.max_depth, frame, high_sample, camera);
+        exact(a.image, b.image);
+        need(!a.info.enhanced_suffix_cache && b.info.enhanced_suffix_cache &&
+                 !a.info.temporal_evaluation_cache_used && !b.info.temporal_evaluation_cache_used &&
+                 a.info.enhanced_suffix_hits == std::array<std::uint64_t, 3>{} &&
+                 a.info.enhanced_suffix_misses == 0 &&
+                 a.info.mutation_attempts == b.info.mutation_attempts &&
+                 a.info.mutation_accepts == b.info.mutation_accepts &&
+                 a.info.completed_evaluations == b.info.completed_evaluations &&
+                 a.info.analytic_null_evaluations == b.info.analytic_null_evaluations &&
+                 a.info.logical_evaluations == b.info.logical_evaluations &&
+                 a.info.area_stencil_offsets == b.info.area_stencil_offsets,
+             "Rough conductor suffix on/off preserves mutation and evaluator accounting");
+        const auto x = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], frame);
+        const auto y = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], frame);
+        need(x.status == GeometryStatus::success && y.status == GeometryStatus::success,
+             x.diagnostic + y.diagnostic);
+        need(x.width == 17 && x.height == 17 && y.width == 17 && y.height == 17 &&
+                 x.serial == frame && y.serial == frame &&
+                 x.generation == a.info.history_generation &&
+                 y.generation == b.info.history_generation && x.epoch == a.info.epoch &&
+                 y.epoch == b.info.epoch && x.front_bank == y.front_bank &&
+                 x.history.size() == pixels && y.history.size() == pixels &&
+                 x.temporal.size() == pixels && y.temporal.size() == pixels &&
+                 x.records.size() == enhanced_wire::bank_count * pixels &&
+                 y.records.size() == enhanced_wire::bank_count * pixels &&
+                 !x.suffix_cache_enabled && x.suffix_context == 0 && y.suffix_cache_enabled &&
+                 y.suffix_context != 0 && x.enhanced_suffix.empty() && y.enhanced_suffix.empty(),
+             "Rough conductor snapshots retain exact publication identity and actual cache state");
+        need(std::memcmp(x.history.data(), y.history.data(), pixels * sizeof(area_wire::History)) ==
+                     0 &&
+                 std::memcmp(x.temporal.data(), y.temporal.data(),
+                             pixels * sizeof(area_wire::Temporal)) == 0,
+             "Rough conductor suffix reuse preserves complete history and temporal tuples");
+        const auto compare_record = [&](enhanced_wire::Reference ref) {
+            if (enhanced_wire::absent(ref))
+                return;
+            need(enhanced_wire::valid(ref, pixels), "Conductor owned-record reference is valid");
+            const auto index = std::size_t(ref.bank) * pixels + ref.pixel;
+            need(std::memcmp(&x.records[index], &y.records[index], sizeof(enhanced_wire::Record)) ==
+                     0,
+                 "Rough conductor suffix reuse preserves the referenced initialized record");
+            ++records;
+        };
+        // Unreferenced arena bytes are not initialized semantic witnesses.
+        for (const auto &h : x.history)
+            if (h.valid && h.selected_slot != contribution_wire::enhanced_null_slot)
+                compare_record(h.record);
+        for (const auto &t : x.temporal)
+            if (t.normalizer > 0 && t.target > 0 &&
+                t.selected_slot != contribution_wire::enhanced_null_slot)
+                compare_record(t.record);
+        if (frame == 2)
+            need(y.suffix_context > previous_context,
+                 "Moved conductor camera receives a new suffix context");
+        else if (frame != 0)
+            need(y.suffix_context == previous_context,
+                 "Static conductor camera retains its suffix context");
+        previous_context = y.suffix_context;
+        for (unsigned k = 0; k < 3; ++k)
+            hits[k] += b.info.enhanced_suffix_hits[k];
+        misses += b.info.enhanced_suffix_misses;
+        std::cout << "suffix_conductor_exact seed=" << off.seed << " frame=" << frame
+                  << " context=" << y.suffix_context << " hits=" << b.info.enhanced_suffix_hits[0]
+                  << ',' << b.info.enhanced_suffix_hits[1] << ',' << b.info.enhanced_suffix_hits[2]
+                  << " misses=" << b.info.enhanced_suffix_misses << '\n';
+    }
+    need(hits[0] + hits[1] + hits[2] > 0 && misses > 0 && records > 0,
+         "Fixed-seed rough conductor run must witness actual suffix hits, fallback and records");
+    std::cout << "suffix_conductor_exact totals hits=" << hits[0] << ',' << hits[1] << ','
+              << hits[2] << " misses=" << misses << " referenced_records=" << records << '\n';
+}
+void enhanced_suffix_controls() {
+    namespace tape = rypath_enhanced_suffix_tape;
+    auto scene = enhanced_cavity();
+    scene.max_depth = 6;
+    scene.materials[0].constant = .9f; // Exercise later cached atoms, not just first E.
+    std::array<std::uint64_t, 3> hits{};
+    std::uint64_t misses = 0, published = 0;
+    for (const unsigned seed_index : {0u, 4u, 11u}) {
+        auto off = enhanced_config();
+        off.width = off.height = 17;
+        off.capacity = seed_index == 4 ? 289 : 37;
+        off.seed = seed + 7919ull * seed_index;
+        off.mutation_steps = 1;
+        off.contribution_replay = FrameContributionReplay::prefix;
+        off.cache_temporal_evaluations = false; // Force both temporal directions.
+        off.enhanced_suffix_cache = false;
+        auto on = off;
+        on.enhanced_suffix_cache = true;
+        auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+        need(pair.status == GeometryStatus::success && pair.shared_renderer &&
+                 pair.independent_history && pair.independent_owned_records &&
+                 pair.independent_suffix_storage,
+             pair.diagnostic);
+        FrameCamera moved{.camera = scene.camera,
+                          .camera_medium = scene.camera_medium,
+                          .raster_camera = scene.raster_camera,
+                          .perspective_lens = scene.perspective_lens,
+                          .texture_camera = scene.texture_camera};
+        need(moved.raster_camera.has_value(), "Suffix fixture has an explicit raster camera");
+        moved.raster_camera->origin.x += .0625f;
+        std::uint64_t previous_context = 0;
+        for (unsigned frame = 0; frame < 8; ++frame) {
+            const auto camera = frame == 2 || frame == 3 ? std::optional<FrameCamera>(moved)
+                                                         : std::optional<FrameCamera>{};
+            std::cout << "suffix_begin seed=" << off.seed << " frame=" << frame << " arm=off"
+                      << std::endl;
+            auto a = enhanced_capture(*pair.sessions[0], off, scene.max_depth, frame, high_sample,
+                                      camera);
+            std::cout << "suffix_begin seed=" << off.seed << " frame=" << frame << " arm=on"
+                      << std::endl;
+            auto b = enhanced_capture(*pair.sessions[1], on, scene.max_depth, frame, high_sample,
+                                      camera);
+            exact(a.image, b.image);
+            need(!a.info.enhanced_suffix_cache && b.info.enhanced_suffix_cache &&
+                     a.info.enhanced_suffix_hits == std::array<std::uint64_t, 3>{} &&
+                     a.info.enhanced_suffix_misses == 0 &&
+                     a.info.mutation_accepts == b.info.mutation_accepts &&
+                     a.info.completed_evaluations == b.info.completed_evaluations &&
+                     a.info.analytic_null_evaluations == b.info.analytic_null_evaluations,
+                 "Suffix on/off preserves exact output, mutation and owner accounting");
+            const auto x =
+                FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], frame, true);
+            const auto y =
+                FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], frame, true);
+            need(x.status == GeometryStatus::success && y.status == GeometryStatus::success,
+                 x.diagnostic + y.diagnostic);
+            need(x.enhanced_suffix.empty() && x.suffix_context == 0 &&
+                     y.enhanced_suffix.size() == 4u * 17u * 17u && y.suffix_context != 0 &&
+                     x.history.size() == y.history.size() && x.temporal.size() == y.temporal.size(),
+                 "Disabled cache has a sentinel; enabled snapshot owns all four banks");
+            need(std::memcmp(x.history.data(), y.history.data(),
+                             x.history.size() * sizeof(area_wire::History)) == 0 &&
+                     std::memcmp(x.temporal.data(), y.temporal.data(),
+                                 x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+                 "Suffix reuse preserves complete published reservoir tuples");
+            if (frame == 2 || frame == 4)
+                need(y.suffix_context > previous_context,
+                     "Changed camera receives a new context identity, including A-B-A");
+            else if (frame != 0)
+                need(y.suffix_context == previous_context,
+                     "Exactly matching current contexts retain their identity");
+            previous_context = y.suffix_context;
+            for (unsigned k = 0; k < 3; ++k)
+                hits[k] += b.info.enhanced_suffix_hits[k];
+            misses += b.info.enhanced_suffix_misses;
+            for (const auto &h : y.history) {
+                if (!h.valid || h.selected_slot == contribution_wire::enhanced_null_slot)
+                    continue;
+                const auto index = std::size_t(h.record.bank) * 289 + h.record.pixel;
+                need(index < y.enhanced_suffix.size(), "Published suffix reference is in bounds");
+                const auto &entry = y.enhanced_suffix[index];
+                if (entry.version == 0)
+                    continue;
+                tape::Input identity{};
+                identity.selected_slot = h.selected_slot;
+                identity.pivot_event = y.records[index].event_ordinal;
+                identity.context_low = entry.context_low;
+                identity.context_high = entry.context_high;
+                need(tape::header(entry, identity) == tape::Status::ok &&
+                         y.records[index].tag == rypath_enhanced_chart::interior_zomega,
+                     "Published tape remains associated with its owned chart and selected slot");
+                ++published;
+            }
+            std::cout << "suffix_exact seed=" << off.seed << " frame=" << frame
+                      << " context=" << y.suffix_context
+                      << " hits=" << b.info.enhanced_suffix_hits[0] << ','
+                      << b.info.enhanced_suffix_hits[1] << ',' << b.info.enhanced_suffix_hits[2]
+                      << " misses=" << b.info.enhanced_suffix_misses << '\n';
+        }
+    }
+    need(published > 0 && hits[0] > 0 && hits[1] > 0 && hits[2] > 0 && misses > 0,
+         "Every bounded tape length hits and unsupported/changed contexts fall back");
+    std::cout << "suffix_exact totals hits=" << hits[0] << ',' << hits[1] << ',' << hits[2]
+              << " misses=" << misses << " published=" << published << '\n';
+    enhanced_suffix_conductor();
+    enhanced_suffix_context_controls();
+    enhanced_suffix_failed_context();
+    enhanced_suffix_full_inactive();
+}
 void enhanced_mean() {
     auto scene = diffuse();
     scene.max_depth = 1;
@@ -1593,10 +2006,12 @@ int main(int argc, char **argv) {
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
+        const bool enhanced_suffix = argc == 2 && std::string_view(argv[1]) == "--enhanced-suffix";
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
-        need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid,
+        need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid ||
+                 enhanced_suffix,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
-             "--enhanced-hybrid");
+             "--enhanced-hybrid or --enhanced-suffix");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -1612,6 +2027,11 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_suffix) {
+            enhanced_suffix_controls();
+            std::cout << "Enhanced sequential suffix exact controls passed\n";
+            return 0;
+        }
         if (enhanced_hybrid) {
             enhanced_hybrid_controls();
             std::cout << "Enhanced hybrid positive fresh/nonself/mean/cache controls passed\n";

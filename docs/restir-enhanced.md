@@ -27,6 +27,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Hybrid reconnection and Jacobian, Eq. 2 | Owned triangle/world-direction charts for admitted diffuse and rough-conductor roots; forced incoming/outgoing evaluation and scaled chart densities |
 | Dual-footprint eligibility, Eq. 5 | Runtime first-eligible selection, forward/inverse footprints and rolling predecessor veto |
 | Forced NEE endpoint reconnection, §6.2.3 | Enhanced owns triangle-area, positional/distant-mass and environment-direction endpoints; other shapes retain replay |
+| Cached suffix evaluation | Bounded two-operation sequential hero tape; exact prefix replay on misses |
 | Selective shift-pair compaction, §6.2.2 | Missing; ordinary wavefront compaction is a different operation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
 | Reservoir reprojection and dual motion, §6.4 | Missing; denoiser motion vectors do not implement this |
@@ -376,9 +377,55 @@ conductor probe passes in 63.24 seconds: 16 and seven supported source charts,
 respectively, with positive E/N witnesses, full/prefix and replaced-draw controls,
 and independent long-double update, geometry and spectral-projection checks.
 Discovery is fixed at one in that arithmetic fixture; it is not a mean oracle.
-Blocked-connection and changed-first-label controls, suffix-cache integration and
-full-scene qualification remain pending. No new native scene timing or Pavilion
-highlight improvement is claimed at this stage.
+The subsequent native probe also passes blocked-connection and changed-first-label
+controls. Full-scene qualification remains pending; no native-v4 scene timing or
+Pavilion highlight improvement is established by these fixtures.
+
+## Bounded sequential suffix cache
+
+Enhanced selected-prefix replay now accepts `--area-suffix-cache on|off` (on by
+request default). Full replay retains its oracle behavior and leaves the cache
+inactive. A captured entry stores at most two ordinary hero updates and the
+original terminal E/N factors and represented technique PDFs. Readout applies the
+same updates and FLOAT multiplication order as canonical forced evaluation; it
+does not replace repeated throughput materialization with a product of ratios.
+The immediate emission after a pivot recomputes its represented BSDF PDF from
+the live pivot and new incoming direction, retaining the pre-pivot MIS density.
+
+This is a bounded spectral execution adaptation, not the paper's arbitrary-length
+RGB suffix factorization. Long, unsupported, uncovered or changed-context entries
+replay the original forced evaluator. Misses leave that walk untouched; invalid
+complete entries fail visibly. Fresh selection and changed mutation tuples
+capture their own entries. Reuse copies each selected record and its matching
+tape together, without writing an imported source or restamping an old context.
+A checked 64-bit context identity rejects exhaustion instead of wrapping.
+
+Each scalar entry is 160 bytes. Four banks at 1920×1080 require 1,327,104,000 bytes
+(about 1.24 GiB), in addition to existing transport/history storage. Allocation
+and transient budgets are checked. Reports expose actual enablement, hits for
+zero/one/two operations and total misses; these counts are not ray counts or a
+per-reason miss histogram. Contracts are wavefront 20 and Area 14, with a
+40-byte owned evaluation receipt and 292-byte live Enhanced sidecar.
+
+The focused Release controls pass 192 independent CPU tape checks and 17 pure
+GPU cases, including ten deferred immediate-PDF receipts. Twenty-four shared-AS
+17×17 diffuse frames and four rough-conductor frames retain exact raw XYZ,
+selected history, temporal tuples and mutation decisions across camera changes.
+Diffuse hit counts are 5,730/4,519/4,046 for zero/one/two operations, with 7,688
+misses; conductor counts are 251/100/42, with 105 misses. Allocator exhaustion,
+accepted asynchronous failure/recovery, immutable source copies and inactive
+full-replay controls also pass. These are bounded correctness witnesses, not
+native-resolution quality or performance qualification.
+
+A standalone GPU probe exposed optimization-sensitive loss of a scaled
+likelihood lane: an inlined ready readout disagreed with the independent oracle
+and with deferred completion. The same probe passes at `-O0`; at the normal
+`-O1`, retaining a call boundary around readout also passes all 17 cases. The full
+lookup has its own boundary, qualified by the frame controls. The validated
+compiler is Apple Metal 32023.883. No arithmetic tolerance or failure gate was
+relaxed; these boundaries are a measured code-generation workaround, not a claim
+that a compiler defect's root cause has been established. Failed diagnostic and
+optimization variants remain in the local validation archive.
 
 ## Retained measurements and limitations
 

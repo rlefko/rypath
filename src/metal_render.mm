@@ -65,13 +65,20 @@ constexpr std::size_t area_cross_target_pixel_bytes(FrameAreaPathDomain domain) 
     return 4 *
            (domain == FrameAreaPathDomain::enhanced ? enhanced_cross_target_bytes : sizeof(float));
 }
+bool frame_suffix_cache_enabled(const FrameConfig &config) {
+    return config.estimator == FrameEstimator::area_replay &&
+           config.area_path_domain == FrameAreaPathDomain::enhanced &&
+           config.contribution_replay == FrameContributionReplay::prefix &&
+           config.enhanced_suffix_cache;
+}
 static_assert(frame_area_canonical_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_canonical_law &&
               frame_area_discovery_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_discovery_law);
 static_assert(wavefront_wire::enhanced_records_id == 20 &&
                   wavefront_wire::enhanced_evaluation_id == 21 &&
-                  area_wire::enhanced_records_id == 11 && area_wire::enhanced_evaluation_id == 12,
+                  area_wire::enhanced_records_id == 11 && area_wire::enhanced_evaluation_id == 12 &&
+                  wavefront_wire::enhanced_suffix_id == 22 && area_wire::enhanced_suffix_id == 13,
               "Enhanced owned-record argument bindings");
 
 // Execute the contract in the actual loaded library. A matching entry-point
@@ -2214,7 +2221,7 @@ struct FrameWavefrontBuffers {
     id<MTLBuffer> packet_hot = nil, packet_cold = nil, packet_hit = nil;
     id<MTLBuffer> hero_state = nil, hero_cold = nil;
     id<MTLBuffer> contribution_evaluation = nil, contribution_state = nil;
-    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil;
+    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
     id<MTLBuffer> queue[2]{nil, nil};
     id<MTLBuffer> free_slots = nil, counters = nil, done = nil;
     id<MTLBuffer> current_dispatch = nil, refill_dispatch = nil;
@@ -2232,7 +2239,7 @@ struct FrameAreaBuffers {
     id<MTLBuffer> replay = nil, leaf = nil, accumulators = nil, temporal = nil, failure = nil;
     id<MTLBuffer> cross_targets = nil;
     id<MTLBuffer> contribution_evaluation = nil;
-    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil;
+    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
     id<MTLBuffer> config[area_wire::config_count]{};
     id<MTLBuffer> arguments[area_wire::config_count]{};
 };
@@ -2249,6 +2256,7 @@ struct FrameAreaContext {
     wire::Parameters parameters{};
     wire::TextureParameters texture{};
     AreaPathDomainContext domain{};
+    std::uint64_t suffix_context = 0;
     id<MTLBuffer> graph_nodes = nil, surface_transforms = nil;
 };
 // History never crosses sessions: scene geometry, materials, spectra, image
@@ -2270,12 +2278,14 @@ struct FrameAreaHistory {
     id<MTLBuffer> banks[2]{nil, nil};
     // One pending Area frame exclusively owns scratch banks 2/3. Slots borrow
     // this arena; history banks 0/1 publish under the same completion token.
-    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil;
+    id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
     FrameAreaContext contexts[2];
     bool pending = false, valid = false, epoch_known = false, serial_exhausted = false;
     std::uint64_t epoch = 0, generation = 0, next_serial = 0, pending_serial = 0;
     // Last successful publication, independent of the latest accepted attempt.
     std::optional<std::uint64_t> committed_serial;
+    std::uint64_t next_suffix_context = 1;
+    bool suffix_context_exhausted = false, suffix_context_seeded = false;
     unsigned front = 0;
 };
 struct Frame::Impl {
@@ -2586,7 +2596,45 @@ struct FrameSession::Impl {
     std::array<Slot, 2> slots;
     std::size_t tile_count = 0, scratch_bytes = 0;
 
-    EnhancedSessionSnapshot snapshot_enhanced(std::uint64_t expected_serial) const {
+    EnhancedSuffixContextState suffix_context_state(std::optional<std::uint64_t> seed = {}) {
+        EnhancedSuffixContextState result;
+        if (!frame_suffix_cache_enabled(config) || !history) {
+            result.diagnostic = "Suffix context access requires enabled Enhanced prefix caching";
+            return result;
+        }
+        std::lock_guard lock(history->mutex);
+        auto &h = *history;
+        if (h.pending) {
+            result.diagnostic = "Suffix context access requires no pending frame";
+            return result;
+        }
+        if (seed) {
+            if (!*seed || h.epoch_known || h.valid || h.generation || h.next_serial ||
+                h.committed_serial || h.next_suffix_context != 1 || h.suffix_context_exhausted ||
+                h.suffix_context_seeded || h.contexts[0].suffix_context ||
+                h.contexts[1].suffix_context) {
+                result.diagnostic =
+                    "Suffix context seed requires a pristine session and nonzero seed";
+                return result;
+            }
+            h.next_suffix_context = *seed;
+            h.suffix_context_seeded = true;
+        }
+        result.status = GeometryStatus::success;
+        result.contexts = {h.contexts[0].suffix_context, h.contexts[1].suffix_context};
+        result.front = h.front;
+        result.next_context = h.next_suffix_context;
+        result.exhausted = h.suffix_context_exhausted;
+        result.valid = h.valid;
+        result.generation = h.generation;
+        result.next_serial = h.next_serial;
+        result.pending_serial = h.pending_serial;
+        result.committed_serial = h.committed_serial;
+        return result;
+    }
+
+    EnhancedSessionSnapshot snapshot_enhanced(std::uint64_t expected_serial,
+                                              bool include_suffix) const {
         EnhancedSessionSnapshot result;
         if (config.estimator != FrameEstimator::area_replay ||
             config.area_path_domain != FrameAreaPathDomain::enhanced || !history) {
@@ -2621,13 +2669,15 @@ struct FrameSession::Impl {
                 latest = slot.area;
             }
         }
-        if (!latest || latest->enhanced_records != history->enhanced_records) {
+        if (!latest || latest->enhanced_records != history->enhanced_records ||
+            latest->enhanced_suffix != history->enhanced_suffix) {
             result.diagnostic = "Enhanced snapshot completed slot is unavailable";
             return result;
         }
         const auto pixels = std::size_t(config.width) * config.height;
-        if (!pixels || pixels > std::numeric_limits<std::size_t>::max() /
-                                    (enhanced_wire::bank_count * sizeof(enhanced_wire::Record))) {
+        if (!pixels ||
+            pixels > std::numeric_limits<std::size_t>::max() /
+                         (enhanced_wire::bank_count * sizeof(rypath_enhanced_suffix_tape::Entry))) {
             result.diagnostic = "Enhanced snapshot byte count overflow";
             return result;
         }
@@ -2635,10 +2685,15 @@ struct FrameSession::Impl {
         const std::size_t temporal_bytes = pixels * sizeof(area_wire::Temporal);
         const std::size_t record_count = pixels * enhanced_wire::bank_count;
         const std::size_t record_bytes = record_count * sizeof(enhanced_wire::Record);
+        const bool suffix_enabled = frame_suffix_cache_enabled(config);
+        const bool copy_suffix = include_suffix && suffix_enabled;
+        const std::size_t suffix_bytes =
+            suffix_enabled ? record_count * sizeof(rypath_enhanced_suffix_tape::Entry) : 16;
         const auto source_history = history->banks[history->front];
         if (source_history == nil || source_history.length != history_bytes ||
             latest->temporal == nil || latest->temporal.length != temporal_bytes ||
-            history->enhanced_records == nil || history->enhanced_records.length != record_bytes) {
+            history->enhanced_records == nil || history->enhanced_records.length != record_bytes ||
+            history->enhanced_suffix == nil || history->enhanced_suffix.length != suffix_bytes) {
             result.diagnostic = "Enhanced snapshot buffer ownership or size mismatch";
             return result;
         }
@@ -2649,7 +2704,12 @@ struct FrameSession::Impl {
                                                    options:MTLResourceStorageModeShared];
         auto record_copy = [r.device newBufferWithLength:record_bytes
                                                  options:MTLResourceStorageModeShared];
-        if (history_copy == nil || temporal_copy == nil || record_copy == nil) {
+        id<MTLBuffer> suffix_copy =
+            copy_suffix
+                ? [r.device newBufferWithLength:suffix_bytes options:MTLResourceStorageModeShared]
+                : nil;
+        if (history_copy == nil || temporal_copy == nil || record_copy == nil ||
+            (copy_suffix && suffix_copy == nil)) {
             result.diagnostic = "Enhanced snapshot staging allocation failed";
             return result;
         }
@@ -2674,6 +2734,12 @@ struct FrameSession::Impl {
                        toBuffer:record_copy
               destinationOffset:0
                            size:record_bytes];
+        if (copy_suffix)
+            [encoder copyFromBuffer:history->enhanced_suffix
+                       sourceOffset:0
+                           toBuffer:suffix_copy
+                  destinationOffset:0
+                               size:suffix_bytes];
         [encoder endEncoding];
         result.diagnostic = metal::complete(command, "Enhanced test snapshot");
         if (!result.diagnostic.empty())
@@ -2684,6 +2750,12 @@ struct FrameSession::Impl {
         std::memcpy(result.history.data(), history_copy.contents, history_bytes);
         std::memcpy(result.temporal.data(), temporal_copy.contents, temporal_bytes);
         std::memcpy(result.records.data(), record_copy.contents, record_bytes);
+        if (copy_suffix) {
+            result.enhanced_suffix.resize(record_count);
+            std::memcpy(result.enhanced_suffix.data(), suffix_copy.contents, suffix_bytes);
+        }
+        result.suffix_cache_enabled = suffix_enabled;
+        result.suffix_context = history->contexts[history->front].suffix_context;
         result.width = config.width;
         result.height = config.height;
         result.front_bank = history->front;
@@ -2831,7 +2903,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v19", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v20", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
@@ -2876,7 +2948,8 @@ struct FrameSession::Impl {
                              contract.contribution_state_alignment) ||
             !alignment_valid(contract.enhanced_state_bytes, contract.enhanced_state_alignment) ||
             contract.enhanced_record_bytes != sizeof(enhanced_wire::Record) ||
-            contract.enhanced_evaluation_bytes != sizeof(enhanced_wire::Evaluation))
+            contract.enhanced_evaluation_bytes != sizeof(enhanced_wire::Evaluation) ||
+            contract.suffix_entry_bytes != sizeof(rypath_enhanced_suffix_tape::Entry))
             return "Metal wavefront shader contract mismatch; rebuild the metallib";
         // Verify the actual selected packet entry before reporting any policy
         // as effective. Older/unrelated libraries must not silently ignore the
@@ -3045,11 +3118,11 @@ struct FrameSession::Impl {
         // Area shares its evaluation buffer with wavefront; its accounting
         // replaces this sentinel rather than charging the full buffer twice.
         slot_bytes += contribution_state_bytes + 16;
-        // Area replaces these two independent-mode sentinels with one shared
-        // records/evaluation allocation for the entire history, not each slot.
-        if (slot_bytes > std::numeric_limits<std::uint64_t>::max() - 32)
+        // Area replaces these independent-mode sentinels with shared
+        // records/evaluation/suffix allocations for the history, not each slot.
+        if (slot_bytes > std::numeric_limits<std::uint64_t>::max() - 48)
             return "Wavefront buffer byte count overflow";
-        slot_bytes += 32;
+        slot_bytes += 48;
         if (slot_bytes > (std::numeric_limits<std::uint64_t>::max() - cie.length) / 2)
             return "Wavefront slots byte count overflow";
         const std::uint64_t total = 2 * std::uint64_t(slot_bytes) + cie.length;
@@ -3070,7 +3143,7 @@ struct FrameSession::Impl {
         area = std::make_shared<FrameAreaPrograms>();
         history = std::make_shared<FrameAreaHistory>();
         std::string error;
-        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract", error);
+        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v14", error);
         if (probe == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(area_wire::Contract)
@@ -3098,7 +3171,8 @@ struct FrameSession::Impl {
             contract.accumulator_bytes != sizeof(area_wire::Accumulator) ||
             contract.replay_bytes != sizeof(rypath_replay::ReplayState) ||
             contract.counters_bytes != sizeof(area_wire::Counters) ||
-            contract.contribution_evaluation_bytes != sizeof(contribution_wire::Evaluation))
+            contract.contribution_evaluation_bytes != sizeof(contribution_wire::Evaluation) ||
+            contract.suffix_entry_bytes != sizeof(rypath_enhanced_suffix_tape::Entry))
             return "Metal Area shader contract mismatch; rebuild the metallib";
         const auto load = [&](NSString *name) {
             return metal::load_pipeline(r.device, library, name, error);
@@ -3171,6 +3245,13 @@ struct FrameSession::Impl {
             return "Area cross-target byte count overflow";
         const bool enhanced = config.area_path_domain == FrameAreaPathDomain::enhanced;
         std::uint64_t enhanced_record_bytes = 16, enhanced_evaluation_bytes = 16;
+        std::uint64_t enhanced_suffix_bytes = 16;
+        if (frame_suffix_cache_enabled(config) &&
+            (!product_bytes(pixels, sizeof(rypath_enhanced_suffix_tape::Entry),
+                            enhanced_suffix_bytes) ||
+             !product_bytes(enhanced_suffix_bytes, enhanced_wire::bank_count,
+                            enhanced_suffix_bytes)))
+            return "Enhanced suffix byte count overflow";
         if (enhanced &&
             (!product_bytes(pixels, sizeof(enhanced_wire::Record), enhanced_record_bytes) ||
              !product_bytes(enhanced_record_bytes, enhanced_wire::bank_count,
@@ -3189,9 +3270,9 @@ struct FrameSession::Impl {
             !add_bytes(workspace_bytes, all_arguments_bytes))
             return "Area arguments byte count overflow";
         // Replace the per-slot replay(32), contribution evaluation(16), and
-        // Enhanced records/evaluation(32) sentinels. The latter buffers belong
+        // Enhanced records/evaluation/suffix(48) sentinels. The latter buffers belong
         // to the history and are charged once, including in legacy Area mode.
-        constexpr std::uint64_t replaced_sentinels = 32 + 16 + 32;
+        constexpr std::uint64_t replaced_sentinels = 32 + 16 + 48;
         if (slot_bytes < replaced_sentinels)
             return "Area slot accounting underflow";
         std::uint64_t per_slot_bytes = slot_bytes - replaced_sentinels;
@@ -3203,13 +3284,14 @@ struct FrameSession::Impl {
             !add_bytes(context_bytes, r.surface_transforms.length) ||
             !product_bytes(2, context_bytes, context_bytes) || !add_bytes(total, context_bytes) ||
             !add_bytes(total, enhanced_record_bytes) ||
-            !add_bytes(total, enhanced_evaluation_bytes) || !add_bytes(total, cie.length))
+            !add_bytes(total, enhanced_evaluation_bytes) ||
+            !add_bytes(total, enhanced_suffix_bytes) || !add_bytes(total, cie.length))
             return "Area slots/history byte count overflow";
         for (const auto bytes :
              {history_bytes, replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes,
               cross_bytes, evaluation_bytes, enhanced_record_bytes, enhanced_evaluation_bytes,
-              std::uint64_t(arguments_bytes), std::uint64_t(r.graph_nodes.length),
-              std::uint64_t(r.surface_transforms.length)})
+              enhanced_suffix_bytes, std::uint64_t(arguments_bytes),
+              std::uint64_t(r.graph_nodes.length), std::uint64_t(r.surface_transforms.length)})
             if (bytes > r.device.maxBufferLength)
                 return "Area buffer exceeds the device limit";
         if (total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
@@ -3226,7 +3308,10 @@ struct FrameSession::Impl {
                                                           options:MTLResourceStorageModePrivate];
         history->enhanced_evaluation = [r.device newBufferWithLength:enhanced_evaluation_bytes
                                                              options:MTLResourceStorageModePrivate];
-        if (history->enhanced_records == nil || history->enhanced_evaluation == nil)
+        history->enhanced_suffix = [r.device newBufferWithLength:enhanced_suffix_bytes
+                                                         options:MTLResourceStorageModePrivate];
+        if (history->enhanced_records == nil || history->enhanced_evaluation == nil ||
+            history->enhanced_suffix == nil)
             return "Enhanced owned-record storage allocation failed";
         // Contents are produced/validated by Area prepare/finish, never cleared
         // here or during slot reuse. Front publication is the validity boundary.
@@ -3237,10 +3322,12 @@ struct FrameSession::Impl {
         if (!slot.area)
             slot.area = std::make_shared<FrameAreaBuffers>();
         auto &b = *slot.area;
-        if (!history || history->enhanced_records == nil || history->enhanced_evaluation == nil)
+        if (!history || history->enhanced_records == nil || history->enhanced_evaluation == nil ||
+            history->enhanced_suffix == nil)
             return "Area owned-record storage is unavailable";
         b.enhanced_records = history->enhanced_records;
         b.enhanced_evaluation = history->enhanced_evaluation;
+        b.enhanced_suffix = history->enhanced_suffix;
         const auto allocate = [&](id<MTLBuffer> __strong &buffer, std::size_t bytes,
                                   bool shared = false) {
             if (buffer == nil)
@@ -3273,7 +3360,8 @@ struct FrameSession::Impl {
     }
     void configure_area(Slot &slot, id<MTLBuffer> raw, std::uint64_t serial, bool history_used,
                         bool temporal_cache, id<MTLBuffer> source, id<MTLBuffer> destination,
-                        rypath_area_stencil::Offsets offsets, unsigned history_source_bank) {
+                        rypath_area_stencil::Offsets offsets, unsigned history_source_bank,
+                        std::uint64_t suffix_context, std::uint64_t source_suffix_context) {
         auto &b = *slot.area;
         if (frame_area_contribution_family(config.area_path_domain)) {
             // The free frame slot owns this shared config until completion.
@@ -3299,6 +3387,8 @@ struct FrameSession::Impl {
                                    : index >= area_wire::temporal_reverse_config ? 0u
                                    : index < 2                                   ? index
                                                                                  : index - 2;
+            const auto actual_context =
+                phase == area_wire::temporal_reverse ? source_suffix_context : suffix_context;
             const area_wire::Config cfg{
                 config.width * config.height,
                 config.width,
@@ -3328,12 +3418,13 @@ struct FrameSession::Impl {
                 frame_area_contribution_family(config.area_path_domain)
                     ? renderer->impl_->parameters.max_depth
                     : 0u,
-                config.area_path_domain == FrameAreaPathDomain::enhanced ? history_source_bank
-                                                                         : 0u};
+                config.area_path_domain == FrameAreaPathDomain::enhanced ? history_source_bank : 0u,
+                static_cast<std::uint32_t>(actual_context),
+                static_cast<std::uint32_t>(actual_context >> 32)};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
-            const std::array<id<MTLBuffer>, 13> resources{b.config[index],
+            const std::array<id<MTLBuffer>, 14> resources{b.config[index],
                                                           b.replay,
                                                           b.leaf,
                                                           b.accumulators,
@@ -3345,7 +3436,8 @@ struct FrameSession::Impl {
                                                           b.cross_targets,
                                                           b.contribution_evaluation,
                                                           b.enhanced_records,
-                                                          b.enhanced_evaluation};
+                                                          b.enhanced_evaluation,
+                                                          b.enhanced_suffix};
             for (NSUInteger argument = 0; argument < resources.size(); ++argument)
                 [encoder setBuffer:resources[argument] offset:0 atIndex:argument];
         }
@@ -3353,7 +3445,8 @@ struct FrameSession::Impl {
     std::string allocate_wavefront(Slot &slot, id<MTLBuffer> raw, id<MTLBuffer> replay = nil,
                                    id<MTLBuffer> contribution_evaluation = nil,
                                    id<MTLBuffer> enhanced_records = nil,
-                                   id<MTLBuffer> enhanced_evaluation = nil) {
+                                   id<MTLBuffer> enhanced_evaluation = nil,
+                                   id<MTLBuffer> enhanced_suffix = nil) {
         auto &r = *renderer->impl_;
         if (!slot.wavefront)
             slot.wavefront = std::make_shared<FrameWavefrontBuffers>();
@@ -3370,11 +3463,13 @@ struct FrameSession::Impl {
             b.replay = replay;
         if (contribution_evaluation != nil)
             b.contribution_evaluation = contribution_evaluation;
-        if ((enhanced_records == nil) != (enhanced_evaluation == nil))
-            return "Wavefront owned-record bindings must be supplied together";
+        if ((enhanced_records == nil) != (enhanced_evaluation == nil) ||
+            (enhanced_records == nil) != (enhanced_suffix == nil))
+            return "Wavefront owned-record/evaluation/suffix bindings must be supplied together";
         if (enhanced_records != nil) {
             b.enhanced_records = enhanced_records;
             b.enhanced_evaluation = enhanced_evaluation;
+            b.enhanced_suffix = enhanced_suffix;
         }
         if (config.area_path_domain == FrameAreaPathDomain::enhanced && enhanced_records == nil)
             return "Enhanced wavefront requires shared Area owned-record storage";
@@ -3398,6 +3493,7 @@ struct FrameSession::Impl {
                           : 16) ||
             !allocate(b.replay, 32) || !allocate(b.contribution_evaluation, 16) ||
             !allocate(b.enhanced_records, 16) || !allocate(b.enhanced_evaluation, 16) ||
+            !allocate(b.enhanced_suffix, 16) ||
             !allocate(b.contribution_state,
                       contribution ? std::size_t(config.capacity) *
                                          (config.area_path_domain == FrameAreaPathDomain::enhanced
@@ -3440,7 +3536,7 @@ struct FrameSession::Impl {
         for (unsigned variant = 0; variant < 2; ++variant) {
             auto encoder = wavefront->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[variant] offset:0];
-            const std::array<id<MTLBuffer>, 22> resources{b.config,
+            const std::array<id<MTLBuffer>, 23> resources{b.config,
                                                           b.scalar_state,
                                                           b.packet_state,
                                                           b.queue[variant],
@@ -3461,7 +3557,8 @@ struct FrameSession::Impl {
                                                           b.contribution_evaluation,
                                                           b.contribution_state,
                                                           b.enhanced_records,
-                                                          b.enhanced_evaluation};
+                                                          b.enhanced_evaluation,
+                                                          b.enhanced_suffix};
             for (NSUInteger index = 0; index < resources.size(); ++index)
                 [encoder setBuffer:resources[index] offset:0 atIndex:index];
         }
@@ -3527,6 +3624,7 @@ struct FrameSession::Impl {
                                       const wire::TextureParameters &texture, id<MTLBuffer> graph,
                                       id<MTLBuffer> surfaces, std::uint64_t &uploaded) {
         // Only the non-front bank is written while no Area frame is pending.
+        context.suffix_context = 0; // No token belongs to an incomplete snapshot.
         // Cache by numerical origin, never by reusable slot-buffer identity.
         const bool same_origin = context.copied_origin && context.copied_origin->x == p.origin.x &&
                                  context.copied_origin->y == p.origin.y &&
@@ -3567,6 +3665,26 @@ struct FrameSession::Impl {
                               : 0u,
                           frame_area_canonical_version(config.area_path_domain),
                           frame_area_discovery_version(config.area_path_domain)};
+        return {};
+    }
+    std::string assign_suffix_context(unsigned destination_index) {
+        auto &h = *history;
+        auto &destination = h.contexts[destination_index];
+        destination.suffix_context = 0;
+        if (!frame_suffix_cache_enabled(config))
+            return {};
+        const auto &source = h.contexts[h.front];
+        if (h.valid && source.suffix_context && same_area_evaluation_context(source, destination)) {
+            destination.suffix_context = source.suffix_context;
+            return {};
+        }
+        if (h.suffix_context_exhausted)
+            return "Enhanced suffix context identity exhausted";
+        destination.suffix_context = h.next_suffix_context;
+        if (h.next_suffix_context == std::numeric_limits<std::uint64_t>::max())
+            h.suffix_context_exhausted = true;
+        else
+            ++h.next_suffix_context;
         return {};
     }
     struct Runner : std::enable_shared_from_this<Runner> {
@@ -3768,6 +3886,14 @@ struct FrameSession::Impl {
             const auto &buffers = *frame->retention->wavefront;
             std::memcpy(&counters, buffers.counters.contents, sizeof(counters));
             const auto pixels = std::uint64_t(config.width) * config.height;
+            const std::uint64_t suffix_attempts = std::uint64_t(counters.suffix_hits[0]) +
+                                                  counters.suffix_hits[1] +
+                                                  counters.suffix_hits[2] + counters.suffix_misses;
+            if (suffix_attempts > pixels ||
+                (!frame_suffix_cache_enabled(config) && suffix_attempts)) {
+                fail("GPU suffix cache counter accounting mismatch");
+                return;
+            }
             if (counters.failure || counters.null_completed > counters.completed ||
                 (config.area_path_domain != FrameAreaPathDomain::enhanced &&
                  counters.null_completed) ||
@@ -3807,6 +3933,9 @@ struct FrameSession::Impl {
                 if (!history)
                     frame->info.completed_samples = counters.completed;
                 if (counters.completed == pixels) {
+                    for (unsigned op = 0; op < 3; ++op)
+                        frame->info.enhanced_suffix_hits[op] += counters.suffix_hits[op];
+                    frame->info.enhanced_suffix_misses += counters.suffix_misses;
                     if (!history || area_leaf == 0)
                         frame->info.fresh_candidates = pixels;
                     if (!history) {
@@ -3870,7 +3999,8 @@ struct FrameSession::Impl {
                             b.scalar_state.length + b.packet_state.length + b.packet_hot.length +
                             b.packet_cold.length + b.packet_hit.length + b.hero_state.length +
                             b.hero_cold.length + b.contribution_state.length +
-                            b.enhanced_records.length + b.enhanced_evaluation.length;
+                            b.enhanced_records.length + b.enhanced_evaluation.length +
+                            b.enhanced_suffix.length;
                     }
                 }
                 const bool reverse = history && area_leaf == area_wire::temporal_reverse_config &&
@@ -3918,7 +4048,8 @@ struct FrameSession::Impl {
                                     b.contribution_evaluation,
                                     b.contribution_state,
                                     b.enhanced_records,
-                                    b.enhanced_evaluation})
+                                    b.enhanced_evaluation,
+                                    b.enhanced_suffix})
                     use_resource(buffer, read_write);
                 use_resource(b.config, MTLResourceUsageRead);
                 use_resource(cie, MTLResourceUsageRead);
@@ -3970,7 +4101,7 @@ struct FrameSession::Impl {
                     for (auto buffer :
                          {a.replay, a.leaf, a.accumulators, a.temporal, a.failure, a.cross_targets,
                           a.contribution_evaluation, a.enhanced_records, a.enhanced_evaluation,
-                          history_destination})
+                          a.enhanced_suffix, history_destination})
                         use_resource(buffer, read_write);
                     use_resource(history_source, MTLResourceUsageRead);
                     for (auto buffer : a.config)
@@ -4346,6 +4477,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                                               : FrameContributionReplay::full;
         frame->info.canonical_transport_version = frame_area_canonical_version(c.area_path_domain);
         frame->info.fresh_discovery_version = frame_area_discovery_version(c.area_path_domain);
+        frame->info.enhanced_suffix_cache = frame_suffix_cache_enabled(c);
         frame->info.contribution_depth =
             frame_area_contribution_family(c.area_path_domain) ? p.max_depth : 0;
         if (slot->raw == nil)
@@ -4385,7 +4517,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 impl_->history ? slot->area->replay : nil,
                 impl_->history ? slot->area->contribution_evaluation : nil,
                 impl_->history ? slot->area->enhanced_records : nil,
-                impl_->history ? slot->area->enhanced_evaluation : nil);
+                impl_->history ? slot->area->enhanced_evaluation : nil,
+                impl_->history ? slot->area->enhanced_suffix : nil);
             if (!result.diagnostic.empty())
                 return result;
             frame->retention->wavefront = slot->wavefront;
@@ -4429,6 +4562,9 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     !same_area_path_domain_context(history.contexts[history.front].domain,
                                                    history.contexts[destination_index].domain))
                     history.valid = false;
+                result.diagnostic = impl_->assign_suffix_context(destination_index);
+                if (!result.diagnostic.empty())
+                    return result;
                 frame->info.camera_upload_bytes = camera_upload_bytes;
                 const auto serial = history.next_serial;
                 if (serial == std::numeric_limits<std::uint64_t>::max())
@@ -4463,10 +4599,12 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 runner->source_context = history.contexts[history.front];
                 runner->history_destination_index = destination_index;
                 runner->history_destination = history.banks[runner->history_destination_index];
-                impl_->configure_area(*slot, frame->raw, serial, history.valid,
-                                      frame->info.temporal_evaluation_cache_used,
-                                      runner->history_source, runner->history_destination, offsets,
-                                      history.front);
+                impl_->configure_area(
+                    *slot, frame->raw, serial, history.valid,
+                    frame->info.temporal_evaluation_cache_used, runner->history_source,
+                    runner->history_destination, offsets, history.front,
+                    history.contexts[destination_index].suffix_context,
+                    history.valid ? history.contexts[history.front].suffix_context : 0);
             }
 
             slot->active = frame->retention;
@@ -4751,7 +4889,7 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
                                            const FrameConfig &b,
                                            const std::filesystem::path &library_path) {
     SharedSceneFrameSessions result;
-    // Compare every current FrameConfig field except the intended cache switch.
+    // Compare every current FrameConfig field except the intended cache switches.
     // Keep this list complete when the configuration gains another field.
     const auto same =
         a.profile_stages == b.profile_stages && a.width == b.width && a.height == b.height &&
@@ -4768,7 +4906,8 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
         a.mutation_policy == b.mutation_policy && a.area_stencil == b.area_stencil;
     if (!same) {
-        result.diagnostic = "Shared-scene validation configurations differ beyond temporal cache";
+        result.diagnostic =
+            "Shared-scene validation configurations differ beyond temporal/suffix caches";
         return result;
     }
     if (a.execution != FrameExecution::wavefront || a.estimator != FrameEstimator::area_replay) {
@@ -4809,6 +4948,12 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         result.enhanced_evaluations = {
             reinterpret_cast<std::uintptr_t>((__bridge void *)first_history->enhanced_evaluation),
             reinterpret_cast<std::uintptr_t>((__bridge void *)second_history->enhanced_evaluation)};
+        result.enhanced_suffix_arenas = {
+            reinterpret_cast<std::uintptr_t>((__bridge void *)first_history->enhanced_suffix),
+            reinterpret_cast<std::uintptr_t>((__bridge void *)second_history->enhanced_suffix)};
+        result.independent_suffix_storage =
+            first_history->enhanced_suffix != nil && second_history->enhanced_suffix != nil &&
+            first_history->enhanced_suffix != second_history->enhanced_suffix;
         result.independent_owned_records =
             first_history->enhanced_records != nil && first_history->enhanced_evaluation != nil &&
             second_history->enhanced_records != nil && second_history->enhanced_evaluation != nil;
@@ -4818,7 +4963,7 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
                 result.independent_owned_records &= left != right;
     }
     if (!result.shared_renderer || !result.independent_history ||
-        !result.independent_owned_records) {
+        !result.independent_owned_records || !result.independent_suffix_storage) {
         result.status = GeometryStatus::failure;
         result.diagnostic = "Shared-scene validation requires one renderer/AS and independent "
                             "history/owned records";
@@ -4830,13 +4975,28 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
     return result;
 }
 
+EnhancedSuffixContextState FrameSessionTestAccess::suffix_context_state(FrameSession &session) {
+    if (!session.impl_)
+        return {.diagnostic = "Suffix context session is moved-from"};
+    return session.impl_->suffix_context_state();
+}
+
+EnhancedSuffixContextState
+FrameSessionTestAccess::seed_next_suffix_context(FrameSession &session,
+                                                 std::uint64_t next_context) {
+    if (!session.impl_)
+        return {.diagnostic = "Suffix context session is moved-from"};
+    return session.impl_->suffix_context_state(next_context);
+}
+
 EnhancedSessionSnapshot FrameSessionTestAccess::snapshot_enhanced(FrameSession &session,
-                                                                  std::uint64_t expected_serial) {
+                                                                  std::uint64_t expected_serial,
+                                                                  bool include_suffix) {
     @autoreleasepool {
         if (!session.impl_)
             return {.diagnostic = "Enhanced snapshot session is moved-from"};
         try {
-            return session.impl_->snapshot_enhanced(expected_serial);
+            return session.impl_->snapshot_enhanced(expected_serial, include_suffix);
         } catch (const std::bad_alloc &) {
             return {.diagnostic = "Enhanced snapshot CPU allocation failed"};
         }

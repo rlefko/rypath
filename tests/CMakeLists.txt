@@ -71,7 +71,7 @@ target_compile_options(rypath_enhanced_reprojection_tests PRIVATE
     "$<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
 add_test(NAME render.enhanced_reprojection COMMAND rypath_enhanced_reprojection_tests)
 set_tests_properties(render.enhanced_reprojection PROPERTIES TIMEOUT 30)
-foreach(component enhanced_reservoir enhanced_resampling_decision enhanced_chart)
+foreach(component enhanced_reservoir enhanced_resampling_decision enhanced_chart enhanced_suffix_tape)
     add_executable(rypath_${component}_tests ${component}_tests.cpp)
     target_include_directories(rypath_${component}_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
     rypath_configure_host_target(rypath_${component}_tests)
@@ -1754,13 +1754,15 @@ if(RYPATH_ENABLE_METAL)
     rypath_configure_host_target(rypath_area_shared_scene_tests)
     add_test(NAME metal.area_shared_scene_cache COMMAND rypath_area_shared_scene_tests)
     add_test(NAME metal.area_shared_scene_repeat COMMAND rypath_area_shared_scene_tests --pair off-off)
-    set_tests_properties(metal.area_shared_scene_cache metal.area_shared_scene_repeat
+    add_test(NAME metal.area_shared_scene_suffix COMMAND rypath_area_shared_scene_tests
+        --cache-feature enhanced-suffix)
+    set_tests_properties(metal.area_shared_scene_cache metal.area_shared_scene_repeat metal.area_shared_scene_suffix
         PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE ENVIRONMENT "MTL_DEBUG_LAYER=1")
     foreach(capability DEVICE RAY_TRACING)
         if(RYPATH_ALLOW_NO_METAL_${capability})
             target_compile_definitions(rypath_area_shared_scene_tests PRIVATE
                 RYPATH_ALLOW_NO_METAL_${capability}=1)
-            set_tests_properties(metal.area_shared_scene_cache metal.area_shared_scene_repeat
+            set_tests_properties(metal.area_shared_scene_cache metal.area_shared_scene_repeat metal.area_shared_scene_suffix
                 PROPERTIES SKIP_RETURN_CODE 77)
         endif()
     endforeach()
@@ -1813,6 +1815,8 @@ if(RYPATH_ENABLE_METAL)
     set_tests_properties(metal.hero_enhanced PROPERTIES TIMEOUT 900 ENVIRONMENT "MTL_DEBUG_LAYER=1")
     add_test(NAME metal.hero_enhanced_nee COMMAND rypath_hero_render_tests --enhanced-nee)
     set_tests_properties(metal.hero_enhanced_nee PROPERTIES TIMEOUT 900 ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    add_test(NAME metal.hero_enhanced_suffix COMMAND rypath_hero_render_tests --enhanced-suffix)
+    set_tests_properties(metal.hero_enhanced_suffix PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE ENVIRONMENT "MTL_DEBUG_LAYER=1")
     add_test(NAME metal.hero_enhanced_hybrid COMMAND rypath_hero_render_tests --enhanced-hybrid)
     set_tests_properties(metal.hero_enhanced_hybrid PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE ENVIRONMENT "MTL_DEBUG_LAYER=1")
     set_tests_properties(metal.hero_contribution PROPERTIES TIMEOUT 900 ENVIRONMENT "MTL_DEBUG_LAYER=1")
@@ -1820,7 +1824,7 @@ if(RYPATH_ENABLE_METAL)
     foreach(capability IN ITEMS DEVICE RAY_TRACING)
         if(RYPATH_ALLOW_NO_METAL_${capability})
             target_compile_definitions(rypath_hero_render_tests PRIVATE RYPATH_ALLOW_NO_METAL_${capability}=1)
-            set_tests_properties(metal.hero_render metal.hero_contribution metal.hero_enhanced metal.hero_enhanced_nee metal.hero_enhanced_hybrid PROPERTIES SKIP_RETURN_CODE 77)
+            set_tests_properties(metal.hero_render metal.hero_contribution metal.hero_enhanced metal.hero_enhanced_nee metal.hero_enhanced_hybrid metal.hero_enhanced_suffix PROPERTIES SKIP_RETURN_CODE 77)
         endif()
     endforeach()
 endif()
@@ -2126,6 +2130,26 @@ if(RYPATH_ENABLE_METAL)
     if(RYPATH_ALLOW_NO_METAL_DEVICE)
         target_compile_definitions(rypath_enhanced_light_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
         set_tests_properties(metal.enhanced_light_math PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_enhanced_suffix_probe enhanced_suffix_probe.mm)
+    target_link_libraries(rypath_enhanced_suffix_probe PRIVATE rypath_metal_backend)
+    target_compile_options(rypath_enhanced_suffix_probe PRIVATE -fobjc-arc
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+    set_target_properties(rypath_enhanced_suffix_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_enhanced_suffix_probe)
+    add_dependencies(rypath_enhanced_suffix_probe rypath_enhanced_suffix_shader)
+    add_test(NAME metal.enhanced_suffix_math COMMAND rypath_enhanced_suffix_probe
+        "${rypath_enhanced_suffix_library}")
+    set_tests_properties(metal.enhanced_suffix_math PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+        ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_enhanced_suffix_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.enhanced_suffix_math PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()
 

@@ -9,7 +9,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 13,
+    contract = 14,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -46,6 +46,9 @@ struct Config {
     // Immutable across this session/history domain. Summed mode requires depth0.
     Word contribution_mode, contribution_depth;
     Word history_source_bank;
+    // Actual evaluator context; temporal_reverse uses the frozen source context.
+    // Zero disables all suffix-arena reads/writes, including sentinel indexing.
+    Word suffix_context_low, suffix_context_high;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -121,11 +124,13 @@ enum Argument : Word {
     cross_targets_id,
     contribution_evaluation_id,
     enhanced_records_id,
-    enhanced_evaluation_id
+    enhanced_evaluation_id,
+    enhanced_suffix_id
 };
 struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
     Word accumulator_bytes, replay_bytes, counters_bytes, contribution_evaluation_bytes;
+    Word suffix_entry_bytes;
 };
 static_assert(__builtin_offsetof(History, confidence) == 60 &&
                   __builtin_offsetof(Temporal, confidence) == 64 &&
@@ -133,8 +138,8 @@ static_assert(__builtin_offsetof(History, confidence) == 60 &&
               "Area v10 structural confidence word offsets");
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 92 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
-                  sizeof(Accumulator) == 104 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
+static_assert(sizeof(Config) == 100 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
+                  sizeof(Accumulator) == 104 && sizeof(Contract) == 36 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath

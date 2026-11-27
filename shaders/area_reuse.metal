@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 // Included by render.metal. Contribution mode supports full and selected-prefix
-// replay; it does not implement a hybrid shift or cached suffix.
+// replay; Enhanced also owns charts and their bounded sequential suffix entries.
 #include "../src/area_stencil_shared.h"
 #include "../src/area_wire.h"
 #include "../src/enhanced_confidence_shared.h"
@@ -35,6 +35,7 @@ struct AreaArguments {
     device cw::Evaluation *contribution_evaluation [[id(aw::contribution_evaluation_id)]];
     device ew::Record *enhanced_records [[id(aw::enhanced_records_id)]];
     device ew::Evaluation *enhanced_evaluation [[id(aw::enhanced_evaluation_id)]];
+    device rypath_enhanced_suffix_tape::Entry *enhanced_suffix [[id(aw::enhanced_suffix_id)]];
 };
 // The existing sticky flag atomic also selects the sole record writer. Other
 // lanes never read this record; command completion precedes every host read.
@@ -93,7 +94,8 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
         (c.contribution_mode == cw::summed && c.contribution_depth != 0) ||
         (c.contribution_mode != cw::summed && c.contribution_depth > 65) ||
         (c.contribution_mode == cw::enhanced && c.history_source_bank > 1) ||
-        (c.contribution_mode != cw::enhanced && c.history_source_bank != 0) ||
+        (c.contribution_mode != cw::enhanced &&
+         (c.history_source_bank != 0 || c.suffix_context_low || c.suffix_context_high)) ||
         (c.stencil == aw::reciprocal16_stencil &&
          (!rypath_area_stencil::valid({c.offset_x[0], c.offset_y[0]}) ||
           !rypath_area_stencil::valid({c.offset_x[1], c.offset_y[1]}))) ||
@@ -199,6 +201,16 @@ inline bool area_copy_record(constant AreaArguments &a, uint pixel, uint slot, e
     }
     a.enhanced_records[ulong(destination.bank) * a.config->pixel_count + destination.pixel] =
         record;
+    if (a.config->suffix_context_low || a.config->suffix_context_high) {
+        const ulong target = ulong(destination.bank) * a.config->pixel_count + destination.pixel;
+        const ulong origin = ulong(source.bank) * a.config->pixel_count + source.pixel;
+        if (area_null(a, slot))
+            a.enhanced_suffix[target] = rypath_enhanced_suffix_tape::Entry{};
+        else if (target != origin)
+            a.enhanced_suffix[target] = a.enhanced_suffix[origin];
+        // Preserve the captured context, even when this frame evaluated a
+        // different context. A later miss must replay, never restamp stale data.
+    }
     return true;
 }
 inline uint area_count(constant AreaArguments &a, const thread aw::Accumulator &accumulator) {
@@ -324,7 +336,14 @@ inline void area_prepare_evaluation(constant AreaArguments &a, uint pixel, uint 
         const auto result = fresh || a.config->phase == aw::mutation
                                 ? ew::Reference{ew::fresh_bank, pixel}
                                 : source;
-        a.enhanced_evaluation[pixel] = {source, result, 0.f, 0, 0, 0};
+        a.enhanced_evaluation[pixel] = {source,
+                                        result,
+                                        0.f,
+                                        0,
+                                        0,
+                                        0,
+                                        a.config->suffix_context_low,
+                                        a.config->suffix_context_high};
     }
 }
 inline bool area_owned_result(constant AreaArguments &a, uint pixel, thread ew::Reference &record,
@@ -344,6 +363,8 @@ inline bool area_owned_result(constant AreaArguments &a, uint pixel, thread ew::
     record = receipt.result;
     h = {receipt.target_h_fraction, receipt.target_h_exponent};
     if (receipt.ready != 1 || (!fresh && receipt.normalizer_exponent != 0) ||
+        receipt.suffix_context_low != a.config->suffix_context_low ||
+        receipt.suffix_context_high != a.config->suffix_context_high ||
         !area_slot_valid(a, request.selected_slot) ||
         !rypath_enhanced_runtime::pending_owned(pending, a.config->pixel_count, pixel, fresh) ||
         !area_owned_value_valid(a, request.selected_slot, record, h)) {
@@ -712,10 +733,11 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, AreaNumber sc
     a.raw_xyz[pixel] = sum;
     return true;
 }
-kernel void rypath_area_contract(device aw::Contract *out [[buffer(0)]]) {
-    *out = {aw::contract,         sizeof(aw::Config),      sizeof(aw::History),
-            sizeof(aw::Temporal), sizeof(aw::Accumulator), sizeof(rypath_replay::ReplayState),
-            sizeof(aw::Counters), sizeof(cw::Evaluation)};
+kernel void rypath_area_contract_v14(device aw::Contract *out [[buffer(0)]]) {
+    *out = {
+        aw::contract,         sizeof(aw::Config),      sizeof(aw::History),
+        sizeof(aw::Temporal), sizeof(aw::Accumulator), sizeof(rypath_replay::ReplayState),
+        sizeof(aw::Counters), sizeof(cw::Evaluation),  sizeof(rypath_enhanced_suffix_tape::Entry)};
 }
 kernel void rypath_area_reset(constant AreaArguments &a [[buffer(1)]],
                               uint lane [[thread_position_in_grid]]) {

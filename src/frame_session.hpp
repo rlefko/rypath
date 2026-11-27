@@ -103,6 +103,8 @@ struct FrameConfig {
     // Enhanced retains the selected owned record/scale; camera/context changes
     // replay both directions. False provides a full-replay validation control.
     bool cache_temporal_evaluations = true;
+    // Effective only for Enhanced Area prefix replay; disabled mode replays suffixes.
+    bool enhanced_suffix_cache = true;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;
     // Automatic retains the legacy/adjacent defaults until a quality decision.
@@ -137,6 +139,9 @@ struct FrameInfo {
     std::uint64_t area_serial = 0;
     bool history_used = false;
     bool temporal_evaluation_cache_used = false;
+    bool enhanced_suffix_cache = false;
+    std::array<std::uint64_t, 3> enhanced_suffix_hits{};
+    std::uint64_t enhanced_suffix_misses = 0;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;
     FrameAreaStencil area_stencil = FrameAreaStencil::adjacent;
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;

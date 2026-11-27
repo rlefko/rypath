@@ -139,6 +139,8 @@ inline SurfaceHit packet_pt_trace(thread Resources &r, thread wire::Sample &samp
 
 // Fixed-chart certification uses precisely the ordinary closest-hit route.
 #include "enhanced_hybrid_runtime.h"
+#include "enhanced_suffix_capture.h"
+#include "enhanced_suffix_lookup.h"
 
 // The ordinary function expands to f0d8494's original body and statement order.
 // Only the split variant replaces event tracing; all event arithmetic is shared.

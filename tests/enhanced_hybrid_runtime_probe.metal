@@ -40,6 +40,7 @@ struct Observer {
     float incoming_generation_q = 0;
     bool fresh() const thread { return inner.fresh(); }
     bool has_interior() const thread { return inner.has_interior(); }
+    thread er::Sink &cache_sink() thread { return inner; }
     bool wanted(uint j) const thread { return inner.wanted(j); }
     bool stop_after(uint d) const thread { return inner.stop_after(d); }
     bool mapping_import(uint d) const thread { return inner.mapping_import(d); }
@@ -62,6 +63,9 @@ struct Observer {
         if (!inner.activate_hybrid(v, h, g))
             return false;
         auto ptr = out + numeric;
+        out[444] = as_type<uint>(state.hybrid.predecessor.normal_offset);
+        for (uint k = 0; k < 3; ++k)
+            out[445 + k] = as_type<uint>(state.hybrid.predecessor.wo[k]);
         out[41] = as_type<uint>(incoming_generation_q);
         for (uint k = 0; k < 4; ++k) {
             ptr[2 * k] = as_type<uint>(entry_previous.lane[k].fraction);
@@ -97,7 +101,7 @@ struct Observer {
         ptr[56] = as_type<uint>(edge.distance_squared.exponent);
         return true;
     }
-    template <typename Lambda> void add(uint j, float4 term, const thread Lambda &lambda) thread {
+    template <typename Lambda> bool add(uint j, float4 term, const thread Lambda &lambda) thread {
         auto ptr = out + atom_base + j * atom_words;
         ptr[0]++;
         const bool active = inner.has_interior();
@@ -121,13 +125,16 @@ struct Observer {
             ptr[14 + k] = as_type<uint>(lambda.lambda[k]);
         }
         store_record(ptr + 20, record);
-        inner.add(j, term, lambda);
+        return inner.add(j, term, lambda);
     }
 };
 } // namespace hybrid_runtime_probe
 struct HybridRuntimeFixture {
     uint mode, selected_slot, count, reserved;
+    float previous_position[3], previous_normal[3], previous_wo[3], normal_offset;
+    float previous_beta[4];
 };
+static_assert(sizeof(HybridRuntimeFixture) == 72 && alignof(HybridRuntimeFixture) == 4);
 struct HybridRuntimeArguments {
     device const rypath::wavefront_wire::Config *config [[id(0)]];
     device const wire::Point *cie [[id(1)]];
@@ -221,6 +228,8 @@ kernel void rypath_enhanced_hybrid_runtime_probe(HYBRID_PROBE_PARAMETERS) {
     const auto owned_words = reinterpret_cast<const thread uint *>(&owned);
     for (uint k = 0; k < 8; ++k)
         out[24 + k] = owned_words[k];
+    out[440] = owned.suffix_context_low;
+    out[441] = owned.suffix_context_high;
     out[32] = state.failed;
     out[33] = request.requested_slot;
     out[34] = request.selected_slot;
@@ -303,6 +312,65 @@ kernel void rypath_enhanced_hybrid_runtime_probe(HYBRID_PROBE_PARAMETERS) {
     const auto published_words = reinterpret_cast<const thread uint *>(&published);
     for (uint k = 0; k < 8; ++k)
         out[432 + k] = published_words[k];
+    out[442] = published.suffix_context_low;
+    out[443] = published.suffix_context_high;
+    if (a.fixture->mode >= 2) {
+        HeroPrevious previous{};
+        previous.type = surface_vertex;
+        previous.path_id = 1;
+        previous.point.position =
+            float3(a.fixture->previous_position[0], a.fixture->previous_position[1],
+                   a.fixture->previous_position[2]);
+        previous.point.geometric_normal =
+            float3(a.fixture->previous_normal[0], a.fixture->previous_normal[1],
+                   a.fixture->previous_normal[2]);
+        rypath_enhanced_hybrid::HybridState certificate{};
+        certificate.predecessor_valid = 1;
+        certificate.predecessor.path_id = 1;
+        certificate.predecessor.normal_offset = a.fixture->normal_offset;
+        for (uint k = 0; k < 3; ++k)
+            certificate.predecessor.wo[k] = a.fixture->previous_wo[k];
+        for (uint k = 0; k < 4; ++k)
+            certificate.predecessor.beta[k] = a.fixture->previous_beta[k];
+        const auto record = a.records[lane];
+        SurfacePoint owned_point{};
+        const auto point_status = rt::owned_point(r, record, 4, p.max_depth, owned_point);
+        const auto connection = enhanced_hybrid_geometry::physical_direction(
+            previous.point.position, owned_point.position);
+        auto probe_sample = walk.sample;
+        probe_sample.status = wire::success;
+        const auto origin =
+            rt::snapshot_offset(certificate.predecessor, previous, connection.direction);
+        const auto primary =
+            packet_pt_trace(r, probe_sample, walk.lambda, ray(float3(0), direction));
+        auto cert_sample = walk.sample;
+        cert_sample.status = wire::success;
+        const auto certified = rt::certify_connection(r, cert_sample, walk.lambda, certificate,
+                                                      previous, record, connection.direction);
+        auto closest_sample = walk.sample;
+        closest_sample.status = wire::success;
+        const auto closest =
+            packet_pt_trace(r, closest_sample, walk.lambda, ray(origin, connection.direction));
+        out[448] = primary.valid;
+        out[449] = primary.instance_id;
+        out[450] = primary.primitive_id;
+        out[451] = uint(primary.type);
+        out[452] = as_type<uint>(primary.distance);
+        out[453] = uint(point_status);
+        out[454] = uint(connection.status);
+        out[455] = uint(certified);
+        out[456] = closest.valid;
+        out[457] = closest.instance_id;
+        out[458] = closest.primitive_id;
+        out[459] = uint(closest.type);
+        out[460] = as_type<uint>(closest.distance);
+        out[461] = as_type<uint>(connection.distance_squared.fraction);
+        out[462] = as_type<uint>(connection.distance_squared.exponent);
+        for (uint k = 0; k < 3; ++k) {
+            out[463 + k] = as_type<uint>(origin[k]);
+            out[466 + k] = as_type<uint>(connection.direction[k]);
+        }
+    }
     if (fresh) {
         // Diagnostic capture uses the independently visible twelve raw words,
         // avoiding the conditional aggregate assignment under investigation.

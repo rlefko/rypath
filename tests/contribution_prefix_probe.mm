@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "contribution_wire.h"
+#include "enhanced_suffix_tape_shared.h"
 #include "enhanced_wire.h"
 #include "metal_execution.hpp"
 #include "render_wire.h"
@@ -16,7 +17,7 @@ namespace {
 using namespace rypath;
 namespace w = render_wire;
 namespace wf = wavefront_wire;
-static_assert(wf::contract == 19 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 104);
+static_assert(wf::contract == 20 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 108);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 constexpr unsigned variants = 16, guard = 256, instances_count = 136;
 void need(bool ok, const std::string &why) {
@@ -393,8 +394,8 @@ int run(const std::filesystem::path &path) {
     auto discovery_finish =
         metal::load_pipeline(device, library, @"rypath_enhanced_discovery_finish", error);
     need(discovery_finish != nil, error);
-    constexpr unsigned discovery_count = 6, discovery_words = 36, enhanced_bytes = 284;
-    std::array<id<MTLBuffer>, 7> d{};
+    constexpr unsigned discovery_count = 6, discovery_words = 36, enhanced_bytes = 292;
+    std::array<id<MTLBuffer>, 8> d{};
     d[0] = allocate(sizeof(w::Parameters));
     d[1] = allocate(discovery_count * sizeof(wf::Config));
     d[2] = b[8]; // Same synthetic sensor, checked independently below.
@@ -403,6 +404,8 @@ int run(const std::filesystem::path &path) {
     namespace ew = enhanced_wire;
     d[5] = allocate(ew::bank_count * discovery_count * sizeof(ew::Record) + 2 * guard, true);
     d[6] = allocate(discovery_count * sizeof(ew::Evaluation) + 2 * guard, true);
+    d[7] = allocate(sizeof(rypath_enhanced_suffix_tape::Entry) + 2 * guard, true);
+    // The typed argument requires one Entry, even when zero context disables access.
     auto *owned_records =
         reinterpret_cast<ew::Record *>(static_cast<unsigned char *>(d[5].contents) + guard);
     auto *owned_evaluations =
@@ -410,7 +413,7 @@ int run(const std::filesystem::path &path) {
     for (unsigned i = 0; i < discovery_count; ++i) {
         const auto source = i == 4 ? ew::Reference{ew::history_bank_0, i} : ew::absent();
         const auto result = i == 4 ? source : ew::Reference{ew::fresh_bank, i};
-        owned_evaluations[i] = {source, result, 0.f, 0, 0, 0};
+        owned_evaluations[i] = {source, result, 0.f, 0, 0, 0, 0, 0};
     }
     owned_records[ew::history_bank_0 * discovery_count + 4] = ew::empty_record();
     std::array<ew::Record, ew::bank_count * discovery_count> expected_records{};
@@ -563,9 +566,12 @@ int run(const std::filesystem::path &path) {
             need(bytes[k] == 0xa5 && bytes[d[i].length - guard + k] == 0xa5,
                  "Enhanced discovery sidecar/result pool guard");
     }
+    for (std::size_t k = 0; k < d[7].length; ++k)
+        need(static_cast<const unsigned char *>(d[7].contents)[k] == 0xa5,
+             "Zero-context discovery must not touch the suffix sentinel");
     std::cout << "6 actual Enhanced sink controls passed: first/second RR cutoff, both survive, "
                  "unit gates, fixed import, all-black null; independent alpha/a normalizer, "
-                 "selected XYZ/target, sensor PDFs and device state284 and owned-record/receipt "
+                 "selected XYZ/target, sensor PDFs and device state292 and owned-record/receipt "
                  "checks; no AS/transport\n";
     // Actual v4 Sink: no geometry is involved, and the host oracle does not use
     // production target/projection or selector helpers.
@@ -575,7 +581,7 @@ int run(const std::filesystem::path &path) {
         metal::load_pipeline(device, library, @"rypath_enhanced_hybrid_sink_finish", error);
     need(hybrid_witness && hybrid_finish, error);
     constexpr unsigned hybrid_count = 17, hybrid_words = 32;
-    std::array<id<MTLBuffer>, 7> hb{};
+    std::array<id<MTLBuffer>, 8> hb{};
     hb[0] = allocate(sizeof(w::Parameters));
     hb[1] = allocate(hybrid_count * sizeof(wf::Config));
     hb[2] = allocate(471 * sizeof(w::Point));
@@ -583,6 +589,8 @@ int run(const std::filesystem::path &path) {
     hb[4] = allocate(hybrid_count * hybrid_words * sizeof(unsigned) + 2 * guard, true);
     hb[5] = allocate(ew::bank_count * hybrid_count * sizeof(ew::Record) + 2 * guard, true);
     hb[6] = allocate(hybrid_count * sizeof(ew::Evaluation) + 2 * guard, true);
+    hb[7] = allocate(sizeof(rypath_enhanced_suffix_tape::Entry) + 2 * guard, true);
+    // The typed argument requires one Entry, even when zero context disables access.
     auto *hp = static_cast<w::Parameters *>(hb[0].contents);
     *hp = *dp;
     hp->width = hp->pixel_count = hp->lane_count = hybrid_count;
@@ -633,7 +641,7 @@ int run(const std::filesystem::path &path) {
         const auto source =
             imported_hybrid(n) ? ew::Reference{ew::history_bank_0, n} : ew::absent();
         const ew::Reference result{ew::fresh_bank, n};
-        he[n] = {source, result, 0, 0, 0, 0};
+        he[n] = {source, result, 0, 0, 0, 0, 0, 0};
         if (imported_hybrid(n)) {
             hr[ew::history_bank_0 * hybrid_count + n] = source_record(n);
             expected_hybrid_records[ew::history_bank_0 * hybrid_count + n] = source_record(n);
@@ -741,9 +749,119 @@ int run(const std::filesystem::path &path) {
             need(bytes[k] == 0xa5 && bytes[hb[i].length - guard + k] == 0xa5,
                  "Hybrid Sink sidecar/result/record/receipt guard");
     }
+    for (std::size_t k = 0; k < hb[7].length; ++k)
+        need(static_cast<const unsigned char *>(hb[7].contents)[k] == 0xa5,
+             "Zero-context hybrid Sink must not touch the suffix sentinel");
     std::cout << "17 actual hybrid Sink controls passed: scaled signed F/hgen, E/N record routing, "
                  "earlier winner, partial import maps, tag6/doubleactivation/outside failures; no "
                  "traversal\n";
+    // Permission tests use the production Sink methods; the host's oracle is
+    // the declared byte-write set, not a second implementation of its guards.
+    auto ownership =
+        metal::load_pipeline(device, library, @"rypath_enhanced_suffix_ownership", error);
+    need(ownership != nil, error);
+    namespace tape = rypath_enhanced_suffix_tape;
+    constexpr unsigned ownership_count = 12, ownership_words = 10;
+    constexpr std::size_t arena_bytes = ew::bank_count * 2 * sizeof(tape::Entry);
+    std::array<id<MTLBuffer>, ownership_count> owner_arenas{}, owner_receipts{};
+    auto owner_config = allocate(sizeof(wf::Config));
+    auto &oc = *static_cast<wf::Config *>(owner_config.contents);
+    oc = hc[0];
+    oc.pixel_count = oc.capacity = 2;
+    auto owner_output =
+        allocate(ownership_count * ownership_words * sizeof(unsigned) + 2 * guard, true);
+    std::array<ew::Evaluation, ownership_count> owner_inputs{};
+    for (unsigned n = 0; n < ownership_count; ++n) {
+        auto &receipt = owner_inputs[n];
+        receipt = {ew::absent(), {ew::fresh_bank, 0}, 0, 0, 0, 0, 17, 19};
+        if (n == 1 || n == 3)
+            receipt.source = {ew::history_bank_0, 0};
+        else if (n == 2)
+            receipt.source = {ew::fresh_bank, 0};
+        else if (n == 9)
+            receipt.source = {ew::fresh_bank, 1};
+        if (n == 3)
+            receipt.result = receipt.source;
+        if (n == 4)
+            receipt.suffix_context_low = receipt.suffix_context_high = 0;
+        if (n == 5)
+            receipt.ready = 1;
+        if (n == 6)
+            receipt.result.pixel = 1;
+        if (n == 8)
+            receipt.target_h_fraction = .5f;
+        owner_receipts[n] = allocate(sizeof(receipt));
+        std::memcpy(owner_receipts[n].contents, &receipt, sizeof(receipt));
+        owner_arenas[n] = allocate((n == 4 ? sizeof(tape::Entry) : arena_bytes) + 2 * guard, true);
+    }
+    command = [queue commandBuffer];
+    encoder = [command computeCommandEncoder];
+    need(command && encoder, "Suffix ownership encoder");
+    [encoder setComputePipelineState:ownership];
+    [encoder setBuffer:hb[0] offset:0 atIndex:0];
+    [encoder setBuffer:owner_config offset:0 atIndex:1];
+    for (unsigned n = 0; n < ownership_count; ++n) {
+        [encoder setBuffer:owner_receipts[n] offset:0 atIndex:2];
+        [encoder setBuffer:owner_arenas[n] offset:guard atIndex:3];
+        [encoder setBuffer:owner_output
+                    offset:guard + n * ownership_words * sizeof(unsigned)
+                   atIndex:4];
+        [encoder setBytes:&n length:sizeof(n) atIndex:5];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    }
+    [encoder endEncoding];
+    error = metal::complete(command, "Actual suffix capture ownership and append writes");
+    need(error.empty(), error);
+    const auto *owner_values = reinterpret_cast<const unsigned *>(
+        static_cast<const unsigned char *>(owner_output.contents) + guard);
+    for (unsigned n = 0; n < ownership_count; ++n) {
+        const bool bad_pending = n >= 5 && n <= 8;
+        const bool writable = n == 0 || n == 1 || n == 9 || n >= 10;
+        const bool staged = writable && n != 11;
+        const auto *v = owner_values + n * ownership_words;
+        const std::string label = "Suffix ownership case=" + std::to_string(n);
+        need(v[0] == unsigned(!bad_pending) && v[1] == unsigned(writable) &&
+                 v[2] == unsigned(bad_pending) && v[3] == unsigned(!bad_pending) &&
+                 v[4] == (writable ? 4u : ew::invalid) && v[5] == unsigned(staged) &&
+                 v[6] == (n == 11   ? 3u
+                          : n == 10 ? 2u
+                          : staged  ? 1u
+                                    : 0u) &&
+                 v[7] == (n >= 10  ? 0xffffu
+                          : staged ? 0xffu
+                                   : 0u) &&
+                 v[8] == unsigned(bad_pending) && v[9] == unsigned(!bad_pending),
+             label + " actual pending/activation/ownership/staging status");
+        std::array<tape::Entry, ew::bank_count * 2> expected{};
+        std::memset(expected.data(), 0xa5, sizeof(expected));
+        if (staged) {
+            auto &entry = expected[4];
+            if (n < 10)
+                entry.version = 0;
+            const unsigned op = n == 10 ? 1u : 0u;
+            constexpr float numerator[] = {1, 2, 4, 8};
+            constexpr float likelihood[] = {.5f, .25f, .125f, .0625f};
+            for (unsigned k = 0; k < 4; ++k) {
+                entry.operations[op].numerator[k] = numerator[k];
+                entry.operations[op].sampled_likelihood[k] = likelihood[k];
+            }
+        }
+        const auto *bytes = static_cast<const unsigned char *>(owner_arenas[n].contents);
+        const auto length = n == 4 ? sizeof(tape::Entry) : arena_bytes;
+        need(std::memcmp(bytes + guard, expected.data(), length) == 0,
+             label + " exact allowed write set; immutable source and older prefix preserved");
+        for (unsigned k = 0; k < guard; ++k)
+            need(bytes[k] == 0xa5 && bytes[guard + length + k] == 0xa5, label + " arena guard");
+        need(std::memcmp(owner_receipts[n].contents, &owner_inputs[n], sizeof(ew::Evaluation)) == 0,
+             label + " immutable evaluator receipt");
+    }
+    const auto *owner_bytes = static_cast<const unsigned char *>(owner_output.contents);
+    for (unsigned k = 0; k < guard; ++k)
+        need(owner_bytes[k] == 0xa5 && owner_bytes[owner_output.length - guard + k] == 0xa5,
+             "Suffix ownership output guard");
+    std::cout << "12 actual suffix capture controls passed: fresh/MH writes, immutable bank2 and "
+                 "history imports, zero-context sentinel, malformed pending receipts, append and "
+                 "overflow preservation; no transport/readout\n";
     return 0;
 }
 } // namespace

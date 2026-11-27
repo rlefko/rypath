@@ -26,6 +26,7 @@ assert "--area-output selected|conditional-mean" in help_text
 assert "--area-path-domain summed|contribution|enhanced" in help_text
 assert "--area-contribution-replay full|prefix" in help_text
 assert "--area-temporal-cache on|off" in help_text
+assert "--area-suffix-cache on|off" in help_text
 assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
              "--strict-spatial-segments on|off", "--metalfx-guide-policy primary|appearance",
@@ -80,6 +81,7 @@ for option, values in (
     ("--area-path-domain", ("invalid", "Contribution", "0")),
     ("--area-contribution-replay", ("invalid", "Full", "0")),
     ("--area-temporal-cache", ("invalid", "On", "0")),
+    ("--area-suffix-cache", ("invalid", "On", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
@@ -272,6 +274,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert data["settings"]["contribution_depth"] is None
     assert data["settings"]["contribution_slot_count"] is None
     assert data["settings"]["replay_contract"] == 0
+    assert data["settings"]["requested_area_suffix_cache"]
+    assert data["settings"]["area_suffix_cache"] is False
+    assert data["settings"]["effective_area_suffix_cache"] is None
     assert data["settings"]["resource_profile"] == "standard"
     for profile in ("standard", "large"):
         destination = root / ("resource-" + profile + ".json")
@@ -426,7 +431,7 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 13
+    assert settings["area_contract"] == 14
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
     for domain in ("summed", "contribution", "enhanced"):
@@ -439,6 +444,9 @@ with tempfile.TemporaryDirectory() as directory:
         assert selected["effective_area_path_domain"] is None
         assert selected["canonical_transport_version"] == (4 if domain == "enhanced" else 0)
         assert selected["fresh_discovery_version"] == (1 if domain == "enhanced" else 0)
+        assert selected["requested_area_suffix_cache"]
+        assert selected["area_suffix_cache"] is False
+        assert selected["effective_area_suffix_cache"] is None
         assert selected["requested_area_temporal_cache"]
         assert selected["area_temporal_cache"]
         assert selected["area_target"] == ("quarter-l1-hybrid-scaled-zero-v4" if domain == "enhanced" else "quarter-l1-v1")
@@ -456,6 +464,9 @@ with tempfile.TemporaryDirectory() as directory:
                 selected = json.loads(destination.read_text())["settings"]
                 assert selected["requested_area_contribution_replay"] == selected["area_contribution_replay"] == replay
                 assert selected["effective_area_contribution_replay"] is None
+                assert selected["requested_area_suffix_cache"]
+                assert selected["area_suffix_cache"] == (contribution_domain == "enhanced" and replay == "prefix")
+                assert selected["effective_area_suffix_cache"] is None
     assert settings["mutation_steps"] == 1 and settings["effective_mutation_steps"] == 1
     assert settings["area_target"] == "quarter-l1-v1"
     assert settings["area_source_mis"] == "source-target-mis-v1"
@@ -477,6 +488,18 @@ with tempfile.TemporaryDirectory() as directory:
         cache_settings = json.loads(destination.read_text())["settings"]
         assert cache_settings["requested_area_temporal_cache"] == (enabled == "on")
         assert cache_settings["area_temporal_cache"] == (enabled == "on")
+    for domain in ("summed", "contribution", "enhanced"):
+        for replay in (("full",) if domain == "summed" else ("full", "prefix")):
+            for enabled in ("on", "off"):
+                destination = root / f"area-suffix-cache-{domain}-{replay}-{enabled}.json"
+                invoke(["--scene", str(malformed), "--output", str(destination),
+                        "--estimator", "area-replay", "--area-path-domain", domain,
+                        *(["--area-contribution-replay", replay] if domain != "summed" else []),
+                        "--spectral-transport", "hero", "--area-suffix-cache", enabled])
+                cache_settings = json.loads(destination.read_text())["settings"]
+                assert cache_settings["requested_area_suffix_cache"] == (enabled == "on")
+                assert cache_settings["area_suffix_cache"] == (domain == "enhanced" and replay == "prefix" and enabled == "on")
+                assert cache_settings["effective_area_suffix_cache"] is None
     assert settings["target_scale"] == 0.125 and settings["fresh_paths_per_pixel_per_frame"] == 1
     for count in (0, 1, 2, 4):
         destination = root / f"area-mutations-{count}.json"
@@ -490,6 +513,6 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 13
+        assert settings["area_contract"] == 14
         assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")

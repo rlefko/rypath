@@ -51,6 +51,9 @@
                               hybrid_import.tag == hybrid_chart::interior_zomega &&
                               count == hybrid_import.event_ordinal + 1u;
     bool forced_continuation = false;
+    const bool suffix_was_active = sink.has_interior();
+    bool suffix_staged = false, suffix_continued = false, suffix_terminal_supported = false;
+    uint suffix_prepared = 0, suffix_operation_mask = 0;
     float3 forced_omega = 0;
     if (sink.state.failed) {
         sample.status = wire::invalid_arithmetic;
@@ -109,6 +112,10 @@
                 typename State::Current v{};
 #endif
                 v.type = environment_vertex;
+#if RYPATH_PACKET_EVENT_ENHANCED
+                suffix_prepared = 15u; // No material preparation is required by a sky endpoint.
+                suffix_terminal_supported = true;
+#endif
                 v.path_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
                 v.light = p.environment_light;
                 v.point.position = incoming.origin + incoming.direction;
@@ -278,6 +285,9 @@
             break;
         }
 #if RYPATH_PACKET_EVENT_ENHANCED
+        suffix_prepared = v.bsdf.active_mask;
+        suffix_terminal_supported =
+            hybrid_runtime::admission_status(r, v) == hybrid_geometry::Status::ok;
         // Canonical v4 uses one incoming-direction law for every admitted
         // secondary event, including footprint rejects. Material preparation
         // above is incoming-independent for these direct PBRT families.
@@ -469,6 +479,15 @@
                         state.hero.density = advanced.density;
                     }
                 }
+#if RYPATH_PACKET_EVENT_ENHANCED
+                suffix_continued = continuation.valid;
+                suffix_operation_mask = current.bsdf.active_mask;
+                if (suffix_was_active && continuation.valid)
+                    suffix_staged = sink.cache_sink().stage_suffix(
+                        proposed.numerator, proposed.pdf, suffix_operation_mask,
+                        suffix_terminal_supported && !proposed.fallback && !proposed.delta &&
+                            !proposed.transmission && !hero_current_requires_single(current.bsdf));
+#endif
                 hero_account_eta(state.hero, proposed.eta, proposed.transmission);
                 state.hero.active_mask = 1;
                 for (uint k = 1; k < 4; ++k)
@@ -584,6 +603,8 @@
         sink.state.hybrid.predecessor_valid = 0;
         sink.state.hybrid.predecessor = {};
         sink.state.hybrid.certificate = {};
+        if (suffix_was_active)
+            sink.cache_sink().advance_suffix(false, 0); // Unsupported intervening boundary.
     }
 #endif
     if (count != old_count && sample.status == wire::success) {
@@ -600,32 +621,47 @@
 #if RYPATH_PACKET_EVENT_CONTRIBUTION
             const uint endpoint_slot = 2u * (count - 2u);
             if (sink.wanted(endpoint_slot)) {
+#if RYPATH_PACKET_EVENT_ENHANCED
+                enhanced_suffix_runtime::Capture<Sink, Wavelengths> capture{
+                    sink,          sample,          lambda,
+                    endpoint_slot, suffix_prepared, suffix_terminal_supported};
+                hero_endpoint_observed(r, sample, lambda, pt, previous, before, count,
+                                       previous_density, capture);
+#else
                 const auto endpoint =
                     hero_endpoint(r, sample, lambda, pt, previous, before, count, previous_density);
-#if !RYPATH_PACKET_EVENT_ENHANCED
                 state.radiance += endpoint;
-#endif
                 if (sample.status == wire::success)
                     sink.add(endpoint_slot, endpoint, lambda);
+#endif
             }
             if (sample.status == wire::success && count < capacity && direct_allowed &&
                 sink.wanted(endpoint_slot + 1u)) {
 #if RYPATH_PACKET_EVENT_ENHANCED
-                const auto direct =
-                    sink.has_interior()
-                        ? hero_direct(r, sample, lambda, index, pt, previous, count, direct_beta,
-                                      direct_density, replay)
-                        : hero_direct_enhanced(r, sample, lambda, index, pt, previous, count,
-                                               direct_beta, direct_density, replay, sink);
+                if (sink.has_interior()) {
+                    enhanced_suffix_runtime::Capture<Sink, Wavelengths> capture{
+                        sink,
+                        sample,
+                        lambda,
+                        endpoint_slot + 1u,
+                        suffix_prepared,
+                        suffix_terminal_supported && !hero_current_requires_single(current.bsdf)};
+                    hero_direct_observed(r, sample, lambda, index, pt, previous, count, direct_beta,
+                                         direct_density, capture, replay);
+                } else {
+                    const auto direct =
+                        hero_direct_enhanced(r, sample, lambda, index, pt, previous, count,
+                                             direct_beta, direct_density, replay, sink);
+                    if (sample.status == wire::success)
+                        sink.add(endpoint_slot + 1u, direct, lambda);
+                }
 #else
                 const auto direct = hero_direct(r, sample, lambda, index, pt, previous, count,
                                                 direct_beta, direct_density, replay);
-#endif
-#if !RYPATH_PACKET_EVENT_ENHANCED
                 state.radiance += direct;
-#endif
                 if (sample.status == wire::success)
                     sink.add(endpoint_slot + 1u, direct, lambda);
+#endif
             }
             // A fixed atom needs no later transport. Fresh WRS and the
             // full-replay oracle never take this early stop.
@@ -654,6 +690,12 @@
                                               sink)) {
             sample.status = wire::invalid_arithmetic;
             state.complete = true;
+        }
+        if (sample.status == wire::success && !sink.state.failed) {
+            if (hybrid_pending.activate)
+                enhanced_suffix_runtime::lookup(state, current, sink);
+            else if (suffix_was_active && suffix_continued && !state.complete)
+                sink.cache_sink().advance_suffix(suffix_staged, suffix_operation_mask);
         }
 #endif
     }

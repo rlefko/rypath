@@ -26,6 +26,13 @@ using Row = std::array<unsigned, 512>;
 constexpr unsigned count = 16, guard = 256;
 struct Fixture {
     unsigned mode, selected_slot, count, reserved;
+    float previous_position[3], previous_normal[3], previous_wo[3], normal_offset;
+    float previous_beta[4];
+};
+static_assert(sizeof(Fixture) == 72 && alignof(Fixture) == 4);
+struct BlockerInput {
+    Row positive;
+    enhanced_wire::Record record;
 };
 void need(bool value, const std::string &why) {
     if (!value)
@@ -166,8 +173,158 @@ void numeric_receipt(const Row &r, const std::string &label) {
     need(r[36] == r[10] && r[37] == r[15] && r[38] == r[18],
          label + " exact stored world omega ray direction");
 }
-void run_variant(const std::filesystem::path &path, bool conductor) {
-    const std::string label = conductor ? "rough-.5" : "diffuse";
+using D3 = std::array<double, 3>;
+D3 subtract(D3 a, D3 b) {
+    for (unsigned k = 0; k < 3; ++k)
+        a[k] -= b[k];
+    return a;
+}
+double dot(D3 a, D3 b) { return (a[0] * b[0] + a[1] * b[1]) + a[2] * b[2]; }
+D3 cross(D3 a, D3 b) {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+D3 normalized(D3 a) {
+    const double length = std::sqrt(dot(a, a));
+    need(length > 0 && std::isfinite(length), "blocker vector support");
+    for (auto &x : a)
+        x /= length;
+    return a;
+}
+GeometryMesh blocker_triangle(const BlockerInput &source) {
+    need(source.positive[4] == 1 && source.positive[5] == 1 && source.record.tag == 5,
+         "Predeclared diffuse identity0 must have its positive first-pivot chart");
+    D3 previous{}, owned{};
+    for (unsigned k = 0; k < 3; ++k) {
+        previous[k] = f32(source.positive[496 + k]);
+        owned[k] = f32(source.positive[499 + k]);
+    }
+    const auto edge = subtract(owned, previous);
+    const double length = std::sqrt(dot(edge, edge));
+    const auto normal = normalized(edge);
+    D3 axis{};
+    unsigned least = 0;
+    for (unsigned k = 1; k < 3; ++k)
+        if (std::abs(normal[k]) < std::abs(normal[least]))
+            least = k;
+    axis[least] = 1;
+    const auto u = normalized(cross(normal, axis));
+    const auto v = cross(normal, u);
+    D3 center{};
+    for (unsigned k = 0; k < 3; ++k)
+        center[k] = (previous[k] + owned[k]) / 2;
+    const double radius = length / 128;
+    GeometryMesh mesh;
+    constexpr double corners[3][2] = {{-1, -1}, {2, -1}, {-1, 2}};
+    for (const auto &corner : corners) {
+        D3 p{};
+        for (unsigned k = 0; k < 3; ++k)
+            p[k] = center[k] + radius * (corner[0] * u[k] + corner[1] * v[k]);
+        mesh.positions.push_back({float(p[0]), float(p[1]), float(p[2])});
+    }
+    mesh.triangles = {{0, 1, 2}};
+    const auto point = [](GeometryPoint p) { return D3{p.x, p.y, p.z}; };
+    const auto a = point(mesh.positions[0]), b = point(mesh.positions[1]),
+               c = point(mesh.positions[2]);
+    const auto face = cross(subtract(b, a), subtract(c, a));
+    need(dot(face, face) > 0, "blocker remains nondegenerate after FLOAT packing");
+    // The original primary segment is unchanged. If it could intersect the
+    // appended triangle, reject this deterministic fixture rather than search.
+    const auto primary = normalized(previous);
+    const double denominator = dot(primary, face);
+    need(denominator != 0, "primary/blocker test is not parallel-ambiguous");
+    const double t = dot(a, face) / denominator;
+    need(t < 0 || t > std::sqrt(dot(previous, previous)),
+         "predeclared primary segment must miss blocker plane");
+    // The source connection crosses strict triangle interior, not an edge/tie.
+    const double connection_t = dot(subtract(a, previous), face) / dot(edge, face);
+    need(connection_t > .25 && connection_t < .75, "blocker strictly precedes owned endpoint");
+    D3 hit{};
+    for (unsigned k = 0; k < 3; ++k)
+        hit[k] = previous[k] + connection_t * edge[k];
+    const auto ab = subtract(b, a), ac = subtract(c, a), ap = subtract(hit, a);
+    const double aa = dot(ab, ab), bb = dot(ab, ac), cc = dot(ac, ac), ad = dot(ap, ab),
+                 cd = dot(ap, ac);
+    const double determinant = aa * cc - bb * bb;
+    const double bary1 = (ad * cc - cd * bb) / determinant,
+                 bary2 = (cd * aa - ad * bb) / determinant;
+    need(bary1 > .1 && bary2 > .1 && bary1 + bary2 < .9,
+         "blocker crossing has a strict barycentric margin");
+    return mesh;
+}
+RenderScene blocked_cavity(const BlockerInput &source) {
+    auto scene = cavity(false);
+    need(scene.geometry.instances.size() == 6 && scene.geometry.meshes.size() == 6,
+         "original cavity IDs");
+    SpectralMaterial black;
+    black.kind = SpectralMaterialKind::constant;
+    black.constant = 0;
+    scene.materials.push_back(black);
+    scene.geometry.meshes.push_back(blocker_triangle(source));
+    scene.geometry.instances.push_back({6, {}});
+    scene.instance_materials.push_back(1);
+    scene.instance_emissions.push_back(no_area_emission);
+    scene.instance_surface_transforms.emplace_back();
+    for (unsigned k = 0; k < 6; ++k)
+        need(scene.geometry.instances[k].mesh_index == k && scene.instance_materials[k] == 0 &&
+                 scene.instance_emissions[k] == 0,
+             "append must preserve all original instance/material/emitter IDs");
+    const auto error = validate_render_scene(scene);
+    need(error.empty(), "blocked cavity: " + error);
+    return scene;
+}
+void prepare_auxiliary_fixture(Fixture &fixture, const BlockerInput &source) {
+    for (unsigned k = 0; k < 3; ++k) {
+        fixture.previous_position[k] = f32(source.positive[496 + k]);
+        fixture.previous_normal[k] = f32(source.positive[508 + k]);
+        fixture.previous_wo[k] = f32(source.positive[445 + k]);
+    }
+    fixture.normal_offset = f32(source.positive[444]);
+    for (unsigned k = 0; k < 4; ++k)
+        fixture.previous_beta[k] = f32(source.positive[456 + k]);
+}
+void check_certificate(const Row &result, const BlockerInput &source, bool blocked) {
+    need(result[448] == 1 && result[449] == 5 && result[450] == 1,
+         "original primary closest identity must remain5/1");
+    need(result[453] == 0 && result[454] == 0, "owned point and physical connection valid");
+    need(result[455] == (blocked ? 2u : 0u), "actual certificate support matches blocker");
+    need(result[456] == 1 && result[457] == (blocked ? 6u : source.record.instance) &&
+             result[458] == (blocked ? 0u : source.record.primitive),
+         "actual closest identity, never Boolean shadow acceptance");
+    D3 previous{}, normal{}, origin{}, direction{};
+    for (unsigned k = 0; k < 3; ++k) {
+        previous[k] = f32(source.positive[496 + k]);
+        normal[k] = f32(source.positive[508 + k]);
+        origin[k] = f32(result[463 + k]);
+        direction[k] = f32(result[466 + k]);
+    }
+    const bool flip = dot(direction, normal) < 0;
+    for (unsigned k = 0; k < 3; ++k) {
+        const float n = float(flip ? -normal[k] : normal[k]);
+        const float shift = f32(source.positive[444]) * n;
+        float expected = float(previous[k]) + shift;
+        if (n != 0)
+            expected = std::nextafter(expected, n < 0 ? -std::numeric_limits<float>::infinity()
+                                                      : std::numeric_limits<float>::infinity());
+        need(std::bit_cast<unsigned>(expected) == result[463 + k],
+             "independent original predecessor offset bits");
+    }
+    const auto length = std::sqrt(scaled(result[461], result[462]));
+    const double actual = f32(result[460]);
+    need(actual > 0 && (blocked ? actual < .75L * length : actual > .75L * length),
+         "closer blocker has strict distance separation");
+    if (blocked) {
+        const auto mesh = blocker_triangle(source);
+        const D3 a{mesh.positions[0].x, mesh.positions[0].y, mesh.positions[0].z},
+            b{mesh.positions[1].x, mesh.positions[1].y, mesh.positions[1].z},
+            c{mesh.positions[2].x, mesh.positions[2].y, mesh.positions[2].z};
+        const auto face = cross(subtract(b, a), subtract(c, a));
+        const double expected = dot(subtract(a, origin), face) / dot(direction, face);
+        close(actual, expected, "independent nearer blocker distance");
+    }
+}
+void run_variant(const std::filesystem::path &path, bool conductor,
+                 const BlockerInput *blocked = nullptr) {
+    const std::string label = blocked ? "diffuse-blocked-n0" : conductor ? "rough-.5" : "diffuse";
     FrameConfig settings;
     settings.width = count;
     settings.height = 1;
@@ -176,7 +333,8 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
     settings.seed = 51001;
     settings.intersection_profile = IntersectionProfile::native;
     settings.estimator = FrameEstimator::independent;
-    auto built = build_frame_session(cavity(conductor), settings);
+    auto fixture_scene = blocked ? blocked_cavity(*blocked) : cavity(conductor);
+    auto built = build_frame_session(fixture_scene, settings);
     need(built.status == GeometryStatus::success && built.session, built.diagnostic);
     auto submitted = built.session->submit({.sample_index = (1ull << 32) + 29});
     need(submitted.status == GeometryStatus::success && submitted.frame, submitted.diagnostic);
@@ -262,15 +420,27 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
     parameters.sampler_kind = render_wire::independent_sampler;
     parameters.lens_radius = 0;
     parameters.gaussian_width = 0;
-    need(parameters.filter_kind == render_wire::box_filter && parameters.instance_count == 6,
+    need(parameters.filter_kind == render_wire::box_filter &&
+             parameters.instance_count == (blocked ? 7u : 6u),
          "manual pinhole/box native fixture parameters");
-    const auto dispatch = [&](bool fresh, unsigned slot, bool prefix, bool poison) {
+    const auto dispatch = [&](bool fresh, unsigned slot, bool prefix, bool poison,
+                              unsigned executed = count, unsigned operation = 1,
+                              const BlockerInput *auxiliary = nullptr) {
         config->contribution_replay = prefix ? 1u : 0u;
-        *fixture = {fresh ? 0u : 1u, slot, count, 0};
+        *fixture = {};
+        fixture->mode = fresh ? 0u : operation;
+        fixture->selected_slot = slot;
+        fixture->count = executed;
+        if (auxiliary)
+            prepare_auxiliary_fixture(*fixture, *auxiliary);
+        std::memset(static_cast<unsigned char *>(buffers[4].contents) + guard, 0xa5,
+                    count * sizeof(Row));
         parameters.gaussian_width = poison ? 1u : 0u;
         for (unsigned n = 0; n < count; ++n)
             evaluations[n] = {fresh ? ew::absent() : ew::Reference{ew::history_bank_0, n},
                               ew::Reference{ew::fresh_bank, n},
+                              0,
+                              0,
                               0,
                               0,
                               0,
@@ -287,7 +457,7 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
         [encoder setIntersectionFunctionTable:table atBufferIndex:14];
         for (auto buffer : buffers)
             [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-        [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+        [encoder dispatchThreads:MTLSizeMake(executed, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
         [encoder endEncoding];
         need(lease.retain_until_completed(command).empty(), "retain resident AS/buffers");
@@ -303,14 +473,14 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
                      "runtime probe guard");
         }
         bool invalid_dispatch = false;
-        for (unsigned n = 0; n < count; ++n) {
+        for (unsigned n = 0; n < executed; ++n) {
             const auto &r = result[n];
             invalid_dispatch |= r[0] != 0 || r[1] != render_wire::success || r[3] != 1 ||
-                                r[48] != 1 || r[55] != 1 || r[58] != 284 ||
+                                r[48] != 1 || r[55] != 1 || r[58] != 292 ||
                                 evaluations[n].ready != 1;
         }
         if (invalid_dispatch) {
-            for (unsigned n = 0; n < count; ++n) {
+            for (unsigned n = 0; n < executed; ++n) {
                 const auto &r = result[n];
                 const auto &e = evaluations[n];
                 std::cerr << label << " dispatch n=" << n << " fresh=" << fresh << " slot=" << slot
@@ -337,7 +507,7 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
             dump << "{\"schema\":2,\"variant\":\"" << label << "\",\"fresh\":" << fresh
                  << ",\"slot\":" << slot << ",\"prefix\":" << prefix << ",\"poison\":" << poison
                  << ",\"row_words\":512,\"rows\":[";
-            for (unsigned n = 0; n < count; ++n) {
+            for (unsigned n = 0; n < executed; ++n) {
                 if (n)
                     dump << ',';
                 dump << '[';
@@ -349,7 +519,7 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
                 dump << ']';
             }
             dump << "],\"source_records\":[";
-            for (unsigned n = 0; n < count; ++n) {
+            for (unsigned n = 0; n < executed; ++n) {
                 if (n)
                     dump << ',';
                 std::array<unsigned, 12> words{};
@@ -363,10 +533,10 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
                 dump << ']';
             }
             dump << "],\"evaluations\":[";
-            for (unsigned n = 0; n < count; ++n) {
+            for (unsigned n = 0; n < executed; ++n) {
                 if (n)
                     dump << ',';
-                std::array<unsigned, 8> words{};
+                std::array<unsigned, sizeof(ew::Evaluation) / sizeof(unsigned)> words{};
                 std::memcpy(words.data(), &evaluations[n], sizeof(ew::Evaluation));
                 dump << '[';
                 for (unsigned k = 0; k < words.size(); ++k) {
@@ -378,16 +548,39 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
             }
             dump << "]}\n" << std::flush;
         }
-        for (unsigned n = 0; n < count; ++n) {
+        for (unsigned n = 0; n < executed; ++n) {
             const auto &r = result[n];
             need(r[0] == 0 && r[1] == render_wire::success && r[3] == 1 && r[48] == 1 &&
-                     r[55] == 1 && r[58] == 284,
+                     r[55] == 1 && r[58] == 292,
                  label + " status/finished fixed catalog n=" + std::to_string(n));
             need(evaluations[n].ready == 1, label + " owned ready publication");
-            numeric_receipt(r, label + " numeric n=" + std::to_string(n));
+            need(evaluations[n].suffix_context_low == 0 &&
+                     evaluations[n].suffix_context_high == 0 && r[440] == 0 && r[441] == 0 &&
+                     r[442] == 0 && r[443] == 0,
+                 "probe cache contexts must stay disabled");
+            if (operation < 2)
+                numeric_receipt(r, label + " numeric n=" + std::to_string(n));
         }
+        for (unsigned n = executed; n < count; ++n)
+            for (auto word : result[n])
+                need(word == 0xa5a5a5a5u, "unexecuted probe owner output untouched");
         return result;
     };
+    if (blocked) {
+        records[0] = blocked->record;
+        const auto result = dispatch(false, 4, false, false, 1, 2, blocked);
+        const auto &row = result[0];
+        need(row[59] == 1 && row[4] == 0,
+             "nearer blocker must be a partial-map zero, not fallback activation");
+        for (unsigned k = 52; k <= 54; ++k)
+            need(row[k] == 0, "blocked fixed import XYZ exactly zero");
+        need(row[56] == std::bit_cast<unsigned>(.5f) && std::bit_cast<int>(row[57]) == 1,
+             "blocked zero query density canonical unit");
+        check_certificate(row, *blocked, true);
+        std::cout << "fixed diffuse n0 appended opaque triangle: unchanged primary, closer "
+                     "instance6/primitive0, zero partial map and valid ready publication\n";
+        return;
+    }
     const auto source = dispatch(true, 0, false, false);
     bool unexpected_catalog = false;
     for (unsigned n = 0; n < count; ++n) {
@@ -470,6 +663,8 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
     if (!conductor)
         need(captured == count,
              "Diffuse predeclared cavity catalog must retain all16 first-pivot captures");
+    std::array<ew::Record, count> source_records{};
+    std::memcpy(source_records.data(), records, sizeof(source_records));
     unsigned positiveE = 0, positiveN = 0;
     for (unsigned slot : {4u, 5u}) {
         const auto full = dispatch(false, slot, false, false);
@@ -521,6 +716,27 @@ void run_variant(const std::filesystem::path &path, bool conductor) {
               << " positive_futureE=" << positiveE << " positive_existingN=" << positiveN
               << "; actual forced full/prefix/removed-xyz invariance, independent "
                  "advance/G/projection; discoveryq1 fixture only\n";
+    if (!conductor) {
+        for (unsigned n = 0; n < count; ++n)
+            records[n] = ew::empty_record();
+        const auto generic = dispatch(false, 4, true, false);
+        for (unsigned n = 0; n < count; ++n) {
+            const auto &row = generic[n];
+            need(row[59] == 1 && row[4] == 0 && row[61] == 2,
+                 "generic source must reject the earlier eligible interior label");
+            need(row[52] == 0 && row[53] == 0 && row[54] == 0 && row[50] == 0 && row[51] == 0 &&
+                     row[56] == std::bit_cast<unsigned>(.5f) && std::bit_cast<int>(row[57]) == 1,
+                 "generic earlier-label partial map zero/normalizer/unit-h");
+        }
+        std::memcpy(records, source_records.data(), sizeof(source_records));
+        const BlockerInput anchor{source[0], source_records[0]};
+        const auto positive = dispatch(false, 4, false, false, 1, 3, &anchor);
+        need(positive[0][59] == 0 && positive[0][4] == 1, "unblocked certificate positive control");
+        check_certificate(positive[0], anchor, false);
+        std::cout << "all16 generic earlier-label zero controls and predeclared n0 unblocked "
+                     "certificate passed\n";
+        run_variant(path, false, &anchor);
+    }
 }
 int run(const std::filesystem::path &path) {
     // Validate BOTH complete fixtures before any Metal setup or first variant.

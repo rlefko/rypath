@@ -58,6 +58,7 @@ struct WavefrontArguments {
     device rypath::enhanced_wire::Record *enhanced_records [[id(wf::enhanced_records_id)]];
     device rypath::enhanced_wire::Evaluation *enhanced_evaluation
         [[id(wf::enhanced_evaluation_id)]];
+    device rypath_enhanced_suffix_tape::Entry *enhanced_suffix [[id(wf::enhanced_suffix_id)]];
 };
 inline void wavefront_fail(constant WavefrontArguments &a, uint failure) {
     atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
@@ -273,7 +274,8 @@ inline bool wavefront_complete_null(constant WavefrontArguments &a, uint slot) {
     if (pending.requested_slot == rypath::contribution_wire::enhanced_null_slot) {
         const uint pixel = pending.pixel;
         if (pending.failed || pixel >= a.config->pixel_count || pending.next_slot != 0 ||
-            pending.rr_cut != 0 || !rypath_enhanced_path::valid_state(pending.selection) ||
+            pending.rr_cut != 0 || pending.suffix_count || pending.suffix_coverage ||
+            !rypath_enhanced_path::valid_state(pending.selection) ||
             !rypath_enhanced_runtime::unstarted_hybrid(pending.hybrid)) {
             wavefront_fail(a, wf::invalid_sample);
             return true;
@@ -341,6 +343,13 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
             wavefront_fail(a, wf::invalid_sample);
             return;
         }
+        if (rypath_enhanced_runtime::suffix_capture_owned(owned, a.config->pixel_count, pixel,
+                                                          request.requested_slot ==
+                                                              rypath_enhanced_path::fresh_slot)) {
+            const ulong owner =
+                ulong(owned.result.bank) * a.config->pixel_count + owned.result.pixel;
+            a.enhanced_suffix[owner] = rypath_enhanced_suffix_tape::Entry{};
+        }
         if (request.requested_slot == rypath::contribution_wire::enhanced_null_slot)
             return; // Queued owner, completed by shade without reading ray/BSDF storage.
     } else if (wavefront_contribution()) {
@@ -390,7 +399,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
 }
 // Version the entry when its output grows: an older host must fail function
 // lookup before binding its shorter contract buffer to this kernel.
-kernel void rypath_wavefront_contract_v19(device wf::Contract *out [[buffer(0)]]) {
+kernel void rypath_wavefront_contract_v20(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),
@@ -416,7 +425,8 @@ kernel void rypath_wavefront_contract_v19(device wf::Contract *out [[buffer(0)]]
             sizeof(rypath_enhanced_runtime::State),
             alignof(rypath_enhanced_runtime::State),
             sizeof(rypath::enhanced_wire::Record),
-            sizeof(rypath::enhanced_wire::Evaluation)};
+            sizeof(rypath::enhanced_wire::Evaluation),
+            sizeof(rypath_enhanced_suffix_tape::Entry)};
 }
 kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
                                    uint lane [[thread_position_in_grid]]) {
@@ -432,6 +442,9 @@ kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
     atomic_store_explicit(&a.counters->next_pixel, count, memory_order_relaxed);
     atomic_store_explicit(&a.counters->completed, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->null_completed, 0u, memory_order_relaxed);
+    for (uint k = 0; k < 3; ++k)
+        atomic_store_explicit(&a.counters->suffix_hits[k], 0u, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->suffix_misses, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->failure, valid ? 0u : wf::invalid_config,
                           memory_order_relaxed);
     atomic_store_explicit(&a.counters->rounds, 0u, memory_order_relaxed);

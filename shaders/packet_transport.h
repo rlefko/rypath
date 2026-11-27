@@ -5,6 +5,7 @@
 #pragma once
 #include "../src/enhanced_hybrid_state_shared.h"
 #include "../src/enhanced_path_shared.h"
+#include "../src/enhanced_suffix_tape_shared.h"
 #include "../src/enhanced_wire.h"
 #include "../src/hero_spectrum_shared.h"
 #include "../src/packet_spectrum_shared.h"

@@ -10,6 +10,7 @@
 #include <bit>
 #include <charconv>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -42,12 +43,14 @@ struct Options {
     IntersectionProfile intersections = IntersectionProfile::native;
     ResourceProfile resource_profile = ResourceProfile::standard;
     bool off_off = false;
+    bool enhanced_suffix = false;
 };
 constexpr std::string_view usage =
     "Shared-AS Area correctness diagnostic (not a performance benchmark)\n"
     "  [--scene SCENE.pbrt] [--library FILE.metallib] [--output FRESH.json]\n"
     "  [--width 7] [--height 3] [--frames 8] [--warmup 0] [--seed 61002]\n"
     "  [--material-seed 0] [--intersections native|compensated] [--pair off-on|off-off]\n"
+    "  [--cache-feature temporal|enhanced-suffix (default: temporal)]\n"
     "  [--resource-profile standard|large (default: standard; Pavilion requires large)]\n"
     "frames includes warmup; every frame is compared; first mismatch returns failure\n";
 template <typename T> T number(std::string_view value) {
@@ -91,6 +94,9 @@ Options parse(int argc, char **argv) {
             if (!profile)
                 throw std::runtime_error("Invalid resource profile: " + std::string(value));
             o.resource_profile = *profile;
+        } else if (key == "--cache-feature") {
+            need(value == "temporal" || value == "enhanced-suffix", "Invalid cache feature");
+            o.enhanced_suffix = value == "enhanced-suffix";
         } else if (key == "--pair") {
             need(value == "off-on" || value == "off-off", "Invalid shared-scene pair");
             o.off_off = value == "off-off";
@@ -251,28 +257,104 @@ void accounting(const FrameInfo &i, const FrameConfig &c, unsigned ordinal) {
     const auto pixels = std::uint64_t(c.width) * c.height;
     const bool history = ordinal != 0;
     need(i.status == FrameStatus::complete, i.diagnostic);
-    need(i.width == c.width && i.height == c.height && i.sample_index == ordinal && i.epoch == 0 &&
-             i.area_serial == ordinal && i.history_generation == std::uint64_t(ordinal) + 1 &&
-             i.history_used == history && i.mutation_policy == c.mutation_policy &&
-             i.area_stencil == c.area_stencil && i.completed_samples == pixels &&
-             i.fresh_candidates == pixels &&
-             i.temporal_evaluation_cache_used == (history && c.cache_temporal_evaluations) &&
-             valid_area_evaluation_accounting(
-                 pixels, history, c.mutation_steps, i.temporal_evaluation_cache_used,
-                 i.completed_evaluations, i.cached_evaluations, i.logical_evaluations) &&
-             i.mutation_attempts == pixels * c.mutation_steps &&
-             i.mutation_accepts <= i.mutation_attempts,
-         "Shared-scene frame identity/history/cache accounting failed");
+    const bool enhanced = c.area_path_domain == FrameAreaPathDomain::enhanced;
+    const bool evaluations =
+        enhanced ? valid_enhanced_area_evaluation_accounting(
+                       pixels, history, c.mutation_steps, i.temporal_evaluation_cache_used,
+                       i.completed_evaluations, i.cached_evaluations, i.analytic_null_evaluations,
+                       i.logical_evaluations)
+                 : valid_area_evaluation_accounting(
+                       pixels, history, c.mutation_steps, i.temporal_evaluation_cache_used,
+                       i.completed_evaluations, i.cached_evaluations, i.logical_evaluations);
+    need(
+        i.width == c.width && i.height == c.height && i.sample_index == ordinal && i.epoch == 0 &&
+            i.area_serial == ordinal && i.history_generation == std::uint64_t(ordinal) + 1 &&
+            i.history_used == history && i.mutation_policy == c.mutation_policy &&
+            i.area_stencil == c.area_stencil && i.area_path_domain == c.area_path_domain &&
+            i.contribution_replay == c.contribution_replay &&
+            i.enhanced_suffix_cache == (c.area_path_domain == FrameAreaPathDomain::enhanced &&
+                                        c.contribution_replay == FrameContributionReplay::prefix &&
+                                        c.enhanced_suffix_cache) &&
+            (i.enhanced_suffix_cache || (i.enhanced_suffix_hits == std::array<std::uint64_t, 3>{} &&
+                                         i.enhanced_suffix_misses == 0)) &&
+            i.completed_samples == pixels && i.fresh_candidates == pixels &&
+            i.temporal_evaluation_cache_used == (history && c.cache_temporal_evaluations) &&
+            evaluations &&
+            (!enhanced || (i.canonical_transport_version == 4 && i.fresh_discovery_version == 1)) &&
+            i.mutation_attempts == pixels * c.mutation_steps &&
+            i.mutation_accepts <= i.mutation_attempts,
+        "Shared-scene frame identity/history/cache accounting failed");
 }
 void info(std::ostream &out, const FrameInfo &i) {
-    out << "{\"serial\":" << i.area_serial << ",\"generation\":" << i.history_generation
+    out << "{\"status\":"
+        << json_string(i.status == FrameStatus::complete ? "complete"
+                       : i.status == FrameStatus::failed ? "failed"
+                                                         : "pending")
+        << ",\"serial\":" << i.area_serial << ",\"generation\":" << i.history_generation
         << ",\"history\":" << (i.history_used ? "true" : "false")
         << ",\"cache\":" << (i.temporal_evaluation_cache_used ? "true" : "false")
+        << ",\"enhanced_suffix_cache\":" << (i.enhanced_suffix_cache ? "true" : "false")
+        << ",\"area_path_domain\":" << json_string(frame_area_path_domain_name(i.area_path_domain))
+        << ",\"contribution_replay\":"
+        << json_string(frame_contribution_replay_name(i.contribution_replay))
+        << ",\"suffix_hits_by_operations\":[" << i.enhanced_suffix_hits[0] << ','
+        << i.enhanced_suffix_hits[1] << ',' << i.enhanced_suffix_hits[2] << ']'
+        << ",\"suffix_misses\":" << i.enhanced_suffix_misses
         << ",\"physical_evaluations\":" << i.completed_evaluations
         << ",\"cached_evaluations\":" << i.cached_evaluations
+        << ",\"analytic_null_evaluations\":" << i.analytic_null_evaluations
         << ",\"logical_evaluations\":" << i.logical_evaluations
         << ",\"mutation_attempts\":" << i.mutation_attempts
         << ",\"mutation_accepts\":" << i.mutation_accepts << '}';
+}
+// Snapshots exist only within this comparison; no suffix-bank readback or
+// per-frame snapshot retention. Unreferenced record bytes are not initialized
+// witnesses and must not participate in an exact comparison.
+std::uint64_t compare_publications(SharedSceneFrameSessions &pair, const FrameInfo &ai,
+                                   const FrameInfo &bi) {
+    const auto x = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], ai.area_serial);
+    const auto y = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], bi.area_serial);
+    const auto pixels = std::uint64_t(ai.width) * ai.height;
+    const auto validate = [&](const auto &snapshot, const auto &i) {
+        need(snapshot.status == GeometryStatus::success, snapshot.diagnostic);
+        need(snapshot.width == i.width && snapshot.height == i.height &&
+                 snapshot.serial == i.area_serial && snapshot.generation == i.history_generation &&
+                 snapshot.epoch == i.epoch && snapshot.history.size() == pixels &&
+                 snapshot.temporal.size() == pixels &&
+                 snapshot.records.size() == pixels * enhanced_wire::bank_count &&
+                 snapshot.suffix_cache_enabled == i.enhanced_suffix_cache &&
+                 (snapshot.suffix_context != 0) == i.enhanced_suffix_cache &&
+                 snapshot.enhanced_suffix.empty(),
+             "Enhanced snapshot publication metadata or actual cache state differs");
+    };
+    validate(x, ai);
+    validate(y, bi);
+    need(x.front_bank == y.front_bank, "Enhanced publication front banks differ");
+    need(std::memcmp(x.history.data(), y.history.data(),
+                     x.history.size() * sizeof(area_wire::History)) == 0,
+         "Enhanced history payloads differ at frame " + std::to_string(ai.area_serial));
+    need(std::memcmp(x.temporal.data(), y.temporal.data(),
+                     x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+         "Enhanced temporal payloads differ at frame " + std::to_string(ai.area_serial));
+    std::uint64_t records = 0;
+    const auto compare_record = [&](enhanced_wire::Reference ref) {
+        if (enhanced_wire::absent(ref))
+            return;
+        need(enhanced_wire::valid(ref, pixels), "Published record reference is out of bounds");
+        const auto index = std::size_t(ref.bank) * pixels + ref.pixel;
+        need(std::memcmp(&x.records[index], &y.records[index], sizeof(enhanced_wire::Record)) == 0,
+             "Enhanced referenced owned record differs at frame " + std::to_string(ai.area_serial) +
+                 ", bank " + std::to_string(ref.bank) + ", pixel " + std::to_string(ref.pixel));
+        ++records;
+    };
+    for (const auto &h : x.history)
+        if (h.valid && h.selected_slot != contribution_wire::enhanced_null_slot)
+            compare_record(h.record);
+    for (const auto &t : x.temporal)
+        if (t.normalizer > 0 && t.target > 0 &&
+            t.selected_slot != contribution_wire::enhanced_null_slot)
+            compare_record(t.record);
+    return records;
 }
 int run(const Options &o) {
     std::ofstream file;
@@ -285,11 +367,15 @@ int run(const Options &o) {
     out << std::setprecision(17);
     std::string error;
     bool shared = false, independent = false, exact = false;
-    unsigned completed = 0;
+    unsigned completed = 0, publications_compared = 0;
+    std::array<std::array<std::uint64_t, 3>, 2> suffix_hits{};
+    std::array<std::uint64_t, 2> suffix_misses{};
+    std::uint64_t record_witnesses = 0;
     out << "{\"schema\":1,\"space\":\"raw XYZ float32\",\"scope\":\"same-AS raw XYZ correctness "
            "diagnostic; no performance "
            "claim\",\"pair\":"
         << json_string(o.off_off ? "off-off" : "off-on")
+        << ",\"cache_feature\":" << json_string(o.enhanced_suffix ? "enhanced-suffix" : "temporal")
         << ",\"scene\":" << json_string(o.scene.empty() ? "builtin-diffuse" : o.scene.string())
         << ",\"build\":" << json_string(RYPATH_BUILD_DESCRIPTION)
         << ",\"library_argument\":" << json_string(o.library.string()) << ",\"width\":" << o.width
@@ -358,8 +444,21 @@ int run(const Options &o) {
         a.mutation_policy = FrameMutationPolicy::spectral_refresh;
         a.area_stencil = FrameAreaStencil::reciprocal16;
         a.cache_temporal_evaluations = false;
+        if (o.enhanced_suffix) {
+            a.area_path_domain = FrameAreaPathDomain::enhanced;
+            a.contribution_replay = FrameContributionReplay::prefix;
+            a.enhanced_suffix_cache = false;
+        }
         auto b = a;
-        b.cache_temporal_evaluations = !o.off_off;
+        if (o.enhanced_suffix)
+            b.enhanced_suffix_cache = !o.off_off;
+        else
+            b.cache_temporal_evaluations = !o.off_off;
+        out << ",\"configured_cache_flags\":{\"off\":{\"temporal\":"
+            << (a.cache_temporal_evaluations ? "true" : "false")
+            << ",\"enhanced_suffix\":" << (a.enhanced_suffix_cache ? "true" : "false")
+            << "},\"other\":{\"temporal\":" << (b.cache_temporal_evaluations ? "true" : "false")
+            << ",\"enhanced_suffix\":" << (b.enhanced_suffix_cache ? "true" : "false") << "}}";
         auto different = b;
         ++different.seed;
         const auto rejected =
@@ -380,6 +479,9 @@ int run(const Options &o) {
         independent = pair.independent_history;
         need(shared && independent,
              "Sessions need one renderer/AS owner and independent histories");
+        if (o.enhanced_suffix)
+            need(pair.independent_owned_records && (o.off_off || pair.independent_suffix_storage),
+                 "Enhanced sessions require independent owned records and suffix storage");
         out << ",\"frames\":[";
         rows_open = true;
         for (unsigned ordinal = 0; ordinal < o.frames; ++ordinal) {
@@ -394,6 +496,12 @@ int run(const Options &o) {
             need(ai.area_stencil_offsets == bi.area_stencil_offsets &&
                      ai.logical_evaluations == bi.logical_evaluations,
                  "Paired selection identities or logical work differ");
+            for (unsigned arm = 0; arm < 2; ++arm) {
+                const auto &i = arm ? bi : ai;
+                for (unsigned op = 0; op < 3; ++op)
+                    suffix_hits[arm][op] += i.enhanced_suffix_hits[op];
+                suffix_misses[arm] += i.enhanced_suffix_misses;
+            }
             // Retain both frames until readbacks complete. Only this pair is
             // resident on the CPU; no EXR or per-frame image files are written.
             const auto x = first.frame->capture();
@@ -429,6 +537,13 @@ int run(const Options &o) {
                            << std::setprecision(17) << d.maximum;
                 throw std::runtime_error(diagnostic.str());
             }
+            if (o.enhanced_suffix) {
+                record_witnesses += compare_publications(pair, ai, bi);
+                ++publications_compared;
+                need(ai.completed_evaluations == bi.completed_evaluations &&
+                         ai.analytic_null_evaluations == bi.analytic_null_evaluations,
+                     "Enhanced evaluator accounting differs despite matching raw output");
+            }
             need(ai.mutation_accepts == bi.mutation_accepts,
                  "Mutation decisions differ despite matching raw output");
         }
@@ -441,7 +556,14 @@ int run(const Options &o) {
         out << ']';
     out << ",\"shared_renderer_and_AS_owner\":" << (shared ? "true" : "false")
         << ",\"independent_history_banks\":" << (independent ? "true" : "false")
-        << ",\"history_payloads_compared\":false"
+        << ",\"history_payloads_compared\":"
+        << (o.enhanced_suffix && publications_compared == o.frames ? "true" : "false")
+        << ",\"history_frames_compared\":" << publications_compared
+        << ",\"referenced_record_witnesses_compared\":" << record_witnesses
+        << ",\"suffix_totals\":{\"off\":{\"hits_by_operations\":[" << suffix_hits[0][0] << ','
+        << suffix_hits[0][1] << ',' << suffix_hits[0][2] << "],\"misses\":" << suffix_misses[0]
+        << "},\"other\":{\"hits_by_operations\":[" << suffix_hits[1][0] << ',' << suffix_hits[1][1]
+        << ',' << suffix_hits[1][2] << "],\"misses\":" << suffix_misses[1] << "}}"
         << ",\"compared_frames\":" << completed
         << ",\"complete\":" << (exact && completed == o.frames ? "true" : "false")
         << ",\"all_exact\":" << (exact ? "true" : "false") << ",\"exit_code\":" << code

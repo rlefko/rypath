@@ -5,6 +5,7 @@
 #include "../src/enhanced_hybrid_state_shared.h"
 #include "../src/enhanced_path_shared.h"
 #include "../src/enhanced_resampling_decision_shared.h"
+#include "../src/enhanced_suffix_tape_shared.h"
 #include "../src/enhanced_wire.h"
 #include "../src/wavefront_wire.h"
 #include "frame_sensor.h"
@@ -18,6 +19,7 @@ namespace ew = rypath::enhanced_wire;
 namespace decision = rypath_enhanced_resampling_decision;
 namespace chart = rypath_enhanced_chart;
 namespace hybrid = rypath_enhanced_hybrid;
+namespace tape = rypath_enhanced_suffix_tape;
 struct State {
     ep::State selection;
     ep::DiscoveryState discovery;
@@ -27,8 +29,9 @@ struct State {
     uint rr_cut, failed;
     ep::reuse::Scaled requested_h{.5f, 1};
     hybrid::HybridState hybrid;
+    uint suffix_count = 0, suffix_coverage = 0;
 };
-static_assert(sizeof(State) == 284 && alignof(State) == 4, "Enhanced sidecar ABI");
+static_assert(sizeof(State) == 292 && alignof(State) == 4, "Enhanced sidecar ABI");
 static_assert(decision::maximum_random_words == ep::er::maximum_random_words,
               "Scaled selector entropy budget");
 static_assert(ep::null_slot == cw::enhanced_null_slot &&
@@ -42,6 +45,13 @@ inline bool pending_owned(const thread ew::Evaluation &e, uint pixels, uint pixe
                 ? ew::absent(e.source) && e.result.bank == ew::fresh_bank && e.result.pixel == pixel
                 : ew::valid(e.source, pixels) &&
                       (same || (e.result.bank == ew::fresh_bank && e.result.pixel == pixel)));
+}
+inline bool suffix_capture_owned(const thread ew::Evaluation &e, uint pixels, uint pixel,
+                                 bool fresh) {
+    return pending_owned(e, pixels, pixel, fresh) &&
+           (e.suffix_context_low || e.suffix_context_high) && e.result.bank == ew::fresh_bank &&
+           e.result.pixel == pixel &&
+           (fresh || e.source.bank != e.result.bank || e.source.pixel != e.result.pixel);
 }
 inline bool unstarted_hybrid(const thread hybrid::HybridState &h) {
     if (!chart::canonical_generic(h.active_record) || !ep::unit_density(h.active_h) ||
@@ -89,9 +99,58 @@ struct Sink {
     uint pixel;
     device ew::Record *records;
     device ew::Evaluation *evaluations;
+    device tape::Entry *suffixes = nullptr;
+    device wf::Counters *counters = nullptr;
     ew::Record atom_record = ew::empty_record();
     ep::reuse::Scaled atom_h{.5f, 1}, atom_generation_h{.5f, 1};
 
+    thread Sink &cache_sink() thread { return *this; }
+    uint suffix_capture_index() thread {
+        const auto receipt = evaluations[pixel];
+        if (!suffix_capture_owned(receipt, config.pixel_count, pixel, fresh()))
+            return ew::invalid;
+        const ulong index = ulong(receipt.result.bank) * config.pixel_count + receipt.result.pixel;
+        if (suffixes == nullptr || index >= ew::invalid) {
+            state.failed = 1;
+            return ew::invalid;
+        }
+        return uint(index);
+    }
+    void invalidate_suffix() thread {
+        const uint owner = suffix_capture_index();
+        if (owner != ew::invalid)
+            suffixes[owner].version = 0;
+    }
+    bool stage_suffix(float4 numerator, float4 likelihood, uint prepared, bool supported) thread {
+        if (!has_interior())
+            return false;
+        const uint owner = suffix_capture_index();
+        if (owner == ew::invalid || state.suffix_count >= tape::maximum_operations || !supported)
+            return false;
+        if (!(prepared & 1u) || (prepared & ~tape::all_lanes)) {
+            state.failed = 1;
+            return false;
+        }
+        // Append beyond every previously selected atom's consumed prefix.
+        // The current atom still uses suffix_count BEFORE this continuation.
+        device auto &operation = suffixes[owner].operations[state.suffix_count];
+        for (uint k = 0; k < 4; ++k) {
+            operation.numerator[k] = numerator[k];
+            operation.sampled_likelihood[k] = likelihood[k];
+        }
+        return true;
+    }
+    void advance_suffix(bool staged, uint prepared) thread {
+        if (!has_interior() || suffix_capture_index() == ew::invalid)
+            return;
+        if (!staged || state.suffix_count >= tape::maximum_operations) {
+            state.suffix_count = tape::maximum_operations + 1u;
+            return; // Older selected cache entries remain valid.
+        }
+        const uint shift = tape::operation_prepared_shift(state.suffix_count);
+        state.suffix_coverage |= (prepared | (prepared << 4u)) << shift;
+        ++state.suffix_count;
+    }
     bool has_interior() const thread {
         return state.hybrid.active_record.tag == chart::interior_zomega;
     }
@@ -111,6 +170,7 @@ struct Sink {
         state.hybrid.active_record = record;
         state.hybrid.active_h = h_eval;
         state.hybrid.active_generation_h = h_gen;
+        state.suffix_count = state.suffix_coverage = 0;
         return true;
     }
     bool mapping_import(uint event) const thread {
@@ -266,14 +326,15 @@ struct Sink {
         return true;
     }
     template <typename Wavelengths>
-    void add(uint index, float4 term, const thread Wavelengths &lambda) thread {
+    bool add(uint index, float4 term, const thread Wavelengths &lambda) thread {
         if (state.failed)
-            return;
+            return false;
         if (index < state.next_slot || index >= state.selection.descriptor.slot_count ||
             !all(isfinite(term)) || any(term < 0)) {
             state.failed = 1;
-            return;
+            return false;
         }
+        bool selected = false;
         const bool direct = (index & 1u) != 0;
         const bool interior = has_interior();
         const auto record = interior ? state.hybrid.active_record
@@ -290,39 +351,39 @@ struct Sink {
             !ep::valid_density(h) || !ep::valid_density(generation_h) || state.hybrid.outside > 1 ||
             (fresh() && state.hybrid.outside)) {
             state.failed = 1;
-            return;
+            return false;
         }
         if (!fresh() && index == state.requested_slot) {
             const auto requested = imported_record();
             if (state.failed)
-                return;
+                return false;
             const bool requested_interior = requested.tag == chart::interior_zomega;
             if (state.hybrid.outside || requested_interior != interior ||
                 (requested_interior && !same_record(requested, state.hybrid.active_record))) {
                 state.requested_xyz = {};
                 state.requested_h = {.5f, 1};
                 state.next_slot = index + 1u;
-                return; // Partial chart map: absence is zero, never chart substitution.
+                return false; // Partial chart map: absence is zero, never chart substitution.
             }
         }
         float3 xyz = 0;
         if (interior) {
             if (!project_interior(term, lambda, h, xyz)) {
                 state.failed = 1;
-                return;
+                return false;
             }
         } else {
             for (uint lane = 0; lane < 4; ++lane) {
                 const float wavelength = lambda.lambda[lane], pdf = lambda.pdf[lane];
                 if (!(wavelength >= 360 && wavelength <= 830 && isfinite(pdf) && pdf > 0)) {
                     state.failed = 1;
-                    return;
+                    return false;
                 }
                 xyz += rypath_frame_sensor::cie(cie, wavelength, false) * (term[lane] / pdf / 4.f);
             }
             if (!all(isfinite(xyz))) {
                 state.failed = 1;
-                return;
+                return false;
             }
         }
         if (fresh()) {
@@ -340,29 +401,32 @@ struct Sink {
                                                  decision::fresh_site(index), ordinal);
                 if (word.status != decision::Status::ok) {
                     state.failed = 1;
-                    return;
+                    return false;
                 }
                 ep::feed_random_word(pending, word.value);
             }
             const auto updated = ep::commit_update(state.selection, pending);
             if (updated.status != ep::Status::ok) {
                 state.failed = 1;
-                return;
+                return false;
             }
             if (updated.selected) {
+                selected = true;
                 const auto receipt = evaluations[pixel];
                 if (!pending_owned(receipt, config.pixel_count, pixel, true)) {
                     state.failed = 1;
-                    return;
+                    return false;
                 }
                 records[ulong(receipt.result.bank) * config.pixel_count + receipt.result.pixel] =
                     record;
             }
         } else if (index == state.requested_slot) {
+            selected = suffix_capture_index() != ew::invalid;
             state.requested_xyz = {xyz.x, xyz.y, xyz.z};
             state.requested_h = h;
         }
         state.next_slot = index + 1u;
+        return selected && !state.failed;
     }
     bool finish(const thread cw::Evaluation &request, thread float3 &xyz,
                 thread cw::Evaluation &result) thread {
@@ -391,10 +455,11 @@ struct Sink {
             receipt.normalizer_exponent = selected.normalizer.exponent;
             value = selected.xyz;
             h = selected.selected_h;
-            if (selected.selected_slot == ep::null_slot)
+            if (selected.selected_slot == ep::null_slot) {
+                invalidate_suffix();
                 records[ulong(receipt.result.bank) * config.pixel_count + receipt.result.pixel] =
                     ew::empty_record();
-            else {
+            } else {
                 const auto record =
                     records[ulong(receipt.result.bank) * config.pixel_count + receipt.result.pixel];
                 if (record.tag == chart::terminal_surface ||

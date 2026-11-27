@@ -44,6 +44,8 @@ struct Evaluation {
     // Fresh CW normalizer is a normalized fraction; imports/cached/null replies
     // retain CW normalizer +0 and exponent0. Prepare always clears this field.
     int normalizer_exponent;
+    // Immutable per-leaf evaluator receipt, independent of the source tape token.
+    Word suffix_context_low, suffix_context_high;
 };
 inline Reference absent() { return {invalid, invalid}; }
 inline bool absent(Reference r) { return r.bank == invalid && r.pixel == invalid; }
@@ -52,7 +54,7 @@ inline Record empty_record() {
     return {record_version, generic, invalid, invalid, invalid, invalid, invalid, 0, {0, 0, 0, 0}};
 }
 static_assert(sizeof(Record) == 48 && alignof(Record) == 4 && sizeof(Reference) == 8 &&
-                  sizeof(Evaluation) == 32 && alignof(Evaluation) == 4,
+                  sizeof(Evaluation) == 40 && alignof(Evaluation) == 4,
               "Enhanced owned-light record ABI");
 } // namespace enhanced_wire
 } // namespace rypath
