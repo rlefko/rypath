@@ -71,7 +71,7 @@ target_compile_options(rypath_enhanced_reprojection_tests PRIVATE
     "$<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
 add_test(NAME render.enhanced_reprojection COMMAND rypath_enhanced_reprojection_tests)
 set_tests_properties(render.enhanced_reprojection PROPERTIES TIMEOUT 30)
-foreach(component enhanced_reservoir enhanced_resampling_decision enhanced_chart enhanced_suffix_tape)
+foreach(component enhanced_reservoir enhanced_resampling_decision enhanced_chart enhanced_suffix_tape enhanced_motion)
     add_executable(rypath_${component}_tests ${component}_tests.cpp)
     target_include_directories(rypath_${component}_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
     rypath_configure_host_target(rypath_${component}_tests)

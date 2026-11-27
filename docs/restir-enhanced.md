@@ -427,6 +427,23 @@ relaxed; these boundaries are a measured code-generation workaround, not a claim
 that a compiler defect's root cause has been established. Failed diagnostic and
 optimization variants remain in the local validation archive.
 
+## Camera-motion geometry foundation
+
+Portable camera projection and geometry compatibility helpers now cover a
+camera-only dual-motion donor construction from the old foreground point:
+`project_old(O) + project_current(X) - project_current(O)`. The 129 CPU controls
+use independent double-precision camera/parallax expectations, common-origin
+rebasing, discrete foreground anchors and explicit geometry thresholds. Invalid
+projection inputs fail; valid offscreen/near-plane cases retain a labeled
+same-pixel domain fallback. This follows the geometric construction in
+[Zeng et al., §4.3](https://sites.cs.ucsb.edu/~lingqi/publications/paper_trmv.pdf).
+
+These helpers do not yet produce GPU geometry, retain matching history geometry,
+or map the reverse transport owner to the selected old pixel. Runtime integration
+must consolidate the existing projection-level donor helper with this geometry
+layer and validate both domain directions. No dual-motion quality or performance
+benefit is claimed by the CPU controls.
+
 ## Retained measurements and limitations
 
 The `3ed5432` runtime's native study used three seeds, static and phased-motion
