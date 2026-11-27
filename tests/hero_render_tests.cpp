@@ -871,6 +871,81 @@ ContributionCapture enhanced_capture(FrameSession &frames, const FrameConfig &c,
         *retained = std::move(submitted.frame);
     return {std::move(image), std::move(info)};
 }
+// A terminal hero path needs exactly one packet-step invocation. Exercise the
+// actual Enhanced host labels/reset/readback across cold and historical frames.
+// Selected-null/all-null ownership is separately controlled by enhanced_null_owners
+// in wavefront_queue_tests; this positive terminal fixture predicts one call per
+// physical evaluation, and does not extend that equality to unfinished paths.
+void enhanced_event_count_controls() {
+    const auto scene = early_emission(false);
+    for (const bool cache : {false, true}) {
+        auto control = enhanced_config();
+        control.width = 3;
+        control.height = 2;
+        control.mutation_steps = 0;
+        control.intersection_profile = IntersectionProfile::native;
+        control.cache_temporal_evaluations = cache;
+        control.capacity = 2;
+        control.quantum = 8; // Includes empty tails in every terminal leaf.
+        auto profiled = control;
+        profiled.profile_stages = true;
+        auto baseline = session(scene, control), measured = session(scene, profiled);
+        for (unsigned ordinal = 0; ordinal < 2; ++ordinal) {
+            const auto expected =
+                enhanced_capture(*baseline, control, 0, ordinal, high_sample + ordinal);
+            const auto actual =
+                enhanced_capture(*measured, profiled, 0, ordinal, high_sample + ordinal);
+            exact(actual.image, expected.image);
+            need(std::any_of(actual.image.raw_xyz.begin(), actual.image.raw_xyz.end(),
+                             [](const auto &xyz) { return xyz[1] > 0; }),
+                 "Terminal Enhanced invocation fixture retains positive physical output");
+            need(!expected.info.path_work.requested && expected.info.path_work.passes.empty(),
+                 "Unprofiled Enhanced control does not report invocation diagnostics");
+            const auto &work = actual.info.path_work;
+            const bool temporal = ordinal != 0 && !cache;
+            need(work.requested && work.complete && work.packet_step_invocations_supported &&
+                     work.passes.size() == (temporal ? 8u : 6u),
+                 "Enhanced cold/history/cache packet-step diagnostic rows");
+            std::uint64_t calls = 0, completed = 0, commands = 0;
+            unsigned fresh = 0, spatial = 0, forward = 0, reverse = 0, finalize = 0;
+            for (const auto &pass : work.passes) {
+                calls += pass.packet_step_invocations;
+                completed += pass.completed_evaluations;
+                commands += pass.commands;
+                if (pass.kind == "finalize") {
+                    ++finalize;
+                    need(pass.packet_step_invocations == 0 && pass.encoded_rounds == 0 &&
+                             pass.completed_evaluations == 0,
+                         "Finalize executes zero packet steps");
+                } else {
+                    need(pass.packet_step_invocations == pass.completed_evaluations,
+                         "Each physical terminal evaluation invokes packet step exactly once");
+                    if (pass.kind == "fresh") {
+                        ++fresh;
+                        need(pass.packet_step_invocations == control.width * control.height,
+                             "Fresh leaf count resets on each frame");
+                    } else if (pass.kind == "spatial") {
+                        need(pass.index < 4, "Spatial invocation row index");
+                        spatial |= 1u << pass.index;
+                    } else if (pass.kind == "temporal-forward")
+                        ++forward;
+                    else if (pass.kind == "temporal-reverse")
+                        ++reverse;
+                    else
+                        need(false, "Unexpected Enhanced invocation row label");
+                }
+            }
+            need(fresh == 1 && spatial == 15 && finalize == 1 && forward == unsigned(temporal) &&
+                     reverse == unsigned(temporal) && calls == actual.info.completed_evaluations &&
+                     completed == actual.info.completed_evaluations &&
+                     commands == actual.info.command_count,
+                 "Per-leaf calls conserve actual physical work and command labels");
+            need(actual.info.cached_evaluations ==
+                     (ordinal != 0 && cache ? 2ull * control.width * control.height : 0),
+                 "Cached temporal evaluations contribute zero packet-step calls");
+        }
+    }
+}
 void enhanced_black() {
     for (unsigned depth : {0u, 65u}) {
         auto scene = depth == 0 ? early_emission(false) : deep(65);
@@ -2835,6 +2910,7 @@ int main(int argc, char **argv) {
     try {
         const bool contribution_only =
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
+        const bool event_counts = argc == 2 && std::string_view(argv[1]) == "--event-counts";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
         const bool enhanced_duplication =
@@ -2844,12 +2920,12 @@ int main(int argc, char **argv) {
         const bool enhanced_pairs = argc == 2 && std::string_view(argv[1]) == "--enhanced-pairs";
         const bool enhanced_suffix = argc == 2 && std::string_view(argv[1]) == "--enhanced-suffix";
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
-        need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid ||
-                 enhanced_suffix || enhanced_pairs || enhanced_motion || enhanced_atlas ||
-                 enhanced_duplication,
+        need(argc == 1 || event_counts || contribution_only || enhanced_only || enhanced_nee ||
+                 enhanced_hybrid || enhanced_suffix || enhanced_pairs || enhanced_motion ||
+                 enhanced_atlas || enhanced_duplication,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
              "--enhanced-hybrid, --enhanced-suffix, --enhanced-pairs, --enhanced-motion or "
-             "--enhanced-atlas");
+             "--enhanced-atlas, --enhanced-duplication or --event-counts");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -2867,6 +2943,10 @@ int main(int argc, char **argv) {
         capability.scene.reset();
         if (enhanced_duplication) {
             enhanced_duplication_controls();
+            return 0;
+        }
+        if (event_counts) {
+            enhanced_event_count_controls();
             return 0;
         }
         if (enhanced_atlas) {

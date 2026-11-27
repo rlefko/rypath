@@ -6,12 +6,13 @@ namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 22,
+    contract = 23,
     default_capacity = 65536,
     packet_layout_constant = 23,
     packet_events_constant = 24,
     contribution_mode_constant = 27,
-    enhanced_mode_constant = 28
+    enhanced_mode_constant = 28,
+    queued_slots_constant = 29
 };
 enum Failure : Word {
     invalid_config = 1u,
@@ -69,6 +70,7 @@ struct Counters {
     Counter null_completed;
     Counter suffix_hits[3], suffix_misses;
     Counter work_count;
+    Counter queued_slots_lo, queued_slots_hi;
 };
 struct DispatchArguments {
     Word x, y, z;
@@ -85,7 +87,7 @@ struct Contract {
     Word enhanced_record_bytes, enhanced_evaluation_bytes;
     Word suffix_entry_bytes, donor_bytes;
 };
-static_assert(sizeof(Config) == 64 && sizeof(Counters) == 56 && sizeof(DispatchArguments) == 12 &&
+static_assert(sizeof(Config) == 64 && sizeof(Counters) == 64 && sizeof(DispatchArguments) == 12 &&
                   sizeof(Contract) == 112,
               "Wavefront host/shader ABI");
 static_assert(contribution_evaluation_id == 18 && contribution_state_id == 19,
@@ -105,3 +107,7 @@ static_assert(rypath::wavefront_wire::work_list_id == 23 &&
 static_assert(rypath::wavefront_wire::donors_id == 24 &&
                   __builtin_offsetof(rypath::wavefront_wire::Config, mapped_evaluation) == 60,
               "Wavefront v22 mapped evaluation ABI");
+
+static_assert(__builtin_offsetof(rypath::wavefront_wire::Counters, queued_slots_lo) == 56 &&
+                  __builtin_offsetof(rypath::wavefront_wire::Counters, queued_slots_hi) == 60,
+              "Wavefront v23 queued-slot diagnostic ABI");

@@ -779,6 +779,8 @@ struct Observation : rypath::FrameStatisticsSample {
 void write_path_work(std::ostream &out, const rypath::FrameWorkDiagnostics &d) {
     out << "{\"requested\":" << (d.requested ? "true" : "false")
         << ",\"complete\":" << (d.complete ? "true" : "false") << ",\"status\":" << quote(d.status)
+        << ",\"packet_step_invocations_supported\":"
+        << (d.packet_step_invocations_supported ? "true" : "false")
         << ",\"state_pool_bytes\":" << d.state_pool_bytes << ",\"passes\":[";
     bool first = true;
     for (const auto &p : d.passes) {
@@ -787,7 +789,12 @@ void write_path_work(std::ostream &out, const rypath::FrameWorkDiagnostics &d) {
         first = false;
         out << "{\"kind\":" << quote(p.kind) << ",\"index\":" << p.index
             << ",\"commands\":" << p.commands << ",\"encoded_rounds\":" << p.encoded_rounds
-            << ",\"completed_evaluations\":" << p.completed_evaluations
+            << ",\"packet_step_invocations\":";
+        if (d.packet_step_invocations_supported && d.complete)
+            out << p.packet_step_invocations;
+        else
+            out << "null";
+        out << ",\"completed_evaluations\":" << p.completed_evaluations
             << ",\"boundary_active_sum\":" << p.boundary_active_sum
             << ",\"boundary_active_max\":" << p.boundary_active_max
             << ",\"encode_seconds\":" << p.encode_seconds << ",\"gpu_seconds\":";

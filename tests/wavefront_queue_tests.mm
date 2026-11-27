@@ -31,7 +31,7 @@ namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
 namespace aw = area_wire;
-static_assert(wf::contract == 22 && sizeof(wf::Contract) == 112 && sizeof(wf::Config) == 64);
+static_assert(wf::contract == 23 && sizeof(wf::Contract) == 112 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
 static_assert(aw::contract == 16 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 104);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
@@ -42,7 +42,7 @@ static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 
               aw::paired_config_id == 16);
 static_assert(sizeof(rypath_area_pair_atlas::Config) == 112 &&
               sizeof(rypath_area_pair_atlas::Entry) == 2);
-static_assert(sizeof(wf::Counters) == 56 && offsetof(wf::Counters, work_count) == 52 &&
+static_assert(sizeof(wf::Counters) == 64 && offsetof(wf::Counters, work_count) == 52 &&
               offsetof(wf::Config, compact_enhanced_pairs) == 56 &&
               offsetof(wf::Config, mapped_evaluation) == 60);
 static_assert(sizeof(enhanced_wire::Record) == 48 && sizeof(enhanced_wire::Reference) == 8 &&
@@ -245,13 +245,23 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
         require(result != nil, "Enhanced null pipeline: " + why);
         return result;
     };
-    auto reset = load(@"rypath_wavefront_reset");
+    MTLFunctionConstantValues *count_constants = [constants copy];
+    const bool count_slots = true;
+    [count_constants setConstantValue:&count_slots
+                                 type:MTLDataTypeBool
+                              atIndex:wf::queued_slots_constant];
+    const auto load_count = [&](NSString *entry) {
+        auto result = metal::load_pipeline(device, library, entry, why, nil, count_constants);
+        require(result != nil, "Enhanced count pipeline: " + why);
+        return result;
+    };
+    auto reset = load_count(@"rypath_wavefront_reset");
     auto initialize = load(@"rypath_wavefront_initialize");
     auto admit = load(@"rypath_wavefront_admit_all_pixels");
     auto finalize = load(@"rypath_wavefront_finalize_admission");
     auto probe = load(@"rypath_wavefront_null_probe");
     auto pair_probe = load(@"rypath_wavefront_pair_probe");
-    auto prepare = load(@"rypath_wavefront_prepare_refill");
+    auto prepare = load_count(@"rypath_wavefront_prepare_refill");
     auto refill = load(@"rypath_wavefront_refill");
     auto advance = load(@"rypath_wavefront_advance");
     auto function = metal::load_function(library, @"rypath_wavefront_initialize", why, constants);
@@ -283,7 +293,7 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
     for (const bool mapped : {false, true})
         for (const bool compact : {false, true})
             for (unsigned capacity :
-                 compact ? std::array{1u, 37u, pixels} : std::array{2u, 7u, pixels}) {
+                 compact ? std::array{1u, 2u, 37u, pixels} : std::array{1u, 2u, 7u, pixels}) {
                 if (mapped && !compact)
                     continue;
                 const wf::Config config{pixels,
@@ -470,6 +480,8 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                                 result.next_pixel == pixels && result.completed == pixels &&
                                 result.null_completed == pixels,
                             "All-null admission must issue zero transport owners");
+                    require(result.queued_slots_lo == 0 && result.queued_slots_hi == 0,
+                            "Compacted all-null admission queues zero packet calls");
                     for (unsigned pixel = 0; pixel < pixels; ++pixel) {
                         const auto *done =
                             reinterpret_cast<const std::uint32_t *>(data(wf::done_id));
@@ -613,6 +625,11 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                             std::swap(buffers[wf::queue_in_id], buffers[wf::queue_out_id]);
                             bind();
                         }
+                        require(result.queued_slots_hi == 0 && result.queued_slots_lo == expected,
+                                "Compacted mixed/real queues count each synthetic step once");
+                        execute({{prepare, 1}, {advance, 1}});
+                        require(counters().queued_slots_lo == expected,
+                                "Compacted empty tail contributes zero calls");
                         for (unsigned pixel = 0; pixel < pixels; ++pixel)
                             require(reinterpret_cast<const std::uint32_t *>(
                                         data(wf::done_id))[pixel] == 1,
@@ -748,6 +765,30 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                     guards();
                     continue;
                 }
+                // The two-word diagnostic is checked before refill overwrites free.
+                for (const bool overflow : {false, true}) {
+                    fresh();
+                    execute({{reset, pixels}, {initialize, capacity}, {probe, capacity}});
+                    auto injected = counters();
+                    require(injected.queued_slots_lo == 0 && injected.queued_slots_hi == 0,
+                            "Each leaf reset clears the queued-slot diagnostic");
+                    injected.queued_slots_lo = 0xffffffffu;
+                    injected.queued_slots_hi = overflow ? 0xffffffffu : 41u;
+                    std::memcpy(data(wf::counters_id), &injected, sizeof(injected));
+                    execute({{prepare, 1}});
+                    const auto actual = counters();
+                    if (overflow)
+                        require(actual.failure == wf::invalid_counters &&
+                                    actual.queued_slots_lo == injected.queued_slots_lo &&
+                                    actual.queued_slots_hi == injected.queued_slots_hi &&
+                                    actual.free == injected.free &&
+                                    actual.next_pixel == injected.next_pixel,
+                                "High overflow fails before count/refill mutation");
+                    else
+                        require(actual.failure == 0 && actual.queued_slots_hi == 42 &&
+                                    actual.queued_slots_lo == capacity - 1,
+                                "Queued-slot low carry increments the high word exactly once");
+                }
                 fresh();
                 execute({{reset, pixels}, {initialize, capacity}});
                 auto before = counters();
@@ -769,6 +810,9 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                                 result.free == 0 && result.refill_begin == 0 &&
                                 result.rounds == rounds + 1,
                             "Null owners must conserve completions through real refill/advance");
+                    require(result.queued_slots_hi == 0 &&
+                                result.queued_slots_lo == result.null_completed,
+                            "Noncompact all-null queues subtract to zero packet calls");
                     for (unsigned pixel = 0; pixel < pixels; ++pixel) {
                         cw::Evaluation evaluation{};
                         std::memcpy(&evaluation,
@@ -814,6 +858,9 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                     before = result;
                     ++rounds;
                 }
+                execute({{prepare, 1}, {advance, 1}});
+                require(counters().queued_slots_hi == 0 && counters().queued_slots_lo == pixels,
+                        "Noncompact empty tail leaves exact queued total unchanged");
                 if (capacity != 2)
                     continue;
                 // Serial single-lane failures avoid a valid sibling racing publication.
@@ -2328,19 +2375,20 @@ int run(const std::filesystem::path &path) {
     const wf::Config config{4, 2, 0, render_wire::pbrt_model, 32, 0, 1, 0, 0, 0, 0.f, 0, 0,
                             0, 0, 0};
     const std::array<wf::Counters, 9> cases{{
-        {2, 2, 0, 4, 2, 0, 7, 2, 0, {0, 0, 0}, 0, 0}, // Valid two-owner continuation clears its
-                                                      // range.
-        {2, 3, 0, 4, 1, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Output exceeds physical capacity.
-        {2, 1, 3, 4, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Free list exceeds physical capacity.
-        {2, 0, 0, 4, 5, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // More completions than pixels.
-        {2, 0, 0, 5, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Allocator exceeds pixel domain.
-        {2, 0, 0, 4, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Lost work cannot become an empty successful
-                                                      // queue.
-        {2, 2, 0, 4, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0, 0}, // Producer overflow stays
-                                                                       // sticky.
-        {2, 2, 0, 4, 2, 0, 7, 0, 3, {0, 0, 0}, 0, 0}, // Null completions exceed all completions.
-        {2, 2, 0, 4, 2, 0, 7, 0, 1, {0, 0, 0}, 0, 0}, // Legacy mode cannot publish null
-                                                      // completions.
+        {2, 2, 0, 4, 2, 0, 7, 2, 0, {0, 0, 0}, 0, 0, 0, 0}, // Valid two-owner continuation clears
+                                                            // its range.
+        {2, 3, 0, 4, 1, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Output exceeds physical capacity.
+        {2, 1, 3, 4, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Free list exceeds physical capacity.
+        {2, 0, 0, 4, 5, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // More completions than pixels.
+        {2, 0, 0, 5, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Allocator exceeds pixel domain.
+        {2, 0, 0, 4, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Lost work cannot become an empty
+                                                            // successful queue.
+        {2, 2, 0, 4, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Producer overflow
+                                                                             // stays sticky.
+        {2, 2, 0, 4, 2, 0, 7, 0, 3, {0, 0, 0}, 0, 0, 0, 0}, // Null completions exceed all
+                                                            // completions.
+        {2, 2, 0, 4, 2, 0, 7, 0, 1, {0, 0, 0}, 0, 0, 0, 0}, // Legacy mode cannot publish null
+                                                            // completions.
     }};
     for (std::size_t n = 0; n < cases.size(); ++n) {
         for (auto buffer : buffers)
@@ -2383,22 +2431,23 @@ int run(const std::filesystem::path &path) {
     auto prepare = metal::load_pipeline(device, library, @"rypath_wavefront_prepare_refill", why);
     require(prepare != nil, why);
     const std::array<wf::Counters, 14> refill_cases{{
-        {2, 0, 2, 2, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Full refill owns [2,4).
-        {2, 0, 2, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Partial final range owns [3,4).
-        {2, 0, 2, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Exhausted domain claims nothing.
-        {2, 1, 1, 3, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // One continuing owner plus one new owner.
-        {2, 2, 0, 2, 0, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // All owners continue; no free slots.
-        {0, 0, 0, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Extra encoded round after all work
-                                                      // completed.
-        {2, 0, 3, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Invalid free count.
-        {2, 0, 2, 5, 5, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Invalid next owner.
-        {2, 0, 2, 2, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Completions exceed issued owners.
-        {2, 0, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Lost active owner.
-        {2, 1, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Continuing count disagrees with issued
-                                                      // work.
-        {2, 0, 2, 2, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0, 0},
-        {2, 0, 2, 2, 2, 0, 7, 0, 3, {0, 0, 0}, 0, 0}, // Null count cannot exceed completions.
-        {2, 0, 2, 2, 2, 0, 7, 0, 1, {0, 0, 0}, 0, 0}, // Legacy null count is invalid.
+        {2, 0, 2, 2, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Full refill owns [2,4).
+        {2, 0, 2, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Partial final range owns [3,4).
+        {2, 0, 2, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Exhausted domain claims nothing.
+        {2, 1, 1, 3, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // One continuing owner plus one new
+                                                            // owner.
+        {2, 2, 0, 2, 0, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // All owners continue; no free slots.
+        {0, 0, 0, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Extra encoded round after all work
+                                                            // completed.
+        {2, 0, 3, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Invalid free count.
+        {2, 0, 2, 5, 5, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Invalid next owner.
+        {2, 0, 2, 2, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Completions exceed issued owners.
+        {2, 0, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Lost active owner.
+        {2, 1, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0}, // Continuing count disagrees with
+                                                            // issued work.
+        {2, 0, 2, 2, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0, 0, 0, 0},
+        {2, 0, 2, 2, 2, 0, 7, 0, 3, {0, 0, 0}, 0, 0, 0, 0}, // Null count cannot exceed completions.
+        {2, 0, 2, 2, 2, 0, 7, 0, 1, {0, 0, 0}, 0, 0, 0, 0}, // Legacy null count is invalid.
     }};
     for (std::size_t n = 0; n < refill_cases.size(); ++n) {
         for (auto buffer : buffers)
@@ -2511,19 +2560,19 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v22", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v23", why);
     require(contract_pipeline != nil,
-            "Wavefront v22 contract unavailable; rebuild the metallib: " + why);
+            "Wavefront v23 contract unavailable; rebuild the metallib: " + why);
     for (NSString *stale in @[
              @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
              @"rypath_wavefront_contract_v13", @"rypath_wavefront_contract_v14",
              @"rypath_wavefront_contract_v15", @"rypath_wavefront_contract_v16",
              @"rypath_wavefront_contract_v17", @"rypath_wavefront_contract_v18",
              @"rypath_wavefront_contract_v19", @"rypath_wavefront_contract_v20",
-             @"rypath_wavefront_contract_v21"
+             @"rypath_wavefront_contract_v21", @"rypath_wavefront_contract_v22"
          ])
         require([library newFunctionWithName:stale] == nil,
-                "Stale Wavefront stage entry must not advertise the v22 ABI");
+                "Stale Wavefront stage entry must not advertise the v23 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");
@@ -2542,7 +2591,7 @@ int run(const std::filesystem::path &path) {
     std::memcpy(&history_contract, contract_buffer.contents, sizeof(history_contract));
     require(history_contract.version == wf::contract && history_contract.hero_bytes &&
                 history_contract.hero_cold_bytes && history_contract.hot_bytes &&
-                history_contract.config_bytes == 64 && history_contract.counters_bytes == 56 &&
+                history_contract.config_bytes == 64 && history_contract.counters_bytes == 64 &&
                 history_contract.dispatch_bytes == 12 &&
                 history_contract.contribution_state_bytes == 80 &&
                 history_contract.contribution_state_alignment == 4 &&

@@ -13,6 +13,12 @@ constant uint rypath_wavefront_packet_layout [[function_constant(wf::packet_layo
 constant uint rypath_wavefront_packet_events [[function_constant(wf::packet_events_constant)]];
 constant bool rypath_wavefront_contribution [[function_constant(wf::contribution_mode_constant)]];
 constant bool rypath_wavefront_enhanced [[function_constant(wf::enhanced_mode_constant)]];
+constant bool rypath_wavefront_queued_slots [[function_constant(wf::queued_slots_constant)]];
+inline bool wavefront_queued_slots() {
+    return is_function_constant_defined(rypath_wavefront_queued_slots)
+               ? rypath_wavefront_queued_slots
+               : false;
+}
 inline bool wavefront_enhanced() {
     return is_function_constant_defined(rypath_wavefront_enhanced) ? rypath_wavefront_enhanced
                                                                    : false;
@@ -490,7 +496,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
 }
 // Version the entry when its output grows: an older host must fail function
 // lookup before binding its shorter contract buffer to this kernel.
-kernel void rypath_wavefront_contract_v22(device wf::Contract *out [[buffer(0)]]) {
+kernel void rypath_wavefront_contract_v23(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),
@@ -537,6 +543,10 @@ kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
     atomic_store_explicit(&a.counters->completed, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->null_completed, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->work_count, 0u, memory_order_relaxed);
+    if (wavefront_queued_slots()) {
+        atomic_store_explicit(&a.counters->queued_slots_lo, 0u, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->queued_slots_hi, 0u, memory_order_relaxed);
+    }
     for (uint k = 0; k < 3; ++k)
         atomic_store_explicit(&a.counters->suffix_hits[k], 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->suffix_misses, 0u, memory_order_relaxed);
@@ -921,6 +931,24 @@ kernel void rypath_wavefront_prepare_refill(constant WavefrontArguments &a [[buf
     if (wavefront_failed(a)) {
         wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);
         return;
+    }
+    // Count the queue consumed by this round only after successful validation.
+    // Lane zero is the sole writer; dispatch barriers publish the two-word sum.
+    // This includes initialized-complete and transparent-boundary calls. Empty
+    // tail rounds add zero. Analytic nulls are removed by the host for noncompact
+    // queues; admission-compacted nulls never entered this queue.
+    if (wavefront_queued_slots()) {
+        const uint lo = atomic_load_explicit(&a.counters->queued_slots_lo, memory_order_relaxed);
+        const uint hi = atomic_load_explicit(&a.counters->queued_slots_hi, memory_order_relaxed);
+        const uint next_lo = lo + current;
+        const uint carry = uint(next_lo < lo);
+        if (carry && hi == 0xffffffffu) {
+            wavefront_fail(a, wf::invalid_counters);
+            wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);
+            return;
+        }
+        atomic_store_explicit(&a.counters->queued_slots_lo, next_lo, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->queued_slots_hi, hi + carry, memory_order_relaxed);
     }
     // The previous dispatch has finished producing the free list. Reserve one
     // contiguous owner range here; lane i owns begin+i without a global CAS

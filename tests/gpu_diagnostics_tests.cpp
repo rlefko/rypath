@@ -60,5 +60,23 @@ int main() {
     for (unsigned i = 0; i < 13; ++i)
         add_frame_work(capped, "mutation", i, 8, 0, 0, .1, 0, 0, true);
     require(capped.passes.size() == 12 && !capped.complete);
+    std::uint64_t previous = 0, delta = 999;
+    require(frame_packet_step_delta(0, 0, false, previous, delta) && delta == 0);
+    require(frame_packet_step_delta(17, 7, false, previous, delta) && delta == 10);
+    require(frame_packet_step_delta(20, 8, false, previous, delta) && delta == 2);
+    require(frame_packet_step_delta(20, 8, false, previous, delta) && delta == 0);
+    require(!frame_packet_step_delta(19, 8, false, previous, delta) && previous == 12);
+    require(!frame_packet_step_delta(7, 8, false, previous, delta) && previous == 12);
+    previous = 0; // New compacted leaf: nulls were never queued.
+    require(frame_packet_step_delta(10, 7, true, previous, delta) && delta == 10);
+    require(!frame_packet_step_delta(9, 7, true, previous, delta));
+    FrameWorkDiagnostics exact;
+    exact.requested = exact.packet_step_invocations_supported = true;
+    add_frame_work(exact, "fresh", 0, 8, 1, 0, .1, 0, 0, true, UINT64_MAX);
+    add_frame_work(exact, "finalize", 0, 0, 0, 0, .1, 0, 0, true);
+    require(exact.complete && exact.passes[0].packet_step_invocations == UINT64_MAX &&
+            exact.passes[1].packet_step_invocations == 0);
+    add_frame_work(exact, "fresh", 0, 8, 1, 0, .1, 0, 0, true, 1);
+    require(!exact.complete && exact.status == "invalid: packet step invocation overflow");
     std::cout << "GPU stage diagnostics checks passed\n";
 }

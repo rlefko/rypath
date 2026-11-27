@@ -3105,7 +3105,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v22", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v23", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
@@ -3172,7 +3172,7 @@ struct FrameSession::Impl {
                  }) {
                 auto declaration = [library newFunctionWithName:required.entry];
                 bool has_layout = false, has_events = false, has_contribution = false,
-                     has_enhanced = false;
+                     has_enhanced = false, has_count = false;
                 for (MTLFunctionConstant *value in declaration.functionConstantsDictionary
                          .allValues) {
                     has_layout |= value.index == wavefront_wire::packet_layout_constant &&
@@ -3181,10 +3181,16 @@ struct FrameSession::Impl {
                                   value.type == MTLDataTypeUInt;
                     has_contribution |= value.index == wavefront_wire::contribution_mode_constant &&
                                         value.type == MTLDataTypeBool;
+                    has_count |= value.index == wavefront_wire::queued_slots_constant &&
+                                 value.type == MTLDataTypeBool;
                     has_enhanced |= value.index == wavefront_wire::enhanced_mode_constant &&
                                     value.type == MTLDataTypeBool;
                 }
-                if (!has_layout || (required.events && !has_events) ||
+                if ((config.profile_stages &&
+                     ([required.entry isEqualToString:@"rypath_wavefront_reset"] ||
+                      [required.entry isEqualToString:@"rypath_wavefront_prepare_refill"]) &&
+                     !has_count) ||
+                    !has_layout || (required.events && !has_events) ||
                     (frame_area_contribution_family(config.area_path_domain) &&
                      !has_contribution) ||
                     (config.area_path_domain == FrameAreaPathDomain::enhanced && !has_enhanced))
@@ -3229,7 +3235,20 @@ struct FrameSession::Impl {
             return metal::load_pipeline(r.device, library, name, error, intersection,
                                         policy_constants);
         };
-        wavefront->reset = load(@"rypath_wavefront_reset");
+        // Keep the count constant out of the shade pipeline specialization.
+        MTLFunctionConstantValues *count_constants = [policy_constants copy];
+        if (count_constants == nil)
+            return "Wavefront count specialization constants allocation failed";
+        const bool count_slots = config.profile_stages && r.parameters.packet_transport != 0 &&
+                                 config.packet_layout == FramePacketLayout::packed &&
+                                 config.packet_events == 1;
+        [count_constants setConstantValue:&count_slots
+                                     type:MTLDataTypeBool
+                                  atIndex:wavefront_wire::queued_slots_constant];
+        const auto load_count = [&](NSString *name) {
+            return metal::load_pipeline(r.device, library, name, error, nil, count_constants);
+        };
+        wavefront->reset = load_count(@"rypath_wavefront_reset");
         if (wavefront->reset == nil)
             return error;
         if (frame_pair_compaction_enabled(config)) {
@@ -3243,7 +3262,7 @@ struct FrameSession::Impl {
         wavefront->initialize = load(@"rypath_wavefront_initialize");
         if (wavefront->initialize == nil)
             return error;
-        wavefront->prepare_refill = load(@"rypath_wavefront_prepare_refill");
+        wavefront->prepare_refill = load_count(@"rypath_wavefront_prepare_refill");
         if (wavefront->prepare_refill == nil)
             return error;
         wavefront->refill = load(@"rypath_wavefront_refill");
@@ -4248,7 +4267,7 @@ struct FrameSession::Impl {
         bool area_reset = true, area_finalizing = false;
         std::uint32_t leaf_completed = 0, leaf_null_completed = 0;
         std::optional<std::uint32_t> leaf_admitted_work_count;
-        std::uint64_t pending_cached_evaluations = 0;
+        std::uint64_t pending_cached_evaluations = 0, leaf_packet_step_invocations = 0;
         MetalRenderScene::Impl *renderer = nullptr; // retained by frame's resource lease
         FrameConfig config;
         wire::Parameters parameters{};
@@ -4260,7 +4279,7 @@ struct FrameSession::Impl {
         double previous_gpu_end = 0, last_encode_seconds = 0;
 
         void record_work(id<MTLCommandBuffer> command, std::uint64_t completed,
-                         std::uint32_t active) {
+                         std::uint32_t active, std::uint64_t packet_step_invocations = 0) {
             if (!config.profile_stages)
                 return;
             const char *kind = !history ? "independent" : "fresh";
@@ -4287,7 +4306,8 @@ struct FrameSession::Impl {
             previous_gpu_end = end;
             std::lock_guard lock(frame->info_mutex);
             add_frame_work(frame->info.path_work, kind, index, area_finalizing ? 0 : config.quantum,
-                           completed, active, end - begin, gap, last_encode_seconds, valid);
+                           completed, active, end - begin, gap, last_encode_seconds, valid,
+                           packet_step_invocations);
         }
 
         bool area_failed() const {
@@ -4559,10 +4579,21 @@ struct FrameSession::Impl {
                 fail("GPU replay completion counter regressed");
                 return;
             }
+            std::uint64_t packet_step_delta = 0;
+            if (config.profile_stages && parameters.packet_transport != 0 &&
+                config.packet_layout == FramePacketLayout::packed && config.packet_events == 1) {
+                const auto queued =
+                    (std::uint64_t(counters.queued_slots_hi) << 32) | counters.queued_slots_lo;
+                if (!frame_packet_step_delta(queued, counters.null_completed, compact_pairs,
+                                             leaf_packet_step_invocations, packet_step_delta)) {
+                    fail("GPU packet step invocation counter regressed or underflowed");
+                    return;
+                }
+            }
             record_work(command,
                         (counters.completed - leaf_completed) -
                             (counters.null_completed - leaf_null_completed),
-                        counters.current);
+                        counters.current, packet_step_delta);
             {
                 std::lock_guard lock(frame->info_mutex);
                 frame->info.completed_evaluations +=
@@ -4620,6 +4651,7 @@ struct FrameSession::Impl {
                 variant = 0;
                 leaf_completed = 0;
                 leaf_null_completed = 0;
+                leaf_packet_step_invocations = 0;
                 leaf_admitted_work_count.reset();
                 launch();
                 return;
@@ -4642,6 +4674,10 @@ struct FrameSession::Impl {
                     auto &work = frame->info.path_work;
                     if (!work.requested) {
                         work.requested = true;
+                        work.packet_step_invocations_supported =
+                            parameters.packet_transport != 0 &&
+                            config.packet_layout == FramePacketLayout::packed &&
+                            config.packet_events == 1;
                         work.status = "available: command-level path passes";
                         work.state_pool_bytes =
                             b.scalar_state.length + b.packet_state.length + b.packet_hot.length +
