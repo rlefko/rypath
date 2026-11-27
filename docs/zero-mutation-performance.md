@@ -90,6 +90,36 @@ evaluated four maps and combined five candidates.
 These short means measure rendering and reconstruction through completion.
 The larger history and variance changes require separate image checks.
 
+## Spatial cost and remaining fresh work
+
+A separate Release run on `d9ffd80` split each GPU stage for timing. Each arm
+used four warmups and one measured static frame at native 1080p. The columns
+below sum GPU command intervals in each phase. The two spatial columns use
+the exhaustive and one-map estimators respectively.
+
+| Scene | Fresh, one map (ms) | Four spatial maps (ms) | One spatial map (ms) | Fresh path-step calls |
+| --- | ---: | ---: | ---: | ---: |
+| Cornell | 256.9 | 542.9 | 139.3 | 4,215,343 |
+| Prism | 291.7 | 917.5 | 237.4 | 5,099,167 |
+| Pavilion day | 628.2 | 1,819.4 | 415.9 | 5,258,782 |
+| Pavilion night | 657.5 | 1,804.3 | 425.3 | 5,258,290 |
+
+Both estimators executed the same number of fresh path steps on each scene.
+The measured one-map spatial phase took 23–26% of the four-map phase.
+Even fresh discovery alone exceeded the complete-frame budgets by 5.1–6.6×.
+The dominant kernel includes ray queries, scattering, spectral evaluation
+and reservoir state updates. Its duration cannot separate those costs.
+An uninstrumented short Cornell run measured 433.8 ms of GPU time inside a
+440.7 ms complete frame. Readback and file encoding occur after that interval.
+
+These runs used the native triangle path on the M4 Max. Host Release code
+uses `-O3`, and the production Metal transport shader uses strict floating
+point and `-O1` to preserve nested coating evaluations. Metal shader validation
+and capture were disabled for the budget runs. A further execution experiment
+would specialize the current shading event for a mixed scene's supported
+materials and measure native register allocation, spill storage, and full
+frame time. The whole-scene diffuse specialization above only covers Cornell.
+
 ## Reconstruction and confidence
 
 Each diagnostic submits the same retained raw frame to signed reconstruction
