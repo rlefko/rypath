@@ -15,7 +15,7 @@ namespace {
 using namespace rypath;
 namespace w = render_wire;
 namespace wf = wavefront_wire;
-static_assert(wf::contract == 17 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 104);
+static_assert(wf::contract == 18 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 104);
 constexpr unsigned variants = 16, guard = 256, instances_count = 136;
 void need(bool ok, const std::string &why) {
     if (!ok)
@@ -391,7 +391,7 @@ int run(const std::filesystem::path &path) {
     auto discovery_finish =
         metal::load_pipeline(device, library, @"rypath_enhanced_discovery_finish", error);
     need(discovery_finish != nil, error);
-    constexpr unsigned discovery_count = 6, discovery_words = 32, enhanced_bytes = 120;
+    constexpr unsigned discovery_count = 6, discovery_words = 36, enhanced_bytes = 128;
     std::array<id<MTLBuffer>, 7> d{};
     d[0] = allocate(sizeof(w::Parameters));
     d[1] = allocate(discovery_count * sizeof(wf::Config));
@@ -481,6 +481,16 @@ int run(const std::filesystem::path &path) {
     constexpr unsigned gate2[] = {2, 0, 1, 1, 1, 1};
     const auto f32 = [](unsigned word) { return std::bit_cast<float>(word); };
     const auto bits = [](float value) { return std::bit_cast<unsigned>(value); };
+    const auto exponent = [](unsigned word) { return std::bit_cast<int>(word); };
+    const auto decode = [&](unsigned fraction_word, unsigned exponent_word) {
+        const auto fraction = f32(fraction_word);
+        const auto power = exponent(exponent_word);
+        need((fraction_word == 0 && power == 0) ||
+                 (std::isfinite(fraction) && fraction >= .5f && fraction < 1 && power >= -4096 &&
+                  power <= 4096),
+             "Enhanced discovery Number must retain its normalized mantissa/exponent");
+        return std::ldexp(static_cast<long double>(fraction), power);
+    };
     for (unsigned i = 0; i < discovery_count; ++i) {
         const auto *v = discovered + i * discovery_words;
         const std::string context = "Enhanced discovery fixture=" + std::to_string(i);
@@ -490,7 +500,7 @@ int run(const std::filesystem::path &path) {
                  v[8] == bits(probability[i]) && v[9] == bits(arrival[i]) &&
                  v[10] == bits(direct[i]) && v[11] == unsigned(i < 2) && v[20] == 0 && v[21] == 7 &&
                  v[22] == 0 && v[23] == 0 && v[24] == unsigned(!imported) && v[25] == gate1[i] &&
-                 v[26] == gate2[i] && v[31] == i,
+                 v[26] == gate2[i] && v[31] == i && v[35] == enhanced_bytes,
              context + " actual gate/observation/status/snapshot contract");
         need(v[1] == (imported ? 5u : fresh_slot), context + " request identity");
         const auto &receipt = owned_evaluations[i];
@@ -499,7 +509,7 @@ int run(const std::filesystem::path &path) {
         need(receipt.source.bank == source.bank && receipt.source.pixel == source.pixel &&
                  receipt.result.bank == result.bank && receipt.result.pixel == result.pixel &&
                  bits(receipt.target_h_fraction) == bits(.5f) && receipt.target_h_exponent == 1 &&
-                 receipt.ready == 1 && receipt.reserved == 0,
+                 receipt.ready == 1 && receipt.normalizer_exponent == exponent(v[34]),
              context + " complete owned receipt publishes unit h once after pending validation");
         const unsigned selected = v[2];
         long double expected_sum = 0;
@@ -510,26 +520,27 @@ int run(const std::filesystem::path &path) {
             }
         // At most six positive targets and five ordered additions. These fixed
         // relative epsilon allowances cover scaled FLOAT grouping, not MC bias.
-        const auto close = [&](float actual, long double expected, long double epsilons,
+        const auto close = [&](long double actual, long double expected, long double epsilons,
                                const char *label) {
             const long double tolerance =
                 epsilons * std::numeric_limits<float>::epsilon() * std::abs(expected);
-            need(std::isfinite(actual) &&
-                     std::abs(static_cast<long double>(actual) - expected) <= tolerance,
+            need(std::isfinite(actual) && std::abs(actual - expected) <= tolerance,
                  context + " " + label);
         };
-        close(f32(v[4]), expected_sum, 32, "independent discovery-weighted normalizer");
-        need(v[4] == v[27], context + " finish preserves selected normalizer");
+        close(decode(v[4], v[34]), expected_sum, 32, "independent discovery-weighted normalizer");
+        need(v[4] == v[27] && v[34] == v[33],
+             context + " finish preserves selected scaled normalizer");
         if (imported) {
-            need(selected == 5 && v[13] == null_slot && v[12] == 0,
+            need(selected == 5 && v[13] == null_slot && v[12] == 0 && v[32] == 0 && v[34] == 0,
                  context + " fixed import has no fresh WRS selection");
         } else if (black) {
-            need(selected == null_slot && v[13] == null_slot && v[12] == 0,
+            need(selected == null_slot && v[13] == null_slot && v[12] == 0 && v[32] == 0 &&
+                     v[34] == 0,
                  context + " all-black publishes explicit null");
         } else {
             need(selected < observed[i] && coefficients[selected] > 0 && v[13] == selected,
                  context + " selected atom was actually observed and nonzero");
-            close(f32(v[12]), targets[selected], 8,
+            close(decode(v[12], v[32]), targets[selected], 8,
                   "selected canonical target is alpha, not alpha/a");
         }
         for (unsigned channel = 0; channel < 3; ++channel) {
@@ -552,7 +563,7 @@ int run(const std::filesystem::path &path) {
     }
     std::cout << "6 actual Enhanced sink controls passed: first/second RR cutoff, both survive, "
                  "unit gates, fixed import, all-black null; independent alpha/a normalizer, "
-                 "selected XYZ/target, sensor PDFs and device state120 and owned-record/receipt "
+                 "selected XYZ/target, sensor PDFs and device state128 and owned-record/receipt "
                  "checks; no AS/transport\n";
     return 0;
 }

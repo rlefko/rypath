@@ -16,7 +16,7 @@ inline constexpr bool frame_area_contribution_family(FrameAreaPathDomain domain)
     return domain == FrameAreaPathDomain::contribution || domain == FrameAreaPathDomain::enhanced;
 }
 inline constexpr std::uint32_t frame_area_canonical_version(FrameAreaPathDomain domain) {
-    return domain == FrameAreaPathDomain::enhanced ? 2u : 0u;
+    return domain == FrameAreaPathDomain::enhanced ? 3u : 0u;
 }
 inline constexpr std::uint32_t frame_area_discovery_version(FrameAreaPathDomain domain) {
     return domain == FrameAreaPathDomain::enhanced ? 1u : 0u;

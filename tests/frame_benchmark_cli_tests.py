@@ -426,7 +426,7 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 11
+    assert settings["area_contract"] == 12
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
     for domain in ("summed", "contribution", "enhanced"):
@@ -437,11 +437,12 @@ with tempfile.TemporaryDirectory() as directory:
         selected = json.loads(destination.read_text())["settings"]
         assert selected["requested_area_path_domain"] == selected["area_path_domain"] == domain
         assert selected["effective_area_path_domain"] is None
-        assert selected["canonical_transport_version"] == (2 if domain == "enhanced" else 0)
+        assert selected["canonical_transport_version"] == (3 if domain == "enhanced" else 0)
         assert selected["fresh_discovery_version"] == (1 if domain == "enhanced" else 0)
         assert selected["requested_area_temporal_cache"]
         assert selected["area_temporal_cache"]
-        assert selected["area_target"] == ("quarter-l1-owned-zero-v2" if domain == "enhanced" else "quarter-l1-v1")
+        assert selected["area_target"] == ("quarter-l1-owned-scaled-zero-v3" if domain == "enhanced" else "quarter-l1-v1")
+        assert selected["area_source_mis"] == ("enhanced-confidence-scaled-mis-v3" if domain == "enhanced" else "source-target-mis-v1")
         assert selected["contribution_depth"] is None and selected["contribution_slot_count"] is None
     for contribution_domain in ("contribution", "enhanced"):
         for replay in ("full", "prefix"):
@@ -489,6 +490,6 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 11
+        assert settings["area_contract"] == 12
         assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")

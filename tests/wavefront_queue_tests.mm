@@ -25,9 +25,9 @@ namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
 namespace aw = area_wire;
-static_assert(wf::contract == 17 && sizeof(wf::Contract) == 104 && sizeof(wf::Config) == 64);
+static_assert(wf::contract == 18 && sizeof(wf::Contract) == 104 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 11 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 92);
+static_assert(aw::contract == 12 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 92);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12);
 static_assert(sizeof(enhanced_wire::Record) == 48 && sizeof(enhanced_wire::Reference) == 8 &&
@@ -43,23 +43,23 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(contract_pipeline != nil, why);
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v11 contract allocation");
+    require(contract_buffer != nil, "Area v12 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v11 contract encoder");
+    require(command && encoder, "Area v12 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v11 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v12 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 11 && contract.config_bytes == 92 && contract.history_bytes == 80 &&
-                contract.temporal_bytes == 84 && contract.accumulator_bytes == 96 &&
+    require(contract.version == 12 && contract.config_bytes == 92 && contract.history_bytes == 88 &&
+                contract.temporal_bytes == 92 && contract.accumulator_bytes == 104 &&
                 contract.replay_bytes == 32 && contract.counters_bytes == 112 &&
                 contract.contribution_evaluation_bytes == 16,
-            "Area v11 contract mismatch; stale Area libraries are incompatible");
+            "Area v12 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
@@ -180,6 +180,9 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
                     sizeof(accumulator));
                 require(temporal.confidence == 0 && accumulator.confidence == 0,
                         "Legacy production WRS must not manufacture Enhanced confidence");
+                require(temporal.normalizer_exponent == 0 && temporal.target_exponent == 0 &&
+                            accumulator.score_exponent == 0 && accumulator.target_exponent == 0,
+                        "Legacy production must retain actual FLOAT values with zero exponents");
             }
             for (unsigned id : {aw::contribution_evaluation_id, aw::enhanced_records_id,
                                 aw::enhanced_evaluation_id}) {
@@ -400,7 +403,8 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                             std::bit_cast<std::uint32_t>(owned.target_h_fraction) ==
                                 std::bit_cast<std::uint32_t>(pixel < completed ? .5f : 0.f) &&
                             owned.target_h_exponent == (pixel < completed ? 1 : 0) &&
-                            owned.ready == unsigned(pixel < completed) && owned.reserved == 0,
+                            owned.ready == unsigned(pixel < completed) &&
+                            owned.normalizer_exponent == 0,
                         "Null owner must publish unit h once without changing owned references");
                 std::uint32_t done;
                 std::memcpy(&done, data(wf::done_id) + pixel * sizeof(done), sizeof(done));
@@ -433,7 +437,7 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
             else if (fault == 6)
                 owned[0].ready = 1;
             else if (fault == 7)
-                owned[0].reserved = 1;
+                owned[0].normalizer_exponent = 1;
             else if (fault == 8)
                 owned[0].source.bank = ew::bank_count;
             else if (fault == 9)
@@ -460,7 +464,7 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                 } else if (fault == 13)
                     owned[0].ready = 1;
                 else if (fault == 14)
-                    owned[0].reserved = 1;
+                    owned[0].normalizer_exponent = 1;
                 else if (fault == 15)
                     owned[0].source.bank = ew::bank_count;
                 execute(fault == 4 ? std::initializer_list<Stage>{{advance, 1}}
@@ -502,7 +506,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
     namespace ew = enhanced_wire;
     // Radius16 is the smallest authored reciprocal stencil; this extent
     // gives it a real in-bounds edge without a large scene or more dispatches.
-    constexpr unsigned width = 17, height = 2, pixels = width * height;
+    constexpr unsigned width = 17, height = 3, pixels = width * height;
     constexpr std::size_t guard = 256;
     std::string why;
     const auto load = [&](NSString *name) {
@@ -535,7 +539,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
         pixels * sizeof(aw::History),
         pixels * sizeof(render_wire::Point),
         sizeof(aw::Counters),
-        4 * pixels * sizeof(float),
+        4 * pixels * (sizeof(float) + sizeof(int)),
         pixels * sizeof(cw::Evaluation),
         ew::bank_count * pixels * sizeof(ew::Record),
         pixels * sizeof(ew::Evaluation)};
@@ -586,6 +590,25 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
         int exponent;
         const auto fraction = std::frexp(value, &exponent);
         return std::pair{fraction, exponent};
+    };
+    // Independent wire decoding: no production scaled arithmetic or target
+    // helper participates in the expected MIS/UCW calculations below.
+    const auto number = [](float fraction, int exponent) -> long double {
+        require((std::bit_cast<unsigned>(fraction) == 0 && exponent == 0) ||
+                    (std::isfinite(fraction) && fraction >= .5f && fraction < 1 &&
+                     exponent >= -4096 && exponent <= 4096),
+                "Enhanced serialized Number must be zero or normalized within its domain");
+        return std::ldexp(static_cast<long double>(fraction), exponent);
+    };
+    const auto scalar_near = [&](float fraction, int exponent, long double expected,
+                                 const std::string &label) {
+        const auto actual = number(fraction, exponent);
+        // Unlike signed vector sums, these nonnegative scalar sums have no
+        // cancellation. An absolute floor would incorrectly admit a lost tiny Z.
+        const auto tolerance = 64.L * std::numeric_limits<float>::epsilon() * std::abs(expected);
+        require(std::abs(actual - expected) <= tolerance,
+                label + ": fraction=" + std::to_string(fraction) +
+                    " exponent=" + std::to_string(exponent));
     };
     const auto descriptor = [](unsigned pixel, unsigned revision) {
         if (pixel == 0)
@@ -662,7 +685,9 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
                 "Area prepare must reset both response receipts");
         leaf[pixel] = xyz;
         requests[pixel].selected_slot = slot;
-        requests[pixel].normalizer = fresh_Z;
+        const auto [Z_fraction, Z_exponent] = scale(fresh_Z);
+        requests[pixel].normalizer = Z_fraction;
+        evaluations[pixel].normalizer_exponent = Z_exponent;
         requests[pixel].ready = 1;
         const auto [fraction, exponent] = scale(h);
         evaluations[pixel].target_h_fraction = fraction;
@@ -682,7 +707,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
             require(same(leaf[p], source[p].xyz) && requests[p].ready == 1 &&
                         requests[p].selected_slot == source[p].selected_slot &&
                         requests[p].normalizer == 0 && evaluations[p].ready == 1 &&
-                        evaluations[p].reserved == 0 &&
+                        evaluations[p].normalizer_exponent == 0 &&
                         same(evaluations[p].source, source[p].record) &&
                         same(evaluations[p].result, source[p].record) &&
                         evaluations[p].target_h_fraction == source[p].target_h_fraction &&
@@ -706,6 +731,8 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
     dispatch(finish);
     for (unsigned pixel = 0; pixel < pixels; ++pixel) {
         require(temporal[pixel].confidence == 1 && temporal[pixel].normalizer == 0 &&
+                    temporal[pixel].normalizer_exponent == 0 && temporal[pixel].target == 0 &&
+                    temporal[pixel].target_exponent == 0 &&
                     temporal[pixel].record.bank == ew::temporal_bank &&
                     temporal[pixel].record.pixel == pixel &&
                     same(record_at(temporal[pixel].record), ew::empty_record()),
@@ -763,31 +790,33 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
             unsigned expected_M = center.confidence;
             const auto add = [&](const aw::Temporal &source, long double score) {
                 expected_Z += score;
-                if (source.target > 0) {
-                    expected_xyz[0] += score * source.xyz.x / source.target;
-                    expected_xyz[1] += score * source.xyz.y / source.target;
-                    expected_xyz[2] += score * source.xyz.z / source.target;
+                const auto target = number(source.target, source.target_exponent);
+                if (target > 0) {
+                    expected_xyz[0] += score * source.xyz.x / target;
+                    expected_xyz[1] += score * source.xyz.y / target;
+                    expected_xyz[2] += score * source.xyz.z / target;
                 }
             };
             for (unsigned direction = 1; direction <= 4; ++direction) {
                 const auto s = neighbor(p, direction, duplicate);
                 if (s == p)
-                    add(center, static_cast<long double>(center.normalizer) / 4);
+                    add(center, number(center.normalizer, center.normalizer_exponent) / 4);
                 else {
                     const auto &other = frozen[s];
                     expected_M += other.confidence;
                     const long double denominator = center.confidence + other.confidence;
-                    add(center, static_cast<long double>(center.normalizer) * center.confidence /
-                                    denominator / 4);
-                    add(other, static_cast<long double>(other.normalizer) * other.confidence /
-                                   denominator / 4);
+                    add(center, number(center.normalizer, center.normalizer_exponent) *
+                                    center.confidence / denominator / 4);
+                    add(other, number(other.normalizer, other.normalizer_exponent) *
+                                   other.confidence / denominator / 4);
                 }
             }
             require(history[p].confidence == expected_M && history[p].valid == 1 &&
                         history[p].record.bank == 1u - config.history_source_bank &&
                         history[p].record.pixel == p,
                     "Spatial M must count structural slots and normalize destination bank");
-            near(history[p].normalizer, expected_Z, "Spatial independent scalar MIS sum");
+            scalar_near(history[p].normalizer, history[p].normalizer_exponent, expected_Z,
+                        "Spatial independent scalar MIS sum");
             near(raw[p].x, expected_xyz[0], "Spatial independent signed X readout");
             near(raw[p].y, expected_xyz[1], "Spatial independent signed Y readout");
             near(raw[p].z, expected_xyz[2], "Spatial independent signed Z readout");
@@ -804,6 +833,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
                         matched |= history[p].selected_slot == frozen[s].selected_slot &&
                                    same(history[p].xyz, frozen[s].xyz) &&
                                    history[p].target == frozen[s].target &&
+                                   history[p].target_exponent == frozen[s].target_exponent &&
                                    history[p].target_h_fraction == frozen[s].target_h_fraction &&
                                    history[p].target_h_exponent == frozen[s].target_h_exponent &&
                                    same(record_at(history[p].record), frozen_records[s]);
@@ -826,8 +856,10 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
     bind();
     auto *old = reinterpret_cast<aw::History *>(data(aw::history_source_id));
     for (unsigned p = 0; p < pixels; ++p) {
-        require(old[p].confidence == (p % width > 0 && p % width + 1 < width ? 4u : 3u),
-                "Cold adjacent M3/M4 witness");
+        require(old[p].confidence == 1u + unsigned(p % width > 0) +
+                                         unsigned(p % width + 1 < width) + unsigned(p / width > 0) +
+                                         unsigned(p / width + 1 < height),
+                "Cold adjacent confidence counts in-bounds slots");
         old[p].confidence = 40 + p;
         std::memset(&record_at(old[p].record), 0xff, sizeof(ew::Record));
     }
@@ -870,7 +902,8 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
     }
     dispatch(merge);
     for (unsigned p = 0; p < pixels; ++p)
-        near(accumulator[p].state.score_sum, temporal_Z[p], "Temporal cap-before-MIS coefficient");
+        scalar_near(accumulator[p].state.score_sum, accumulator[p].score_exponent, temporal_Z[p],
+                    "Temporal cap-before-MIS coefficient");
     config.phase = aw::temporal;
     config.candidate = 1;
     dispatch(prepare);
@@ -881,9 +914,12 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
     dispatch(finish);
     for (unsigned p = 0; p < pixels; ++p) {
         require(temporal[p].confidence == 21 && temporal[p].record.bank == ew::temporal_bank &&
-                    temporal[p].record.pixel == p && temporal[p].target == fresh_alpha[p],
+                    temporal[p].record.pixel == p,
                 "Warm temporal retains capped-null history confidence and current target");
-        near(temporal[p].normalizer, temporal_Z[p], "Warm temporal independent normalizer");
+        scalar_near(temporal[p].target, temporal[p].target_exponent, fresh_alpha[p],
+                    "Warm temporal selected canonical target");
+        scalar_near(temporal[p].normalizer, temporal[p].normalizer_exponent, temporal_Z[p],
+                    "Warm temporal independent normalizer");
         if (!(p & 1u))
             require(
                 temporal[p].target_h_fraction == scale(fresh_h[p]).first &&
@@ -931,37 +967,40 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
         if (accept) {
             const auto alpha = proxy(leaf[p], p == 0 ? fresh_h[p] : fresh_h[p] * 2);
             const auto &source = before_mutation[p];
-            require(alpha > source.target, "Accepted MH fixture must be strictly uphill");
+            const auto source_alpha = number(source.target, source.target_exponent);
+            const auto source_Z = number(source.normalizer, source.normalizer_exponent);
+            require(alpha > source_alpha, "Accepted MH fixture must be strictly uphill");
             // Z is alpha*UCW. Uphill forward acceptance is 1, while the
             // represented reverse probability is the rounded 24-bit mantissa
             // ratio times the EXACT power-of-two exponent difference. Derive
             // that probability independently, without production MIS helpers.
             int old_exponent, new_exponent;
-            const long double old_fraction = std::frexp(source.target, &old_exponent);
+            const long double old_fraction = std::frexp(source_alpha, &old_exponent);
             const long double new_fraction = std::frexp(alpha, &new_exponent);
             const float rounded_ratio = static_cast<float>(old_fraction / new_fraction);
             const long double reverse_probability =
                 std::ldexp(static_cast<long double>(rounded_ratio), old_exponent - new_exponent);
             require(reverse_probability > 0 && reverse_probability < 1,
                     "Represented reverse MH probability must be nontrivial");
-            const auto expected_Z = static_cast<long double>(source.normalizer) *
-                                    reverse_probability * alpha / source.target;
+            const auto expected_Z = source_Z * reverse_probability * alpha / source_alpha;
             // Production materializes its correction with intermediate FLOAT
             // rounding; the existing 64-epsilon bound includes those 3 operations.
-            near(temporal[p].normalizer, expected_Z, "Accepted MH represented-dyadic normalizer");
-            const auto wrong_Z =
-                static_cast<long double>(source.normalizer) * alpha / source.target;
+            scalar_near(temporal[p].normalizer, temporal[p].normalizer_exponent, expected_Z,
+                        "Accepted MH represented-dyadic normalizer");
+            const auto wrong_Z = source_Z * alpha / source_alpha;
             require(std::abs(wrong_Z - expected_Z) > 1024.L *
                                                          std::numeric_limits<float>::epsilon() *
                                                          std::max(1.L, std::abs(expected_Z)),
                     "Negative control must reject treating stored Z as UCW");
             const auto h = scale(p == 0 ? fresh_h[p] : fresh_h[p] * 2);
             require(same(temporal[p].payload, proposed_payloads[p]) &&
-                        same(temporal[p].xyz, leaf[p]) && temporal[p].target == alpha &&
+                        same(temporal[p].xyz, leaf[p]) &&
                         temporal[p].target_h_fraction == h.first &&
                         temporal[p].target_h_exponent == h.second &&
                         same(record_at(temporal[p].record), descriptor(p, 1)),
                     "Accepted mutation must publish its actual candidate tuple");
+            scalar_near(temporal[p].target, temporal[p].target_exponent, alpha,
+                        "Accepted mutation scaled canonical target");
         } else
             require(same(temporal[p], before_mutation[p]) &&
                         same(record_at(temporal[p].record), before_records[p]),
@@ -969,6 +1008,106 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
     }
     spatial(false);
     spatial(true); // Two identical valid reciprocal offsets are two structural slots.
+
+    // Reproduce the native Pavilion operands in the ACTUAL production spatial
+    // kernels. Only the center draw is positive; every surrounding null draw
+    // remains a structurally present M21 proposal. Its inverse evaluation is
+    // positive, so center attenuation cannot be removed from the denominator.
+    // The second run shifts Z by another 128 exponent bits: a final FLOAT
+    // readout rounds to zero, but the reusable selected history must stay positive.
+    constexpr unsigned owner = width + 1;
+    const float evidence_Z = std::bit_cast<float>(0x03d76154u);
+    const float evidence_alpha = std::bit_cast<float>(0x33f892fcu);
+    const float evidence_inverse = std::bit_cast<float>(0x3b258c2cu);
+    constexpr float owner_h = .0625f, inverse_h = 0x1p-64f;
+    const render_wire::Point owner_xyz{4 * (evidence_alpha - 1e-6f * owner_h), 0, 0};
+    const render_wire::Point inverse_xyz{4 * evidence_inverse, 0, 0};
+    require(std::bit_cast<unsigned>(proxy(owner_xyz, owner_h)) == 0x33f892fcu &&
+                std::bit_cast<unsigned>(proxy(inverse_xyz, inverse_h)) == 0x3b258c2cu,
+            "Pavilion fixture XYZ/h must reproduce the retained canonical target operands");
+    for (int Z_shift : {0, -128}) {
+        config.stencil = aw::adjacent_stencil;
+        config.offset_x[0] = config.offset_x[1] = 0;
+        config.offset_y[0] = config.offset_y[1] = 0;
+        config.phase = aw::spatial;
+        config.candidate = 0;
+        for (unsigned p = 0; p < pixels; ++p) {
+            temporal[p] = {};
+            temporal[p].payload = rypath_replay::fresh({p, 17, 19, 23, 29});
+            temporal[p].selected_slot = cw::enhanced_null_slot;
+            temporal[p].confidence = 21;
+            temporal[p].record = {ew::temporal_bank, p};
+            temporal[p].target_h_fraction = .5f;
+            temporal[p].target_h_exponent = 1;
+            // Null atoms must not read the poisoned record bytes.
+            std::memset(&record_at(temporal[p].record), 0xff, sizeof(ew::Record));
+        }
+        const auto [Z_fraction, Z_exponent] = scale(evidence_Z);
+        const auto [alpha_fraction, alpha_exponent] = scale(evidence_alpha);
+        const auto [h_fraction, h_exponent] = scale(owner_h);
+        auto &center = temporal[owner];
+        center.normalizer = Z_fraction;
+        center.normalizer_exponent = Z_exponent + Z_shift;
+        center.target = alpha_fraction;
+        center.target_exponent = alpha_exponent;
+        center.xyz = owner_xyz;
+        center.selected_slot = 1;
+        center.target_h_fraction = h_fraction;
+        center.target_h_exponent = h_exponent;
+        record_at(center.record) = descriptor(owner, 2);
+        const auto frozen_center = center;
+        dispatch(spatial_begin);
+        for (unsigned direction = 1; direction <= 4; ++direction) {
+            config.candidate = direction;
+            dispatch(prepare);
+            for (unsigned p = 0; p < pixels; ++p) {
+                const bool center_import = neighbor(p, direction, false) == owner;
+                response(p, center_import ? inverse_xyz : render_wire::Point{},
+                         center_import ? inverse_h : 1.f,
+                         center_import ? 1u : cw::enhanced_null_slot);
+            }
+            dispatch(merge);
+        }
+        require(accumulator[owner].logical_count == 4 && accumulator[owner].confidence == 84 &&
+                    std::bit_cast<unsigned>(accumulator[owner].state.score_sum) == 0 &&
+                    accumulator[owner].score_exponent == 0,
+                "Tiny-Z four null neighbors must retain four structural M21 domains");
+        config.phase = aw::spatial_final;
+        config.candidate = 0;
+        dispatch(finalize);
+        const auto *history =
+            reinterpret_cast<const aw::History *>(data(aw::history_destination_id));
+        const auto &selected = history[owner];
+        const long double expected_Z =
+            std::ldexp(static_cast<long double>(evidence_Z), Z_shift) * evidence_alpha /
+            (static_cast<long double>(evidence_alpha) + evidence_inverse);
+        require(expected_Z > 0 && expected_Z < std::numeric_limits<float>::min() &&
+                    selected.confidence == 105 && selected.selected_slot == 1 &&
+                    selected.normalizer >= .5f && selected.normalizer < 1 &&
+                    selected.normalizer_exponent < -125 && selected.target == alpha_fraction &&
+                    selected.target_exponent == alpha_exponent && same(selected.xyz, owner_xyz) &&
+                    same(selected.payload, frozen_center.payload) &&
+                    same(record_at(selected.record), descriptor(owner, 2)),
+                "Tiny positive history must survive four reciprocal denominators with M105");
+        scalar_near(selected.normalizer, selected.normalizer_exponent, expected_Z,
+                    "Pavilion independent subnormal-range spatial normalizer");
+        require(raw[owner].y == 0 && raw[owner].z == 0 && std::isfinite(raw[owner].x),
+                "Tiny-Z frame must complete with finite signed vector readout");
+        if (Z_shift == 0) {
+            // Gradual-underflow final readout permits an absolute half-unit
+            // rounding term; Z itself above is still checked purely relatively.
+            const long double expected_x = expected_Z * owner_xyz.x / evidence_alpha;
+            const auto tolerance = 64.L * std::numeric_limits<float>::epsilon() * expected_x +
+                                   std::numeric_limits<float>::denorm_min();
+            require(raw[owner].x > 0 &&
+                        std::abs(static_cast<long double>(raw[owner].x) - expected_x) <= tolerance,
+                    "Final subnormal readout must agree with independent scalar UCW");
+        } else
+            require(std::bit_cast<unsigned>(raw[owner].x) == 0,
+                    "Below final FLOAT range rounds to zero without nulling selected history");
+        require(same(temporal[owner], frozen_center),
+                "Tiny-Z spatial reuse must preserve immutable temporal input");
+    }
 }
 int run(const std::filesystem::path &path) {
     auto device = MTLCreateSystemDefaultDevice();
@@ -1179,16 +1318,17 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v17", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v18", why);
     require(contract_pipeline != nil,
-            "Wavefront v17 contract unavailable; rebuild the metallib: " + why);
+            "Wavefront v18 contract unavailable; rebuild the metallib: " + why);
     for (NSString *stale in @[
              @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
              @"rypath_wavefront_contract_v13", @"rypath_wavefront_contract_v14",
-             @"rypath_wavefront_contract_v15", @"rypath_wavefront_contract_v16"
+             @"rypath_wavefront_contract_v15", @"rypath_wavefront_contract_v16",
+             @"rypath_wavefront_contract_v17"
          ])
         require([library newFunctionWithName:stale] == nil,
-                "Stale Wavefront stage entry must not advertise the v17 ABI");
+                "Stale Wavefront stage entry must not advertise the v18 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");
@@ -1211,7 +1351,7 @@ int run(const std::filesystem::path &path) {
                 history_contract.dispatch_bytes == 12 &&
                 history_contract.contribution_state_bytes == 80 &&
                 history_contract.contribution_state_alignment == 4 &&
-                history_contract.enhanced_state_bytes == 120 &&
+                history_contract.enhanced_state_bytes == 128 &&
                 history_contract.enhanced_state_alignment == 4 &&
                 history_contract.enhanced_record_bytes == 48 &&
                 history_contract.enhanced_evaluation_bytes == 32,

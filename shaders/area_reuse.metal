@@ -6,6 +6,7 @@
 #include "../src/area_wire.h"
 #include "../src/enhanced_confidence_shared.h"
 #include "../src/enhanced_path_shared.h"
+#include "../src/enhanced_resampling_decision_shared.h"
 #include "../src/mutation_shared.h"
 #include "../src/reuse_mis_shared.h"
 namespace aw = rypath::area_wire;
@@ -16,6 +17,10 @@ namespace mutation = rypath_mutation;
 namespace reuse_mis = rypath_reuse_mis;
 namespace enhanced_path = rypath_enhanced_path;
 namespace confidence = rypath_enhanced_confidence;
+namespace enhanced_reservoir = rypath_enhanced_reservoir;
+namespace enhanced_entropy = rypath_enhanced_resampling_decision;
+using AreaNumber = enhanced_reservoir::Number;
+using AreaNumberResult = enhanced_reservoir::NumberResult;
 struct AreaArguments {
     device const aw::Config *config [[id(aw::config_id)]];
     device rypath_replay::ReplayState *replay [[id(aw::replay_id)]];
@@ -26,7 +31,7 @@ struct AreaArguments {
     device aw::History *history_destination [[id(aw::history_destination_id)]];
     device wire::Point *raw_xyz [[id(aw::raw_xyz_id)]];
     device aw::Counters *counters [[id(aw::failure_id)]];
-    device float *cross_targets [[id(aw::cross_targets_id)]];
+    device uchar *cross_targets [[id(aw::cross_targets_id)]];
     device cw::Evaluation *contribution_evaluation [[id(aw::contribution_evaluation_id)]];
     device ew::Record *enhanced_records [[id(aw::enhanced_records_id)]];
     device ew::Evaluation *enhanced_evaluation [[id(aw::enhanced_evaluation_id)]];
@@ -104,6 +109,45 @@ inline bool area_contribution(constant AreaArguments &a) {
 inline bool area_enhanced(constant AreaArguments &a) {
     return a.config->contribution_mode == cw::enhanced;
 }
+// Legacy carriers hold the ORIGINAL FLOAT in fraction and exponent0. Only
+// Enhanced carriers are normalized Numbers; legacy never enters scaled math.
+inline AreaNumberResult area_legacy(reservoir::ScalarResult x) { return {{x.value, 0}, x.status}; }
+template <typename Source> inline AreaNumber area_Z(const thread Source &s) {
+    return {s.normalizer, s.normalizer_exponent};
+}
+template <typename Source> inline AreaNumber area_T(const thread Source &s) {
+    return {s.target, s.target_exponent};
+}
+inline AreaNumber area_S(const thread aw::Accumulator &s) {
+    return {s.state.score_sum, s.score_exponent};
+}
+inline bool area_number_valid(constant AreaArguments &a, AreaNumber x) {
+    return area_enhanced(a) ? enhanced_reservoir::valid_number(x)
+                            : x.exponent == 0 && reservoir::normal_or_zero(x.fraction) &&
+                                  (as_type<uint>(x.fraction) & 0x80000000u) == 0;
+}
+inline uint4 area_numbers(AreaNumber x, AreaNumber y) {
+    return {as_type<uint>(x.fraction), as_type<uint>(x.exponent), as_type<uint>(y.fraction),
+            as_type<uint>(y.exponent)};
+}
+inline enhanced_reservoir::State area_selector(const thread aw::Accumulator &s) {
+    return {area_S(s),
+            {s.state.selected_target, s.target_exponent},
+            s.state.candidate_count,
+            s.state.selected_index,
+            s.state.status};
+}
+inline void area_cross_store(constant AreaArguments &a, ulong index, AreaNumber x) {
+    if (area_enhanced(a))
+        reinterpret_cast<device AreaNumber *>(a.cross_targets)[index] = x;
+    else
+        reinterpret_cast<device float *>(a.cross_targets)[index] = x.fraction;
+}
+inline AreaNumber area_cross_load(constant AreaArguments &a, ulong index) {
+    return area_enhanced(a)
+               ? reinterpret_cast<device AreaNumber *>(a.cross_targets)[index]
+               : AreaNumber{reinterpret_cast<device float *>(a.cross_targets)[index], 0};
+}
 inline bool area_confidence_valid(constant AreaArguments &a, uint value) {
     return area_enhanced(a) ? confidence::valid_source({value, 1}) : value == 0;
 }
@@ -157,11 +201,17 @@ inline bool area_copy_record(constant AreaArguments &a, uint pixel, uint slot, e
 inline uint area_count(constant AreaArguments &a, const thread aw::Accumulator &accumulator) {
     return area_enhanced(a) ? accumulator.logical_count : accumulator.state.candidate_count;
 }
-inline bool area_selected_values(constant AreaArguments &a, uint slot, float normalizer,
-                                 float target, wire::Point xyz) {
+inline bool area_selected_values(constant AreaArguments &a, uint slot, AreaNumber normalizer,
+                                 AreaNumber target, wire::Point xyz) {
+    if (!area_number_valid(a, normalizer) || !area_number_valid(a, target))
+        return false;
     if (area_null(a, slot))
-        return as_type<uint>(normalizer) == 0 && as_type<uint>(target) == 0 && area_zero(xyz);
-    return reservoir::positive_normal(normalizer) && reservoir::positive_normal(target);
+        return enhanced_reservoir::zero(normalizer) && enhanced_reservoir::zero(target) &&
+               area_zero(xyz);
+    return area_enhanced(a)
+               ? enhanced_reservoir::positive(normalizer) && enhanced_reservoir::positive(target)
+               : reservoir::positive_normal(normalizer.fraction) &&
+                     reservoir::positive_normal(target.fraction);
 }
 inline uint area_neighbor_direction(constant AreaArguments &a, uint pixel, uint direction) {
     if (a.config->stencil == aw::reciprocal16_stencil)
@@ -209,7 +259,7 @@ inline bool area_history(constant AreaArguments &a, uint pixel, const thread aw:
         (area_enhanced(a) &&
          (history.record.bank != a.config->history_source_bank || history.record.pixel != pixel)) ||
         !area_slot_valid(a, history.selected_slot) || !rypath_replay::valid(history.payload) ||
-        !area_selected_values(a, history.selected_slot, history.normalizer, history.target,
+        !area_selected_values(a, history.selected_slot, area_Z(history), area_T(history),
                               history.xyz)) {
         AREA_DETAIL(a, aw::invalid_payload, 0,
                     uint4(as_type<uint>(history.normalizer), as_type<uint>(history.target),
@@ -222,7 +272,7 @@ inline bool area_history(constant AreaArguments &a, uint pixel, const thread aw:
             {history.xyz.x, history.xyz.y, history.xyz.z}, a.config->target_scale,
             {history.target_h_fraction, history.target_h_exponent});
         if (target.status != reservoir::Status::ok ||
-            as_type<uint>(target.value) != as_type<uint>(history.target)) {
+            !enhanced_reservoir::same(target.value, area_T(history))) {
             AREA_FAIL(a, aw::invalid_payload);
             return false;
         }
@@ -249,11 +299,11 @@ inline bool area_temporal_confidence(constant AreaArguments &a, uint pixel,
     return true;
 }
 inline bool area_target(constant AreaArguments &a, uint pixel, wire::Point xyz,
-                        thread float &target, reuse_mis::Scaled h = {.5f, 1}) {
+                        thread AreaNumber &target, reuse_mis::Scaled h = {.5f, 1}) {
     const auto checked =
-        area_enhanced(a)
-            ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale, h)
-            : reuse_mis::importance_target(xyz.x, xyz.y, xyz.z, a.config->target_scale);
+        area_enhanced(a) ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale, h)
+                         : area_legacy(reuse_mis::importance_target(xyz.x, xyz.y, xyz.z,
+                                                                    a.config->target_scale));
     if (checked.status != reservoir::Status::ok) {
         AREA_DETAIL(a, aw::invalid_value, checked.status,
                     as_type<uint4>(float4(xyz.x, xyz.y, xyz.z, a.config->target_scale)));
@@ -286,10 +336,12 @@ inline bool area_owned_result(constant AreaArguments &a, uint pixel, thread ew::
     pending.target_h_fraction = 0;
     pending.target_h_exponent = 0;
     pending.ready = 0;
+    pending.normalizer_exponent = 0;
     const bool fresh = request.requested_slot == reservoir::no_selection;
     record = receipt.result;
     h = {receipt.target_h_fraction, receipt.target_h_exponent};
-    if (receipt.ready != 1 || receipt.reserved != 0 || !area_slot_valid(a, request.selected_slot) ||
+    if (receipt.ready != 1 || (!fresh && receipt.normalizer_exponent != 0) ||
+        !area_slot_valid(a, request.selected_slot) ||
         !rypath_enhanced_runtime::pending_owned(pending, a.config->pixel_count, pixel, fresh) ||
         !area_owned_value_valid(a, request.selected_slot, record, h)) {
         AREA_FAIL(a, aw::invalid_payload);
@@ -316,7 +368,8 @@ inline bool area_pending_evaluation(constant AreaArguments &a, uint pixel, uint 
     const auto e = a.contribution_evaluation[pixel];
     if (!area_slot_valid(a, requested_slot) || e.requested_slot != requested_slot ||
         e.selected_slot != reservoir::no_selection || as_type<uint>(e.normalizer) != 0 ||
-        e.ready != 0) {
+        e.ready != 0 ||
+        (area_enhanced(a) && a.enhanced_evaluation[pixel].normalizer_exponent != 0)) {
         AREA_DETAIL(
             a, aw::invalid_payload, 0,
             uint4(e.requested_slot, e.selected_slot, as_type<uint>(e.normalizer), e.ready),
@@ -325,32 +378,34 @@ inline bool area_pending_evaluation(constant AreaArguments &a, uint pixel, uint 
     }
     return true;
 }
-inline bool area_evaluated_slot(constant AreaArguments &a, uint pixel, bool fresh, float target,
-                                thread uint &selected_slot, thread float &normalizer) {
+inline bool area_evaluated_slot(constant AreaArguments &a, uint pixel, bool fresh,
+                                AreaNumber target, thread uint &selected_slot,
+                                thread AreaNumber &normalizer) {
     selected_slot = 0;
     normalizer = target;
     if (!area_contribution(a))
-        return true; // Default does not touch its one-record sentinel.
+        return true;
     const auto e = a.contribution_evaluation[pixel];
+    const int exponent = area_enhanced(a) ? a.enhanced_evaluation[pixel].normalizer_exponent : 0;
+    const AreaNumber received{e.normalizer, exponent};
     const bool request_valid =
         fresh ? e.requested_slot == reservoir::no_selection
               : area_slot_valid(a, e.requested_slot) && e.requested_slot == e.selected_slot;
     const bool fresh_null = fresh && area_null(a, e.selected_slot);
     const bool normalizer_valid =
-        fresh_null ? as_type<uint>(e.normalizer) == 0 && as_type<uint>(target) == 0
-        : fresh    ? reservoir::positive_normal(e.normalizer) &&
-                      (area_enhanced(a) || e.normalizer >= target)
-                : as_type<uint>(e.normalizer) == 0;
+        fresh_null ? enhanced_reservoir::zero(received) && enhanced_reservoir::zero(target)
+        : fresh    ? area_enhanced(a)
+                         ? enhanced_reservoir::positive(received)
+                         : reservoir::positive_normal(e.normalizer) && e.normalizer >= target.fraction
+                   : enhanced_reservoir::zero(received);
     if (e.ready != 1 || !area_slot_valid(a, e.selected_slot) || !request_valid ||
-        (area_null(a, e.selected_slot) && as_type<uint>(target) != 0) || !normalizer_valid) {
-        AREA_DETAIL(a, aw::invalid_payload, 0,
-                    uint4(e.requested_slot, e.selected_slot, as_type<uint>(e.normalizer), e.ready),
-                    uint4(uint(fresh), as_type<uint>(target), a.config->contribution_mode,
-                          a.config->contribution_depth));
+        (area_null(a, e.selected_slot) && !enhanced_reservoir::zero(target)) || !normalizer_valid) {
+        AREA_DETAIL(a, aw::invalid_payload, 0, area_numbers(received, target),
+                    uint4(e.requested_slot, e.selected_slot, e.ready, fresh));
         return false;
     }
     selected_slot = e.selected_slot;
-    normalizer = e.normalizer;
+    normalizer = received;
     return true;
 }
 inline void area_consume_evaluation(constant AreaArguments &a, uint pixel) {
@@ -372,8 +427,9 @@ inline uint area_selection_word(constant AreaArguments &a, uint pixel, uint ordi
 }
 inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumulator &accumulator,
                         const thread rypath_replay::ReplayState &payload, wire::Point xyz,
-                        float score, float target, uint selected_slot, uint source_confidence = 0,
-                        ew::Reference record = {0, 0}, reuse_mis::Scaled h = {0, 0}) {
+                        AreaNumber score, AreaNumber target, uint selected_slot,
+                        uint source_confidence = 0, ew::Reference record = {0, 0},
+                        reuse_mis::Scaled h = {0, 0}) {
     if (!area_slot_valid(a, selected_slot) || !area_slot_valid(a, accumulator.selected_slot) ||
         !area_owned_value_valid(a, selected_slot, record, h)) {
         AREA_DETAIL(a, aw::invalid_payload, 0,
@@ -391,14 +447,15 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
         if (accumulator.confidence > confidence::maximum_confidence ||
             !confidence::valid_source({source_confidence, uint(source_confidence != 0)}) ||
             source_confidence > confidence::maximum_confidence - accumulator.confidence ||
-            (source_confidence == 0 && score != 0)) {
+            (source_confidence == 0 && !enhanced_reservoir::zero(score))) {
             AREA_FAIL(a, aw::invalid_value);
             return false;
         }
         accumulator.confidence += source_confidence;
-        if (accumulator.logical_count >= aw::spatial_candidates || !reservoir::finite(score) ||
-            score < 0 || !reservoir::finite(target) || target < 0 ||
-            (score > 0 && (!reservoir::positive_normal(target) || area_null(a, selected_slot)))) {
+        if (accumulator.logical_count >= aw::spatial_candidates ||
+            !enhanced_reservoir::valid_number(score) || !enhanced_reservoir::valid_number(target) ||
+            (!enhanced_reservoir::zero(score) &&
+             (!enhanced_reservoir::positive(target) || area_null(a, selected_slot)))) {
             AREA_FAIL(a, aw::invalid_reservoir);
             return false;
         }
@@ -406,26 +463,82 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
             accumulator.payload = payload; // An opaque receipt for a possible null result.
             accumulator.xyz = {0, 0, 0};
             accumulator.target = 0;
+            accumulator.target_exponent = 0;
             accumulator.selected_slot = cw::enhanced_null_slot;
             accumulator.record = record;
             accumulator.target_h_fraction = .5f;
             accumulator.target_h_exponent = 1;
         }
-        if (score == 0) {
+        if (enhanced_reservoir::zero(score)) {
             ++accumulator.logical_count;
             return true; // Retain the domain, but draw no categorical entropy.
         }
     }
+    if (area_enhanced(a)) {
+        auto state = area_selector(accumulator);
+        // Score is ALREADY proposal/MIS weighted. The physical selected target
+        // is passed separately and mirrored in the accumulator's wire fields.
+        auto pending = enhanced_reservoir::prepare_score(state, score, target);
+        if (pending.status != reservoir::Status::ok) {
+            AREA_DETAIL(a, aw::invalid_reservoir, pending.status, area_numbers(score, target),
+                        area_numbers(pending.score_sum, pending.target));
+            return false;
+        }
+        const enhanced_entropy::Identity identity{pixel, a.config->serial_low,
+                                                  a.config->serial_high, a.config->seed_low,
+                                                  a.config->seed_high};
+        for (uint ordinal = 0;
+             !pending.decision.complete && ordinal < enhanced_reservoir::maximum_random_words;
+             ++ordinal) {
+            const auto entropy = enhanced_entropy::word(
+                identity, enhanced_entropy::area_site(a.config->phase, a.config->candidate),
+                ordinal);
+            if (entropy.status != enhanced_entropy::Status::ok ||
+                enhanced_reservoir::feed_random_word(pending, entropy.value) !=
+                    reservoir::Status::ok) {
+                AREA_DETAIL(a, aw::invalid_reservoir, pending.status, area_numbers(score, target),
+                            uint4(ordinal, entropy.value, uint(entropy.status), 0));
+                return false;
+            }
+        }
+        const auto result = enhanced_reservoir::commit_update(state, pending);
+        if (result.status != reservoir::Status::ok) {
+            AREA_DETAIL(a, aw::invalid_reservoir, result.status, area_numbers(score, target));
+            return false;
+        }
+        accumulator.state = {state.score_sum.fraction, state.selected_target.fraction,
+                             state.candidate_count, state.selected_index, state.status};
+        accumulator.score_exponent = state.score_sum.exponent;
+        if (result.selected) {
+            accumulator.payload = payload;
+            accumulator.xyz = xyz;
+            accumulator.target = target.fraction;
+            accumulator.target_exponent = target.exponent;
+            accumulator.selected_slot = selected_slot;
+            accumulator.record = record;
+            accumulator.target_h_fraction = h.fraction;
+            accumulator.target_h_exponent = h.exponent;
+        }
+        ++accumulator.logical_count;
+        return true;
+    }
+    if (score.exponent != 0 || target.exponent != 0 || accumulator.score_exponent != 0 ||
+        accumulator.target_exponent != 0) {
+        AREA_FAIL(a, aw::invalid_reservoir);
+        return false;
+    }
     // The shared categorical selector receives an already MIS-weighted score.
     // Its target is one; the physical selected target lives separately.
-    auto pending = reservoir::prepare_update(accumulator.state, score, 1.f);
+    const float legacy_score = score.fraction, legacy_target = target.fraction;
+    auto pending = reservoir::prepare_update(accumulator.state, legacy_score, 1.f);
     if (pending.status != reservoir::Status::ok) {
-        AREA_DETAIL(a, aw::invalid_reservoir, pending.status, area_state_values(pending.source),
-                    as_type<uint4>(float4(score, target, pending.score_sum, pending.target)),
-                    uint4(uint(pending.source.status), uint(pending.status), pending.words_used,
-                          pending.compared_bits),
-                    uint4(pending.rare_probability.significand, pending.rare_probability.bit_count,
-                          pending.complete, pending.selected));
+        AREA_DETAIL(
+            a, aw::invalid_reservoir, pending.status, area_state_values(pending.source),
+            as_type<uint4>(float4(legacy_score, legacy_target, pending.score_sum, pending.target)),
+            uint4(uint(pending.source.status), uint(pending.status), pending.words_used,
+                  pending.compared_bits),
+            uint4(pending.rare_probability.significand, pending.rare_probability.bit_count,
+                  pending.complete, pending.selected));
         return false;
     }
     for (uint ordinal = 0; !pending.complete && ordinal < reservoir::maximum_random_words;
@@ -433,7 +546,8 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
         if (reservoir::feed_random_word(pending, area_selection_word(a, pixel, ordinal)) !=
             reservoir::Status::ok) {
             AREA_DETAIL(a, aw::invalid_reservoir, pending.status, area_state_values(pending.source),
-                        as_type<uint4>(float4(score, target, pending.score_sum, pending.target)),
+                        as_type<uint4>(
+                            float4(legacy_score, legacy_target, pending.score_sum, pending.target)),
                         uint4(uint(pending.source.status), uint(pending.status), pending.words_used,
                               pending.compared_bits),
                         uint4(pending.rare_probability.significand,
@@ -444,18 +558,19 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
     }
     const auto result = reservoir::commit_update(accumulator.state, pending);
     if (result.status != reservoir::Status::ok) {
-        AREA_DETAIL(a, aw::invalid_reservoir, result.status, area_state_values(pending.source),
-                    as_type<uint4>(float4(score, target, pending.score_sum, pending.target)),
-                    uint4(uint(pending.source.status), uint(pending.status), pending.words_used,
-                          pending.compared_bits),
-                    uint4(pending.rare_probability.significand, pending.rare_probability.bit_count,
-                          pending.complete, pending.selected));
+        AREA_DETAIL(
+            a, aw::invalid_reservoir, result.status, area_state_values(pending.source),
+            as_type<uint4>(float4(legacy_score, legacy_target, pending.score_sum, pending.target)),
+            uint4(uint(pending.source.status), uint(pending.status), pending.words_used,
+                  pending.compared_bits),
+            uint4(pending.rare_probability.significand, pending.rare_probability.bit_count,
+                  pending.complete, pending.selected));
         return false;
     }
     if (result.selected) {
         accumulator.payload = payload;
         accumulator.xyz = xyz;
-        accumulator.target = target;
+        accumulator.target = legacy_target;
         accumulator.selected_slot = selected_slot;
         accumulator.record = record;
         accumulator.target_h_fraction = h.fraction;
@@ -467,97 +582,112 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
 }
 inline bool area_finish(constant AreaArguments &a, uint pixel,
                         const thread aw::Accumulator &accumulator, uint count,
-                        thread float &normalizer) {
+                        thread AreaNumber &normalizer) {
     if (area_count(a, accumulator) != count || !area_confidence_valid(a, accumulator.confidence) ||
         !area_owned_value_valid(a, accumulator.selected_slot, accumulator.record,
                                 {accumulator.target_h_fraction, accumulator.target_h_exponent}) ||
         !rypath_replay::valid(accumulator.payload) ||
         !area_slot_valid(a, accumulator.selected_slot)) {
-        AREA_DETAIL(a, aw::invalid_count, accumulator.state.status,
-                    area_state_values(accumulator.state), uint4(count, 0, 0, 0),
-                    area_payload_head(accumulator.payload), area_payload_tail(accumulator.payload));
+        AREA_FAIL(a, aw::invalid_count);
         return false;
     }
-    if (area_null(a, accumulator.selected_slot)) {
-        if (!reservoir::valid_state(accumulator.state) || accumulator.state.candidate_count != 0 ||
-            !area_selected_values(a, accumulator.selected_slot, accumulator.state.score_sum,
-                                  accumulator.target, accumulator.xyz)) {
+    if (area_enhanced(a)) {
+        const auto state = area_selector(accumulator);
+        if (!enhanced_reservoir::valid_state(state) ||
+            !enhanced_reservoir::same(state.selected_target, area_T(accumulator)) ||
+            !area_selected_values(a, accumulator.selected_slot, area_S(accumulator),
+                                  area_T(accumulator), accumulator.xyz) ||
+            (area_null(a, accumulator.selected_slot) && state.candidate_count != 0)) {
             AREA_FAIL(a, aw::invalid_reservoir);
             return false;
         }
-        normalizer = 0;
-        return true;
-    }
-    if (!reservoir::valid_state(accumulator.state) || accumulator.state.selected_target != 1.f) {
-        AREA_DETAIL(a, aw::invalid_reservoir, accumulator.state.status,
-                    area_state_values(accumulator.state));
+    } else if (accumulator.score_exponent != 0 || accumulator.target_exponent != 0 ||
+               !reservoir::valid_state(accumulator.state) ||
+               accumulator.state.selected_target != 1.f) {
+        AREA_FAIL(a, aw::invalid_reservoir);
         return false;
     }
-    float target;
+    AreaNumber target;
     if (!area_target(a, pixel, accumulator.xyz, target,
                      {accumulator.target_h_fraction, accumulator.target_h_exponent}))
         return false;
-    if (target != accumulator.target) {
-        AREA_DETAIL(a, aw::invalid_reservoir, 0,
-                    as_type<uint4>(
-                        float4(target, accumulator.target, accumulator.xyz.x, accumulator.xyz.y)),
-                    uint4(as_type<uint>(accumulator.xyz.z), 0, 0, 0));
+    if (!enhanced_reservoir::same(target, area_T(accumulator))) {
+        AREA_DETAIL(a, aw::invalid_reservoir, 0, area_numbers(target, area_T(accumulator)));
         return false;
     }
-    // The MIS functions form a partition of unity. Another /K would bias it.
-    normalizer = accumulator.state.score_sum;
+    normalizer = area_S(accumulator); // No extra /K or confidence normalization.
     return true;
 }
 inline bool area_temporal_valid(constant AreaArguments &a, uint pixel,
                                 const thread aw::Temporal &source) {
-    float target = 0;
+    AreaNumber target{0, 0};
     if (!rypath_replay::valid(source.payload) || !area_confidence_valid(a, source.confidence) ||
         !area_owned_value_valid(a, source.selected_slot, source.record,
                                 {source.target_h_fraction, source.target_h_exponent}) ||
         (area_enhanced(a) && source.record.bank != ew::fresh_bank &&
          source.record.bank != ew::temporal_bank) ||
-        !area_selected_values(a, source.selected_slot, source.normalizer, source.target,
+        !area_selected_values(a, source.selected_slot, area_Z(source), area_T(source),
                               source.xyz) ||
         !area_slot_valid(a, source.selected_slot) || source.reserved[0] || source.reserved[1] ||
         !area_target(a, pixel, source.xyz, target,
                      {source.target_h_fraction, source.target_h_exponent}) ||
-        source.target != target) {
-        AREA_DETAIL(a, aw::invalid_value, 0,
-                    as_type<uint4>(float4(source.normalizer, source.target, target, source.xyz.x)),
-                    uint4(as_type<uint>(source.xyz.y), as_type<uint>(source.xyz.z),
-                          source.reserved[0], source.reserved[1]),
-                    area_payload_head(source.payload), area_payload_tail(source.payload));
+        !enhanced_reservoir::same(area_T(source), target)) {
+        AREA_DETAIL(
+            a, aw::invalid_value, 0,
+            as_type<uint4>(float4(source.normalizer, source.target, target.fraction, source.xyz.x)),
+            uint4(as_type<uint>(source.xyz.y), as_type<uint>(source.xyz.z), source.reserved[0],
+                  source.reserved[1]),
+            area_payload_head(source.payload), area_payload_tail(source.payload));
         return false;
     }
     return true;
 }
-inline bool area_weighted_xyz(constant AreaArguments &a, uint pixel, float normalizer,
-                              wire::Point xyz, float target, thread wire::Point &weighted) {
-    if (area_enhanced(a) && normalizer == 0) {
-        if (!all(isfinite(float3(xyz.x, xyz.y, xyz.z))) || !reservoir::finite(target) ||
-            target < 0) {
+inline bool area_weighted_xyz(constant AreaArguments &a, uint pixel, AreaNumber normalizer,
+                              wire::Point xyz, AreaNumber target, thread wire::Point &weighted) {
+    if (area_enhanced(a)) {
+        if (!enhanced_reservoir::valid_number(normalizer) ||
+            !enhanced_reservoir::valid_number(target)) {
             AREA_FAIL(a, aw::invalid_value);
             return false;
         }
-        weighted = {0, 0, 0};
+        // A zero MIS weight contributes zero even for a non-null evaluated atom.
+        if (enhanced_reservoir::zero(normalizer)) {
+            if (!all(isfinite(float3(xyz.x, xyz.y, xyz.z)))) {
+                AREA_FAIL(a, aw::invalid_value);
+                return false;
+            }
+            weighted = {0, 0, 0};
+            return true;
+        }
+        const auto result = enhanced_path::readout(normalizer, {xyz.x, xyz.y, xyz.z}, target);
+        if (result.status != enhanced_path::Status::ok) {
+            AREA_DETAIL(a, aw::invalid_value, result.status, area_numbers(normalizer, target));
+            return false;
+        }
+        weighted = {result.value.x, result.value.y, result.value.z};
         return true;
     }
-    const auto x = reuse_mis::signed_contribution(normalizer, xyz.x, target);
-    const auto y = reuse_mis::signed_contribution(normalizer, xyz.y, target);
-    const auto z = reuse_mis::signed_contribution(normalizer, xyz.z, target);
+    if (normalizer.exponent != 0 || target.exponent != 0) {
+        AREA_FAIL(a, aw::invalid_value);
+        return false;
+    }
+    const auto x = reuse_mis::signed_contribution(normalizer.fraction, xyz.x, target.fraction);
+    const auto y = reuse_mis::signed_contribution(normalizer.fraction, xyz.y, target.fraction);
+    const auto z = reuse_mis::signed_contribution(normalizer.fraction, xyz.z, target.fraction);
     if (x.status != reservoir::Status::ok || y.status != reservoir::Status::ok ||
         z.status != reservoir::Status::ok) {
-        AREA_DETAIL(a, aw::invalid_value, x.status,
-                    as_type<uint4>(float4(normalizer, xyz.x, xyz.y, xyz.z)),
-                    uint4(as_type<uint>(target), uint(x.status), uint(y.status), uint(z.status)),
-                    as_type<uint4>(float4(x.value, y.value, z.value, 0)));
+        AREA_DETAIL(
+            a, aw::invalid_value, x.status,
+            as_type<uint4>(float4(normalizer.fraction, xyz.x, xyz.y, xyz.z)),
+            uint4(as_type<uint>(target.fraction), uint(x.status), uint(y.status), uint(z.status)),
+            as_type<uint4>(float4(x.value, y.value, z.value, 0)));
         return false;
     }
     weighted = {x.value, y.value, z.value};
     return true;
 }
-inline bool area_add_output(constant AreaArguments &a, uint pixel, float score, wire::Point xyz,
-                            float target) {
+inline bool area_add_output(constant AreaArguments &a, uint pixel, AreaNumber score,
+                            wire::Point xyz, AreaNumber target) {
     if (a.config->output_mode != aw::conditional_mean_output)
         return true;
     wire::Point term;
@@ -570,8 +700,9 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, float score, 
     const wire::Point sum{x.value, y.value, z.value};
     if (x.status != reservoir::Status::ok || y.status != reservoir::Status::ok ||
         z.status != reservoir::Status::ok) {
-        AREA_DETAIL(a, aw::invalid_value, 0, as_type<uint4>(float4(old.x, old.y, old.z, score)),
-                    as_type<uint4>(float4(term.x, term.y, term.z, target)),
+        AREA_DETAIL(a, aw::invalid_value, 0,
+                    as_type<uint4>(float4(old.x, old.y, old.z, score.fraction)),
+                    as_type<uint4>(float4(term.x, term.y, term.z, target.fraction)),
                     uint4(uint(x.status), uint(y.status), uint(z.status), 0));
         return false;
     }
@@ -671,6 +802,7 @@ inline bool area_publish_cached(constant AreaArguments &a, uint pixel,
         }
         receipt.target_h_fraction = source.target_h_fraction;
         receipt.target_h_exponent = source.target_h_exponent;
+        receipt.normalizer_exponent = 0;
         receipt.ready = 1;
         a.enhanced_evaluation[pixel] = receipt;
     }
@@ -694,17 +826,18 @@ kernel void rypath_area_cache_evaluation(constant AreaArguments &a [[buffer(1)]]
         area_publish_cached(a, pixel, fresh);
     } else if (a.config->phase == aw::temporal) {
         const auto source = a.history_source[pixel];
-        float target;
+        AreaNumber target;
         if (!area_history(a, pixel, source) ||
             !area_target(a, pixel, source.xyz, target,
                          area_enhanced(a)
                              ? reuse_mis::Scaled{source.target_h_fraction, source.target_h_exponent}
                              : reuse_mis::Scaled{.5f, 1}))
             return;
-        if (as_type<uint>(target) != as_type<uint>(source.target)) {
-            AREA_DETAIL(a, aw::invalid_value, 0,
-                        as_type<uint4>(float4(source.xyz.x, source.xyz.y, source.xyz.z, target)),
-                        uint4(as_type<uint>(source.target), 0, 0, 0));
+        if (!enhanced_reservoir::same(target, area_T(source))) {
+            AREA_DETAIL(
+                a, aw::invalid_value, 0,
+                as_type<uint4>(float4(source.xyz.x, source.xyz.y, source.xyz.z, target.fraction)),
+                uint4(as_type<uint>(source.target), 0, 0, 0));
             return;
         }
         area_publish_cached(a, pixel, source);
@@ -732,24 +865,25 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
     reuse_mis::Scaled h{};
     if (!area_owned_result(a, pixel, record, h))
         return;
-    float target;
+    AreaNumber target;
     if (!area_target(a, pixel, xyz, target, h))
         return;
     uint selected_slot;
-    float fresh_normalizer;
+    AreaNumber fresh_normalizer;
     if (!area_evaluated_slot(a, pixel, a.config->phase == aw::fresh, target, selected_slot,
                              fresh_normalizer))
         return;
-    float score = target;
+    AreaNumber score = target;
     uint expected = 0;
     uint source_confidence = 0;
     if (a.config->phase == aw::fresh) {
         source_confidence = area_enhanced(a) ? 1u : 0u;
         if (area_contribution(a))
             score = fresh_normalizer;
-        a.temporal[pixel] = {
-            payload,           score,  xyz,        target,    selected_slot, {0, 0},
-            source_confidence, record, h.fraction, h.exponent};
+        a.temporal[pixel] = {payload,           score.fraction, xyz,
+                             target.fraction,   selected_slot,  {0, 0},
+                             source_confidence, record,         h.fraction,
+                             h.exponent,        score.exponent, target.exponent};
         if (a.config->history_used) {
             area_consume_evaluation(a, pixel);
             return; // Fresh score also needs this payload's previous-context target.
@@ -774,20 +908,22 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         const auto checked =
             area_enhanced(a)
-                ? enhanced_path::canonical_score(source.normalizer, source.target, target,
+                ? enhanced_path::canonical_score(area_Z(source), area_T(source), target,
                                                  float(temporal_confidence.fresh.confidence),
                                                  float(temporal_confidence.history.confidence))
             : area_contribution(a)
-                ? reuse_mis::temporal_fresh_score(source.normalizer, source.target, target)
-                : reuse_mis::temporal_fresh_score(source.target, target);
+                ? area_legacy(reuse_mis::temporal_fresh_score(source.normalizer, source.target,
+                                                              target.fraction))
+                : area_legacy(reuse_mis::temporal_fresh_score(source.target, target.fraction));
         if (checked.status != reservoir::Status::ok) {
-            AREA_DETAIL(a, aw::invalid_value, checked.status,
-                        as_type<uint4>(float4(source.target, target, checked.value, 0)));
+            AREA_DETAIL(
+                a, aw::invalid_value, checked.status,
+                as_type<uint4>(float4(source.target, target.fraction, checked.value.fraction, 0)));
             return;
         }
         score = checked.value;
         xyz = source.xyz;
-        target = source.target;
+        target = area_T(source);
         record = source.record;
         h = {source.target_h_fraction, source.target_h_exponent};
     } else if (a.config->phase == aw::temporal) {
@@ -809,14 +945,15 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         const auto checked =
             area_enhanced(a)
-                ? enhanced_path::pair_score({source.normalizer, source.target, target,
+                ? enhanced_path::pair_score({area_Z(source), area_T(source), target,
                                              float(temporal_confidence.history.confidence),
                                              float(temporal_confidence.fresh.confidence)})
-                : reuse_mis::temporal_history_score(source.normalizer, target, source.target);
+                : area_legacy(reuse_mis::temporal_history_score(source.normalizer, target.fraction,
+                                                                source.target));
         if (checked.status != reservoir::Status::ok) {
-            AREA_DETAIL(
-                a, aw::invalid_value, checked.status,
-                as_type<uint4>(float4(source.normalizer, target, source.target, checked.value)));
+            AREA_DETAIL(a, aw::invalid_value, checked.status,
+                        as_type<uint4>(float4(source.normalizer, target.fraction, source.target,
+                                              checked.value.fraction)));
             return;
         }
         score = checked.value;
@@ -845,21 +982,22 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         const auto checked =
             area_enhanced(a)
-                ? boundary ? reservoir::ScalarResult{0, reservoir::Status::ok}
-                           : enhanced_path::pair_score({source.normalizer, source.target, target,
+                ? boundary ? AreaNumberResult{{0, 0}, reservoir::Status::ok}
+                           : enhanced_path::pair_score({area_Z(source), area_T(source), target,
                                                         float(source.confidence),
                                                         float(center.confidence), .25f})
-                : reuse_mis::spatial_pair_score(source.normalizer, target, source.target);
+                : area_legacy(reuse_mis::spatial_pair_score(source.normalizer, target.fraction,
+                                                            source.target));
         if (checked.status != reservoir::Status::ok) {
-            AREA_DETAIL(
-                a, aw::invalid_value, checked.status,
-                as_type<uint4>(float4(source.normalizer, target, source.target, checked.value)));
+            AREA_DETAIL(a, aw::invalid_value, checked.status,
+                        as_type<uint4>(float4(source.normalizer, target.fraction, source.target,
+                                              checked.value.fraction)));
             return;
         }
         score = checked.value;
         // The inverse direction at the neighboring pixel provides the center
         // payload's reverse target after all four immutable-cache passes finish.
-        a.cross_targets[ulong(a.config->candidate - 1) * a.config->pixel_count + pixel] = target;
+        area_cross_store(a, ulong(a.config->candidate - 1) * a.config->pixel_count + pixel, target);
         if (!area_add_output(a, pixel, score, xyz, target))
             return;
     } else {
@@ -888,7 +1026,7 @@ kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
         return;
     }
     const auto accumulator = a.accumulators[pixel];
-    float normalizer;
+    AreaNumber normalizer;
     if (!area_finish(a, pixel, accumulator, count, normalizer))
         return;
     if (area_enhanced(a)) {
@@ -906,7 +1044,7 @@ kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
             return;
     }
     a.temporal[pixel] = {accumulator.payload,
-                         normalizer,
+                         normalizer.fraction,
                          accumulator.xyz,
                          accumulator.target,
                          accumulator.selected_slot,
@@ -914,7 +1052,9 @@ kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
                          accumulator.confidence,
                          record,
                          accumulator.target_h_fraction,
-                         accumulator.target_h_exponent};
+                         accumulator.target_h_exponent,
+                         normalizer.exponent,
+                         accumulator.target_exponent};
 }
 kernel void rypath_area_spatial_begin(constant AreaArguments &a [[buffer(1)]],
                                       uint pixel [[thread_position_in_grid]]) {
@@ -948,7 +1088,7 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
     const aw::Temporal center = a.temporal[pixel];
     if (!area_temporal_valid(a, pixel, center))
         return;
-    float center_score = 0;
+    AreaNumber center_score{0, 0};
     confidence::Spatial spatial_confidence{};
     if (area_enhanced(a))
         spatial_confidence = confidence::spatial_begin({center.confidence, 1});
@@ -956,10 +1096,10 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
         const uint neighbor = area_neighbor_direction(a, pixel, direction);
         const uint opposite = rypath_area_stencil::inverse_slot(direction);
         // A clamped self-neighbor does not have the ordinary opposite inverse.
-        const float reverse_target =
+        const AreaNumber reverse_target =
             neighbor == pixel
-                ? center.target
-                : a.cross_targets[ulong(opposite - 1) * a.config->pixel_count + neighbor];
+                ? area_T(center)
+                : area_cross_load(a, ulong(opposite - 1) * a.config->pixel_count + neighbor);
         uint neighbor_confidence = 0;
         if (area_enhanced(a) && neighbor != pixel) {
             const auto source = a.temporal[neighbor];
@@ -974,26 +1114,30 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
             AREA_FAIL(a, aw::invalid_count);
             return;
         }
-        const auto part =
-            area_enhanced(a)
-                ? enhanced_path::canonical_score(
-                      center.normalizer, center.target, neighbor == pixel ? 0.f : reverse_target,
-                      float(center.confidence),
-                      neighbor == pixel ? 1.f : float(neighbor_confidence), .25f)
-                : reuse_mis::spatial_pair_score(center.normalizer, center.target, reverse_target);
+        const auto part = area_enhanced(a)
+                              ? enhanced_path::canonical_score(
+                                    area_Z(center), area_T(center),
+                                    neighbor == pixel ? AreaNumber{0, 0} : reverse_target,
+                                    float(center.confidence),
+                                    neighbor == pixel ? 1.f : float(neighbor_confidence), .25f)
+                              : area_legacy(reuse_mis::spatial_pair_score(
+                                    center.normalizer, center.target, reverse_target.fraction));
         if (part.status != reservoir::Status::ok) {
             AREA_DETAIL(a, aw::invalid_value, part.status,
-                        as_type<uint4>(
-                            float4(center.normalizer, center.target, reverse_target, part.value)),
+                        as_type<uint4>(float4(center.normalizer, center.target,
+                                              reverse_target.fraction, part.value.fraction)),
                         uint4(direction, neighbor, opposite, 0));
             return;
         }
-        const auto sum = direction == 1     ? part
-                         : area_enhanced(a) ? enhanced_path::add_scores(center_score, part.value)
-                                            : reuse_mis::add_scores(center_score, part.value);
+        const auto sum =
+            direction == 1 ? part
+            : area_enhanced(a)
+                ? enhanced_path::add_scores(center_score, part.value)
+                : area_legacy(reuse_mis::add_scores(center_score.fraction, part.value.fraction));
         if (sum.status != reservoir::Status::ok) {
             AREA_DETAIL(a, aw::invalid_value, sum.status,
-                        as_type<uint4>(float4(center_score, part.value, sum.value, 0)),
+                        as_type<uint4>(float4(center_score.fraction, part.value.fraction,
+                                              sum.value.fraction, 0)),
                         uint4(direction, neighbor, opposite, 0));
             return;
         }
@@ -1005,17 +1149,19 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
         AREA_FAIL(a, aw::invalid_count);
         return;
     }
-    if (!area_update(a, pixel, accumulator, center.payload, center.xyz, center_score, center.target,
-                     center.selected_slot, area_enhanced(a) ? center.confidence : 0u, center.record,
+    if (!area_update(a, pixel, accumulator, center.payload, center.xyz, center_score,
+                     area_T(center), center.selected_slot,
+                     area_enhanced(a) ? center.confidence : 0u, center.record,
                      {center.target_h_fraction, center.target_h_exponent}) ||
-        !area_add_output(a, pixel, center_score, center.xyz, center.target))
+        !area_add_output(a, pixel, center_score, center.xyz, area_T(center)))
         return;
-    float normalizer;
+    AreaNumber normalizer;
     if (!area_finish(a, pixel, accumulator, aw::spatial_candidates, normalizer))
         return;
     if (a.config->output_mode == aw::selected_output) {
         wire::Point weighted;
-        if (!area_weighted_xyz(a, pixel, normalizer, accumulator.xyz, accumulator.target, weighted))
+        if (!area_weighted_xyz(a, pixel, normalizer, accumulator.xyz, area_T(accumulator),
+                               weighted))
             return;
         a.raw_xyz[pixel] = weighted;
     }
@@ -1027,7 +1173,7 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
             return;
     }
     a.history_destination[pixel] = {accumulator.payload,
-                                    normalizer,
+                                    normalizer.fraction,
                                     accumulator.target,
                                     1,
                                     accumulator.selected_slot,
@@ -1035,7 +1181,9 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
                                     accumulator.confidence,
                                     record,
                                     accumulator.target_h_fraction,
-                                    accumulator.target_h_exponent};
+                                    accumulator.target_h_exponent,
+                                    normalizer.exponent,
+                                    accumulator.target_exponent};
 }
 
 // The source cache always belongs to the CURRENT destination evaluation. Each
@@ -1052,20 +1200,20 @@ inline bool area_mutation_source(constant AreaArguments &a, uint pixel,
             ? enhanced_path::target({source.xyz.x, source.xyz.y, source.xyz.z},
                                     a.config->target_scale,
                                     {source.target_h_fraction, source.target_h_exponent})
-            : reuse_mis::importance_target(source.xyz.x, source.xyz.y, source.xyz.z,
-                                           a.config->target_scale);
+            : area_legacy(reuse_mis::importance_target(source.xyz.x, source.xyz.y, source.xyz.z,
+                                                       a.config->target_scale));
     if (!rypath_replay::valid(source.payload) || !area_confidence_valid(a, source.confidence) ||
         !area_owned_value_valid(a, source.selected_slot, source.record,
                                 {source.target_h_fraction, source.target_h_exponent}) ||
         (area_enhanced(a) && source.record.bank != ew::fresh_bank &&
          source.record.bank != ew::temporal_bank) ||
-        !area_selected_values(a, source.selected_slot, source.normalizer, source.target,
+        !area_selected_values(a, source.selected_slot, area_Z(source), area_T(source),
                               source.xyz) ||
         !area_slot_valid(a, source.selected_slot) || source.reserved[0] != 0 ||
         source.reserved[1] != 0 || target.status != reservoir::Status::ok ||
-        target.value != source.target) {
+        !enhanced_reservoir::same(target.value, area_T(source))) {
         AREA_DETAIL(a, aw::invalid_mutation, target.status,
-                    as_type<uint4>(float4(source.normalizer, source.target, target.value,
+                    as_type<uint4>(float4(source.normalizer, source.target, target.value.fraction,
                                           a.config->target_scale)),
                     as_type<uint4>(float4(source.xyz.x, source.xyz.y, source.xyz.z, 0)),
                     area_payload_head(source.payload), area_payload_tail(source.payload));
@@ -1131,6 +1279,75 @@ kernel void rypath_area_mutation_prepare(constant wire::Parameters &p [[buffer(0
     // Symmetric mutation changes U only; j remains fixed on the counting domain.
     area_prepare_evaluation(a, pixel, source.selected_slot, source.record);
 }
+struct AreaMutationResult {
+    AreaNumber normalizer{0, 0};
+    uint words_used = 0;
+    bool accepted = false;
+};
+inline bool area_mutation_decision(constant AreaArguments &a, uint pixel,
+                                   const thread aw::Temporal &source, AreaNumber target,
+                                   thread AreaMutationResult &result) {
+    if (area_enhanced(a)) {
+        auto pending = enhanced_reservoir::prepare_normalizer_acceptance(area_Z(source),
+                                                                         area_T(source), target);
+        if (pending.status != mutation::Status::ok) {
+            AREA_DETAIL(a, aw::invalid_mutation, pending.status,
+                        area_numbers(area_Z(source), area_T(source)),
+                        area_numbers(target, pending.accepted_normalizer));
+            return false;
+        }
+        const enhanced_entropy::Identity identity{pixel, a.config->serial_low,
+                                                  a.config->serial_high, a.config->seed_low,
+                                                  a.config->seed_high};
+        for (uint ordinal = 0;
+             !pending.decision.complete && ordinal < enhanced_reservoir::maximum_random_words;
+             ++ordinal) {
+            const auto entropy = enhanced_entropy::word(
+                identity, enhanced_entropy::mutation_site(a.config->candidate), ordinal);
+            if (entropy.status != enhanced_entropy::Status::ok ||
+                enhanced_reservoir::feed_random_word(pending, entropy.value) !=
+                    mutation::Status::ok) {
+                AREA_DETAIL(a, aw::invalid_mutation, pending.status,
+                            area_numbers(area_Z(source), target),
+                            uint4(ordinal, entropy.value, uint(entropy.status), 0));
+                return false;
+            }
+        }
+        const auto checked = enhanced_reservoir::finalize_normalizer_acceptance(pending);
+        if (checked.status != mutation::Status::ok) {
+            AREA_DETAIL(a, aw::invalid_mutation, checked.status,
+                        area_numbers(area_Z(source), target));
+            return false;
+        }
+        result = {checked.normalizer, checked.words_used, checked.accepted};
+        return true;
+    }
+    // Legacy FLOAT preparation/entropy/correction order is unchanged.
+    auto pending =
+        reuse_mis::prepare_normalizer_acceptance(source.normalizer, source.target, target.fraction);
+    if (pending.status != mutation::Status::ok) {
+        AREA_DETAIL(a, aw::invalid_mutation, pending.status, area_numbers(area_Z(source), target));
+        return false;
+    }
+    const auto identity = area_mutation_identity(a, pixel);
+    for (uint ordinal = 0; !pending.decision.complete && ordinal < reservoir::maximum_random_words;
+         ++ordinal) {
+        const auto entropy = mutation::acceptance_word(identity, a.config->candidate, ordinal);
+        if (entropy.status != mutation::Status::ok ||
+            reuse_mis::feed_random_word(pending, entropy.value) != mutation::Status::ok) {
+            AREA_DETAIL(a, aw::invalid_mutation, pending.status,
+                        area_numbers(area_Z(source), target));
+            return false;
+        }
+    }
+    const auto checked = reuse_mis::finalize_normalizer_acceptance(pending);
+    if (checked.status != mutation::Status::ok) {
+        AREA_DETAIL(a, aw::invalid_mutation, checked.status, area_numbers(area_Z(source), target));
+        return false;
+    }
+    result = {{checked.normalizer, 0}, checked.words_used, checked.accepted};
+    return true;
+}
 kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
                                         uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a, pixel))
@@ -1148,10 +1365,11 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
         return;
     if (area_null(a, source.selected_slot)) {
         uint selected_slot;
-        float unused_normalizer;
+        AreaNumber unused_normalizer;
         const auto evaluated_null = a.replay[pixel];
         if (!area_same_payload(evaluated_null, source.payload) || !area_zero(a.leaf_xyz[pixel]) ||
-            !area_evaluated_slot(a, pixel, false, 0, selected_slot, unused_normalizer) ||
+            !area_evaluated_slot(a, pixel, false, AreaNumber{0, 0}, selected_slot,
+                                 unused_normalizer) ||
             selected_slot != cw::enhanced_null_slot) {
             AREA_FAIL(a, aw::invalid_mutation);
             return;
@@ -1171,81 +1389,47 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
     }
     const auto xyz = a.leaf_xyz[pixel];
     const auto target =
-        area_enhanced(a)
-            ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale, h)
-            : reuse_mis::importance_target(xyz.x, xyz.y, xyz.z, a.config->target_scale);
+        area_enhanced(a) ? enhanced_path::target({xyz.x, xyz.y, xyz.z}, a.config->target_scale, h)
+                         : area_legacy(reuse_mis::importance_target(xyz.x, xyz.y, xyz.z,
+                                                                    a.config->target_scale));
     if (target.status != reservoir::Status::ok) {
         AREA_DETAIL(a, aw::invalid_mutation, target.status,
                     as_type<uint4>(float4(xyz.x, xyz.y, xyz.z, a.config->target_scale)));
         return;
     }
     uint selected_slot;
-    float unused_normalizer;
+    AreaNumber unused_normalizer;
     if (!area_evaluated_slot(a, pixel, false, target.value, selected_slot, unused_normalizer))
         return;
     if (selected_slot != source.selected_slot) {
         AREA_DETAIL(a, aw::invalid_mutation, 0, uint4(source.selected_slot, selected_slot, 0, 0));
         return;
     }
-    if (area_enhanced(a) && target.value == 0) {
+    if (area_enhanced(a) && enhanced_reservoir::zero(target.value)) {
         if (area_mutation_rejected(a, pixel))
             area_consume_evaluation(a, pixel);
         return; // Exact zero acceptance; no positive-target MH division or draw.
     }
-    auto pending =
-        reuse_mis::prepare_normalizer_acceptance(source.normalizer, source.target, target.value);
-    if (pending.status != mutation::Status::ok) {
-        AREA_DETAIL(a, aw::invalid_mutation, pending.status,
-                    as_type<uint4>(float4(source.normalizer, source.target, target.value,
-                                          pending.accepted_normalizer)),
-                    uint4(pending.smaller_ratio.significand, pending.smaller_ratio.bit_count,
-                          uint(pending.decision.status), 0));
+    AreaMutationResult result{};
+    if (!area_mutation_decision(a, pixel, source, target.value, result))
         return;
-    }
-    const auto identity = area_mutation_identity(a, pixel);
-    for (uint ordinal = 0; !pending.decision.complete && ordinal < reservoir::maximum_random_words;
-         ++ordinal) {
-        const auto entropy = mutation::acceptance_word(identity, a.config->candidate, ordinal);
-        if (entropy.status != mutation::Status::ok ||
-            reuse_mis::feed_random_word(pending, entropy.value) != mutation::Status::ok) {
-            AREA_DETAIL(
-                a, aw::invalid_mutation, pending.status,
-                as_type<uint4>(float4(source.normalizer, source.target, target.value,
-                                      pending.accepted_normalizer)),
-                uint4(ordinal, entropy.value, uint(entropy.status), uint(pending.decision.status)),
-                uint4(pending.smaller_ratio.significand, pending.smaller_ratio.bit_count,
-                      pending.decision.words_used, pending.decision.compared_bits));
-            return;
-        }
-    }
-    const auto result = reuse_mis::finalize_normalizer_acceptance(pending);
-    if (result.status != mutation::Status::ok) {
-        AREA_DETAIL(a, aw::invalid_mutation, result.status,
-                    as_type<uint4>(float4(source.normalizer, source.target, target.value,
-                                          pending.accepted_normalizer)),
-                    uint4(pending.smaller_ratio.significand, pending.smaller_ratio.bit_count,
-                          pending.decision.words_used, pending.decision.compared_bits),
-                    uint4(pending.decision.complete, pending.decision.selected,
-                          uint(pending.decision.status), 0));
-        return;
-    }
     // Counts are diagnostics, never an acceptance/stopping criterion. Valid
     // dispatches attempt exactly pixel_count*mutation_steps; configuration
     // validation proves this product fits the shared 32-bit counters.
     const uint maximum = a.config->pixel_count * a.config->mutation_steps;
     if (atomic_fetch_add_explicit(&a.counters->mutations, 1u, memory_order_relaxed) >= maximum) {
-        AREA_DETAIL(a, aw::invalid_mutation, result.status,
+        AREA_DETAIL(a, aw::invalid_mutation, 0,
                     uint4(maximum, result.words_used, result.accepted, 0),
-                    as_type<uint4>(
-                        float4(source.normalizer, source.target, target.value, result.normalizer)));
+                    as_type<uint4>(float4(source.normalizer, source.target, target.value.fraction,
+                                          result.normalizer.fraction)));
         return;
     }
     if (result.accepted) {
         if (atomic_fetch_add_explicit(&a.counters->accepted, 1u, memory_order_relaxed) >= maximum) {
-            AREA_DETAIL(a, aw::invalid_mutation, result.status,
+            AREA_DETAIL(a, aw::invalid_mutation, 0,
                         uint4(maximum, result.words_used, result.accepted, 0),
-                        as_type<uint4>(float4(source.normalizer, source.target, target.value,
-                                              result.normalizer)));
+                        as_type<uint4>(float4(source.normalizer, source.target,
+                                              target.value.fraction, result.normalizer.fraction)));
             return;
         }
         ew::Reference destination{};
@@ -1254,9 +1438,18 @@ kernel void rypath_area_mutation_finish(constant AreaArguments &a [[buffer(1)]],
             if (!area_copy_record(a, pixel, selected_slot, record, destination))
                 return;
         }
-        a.temporal[pixel] = {
-            proposal.payload, result.normalizer, xyz,         target.value, source.selected_slot,
-            {0, 0},           source.confidence, destination, h.fraction,   h.exponent};
+        a.temporal[pixel] = {proposal.payload,
+                             result.normalizer.fraction,
+                             xyz,
+                             target.value.fraction,
+                             source.selected_slot,
+                             {0, 0},
+                             source.confidence,
+                             destination,
+                             h.fraction,
+                             h.exponent,
+                             result.normalizer.exponent,
+                             target.value.exponent};
     }
     // Rejection retains the exact old payload/Z/XYZ/target. The host always
     // launches every configured step, including after rejections/equal targets.

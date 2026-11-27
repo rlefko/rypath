@@ -40,7 +40,10 @@ struct Evaluation {
     Reference source, result;
     float target_h_fraction;
     int target_h_exponent;
-    Word ready, reserved;
+    Word ready;
+    // Fresh CW normalizer is a normalized fraction; imports/cached/null replies
+    // retain CW normalizer +0 and exponent0. Prepare always clears this field.
+    int normalizer_exponent;
 };
 inline Reference absent() { return {invalid, invalid}; }
 inline bool absent(Reference r) { return r.bank == invalid && r.pixel == invalid; }

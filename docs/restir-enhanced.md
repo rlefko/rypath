@@ -196,7 +196,9 @@ excluded from main.
 
 ## Owned terminal-light stage
 
-The Enhanced canonical law is version 2. Its disjoint terminal NEE charts own a
+The owned terminal-light stage introduced Enhanced canonical law version 2;
+the scaled-weight stage below advances the current law to version 3. Its disjoint
+terminal NEE charts own a
 LightID and either triangle area coordinates, a positional/distant counting mass,
 or an environment direction in solid angle. Unsupported emitter shapes retain
 generic replay. An imported generic atom that belongs to an owned chart at its
@@ -251,6 +253,52 @@ establish a speedup. Adaptive surface reconnection, suffix caching, shift-pair
 compaction, dual-motion integration and duplication diagnostics remain pending.
 The footprint, suffix-product and reprojection helpers are preparatory algebra;
 their presence alone is not runtime coverage of those mechanisms.
+
+## Scaled-weight stage
+
+Canonical law 3 keeps Enhanced reservoir score sums `S`, normalizers `Z`, targets
+`T`, and spatial cross targets as normalized FLOAT fractions with separate signed
+exponents. Serialized positive values have exponent bounds ±4096; exact zero uses
+the pair `(+0, 0)`. Arithmetic intermediates may use wider exponent ranges before
+storage validation. Exceeding a declared storage or decision bound fails visibly.
+Legacy summed/contribution arithmetic retains its existing FLOAT representation.
+This extends the numerical reference; it does not establish exact real arithmetic
+or unbiasedness of all FLOAT operations.
+
+The native Pavilion-day failure at `6a5091e` was not an invalid fresh path. Its
+fresh null was legitimate, while reused history retained `Z ≈ 1.26589e-36` and a
+spatial quarter-weight of `1.450105848e-41`. The ordinary FLOAT reservoir could not
+carry that positive weight through its normal-only arithmetic. Scaled storage
+preserves these positive values rather than discarding the candidate or treating
+the history as null. Only final XYZ readout rounds into FLOAT using round-to-nearest,
+ties-to-even, including underflow; a rounded-zero output component does not erase
+the selected history record or its positive scaled weight.
+
+Enhanced resampling entropy law 1 separates fresh local selection, Area selection
+and mutation acceptance by role and counter address. It retains pixel, full
+submission serial, seed and site identity and supports up to 257 random words per
+bounded scaled decision. It does not extend the legacy entropy strides or change
+the separate discovery law, which remains version 1. Wavefront/Area contracts are
+18/12; the Enhanced sidecar is 128 bytes, Area history/temporal/accumulator carriers
+are 88/92/104 bytes, and each Enhanced cross-target cell is 8 bytes. The owned-light
+record and evaluation receipt remain 48/32 bytes. Cached/imported/null evaluation
+receipts retain a zero fresh-normalizer exponent; prepare clears it before reuse.
+
+The current stage passes the three focused CPU path, scaled-reservoir and
+entropy checks, CLI metadata checks, production GPU queue protocol and selected-prefix
+controls, and legacy contribution, Enhanced physical/mean and Enhanced NEE tests.
+The queue probe includes the exact Pavilion range case and a smaller positive
+history whose final XYZ rounds to zero. The first scene-test run stopped at a
+stale version-2 assertion; after correcting the asserted version to 3, both
+Enhanced suites passed. Native reruns remain pending. These checks do not qualify
+four-scene quality, performance or the complete Enhanced algorithm. The chart
+and geometry helpers remain preparation for future runtime shifts.
+
+For context, the superseded `6a5091e` native screen measured Cornell at
+724.195 ms (1.38084 FPS) and Prism at 1073.467 ms (0.931561 FPS). Pavilion day failed
+on submitted frame 18, and no Pavilion-night run was obtained, so neither has an
+FPS result from that screen. These are bounded pre-repair observations, not final
+timings or measurements of the scaled-weight revision.
 
 ## Retained measurements and limitations
 

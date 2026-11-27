@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-#include "../src/contribution_decision_shared.h"
 #include "../src/contribution_wire.h"
 #include "../src/enhanced_decision_shared.h"
 #include "../src/enhanced_path_shared.h"
+#include "../src/enhanced_resampling_decision_shared.h"
 #include "../src/enhanced_wire.h"
 #include "../src/wavefront_wire.h"
 #include "frame_sensor.h"
@@ -14,6 +14,7 @@ namespace cw = rypath::contribution_wire;
 namespace rw = rypath::render_wire;
 namespace wf = rypath::wavefront_wire;
 namespace ew = rypath::enhanced_wire;
+namespace decision = rypath_enhanced_resampling_decision;
 struct State {
     ep::State selection;
     ep::DiscoveryState discovery;
@@ -23,13 +24,15 @@ struct State {
     uint rr_cut, failed;
     ep::reuse::Scaled requested_h{.5f, 1};
 };
-static_assert(sizeof(State) == 120 && alignof(State) == 4, "Enhanced sidecar ABI");
+static_assert(sizeof(State) == 128 && alignof(State) == 4, "Enhanced sidecar ABI");
+static_assert(decision::maximum_random_words == ep::er::maximum_random_words,
+              "Scaled selector entropy budget");
 static_assert(ep::null_slot == cw::enhanced_null_slot &&
                   ep::law_version == cw::enhanced_discovery_law,
               "Enhanced law/tag agreement");
 inline bool pending_owned(const thread ew::Evaluation &e, uint pixels, uint pixel, bool fresh) {
     const bool same = e.source.bank == e.result.bank && e.source.pixel == e.result.pixel;
-    return e.ready == 0 && e.reserved == 0 && as_type<uint>(e.target_h_fraction) == 0 &&
+    return e.ready == 0 && e.normalizer_exponent == 0 && as_type<uint>(e.target_h_fraction) == 0 &&
            e.target_h_exponent == 0 && ew::valid(e.result, pixels) &&
            (fresh
                 ? ew::absent(e.source) && e.result.bank == ew::fresh_bank && e.result.pixel == pixel
@@ -185,14 +188,20 @@ struct Sink {
                 (index & 1u) ? state.direct_probability : state.arrival_probability;
             auto pending = ep::prepare_update(state.selection, index, {xyz.x, xyz.y, xyz.z},
                                               probability, h, generation_h);
-            for (uint ordinal = 0; pending.status == ep::Status::ok && !pending.decision.complete &&
-                                   ordinal < ep::math::maximum_random_words;
-                 ++ordinal)
-                ep::feed_random_word(pending, rypath_contribution_decision::word(
-                                                  {pixel, config.contribution_serial_low,
-                                                   config.contribution_serial_high,
-                                                   parameters.seed_low, parameters.seed_high},
-                                                  index, ordinal));
+            for (uint ordinal = 0;
+                 pending.status == ep::Status::ok && !pending.decision.decision.complete &&
+                 ordinal < ep::er::maximum_random_words;
+                 ++ordinal) {
+                const auto word = decision::word({pixel, config.contribution_serial_low,
+                                                  config.contribution_serial_high,
+                                                  parameters.seed_low, parameters.seed_high},
+                                                 decision::fresh_site(index), ordinal);
+                if (word.status != decision::Status::ok) {
+                    state.failed = 1;
+                    return;
+                }
+                ep::feed_random_word(pending, word.value);
+            }
             const auto updated = ep::commit_update(state.selection, pending);
             if (updated.status != ep::Status::ok) {
                 state.failed = 1;
@@ -235,7 +244,8 @@ struct Sink {
             if (selected.status != ep::Status::ok)
                 return false;
             result.selected_slot = selected.selected_slot;
-            result.normalizer = selected.normalizer;
+            result.normalizer = selected.normalizer.fraction;
+            receipt.normalizer_exponent = selected.normalizer.exponent;
             value = selected.xyz;
             h = selected.selected_h;
             if (selected.selected_slot == ep::null_slot)

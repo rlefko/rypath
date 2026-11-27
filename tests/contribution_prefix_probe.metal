@@ -436,9 +436,9 @@ kernel void rypath_enhanced_discovery_witness(
     // A separate dispatch reloads these bytes, preventing thread/device copy
     // forwarding from turning the persistence check into a thread-local test.
     pool[n] = state;
-    out[32u * n] = uint(!first_skip);
-    out[32u * n + 25u] = uint(first);
-    out[32u * n + 26u] = second;
+    out[36u * n] = uint(!first_skip);
+    out[36u * n + 25u] = uint(first);
+    out[36u * n + 26u] = second;
 }
 
 kernel void rypath_enhanced_discovery_finish(
@@ -472,7 +472,7 @@ kernel void rypath_enhanced_discovery_finish(
                                pending.result.pixel == expected_result.pixel &&
                                as_type<uint>(pending.target_h_fraction) == 0 &&
                                pending.target_h_exponent == 0 && pending.ready == 0 &&
-                               pending.reserved == 0;
+                               pending.normalizer_exponent == 0;
     cw::Evaluation result{};
     float3 value(0);
     const bool finished = final_sink.finish(request, value, result);
@@ -489,9 +489,9 @@ kernel void rypath_enhanced_discovery_finish(
                                as_type<uint>(after_duplicate.target_h_fraction) &&
                            published.target_h_exponent == after_duplicate.target_h_exponent &&
                            published.ready == after_duplicate.ready &&
-                           published.reserved == after_duplicate.reserved;
+                           published.normalizer_exponent == after_duplicate.normalizer_exponent;
     pool[n] = persisted;
-    const uint base = 32u * n;
+    const uint base = 36u * n;
     out[base] |=
         uint(!finished || persisted.failed || !owned_pending || duplicate_finished || !unchanged);
     out[base + 1] = result.requested_slot;
@@ -505,7 +505,7 @@ kernel void rypath_enhanced_discovery_finish(
     out[base + 9] = as_type<uint>(persisted.arrival_probability);
     out[base + 10] = as_type<uint>(persisted.direct_probability);
     out[base + 11] = persisted.rr_cut;
-    out[base + 12] = as_type<uint>(persisted.selection.selected_target);
+    out[base + 12] = as_type<uint>(persisted.selection.selected_target.fraction);
     out[base + 13] = persisted.selection.selected_slot;
     out[base + 14] = as_type<uint>(value.x);
     out[base + 15] = as_type<uint>(value.y);
@@ -518,9 +518,13 @@ kernel void rypath_enhanced_discovery_finish(
     out[base + 22] = uint(persisted.selection.status);
     out[base + 23] = uint(persisted.discovery.status);
     out[base + 24] = uint(final_sink.fresh());
-    out[base + 27] = as_type<uint>(persisted.selection.score_sum);
+    out[base + 27] = as_type<uint>(persisted.selection.score_sum.fraction);
     out[base + 28] = as_type<uint>(persisted.requested_xyz.x);
     out[base + 29] = as_type<uint>(persisted.requested_xyz.y);
     out[base + 30] = as_type<uint>(persisted.requested_xyz.z);
     out[base + 31] = persisted.pixel;
+    out[base + 32] = as_type<uint>(persisted.selection.selected_target.exponent);
+    out[base + 33] = as_type<uint>(persisted.selection.score_sum.exponent);
+    out[base + 34] = as_type<uint>(published.normalizer_exponent);
+    out[base + 35] = sizeof(er::State);
 }

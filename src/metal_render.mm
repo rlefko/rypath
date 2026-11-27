@@ -58,6 +58,13 @@ namespace rypath {
 namespace {
 
 namespace wire = render_wire;
+// Enhanced cross-target cells serialize a FLOAT mantissa and a signed exponent.
+constexpr std::size_t enhanced_cross_target_bytes = sizeof(float) + sizeof(std::int32_t);
+static_assert(enhanced_cross_target_bytes == 8);
+constexpr std::size_t area_cross_target_pixel_bytes(FrameAreaPathDomain domain) {
+    return 4 *
+           (domain == FrameAreaPathDomain::enhanced ? enhanced_cross_target_bytes : sizeof(float));
+}
 static_assert(frame_area_canonical_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_canonical_law &&
               frame_area_discovery_version(FrameAreaPathDomain::enhanced) ==
@@ -2714,7 +2721,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v17", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v18", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
@@ -3029,7 +3036,6 @@ struct FrameSession::Impl {
         const std::uint64_t replay_bytes = pixels * sizeof(rypath_replay::ReplayState);
         const std::uint64_t leaf_bytes = pixels * sizeof(wire::Point);
         const std::uint64_t temporal_bytes = pixels * sizeof(area_wire::Temporal);
-        const std::uint64_t cross_bytes = pixels * 4 * sizeof(float);
         const std::uint64_t accumulator_bytes = pixels * sizeof(area_wire::Accumulator);
         const std::uint64_t evaluation_bytes =
             frame_area_contribution_family(config.area_path_domain)
@@ -3049,6 +3055,10 @@ struct FrameSession::Impl {
             bytes = count * stride;
             return true;
         };
+        std::uint64_t cross_bytes = 0;
+        if (!product_bytes(pixels, area_cross_target_pixel_bytes(config.area_path_domain),
+                           cross_bytes))
+            return "Area cross-target byte count overflow";
         const bool enhanced = config.area_path_domain == FrameAreaPathDomain::enhanced;
         std::uint64_t enhanced_record_bytes = 16, enhanced_evaluation_bytes = 16;
         if (enhanced &&
@@ -3130,11 +3140,15 @@ struct FrameSession::Impl {
             return buffer != nil;
         };
         const auto pixels = std::size_t(config.width) * config.height;
+        const auto cross_target_stride = area_cross_target_pixel_bytes(config.area_path_domain);
+        if (pixels > std::numeric_limits<std::size_t>::max() / cross_target_stride)
+            return "Area cross-target byte count overflow";
+        const auto cross_bytes = pixels * cross_target_stride;
         if (!allocate(b.replay, pixels * sizeof(rypath_replay::ReplayState)) ||
             !allocate(b.leaf, pixels * sizeof(wire::Point)) ||
             !allocate(b.accumulators, pixels * sizeof(area_wire::Accumulator)) ||
             !allocate(b.temporal, pixels * sizeof(area_wire::Temporal)) ||
-            !allocate(b.cross_targets, pixels * 4 * sizeof(float)) ||
+            !allocate(b.cross_targets, cross_bytes) ||
             !allocate(b.contribution_evaluation,
                       frame_area_contribution_family(config.area_path_domain)
                           ? pixels * sizeof(contribution_wire::Evaluation)

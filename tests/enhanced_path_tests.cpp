@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -17,6 +18,16 @@ namespace e = rypath_enhanced_path;
 namespace d = rypath_enhanced_decision;
 namespace c = rypath_contribution_path;
 namespace m = rypath_reservoir;
+namespace er = rypath_enhanced_reservoir;
+e::Number N(float x) {
+    if ((std::bit_cast<unsigned>(x) & 0x7fffffffu) == 0)
+        return {0, 0};
+    int exponent = 0;
+    return {std::frexp(x, &exponent), exponent};
+}
+long double V(e::Number x) { return std::ldexp(static_cast<long double>(x.fraction), x.exponent); }
+bool Z(e::Number x) { return x.fraction == 0 && x.exponent == 0; }
+
 void need(bool value, const char *message) {
     if (!value)
         throw std::runtime_error(message);
@@ -34,7 +45,7 @@ e::PreparedUpdate pending(const e::State &state, unsigned index, e::XYZ xyz, flo
 }
 void observe(e::State &s, e::XYZ xyz, float probability, unsigned word = 0) {
     auto p = pending(s, s.observed, xyz, probability);
-    for (unsigned i = 0; !p.decision.complete && i < m::maximum_random_words; ++i)
+    for (unsigned i = 0; !p.decision.decision.complete && i < er::maximum_random_words; ++i)
         e::feed_random_word(p, word);
     need(e::commit_update(s, p).status == e::Status::ok, "commit valid observation");
 }
@@ -51,14 +62,14 @@ long double alpha(e::XYZ xyz, float scale = 1) {
 void targets_and_nulls() {
     need(e::null_slot != e::fresh_slot, "null is not a fresh request");
     for (auto xyz : {e::XYZ{}, e::XYZ{-0.f, 0, -0.f}})
-        need(m::bits(e::target(xyz, 1).value) == 0, "exact signed black target");
+        need(Z(e::target(xyz, 1).value), "exact signed black target");
     const float tiny = std::numeric_limits<float>::denorm_min();
-    need(e::target({tiny, 0, 0}, 1).value > 0, "nonzero subnormal retains support");
+    need(!Z(e::target({tiny, 0, 0}, 1).value), "nonzero subnormal retains support");
     for (auto xyz :
          {e::XYZ{4, -8, 16}, e::XYZ{0x1p120f, -0x1p120f, 0x1p120f}, e::XYZ{tiny, 0, 0}}) {
         const auto t = e::target(xyz, 1);
         need(t.status == m::Status::ok, "finite signed HDR target");
-        near(t.value, alpha(xyz), alpha(xyz) * 4e-7L, "independent target");
+        near(V(t.value), alpha(xyz), alpha(xyz) * 4e-7L, "independent target");
     }
     need(e::target({}, 0).status != m::Status::ok, "black does not bypass invalid scale");
     need(e::target({std::numeric_limits<float>::infinity(), 0, 0}, 1).status != m::Status::ok,
@@ -67,18 +78,19 @@ void targets_and_nulls() {
         auto s = e::begin(descriptor(depth), 1);
         for (unsigned i = 0; i < s.descriptor.slot_count; ++i) {
             auto p = pending(s, i, {-0.f, 0, 0}, 1);
-            need(p.decision.complete && p.decision.words_used == 0, "zero consumes no entropy");
+            need(p.decision.decision.complete && p.decision.decision.words_used == 0,
+                 "zero consumes no entropy");
             need(e::commit_update(s, p).status == e::Status::ok, "zero observation committed");
         }
         const auto r = e::finalize(s, e::StopReason::depth_end);
-        need(r.status == e::Status::ok && r.selected_slot == e::null_slot && r.normalizer == 0 &&
-                 r.target == 0 && s.observed == s.descriptor.slot_count,
+        need(r.status == e::Status::ok && r.selected_slot == e::null_slot && Z(r.normalizer) &&
+                 Z(r.target) && s.observed == s.descriptor.slot_count,
              "all-black explicit null retains observations");
         const auto out = e::readout(r);
         need(out.status == e::Status::ok && m::bits(out.value.x) == 0, "canonical null readout");
     }
-    need(e::readout(1, {}, 1).status != e::Status::ok, "no fabricated nonnull black");
-    need(e::readout(0, {1, 0, 0}, 0).status != e::Status::ok, "null has no nonzero XYZ");
+    need(e::readout(N(1), {}, N(1)).status != e::Status::ok, "no fabricated nonnull black");
+    need(e::readout(N(0), {1, 0, 0}, N(0)).status != e::Status::ok, "null has no nonzero XYZ");
 }
 void ordered_and_failures() {
     auto s = e::begin(descriptor(65), 1);
@@ -87,7 +99,7 @@ void ordered_and_failures() {
     const auto selected = s.selected_slot;
     const auto sum = s.score_sum;
     observe(s, {}, .25f);
-    need(s.selected_slot == selected && m::bits(s.score_sum) == m::bits(sum) && s.observed == 3,
+    need(s.selected_slot == selected && er::same(s.score_sum, sum) && s.observed == 3,
          "zero after real preserves selection and logical cursor");
     need(e::finalize(s, e::StopReason::rr_cut).status == e::Status::ok, "odd RR prefix accepted");
     need(e::finalize(s, e::StopReason::depth_end).status == e::Status::incomplete,
@@ -113,21 +125,23 @@ void ordered_and_failures() {
          "RR cutoff cannot follow N");
     auto bad = e::begin(descriptor(0), 1);
     p = pending(bad, 0, {}, 1);
-    p.decision.selected = true;
+    p.decision.decision.selected = true;
     need(e::commit_update(bad, p).status != e::Status::ok, "tampered zero decision fails");
     auto overflow = e::begin(descriptor(1), 1);
     const auto huge = e::XYZ{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
                              std::numeric_limits<float>::max()};
     p = e::prepare_update(overflow, 0, huge, 0x1p-32f);
-    need(p.status == e::Status::arithmetic_failure, "HDR score overflow is whole-stream failure");
-    need(e::commit_update(overflow, p).status == e::Status::arithmetic_failure,
-         "overflow cannot drop candidate");
+    need(p.status == e::Status::ok && p.decision.score_sum.exponent > 128,
+         "HDR score remains scaled beyond FLOAT");
+    need(e::commit_update(overflow, p).status == e::Status::ok,
+         "wide score retains candidate without FLOAT overflow");
     auto stale = e::begin(descriptor(1), 1);
     p = pending(stale, 0, {1, 0, 0}, 1);
     observe(stale, {}, 1);
     need(e::commit_update(stale, p).status == e::Status::invalid_state, "stale prepared update");
 }
-long double probability(const m::PreparedUpdate &p) {
+long double probability(const er::PreparedUpdate &prepared) {
+    const auto &p = prepared.decision;
     if (p.complete)
         return p.selected ? 1 : 0;
     const long double rare = std::ldexp(static_cast<long double>(p.rare_probability.significand),
@@ -153,7 +167,7 @@ void wrs_distribution() {
         unsigned n = 0;
         for (unsigned j = 0; j < count; ++j) {
             const auto p = pending(branches[j].state, i, xyz[i], a[i]);
-            const long double select = p.alpha == 0 ? 0 : probability(p.decision);
+            const long double select = Z(p.alpha) ? 0 : probability(p.decision);
             for (unsigned outcome = 0; outcome < 2; ++outcome) {
                 const long double chance = outcome ? select : 1 - select;
                 if (chance == 0)
@@ -162,7 +176,7 @@ void wrs_distribution() {
                 // Independent state recurrence, not production commit. The
                 // committed complete-state path is checked separately below.
                 ++state.observed;
-                if (p.alpha != 0)
+                if (!Z(p.alpha))
                     state.score_sum = p.decision.score_sum;
                 if (outcome) {
                     state.selected_slot = i;
@@ -180,11 +194,11 @@ void wrs_distribution() {
     for (unsigned i = 0; i < count; ++i) {
         const auto &b = branches[i];
         need(e::valid_state(b.state), "independent recurrence produces valid state");
-        near(b.state.score_sum, expected_sum, expected_sum * 4e-7L, "ordered normalizer");
+        near(V(b.state.score_sum), expected_sum, expected_sum * 4e-7L, "ordered normalizer");
         const auto r = e::finalize(b.state, e::StopReason::depth_end);
         const auto out = e::readout(r);
         need(out.status == e::Status::ok, "signed readout valid");
-        const long double W = static_cast<long double>(r.normalizer) / r.target;
+        const long double W = V(r.normalizer) / V(r.target);
         near(out.value.x, W * r.xyz.x, std::abs(W * r.xyz.x) * 3e-7L + 1e-30L,
              "signed scaled readout against independent division");
         average[0] += b.mass * out.value.x;
@@ -208,7 +222,7 @@ void wrs_distribution() {
     auto state = e::begin(descriptor(1), std::numeric_limits<float>::min());
     observe(state, {std::numeric_limits<float>::max(), 0, 0}, 1);
     auto p = pending(state, 1, {std::numeric_limits<float>::denorm_min(), 0, 0}, 1);
-    const auto rare = p.decision.rare_probability;
+    const auto rare = p.decision.decision.rare_probability;
     need(rare.bit_count > 256, "nine-word rare probability not erased");
     const unsigned words = (rare.bit_count + 31) / 32;
     for (unsigned ordinal = 0; ordinal < words; ++ordinal) {
@@ -224,25 +238,26 @@ void wrs_distribution() {
             word -= 1u << (words * 32 - rare.bit_count);
         e::feed_random_word(p, word);
         if (ordinal + 1 < words)
-            need(!p.decision.complete, "threshold prefix keeps requesting entropy");
+            need(!p.decision.decision.complete, "threshold prefix keeps requesting entropy");
     }
-    need(p.decision.words_used == 9 && e::commit_update(state, p).status == e::Status::ok &&
-             state.selected_slot == 1,
+    need(p.decision.decision.words_used == 9 &&
+             e::commit_update(state, p).status == e::Status::ok && state.selected_slot == 1,
          "ninth-word rare finite decision remains selectable");
 }
 void pair_scores_and_negative_controls() {
     for (float Z : {1.f, 8.f, 0x1p120f})
         for (float ts : {0.f, .25f, 8.f})
             for (float td : {0.f, 1.f, 16.f}) {
-                const e::PairInput p{Z, ts, td, 20, 1, .25f};
+                const e::PairInput p{N(Z), N(ts), N(td), 20, 1, .25f};
                 const auto s = e::pair_score(p);
                 need(s.status == m::Status::ok, "zero-aware pair score");
                 const long double expected =
                     td == 0 ? 0 : static_cast<long double>(Z) * 20 * td / (20.L * ts + td) / 4;
-                near(s.value, expected, std::abs(expected) * 3e-7L, "independent pair formula");
+                near(V(s.value), expected, std::abs(expected) * 3e-7L, "independent pair formula");
             }
-    need(e::pair_score({0, 0, 0, 20, 1}).value == 0, "selected null score zero");
-    need(e::pair_score({1, 0, 4, 1, 1}).value == 1, "undefined inverse gets complementary share");
+    need(Z(e::pair_score({N(0), N(0), N(0), 20, 1}).value), "selected null score zero");
+    need(V(e::pair_score({N(1), N(0), N(4), 1, 1}).value) == 1,
+         "undefined inverse gets complementary share");
     // Independent two-state null-domain negative: destination F=2 in
     // both U states; source F/target=0 at U0 and2 at U1. Fresh has one atom,
     // so current Z=2, old Z is0 or2. Four independent (currentU,oldU) pairs.
@@ -252,24 +267,24 @@ void pair_scores_and_negative_controls() {
         for (unsigned old = 0; old < 2; ++old) {
             const float inverse = current == 0 ? 0.f : 2.f;
             const float Zold = old == 0 ? 0.f : 2.f;
-            const auto center = e::canonical_score(2, 2, inverse, 1, 1);
-            const auto shifted = e::pair_score({Zold, old == 0 ? 0.f : 2.f, 2, 1, 1});
+            const auto center = e::canonical_score(N(2), N(2), N(inverse), 1, 1);
+            const auto shifted = e::pair_score({N(Zold), N(old == 0 ? 0.f : 2.f), N(2), 1, 1});
             need(center.status == m::Status::ok && shifted.status == m::Status::ok,
                  "null-domain contributions valid");
             // The intentionally WRONG implementation deletes the inverse
             // domain whenever the independently drawn old reservoir is null.
             const long double wrong_center = old == 0 ? 2 : (inverse == 0 ? 2 : 1);
-            correct += (center.value + shifted.value) / 4.L;
-            deleted += (wrong_center + shifted.value) / 4.L;
+            correct += (V(center.value) + V(shifted.value)) / 4.L;
+            deleted += (wrong_center + V(shifted.value)) / 4.L;
         }
     near(correct, 2, 0, "null-domain reference");
     near(deleted, 2.25L, 0, "null deletion 9/4 negative witness");
     need(deleted != correct, "null cannot delete structural support");
-    need(e::canonical_score(8, 2, 0, 1, 20, .25f).value == 2,
+    need(V(e::canonical_score(N(8), N(2), N(0), 1, 20, .25f).value) == 2,
          "zero inverse gives full canonical pair share");
-    need(e::canonical_score(0, 0, 4, 1, 20).value == 0, "null canonical score");
-    need(e::add_scores(0, 3).value == 3 && e::add_scores(3, 0).value == 3 &&
-             e::add_scores(0, 0).value == 0 && e::add_scores(2, 3).value == 5,
+    need(Z(e::canonical_score(N(0), N(0), N(4), 1, 20).value), "null canonical score");
+    need(V(e::add_scores(N(0), N(3)).value) == 3 && V(e::add_scores(N(3), N(0)).value) == 3 &&
+             Z(e::add_scores(N(0), N(0)).value) && V(e::add_scores(N(2), N(3)).value) == 5,
          "zero-aware score sum");
     // Fresh E0=0, future E1=4 discovered with independent probability1/2.
     // A killed path is an explicit null, NOT a fake sampled future j. Survival
@@ -286,7 +301,7 @@ void pair_scores_and_negative_controls() {
     const auto out = e::readout(e::finalize(survived, e::StopReason::depth_end));
     near(.5L * out.value.x, 4, 1e-6L, "external discovery compensation");
     const e::XYZ canonical_later{4, 0, 0};
-    need(e::target(canonical_later, 1).value > 0 && null.selected_slot != 2,
+    need(!Z(e::target(canonical_later, 1).value) && null.selected_slot != 2,
          "unobserved is not zero canonical response");
 }
 void future_padding_negative() {
@@ -313,9 +328,9 @@ void future_padding_negative() {
     observe(s, {}, .5f);
     auto p = pending(s, 2, {4, 0, 0}, .5f);
     const long double choose = probability(p.decision);
-    const long double total = p.decision.score_sum;
+    const long double total = V(p.decision.score_sum);
     const long double survivor_mean =
-        (1 - choose) * total / s.selected_target + choose * total / p.alpha * 4;
+        (1 - choose) * total / V(s.selected_target) + choose * total / V(p.alpha) * 4;
     near(.5L * e::readout(cut).value.x + .5L * survivor_mean, 5, 3e-6L,
          "arrival and later discovery probabilities kept distinct");
 }
@@ -329,23 +344,23 @@ void long_stream_and_readout() {
         const float a = i < 50 ? 1.f : .25f;
         const auto t = e::target(xyz, 1);
         total += alpha(xyz) / a;
-        if (t.value > 0) {
-            float_sum += t.value / a;
+        if (!Z(t.value)) {
+            float_sum += static_cast<float>(V(t.value)) / a;
             ++positives;
         }
         observe(s, xyz, a, 0xffffffffu);
         need(s.observed == i + 1 && e::valid_state(s), "all131 ordered observations valid");
     }
-    need(positives == 87 && m::bits(float_sum) == m::bits(s.score_sum),
+    need(positives == 87 && m::bits(float_sum) == m::bits(static_cast<float>(V(s.score_sum))),
          "zero skip retains original positive-score association");
-    near(s.score_sum, total, total * 2e-6L, "independent long-stream normalizer");
+    near(V(s.score_sum), total, total * 2e-6L, "independent long-stream normalizer");
     need(e::finalize(s, e::StopReason::depth_end).status == e::Status::ok, "D65 full stream");
     const float tiny = std::numeric_limits<float>::denorm_min();
-    const auto output = e::readout(0x1p120f, {tiny, -tiny, -0.f}, 0x1p-120f);
+    const auto output = e::readout(N(0x1p120f), {tiny, -tiny, -0.f}, N(0x1p-120f));
     need(output.status == e::Status::ok && output.value.x == 0x1p91f &&
              output.value.y == -0x1p91f && m::bits(output.value.z) == 0x80000000u,
          "weight before materialization recovers subnormal HDR and signed zero");
-    const auto overflow = e::readout(0x1p120f, {0x1p120f, 0, 0}, 0x1p-120f);
+    const auto overflow = e::readout(N(0x1p120f), {0x1p120f, 0, 0}, N(0x1p-120f));
     need(overflow.status == e::Status::arithmetic_failure, "readout overflow is failure");
     auto p = e::prepare_update(s, 131, {}, 1);
     need(p.status == e::Status::invalid_slot, "past fixed-domain observation fails");
@@ -358,13 +373,14 @@ void chart_densities() {
                      e::XYZ{std::numeric_limits<float>::denorm_min(), 0, 0}}) {
         const auto expected = r::importance_target(xyz.x, xyz.y, xyz.z, 1);
         const auto actual = e::target(xyz, 1, unit);
-        need(actual.status == expected.status && m::bits(actual.value) == m::bits(expected.value),
+        need(actual.status == expected.status &&
+                 m::bits(static_cast<float>(V(actual.value))) == m::bits(expected.value),
              "Unit evaluation density preserves original target bits");
         auto state = e::begin(descriptor(0), 1);
         const auto old = e::prepare_update(state, 0, xyz, .5f);
         const auto explicit_unit = e::prepare_update(state, 0, xyz, .5f, unit, unit);
-        need(m::bits(old.alpha) == m::bits(explicit_unit.alpha) &&
-                 m::bits(old.decision.score_sum) == m::bits(explicit_unit.decision.score_sum),
+        need(er::same(old.alpha, explicit_unit.alpha) &&
+                 er::same(old.decision.score_sum, explicit_unit.decision.score_sum),
              "Default chart densities preserve score bits");
     }
     const e::XYZ F{0x1p-18f, -0x1p-20f, 0};
@@ -376,10 +392,11 @@ void chart_densities() {
             (std::abs(static_cast<long double>(F.x)) + std::abs(static_cast<long double>(F.y))) / 4;
         const long double expected = energy + density * static_cast<long double>(1e-6f);
         need(actual.status == m::Status::ok, "Scaled h need not materialize to FLOAT");
-        near(actual.value, expected, expected * 4e-7L, "Independent chart floor/energy target");
+        near(V(actual.value), expected, expected * 4e-7L, "Independent chart floor/energy target");
     }
-    need(e::target({1, 0, 0}, 1, {.5f, 1024}).status == m::Status::arithmetic_failure,
-         "Huge chart floor fails instead of overflowing or clipping");
+    need(e::target({1, 0, 0}, 1, {.5f, 1024}).status == m::Status::ok &&
+             e::target({1, 0, 0}, 1, {.5f, 1024}).value.exponent > 128,
+         "Huge chart floor remains scaled without overflowing or clipping");
     for (auto poison : {r::Scaled{0, 1}, r::Scaled{1, 0}, r::Scaled{-.5f, 1},
                         r::Scaled{std::numeric_limits<float>::quiet_NaN(), 1},
                         r::Scaled{.5f, std::numeric_limits<int>::max()},
@@ -392,10 +409,10 @@ void chart_densities() {
     }
     auto state = e::begin(descriptor(0), 1);
     auto update = e::prepare_update(state, 0, {2, 0, 0}, 1, {.5f, 4}, {.5f, 2});
-    need(update.status == e::Status::ok && update.decision.complete,
+    need(update.status == e::Status::ok && update.decision.decision.complete,
          "Different source generation/query density is legal");
     need(e::commit_update(state, update).status == e::Status::ok &&
-             state.score_sum < state.selected_target && e::valid_state(state),
+             er::less(state.score_sum, state.selected_target) && e::valid_state(state),
          "h_gen>1 legally produces Z below selected canonical target");
     need(e::same_density(state.selected_h, {.5f, 4}), "Selected evaluation density retained");
     const auto reservoir = e::finalize(state, e::StopReason::depth_end);
@@ -424,13 +441,14 @@ void chart_densities() {
     // states oppositely, so the negative control distinguishes actual policy.
     const auto current = e::target({0x1p-18f, 0, 0}, 1, {.5f, 2});
     const auto proposal = e::target({0x1p-18f, 0, 0}, 1, {.5f, 0});
-    const auto acceptance = r::prepare_normalizer_acceptance(.25f, current.value, proposal.value);
+    const auto acceptance =
+        er::prepare_normalizer_acceptance(N(.25f), current.value, proposal.value);
     const auto wrong_current = e::target({0x1p-19f, 0, 0}, 1);
     const auto wrong_proposal = e::target({0x1p-17f, 0, 0}, 1);
     const auto wrong =
-        r::prepare_normalizer_acceptance(.25f, wrong_current.value, wrong_proposal.value);
-    need(acceptance.status == r::MutationStatus::ok && !acceptance.decision.complete &&
-             wrong.status == r::MutationStatus::ok && wrong.decision.complete &&
+        er::prepare_normalizer_acceptance(N(.25f), wrong_current.value, wrong_proposal.value);
+    need(acceptance.status == er::MutationStatus::ok && !acceptance.decision.complete &&
+             wrong.status == er::MutationStatus::ok && wrong.decision.complete &&
              wrong.decision.selected,
          "Fixed-label MH targets physical chart T, not old U target");
 }
@@ -471,14 +489,15 @@ void chart_quadrature() {
             const auto cut = e::readout(e::finalize(source, e::StopReason::rr_cut));
             const auto next = e::prepare_update(source, 1, {F[second], 0, 0}, .5f,
                                                 evaluation[second], generation[second]);
-            need(next.status == e::Status::ok && !next.decision.complete, "Chart WRS second atom");
+            need(next.status == e::Status::ok && !next.decision.decision.complete,
+                 "Chart WRS second atom");
             const long double select_new = probability(next.decision);
             long double survived = 0;
             for (unsigned word : {0u, 0xffffffffu}) {
                 auto state = source;
                 auto p = next;
                 for (unsigned ordinal = 0;
-                     !p.decision.complete && ordinal < m::maximum_random_words; ++ordinal)
+                     !p.decision.decision.complete && ordinal < er::maximum_random_words; ++ordinal)
                     e::feed_random_word(p, word);
                 const auto result = e::commit_update(state, p);
                 need(result.status == e::Status::ok, "Commit chart WRS branch");
@@ -491,6 +510,66 @@ void chart_quadrature() {
         }
     near(two_atom_mean, 28.L / 3, 1e-5L,
          "Independent endpoint/discovery/WRS quadrature physical sum");
+}
+
+void scaled_regressions() {
+    // Exact failed native Pavilion words, independent physical formula. The
+    // quarter-weight MIS score remains positive below FLOAT normal range.
+    const float Zp = std::bit_cast<float>(0x03d76154u);
+    const float Tp = std::bit_cast<float>(0x33f892fcu);
+    const float inverse = std::bit_cast<float>(0x3b258c2cu);
+    const auto score = e::canonical_score(N(Zp), N(Tp), N(inverse), 1, 1, .25f);
+    const long double expected =
+        static_cast<long double>(Zp) * Tp / (static_cast<long double>(Tp) + inverse) / 4;
+    need(score.status == m::Status::ok && er::positive(score.value) && score.value.exponent < -125,
+         "Pavilion quarter MIS remains a positive Number");
+    near(V(score.value), expected, expected * 5e-7L, "independent Pavilion exact-word score");
+    // A serialized intermediate product would exceed4096, but the complete
+    // quotient is legal. Do not apply storage limits before cancellation.
+    const e::Number wideZ{.5f, 4001}, wideT{.5f, 1001};
+    const auto complement = e::canonical_score(wideZ, wideT, wideT, 1, 1);
+    const auto shifted = e::pair_score({wideZ, wideT, wideT, 1, 1});
+    need(complement.status == m::Status::ok && shifted.status == m::Status::ok &&
+             er::same(complement.value, {.5f, 4000}) && er::same(shifted.value, {.5f, 4000}),
+         "pair/canonical intermediate exponents cancel before storage check");
+    const auto cancelled_readout = e::readout(wideZ, {1, -1, -0.f}, wideZ);
+    need(cancelled_readout.status == e::Status::ok && cancelled_readout.value.x == 1 &&
+             cancelled_readout.value.y == -1 && m::bits(cancelled_readout.value.z) == 0x80000000u,
+         "readout cancels wide scaled weights before FLOAT");
+    const auto tiny_target = e::target({std::numeric_limits<float>::denorm_min(), 0, 0},
+                                       std::numeric_limits<float>::min(), {.5f, -1024});
+    need(tiny_target.status == m::Status::ok && tiny_target.value.exponent < -149,
+         "nonzero target below smallest FLOAT remains represented");
+    auto selected = e::begin(descriptor(0), 1);
+    observe(selected, {Tp, 0, 0}, 1);
+    auto donor = e::finalize(selected, e::StopReason::depth_end);
+    donor.normalizer = N(Zp); // A previous legal positive MIS/WRS normalizer.
+    bool quantized = false;
+    for (unsigned frame = 0; frame < 40; ++frame) {
+        auto fresh = e::begin(descriptor(0), 1);
+        observe(fresh, {}, 1);
+        const auto null = e::finalize(fresh, e::StopReason::depth_end);
+        need(null.selected_slot == e::null_slot && Z(null.normalizer),
+             "fresh null is not donor domain deletion");
+        const auto canonical =
+            e::canonical_score(null.normalizer, null.target, donor.target, 1, 20);
+        const auto import =
+            e::pair_score({donor.normalizer, donor.target, donor.target, 20, 1, .25f});
+        const auto combined = e::add_scores(canonical.value, import.value);
+        need(canonical.status == m::Status::ok && import.status == m::Status::ok &&
+                 combined.status == m::Status::ok && er::positive(combined.value),
+             "40frame null-fresh/real-donor lineage retains tiny positive weight");
+        donor.normalizer = combined.value;
+        const auto output = e::readout(donor);
+        need(output.status == e::Status::ok && donor.selected_slot != e::null_slot &&
+                 er::positive(donor.normalizer),
+             "FLOAT output quantization must not canonicalize a positive reservoir to null");
+        quantized |= output.value.x == 0;
+    }
+    need(quantized, "lineage actually reaches correctly rounded zero FLOAT output");
+    const auto poison =
+        e::canonical_score({.5f, std::numeric_limits<int>::max()}, N(1), N(1), 1, 1);
+    need(poison.status != m::Status::ok, "serialized exponent poison rejected before operations");
 }
 
 void discovery() {
@@ -583,6 +662,7 @@ int main() {
         long_stream_and_readout();
         chart_densities();
         chart_quadrature();
+        scaled_regressions();
         discovery();
         std::cout << "Enhanced zero-aware canonical math tests passed\n";
         return 0;

@@ -9,7 +9,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 11,
+    contract = 12,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -75,6 +75,9 @@ struct History {
     enhanced_wire::Reference record;
     float target_h_fraction;
     int target_h_exponent;
+    // Enhanced stores normalized fractions in normalizer/target and these
+    // exponents separately. Legacy records keep actual FLOAT values and zero exponents.
+    int normalizer_exponent, target_exponent;
 };
 struct Temporal {
     rypath_replay::ReplayState payload;
@@ -86,6 +89,7 @@ struct Temporal {
     enhanced_wire::Reference record;
     float target_h_fraction;
     int target_h_exponent;
+    int normalizer_exponent, target_exponent;
 };
 struct Accumulator {
     rypath_reservoir::State state;
@@ -100,6 +104,9 @@ struct Accumulator {
     enhanced_wire::Reference record;
     float target_h_fraction;
     int target_h_exponent;
+    // Enhanced state.selected_target mirrors the physical target above.
+    // Legacy's unit-target categorical selector and zero exponents are unchanged.
+    int score_exponent, target_exponent;
 };
 enum Argument : Word {
     config_id,
@@ -126,8 +133,8 @@ static_assert(__builtin_offsetof(History, confidence) == 60 &&
               "Area v10 structural confidence word offsets");
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 92 && sizeof(History) == 80 && sizeof(Temporal) == 84 &&
-                  sizeof(Accumulator) == 96 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
+static_assert(sizeof(Config) == 92 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
+                  sizeof(Accumulator) == 104 && sizeof(Contract) == 32 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath
