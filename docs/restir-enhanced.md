@@ -873,3 +873,7 @@ bias. Lin et al. measured 3.25% average absolute relative bias in their
 Kitchen scene. That value applies to their experiment. The published method
 and our Area implementation need separate image and cost measurements.
 [Lin et al., section 5](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/lin2026restirptenhanced.pdf)
+
+The four-scene M4 Max evaluation includes native timings, held-out image comparisons
+and the Pavilion night artifact diagnosis.
+[Duplication-based confidence study](duplication-cap-study.md)

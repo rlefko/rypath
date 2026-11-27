@@ -22,6 +22,12 @@ The pool reflection and day textures require separate checks when evaluating
 changes to denoising or reservoir confidence.
 [Highlight and texture measurements](zero-mutation-performance.md#pavilion-night-highlight-persistence)
 
+The optional duplication-based confidence cap shortened the roof excursion,
+but a bright stone sample survived all 104 frames with zero local duplicates.
+Both native night seeds had higher whole-image denoised error with the cap.
+Fixed confidence remains the default.
+[Duplication-cap study and native crops](duplication-cap-study.md)
+
 Cold expansion arithmetic repairs a reproduced Enhanced geometric-cancellation
 failure. Its 185 GPU geometry controls pass, and the formerly failing native
 Pavilion-night sequence completes all 40 submissions with finite final raw and
