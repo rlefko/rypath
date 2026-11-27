@@ -29,6 +29,7 @@ assert "--area-temporal-cache on|off" in help_text
 assert "--area-suffix-cache on|off" in help_text
 assert "--area-pair-compaction on|off" in help_text
 assert "--area-temporal-reprojection off|dual" in help_text
+assert "--area-duplication off|initial-seed|initial-atom|current" in help_text
 assert "auto|adjacent|reciprocal16|paired-gaussian16" in help_text
 assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
@@ -87,6 +88,7 @@ for option, values in (
     ("--area-suffix-cache", ("invalid", "On", "0")),
     ("--area-pair-compaction", ("invalid", "On", "0")),
     ("--area-temporal-reprojection", ("invalid", "Dual", "on", "0")),
+    ("--area-duplication", ("invalid", "Initial-Seed", "on", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
@@ -445,6 +447,14 @@ with tempfile.TemporaryDirectory() as directory:
     assert settings["area_contract"] == 16
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
+    for mode in ("off", "initial-seed", "initial-atom", "current"):
+        destination = root / f"area-duplication-parse-{mode}.json"
+        invoke(["--scene", str(malformed), "--output", str(destination),
+                "--estimator", "area-replay", "--area-path-domain", "enhanced",
+                "--spectral-transport", "hero", "--area-duplication", mode])
+        duplication_settings = json.loads(destination.read_text())["settings"]
+        assert duplication_settings["requested_area_duplication"] == mode
+        assert duplication_settings["area_duplication"] == "off"
     for stencil in ("adjacent", "reciprocal16", "paired-gaussian16"):
         destination = root / f"area-atlas-parse-{stencil}.json"
         invoke(["--scene", str(malformed), "--output", str(destination),

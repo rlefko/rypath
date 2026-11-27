@@ -2,6 +2,7 @@
 #include "area_pair_atlas.hpp"
 #include "area_stencil_shared.h"
 #include "enhanced_chart_shared.h"
+#include "enhanced_duplication_oracle.hpp"
 #include "frame_session.hpp"
 #include "frame_session_test_access.hpp"
 #include "hero_spectrum_shared.h"
@@ -1666,6 +1667,139 @@ void enhanced_suffix_conductor() {
     std::cout << "suffix_conductor_exact totals hits=" << hits[0] << ',' << hits[1] << ','
               << hits[2] << " misses=" << misses << " referenced_records=" << records << '\n';
 }
+void duplication_snapshot_oracle(const EnhancedSessionSnapshot &snapshot, const FrameInfo &info) {
+    namespace d = rypath_enhanced_duplication;
+    namespace ref = duplication_oracle;
+    need(snapshot.status == GeometryStatus::success, snapshot.diagnostic);
+    const unsigned N = snapshot.width * snapshot.height;
+    need(snapshot.duplication_mode == info.duplication.mode &&
+             snapshot.duplication_labels.size() == N &&
+             snapshot.duplication_temporal_labels.size() == N &&
+             snapshot.duplication_counts.size() == N,
+         "Diagnostic snapshot owns exactly the latest publication labels/scratch/counts");
+    std::vector<ref::Pixel> pixels(N);
+    for (unsigned p = 0; p < N; ++p) {
+        const auto &h = snapshot.history[p];
+        const auto &label = snapshot.duplication_labels[p];
+        auto &v = pixels[p];
+        v.null = h.selected_slot == contribution_wire::enhanced_null_slot;
+        v.valid = !v.null && label.fresh_pixel < N && label.initial_j != 0xffffffffu;
+        v.birth = {label.fresh_pixel, label.sample_low, label.sample_high, label.initial_j};
+        std::memcpy(v.current.data(), &h.payload, 7 * sizeof(unsigned));
+        v.current[7] = h.selected_slot;
+        need(v.null ? d::canonical_invalid(label) : v.valid,
+             "Null and known positive coverage are separate, never guessed from brightness");
+    }
+    const unsigned mode = info.duplication.mode == FrameAreaDuplication::initial_seed   ? 1
+                          : info.duplication.mode == FrameAreaDuplication::initial_atom ? 2
+                                                                                        : 3;
+    const auto expected = ref::count(pixels, snapshot.width, snapshot.height, mode);
+    need(info.duplication.version == 1 && info.duplication.denominator == 288 &&
+             info.duplication.histogram.size() == 291 && info.duplication.unknown_pixels == 0,
+         "Enabled diagnostic identity and complete known-provenance coverage");
+    std::uint64_t valid = 0;
+    for (unsigned bin = 0; bin < 291; ++bin) {
+        need(info.duplication.histogram[bin] == expected.histogram[bin],
+             "Published histogram equals independent finite-coordinate oracle");
+        if (bin < 289)
+            valid += expected.histogram[bin];
+    }
+    need(info.duplication.valid_pixels == valid &&
+             info.duplication.null_pixels == expected.histogram[289] &&
+             std::equal(snapshot.duplication_counts.begin(), snapshot.duplication_counts.end(),
+                        expected.counts.begin()),
+         "Owned exact count map and coverage agree with independent oracle");
+    const double mean = valid ? double(expected.sum) / (288. * valid) : 0;
+    need(std::isfinite(info.duplication.mean_d) &&
+             std::abs(info.duplication.mean_d - mean) <= 4 * std::numeric_limits<double>::epsilon(),
+         "Duplication mean converts integer counts using fixed288 denominator");
+}
+void enhanced_duplication_exact_controls() {
+    auto scene = enhanced_cavity();
+    scene.max_depth = 3;
+    std::uint64_t valid_centers = 0;
+    for (const auto mode : {FrameAreaDuplication::initial_seed, FrameAreaDuplication::initial_atom,
+                            FrameAreaDuplication::current}) {
+        auto off = enhanced_config();
+        off.width = off.height = 7;
+        off.capacity = 37;
+        off.seed = 0;
+        off.mutation_steps = mode == FrameAreaDuplication::initial_seed ? 0 : 1;
+        off.area_stencil = FrameAreaStencil::paired_gaussian16;
+        off.contribution_replay = FrameContributionReplay::prefix;
+        off.compact_enhanced_pairs = true;
+        off.area_duplication = FrameAreaDuplication::off;
+        auto on = off;
+        on.area_duplication = mode;
+        auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+        need(pair.status == GeometryStatus::success && pair.shared_renderer &&
+                 pair.independent_duplication_storage && !pair.duplication_enabled[0] &&
+                 pair.duplication_enabled[1],
+             pair.diagnostic);
+        const auto absent = FrameSessionTestAccess::duplication_state(*pair.sessions[0]);
+        need(absent.status == GeometryStatus::success && absent.mode == FrameAreaDuplication::off &&
+                 absent.storage_bytes == 0 && !absent.valid,
+             "Disabled diagnostics allocate no label/map resources");
+        for (unsigned frame = 0; frame < 3; ++frame) {
+            const std::uint64_t sample = frame < 2 ? 0 : 1ull << 32;
+            const auto a = enhanced_capture(*pair.sessions[0], off, scene.max_depth, frame, sample);
+            const auto b = enhanced_capture(*pair.sessions[1], on, scene.max_depth, frame, sample);
+            exact(a.image, b.image);
+            need(a.info.duplication.version == 0 &&
+                     a.info.duplication.mode == FrameAreaDuplication::off &&
+                     a.info.duplication.histogram.empty() &&
+                     a.info.logical_evaluations == b.info.logical_evaluations &&
+                     a.info.completed_evaluations == b.info.completed_evaluations &&
+                     a.info.cached_evaluations == b.info.cached_evaluations &&
+                     a.info.analytic_null_evaluations == b.info.analytic_null_evaluations &&
+                     a.info.mutation_attempts == b.info.mutation_attempts &&
+                     a.info.mutation_accepts == b.info.mutation_accepts,
+                 "Diagnostic off/on preserves exact transport, weights, confidence, mutation and "
+                 "accounting");
+            const auto x = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], frame,
+                                                                     false, false, true);
+            const auto y = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], frame,
+                                                                     false, false, true);
+            need(x.status == GeometryStatus::success && y.status == GeometryStatus::success,
+                 x.diagnostic + y.diagnostic);
+            need(x.duplication_labels.empty() && x.duplication_counts.empty(),
+                 "Disabled publication has absent diagnostic arrays");
+            need(x.front_bank == y.front_bank && x.history.size() == y.history.size() &&
+                     x.temporal.size() == y.temporal.size() &&
+                     std::memcmp(x.history.data(), y.history.data(),
+                                 x.history.size() * sizeof(area_wire::History)) == 0 &&
+                     std::memcmp(x.temporal.data(), y.temporal.data(),
+                                 x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+                 "Off/on diagnostics preserve exact physical reservoir tuples");
+            const auto record = [&](enhanced_wire::Reference r) {
+                if (enhanced_wire::absent(r))
+                    return;
+                const auto index = std::size_t(r.bank) * 49 + r.pixel;
+                need(index < x.records.size() && index < y.records.size() &&
+                         std::memcmp(&x.records[index], &y.records[index],
+                                     sizeof(enhanced_wire::Record)) == 0,
+                     "Diagnostic hooks preserve exact selected owned records");
+            };
+            for (const auto &h : x.history)
+                if (h.valid && h.selected_slot != contribution_wire::enhanced_null_slot)
+                    record(h.record);
+            for (const auto &t : x.temporal)
+                if (t.normalizer > 0 && t.target > 0 &&
+                    t.selected_slot != contribution_wire::enhanced_null_slot)
+                    record(t.record);
+            duplication_snapshot_oracle(y, b.info);
+            valid_centers += b.info.duplication.valid_pixels;
+            if (frame < 2)
+                for (const auto &label : y.duplication_labels)
+                    if (label.fresh_pixel < 49)
+                        need(label.sample_low == 0 && label.sample_high == 0,
+                             "Repeated sample labels retain common original seed family across "
+                             "changing serials");
+        }
+    }
+    need(valid_centers > 0,
+         "Real-frame duplication controls must publish positive known-ancestor coverage");
+}
 void atlas_metadata(const FrameInfo &info, const FrameConfig &c) {
     namespace a = rypath_area_pair_atlas;
     const auto &m = info.paired_atlas;
@@ -1901,6 +2035,87 @@ ContributionCapture motion_capture(FrameSession &session, std::optional<FrameCam
     if (retained)
         *retained = std::move(submitted.frame);
     return {std::move(image), std::move(info)};
+}
+void enhanced_duplication_lifetime_controls() {
+    auto scene = enhanced_cavity();
+    scene.max_depth = 1;
+    auto c = enhanced_config();
+    c.width = c.height = 7;
+    c.capacity = 37;
+    c.mutation_steps = 1;
+    c.area_duplication = FrameAreaDuplication::initial_atom;
+    auto candidate = session(scene, c);
+    std::unique_ptr<Frame> retained;
+    const auto first = motion_capture(*candidate, {}, 73, &retained);
+    const auto before = FrameSessionTestAccess::duplication_state(*candidate);
+    need(before.status == GeometryStatus::success && before.valid && before.history_valid &&
+             before.front == before.history_front && before.generation == before.history_generation,
+         before.diagnostic);
+    need(FrameSessionTestAccess::force_next_duplication_publication_failure(*candidate).empty(),
+         "Arm diagnostic failure immediately before joint publication");
+    auto failed = candidate->submit({.sample_index = high_sample, .epoch = 73});
+    need(failed.status == GeometryStatus::success && failed.frame &&
+             failed.frame->wait().status == FrameStatus::failed,
+         "Injected diagnostic publication fails");
+    const auto after = FrameSessionTestAccess::duplication_state(*candidate);
+    need(after.status == GeometryStatus::success && after.valid && after.history_valid &&
+             after.front == before.front && after.history_front == before.history_front &&
+             after.generation == before.generation &&
+             after.history_generation == before.history_generation &&
+             after.committed_serial == before.committed_serial,
+         "Same-epoch failure preserves the committed diagnostic/reservoir bundle");
+    need(FrameSessionTestAccess::snapshot_enhanced(*candidate, first.info.area_serial, false, false,
+                                                   true)
+                 .status == GeometryStatus::failure,
+         "A later failed attempt forbids stale GPU diagnostic readback");
+    failed.frame.reset();
+    const auto recovered = motion_capture(*candidate);
+    const auto snapshot = FrameSessionTestAccess::snapshot_enhanced(
+        *candidate, recovered.info.area_serial, false, false, true);
+    duplication_snapshot_oracle(snapshot, recovered.info);
+    need(FrameSessionTestAccess::force_next_duplication_publication_failure(*candidate).empty(),
+         "Arm failed cut publication");
+    auto cut = candidate->submit({.sample_index = 0, .epoch = 74});
+    need(cut.status == GeometryStatus::success && cut.frame &&
+             cut.frame->wait().status == FrameStatus::failed,
+         "Cut attempt fails after diagnostic work");
+    const auto invalid = FrameSessionTestAccess::duplication_state(*candidate);
+    need(invalid.status == GeometryStatus::success && !invalid.valid && !invalid.history_valid,
+         "Failed cut invalidates both diagnostic and reservoir eligibility");
+    cut.frame.reset();
+    auto cold = candidate->submit({.sample_index = 0, .epoch = 74});
+    need(cold.status == GeometryStatus::success && cold.frame, cold.diagnostic);
+    const auto info = cold.frame->wait();
+    need(info.status == FrameStatus::complete && !info.history_used, info.diagnostic);
+    const auto final =
+        FrameSessionTestAccess::snapshot_enhanced(*candidate, info.area_serial, false, false, true);
+    duplication_snapshot_oracle(final, info);
+    for (const auto &label : final.duplication_labels)
+        if (label.fresh_pixel < 49)
+            need(label.sample_low == 0 && label.sample_high == 0,
+                 "Cold recovery labels use current original sample, not a failed or stale "
+                 "generation");
+    cold.frame.reset();
+    candidate.reset();
+    exact(first.image, retained->capture());
+    // Enabled diagnostic buffers remain retained by pending work even when the
+    // public session disappears; copied FrameInfo telemetry survives completion.
+    auto dying = session(scene, c);
+    auto pending = dying->submit({.sample_index = 0, .epoch = 91});
+    need(pending.status == GeometryStatus::success && pending.frame, pending.diagnostic);
+    dying.reset();
+    const auto finished = pending.frame->wait();
+    need(finished.status == FrameStatus::complete && finished.duplication.version == 1 &&
+             finished.duplication.histogram.size() == 291 &&
+             pending.frame->capture().status == GeometryStatus::success,
+         "Pending session destruction retains diagnostic resources through successful GPU "
+         "publication");
+}
+void enhanced_duplication_controls() {
+    need(FrameConfig{}.area_duplication == FrameAreaDuplication::off,
+         "Duplication diagnostics default off");
+    enhanced_duplication_exact_controls();
+    enhanced_duplication_lifetime_controls();
 }
 void enhanced_motion_static_controls() {
     auto scene = motion_disocclusion_scene();
@@ -2622,13 +2837,16 @@ int main(int argc, char **argv) {
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
+        const bool enhanced_duplication =
+            argc == 2 && std::string_view(argv[1]) == "--enhanced-duplication";
         const bool enhanced_atlas = argc == 2 && std::string_view(argv[1]) == "--enhanced-atlas";
         const bool enhanced_motion = argc == 2 && std::string_view(argv[1]) == "--enhanced-motion";
         const bool enhanced_pairs = argc == 2 && std::string_view(argv[1]) == "--enhanced-pairs";
         const bool enhanced_suffix = argc == 2 && std::string_view(argv[1]) == "--enhanced-suffix";
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
         need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid ||
-                 enhanced_suffix || enhanced_pairs || enhanced_motion || enhanced_atlas,
+                 enhanced_suffix || enhanced_pairs || enhanced_motion || enhanced_atlas ||
+                 enhanced_duplication,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
              "--enhanced-hybrid, --enhanced-suffix, --enhanced-pairs, --enhanced-motion or "
              "--enhanced-atlas");
@@ -2647,6 +2865,10 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_duplication) {
+            enhanced_duplication_controls();
+            return 0;
+        }
         if (enhanced_atlas) {
             enhanced_atlas_controls();
             return 0;

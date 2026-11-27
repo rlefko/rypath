@@ -2,6 +2,7 @@
 #pragma once
 #include "area_pair_atlas_shared.h"
 #include "area_wire.h"
+#include "enhanced_duplication_wire.h"
 #include "enhanced_motion_wire.h"
 #include "enhanced_suffix_tape_shared.h"
 #include "frame_session.hpp"
@@ -20,6 +21,8 @@ struct SharedSceneFrameSessions {
     std::array<std::uintptr_t, 2> paired_atlas_arenas{};
     bool shared_paired_atlas_storage = false;
     bool independent_history = false;
+    std::array<bool, 2> duplication_enabled{};
+    bool independent_duplication_storage = false;
     // Opaque identities only: callers cannot mutate the shared owned-path
     // storage or treat it as a completed-frame snapshot.
     std::array<std::uintptr_t, 2> enhanced_record_arenas{}, enhanced_evaluations{};
@@ -53,6 +56,19 @@ struct EnhancedSessionSnapshot {
     std::vector<enhanced_motion_wire::Donor> donors;
     // Actual per-slot Config copy; absent in old stencil modes. No GPU lease.
     std::optional<rypath_area_pair_atlas::Config> paired_config;
+    FrameAreaDuplication duplication_mode = FrameAreaDuplication::off;
+    std::vector<enhanced_duplication_wire::Label> duplication_labels, duplication_temporal_labels;
+    std::vector<std::uint16_t> duplication_counts;
+};
+struct EnhancedDuplicationState {
+    GeometryStatus status = GeometryStatus::failure;
+    std::string diagnostic;
+    FrameAreaDuplication mode = FrameAreaDuplication::off;
+    bool valid = false, history_valid = false;
+    unsigned front = 0, history_front = 0;
+    std::uint64_t generation = 0, history_generation = 0, next_serial = 0, pending_serial = 0,
+                  storage_bytes = 0;
+    std::optional<std::uint64_t> committed_serial;
 };
 struct EnhancedMotionState {
     GeometryStatus status = GeometryStatus::failure;
@@ -79,6 +95,9 @@ struct FrameSessionTestAccess {
     // publication identity remains inspectable after a failed attempt; GPU
     // scratch/full-snapshot eligibility is unchanged.
     static EnhancedMotionState motion_state(FrameSession &);
+    static EnhancedDuplicationState duplication_state(FrameSession &);
+    // Diagnostic-only rejection after validation, before the atomic publication.
+    static std::string force_next_duplication_publication_failure(FrameSession &);
     // Test-only one-shot host rejection at the next completed Area publication,
     // after GPU validation and before either reservoir/geometry is committed.
     // Empty diagnostic means armed; rejects pending/disabled/already-armed state.
@@ -100,10 +119,11 @@ struct FrameSessionTestAccess {
     // Temporal bank3 is the fresh tuple only on a cold frame with zero mutations.
     static EnhancedSessionSnapshot snapshot_enhanced(FrameSession &, std::uint64_t expected_serial,
                                                      bool include_suffix = false,
-                                                     bool include_motion = false);
+                                                     bool include_motion = false,
+                                                     bool include_duplication = false);
     // Ordinary build_frame_session validates/builds the first session. The
     // second uses the exact same renderer; only temporal/suffix cache flags and
-    // experimental Enhanced pair compaction/temporal reprojection may differ.
+    // experimental Enhanced pair compaction/temporal reprojection and diagnostic modes may differ.
     // Reprojection changes source domains: moving contrasts need raw mean tests;
     // exact equality is asserted only for unchanged static identity contexts.
     // Enhanced also uses exact caching when the complete evaluator context matches.

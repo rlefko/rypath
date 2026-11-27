@@ -2562,6 +2562,7 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
 // Runtime kernels depend on definitions from the preceding includes.
 // clang-format off
 #include "wavefront.metal"
+#include "enhanced_duplication.metal"
 #include "area_reuse.metal"
 #include "reconstruction_guides.metal"
 #include "enhanced_motion.metal"

@@ -3,6 +3,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "bsdf_table_fixture.hpp"
+#include "enhanced_duplication_wire.h"
 #include "enhanced_hybrid_state_shared.h"
 #include "enhanced_motion_wire.h"
 #include "enhanced_suffix_tape_shared.h"
@@ -911,8 +912,8 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
 // Protocol fixture only: transport responses are injected after production
 // prepare. The scalar reference uses direct double MIS formulas, not shared
 // reservoir/target/confidence helpers or the GPU's categorical decisions.
-void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
-                            id<MTLCommandQueue> queue) {
+void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue,
+                            bool duplication_probe = false) {
     namespace cw = contribution_wire;
     namespace ew = enhanced_wire;
     // Radius16 is the smallest authored reciprocal stencil; this extent
@@ -1068,7 +1069,10 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
             [argument_encoder setBuffer:buffers[i] offset:guard atIndex:i];
     };
     bind();
-    const auto dispatch = [&](id<MTLComputePipelineState> pipeline, unsigned count = pixels) {
+    id<MTLBuffer> duplication_arguments = nil;
+    std::vector<id<MTLBuffer>> duplication_resources;
+    const auto dispatch = [&](id<MTLComputePipelineState> pipeline, unsigned count = pixels,
+                              bool allow_failure = false) {
         const bool suffix_enabled = config.suffix_context_low || config.suffix_context_high;
         std::array<tape::Entry, ew::bank_count * pixels> frozen_suffixes{};
         std::memcpy(frozen_suffixes.data(), suffixes, lengths[aw::enhanced_suffix_id]);
@@ -1079,6 +1083,11 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
         [encoder setComputePipelineState:pipeline];
         [encoder setBuffer:arguments offset:0 atIndex:1];
         [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
+        if (duplication_arguments) {
+            [encoder setBuffer:duplication_arguments offset:0 atIndex:2];
+            for (auto resource : duplication_resources)
+                [encoder useResource:resource usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+        }
         for (auto buffer : buffers)
             [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
         [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
@@ -1088,7 +1097,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
                 "Area protocol command completion");
         aw::Counters counters{};
         std::memcpy(&counters, data(aw::failure_id), sizeof(counters));
-        require(counters.failure == 0,
+        require(allow_failure || counters.failure == 0,
                 "Area protocol failure phase=" + std::to_string(config.phase) +
                     " candidate=" + std::to_string(config.candidate) +
                     " source_line=" + std::to_string(counters.first_failure.source_line));
@@ -1167,6 +1176,257 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
         config.temporal_cache = 0;
         dispatch(prepare); // Restore the independent nonidentity replay fixture below.
     };
+    if (duplication_probe) {
+        namespace dw = enhanced_duplication_wire;
+        namespace dup = rypath_enhanced_duplication;
+        auto diagnostic_finish = load(@"rypath_area_temporal_finish_duplication_v1");
+        auto diagnostic_finalize = load(@"rypath_area_finalize_duplication_v1");
+        auto diagnostic_reset = load(@"rypath_enhanced_duplication_reset");
+        auto diagnostic_function =
+            metal::load_function(library, @"rypath_area_temporal_finish_duplication_v1", why);
+        require(diagnostic_function != nil, why);
+        auto de = [diagnostic_function newArgumentEncoderWithBufferIndex:2];
+        require(de != nil, "Provenance argument encoder");
+        duplication_arguments = [device newBufferWithLength:de.encodedLength
+                                                    options:MTLResourceStorageModeShared];
+        const std::array<std::size_t, 6> sizes{sizeof(dw::Config),
+                                               pixels * sizeof(dup::Label),
+                                               pixels * sizeof(dup::Label),
+                                               pixels * sizeof(dup::Label),
+                                               pixels * sizeof(std::uint16_t),
+                                               sizeof(dw::Counters)};
+        std::array<id<MTLBuffer>, 6> diagnostic{};
+        for (unsigned id = 0; id < diagnostic.size(); ++id) {
+            diagnostic[id] = [device newBufferWithLength:sizes[id] + 2 * guard
+                                                 options:MTLResourceStorageModeShared];
+            require(diagnostic[id] != nil, "Provenance guarded allocation");
+            std::memset(diagnostic[id].contents, 0xa5, diagnostic[id].length);
+            duplication_resources.push_back(diagnostic[id]);
+        }
+        const auto dd = [&](unsigned id) {
+            return static_cast<unsigned char *>(diagnostic[id].contents) + guard;
+        };
+        auto *source_ids = reinterpret_cast<dup::Label *>(dd(dw::history_source_labels_id));
+        auto *destination_ids =
+            reinterpret_cast<dup::Label *>(dd(dw::history_destination_labels_id));
+        auto *temporal_ids = reinterpret_cast<dup::Label *>(dd(dw::temporal_labels_id));
+        auto *dc = reinterpret_cast<dw::Counters *>(dd(dw::counters_id));
+        const auto bind_diagnostic = [&] {
+            [de setArgumentBuffer:duplication_arguments offset:0];
+            for (unsigned id = 0; id < diagnostic.size(); ++id)
+                [de setBuffer:diagnostic[id] offset:guard atIndex:id];
+            [de setBuffer:buffers[aw::history_destination_id]
+                   offset:guard
+                  atIndex:dw::history_destination_id];
+        };
+        bind_diagnostic();
+        const auto configure = [&] {
+            const dw::Config c{
+                1, width, height, dup::initial_atom, config.serial_low, config.serial_high, 0, 0};
+            std::memcpy(dd(dw::config_id), &c, sizeof(c));
+        };
+        const auto check_guards = [&] {
+            for (unsigned id = 0; id < diagnostic.size(); ++id) {
+                const auto *bytes = static_cast<const unsigned char *>(diagnostic[id].contents);
+                for (unsigned j = 0; j < guard; ++j)
+                    require(bytes[j] == 0xa5 && bytes[guard + sizes[id] + j] == 0xa5,
+                            "Provenance buffer guards");
+            }
+        };
+        const auto equal_label = [](dup::Label a, dup::Label b) {
+            return std::memcmp(&a, &b, sizeof(a)) == 0;
+        };
+        parameters.seed_low = parameters.seed_high = 0;
+        parameters.sample_low = parameters.sample_high = 0;
+        const auto cold = [&](bool second_positive) {
+            config.phase = aw::fresh;
+            config.candidate = 0;
+            config.history_used = 0;
+            config.temporal_reprojection = 0;
+            config.mutation_steps = 1;
+            configure();
+            dispatch(reset, 1);
+            dispatch(diagnostic_reset, 291);
+            dispatch(prepare);
+            for (unsigned p = 0; p < pixels; ++p) {
+                const bool positive = p == 0 || (second_positive && p == 1);
+                const render_wire::Point xyz =
+                    positive ? render_wire::Point{float(4 + 4 * p), 0, 0} : render_wire::Point{};
+                const unsigned slot = positive ? (p == 0 ? 0u : 1u) : cw::enhanced_null_slot;
+                response(p, xyz, 1, slot, 2 * proxy(xyz, 1));
+                if (positive)
+                    record_at(evaluations[p].result) = descriptor(p, 0);
+            }
+            dispatch(merge);
+            dispatch(diagnostic_finish);
+            require(dc->failure == 0 && dc->temporal_completed == pixels,
+                    "Fresh temporal provenance completes every owner");
+            for (unsigned p = 0; p < pixels; ++p) {
+                const auto expected = (p == 0 || (second_positive && p == 1))
+                                          ? dup::Label{p, parameters.sample_low,
+                                                       parameters.sample_high, p == 0 ? 0u : 1u}
+                                          : dup::invalid_label();
+                require(equal_label(temporal_ids[p], expected),
+                        "Actual fresh winner captures original pixel/sample64/initial-j including "
+                        "zero words");
+            }
+            check_guards();
+        };
+        cold(true);
+        std::array<dup::Label, pixels> initial_births{};
+        std::memcpy(initial_births.data(), temporal_ids, sizeof(initial_births));
+        const auto original_zero = temporal[0].payload;
+        const auto original_reject = temporal[1];
+        config.phase = aw::mutation;
+        config.candidate = 0;
+        dispatch(mutation_prepare);
+        for (unsigned p = 0; p < pixels; ++p) {
+            const auto xyz = p == 0 ? render_wire::Point{400, 0, 0} : render_wire::Point{};
+            response(p, xyz, 1, temporal[p].selected_slot);
+            if (temporal[p].selected_slot != cw::enhanced_null_slot)
+                record_at(evaluations[p].result) = descriptor(p, 1);
+        }
+        dispatch(mutation_finish);
+        require(!same(temporal[0].payload, original_zero) && same(temporal[1], original_reject),
+                "Forced uphill accepted mutation changes U; zero-target proposal is rejected");
+        require(
+            std::memcmp(initial_births.data(), temporal_ids, sizeof(initial_births)) == 0,
+            "Accepted, rejected and null MCMC moves retain original birth labels byte-for-byte");
+        // Fresh sampleHigh1 is a distinct genealogy despite equal low/sample0.
+        ++config.serial_low;
+        parameters.sample_high = 1;
+        cold(false);
+        const dup::Label birth{0, 0, 1, 0};
+        require(!equal_label(birth, initial_births[0]),
+                "High sample word is part of original genealogy");
+        config.phase = aw::spatial;
+        config.candidate = 0;
+        config.stencil = aw::reciprocal16_stencil;
+        config.offset_x[0] = config.offset_x[1] = 16;
+        config.offset_y[0] = config.offset_y[1] = 0;
+        dispatch(spatial_begin);
+        for (unsigned k = 1; k <= 4; ++k) {
+            config.candidate = k;
+            dispatch(prepare);
+            for (unsigned p = 0; p < pixels; ++p) {
+                const int x = int(p % width) + ((k & 1u) ? 16 : -16);
+                const unsigned source =
+                    x < 0 || x >= int(width) ? p : unsigned(int(p / width) * int(width) + x);
+                const auto &t = temporal[source];
+                response(p, t.xyz, 1, t.selected_slot);
+            }
+            dispatch(merge);
+        }
+        config.phase = aw::spatial_final;
+        config.candidate = 0;
+        dispatch(diagnostic_finalize);
+        require(dc->failure == 0 && dc->final_completed == pixels,
+                "Final provenance completes actual spatial owners");
+        for (unsigned p = 0; p < pixels; ++p)
+            require(
+                equal_label(destination_ids[p], p == 0 || p == 16 ? birth : dup::invalid_label()),
+                "Final actual center and duplicated-spatial winners copy temporal source birth; "
+                "nulls remain missing");
+        const std::array<dup::Label, pixels> published = [&] {
+            std::array<dup::Label, pixels> x{};
+            std::memcpy(x.data(), destination_ids, sizeof(x));
+            return x;
+        }();
+        // Freeze the actual publication as history, aligning diagnostic banks
+        // with reservoir banks rather than the independent geometry front.
+        std::swap(buffers[aw::history_source_id], buffers[aw::history_destination_id]);
+        bind();
+        std::swap(diagnostic[dw::history_source_labels_id],
+                  diagnostic[dw::history_destination_labels_id]);
+        source_ids = reinterpret_cast<dup::Label *>(dd(dw::history_source_labels_id));
+        destination_ids = reinterpret_cast<dup::Label *>(dd(dw::history_destination_labels_id));
+        bind_diagnostic();
+        auto *old = reinterpret_cast<aw::History *>(data(aw::history_source_id));
+        auto *donors = reinterpret_cast<enhanced_motion_wire::Donor *>(data(aw::donors_id));
+        config.history_source_bank = 1;
+        config.history_used = 1;
+        config.temporal_reprojection = 1;
+        config.phase = aw::fresh;
+        config.candidate = 0;
+        ++config.serial_low;
+        parameters.sample_high = 2;
+        configure();
+        for (unsigned p = 0; p < pixels; ++p)
+            donors[p] = {p == 5 || p == 6 ? 0u : (p + 1) % pixels,
+                         unsigned(rypath_enhanced_motion::Classification::ordinary),
+                         config.serial_low, config.serial_high};
+        dispatch(reset, 1);
+        dispatch(diagnostic_reset, 291);
+        dispatch(prepare);
+        for (unsigned p = 0; p < pixels; ++p) {
+            const auto xyz = p == 2 ? render_wire::Point{12, 0, 0} : render_wire::Point{};
+            response(p, xyz, 1, p == 2 ? 1u : cw::enhanced_null_slot, 2 * proxy(xyz, 1));
+            if (p == 2)
+                record_at(evaluations[p].result) = descriptor(p, 0);
+        }
+        dispatch(merge);
+        config.phase = aw::temporal_reverse;
+        dispatch(prepare);
+        for (unsigned p = 0; p < pixels; ++p)
+            response(p, {}, 1, temporal[p].selected_slot);
+        dispatch(merge);
+        config.phase = aw::temporal;
+        config.candidate = 1;
+        dispatch(prepare);
+        for (unsigned p = 0; p < pixels; ++p) {
+            const unsigned source = donors[p].source_pixel;
+            response(p, p == 5 || p == 6 ? old[source].xyz : render_wire::Point{}, 1,
+                     old[source].selected_slot);
+        }
+        dispatch(merge);
+        dispatch(diagnostic_finish);
+        require(dc->failure == 0 && dc->temporal_completed == pixels,
+                "Mapped temporal provenance validates frozen history domains");
+        for (unsigned p = 0; p < pixels; ++p) {
+            const auto expected = p == 2             ? dup::Label{2, 0, 2, 1}
+                                  : p == 5 || p == 6 ? birth
+                                                     : dup::invalid_label();
+            require(equal_label(temporal_ids[p], expected),
+                    "Actual mapped history donor and fresh winner retain independent known birth "
+                    "labels");
+        }
+        require(std::memcmp(source_ids, published.data(), sizeof(published)) == 0,
+                "Mapped many-to-one reuse never mutates source ancestry");
+        // An unknown positive source is a protocol failure, not a null family.
+        source_ids[0] = dup::invalid_label();
+        dispatch(diagnostic_reset, 291);
+        dispatch(diagnostic_finish, pixels, true);
+        require((dc->failure & dw::invalid_provenance) != 0,
+                "Unknown positive historical parent fails visibly");
+        source_ids[0] = birth;
+        // A positive winner from temporalbank is not a legal temporal parent,
+        // even though that record itself is structurally valid physical data.
+        configure();
+        dispatch(diagnostic_reset, 291);
+        accumulator[5].record = {ew::temporal_bank, 0};
+        record_at(accumulator[5].record) = descriptor(0, 0);
+        dispatch(diagnostic_finish, pixels, true);
+        require((dc->failure & dw::invalid_provenance) != 0,
+                "Wrong positive source bank cannot be silently guessed as ancestry");
+        source_ids[1] = {1, 0, 99, 0};
+        accumulator[5].record = {config.history_source_bank, 1};
+        dispatch(diagnostic_reset, 291);
+        dispatch(diagnostic_finish, pixels, true);
+        require((dc->failure & dw::invalid_provenance) != 0,
+                "A valid but wrong-source-pixel label cannot replace the frozen mapped parent");
+        source_ids[1] = published[1];
+        accumulator[5].record = {config.history_source_bank, 0};
+        [de setBuffer:diagnostic[dw::temporal_labels_id]
+               offset:guard
+              atIndex:dw::history_source_labels_id];
+        dispatch(diagnostic_reset, 291);
+        dispatch(diagnostic_finish, pixels, true);
+        require((dc->failure & dw::invalid_config) != 0,
+                "Aliased source/temporal provenance buffers fail configuration");
+        bind_diagnostic();
+        check_guards();
+        return;
+    }
     // Cold all-null generation: every source domain still contributes M1.
     config.phase = aw::fresh;
     dispatch(reset, 1);
@@ -2294,6 +2554,7 @@ int run(const std::filesystem::path &path) {
             "History storage contract mismatch");
     enhanced_null_owners(device, library, queue, history_contract);
     enhanced_area_protocol(device, library, queue);
+    enhanced_area_protocol(device, library, queue, true);
     constexpr std::uint32_t history_schema = 0x48535435u;
     auto layout_pipeline =
         metal::load_pipeline(device, library, @"rypath_hero_history_layout", why);

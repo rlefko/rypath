@@ -218,8 +218,10 @@ matched-mean and frame-history controls pass. Bounded two-operation suffix cachi
 passes focused CPU/GPU and exact diffuse/conductor controls. Native static cache/null-compaction screens retain exact controls but show limited,
 scene-dependent gains. Camera-only dual motion passes focused runtime controls.
 Paired Gaussian spatial textures pass independent integer/GPU and bounded
-rendering controls. Duplication analysis, moving-scene and complete quality/time
-qualification remain open.
+rendering controls. Optional exact duplication diagnostics pass focused CPU/GPU,
+off/on rendering and publication-lifetime controls; native diagnostic cost,
+moving-scene quality and complete quality/time qualification remain open. Adaptive biased caps remain outside this
+diagnostic.
 
 [Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
 reduces retained AS memory with bounded exact image controls; it establishes no

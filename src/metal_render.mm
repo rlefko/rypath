@@ -8,6 +8,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "enhanced_duplication_wire.h"
 #include "enhanced_motion_host.hpp"
 #include "enhanced_wire.h"
 #include "frame_session.hpp"
@@ -60,6 +61,16 @@ namespace rypath {
 namespace {
 
 namespace wire = render_wire;
+namespace edw = enhanced_duplication_wire;
+static_assert(static_cast<unsigned>(FrameAreaDuplication::off) == edw::shared::off &&
+              static_cast<unsigned>(FrameAreaDuplication::initial_seed) ==
+                  edw::shared::initial_seed &&
+              static_cast<unsigned>(FrameAreaDuplication::initial_atom) ==
+                  edw::shared::initial_atom &&
+              static_cast<unsigned>(FrameAreaDuplication::current) == edw::shared::current);
+bool frame_duplication_enabled(const FrameConfig &c) {
+    return c.area_duplication != FrameAreaDuplication::off;
+}
 // Enhanced cross-target cells serialize a FLOAT mantissa and a signed exponent.
 constexpr std::size_t enhanced_cross_target_bytes = sizeof(float) + sizeof(std::int32_t);
 static_assert(enhanced_cross_target_bytes == 8);
@@ -2274,7 +2285,12 @@ struct FrameMotionPrograms {
     id<MTLIntersectionFunctionTable> table = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
 };
+struct FrameDuplicationPrograms {
+    id<MTLComputePipelineState> reset = nil, count = nil;
+    id<MTLArgumentEncoder> argument_encoder = nil;
+};
 struct FrameAreaBuffers {
+    id<MTLBuffer> duplication_config = nil, duplication_arguments = nil, duplication_counters = nil;
     id<MTLBuffer> replay = nil, leaf = nil, accumulators = nil, temporal = nil, failure = nil;
     id<MTLBuffer> cross_targets = nil;
     id<MTLBuffer> contribution_evaluation = nil;
@@ -2321,6 +2337,9 @@ struct FrameAreaHistory {
     // One pending Area frame exclusively owns scratch banks 2/3. Slots borrow
     // this arena; history banks 0/1 publish under the same completion token.
     id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
+    id<MTLBuffer> duplication_labels[2]{nil, nil}, duplication_temporal = nil;
+    id<MTLBuffer> duplication_counts[2]{nil, nil};
+    bool fail_next_duplication_publication = false;
     FrameAreaContext contexts[2];
     id<MTLBuffer> geometry[2]{nil, nil}, donors = nil;
     unsigned geometry_front = 0;
@@ -2626,6 +2645,7 @@ struct FrameSession::Impl {
     std::shared_ptr<FrameWavefrontPrograms> wavefront;
     std::shared_ptr<FrameAreaPrograms> area;
     std::shared_ptr<FrameMotionPrograms> motion;
+    std::shared_ptr<FrameDuplicationPrograms> duplication;
     std::shared_ptr<const FramePairAtlasAsset> paired_atlas;
     std::shared_ptr<FrameAreaHistory> history;
     std::size_t state_bytes = 0, slot_bytes = 0;
@@ -2683,7 +2703,7 @@ struct FrameSession::Impl {
     }
 
     EnhancedSessionSnapshot snapshot_enhanced(std::uint64_t expected_serial, bool include_suffix,
-                                              bool include_motion) const {
+                                              bool include_motion, bool include_duplication) const {
         EnhancedSessionSnapshot result;
         if (config.estimator != FrameEstimator::area_replay ||
             config.area_path_domain != FrameAreaPathDomain::enhanced || !history) {
@@ -2874,6 +2894,62 @@ struct FrameSession::Impl {
             }
             result.paired_config = actual;
         }
+        result.duplication_mode = config.area_duplication;
+        if (include_duplication && duplication) {
+            edw::Config actual{};
+            if (!latest->duplication_config ||
+                latest->duplication_config.length != sizeof(actual)) {
+                result.diagnostic = "Duplication snapshot config is unavailable";
+                return result;
+            }
+            std::memcpy(&actual, latest->duplication_config.contents, sizeof(actual));
+            if (!edw::valid_config(actual) || actual.width != config.width ||
+                actual.height != config.height ||
+                actual.mode != static_cast<std::uint32_t>(config.area_duplication) ||
+                (std::uint64_t(actual.serial_low) | (std::uint64_t(actual.serial_high) << 32)) !=
+                    expected_serial) {
+                result.diagnostic = "Duplication snapshot publication config mismatch";
+                return result;
+            }
+            const std::size_t label_bytes = pixels * sizeof(edw::Label),
+                              count_bytes = pixels * sizeof(std::uint16_t);
+            const auto read = [&](id<MTLBuffer> source, void *out,
+                                  std::size_t bytes) -> std::string {
+                if (!source || source.length != bytes)
+                    return "Duplication snapshot ownership/size mismatch";
+                auto staging = [r.device newBufferWithLength:bytes
+                                                     options:MTLResourceStorageModeShared];
+                if (!staging)
+                    return "Duplication snapshot staging allocation failed";
+                auto command = [r.queue commandBuffer];
+                auto blit = [command blitCommandEncoder];
+                if (!command || !blit)
+                    return "Duplication snapshot encoder failed";
+                [blit copyFromBuffer:source
+                         sourceOffset:0
+                             toBuffer:staging
+                    destinationOffset:0
+                                 size:bytes];
+                [blit endEncoding];
+                auto error = metal::complete(command, "duplication test snapshot");
+                if (error.empty())
+                    std::memcpy(out, staging.contents, bytes);
+                return error;
+            };
+            result.duplication_labels.resize(pixels);
+            result.duplication_temporal_labels.resize(pixels);
+            result.duplication_counts.resize(pixels);
+            for (auto error : {read(history->duplication_labels[history->front],
+                                    result.duplication_labels.data(), label_bytes),
+                               read(history->duplication_temporal,
+                                    result.duplication_temporal_labels.data(), label_bytes),
+                               read(history->duplication_counts[history->front],
+                                    result.duplication_counts.data(), count_bytes)})
+                if (!error.empty()) {
+                    result.diagnostic = error;
+                    return result;
+                }
+        }
         result.suffix_cache_enabled = suffix_enabled;
         result.suffix_context = history->contexts[history->front].suffix_context;
         result.width = config.width;
@@ -2890,6 +2966,12 @@ struct FrameSession::Impl {
                         const FrameConfig &settings, const std::filesystem::path &library_path) {
         renderer = std::move(owner);
         config = settings;
+        if (frame_duplication_enabled(config) &&
+            (static_cast<unsigned>(config.area_duplication) > 3 ||
+             config.execution != FrameExecution::wavefront ||
+             config.estimator != FrameEstimator::area_replay ||
+             config.area_path_domain != FrameAreaPathDomain::enhanced))
+            return "Area duplication diagnostics require wavefront Enhanced Area";
         if (config.mutation_policy == FrameMutationPolicy::automatic)
             config.mutation_policy = FrameMutationPolicy::legacy;
         if (config.area_stencil == FrameAreaStencil::automatic)
@@ -3348,6 +3430,60 @@ struct FrameSession::Impl {
                 return "Enhanced motion group width exceeds device or pipeline limit";
         return {};
     }
+    std::string prepare_duplication(id<MTLLibrary> library) {
+        if (!frame_duplication_enabled(config))
+            return {};
+        auto &r = *renderer->impl_;
+        std::string error;
+        auto probe = metal::load_pipeline(r.device, library,
+                                          @"rypath_enhanced_duplication_contract_v1", error);
+        if (!probe)
+            return error;
+        auto check = [r.device newBufferWithLength:sizeof(edw::Contract)
+                                           options:MTLResourceStorageModeShared];
+        if (!check)
+            return "Duplication contract allocation failed";
+        std::memset(check.contents, 0, check.length);
+        auto command = [r.queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        if (!command || !encoder)
+            return "Duplication contract encoder failed";
+        [encoder setComputePipelineState:probe];
+        [encoder setBuffer:check offset:0 atIndex:0];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        error = metal::complete(command, "duplication contract");
+        if (!error.empty())
+            return error;
+        edw::Contract c{};
+        std::memcpy(&c, check.contents, sizeof(c));
+        if (c.version != edw::contract || c.config_bytes != sizeof(edw::Config) ||
+            c.label_bytes != sizeof(edw::Label) || c.counters_bytes != sizeof(edw::Counters) ||
+            c.count_bytes != sizeof(std::uint16_t) || c.histogram_bins != 291 ||
+            c.tile_width != 8 || c.tile_height != 8)
+            return "Metal duplication diagnostic contract mismatch";
+        duplication = std::make_shared<FrameDuplicationPrograms>();
+        duplication->reset =
+            metal::load_pipeline(r.device, library, @"rypath_enhanced_duplication_reset", error);
+        if (!duplication->reset)
+            return error;
+        duplication->count =
+            metal::load_pipeline(r.device, library, @"rypath_enhanced_duplication_count_v1", error);
+        if (!duplication->count)
+            return error;
+        if (duplication->count.maxTotalThreadsPerThreadgroup < 64 ||
+            r.device.maxThreadsPerThreadgroup.width < 8 ||
+            r.device.maxThreadsPerThreadgroup.height < 8 ||
+            duplication->count.staticThreadgroupMemoryLength > r.device.maxThreadgroupMemoryLength)
+            return "Duplication count tile exceeds device limits";
+        auto fn = metal::load_function(library, @"rypath_enhanced_duplication_reset", error);
+        if (!fn)
+            return error;
+        duplication->argument_encoder = [fn newArgumentEncoderWithBufferIndex:2];
+        if (!duplication->argument_encoder)
+            return "Duplication argument encoder creation failed";
+        return {};
+    }
     std::string prepare_paired_atlas() {
         auto &r = *renderer->impl_;
         if (!frame_paired_atlas_enabled(config)) {
@@ -3444,7 +3580,9 @@ struct FrameSession::Impl {
         area->merge = load(@"rypath_area_merge");
         if (area->merge == nil)
             return error;
-        area->temporal_finish = load(@"rypath_area_temporal_finish");
+        area->temporal_finish =
+            load(frame_duplication_enabled(config) ? @"rypath_area_temporal_finish_duplication_v1"
+                                                   : @"rypath_area_temporal_finish");
         if (area->temporal_finish == nil)
             return error;
         area->mutation_prepare = load(@"rypath_area_mutation_prepare");
@@ -3456,7 +3594,9 @@ struct FrameSession::Impl {
         area->spatial_begin = load(@"rypath_area_spatial_begin");
         if (area->spatial_begin == nil)
             return error;
-        area->finalize = load(@"rypath_area_finalize");
+        area->finalize =
+            load(frame_duplication_enabled(config) ? @"rypath_area_finalize_duplication_v1"
+                                                   : @"rypath_area_finalize");
         if (area->finalize == nil)
             return error;
         for (auto pipeline : {area->reset, area->prepare, area->merge, area->cache_evaluation,
@@ -3470,6 +3610,9 @@ struct FrameSession::Impl {
         area->argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
         if (area->argument_encoder == nil)
             return "Area argument encoder creation failed";
+        error = prepare_duplication(library);
+        if (!error.empty())
+            return error;
         error = prepare_motion(library);
         if (!error.empty())
             return error;
@@ -3522,6 +3665,10 @@ struct FrameSession::Impl {
             (!product_bytes(pixels, sizeof(motion_wire::Geometry), geometry_bytes) ||
              !product_bytes(pixels, sizeof(motion_wire::Donor), donor_bytes)))
             return "Enhanced motion geometry/donor byte count overflow";
+        std::uint64_t duplication_label_bytes = 0, duplication_count_bytes = 0;
+        if (duplication && (!product_bytes(pixels, sizeof(edw::Label), duplication_label_bytes) ||
+                            !product_bytes(pixels, sizeof(std::uint16_t), duplication_count_bytes)))
+            return "Duplication byte count overflow";
         std::uint64_t paired_atlas_bytes = 16;
         if (frame_paired_atlas_enabled(config) &&
             !product_bytes(paired::total_entries, sizeof(paired::Entry), paired_atlas_bytes))
@@ -3536,6 +3683,11 @@ struct FrameSession::Impl {
                        !add_bytes(workspace_bytes, sizeof(motion_wire::Counters)) ||
                        !add_bytes(workspace_bytes, motion->argument_encoder.encodedLength)))
             return "Enhanced motion per-slot byte count overflow";
+        if (duplication &&
+            (!add_bytes(workspace_bytes, sizeof(edw::Config)) ||
+             !add_bytes(workspace_bytes, sizeof(edw::Counters)) ||
+             !add_bytes(workspace_bytes, duplication->argument_encoder.encodedLength)))
+            return "Duplication per-slot byte count overflow";
         // Reflected Config storage exists in old modes too, without any draw.
         if (!add_bytes(workspace_bytes, sizeof(paired::Config)))
             return "Area paired config byte count overflow";
@@ -3564,26 +3716,38 @@ struct FrameSession::Impl {
             !add_bytes(total, geometry_bytes) || !add_bytes(total, donor_bytes) ||
             !add_bytes(total, paired_atlas_bytes) || !add_bytes(total, cie.length))
             return "Area slots/history byte count overflow";
-        for (const auto bytes : {history_bytes,
-                                 replay_bytes,
-                                 leaf_bytes,
-                                 temporal_bytes,
-                                 accumulator_bytes,
-                                 cross_bytes,
-                                 evaluation_bytes,
-                                 enhanced_record_bytes,
-                                 enhanced_evaluation_bytes,
-                                 enhanced_suffix_bytes,
-                                 geometry_bytes,
-                                 donor_bytes,
-                                 paired_atlas_bytes,
-                                 std::uint64_t(sizeof(paired::Config)),
-                                 std::uint64_t(motion ? sizeof(motion_wire::Config) : 0),
-                                 std::uint64_t(motion ? sizeof(motion_wire::Counters) : 0),
-                                 std::uint64_t(motion ? motion->argument_encoder.encodedLength : 0),
-                                 std::uint64_t(arguments_bytes),
-                                 std::uint64_t(r.graph_nodes.length),
-                                 std::uint64_t(r.surface_transforms.length)})
+        for (unsigned i = 0; i < 3; ++i)
+            if (!add_bytes(total, duplication_label_bytes))
+                return "Duplication labels budget overflow";
+        for (unsigned i = 0; i < 2; ++i)
+            if (!add_bytes(total, duplication_count_bytes))
+                return "Duplication maps budget overflow";
+        for (const auto bytes :
+             {history_bytes,
+              duplication_label_bytes,
+              duplication_count_bytes,
+              std::uint64_t(duplication ? sizeof(edw::Config) : 0),
+              std::uint64_t(duplication ? sizeof(edw::Counters) : 0),
+              std::uint64_t(duplication ? duplication->argument_encoder.encodedLength : 0),
+              replay_bytes,
+              leaf_bytes,
+              temporal_bytes,
+              accumulator_bytes,
+              cross_bytes,
+              evaluation_bytes,
+              enhanced_record_bytes,
+              enhanced_evaluation_bytes,
+              enhanced_suffix_bytes,
+              geometry_bytes,
+              donor_bytes,
+              paired_atlas_bytes,
+              std::uint64_t(sizeof(paired::Config)),
+              std::uint64_t(motion ? sizeof(motion_wire::Config) : 0),
+              std::uint64_t(motion ? sizeof(motion_wire::Counters) : 0),
+              std::uint64_t(motion ? motion->argument_encoder.encodedLength : 0),
+              std::uint64_t(arguments_bytes),
+              std::uint64_t(r.graph_nodes.length),
+              std::uint64_t(r.surface_transforms.length)})
             if (bytes > r.device.maxBufferLength)
                 return "Area buffer exceeds the device limit";
         if (total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
@@ -3593,6 +3757,25 @@ struct FrameSession::Impl {
         error = prepare_paired_atlas();
         if (!error.empty())
             return error;
+        if (duplication) {
+            for (auto &b : history->duplication_labels) {
+                b = [r.device newBufferWithLength:duplication_label_bytes
+                                          options:MTLResourceStorageModePrivate];
+                if (!b)
+                    return "Duplication labels allocation failed";
+            }
+            history->duplication_temporal =
+                [r.device newBufferWithLength:duplication_label_bytes
+                                      options:MTLResourceStorageModePrivate];
+            if (!history->duplication_temporal)
+                return "Duplication temporal labels allocation failed";
+            for (auto &b : history->duplication_counts) {
+                b = [r.device newBufferWithLength:duplication_count_bytes
+                                          options:MTLResourceStorageModePrivate];
+                if (!b)
+                    return "Duplication count map allocation failed";
+            }
+        }
         for (auto &bank : history->banks) {
             bank = [r.device newBufferWithLength:history_bytes
                                          options:MTLResourceStorageModePrivate];
@@ -3659,6 +3842,11 @@ struct FrameSession::Impl {
                           : 16) ||
             !allocate(b.failure, sizeof(area_wire::Counters), true))
             return "Area workspace allocation failed";
+        if (duplication &&
+            (!allocate(b.duplication_config, sizeof(edw::Config), true) ||
+             !allocate(b.duplication_counters, sizeof(edw::Counters), true) ||
+             !allocate(b.duplication_arguments, duplication->argument_encoder.encodedLength, true)))
+            return "Duplication pending-frame allocation failed";
         if (!allocate(b.paired_config, sizeof(paired::Config), true))
             return "Area paired frame-config allocation failed";
         if (motion && (!allocate(b.motion_config, sizeof(motion_wire::Config), true) ||
@@ -3677,6 +3865,29 @@ struct FrameSession::Impl {
                         std::uint64_t suffix_context, std::uint64_t source_suffix_context,
                         bool mapped_motion) {
         auto &b = *slot.area;
+        if (duplication) {
+            edw::Config c{edw::contract,
+                          config.width,
+                          config.height,
+                          static_cast<std::uint32_t>(config.area_duplication),
+                          static_cast<std::uint32_t>(serial),
+                          static_cast<std::uint32_t>(serial >> 32),
+                          0,
+                          0};
+            std::memcpy(b.duplication_config.contents, &c, sizeof(c));
+            auto encoder = duplication->argument_encoder;
+            [encoder setArgumentBuffer:b.duplication_arguments offset:0];
+            const std::array<id<MTLBuffer>, 7> resources{
+                b.duplication_config,
+                history->duplication_labels[history_source_bank],
+                history->duplication_labels[history_source_bank ^ 1],
+                history->duplication_temporal,
+                history->duplication_counts[history_source_bank ^ 1],
+                b.duplication_counters,
+                destination};
+            for (NSUInteger i = 0; i < resources.size(); ++i)
+                [encoder setBuffer:resources[i] offset:0 atIndex:i];
+        }
         if (frame_area_contribution_family(config.area_path_domain)) {
             // The free frame slot owns this shared config until completion.
             // Decision entropy follows accepted submission identity, not the
@@ -4025,6 +4236,7 @@ struct FrameSession::Impl {
         std::shared_ptr<FrameWavefrontPrograms> programs;
         std::shared_ptr<FrameAreaPrograms> area_programs;
         std::shared_ptr<FrameMotionPrograms> motion_programs;
+        std::shared_ptr<FrameDuplicationPrograms> duplication_programs;
         std::shared_ptr<FrameAreaHistory> history;
         bool motion_generate = false, motion_mapped = false, motion_validated = false;
         unsigned motion_destination = 0;
@@ -4131,6 +4343,45 @@ struct FrameSession::Impl {
                 fail("GPU Area mutation accounting mismatch");
                 return;
             }
+            FrameAreaDuplicationInfo duplication_info;
+            if (duplication_programs) {
+                try {
+                    duplication_info.histogram.resize(291);
+                } catch (const std::bad_alloc &) {
+                    fail("Duplication CPU summary allocation failed");
+                    return;
+                }
+                edw::Counters c{};
+                std::memcpy(&c, frame->retention->area->duplication_counters.contents, sizeof(c));
+                std::uint64_t total = 0, weighted = 0;
+                for (unsigned i = 0; i < 291; ++i) {
+                    duplication_info.histogram[i] = c.histogram[i];
+                    total += c.histogram[i];
+                    if (i <= 288) {
+                        duplication_info.valid_pixels += c.histogram[i];
+                        weighted += std::uint64_t(i) * c.histogram[i];
+                    }
+                }
+                if (c.failure || c.temporal_completed != pixels || c.final_completed != pixels ||
+                    c.counted_completed != pixels || total != pixels || c.histogram[290]) {
+                    std::ostringstream out;
+                    out << "Enhanced duplication diagnostic accounting mismatch: flags="
+                        << c.failure << " temporal=" << c.temporal_completed
+                        << " final=" << c.final_completed << " counted=" << c.counted_completed
+                        << " histogram=" << total << " unknown=" << c.histogram[290]
+                        << " expected=" << pixels;
+                    fail(out.str());
+                    return;
+                }
+                duplication_info.mode = config.area_duplication;
+                duplication_info.version = edw::contract;
+                duplication_info.denominator = 288;
+                duplication_info.null_pixels = c.histogram[289];
+                duplication_info.unknown_pixels = c.histogram[290];
+                if (duplication_info.valid_pixels)
+                    duplication_info.mean_d =
+                        double(weighted) / (288.0 * double(duplication_info.valid_pixels));
+            }
             {
                 std::lock_guard history_lock(history->mutex);
                 if (!history->pending || history->pending_serial != frame->info.area_serial ||
@@ -4163,11 +4414,15 @@ struct FrameSession::Impl {
                         (!frame_pair_compaction_enabled(config) &&
                          frame->info.compacted_null_evaluations))
                         error = "Area evaluation accounting mismatch";
-                    else if (frame_motion_enabled(config) &&
-                             history->fail_next_motion_publication) {
+                    else if (duplication_programs && history->fail_next_duplication_publication) {
+                        history->fail_next_duplication_publication = false;
+                        error = "Enhanced duplication test forced publication failure";
+                    } else if (frame_motion_enabled(config) &&
+                               history->fail_next_motion_publication) {
                         history->fail_next_motion_publication = false;
                         error = "Enhanced motion test forced publication failure";
                     } else {
+                        frame->info.duplication = std::move(duplication_info);
                         history->front = history_destination_index;
                         history->valid = true;
                         history->committed_serial = frame->info.area_serial;
@@ -4502,6 +4757,17 @@ struct FrameSession::Impl {
                           a.contribution_evaluation, a.enhanced_records, a.enhanced_evaluation,
                           a.enhanced_suffix, history_destination})
                         use_resource(buffer, read_write);
+                    if (duplication_programs) {
+                        use_resource(a.duplication_config, MTLResourceUsageRead);
+                        use_resource(a.duplication_counters, read_write);
+                        use_resource(history->duplication_labels[history_destination_index ^ 1],
+                                     MTLResourceUsageRead);
+                        use_resource(history->duplication_labels[history_destination_index],
+                                     read_write);
+                        use_resource(history->duplication_temporal, read_write);
+                        use_resource(history->duplication_counts[history_destination_index],
+                                     read_write);
+                    }
                     use_resource(a.donors, MTLResourceUsageRead);
                     use_resource(a.paired_atlas, MTLResourceUsageRead);
                     use_resource(a.paired_config, MTLResourceUsageRead);
@@ -4524,6 +4790,8 @@ struct FrameSession::Impl {
                         [encoder setComputePipelineState:pipeline];
                         [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
                         [encoder setBuffer:a.arguments[argument] offset:0 atIndex:1];
+                        if (duplication_programs)
+                            [encoder setBuffer:a.duplication_arguments offset:0 atIndex:2];
                         [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
                             threadsPerThreadgroup:MTLSizeMake(count == 1 ? 1 : config.group_width,
                                                               1, 1)];
@@ -4532,6 +4800,27 @@ struct FrameSession::Impl {
                         barrier();
                     };
                     const auto pixels = std::uint64_t(config.width) * config.height;
+                    const auto duplication_dispatch = [&](id<MTLComputePipelineState> pipeline,
+                                                          bool count) {
+                        if (stages &&
+                            !stages->begin(command, encoder,
+                                           count ? "duplication.count" : "duplication.reset"))
+                            return;
+                        [encoder setComputePipelineState:pipeline];
+                        [encoder setBuffer:a.duplication_arguments offset:0 atIndex:2];
+                        if (count)
+                            [encoder dispatchThreadgroups:MTLSizeMake((config.width + 7) / 8,
+                                                                      (config.height + 7) / 8, 1)
+                                    threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                        else
+                            [encoder dispatchThreads:MTLSizeMake(291, 1, 1)
+                                threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                        if (stages)
+                            stages->end(encoder);
+                        barrier();
+                    };
+                    if (area_reset && duplication_programs)
+                        duplication_dispatch(duplication_programs->reset, false);
                     if (area_reset && motion_generate) {
                         const auto dispatch_motion = [&](id<MTLComputePipelineState> pipeline,
                                                          NSUInteger count, const char *label,
@@ -4604,10 +4893,12 @@ struct FrameSession::Impl {
                                 config.mutation_steps ? area_wire::mutation_config_begin : 3;
                         }
                     }
-                    if (area_finalizing)
+                    if (area_finalizing) {
                         area_dispatch(area_programs->finalize, area_wire::spatial_finalize_config,
                                       pixels, "area.finalize");
-                    else if (first) {
+                        if (duplication_programs)
+                            duplication_dispatch(duplication_programs->count, true);
+                    } else if (first) {
                         const bool mutation = area_leaf >= area_wire::mutation_config_begin &&
                                               area_leaf < area_wire::temporal_reverse_config;
                         area_dispatch(
@@ -5040,6 +5331,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     std::memset(slot->area->paired_config.contents, 0,
                                 slot->area->paired_config.length);
                 }
+                runner->duplication_programs = impl_->duplication;
                 if (frame_motion_enabled(c)) {
                     if (history.geometry_front > 1 ||
                         (history.valid && (!history.geometry_valid ||
@@ -5053,6 +5345,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                         same_area_evaluation_context(history.contexts[history.front],
                                                      history.contexts[destination_index]);
                     runner->motion_programs = impl_->motion;
+
                     runner->motion_generate = !same;
                     runner->motion_mapped = !same && history.valid;
                     runner->motion_destination = history.geometry_front ^ 1u;
@@ -5270,6 +5563,14 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         result.diagnostic = "Enhanced motion dimensions must be 1..2^23 with a 32-bit pixel count";
         return result;
     }
+    if (config.area_duplication != FrameAreaDuplication::off &&
+        (static_cast<unsigned>(config.area_duplication) > 3 ||
+         config.execution != FrameExecution::wavefront ||
+         config.estimator != FrameEstimator::area_replay ||
+         config.area_path_domain != FrameAreaPathDomain::enhanced)) {
+        result.diagnostic = "Area duplication diagnostics require wavefront Enhanced Area";
+        return result;
+    }
     if (config.mutation_policy != FrameMutationPolicy::automatic &&
         config.mutation_policy != FrameMutationPolicy::legacy &&
         config.mutation_policy != FrameMutationPolicy::spectral_refresh) {
@@ -5414,7 +5715,7 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
                                            const FrameConfig &b,
                                            const std::filesystem::path &library_path) {
     SharedSceneFrameSessions result;
-    // Cache/compaction toggles are execution controls. Motion additionally
+    // Cache/compaction and duplication diagnostics are execution controls. Motion additionally
     // changes temporal source-domain selection: only static identity contrasts
     // imply exact equality; moving contrasts require matched raw mean tests.
     // Compare every other FrameConfig field, including unrelated seeds/policy.
@@ -5435,8 +5736,9 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         // Stencil changes spatial source domains, never an execution-only toggle.
         a.area_stencil == b.area_stencil;
     if (!same) {
-        result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
-                            "caches, pair compaction or temporal reprojection";
+        result.diagnostic =
+            "Shared-scene validation configurations differ beyond temporal/suffix "
+            "caches, pair compaction, temporal reprojection or duplication diagnostics";
         return result;
     }
     if (a.execution != FrameExecution::wavefront || a.estimator != FrameEstimator::area_replay) {
@@ -5484,6 +5786,19 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
             for (auto right : second_history->banks)
                 result.independent_history &= left != right;
     if (first_history && second_history) {
+        result.duplication_enabled = {bool(first.session->impl_->duplication),
+                                      bool(second->duplication)};
+        result.independent_duplication_storage = true;
+        for (auto left :
+             {first_history->duplication_labels[0], first_history->duplication_labels[1],
+              first_history->duplication_temporal, first_history->duplication_counts[0],
+              first_history->duplication_counts[1]})
+            for (auto right :
+                 {second_history->duplication_labels[0], second_history->duplication_labels[1],
+                  second_history->duplication_temporal, second_history->duplication_counts[0],
+                  second_history->duplication_counts[1]})
+                if (left && right && left == right)
+                    result.independent_duplication_storage = false;
         result.independent_motion_storage = true;
         for (auto left :
              {first_history->geometry[0], first_history->geometry[1], first_history->donors})
@@ -5548,6 +5863,44 @@ EnhancedMotionState FrameSessionTestAccess::motion_state(FrameSession &session) 
     result.committed_serial = h.committed_serial;
     return result;
 }
+EnhancedDuplicationState FrameSessionTestAccess::duplication_state(FrameSession &session) {
+    EnhancedDuplicationState result;
+    if (!session.impl_ || !session.impl_->history) {
+        result.diagnostic = "Duplication state requires an Area session";
+        return result;
+    }
+    auto &h = *session.impl_->history;
+    std::lock_guard lock(h.mutex);
+    if (h.pending) {
+        result.diagnostic = "Duplication state requires no pending frame";
+        return result;
+    }
+    result.status = GeometryStatus::success;
+    result.mode = session.impl_->config.area_duplication;
+    result.history_valid = h.valid;
+    result.valid = h.valid && bool(session.impl_->duplication);
+    result.front = result.history_front = h.front;
+    result.generation = result.history_generation = h.generation;
+    result.next_serial = h.next_serial;
+    result.pending_serial = h.pending_serial;
+    result.committed_serial = h.committed_serial;
+    for (auto b : {h.duplication_labels[0], h.duplication_labels[1], h.duplication_temporal,
+                   h.duplication_counts[0], h.duplication_counts[1]})
+        if (b)
+            result.storage_bytes += b.length;
+    return result;
+}
+std::string
+FrameSessionTestAccess::force_next_duplication_publication_failure(FrameSession &session) {
+    if (!session.impl_ || !session.impl_->duplication || !session.impl_->history)
+        return "Duplication failure control requires an enabled session";
+    auto &h = *session.impl_->history;
+    std::lock_guard lock(h.mutex);
+    if (h.pending || h.fail_next_duplication_publication)
+        return "Duplication failure control requires idle, unarmed history";
+    h.fail_next_duplication_publication = true;
+    return {};
+}
 std::string FrameSessionTestAccess::force_next_motion_publication_failure(FrameSession &session) {
     if (!session.impl_ || !frame_motion_enabled(session.impl_->config) || !session.impl_->history)
         return "Motion failure control requires an enabled Enhanced motion session";
@@ -5576,13 +5929,14 @@ FrameSessionTestAccess::seed_next_suffix_context(FrameSession &session,
 EnhancedSessionSnapshot FrameSessionTestAccess::snapshot_enhanced(FrameSession &session,
                                                                   std::uint64_t expected_serial,
                                                                   bool include_suffix,
-                                                                  bool include_motion) {
+                                                                  bool include_motion,
+                                                                  bool include_duplication) {
     @autoreleasepool {
         if (!session.impl_)
             return {.diagnostic = "Enhanced snapshot session is moved-from"};
         try {
-            return session.impl_->snapshot_enhanced(expected_serial, include_suffix,
-                                                    include_motion);
+            return session.impl_->snapshot_enhanced(expected_serial, include_suffix, include_motion,
+                                                    include_duplication);
         } catch (const std::bad_alloc &) {
             return {.diagnostic = "Enhanced snapshot CPU allocation failed"};
         }

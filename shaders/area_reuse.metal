@@ -1145,8 +1145,36 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
     a.accumulators[pixel] = accumulator;
     area_consume_evaluation(a, pixel);
 }
-kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
-                                        uint pixel [[thread_position_in_grid]]) {
+// Empty specialization leaves original entry points with no diagnostic resources
+// or runtime mode branch. Enabled variants only observe publication provenance.
+struct AreaNoDuplication {
+    inline bool temporal(constant AreaArguments &, uint, const thread aw::Accumulator &) const {
+        return true;
+    }
+    inline bool final(constant AreaArguments &, uint, const thread aw::Accumulator &) const {
+        return true;
+    }
+};
+struct AreaDuplication {
+    constant DuplicationArguments *diagnostic;
+    constant wire::Parameters *parameters;
+    inline bool temporal(constant AreaArguments &a, uint pixel,
+                         const thread aw::Accumulator &winner) const {
+        uint source = pixel;
+        if (!area_temporal_source(a, pixel, source))
+            return false;
+        const auto config = *a.config;
+        return duplication_temporal(*diagnostic, config, *parameters, pixel, source, winner);
+    }
+    inline bool final(constant AreaArguments &a, uint pixel,
+                      const thread aw::Accumulator &winner) const {
+        const auto config = *a.config;
+        return duplication_final(*diagnostic, config, *parameters, pixel, winner);
+    }
+};
+template <typename Publication>
+inline void area_temporal_finish_body(constant AreaArguments &a, uint pixel,
+                                      const thread Publication &publication) {
     if (pixel >= a.config->pixel_count || !area_config(a, pixel))
         return;
     const uint count = a.config->history_used ? 2u : 1u;
@@ -1167,6 +1195,8 @@ kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
             return;
         }
     }
+    if (!publication.temporal(a, pixel, accumulator))
+        return;
     ew::Reference record{};
     if (area_enhanced(a)) {
         record = {ew::temporal_bank, pixel};
@@ -1186,6 +1216,17 @@ kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
                          normalizer.exponent,
                          accumulator.target_exponent};
 }
+kernel void rypath_area_temporal_finish(constant AreaArguments &a [[buffer(1)]],
+                                        uint pixel [[thread_position_in_grid]]) {
+    area_temporal_finish_body(a, pixel, AreaNoDuplication{});
+}
+kernel void rypath_area_temporal_finish_duplication_v1(constant wire::Parameters &p [[buffer(0)]],
+                                                       constant AreaArguments &a [[buffer(1)]],
+                                                       constant DuplicationArguments &d
+                                                       [[buffer(2)]],
+                                                       uint pixel [[thread_position_in_grid]]) {
+    area_temporal_finish_body(a, pixel, AreaDuplication{&d, &p});
+}
 kernel void rypath_area_spatial_begin(constant AreaArguments &a [[buffer(1)]],
                                       uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a, pixel))
@@ -1201,8 +1242,9 @@ kernel void rypath_area_spatial_begin(constant AreaArguments &a [[buffer(1)]],
     a.accumulators[pixel] = aw::Accumulator{};
     a.raw_xyz[pixel] = {0, 0, 0};
 }
-kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
-                                 uint pixel [[thread_position_in_grid]]) {
+template <typename Publication>
+inline void area_finalize_body(constant AreaArguments &a, uint pixel,
+                               const thread Publication &publication) {
     if (pixel >= a.config->pixel_count || !area_config(a, pixel))
         return;
     if (a.config->phase != aw::spatial_final || a.config->candidate != 0) {
@@ -1300,6 +1342,8 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
         a.raw_xyz[pixel] = weighted;
     }
     // Output marginalization never changes the selected sample reused later.
+    if (!publication.final(a, pixel, accumulator))
+        return;
     ew::Reference record{};
     if (area_enhanced(a)) {
         record = {1u - a.config->history_source_bank, pixel};
@@ -1318,6 +1362,17 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
                                     accumulator.target_h_exponent,
                                     normalizer.exponent,
                                     accumulator.target_exponent};
+}
+
+kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
+                                 uint pixel [[thread_position_in_grid]]) {
+    area_finalize_body(a, pixel, AreaNoDuplication{});
+}
+kernel void rypath_area_finalize_duplication_v1(constant wire::Parameters &p [[buffer(0)]],
+                                                constant AreaArguments &a [[buffer(1)]],
+                                                constant DuplicationArguments &d [[buffer(2)]],
+                                                uint pixel [[thread_position_in_grid]]) {
+    area_finalize_body(a, pixel, AreaDuplication{&d, &p});
 }
 
 // The source cache always belongs to the CURRENT destination evaluation. Each

@@ -66,6 +66,7 @@ struct Options {
     bool enhanced_suffix_cache = true;
     bool compact_enhanced_pairs = false;
     bool enhanced_temporal_reprojection = false;
+    rypath::FrameAreaDuplication area_duplication = rypath::FrameAreaDuplication::off;
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
@@ -159,6 +160,7 @@ const char *usage =
     "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
     "auto|adjacent|reciprocal16|paired-gaussian16\n"
+    "  [--area-duplication off|initial-seed|initial-atom|current (diagnostic only; default: off)]\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
     "  [--area-suffix-cache on|off (Enhanced sequential suffix replay; default: on)]\n"
@@ -345,6 +347,17 @@ std::string parse(int argc, char **argv, Options &o) {
             if (value != "off" && value != "dual")
                 return "area temporal reprojection must be off or dual";
             o.enhanced_temporal_reprojection = value == "dual";
+        } else if (key == "--area-duplication") {
+            if (value == "off")
+                o.area_duplication = rypath::FrameAreaDuplication::off;
+            else if (value == "initial-seed")
+                o.area_duplication = rypath::FrameAreaDuplication::initial_seed;
+            else if (value == "initial-atom")
+                o.area_duplication = rypath::FrameAreaDuplication::initial_atom;
+            else if (value == "current")
+                o.area_duplication = rypath::FrameAreaDuplication::current;
+            else
+                return "area duplication must be off, initial-seed, initial-atom, or current";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
@@ -447,6 +460,11 @@ std::string parse(int argc, char **argv, Options &o) {
             o.spectral_transport == rypath::SpectralTransportSelection::packet)
             return "contribution path domain requires a PBRT scene with effective hero transport";
     }
+    if (o.area_duplication != rypath::FrameAreaDuplication::off &&
+        (o.execution != rypath::FrameExecution::wavefront ||
+         o.estimator != rypath::FrameEstimator::area_replay ||
+         o.area_path_domain != rypath::FrameAreaPathDomain::enhanced))
+        return "area duplication diagnostics require wavefront Enhanced Area";
     if ((seen.contains("--variance-policy") || seen.contains("--variance-prefilter") ||
          seen.contains("--strict-spatial-segments")) &&
         o.reconstruction != rypath::ReconstructionMode::temporal)
@@ -747,6 +765,7 @@ struct Observation : rypath::FrameStatisticsSample {
     rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::legacy;
     rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::adjacent;
     rypath::FrameAreaAtlasInfo paired_atlas{};
+    rypath::FrameAreaDuplicationInfo duplication{};
     rypath::FrameContributionReplay contribution_replay = rypath::FrameContributionReplay::full;
     std::array<std::int32_t, 4> area_stencil_offsets{};
     rypath::GPUStageDiagnostics gpu_stages;
@@ -854,6 +873,28 @@ void write_counters(std::ostream &out, const rypath::ReconstructionCounters &c) 
     }
     out << '}';
 }
+void write_duplication(std::ostream &out, const rypath::FrameAreaDuplicationInfo &d) {
+    if (!d.version) {
+        out << "null";
+        return;
+    }
+    if (d.histogram.size() != 291)
+        throw std::runtime_error("Duplication summary histogram size mismatch");
+    out << "{\"mode\":" << quote(rypath::frame_area_duplication_name(d.mode))
+        << ",\"version\":" << d.version << ",\"denominator\":" << d.denominator
+        << ",\"edge_policy\":\"17x17-exclude-center-oob-zero-fixed288\""
+        << ",\"equality_policy\":" << quote(rypath::frame_area_duplication_key_policy(d.mode))
+        << ",\"independence_claim\":false"
+        << ",\"valid_pixels\":" << d.valid_pixels << ",\"null_pixels\":" << d.null_pixels
+        << ",\"unknown_pixels\":" << d.unknown_pixels << ",\"mean_d\":" << d.mean_d
+        << ",\"histogram\":[";
+    for (std::size_t i = 0; i < d.histogram.size(); ++i) {
+        if (i)
+            out << ',';
+        out << d.histogram[i];
+    }
+    out << "]}";
+}
 void write_paired_atlas(std::ostream &out, const rypath::FrameAreaAtlasInfo &atlas,
                         bool include_poses = true) {
     if (!atlas.version) {
@@ -899,6 +940,7 @@ std::string paired_atlas_poses(const rypath::FrameAreaAtlasInfo &atlas) {
     return out.str();
 }
 struct Report {
+    rypath::FrameAreaDuplication actual_area_duplication = rypath::FrameAreaDuplication::off;
     rypath::FrameAreaAtlasInfo paired_atlas_identity{};
     Options options;
     rypath::AccelerationBuildInfo acceleration_build;
@@ -1083,6 +1125,10 @@ struct Report {
                                 ? "dual"
                                 : "off")
                     : "null")
+            << ",\"requested_area_duplication\":"
+            << quote(rypath::frame_area_duplication_name(options.area_duplication))
+            << ",\"area_duplication\":"
+            << quote(rypath::frame_area_duplication_name(actual_area_duplication))
             << ",\"paired_atlas_identity\":";
         write_paired_atlas(out, paired_atlas_identity, false);
         out << ",\"target_scale\":" << options.target_scale
@@ -1211,6 +1257,8 @@ struct Report {
                 << ",\"phase\":" << quote(f.pose.phase) << ",\"motion_offset\":" << f.pose.offset
                 << ",\"camera\":";
             write_camera(out, f.camera);
+            out << ",\"duplication\":";
+            write_duplication(out, f.duplication);
             out << ",\"warmup\":" << (f.warmup ? "true" : "false")
                 << ",\"complete\":" << (f.complete ? "true" : "false")
                 << ",\"completed_samples\":" << f.completed_samples
@@ -1507,6 +1555,7 @@ int run(const Options &options) {
         config.enhanced_suffix_cache = options.enhanced_suffix_cache;
         config.compact_enhanced_pairs = options.compact_enhanced_pairs;
         config.enhanced_temporal_reprojection = options.enhanced_temporal_reprojection;
+        config.area_duplication = options.area_duplication;
         config.target_scale = options.target_scale;
         config.mutation_steps = options.mutation_steps;
         config.mutation_policy = options.mutation_policy;
@@ -1538,6 +1587,7 @@ int run(const Options &options) {
             report.diagnostic =
                 built.diagnostic.empty() ? "frame session unavailable" : built.diagnostic;
         } else {
+            report.actual_area_duplication = options.area_duplication;
             report.shadow_traversal = built.shadow_traversal;
             const auto warmup_start = Clock::now();
             std::unique_ptr<rypath::Frame> last;
@@ -1682,6 +1732,7 @@ int run(const Options &options) {
                     observation.history_used = info.history_used;
                     observation.enhanced_suffix_cache = info.enhanced_suffix_cache;
                     observation.enhanced_pair_compaction = info.enhanced_pair_compaction;
+                    observation.duplication = info.duplication;
                     observation.enhanced_temporal_reprojection_requested =
                         info.enhanced_temporal_reprojection_requested;
                     observation.enhanced_temporal_reprojection =

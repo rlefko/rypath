@@ -3,6 +3,7 @@
 #include "frame_work_diagnostics.hpp"
 #include "gpu_diagnostics.hpp"
 #include "metal_render.hpp"
+#include <vector>
 
 namespace rypath {
 // Frames contribute one fresh sample per pixel. Area replay additionally
@@ -69,6 +70,46 @@ inline constexpr const char *frame_area_stencil_name(FrameAreaStencil stencil) {
     }
     return "invalid";
 }
+// Diagnostic equality labels, never an independence or weighting decision.
+enum class FrameAreaDuplication { off, initial_seed, initial_atom, current };
+inline constexpr const char *frame_area_duplication_name(FrameAreaDuplication mode) {
+    switch (mode) {
+    case FrameAreaDuplication::off:
+        return "off";
+    case FrameAreaDuplication::initial_seed:
+        return "initial-seed";
+    case FrameAreaDuplication::initial_atom:
+        return "initial-atom";
+    case FrameAreaDuplication::current:
+        return "current";
+    }
+    return "invalid";
+}
+inline constexpr const char *frame_area_duplication_key_policy(FrameAreaDuplication mode) {
+    switch (mode) {
+    case FrameAreaDuplication::off:
+        return "absent";
+    case FrameAreaDuplication::initial_seed:
+        return "exact-fresh-pixel-sample64";
+    case FrameAreaDuplication::initial_atom:
+        return "exact-fresh-pixel-sample64-initial-j";
+    case FrameAreaDuplication::current:
+        return "exact-current-replay-u-j";
+    }
+    return "invalid";
+}
+// Fixed17x17 neighborhood excludes center; out-of-bounds/missing neighbors
+// contribute zero, denominator288. Bin289=null; bin290=unknown-positive(error).
+// Session seed is fixed; equality never establishes statistical independence.
+struct FrameAreaDuplicationInfo {
+    FrameAreaDuplication mode = FrameAreaDuplication::off;
+    std::uint32_t version = 0, denominator = 0;
+    // Empty when off; exactly291 uint32 GPU counts when enabled.
+    std::vector<std::uint32_t> histogram;
+    std::uint64_t valid_pixels = 0, null_pixels = 0, unknown_pixels = 0;
+    // Mean among valid centers; missing centers are excluded, edge denominator288.
+    double mean_d = 0;
+};
 enum class FrameAreaOutput { selected, conditional_mean };
 struct FrameConfig {
     bool profile_stages = false;
@@ -109,6 +150,7 @@ struct FrameConfig {
     bool enhanced_suffix_cache = true;
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
     bool compact_enhanced_pairs = false;
+    FrameAreaDuplication area_duplication = FrameAreaDuplication::off;
     // Experimental static-geometry, camera-only temporal donor selection.
     bool enhanced_temporal_reprojection = false;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
@@ -172,6 +214,7 @@ struct FrameInfo {
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;
     FrameAreaStencil area_stencil = FrameAreaStencil::adjacent;
     FrameAreaAtlasInfo paired_atlas{};
+    FrameAreaDuplicationInfo duplication{};
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
     FrameContributionReplay contribution_replay = FrameContributionReplay::full;
     std::uint32_t contribution_depth = 0;

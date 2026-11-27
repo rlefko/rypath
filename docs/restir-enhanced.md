@@ -32,8 +32,8 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Cached suffix evaluation | Bounded two-operation sequential hero tape; exact prefix replay on misses |
 | Selective shift-pair compaction, §6.2.2 | Opt-in admission skips structurally selected-null requests; all nonnull requests retain canonical evaluation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
-| Reservoir reprojection and dual motion, §6.4 | Implemented opt-in camera-only dual motion; runtime qualification pending |
-| Duplication maps, §5 | Missing; adaptive confidence introduces bias and must remain a separately labeled option |
+| Reservoir reprojection and dual motion, §6.4 | Opt-in camera-only dual motion; focused controls and four-scene native motion smoke pass |
+| Duplication diagnostics, §5 | Opt-in ancestry/current-coordinate maps; focused exactness and lifecycle controls pass; biased adaptive cap absent |
 
 Published performance is evidence about that implementation and hardware, not a
 forecast for M4 Max or for our spectral/coated-material model.
@@ -559,10 +559,18 @@ reported serials/generations, translation, static memoization and camera cuts.
 The moving depth-zero mean control is a bias smoke test, not general scene-quality
 qualification.
 
+At `b720693`, a native-1080p eight-frame hold/translate/hold/cut sequence completes
+on Cornell, Prism and Pavilion day/night with one mutation and signed temporal
+reconstruction. All 32 frames have the expected geometry, donor, cache and
+publication accounting; every scene exercises positive dual-donor selection.
+All eight final raw/reconstructed FLOAT captures are finite. This is a bounded
+moving-scene integration check using reciprocal spatial offsets, not a performance
+comparison or motion-quality qualification.
+
 This stage supports static resident geometry with camera motion only, without
 object or deformation motion. The early geometry query duplicates the later
-reconstruction guide query; native cost and moving-camera raw quality remain
-unmeasured. No performance benefit is established.
+reconstruction guide query; its performance benefit and moving-camera raw quality
+remain unqualified.
 
 ## Paired Gaussian spatial domains
 
@@ -609,6 +617,57 @@ compaction and motion controls, mutation-arm selection, large-scene budgets and
 temporal variance policy. It validates actual frame identity before labeling or
 reconstructing results, keeping independent hero references separate from Area
 arms. Complete scene-quality and native throughput qualification remain pending.
+
+A subsequent native-1080p paired-atlas zero-mutation screen on `9d34076` completes
+Cornell, Prism and Pavilion day, but Pavilion night fails wavefront validation
+at sample 38. The failure is retained for diagnosis; the four-scene timing study
+is incomplete. Optional duplication diagnostics were absent from that runtime
+and do not establish a repair.
+
+## Optional duplication diagnostics
+
+`--area-duplication off|initial-seed|initial-atom|current` is diagnostic-only and
+defaults to `off`. It requires wavefront Enhanced Area. Disabled sessions retain
+the original Area entry points and allocate no diagnostic buffers or dispatches.
+The maps do not affect confidence, targets, weights, mutation acceptance, caps or
+radiance; no adaptive cap or clamp is introduced.
+
+Fresh winners receive an exact 16-byte provenance label: original pixel, 64-bit
+sample label and initial contribution slot `j`. `initial-seed` compares the pixel
+and sample words; `initial-atom` also compares the original `j`. Repeated labels
+can share this family despite different serial-keyed discovery/selection choices;
+it is not a complete fresh-event or transport identity. Ancestry follows the
+actual winning owned record through temporal and spatial reuse and remains
+unchanged across accepted and rejected MCMC moves. This genealogy can overstate
+correlation after mutation. `current` instead compares the seven current replay
+words and `j` as an exact 32-byte key, with the common replay version validated
+separately. Equality or inequality in any mode does not prove independence.
+
+Each valid center counts matching valid neighbors in a finite-image 17×17 square,
+excluding itself. Out-of-bounds and missing neighbors contribute zero; the
+denominator stays 288 at edges. Null centers store the explicit `0xffff` missing
+count, not zero duplication, while retaining their physical proposal domains.
+Unknown positive ancestry is a protocol failure. A 291-bin histogram distinguishes
+counts 0–288, null centers and unknown positive centers.
+
+The separate version-one diagnostic ABI uses a 32-byte config and 1,180-byte
+counters; normal wavefront 22/Area 16 carriers and bindings remain unchanged.
+Enabled global storage is `52*N` bytes for three 16-byte label arrays and two
+2-byte count maps, plus small per-slot config/counter/argument buffers.
+Reservoirs, labels, maps and copied statistics publish together after physical
+and diagnostic accounting and serial checks. Failed attempts cannot expose dirty
+destination maps; cuts invalidate eligibility. Private latest-publication readback
+returns owned CPU copies under no-pending/serial/generation guards, rather than
+lending mutable GPU storage to retained frames.
+
+Release validation passes the CPU label oracle, GPU tiled count/guard controls,
+CLI validation, and real-frame off/on exactness and publication-lifetime tests
+with Metal API validation. The frame controls compare exact raw pixels, physical
+reservoir tuples and selected records for all three modes, including repeated
+sample labels, 64-bit sample indices and forced failure/recovery. Separate actual
+CLI runs pass eight-frame paired-atlas/dual-motion/compaction sequences for each
+mode. Native-resolution overhead and full-scene diagnostic distributions remain
+unmeasured. No decorrelation, highlight repair or performance benefit is established.
 
 ## Retained measurements and limitations
 
