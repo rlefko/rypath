@@ -24,6 +24,13 @@ Pavilion-night sequence completes all 40 submissions with finite final raw and
 reconstructed FLOAT captures. This is numerical recovery, not scene-quality or
 performance qualification; see the [validation record](restir-enhanced.md#geometric-cancellation-recovery).
 
+The [Enhanced execution investigation](enhanced-performance.md) confirms a native
+zero-mutation regression relative to contribution-prefix replay. Exact diagnostic
+counts show fewer path-step calls, while current shader profiles show greater
+spill storage. Two outlining experiments provide no useful recovery. They remain
+unadopted; state-layout and complete material-event specialization are the next
+bounded experiments. These measurements do not qualify image quality.
+
 The [hero execution follow-up](hero-execution.md) combines exact temporal
 memoization with smaller current, historical and sampled-light state. Its short
 native-1080p Area-one screen retains exact final raw/reconstructed FLOAT pixels
