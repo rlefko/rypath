@@ -232,7 +232,8 @@ Options parse(int argc, char **argv) {
             o.compare_reconstruction = value == "on";
         } else if (key == "--resource-profile") {
             const auto profile = parse_resource_profile(value);
-            require(profile.has_value(), "Resource profile must be standard or large");
+            if (!profile)
+                throw std::runtime_error("Resource profile must be standard or large");
             o.resource_profile = *profile;
         } else if (key == "--variance-policy") {
             require(value == "paired" || value == "center" || value == "conservative",

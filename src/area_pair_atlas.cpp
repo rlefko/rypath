@@ -41,8 +41,8 @@ bool initialize_labels(std::span<Label> labels, Word width, std::string &diagnos
         labels[pixel] = Label(pixel >> 1);
     return true;
 }
-bool shuffle_labels(std::span<Label> labels, Word width, Word atlas, Word pass,
-                    shared::replay::Words2 seed, std::string &diagnostic) {
+bool shuffle_labels(std::span<Label> labels, Word width, shared::replay::Words2 seed, Word atlas,
+                    Word pass, std::string &diagnostic) {
     if (!shape(labels.size(), width, diagnostic))
         return false;
     const Word blocks = width / 2, parity = pass & 1u;
@@ -145,8 +145,8 @@ Asset generate() {
                 return asset;
             }
             for (Word pass = 0; pass < shared::shuffle_count; ++pass)
-                if (!shuffle_labels(labels, tile.width, atlas, pass,
-                                    {shared::atlas_seed_low, shared::atlas_seed_high},
+                if (!shuffle_labels(labels, tile.width,
+                                    {shared::atlas_seed_low, shared::atlas_seed_high}, atlas, pass,
                                     asset.diagnostic)) {
                     asset.entries.clear();
                     return asset;

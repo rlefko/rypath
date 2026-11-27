@@ -2,9 +2,10 @@
 #include "frame_work_diagnostics.hpp"
 #include "gpu_diagnostics.hpp"
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <limits>
-int main() {
+int main() try {
     using namespace rypath;
     const auto require = [](bool value) {
         if (!value)
@@ -79,4 +80,7 @@ int main() {
     add_frame_work(exact, "fresh", 0, 8, 1, 0, .1, 0, 0, true, 1);
     require(!exact.complete && exact.status == "invalid: packet step invocation overflow");
     std::cout << "GPU stage diagnostics checks passed\n";
+} catch (const std::exception &error) {
+    std::cerr << error.what() << '\n';
+    return EXIT_FAILURE;
 }

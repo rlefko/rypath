@@ -52,7 +52,10 @@ void rng_and_construction() {
          "Bounded max word and invalid bound");
     const std::array<unsigned, 3> script{0, 15, 40};
     unsigned retries = 0, scripted = 0;
-    while (retries < script.size() && !shared::bounded(script[retries++], 24, scripted)) {
+    for (const auto word : script) {
+        ++retries;
+        if (shared::bounded(word, 24, scripted))
+            break;
     }
     need(retries == 3 && scripted == 16,
          "Scripted bounded draws reject two words before accepting the third");
@@ -66,15 +69,16 @@ void rng_and_construction() {
     need(shared::shuffle_count == 128 && 32921161 / 256000 == 128,
          "Sigma16 full rational FLOOR is128, not129");
     for (unsigned width : {2u, 4u, 6u, 8u}) {
-        std::vector<cpu::Label> labels(width * width);
+        std::vector<cpu::Label> labels(std::size_t(width) * width);
         std::vector<shared::Entry> linked(labels.size());
         std::string why;
         need(cpu::initialize_labels(labels, width, why), why.c_str());
         for (unsigned p = 0; p < labels.size(); ++p)
             need(labels[p] == p / 2, "Initial adjacent horizontal labels appear twice");
         for (unsigned pass = 0; pass < 8; ++pass) {
-            need(cpu::shuffle_labels(labels, width, 2, pass,
-                                     {shared::atlas_seed_low, shared::atlas_seed_high}, why),
+            need(cpu::shuffle_labels(labels, width,
+                                     {shared::atlas_seed_low, shared::atlas_seed_high}, 2, pass,
+                                     why),
                  why.c_str());
             const auto independent = ref::labels(width, 2, pass + 1);
             for (unsigned p = 0; p < labels.size(); ++p)
@@ -140,7 +144,7 @@ void lookup(const std::vector<shared::Entry> &tile, unsigned L) {
 // Handwritten half-period pairs exercise exact +/-ties on either tile axis.
 // These fixtures do not change the generated production asset or its digest.
 std::vector<shared::Entry> half_period_tile(unsigned L, bool vertical) {
-    std::vector<shared::Entry> tile(L * L);
+    std::vector<shared::Entry> tile(std::size_t(L) * L);
     for (unsigned y = 0; y < L; ++y)
         for (unsigned x = 0; x < L; ++x) {
             const int delta = (vertical ? y : x) < L / 2 ? int(L / 2) : -int(L / 2);
@@ -299,8 +303,8 @@ void production_asset() {
             radius += r;
             ++histogram[r < 16 ? 0 : r < 32 ? 1 : r < 48 ? 2 : r < 64 ? 3 : 4];
         }
-        const long double N = tile.size(), rx = std::sqrt(xx / N), ry = std::sqrt(yy / N),
-                          radial = radius / N;
+        const long double N = static_cast<long double>(tile.size()), rx = std::sqrt(xx / N),
+                          ry = std::sqrt(yy / N), radial = radius / N;
         const long double radial_expected = 16 * std::sqrt(std::acos(-1.L) / 2);
         std::cout << "atlas_distribution tile=" << k << " mean=" << double(sx / N) << ','
                   << double(sy / N) << " RMS=" << double(rx) << ',' << double(ry)

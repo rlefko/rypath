@@ -18,8 +18,8 @@ struct Asset {
     }
 };
 bool initialize_labels(std::span<Label> labels, shared::Word width, std::string &diagnostic);
-bool shuffle_labels(std::span<Label> labels, shared::Word width, shared::Word atlas,
-                    shared::Word pass, shared::replay::Words2 seed, std::string &diagnostic);
+bool shuffle_labels(std::span<Label> labels, shared::Word width, shared::replay::Words2 seed,
+                    shared::Word atlas, shared::Word pass, std::string &diagnostic);
 bool link_labels(std::span<const Label> labels, shared::Word width,
                  std::span<shared::Entry> entries, std::string &diagnostic);
 bool validate_tile(std::span<const shared::Entry> entries, shared::Word width,

@@ -269,7 +269,8 @@ void atlas() {
         requested.spatial_mode = actual.spatial_mode = FrameSpatialMode::shared;
         const auto shared = rypath_stochastic_spatial::draw(
             17, 0, std::uint32_t(c.seed), std::uint32_t(c.seed >> 32), FrameSpatialMode::shared);
-        const auto independent_evaluations = rypath_stochastic_spatial::evaluations(selected);
+        const std::uint64_t independent_evaluations =
+            rypath_stochastic_spatial::evaluations(selected);
         actual.logical_evaluations -= (independent_evaluations - 1) * 6;
         actual.completed_evaluations -= (independent_evaluations - 1) * 6;
         actual.stochastic_forward_atlas = shared.forward;
