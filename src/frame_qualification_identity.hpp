@@ -52,6 +52,11 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
         mutations > std::numeric_limits<std::uint32_t>::max() - 7u ||
         n > std::numeric_limits<std::uint64_t>::max() / (7ull + mutations))
         return fail("Qualification dimensions/accounting overflow");
+    const auto spatial_candidates = !area                                                ? 0u
+                                    : rypath_stochastic_spatial::enabled(c.spatial_mode) ? 2u
+                                                                                         : 5u;
+    if (f.spatial_candidates != spatial_candidates)
+        return fail("Qualification spatial reservoir candidate count mismatch");
     if (f.status != FrameStatus::complete || f.width != c.width || f.height != c.height ||
         f.completed_samples != n)
         return fail("Qualification frame completion/dimensions mismatch");

@@ -5509,7 +5509,9 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                                                  history.contexts[destination_index]);
                 frame->info.history_generation = history.generation;
                 frame->info.temporal_candidates = history.valid ? 2 : 1;
-                frame->info.spatial_candidates = area_wire::spatial_candidates;
+                frame->info.spatial_candidates = rypath_stochastic_spatial::enabled(c.spatial_mode)
+                                                     ? 2u
+                                                     : area_wire::spatial_candidates;
                 runner->history = impl_->history;
                 runner->area_programs = impl_->area;
                 runner->history_source = history.banks[history.front];

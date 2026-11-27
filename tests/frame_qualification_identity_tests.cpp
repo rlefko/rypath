@@ -25,6 +25,7 @@ FrameInfo enhanced() {
     f.fresh_discovery_version = 1;
     f.contribution_depth = 6;
     f.enhanced_history_cap = 20;
+    f.spatial_candidates = 5;
     f.enhanced_suffix_cache = true;
     f.mutation_policy = FrameMutationPolicy::legacy;
     f.area_stencil = FrameAreaStencil::adjacent;
@@ -80,6 +81,7 @@ void controls() {
     reject([](auto &x) { x.canonical_transport_version = 0; }, "wrong canonical law");
     reject([](auto &x) { x.fresh_discovery_version = 0; }, "wrong discovery law");
     reject([](auto &x) { x.contribution_depth = 5; }, "wrong depth");
+    reject([](auto &x) { x.spatial_candidates = 2; }, "incorrect exhaustive candidate count");
     reject([](auto &x) { x.enhanced_history_cap = 1; }, "incorrect effective history cap");
     reject([](auto &x) { x.enhanced_suffix_cache = false; }, "ignored requested suffix");
     reject([](auto &x) { x.status = FrameStatus::failed; }, "failed status");
@@ -218,6 +220,7 @@ void atlas() {
         auto actual = f;
         requested.spatial_mode = actual.spatial_mode = FrameSpatialMode::independent;
         actual.stochastic_spatial_pairs = true;
+        actual.spatial_candidates = 2;
         const auto selected = rypath_stochastic_spatial::draw(17, 0, std::uint32_t(c.seed),
                                                               std::uint32_t(c.seed >> 32));
         actual.stochastic_forward_atlas = selected.forward;
