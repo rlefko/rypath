@@ -12,9 +12,18 @@ namespace {
 namespace c = rypath_enhanced_confidence;
 namespace e = rypath_enhanced_path;
 namespace m = rypath_reservoir;
+namespace er = rypath_enhanced_reservoir;
 void need(bool condition, const char *message) {
     if (!condition)
         throw std::runtime_error(message);
+}
+e::Number number(float value) {
+    const auto result = er::from_float(value);
+    need(result.status == er::Status::ok, "Confidence score input is representable");
+    return result.value;
+}
+long double value(e::Number number) {
+    return std::ldexp(static_cast<long double>(number.fraction), number.exponent);
 }
 void near(long double actual, long double expected, long double tolerance, const char *message) {
     need(std::isfinite(actual) && std::abs(actual - expected) <= tolerance, message);
@@ -92,13 +101,15 @@ void structural_not_sampled() {
         for (unsigned old = 0; old < 2; ++old) {
             const float inverse = current == 0 ? 0.f : 2.f;
             const float Zold = old == 0 ? 0.f : 2.f;
-            const auto center = e::canonical_score(2, 2, inverse, fresh, history);
-            const auto neighbor = e::pair_score({Zold, old == 0 ? 0.f : 2.f, 2, history, fresh});
+            const auto center =
+                e::canonical_score(number(2), number(2), number(inverse), fresh, history);
+            const auto neighbor = e::pair_score(
+                {number(Zold), number(old == 0 ? 0.f : 2.f), number(2), history, fresh});
             need(center.status == m::Status::ok && neighbor.status == m::Status::ok,
                  "Complementary coefficient example is numerically valid");
-            correct += (center.value + neighbor.value) / 4.L;
+            correct += (value(center.value) + value(neighbor.value)) / 4.L;
             const long double wrong_center = old == 0 ? 2 : (inverse == 0 ? 2 : 1);
-            deletion += (wrong_center + neighbor.value) / 4.L;
+            deletion += (wrong_center + value(neighbor.value)) / 4.L;
         }
     near(correct, 2, 0, "Structural null retains unbiased complementary partition");
     near(deletion, 2.25L, 0, "Deleting a null source confidence is biased");
@@ -110,14 +121,15 @@ void complementary_and_cap_timing() {
     // At one common chart point use target2/4 and UCWs1; both source normalizers
     // equal own target. Their weighted destination integrand is2. An independent
     // exact-rational calculation gives shares2/82 and80/82, not2/422,420/422.
-    const auto center = e::canonical_score(2, 2, 4, fresh, history);
-    const auto shifted = e::pair_score({4, 4, 2, history, fresh});
-    near(center.value, 4.L / 82, 1e-8L, "Fresh complementary score with preweight cap20");
-    near(shifted.value, 160.L / 82, 3e-7L, "History shifted score with same capped coefficient");
-    near(static_cast<long double>(center.value) + shifted.value, 2, 3e-7L,
+    const auto center = e::canonical_score(number(2), number(2), number(4), fresh, history);
+    const auto shifted = e::pair_score({number(4), number(4), number(2), history, fresh});
+    near(value(center.value), 4.L / 82, 1e-8L, "Fresh complementary score with preweight cap20");
+    near(value(shifted.value), 160.L / 82, 3e-7L,
+         "History shifted score with same capped coefficient");
+    near(value(center.value) + value(shifted.value), 2, 3e-7L,
          "Complementary partition sums to complete integrand");
-    const auto wrong_history = e::pair_score({4, 4, 2, 105, fresh});
-    need(std::abs(static_cast<long double>(center.value) + wrong_history.value - 2) > .03L,
+    const auto wrong_history = e::pair_score({number(4), number(4), number(2), 105, fresh});
+    need(std::abs(value(center.value) + value(wrong_history.value) - 2) > .03L,
          "Cap only one side/after weighting breaks complementary partition");
     const auto spatial = c::spatial_begin(t.output);
     need(c::spatial_finish(spatial).source.confidence == 21,
