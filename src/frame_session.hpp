@@ -175,14 +175,15 @@ struct FrameConfig {
     // Enhanced retains the selected owned record/scale; camera/context changes
     // replay both directions. False provides a full-replay validation control.
     bool cache_temporal_evaluations = true;
+    // Fixed prior-frame confidence, independent of sample values.
+    std::uint32_t enhanced_history_cap = 20;
     // Effective only for Enhanced Area prefix replay; disabled mode replays suffixes.
-    std::uint32_t enhanced_history_cap =
-        20; // Fixed prior-frame confidence, independent of samples.
     bool enhanced_suffix_cache = true;
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
     bool compact_enhanced_pairs = false;
-    // Unbiased stochastic evaluation of the four pairwise spatial MIS terms.
+    // Fresh extraction ends before temporal/spatial reuse and publishes no history.
     FrameAreaReuse area_reuse = FrameAreaReuse::full;
+    // Choose how to evaluate the four pairwise spatial MIS terms.
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     FrameAreaDuplication area_duplication = FrameAreaDuplication::off;
     // Experimental static-geometry, camera-only temporal donor selection.

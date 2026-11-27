@@ -270,9 +270,10 @@ fixtures, while the suite target remains unmet. Query shadows, default native AS
 builds and packed one-event execution remain selected; the other policies retain
 their opt-in experiments and measured limits.
 
-The next interactive work should improve importance sampling, replay/reconnection
-efficiency, guide generation during motion and filtering, then demonstrate quality
-per unit time against the independent control. The current adaptation does not
+The [zero-mutation study](zero-mutation-performance.md) reduces spatial work
+to one reciprocal map. Fresh discovery and the remaining path evaluation both
+need to fit the complete-frame budget. Compare changes against the exhaustive
+and independent controls at matched quality through camera motion. The current adaptation does not
 reproduce the papers' optimized reconnection implementations, and completed studies do not imply
 universal quality or performance acceptance.
 

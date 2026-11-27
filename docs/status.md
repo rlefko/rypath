@@ -5,9 +5,8 @@ fresh spectral paths, reciprocal spatial reuse and reconstruction separately.
 The native budgets are 50 ms for Cornell/Prism and 100 ms for Pavilion. The
 stochastic spatial estimators and fixed temporal-confidence controls are opt-in.
 
-The [Enhanced ReSTIR follow-up](restir-enhanced.md) targets native-1080p,
-Area reuse, one mutation and denoising at 20 FPS for Cornell/Prism and 10+ FPS
-for Pavilion day/night. Its opt-in finite-depth domain includes weighted fresh
+The [Enhanced ReSTIR implementation](restir-enhanced.md) supports native-1080p
+Area reuse with zero or more corrected mutations and denoising. Its opt-in finite-depth domain includes weighted fresh
 discovery, strict confidence, supported terminal/interior reconnection, bounded
 spectral suffix caching and selected-null compaction. Native static exactness and
 timing screens pass execution checks, but caching/compaction gains are limited

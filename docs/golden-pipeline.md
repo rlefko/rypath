@@ -9,8 +9,13 @@ All shadow, reuse, mutation, guide and reconstruction work counts toward frame
 time. Upscaled and interpolated display rates are reported separately.
 
 The pipeline is native Metal traversal, wavefront spectral PT, Area ReSTIR
-temporal reuse, one weight-corrected MCMC mutation, spatial reuse, and separate
-denoising/presentation. This is the experimental candidate, selected in the viewer
+temporal reuse, optional weight-corrected MCMC, spatial reuse, and separate
+denoising/presentation. The current four-scene study targets zero mutations
+with budgets of 50 ms on Cornell/Prism and 100 ms on Pavilion. The viewer
+exposes the sampled spatial policies for direct inspection.
+[Zero-mutation performance and quality](zero-mutation-performance.md)
+
+The original one-mutation configuration uses full replay and is selected in the viewer
 with `--estimator area-replay --mutations 1 --mode temporal`. The viewer defaults
 to independent sampling and signed temporal reconstruction because the current
 full-replay reuse implementation increases both cost and denoised error in the

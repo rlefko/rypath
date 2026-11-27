@@ -71,6 +71,25 @@ guidance motivates checking register pressure and temporary storage in the
 compiled kernel. Whole-frame timing decides whether the change pays off.
 [Metal shader performance](https://developer.apple.com/videos/play/tech-talks/111373/)
 
+## Short native cross-check
+
+Both arms below use `a19feb2`, cap 20, generic shading, identical native
+settings and signed denoising on the 40-core M4 Max (macOS 26.6, Xcode 26.6).
+One process per arm uses two warmups and four measured static frames. Every
+frame completed 2,073,600 fresh paths. The shared arm evaluated exactly one
+spatial map and combined two reservoir candidates. The exhaustive arm
+evaluated four maps and combined five candidates.
+
+| Scene | Exhaustive, ms | Shared, ms | Shared FPS | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Cornell | 854.90 | 444.04 | 2.25 | 1.93× |
+| Prism | 1269.60 | 576.62 | 1.73 | 2.20× |
+| Pavilion day | 2423.39 | 1058.33 | 0.94 | 2.29× |
+| Pavilion night | 2461.40 | 1108.35 | 0.90 | 2.22× |
+
+These short means measure rendering and reconstruction through completion.
+The larger history and variance changes require separate image checks.
+
 ## Reconstruction and confidence
 
 Each diagnostic submits the same retained raw frame to signed reconstruction
