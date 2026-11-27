@@ -11,12 +11,12 @@ CPU/GPU, mapped-domain and frame-publication controls plus a four-scene native
 motion smoke; motion quality qualification remains open. Paired Gaussian spatial textures now pass
 independent integer, GPU, rendered-frame and actual CLI controls; duplication
 diagnostics pass focused off/on exactness, provenance and publication controls.
-The new paired-atlas zero-mutation native screen completes Cornell, Prism and
-Pavilion day, but Pavilion night fails wavefront validation at sample 38; that
-failure remains under investigation. The complete scene-quality/time study
-remains follow-up work. This is not the
-complete paper implementation; no Pavilion highlight repair is established, and
-the frame-rate targets are unmet.
+The original paired-atlas zero-mutation native screen completes Cornell, Prism
+and Pavilion day, but fails Pavilion night at sample 38. The numerical recovery
+below completes that sequence; the original failed study remains preserved.
+The complete scene-quality/time study remains follow-up work. This is not the
+complete paper implementation; no Pavilion highlight repair is established,
+and the frame-rate targets are unmet.
 
 Cold expansion arithmetic repairs a reproduced Enhanced geometric-cancellation
 failure. Its 185 GPU geometry controls pass, and the formerly failing native
