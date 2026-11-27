@@ -655,6 +655,42 @@ at sample 38. The failure is retained for diagnosis; the four-scene timing study
 is incomplete. Optional duplication diagnostics were absent from that runtime
 and do not establish a repair.
 
+## Enhanced fresh-only diagnostic
+
+`--area-reuse fresh` extracts the actual Enhanced fresh local-selected `(U,j)`
+with its discovery normalizer `Z` and physical target `T`, producing `Z*F/T`.
+This is one selected-contribution estimator, not the independent PT path sum.
+It requires Enhanced wavefront Area, explicit zero mutations and spatial mode
+`all`. It rejects reprojection, pair compaction and duplication diagnostics.
+The default `--area-reuse full` retains the existing pipeline.
+
+Each pixel runs one complete fresh discovery evaluation. A dedicated finalizer
+validates its confidence-one accumulator and writes the weighted raw estimate;
+zero/null reservoirs produce zero without materializing `0/0`. There is no
+extra categorical draw, temporal proposal, mutation or spatial replay. Completion
+reports `physical=logical=fresh=N`, zero cached/analytic-null evaluations, and zero
+temporal/spatial proposals. Finite-depth and scene-model requirements are unchanged.
+Both selected and conditional-mean output modes use this same one-atom readout.
+
+Accepted attempts consume their serial, including failed attempts. Successful
+fresh completion releases the pending frame without flipping the history front,
+incrementing its generation, assigning a committed reservoir serial or making
+history valid. Repeated samples and camera/epoch changes retain these rules.
+Per-frame accumulator/XYZ storage follows the ordinary retained-Frame lifetime;
+ordinary reusable-history snapshots remain unavailable for this diagnostic.
+Physical temporal/suffix caches are effectively off and reported separately from
+their requested settings. The diagnostic currently retains ordinary Area storage;
+it is a work/noise-floor isolation, not a minimal-memory renderer.
+
+The frame benchmark supports `--reconstruction none`, `temporal` and `metalfx`.
+Reconstruction retains its separate output and history; it cannot publish physical
+Area history. Qualification accepts this mode with `--mutation-arms 0` and keeps
+its independent reference/arm distinct from Enhanced fresh extraction. A shared-AS
+oracle compares raw extraction with `Z/T` readout of the cold full pipeline's
+captured fresh temporal reservoir. CPU identity and GPU controls distinguish
+numerical equivalence, null/range behavior, epoch changes, retention and failed
+attempt recovery from scene-quality or native-throughput qualification.
+
 ## Experimental stochastic spatial terms
 
 `--area-spatial-mode stochastic-pairs` opts into our stochastic evaluation of

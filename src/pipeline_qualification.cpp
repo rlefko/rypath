@@ -89,6 +89,7 @@ struct Options {
     std::uint32_t enhanced_history_cap = 20;
     bool compare_reconstruction = false;
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
+    FrameAreaReuse area_reuse = FrameAreaReuse::full;
     std::vector<int> arms{-1, 0, 1, 2, 4};
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir;
@@ -111,6 +112,8 @@ const char *target_name(const Options &o) {
                                                                : "quarter-l1-v1";
 }
 const char *source_mis_name(const Options &o) {
+    if (o.area_reuse == FrameAreaReuse::fresh)
+        return "fresh-local-selection-v1";
     return o.area_path_domain == FrameAreaPathDomain::enhanced
                ? "enhanced-hybrid-confidence-scaled-mis-v4"
                : "source-target-mis-v1";
@@ -146,6 +149,7 @@ const char *usage =
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
     "auto|adjacent|reciprocal16|paired-gaussian16\n"
     "  [--area-path-domain summed|contribution|enhanced] [--area-contribution-replay full|prefix]\n"
+    "  [--area-reuse full|fresh (fresh requires --mutation-arms 0)]\n"
     "  [--area-spatial-mode all|stochastic-pairs|stochastic-shared (default: all)]\n"
     "  [--area-suffix-cache on|off] [--area-pair-compaction on|off]\n"
     "  [--area-temporal-reprojection off|dual] [--mutation-arms 0|0,1|0,1,2,4]\n"
@@ -183,6 +187,9 @@ Options parse(int argc, char **argv) {
         } else if (key == "--area-suffix-cache" || key == "--area-pair-compaction") {
             require(value == "on" || value == "off", "Area execution switches must be on or off");
             (key == "--area-suffix-cache" ? o.suffix_cache : o.compact_pairs) = value == "on";
+        } else if (key == "--area-reuse") {
+            require(value == "full" || value == "fresh", "Area reuse must be full or fresh");
+            o.area_reuse = value == "fresh" ? FrameAreaReuse::fresh : FrameAreaReuse::full;
         } else if (key == "--area-spatial-mode") {
             require(value == "all" || value == "stochastic-pairs" || value == "stochastic-shared",
                     "Area spatial mode must be all, stochastic-pairs, or stochastic-shared");
@@ -291,6 +298,12 @@ Options parse(int argc, char **argv) {
         }
     }
     require(!o.scene.empty() && !o.output_dir.empty(), "--scene and --output-dir are required");
+    require(o.area_reuse != FrameAreaReuse::fresh ||
+                (o.area_path_domain == FrameAreaPathDomain::enhanced &&
+                 o.arms == std::vector<int>{-1, 0} && o.spatial_mode == FrameSpatialMode::all &&
+                 !o.compact_pairs && !o.temporal_reprojection),
+            "Fresh extraction requires Enhanced, mutation-arms 0, full spatial mode and no "
+            "reprojection/compaction");
     require(!rypath_stochastic_spatial::enabled(o.spatial_mode) ||
                 (o.area_path_domain == FrameAreaPathDomain::enhanced &&
                  o.area_stencil == FrameAreaStencil::paired_gaussian16),
@@ -990,6 +1003,7 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
         config.enhanced_suffix_cache = o.suffix_cache;
         config.compact_enhanced_pairs = o.compact_pairs;
         config.spatial_mode = o.spatial_mode;
+        config.area_reuse = o.area_reuse;
         config.enhanced_temporal_reprojection = o.temporal_reprojection;
     }
     auto renderer = session(scene.value, config, device);
@@ -1094,6 +1108,8 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"compacted_null_evaluations\":" << raw_info->compacted_null_evaluations
                  << ",\"enhanced_pair_compaction\":"
                  << (raw_info->enhanced_pair_compaction ? "true" : "false")
+                 << ",\"requested_area_reuse\":" << quote(frame_area_reuse_name(o.area_reuse))
+                 << ",\"area_reuse\":" << quote(frame_area_reuse_name(raw_info->area_reuse))
                  << ",\"requested_area_spatial_mode\":"
                  << quote(frame_spatial_mode_name(o.spatial_mode)) << ",\"area_spatial_mode\":"
                  << quote(frame_spatial_mode_name(raw_info->spatial_mode))
@@ -1127,7 +1143,9 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << quote(mutations < 0 ? "not-applicable" : area_output_name(o.area_output))
                  << ",\"area_target\":" << quote(mutations < 0 ? "none" : target_name(o))
                  << ",\"area_source_mis\":" << quote(mutations < 0 ? "none" : source_mis_name(o))
-                 << ",\"area_temporal_reuse\":" << (mutations < 0 ? 0u : o.enhanced_history_cap)
+                 << ",\"area_temporal_reuse\":"
+                 << frame_temporal_reuse_cap(config.estimator, config.area_reuse,
+                                             config.enhanced_history_cap)
 
                  << ",\"requested_area_mutation_policy\":"
                  << quote(frame_mutation_policy_name(o.mutation_policy))
@@ -1243,6 +1261,8 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                                             std::to_string(raw_info->canonical_transport_version));
                     attributes.emplace_back("rypath.area.fresh_discovery_version",
                                             std::to_string(raw_info->fresh_discovery_version));
+                    attributes.emplace_back("rypath.area.reuse",
+                                            frame_area_reuse_name(raw_info->area_reuse));
                     attributes.emplace_back("rypath.area.requested_spatial_mode",
                                             frame_spatial_mode_name(o.spatial_mode));
                     attributes.emplace_back("rypath.area.spatial_mode",
@@ -1267,9 +1287,10 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                                             variance_name(o.variance_policy));
                     attributes.emplace_back("rypath.frame.resource_profile",
                                             std::string(resource_profile_name(o.resource_profile)));
-                    attributes.emplace_back("rypath.area.temporal_reuse",
-                                            mutations < 0 ? "0"
-                                                          : std::to_string(o.enhanced_history_cap));
+                    attributes.emplace_back(
+                        "rypath.area.temporal_reuse",
+                        std::to_string(frame_temporal_reuse_cap(config.estimator, config.area_reuse,
+                                                                config.enhanced_history_cap)));
                     attributes.emplace_back("rypath.area.mutation_steps",
                                             std::to_string(mutations < 0 ? 0 : mutations));
                     attributes.emplace_back("rypath.hero.requested",
@@ -1354,7 +1375,10 @@ std::string settings_json(const Options &o) {
         << ",\"area_output\":" << quote(area_output_name(o.area_output))
         << ",\"area_target\":" << quote(target_name(o))
         << ",\"area_source_mis\":" << quote(source_mis_name(o))
-        << ",\"area_temporal_reuse\":" << o.enhanced_history_cap
+        << ",\"requested_area_history_cap\":" << o.enhanced_history_cap
+        << ",\"area_temporal_reuse\":"
+        << frame_temporal_reuse_cap(FrameEstimator::area_replay, o.area_reuse,
+                                    o.enhanced_history_cap)
         << ",\"requested_area_path_domain\":"
         << quote(frame_area_path_domain_name(o.area_path_domain))
         << ",\"requested_area_contribution_replay\":"
@@ -1363,6 +1387,7 @@ std::string settings_json(const Options &o) {
         << ",\"requested_area_pair_compaction\":" << (o.compact_pairs ? "true" : "false")
         << ",\"requested_area_temporal_reprojection\":"
         << quote(o.temporal_reprojection ? "dual" : "off")
+        << ",\"requested_area_reuse\":" << quote(frame_area_reuse_name(o.area_reuse))
         << ",\"requested_area_spatial_mode\":" << quote(frame_spatial_mode_name(o.spatial_mode))
         << ",\"requested_area_stencil\":" << quote(frame_area_stencil_name(o.area_stencil))
         << ",\"requested_area_mutation_policy\":"

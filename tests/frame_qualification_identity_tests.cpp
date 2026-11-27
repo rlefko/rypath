@@ -47,6 +47,33 @@ FrameConfig config() {
     c.contribution_replay = FrameContributionReplay::prefix;
     return c;
 }
+void fresh_controls() {
+    auto c = config();
+    c.area_reuse = FrameAreaReuse::fresh;
+    c.mutation_steps = 0;
+    auto f = enhanced();
+    f.area_reuse = FrameAreaReuse::fresh;
+    f.enhanced_history_cap = f.spatial_candidates = 0;
+    f.enhanced_suffix_cache = false;
+    f.completed_evaluations = f.logical_evaluations = f.completed_samples;
+    f.analytic_null_evaluations = f.mutation_attempts = 0;
+    check(valid_frame_qualification_identity(c, f, 6), "fresh-only completion identity");
+    auto bad = f;
+    bad.history_used = true;
+    check(!valid_frame_qualification_identity(c, bad, 6), "fresh-only reused history");
+    bad = f;
+    bad.history_generation = 1;
+    check(!valid_frame_qualification_identity(c, bad, 6), "fresh-only committed history");
+    bad = f;
+    bad.spatial_candidates = 5;
+    check(!valid_frame_qualification_identity(c, bad, 6), "fresh-only spatial proposals");
+    bad = f;
+    bad.temporal_candidates = 1;
+    check(!valid_frame_qualification_identity(c, bad, 6), "fresh-only temporal proposal");
+    bad = f;
+    bad.logical_evaluations += 6;
+    check(!valid_frame_qualification_identity(c, bad, 6), "fresh-only fabricated map work");
+}
 void controls() {
     auto c = config();
     auto f = enhanced();
@@ -266,6 +293,7 @@ void atlas() {
 } // namespace
 int main() {
     try {
+        fresh_controls();
         controls();
         legacy_and_independent();
         atlas();

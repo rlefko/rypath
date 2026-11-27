@@ -130,12 +130,13 @@ inline bool valid_area_evaluation_accounting(std::uint64_t pixels, bool history,
 // Physical transport, cached responses and analytic null completions are
 // disjoint categories. A cached null response remains a cache hit, not a
 // fabricated wavefront completion. Every fresh owner executes physical work.
-inline bool valid_enhanced_area_evaluation_accounting(std::uint64_t pixels, bool history,
-                                                      std::uint32_t mutations, bool cache_used,
-                                                      std::uint64_t physical, std::uint64_t cached,
-                                                      std::uint64_t analytic_null,
-                                                      std::uint64_t logical,
-                                                      std::uint32_t spatial_evaluations = 4) {
+inline bool valid_enhanced_area_evaluation_accounting(
+    std::uint64_t pixels, bool history, std::uint32_t mutations, bool cache_used,
+    std::uint64_t physical, std::uint64_t cached, std::uint64_t analytic_null,
+    std::uint64_t logical, std::uint32_t spatial_evaluations = 4, bool fresh_only = false) {
+    if (fresh_only)
+        return !history && mutations == 0 && !cache_used && physical == pixels && cached == 0 &&
+               analytic_null == 0 && logical == pixels;
     if (spatial_evaluations < 1 || spatial_evaluations > 4)
         return false;
     const auto expected =

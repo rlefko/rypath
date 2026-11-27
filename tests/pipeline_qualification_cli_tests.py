@@ -386,6 +386,16 @@ def qualification_checks(executable):
         shared = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
         assert shared["settings"]["requested_area_spatial_mode"] == "stochastic-shared"
         assert shared["complete"] is False
+        destination = root / "fresh-extraction"
+        result = run(executable, ["--scene", source, "--output-dir", destination,
+                                 "--spectral-transport", "hero", "--area-path-domain", "enhanced",
+                                 "--mutation-arms", "0", "--area-reuse", "fresh"])
+        assert result.returncode != 0
+        fresh = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
+        assert fresh["settings"]["requested_area_reuse"] == "fresh"
+        assert fresh["settings"]["mutation_arms"] == "0"
+        assert fresh["settings"]["area_source_mis"] == "fresh-local-selection-v1"
+        assert fresh["settings"]["arms"] == ["independent", "area-0"]
     print("Qualification CLI and failure publication checks passed")
 
 

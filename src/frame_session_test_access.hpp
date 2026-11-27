@@ -90,7 +90,18 @@ struct EnhancedSuffixContextState {
     std::optional<std::uint64_t> committed_serial;
     bool exhausted = false, valid = false;
 };
+struct AreaPublicationState {
+    GeometryStatus status = GeometryStatus::failure;
+    std::string diagnostic;
+    bool pending = false, valid = false;
+    unsigned front = 0;
+    std::uint64_t generation = 0, next_serial = 0;
+    std::optional<std::uint64_t> committed_serial;
+};
 struct FrameSessionTestAccess {
+    // CPU-only publication metadata; never encodes a GPU command or reads scratch.
+    static AreaPublicationState publication_state(FrameSession &);
+
     // Externally serialized, enabled motion session, no pending frame. CPU
     // publication identity remains inspectable after a failed attempt; GPU
     // scratch/full-snapshot eligibility is unchanged.
@@ -122,12 +133,11 @@ struct FrameSessionTestAccess {
                                                      bool include_motion = false,
                                                      bool include_duplication = false);
     // Ordinary build_frame_session validates/builds the first session. The
-    // second uses the exact same renderer; only diffuse specialization, temporal/suffix cache flags
-    // and experimental Enhanced pair compaction/temporal reprojection and diagnostic modes may
-    // differ. Reprojection changes source domains: moving contrasts need raw mean tests; exact
-    // equality is asserted only for unchanged static identity contexts. Enhanced also uses exact
-    // caching when the complete evaluator context matches. Callers must serialize both sessions,
-    // including their GPU consumers.
+    // second shares its renderer. Diffuse specialization, temporal/suffix caches,
+    // pair compaction, reprojection and diagnostics may differ. The fresh/full
+    // contrast compares a cold temporal reservoir to its isolated fresh estimate.
+    // Moving reprojection changes source domains and needs statistical comparisons.
+    // Serialize both sessions and their GPU consumers.
     static SharedSceneFrameSessions
     build_shared_scene(const RenderScene &, const FrameConfig &, const FrameConfig &,
                        const std::filesystem::path &library_path = {});

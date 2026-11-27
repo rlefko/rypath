@@ -30,7 +30,7 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
     const bool enhanced = area && c.area_path_domain == FrameAreaPathDomain::enhanced;
     const bool wavefront = c.execution == FrameExecution::wavefront;
     const bool suffix = enhanced && c.contribution_replay == FrameContributionReplay::prefix &&
-                        c.enhanced_suffix_cache;
+                        c.enhanced_suffix_cache && c.area_reuse == FrameAreaReuse::full;
     const bool compact = enhanced && wavefront && c.compact_enhanced_pairs;
     const bool motion = enhanced && wavefront && c.enhanced_temporal_reprojection;
     const bool paired = area && wavefront && c.area_stencil == FrameAreaStencil::paired_gaussian16;
@@ -46,13 +46,21 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
                    f.stochastic_canonical_atlas != selection.canonical
              : f.stochastic_forward_atlas != 0 || f.stochastic_canonical_atlas != 0))
         return fail("Qualification stochastic spatial identity mismatch");
+    if ((c.area_reuse != FrameAreaReuse::full && c.area_reuse != FrameAreaReuse::fresh) ||
+        f.area_reuse != c.area_reuse ||
+        (c.area_reuse == FrameAreaReuse::fresh &&
+         (!enhanced || c.mutation_steps || c.spatial_mode != FrameSpatialMode::all ||
+          c.compact_enhanced_pairs || c.enhanced_temporal_reprojection ||
+          c.area_duplication != FrameAreaDuplication::off || f.history_used ||
+          f.history_generation || f.temporal_candidates || f.spatial_candidates)))
+        return fail("Qualification fresh-only identity/publication mismatch");
     const auto mutations = area ? c.mutation_steps : 0u;
     // Bound arithmetic used by the exact accounting helpers, including mutations.
     if (!n || n > std::numeric_limits<std::uint32_t>::max() ||
         mutations > std::numeric_limits<std::uint32_t>::max() - 7u ||
         n > std::numeric_limits<std::uint64_t>::max() / (7ull + mutations))
         return fail("Qualification dimensions/accounting overflow");
-    const auto spatial_candidates = !area                                                ? 0u
+    const auto spatial_candidates = !area || c.area_reuse == FrameAreaReuse::fresh       ? 0u
                                     : rypath_stochastic_spatial::enabled(c.spatial_mode) ? 2u
                                                                                          : 5u;
     if (f.spatial_candidates != spatial_candidates)
@@ -69,7 +77,9 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
         f.contribution_depth !=
             (frame_area_contribution_family(c.area_path_domain) ? scene_depth : 0u))
         return fail("Qualification path domain/replay/law/depth mismatch");
-    if (f.enhanced_history_cap != (enhanced ? c.enhanced_history_cap : 0u) ||
+    if (f.enhanced_history_cap !=
+            (enhanced ? frame_temporal_reuse_cap(c.estimator, c.area_reuse, c.enhanced_history_cap)
+                      : 0u) ||
         f.enhanced_suffix_cache != suffix || f.enhanced_pair_compaction != compact ||
         f.enhanced_temporal_reprojection_requested != c.enhanced_temporal_reprojection ||
         f.enhanced_temporal_reprojection != motion)
@@ -93,7 +103,8 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
                          rypath_stochastic_spatial::enabled(c.spatial_mode)
                              ? rypath_stochastic_spatial::evaluations(
                                    {f.stochastic_forward_atlas, f.stochastic_canonical_atlas})
-                             : 4u)
+                             : 4u,
+                         c.area_reuse == FrameAreaReuse::fresh)
                    : f.analytic_null_evaluations == 0 &&
                          valid_area_evaluation_accounting(
                              n, f.history_used, mutations, f.temporal_evaluation_cache_used,

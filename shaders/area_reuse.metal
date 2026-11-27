@@ -1253,6 +1253,29 @@ kernel void rypath_area_temporal_finish_duplication_v1(constant wire::Parameters
                                                        uint pixel [[thread_position_in_grid]]) {
     area_temporal_finish_body(a, pixel, AreaDuplication{&d, &p});
 }
+// Diagnostic extraction of the ACTUAL Enhanced fresh local-selected atom.
+// No history/temporal/suffix publication or extra categorical draw occurs here.
+kernel void rypath_area_fresh_finalize_v1(constant AreaArguments &a [[buffer(1)]],
+                                          uint pixel [[thread_position_in_grid]]) {
+    if (pixel >= a.config->pixel_count || !area_config(a, pixel))
+        return;
+    if (!area_enhanced(a) || a.config->phase != aw::fresh || a.config->candidate != 0 ||
+        a.config->history_used || a.config->mutation_steps || a.config->spatial_mode) {
+        AREA_FAIL(a, aw::invalid_config);
+        return;
+    }
+    const auto accumulator = a.accumulators[pixel];
+    AreaNumber Z;
+    if (accumulator.confidence != 1 || !area_finish(a, pixel, accumulator, 1, Z)) {
+        AREA_FAIL(a, aw::invalid_count);
+        return;
+    }
+    wire::Point weighted;
+    if (!area_weighted_xyz(a, pixel, Z, accumulator.xyz, area_T(accumulator), weighted))
+        return;
+    a.raw_xyz[pixel] = weighted;
+}
+
 kernel void rypath_area_spatial_begin(constant AreaArguments &a [[buffer(1)]],
                                       uint pixel [[thread_position_in_grid]]) {
     if (pixel >= a.config->pixel_count || !area_config(a, pixel))

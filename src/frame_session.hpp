@@ -45,6 +45,19 @@ inline constexpr const char *frame_contribution_replay_name(FrameContributionRep
     }
     return "invalid";
 }
+enum class FrameAreaReuse { full, fresh };
+inline constexpr std::uint32_t frame_temporal_reuse_cap(FrameEstimator estimator,
+                                                        FrameAreaReuse reuse,
+                                                        std::uint32_t configured_cap) {
+    return estimator == FrameEstimator::area_replay && reuse == FrameAreaReuse::full
+               ? configured_cap
+               : 0u;
+}
+inline constexpr const char *frame_area_reuse_name(FrameAreaReuse mode) {
+    return mode == FrameAreaReuse::full    ? "full"
+           : mode == FrameAreaReuse::fresh ? "fresh"
+                                           : "invalid";
+}
 enum class FrameMutationPolicy { automatic, legacy, spectral_refresh };
 using FrameSpatialMode = rypath_stochastic_spatial::Mode;
 inline constexpr const char *frame_spatial_mode_name(FrameSpatialMode mode) {
@@ -169,6 +182,7 @@ struct FrameConfig {
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
     bool compact_enhanced_pairs = false;
     // Unbiased stochastic evaluation of the four pairwise spatial MIS terms.
+    FrameAreaReuse area_reuse = FrameAreaReuse::full;
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     FrameAreaDuplication area_duplication = FrameAreaDuplication::off;
     // Experimental static-geometry, camera-only temporal donor selection.
@@ -222,10 +236,11 @@ struct FrameInfo {
     std::uint64_t area_serial = 0;
     bool history_used = false;
     bool temporal_evaluation_cache_used = false;
-    std::uint32_t enhanced_history_cap = 0; // Zero outside the Enhanced estimator.
+    std::uint32_t enhanced_history_cap = 0; // Zero without Enhanced temporal reuse.
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
     bool stochastic_spatial_pairs = false;
+    FrameAreaReuse area_reuse = FrameAreaReuse::full;
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     std::uint32_t stochastic_forward_atlas = 0, stochastic_canonical_atlas = 0;
     bool enhanced_temporal_reprojection_requested = false;

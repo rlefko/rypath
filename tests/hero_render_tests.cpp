@@ -2906,12 +2906,171 @@ void contribution_controls() {
     contribution_multileaf_mean();
 }
 } // namespace
+void enhanced_fresh_only_controls() {
+    auto black = early_emission(false);
+    black.area_emissions[0].radiance.fill(0);
+    auto tiny = early_emission(false), large = early_emission(false);
+    tiny.area_emissions[0].radiance.fill(std::ldexp(1.f, -80));
+    large.area_emissions[0].radiance.fill(std::ldexp(1.f, 80));
+    unsigned cases = 0;
+    for (const auto &scene : {diffuse(), early_emission(true), black, tiny, large})
+        for (const auto replay : {FrameContributionReplay::full, FrameContributionReplay::prefix})
+            for (unsigned capacity : {1u, 37u}) {
+                auto control = enhanced_config();
+                control.width = 7;
+                control.height = 5;
+                control.capacity = capacity;
+                control.mutation_steps = 0;
+                control.cache_temporal_evaluations = false;
+                control.enhanced_suffix_cache = false;
+                control.contribution_replay = replay;
+                control.area_output =
+                    capacity == 1 ? FrameAreaOutput::selected : FrameAreaOutput::conditional_mean;
+                auto diagnostic = control;
+                diagnostic.area_reuse = FrameAreaReuse::fresh;
+                auto pair = FrameSessionTestAccess::build_shared_scene(scene, control, diagnostic);
+                need(pair.status == GeometryStatus::success && pair.shared_renderer,
+                     pair.diagnostic);
+                const auto initial = FrameSessionTestAccess::publication_state(*pair.sessions[1]);
+                need(initial.status == GeometryStatus::success && !initial.valid &&
+                         !initial.committed_serial,
+                     "Fresh diagnostic starts without published history");
+                std::unique_ptr<Frame> saved;
+                FrameCapture saved_pixels;
+                for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+                    // An epoch cut keeps the full arm cold while both accepted
+                    // serials remain identical. The middle case changes camera.
+                    std::optional<FrameCamera> camera;
+                    if (ordinal == 1) {
+                        camera = FrameCamera{.camera = scene.camera,
+                                             .camera_medium = scene.camera_medium,
+                                             .raster_camera = scene.raster_camera,
+                                             .perspective_lens = scene.perspective_lens,
+                                             .texture_camera = scene.texture_camera};
+                        camera->raster_camera->origin.x += .125f;
+                    }
+                    FrameRequest request{high_sample + ordinal, 73u + ordinal, camera};
+                    auto full = pair.sessions[0]->submit(request);
+                    need(full.status == GeometryStatus::success && full.frame, full.diagnostic);
+                    const auto full_info = full.frame->wait();
+                    need(full_info.status == FrameStatus::complete && !full_info.history_used,
+                         full_info.diagnostic);
+                    const auto source =
+                        FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], ordinal);
+                    need(source.status == GeometryStatus::success, source.diagnostic);
+                    auto fresh = pair.sessions[1]->submit(request);
+                    need(fresh.status == GeometryStatus::success && fresh.frame, fresh.diagnostic);
+                    const auto info = fresh.frame->wait();
+                    const auto n = std::uint64_t(control.width) * control.height;
+                    need(info.status == FrameStatus::complete &&
+                             info.area_reuse == FrameAreaReuse::fresh && !info.history_used &&
+                             !info.temporal_evaluation_cache_used && !info.enhanced_suffix_cache &&
+                             info.history_generation == 0 && info.area_serial == ordinal &&
+                             info.completed_samples == n && info.fresh_candidates == n &&
+                             info.completed_evaluations == n && info.logical_evaluations == n &&
+                             info.cached_evaluations == 0 && info.analytic_null_evaluations == 0 &&
+                             info.temporal_candidates == 0 && info.spatial_candidates == 0 &&
+                             info.mutation_attempts == 0 && info.mutation_accepts == 0,
+                         info.diagnostic);
+                    const auto image = fresh.frame->capture();
+                    need(image.status == GeometryStatus::success && image.raw_xyz.size() == n,
+                         image.diagnostic);
+                    for (std::size_t p = 0; p < n; ++p) {
+                        const auto &t = source.temporal[p];
+                        const auto Z = std::ldexp(static_cast<long double>(t.normalizer),
+                                                  t.normalizer_exponent);
+                        const auto T =
+                            std::ldexp(static_cast<long double>(t.target), t.target_exponent);
+                        const float xyz[3]{t.xyz.x, t.xyz.y, t.xyz.z};
+                        need(t.confidence == 1,
+                             "Cold captured temporal tuple is the fresh confidence-one atom");
+                        for (unsigned k = 0; k < 3; ++k) {
+                            const long double expected = Z == 0 ? 0 : Z * xyz[k] / T;
+                            const auto tolerance =
+                                64.L * std::numeric_limits<float>::epsilon() * std::abs(expected) +
+                                64.L * std::numeric_limits<float>::denorm_min();
+                            need(std::abs(static_cast<long double>(image.raw_xyz[p][k]) -
+                                          expected) <= tolerance,
+                                 "Fresh raw differs from shared-AS cold selected-atom Z/T oracle");
+                        }
+                    }
+                    const auto state = FrameSessionTestAccess::publication_state(*pair.sessions[1]);
+                    need(state.status == GeometryStatus::success && !state.pending &&
+                             !state.valid && !state.committed_serial &&
+                             state.front == initial.front && state.generation == 0 &&
+                             state.next_serial == ordinal + 1,
+                         "Fresh completion must never publish reusable history");
+                    need(FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], ordinal)
+                                 .status == GeometryStatus::failure,
+                         "Fresh diagnostics never alias ordinary published history snapshots");
+                    if (ordinal == 0) {
+                        saved_pixels = image;
+                        saved = std::move(fresh.frame);
+                    } else
+                        exact(saved->capture(), saved_pixels);
+                    ++cases;
+                }
+            }
+    // A caller may release the session while its accepted fresh frame runs.
+    auto c = enhanced_config();
+    c.width = 3;
+    c.height = 2;
+    c.capacity = 2;
+    c.mutation_steps = 0;
+    c.area_reuse = FrameAreaReuse::fresh;
+    auto owner = session(early_emission(false), c);
+    auto pending = owner->submit({high_sample, 0, {}});
+    need(pending.status == GeometryStatus::success && pending.frame, pending.diagnostic);
+    owner.reset();
+    need(pending.frame->wait().status == FrameStatus::complete &&
+             pending.frame->capture().status == GeometryStatus::success,
+         "Fresh frame survives session destruction without publishing history");
+    // A failed accepted attempt consumes its serial without publishing history.
+    auto failure_scene = early_emission(false);
+    failure_scene.light_sampler = LightSamplerKind::uniform;
+    failure_scene.area_emissions[0].radiance.fill(1e30f);
+    failure_scene.environment.fill(std::numeric_limits<float>::max());
+    auto recovery = session(failure_scene, c);
+    auto first = recovery->submit({high_sample, 73, {}});
+    need(first.status == GeometryStatus::success && first.frame &&
+             first.frame->wait().status == FrameStatus::complete,
+         first.diagnostic);
+    const auto first_pixels = first.frame->capture();
+    FrameCamera miss{.camera = failure_scene.camera,
+                     .camera_medium = failure_scene.camera_medium,
+                     .raster_camera = failure_scene.raster_camera,
+                     .perspective_lens = failure_scene.perspective_lens,
+                     .texture_camera = failure_scene.texture_camera};
+    miss.raster_camera->origin.x = 100.f;
+    auto failed = recovery->submit({high_sample, 74, miss});
+    need(failed.status == GeometryStatus::success && failed.frame, failed.diagnostic);
+    const auto failure = failed.frame->wait();
+    need(failure.status == FrameStatus::failed && failure.area_serial == 1 &&
+             failure.history_generation == 0,
+         "Fresh nonfinite attempt must fail visibly");
+    failed.frame.reset();
+    const auto after_failure = FrameSessionTestAccess::publication_state(*recovery);
+    need(!after_failure.pending && !after_failure.valid && !after_failure.committed_serial &&
+             after_failure.generation == 0 && after_failure.next_serial == 2,
+         "Failed fresh attempt cannot publish or consume a second serial");
+    auto recovered = recovery->submit({high_sample, 75, {}});
+    need(recovered.status == GeometryStatus::success && recovered.frame, recovered.diagnostic);
+    const auto restored = recovered.frame->wait();
+    need(restored.status == FrameStatus::complete && restored.area_serial == 2 &&
+             !restored.history_used && restored.history_generation == 0,
+         "Fresh recovery remains history-free");
+    exact(first.frame->capture(), first_pixels);
+    std::cout << cases
+              << " shared-AS fresh/cold-ZT/null/range/capacity/cut/retention controls passed\n";
+}
+
 int main(int argc, char **argv) {
     try {
         const bool contribution_only =
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool event_counts = argc == 2 && std::string_view(argv[1]) == "--event-counts";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
+        const bool enhanced_fresh = argc == 2 && std::string_view(argv[1]) == "--enhanced-fresh";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
         const bool enhanced_duplication =
             argc == 2 && std::string_view(argv[1]) == "--enhanced-duplication";
@@ -2922,7 +3081,7 @@ int main(int argc, char **argv) {
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
         need(argc == 1 || event_counts || contribution_only || enhanced_only || enhanced_nee ||
                  enhanced_hybrid || enhanced_suffix || enhanced_pairs || enhanced_motion ||
-                 enhanced_atlas || enhanced_duplication,
+                 enhanced_atlas || enhanced_duplication || enhanced_fresh,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
              "--enhanced-hybrid, --enhanced-suffix, --enhanced-pairs, --enhanced-motion or "
              "--enhanced-atlas, --enhanced-duplication or --event-counts");
@@ -2941,6 +3100,10 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_fresh) {
+            enhanced_fresh_only_controls();
+            return 0;
+        }
         if (enhanced_duplication) {
             enhanced_duplication_controls();
             return 0;

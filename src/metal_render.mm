@@ -82,11 +82,25 @@ constexpr std::size_t area_cross_target_pixel_bytes(const FrameConfig &config) {
                        ? enhanced_cross_target_bytes
                        : sizeof(float));
 }
+std::string validate_area_reuse(const FrameConfig &config) {
+    if (config.area_reuse != FrameAreaReuse::full && config.area_reuse != FrameAreaReuse::fresh)
+        return "Invalid Area reuse mode";
+    if (config.area_reuse == FrameAreaReuse::fresh &&
+        (config.execution != FrameExecution::wavefront ||
+         config.estimator != FrameEstimator::area_replay ||
+         config.area_path_domain != FrameAreaPathDomain::enhanced || config.mutation_steps != 0 ||
+         config.spatial_mode != FrameSpatialMode::all || config.compact_enhanced_pairs ||
+         config.enhanced_temporal_reprojection ||
+         config.area_duplication != FrameAreaDuplication::off))
+        return "Fresh extraction requires Enhanced wavefront Area, zero mutations, full spatial "
+               "mode and no reprojection/compaction/duplication";
+    return {};
+}
 bool frame_suffix_cache_enabled(const FrameConfig &config) {
     return config.estimator == FrameEstimator::area_replay &&
            config.area_path_domain == FrameAreaPathDomain::enhanced &&
            config.contribution_replay == FrameContributionReplay::prefix &&
-           config.enhanced_suffix_cache;
+           config.enhanced_suffix_cache && config.area_reuse == FrameAreaReuse::full;
 }
 bool frame_pair_compaction_enabled(const FrameConfig &config) {
     return config.execution == FrameExecution::wavefront &&
@@ -2309,6 +2323,7 @@ struct FrameAreaPrograms {
     id<MTLComputePipelineState> reset = nil, prepare = nil, merge = nil, cache_evaluation = nil;
     id<MTLComputePipelineState> temporal_finish = nil, spatial_begin = nil, finalize = nil;
     id<MTLComputePipelineState> mutation_prepare = nil, mutation_finish = nil;
+    id<MTLComputePipelineState> fresh_finalize = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
     id<MTLBuffer> paired_atlas = nil;
 };
@@ -2971,6 +2986,8 @@ struct FrameSession::Impl {
                         const FrameConfig &settings, const std::filesystem::path &library_path) {
         renderer = std::move(owner);
         config = settings;
+        if (const auto error = validate_area_reuse(config); !error.empty())
+            return error;
         if (frame_duplication_enabled(config) &&
             (static_cast<unsigned>(config.area_duplication) > 3 ||
              config.execution != FrameExecution::wavefront ||
@@ -3608,6 +3625,13 @@ struct FrameSession::Impl {
         const auto load = [&](NSString *name) {
             return metal::load_pipeline(r.device, library, name, error);
         };
+        if (config.area_reuse == FrameAreaReuse::fresh) {
+            area->fresh_finalize = load(@"rypath_area_fresh_finalize_v1");
+            if (!area->fresh_finalize)
+                return error;
+            if (config.group_width > metal::group_width(r.device, area->fresh_finalize))
+                return "Fresh extraction group width exceeds pipeline or device limit";
+        }
         area->reset = load(@"rypath_area_reset");
         if (area->reset == nil)
             return error;
@@ -4456,7 +4480,8 @@ struct FrameSession::Impl {
                                       ? rypath_stochastic_spatial::evaluations(
                                             {frame->info.stochastic_forward_atlas,
                                              frame->info.stochastic_canonical_atlas})
-                                      : 4u)
+                                      : 4u,
+                                  config.area_reuse == FrameAreaReuse::fresh)
                             : frame->info.analytic_null_evaluations == 0 &&
                                   valid_area_evaluation_accounting(
                                       pixels, frame->info.history_used, config.mutation_steps,
@@ -4479,10 +4504,16 @@ struct FrameSession::Impl {
                         error = "Enhanced motion test forced publication failure";
                     } else {
                         frame->info.duplication = std::move(duplication_info);
-                        history->front = history_destination_index;
-                        history->valid = true;
-                        history->committed_serial = frame->info.area_serial;
-                        ++history->generation;
+                        if (config.area_reuse == FrameAreaReuse::fresh) {
+                            // Serial completion is not reusable reservoir publication.
+                            // Accumulator/XYZ stay retained by this Frame's slot.
+                            history->valid = false;
+                        } else {
+                            history->front = history_destination_index;
+                            history->valid = true;
+                            history->committed_serial = frame->info.area_serial;
+                            ++history->generation;
+                        }
                         if (frame_motion_enabled(config)) {
                             if (motion_generate)
                                 history->geometry_front = motion_destination;
@@ -4675,9 +4706,12 @@ struct FrameSession::Impl {
                     rypath_stochastic_spatial::enabled(config.spatial_mode)
                         ? 2 + frame->info.stochastic_canonical_atlas
                         : 6u;
-                if ((rypath_stochastic_spatial::enabled(config.spatial_mode) &&
-                     area_leaf == spatial_last && area_leaf >= 3 && area_leaf <= 6) ||
-                    (!rypath_stochastic_spatial::enabled(config.spatial_mode) && area_leaf == 6))
+                if (config.area_reuse == FrameAreaReuse::fresh && area_leaf == 0)
+                    area_finalizing = true;
+                else if ((rypath_stochastic_spatial::enabled(config.spatial_mode) &&
+                          area_leaf == spatial_last && area_leaf >= 3 && area_leaf <= 6) ||
+                         (!rypath_stochastic_spatial::enabled(config.spatial_mode) &&
+                          area_leaf == 6))
                     area_finalizing = true;
                 else if (rypath_stochastic_spatial::enabled(config.spatial_mode) &&
                          area_leaf == spatial_first && area_leaf >= 3 && area_leaf <= 6)
@@ -4952,7 +4986,8 @@ struct FrameSession::Impl {
                                               "area.spatial_begin");
                         } else {
                             area_dispatch(area_programs->merge, previous, pixels, "area.merge");
-                            if (previous == 1 || (previous == 0 && !frame->info.history_used)) {
+                            if (config.area_reuse != FrameAreaReuse::fresh &&
+                                (previous == 1 || (previous == 0 && !frame->info.history_used))) {
                                 area_dispatch(area_programs->temporal_finish, previous, pixels,
                                               "area.temporal_finish");
                                 if (config.mutation_steps == 0)
@@ -4987,8 +5022,13 @@ struct FrameSession::Impl {
                         }
                     }
                     if (area_finalizing) {
-                        area_dispatch(area_programs->finalize, area_wire::spatial_finalize_config,
-                                      pixels, "area.finalize");
+                        if (config.area_reuse == FrameAreaReuse::fresh)
+                            area_dispatch(area_programs->fresh_finalize, 0, pixels,
+                                          "area.fresh_finalize");
+                        else
+                            area_dispatch(area_programs->finalize,
+                                          area_wire::spatial_finalize_config, pixels,
+                                          "area.finalize");
                         if (duplication_programs)
                             duplication_dispatch(duplication_programs->count, true);
                     } else if (first) {
@@ -5306,11 +5346,14 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         frame->info.canonical_transport_version = frame_area_canonical_version(c.area_path_domain);
         frame->info.fresh_discovery_version = frame_area_discovery_version(c.area_path_domain);
         frame->info.enhanced_history_cap =
-            c.area_path_domain == FrameAreaPathDomain::enhanced ? c.enhanced_history_cap : 0u;
+            c.area_path_domain == FrameAreaPathDomain::enhanced
+                ? frame_temporal_reuse_cap(c.estimator, c.area_reuse, c.enhanced_history_cap)
+                : 0u;
         frame->info.enhanced_suffix_cache = frame_suffix_cache_enabled(c);
         frame->info.enhanced_pair_compaction = frame_pair_compaction_enabled(c);
         frame->info.stochastic_spatial_pairs = rypath_stochastic_spatial::enabled(c.spatial_mode);
         frame->info.spatial_mode = c.spatial_mode;
+        frame->info.area_reuse = c.area_reuse;
         frame->info.enhanced_temporal_reprojection_requested = c.enhanced_temporal_reprojection;
         frame->info.enhanced_temporal_reprojection = frame_motion_enabled(c);
         frame->info.contribution_depth =
@@ -5503,16 +5546,20 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                         : rypath_area_stencil::Offsets{{-1, 0}, {0, -1}};
                 frame->info.area_stencil_offsets = {offsets.first.x, offsets.first.y,
                                                     offsets.second.x, offsets.second.y};
-                frame->info.history_used = history.valid;
+                frame->info.history_used = history.valid && c.area_reuse == FrameAreaReuse::full;
                 frame->info.temporal_evaluation_cache_used =
-                    history.valid && c.cache_temporal_evaluations && !runner->motion_mapped &&
+                    frame->info.history_used && c.cache_temporal_evaluations &&
+                    !runner->motion_mapped &&
                     same_area_evaluation_context(history.contexts[history.front],
                                                  history.contexts[destination_index]);
                 frame->info.history_generation = history.generation;
-                frame->info.temporal_candidates = history.valid ? 2 : 1;
-                frame->info.spatial_candidates = rypath_stochastic_spatial::enabled(c.spatial_mode)
-                                                     ? 2u
-                                                     : area_wire::spatial_candidates;
+                if (c.area_reuse == FrameAreaReuse::full) {
+                    frame->info.temporal_candidates = history.valid ? 2u : 1u;
+                    frame->info.spatial_candidates =
+                        rypath_stochastic_spatial::enabled(c.spatial_mode)
+                            ? 2u
+                            : area_wire::spatial_candidates;
+                }
                 runner->history = impl_->history;
                 runner->area_programs = impl_->area;
                 runner->history_source = history.banks[history.front];
@@ -5520,7 +5567,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 runner->history_destination_index = destination_index;
                 runner->history_destination = history.banks[runner->history_destination_index];
                 impl_->configure_area(
-                    *slot, frame->raw, serial, history.valid,
+                    *slot, frame->raw, serial, frame->info.history_used,
                     frame->info.temporal_evaluation_cache_used, runner->history_source,
                     runner->history_destination, offsets, history.front,
                     history.contexts[destination_index].suffix_context,
@@ -5693,6 +5740,10 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         result.diagnostic = "Invalid Area stencil";
         return result;
     }
+    if (const auto error = validate_area_reuse(config); !error.empty()) {
+        result.diagnostic = error;
+        return result;
+    }
     if (!rypath_stochastic_spatial::valid_mode(config.spatial_mode)) {
         result.diagnostic = "Invalid spatial sampling mode";
         return result;
@@ -5862,6 +5913,8 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.contribution_replay == b.contribution_replay && a.target_scale == b.target_scale &&
         a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
         a.mutation_policy == b.mutation_policy &&
+        // Fresh/full Area reuse is an explicit test-only oracle contrast: compare
+        // fresh extraction with the cold full arm's captured temporal reservoir.
         // Stencil changes spatial source domains, never an execution-only toggle.
         a.area_stencil == b.area_stencil && a.spatial_mode == b.spatial_mode &&
         a.enhanced_history_cap == b.enhanced_history_cap;
@@ -6042,6 +6095,24 @@ std::string FrameSessionTestAccess::force_next_motion_publication_failure(FrameS
         return "Motion failure control requires idle, unarmed history";
     h.fail_next_motion_publication = true;
     return {};
+}
+
+AreaPublicationState FrameSessionTestAccess::publication_state(FrameSession &session) {
+    AreaPublicationState result;
+    if (!session.impl_ || !session.impl_->history) {
+        result.diagnostic = "Publication state requires an Area session";
+        return result;
+    }
+    std::lock_guard lock(session.impl_->history->mutex);
+    const auto &h = *session.impl_->history;
+    result.status = GeometryStatus::success;
+    result.pending = h.pending;
+    result.valid = h.valid;
+    result.front = h.front;
+    result.generation = h.generation;
+    result.next_serial = h.next_serial;
+    result.committed_serial = h.committed_serial;
+    return result;
 }
 
 EnhancedSuffixContextState FrameSessionTestAccess::suffix_context_state(FrameSession &session) {

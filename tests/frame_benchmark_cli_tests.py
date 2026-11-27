@@ -605,4 +605,12 @@ with tempfile.TemporaryDirectory() as directory:
     assert shared_settings["requested_area_spatial_mode"] == "stochastic-shared"
     assert shared_settings["effective_area_spatial_mode"] is None
     assert shared_settings["area_spatial_mode"] == "not-applicable"
+    destination = root / "fresh-extraction.json"
+    invoke(["--scene", str(malformed), "--output", str(destination),
+            "--estimator", "area-replay", "--area-path-domain", "enhanced", "--mutations", "0",
+            "--spectral-transport", "hero", "--area-reuse", "fresh"])
+    settings = json.loads(destination.read_text())["settings"]
+    assert settings["requested_area_reuse"] == "fresh" and settings["effective_area_reuse"] is None
+    assert settings["area_temporal_reuse"] == 0 and settings["area_temporal_cache"] is False
+    assert settings["area_suffix_cache"] is False and settings["area_source_mis"] == "fresh-local-selection-v1"
 print("frame benchmark CLI checks passed")
