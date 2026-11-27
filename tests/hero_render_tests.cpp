@@ -171,7 +171,7 @@ RenderSamplesResult sample(MetalRenderScene &renderer, std::uint64_t index, unsi
                                    .sample_count = 1,
                                    .total_samples = index + 1});
     need(result.status == GeometryStatus::success, result.diagnostic);
-    need(result.samples.empty() && result.packet_samples.size() == width * height &&
+    need(result.samples.empty() && result.packet_samples.size() == std::size_t(width) * height &&
              result.packet_splats.empty() && result.guard_count > 0,
          "Hero packet ownership/guards");
     for (unsigned i = 0; i < result.packet_samples.size(); ++i) {
@@ -377,8 +377,8 @@ void visible_mapping_and_area0() {
             v *= .5;
         for (unsigned slot = 0; slot < 4; ++slot) {
             const int sign = slot % 2 ? -1 : 1;
-            const int x = int(pixel % c.width) + sign * d[slot / 2 * 2];
-            const int y = int(pixel / c.width) + sign * d[slot / 2 * 2 + 1];
+            const int x = int(pixel % c.width) + sign * d[std::size_t(slot) / 2 * 2];
+            const int y = int(pixel / c.width) + sign * d[std::size_t(slot) / 2 * 2 + 1];
             const unsigned neighbor = x >= 0 && y >= 0 && x < int(c.width) && y < int(c.height)
                                           ? unsigned(y) * c.width + unsigned(x)
                                           : pixel;
