@@ -90,6 +90,23 @@ evaluated four maps and combined five candidates.
 These short means measure rendering and reconstruction through completion.
 The larger history and variance changes require separate image checks.
 
+## Sustained static frame time
+
+A separate Release build on `fe1b28c` repeated the full one-map pipeline at
+native 1920×1080 on all four scenes. Each run used eight warmup frames, 96
+measured frames, seed 61002, generic shading and the signed temporal denoiser.
+Mean and P95 are measured frame wall times. FPS is the reciprocal of the mean.
+
+| Scene | Mean, ms | P95, ms | FPS |
+| --- | ---: | ---: | ---: |
+| Cornell | 453.75 | 460.64 | 2.20 |
+| Prism | 582.31 | 590.84 | 1.72 |
+| Pavilion day | 1150.69 | 1171.84 | 0.87 |
+| Pavilion night | 1186.58 | 1202.38 | 0.84 |
+
+The 96 frames share one camera and a temporal history. Separate runs are
+needed to compare seeds or movement.
+
 ## Spatial cost and remaining fresh work
 
 A separate Release run on `d9ffd80` split each GPU stage for timing. Each arm
@@ -246,6 +263,27 @@ The independent reference at that pixel was near black. Whole-frame averages
 conceal these localized errors. The reflected pool light remains a separate
 quality check because suppressing bright samples can also remove authored
 detail.
+
+On this same native seed and frame, we varied only the fixed Area cap with
+the signed denoiser held at 64 frames. The table uses full rectangular crops.
+The trajectory above used a sparse fixed grid inside those crops. The dark
+outlier count includes pixels whose maximum absolute RGB channel exceeds 10
+while all three reference channels have magnitude below one.
+
+| Output | Roof crop mean Y | Reflected lantern mean Y | Dark outlier pixels | Full-frame RGB MSE |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed 20, signed | 0.0894 | 0.3324 | 205 | 0.3625 |
+| Fixed 4, signed | 0.0471 | 0.3414 | 244 | 0.5281 |
+| Fixed 1, signed | 0.0375 | 0.3414 | 253 | 0.5575 |
+| Independent PT, signed | 0.0300 | 0.3461 | 247 | 0.6572 |
+| Fixed 20, native MetalFX | 0.0315 | 0.2764 | 0 | 0.1869 |
+
+The four reference batches place roof mean Y between 0.0290 and 0.0358 and
+reflected lantern mean Y between 0.3247 and 0.3758. Shortening the fixed cap
+helps the roof and increases the total number of dark outliers at this
+threshold. MetalFX suppresses the outliers and attenuates the reflection.
+These are separate-process captures. The two denoisers' inputs match exactly
+inside the measured reflection crop. Global raw equality is scene dependent.
 
 ## Other execution experiments
 
