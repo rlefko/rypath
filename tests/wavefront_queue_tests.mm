@@ -28,13 +28,17 @@ namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
 namespace aw = area_wire;
-static_assert(wf::contract == 20 && sizeof(wf::Contract) == 108 && sizeof(wf::Config) == 64);
+static_assert(wf::contract == 21 && sizeof(wf::Contract) == 108 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
 static_assert(aw::contract == 14 && sizeof(aw::Contract) == 36 && sizeof(aw::Config) == 100);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12 &&
-              wf::enhanced_suffix_id == 22 && aw::enhanced_suffix_id == 13);
+              wf::enhanced_suffix_id == 22 && wf::work_list_id == 23 &&
+              aw::enhanced_suffix_id == 13);
+static_assert(sizeof(wf::Counters) == 56 && offsetof(wf::Counters, work_count) == 52 &&
+              offsetof(wf::Config, compact_enhanced_pairs) == 56 &&
+              offsetof(wf::Config, reserved2) == 60);
 static_assert(sizeof(enhanced_wire::Record) == 48 && sizeof(enhanced_wire::Reference) == 8 &&
               sizeof(enhanced_wire::Evaluation) == 40);
 static_assert(sizeof(contribution_wire::Evaluation) == 16);
@@ -209,7 +213,7 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                           const wf::Contract &contract) {
     namespace cw = contribution_wire;
     namespace ew = enhanced_wire;
-    constexpr unsigned pixels = 7;
+    constexpr unsigned pixels = 79;
     constexpr std::size_t guard = 256;
     std::string why;
     const auto constants_for = [](bool contribution, bool enhanced) {
@@ -231,7 +235,10 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
     };
     auto reset = load(@"rypath_wavefront_reset");
     auto initialize = load(@"rypath_wavefront_initialize");
+    auto admit = load(@"rypath_wavefront_admit_all_pixels");
+    auto finalize = load(@"rypath_wavefront_finalize_admission");
     auto probe = load(@"rypath_wavefront_null_probe");
+    auto pair_probe = load(@"rypath_wavefront_pair_probe");
     auto prepare = load(@"rypath_wavefront_prepare_refill");
     auto refill = load(@"rypath_wavefront_refill");
     auto advance = load(@"rypath_wavefront_advance");
@@ -254,160 +261,445 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
     parameters.model = render_wire::pbrt_model;
     parameters.packet_transport = 2;
     parameters.sampler_kind = render_wire::independent_sampler;
-    for (unsigned capacity : {2u, 7u}) {
-        const wf::Config config{
-            pixels,       capacity, 2,   render_wire::pbrt_model, 1,  1,  1,     0,
-            cw::enhanced, 0,        1.f, cw::prefix_replay,       11, 13, {0, 0}};
-        std::array<id<MTLBuffer>, wf::enhanced_suffix_id + 1> buffers{};
-        std::array<std::size_t, wf::enhanced_suffix_id + 1> lengths{};
-        lengths.fill(16);
-        lengths[wf::config_id] = sizeof(config);
-        lengths[wf::counters_id] = sizeof(wf::Counters);
-        lengths[wf::queue_in_id] = lengths[wf::queue_out_id] = lengths[wf::free_slots_id] =
-            capacity * sizeof(std::uint32_t);
-        lengths[wf::raw_xyz_id] = pixels * sizeof(render_wire::Point);
-        lengths[wf::done_id] = pixels * sizeof(std::uint32_t);
-        lengths[wf::current_dispatch_id] = lengths[wf::refill_dispatch_id] =
-            sizeof(wf::DispatchArguments);
-        lengths[wf::replay_input_id] = pixels * sizeof(rypath_replay::ReplayState);
-        lengths[wf::contribution_evaluation_id] = pixels * sizeof(cw::Evaluation);
-        lengths[wf::contribution_state_id] = capacity * contract.enhanced_state_bytes;
-        lengths[wf::enhanced_records_id] = ew::bank_count * pixels * sizeof(ew::Record);
-        lengths[wf::enhanced_evaluation_id] = pixels * sizeof(ew::Evaluation);
-        lengths[wf::scalar_state_id] = capacity * contract.scalar_bytes;
-        lengths[wf::packet_state_id] = capacity * contract.packet_bytes;
-        lengths[wf::packet_hot_id] = capacity * contract.hot_bytes;
-        lengths[wf::packet_cold_id] = capacity * contract.cold_bytes;
-        lengths[wf::packet_hit_id] = capacity * contract.hit_bytes;
-        lengths[wf::hero_state_id] = capacity * contract.hero_bytes;
-        lengths[wf::hero_cold_id] = capacity * contract.hero_cold_bytes;
-        for (unsigned i = 0; i < buffers.size(); ++i) {
-            buffers[i] = [device newBufferWithLength:lengths[i] + 2 * guard
-                                             options:MTLResourceStorageModeShared];
-            require(buffers[i] != nil, "Enhanced null guarded pool");
-        }
-        const auto data = [&](unsigned id) {
-            return static_cast<unsigned char *>(buffers[id].contents) + guard;
-        };
-        const auto unrelated = [](unsigned id) {
-            return id == wf::scalar_state_id || id == wf::packet_state_id ||
-                   id == wf::packet_hot_id || id == wf::packet_cold_id || id == wf::packet_hit_id ||
-                   id == wf::hero_state_id || id == wf::hero_cold_id || id == wf::cie_id ||
-                   id == wf::enhanced_records_id || id == wf::enhanced_suffix_id;
-        };
-        const auto bind = [&] {
-            [argument_encoder setArgumentBuffer:arguments offset:0];
-            for (unsigned i = 0; i < buffers.size(); ++i)
-                [argument_encoder setBuffer:buffers[i] offset:guard atIndex:i];
-        };
-        const auto fresh = [&] {
+    parameters.forward = {-.05f, -.05f, 1};
+    parameters.right = {.1f, 0, 0};
+    parameters.up = {0, .1f, 0};
+    parameters.camera_normal = {0, 0, 1};
+    parameters.camera_image_area = .01f;
+    parameters.camera_plane_depth = 1;
+    for (const bool compact : {false, true})
+        for (unsigned capacity :
+             compact ? std::array{1u, 37u, pixels} : std::array{2u, 7u, pixels}) {
+            const wf::Config config{pixels,
+                                    capacity,
+                                    2,
+                                    render_wire::pbrt_model,
+                                    1,
+                                    1,
+                                    1,
+                                    0,
+                                    cw::enhanced,
+                                    0,
+                                    1.f,
+                                    cw::prefix_replay,
+                                    11,
+                                    13,
+                                    unsigned(compact),
+                                    0};
+            std::array<id<MTLBuffer>, wf::work_list_id + 1> buffers{};
+            std::array<std::size_t, wf::work_list_id + 1> lengths{};
+            lengths.fill(16);
+            lengths[wf::config_id] = sizeof(config);
+            lengths[wf::counters_id] = sizeof(wf::Counters);
+            lengths[wf::queue_in_id] = lengths[wf::queue_out_id] = lengths[wf::free_slots_id] =
+                capacity * sizeof(std::uint32_t);
+            lengths[wf::raw_xyz_id] = pixels * sizeof(render_wire::Point);
+            lengths[wf::done_id] = pixels * sizeof(std::uint32_t);
+            lengths[wf::current_dispatch_id] = lengths[wf::refill_dispatch_id] =
+                sizeof(wf::DispatchArguments);
+            lengths[wf::replay_input_id] = pixels * sizeof(rypath_replay::ReplayState);
+            lengths[wf::contribution_evaluation_id] = pixels * sizeof(cw::Evaluation);
+            lengths[wf::contribution_state_id] = capacity * contract.enhanced_state_bytes;
+            lengths[wf::enhanced_records_id] = ew::bank_count * pixels * sizeof(ew::Record);
+            lengths[wf::enhanced_evaluation_id] = pixels * sizeof(ew::Evaluation);
+            lengths[wf::work_list_id] = compact ? pixels * sizeof(std::uint32_t) : 16;
+            lengths[wf::enhanced_suffix_id] =
+                compact ? ew::bank_count * pixels * sizeof(rypath_enhanced_suffix_tape::Entry)
+                        : sizeof(rypath_enhanced_suffix_tape::Entry);
+            lengths[wf::scalar_state_id] = capacity * contract.scalar_bytes;
+            lengths[wf::packet_state_id] = capacity * contract.packet_bytes;
+            lengths[wf::packet_hot_id] = capacity * contract.hot_bytes;
+            lengths[wf::packet_cold_id] = capacity * contract.cold_bytes;
+            lengths[wf::packet_hit_id] = capacity * contract.hit_bytes;
+            lengths[wf::hero_state_id] = capacity * contract.hero_bytes;
+            lengths[wf::hero_cold_id] = capacity * contract.hero_cold_bytes;
             for (unsigned i = 0; i < buffers.size(); ++i) {
-                std::memset(buffers[i].contents, 0xa5, buffers[i].length);
-                if (unrelated(i))
-                    std::memset(data(i), 0xff, lengths[i]);
+                buffers[i] = [device newBufferWithLength:lengths[i] + 2 * guard
+                                                 options:MTLResourceStorageModeShared];
+                require(buffers[i] != nil, "Enhanced null guarded pool");
             }
-            std::memcpy(data(wf::config_id), &config, sizeof(config));
-            for (unsigned pixel = 0; pixel < pixels; ++pixel) {
-                const auto replay = rypath_replay::fresh({pixel, 17, 19, 23, 29});
-                require(rypath_replay::valid(replay), "Host fresh replay receipt");
-                std::memcpy(data(wf::replay_input_id) + pixel * sizeof(replay), &replay,
-                            sizeof(replay));
-                const cw::Evaluation request{cw::enhanced_null_slot, 0xffffffffu, 0.f, 0};
-                std::memcpy(data(wf::contribution_evaluation_id) + pixel * sizeof(request),
-                            &request, sizeof(request));
-                const ew::Reference reference{ew::history_bank_0, pixel};
-                const ew::Evaluation owned{reference, reference, 0.f, 0, 0, 0, 0, 0};
-                std::memcpy(data(wf::enhanced_evaluation_id) + pixel * sizeof(owned), &owned,
-                            sizeof(owned));
-            }
-            bind();
-        };
-        using Stage = std::pair<id<MTLComputePipelineState>, unsigned>;
-        const auto execute = [&](std::initializer_list<Stage> stages) {
-            auto command = [queue commandBuffer];
-            auto encoder = [command computeCommandEncoder];
-            require(command && encoder, "Enhanced null encoder");
-            [encoder setBuffer:arguments offset:0 atIndex:1];
-            [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
-            [encoder setBuffer:environment offset:guard atIndex:7];
-            [encoder setBuffer:tables offset:guard atIndex:12];
-            for (auto buffer : buffers)
-                [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-            for (const auto &[pipeline, count] : stages) {
-                [encoder setComputePipelineState:pipeline];
-                [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
-                    threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
-            }
-            [encoder endEncoding];
-            require(metal::complete(command, "Enhanced null ownership").empty(),
-                    "Enhanced null command failed");
-        };
-        const auto counters = [&] {
-            wf::Counters result{};
-            std::memcpy(&result, data(wf::counters_id), sizeof(result));
-            return result;
-        };
-        const auto guards = [&] {
-            for (unsigned i = 0; i < buffers.size(); ++i) {
-                const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
-                for (std::size_t j = 0; j < buffers[i].length; ++j) {
-                    if (j >= guard && j < guard + lengths[i]) {
-                        if (unrelated(i))
-                            require(bytes[j] == 0xff, "Null owner touched ray/BSDF/unused pool");
-                    } else
-                        require(bytes[j] == 0xa5, "Null owner touched a buffer guard");
+            const auto data = [&](unsigned id) {
+                return static_cast<unsigned char *>(buffers[id].contents) + guard;
+            };
+            const auto unrelated = [](unsigned id) {
+                return id == wf::scalar_state_id || id == wf::packet_state_id ||
+                       id == wf::packet_hot_id || id == wf::packet_cold_id ||
+                       id == wf::packet_hit_id || id == wf::hero_state_id ||
+                       id == wf::hero_cold_id || id == wf::cie_id ||
+                       id == wf::enhanced_records_id || id == wf::enhanced_suffix_id;
+            };
+            const auto bind = [&] {
+                [argument_encoder setArgumentBuffer:arguments offset:0];
+                for (unsigned i = 0; i < buffers.size(); ++i)
+                    [argument_encoder setBuffer:buffers[i] offset:guard atIndex:i];
+            };
+            bool transport_touched = false;
+            const auto fresh = [&] {
+                transport_touched = false;
+                for (unsigned i = 0; i < buffers.size(); ++i) {
+                    std::memset(buffers[i].contents, 0xa5, buffers[i].length);
+                    if (unrelated(i))
+                        std::memset(data(i), 0xff, lengths[i]);
                 }
+                std::memcpy(data(wf::config_id), &config, sizeof(config));
+                for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                    const auto replay = rypath_replay::fresh({pixel, 17, 19, 23, 29});
+                    require(rypath_replay::valid(replay), "Host fresh replay receipt");
+                    std::memcpy(data(wf::replay_input_id) + pixel * sizeof(replay), &replay,
+                                sizeof(replay));
+                    const cw::Evaluation request{cw::enhanced_null_slot, 0xffffffffu, 0.f, 0};
+                    std::memcpy(data(wf::contribution_evaluation_id) + pixel * sizeof(request),
+                                &request, sizeof(request));
+                    const ew::Reference reference{ew::history_bank_0, pixel};
+                    const ew::Evaluation owned{reference, reference, 0.f, 0, 0, 0, 0, 0};
+                    std::memcpy(data(wf::enhanced_evaluation_id) + pixel * sizeof(owned), &owned,
+                                sizeof(owned));
+                }
+                bind();
+            };
+            using Stage = std::pair<id<MTLComputePipelineState>, unsigned>;
+            const auto execute = [&](std::initializer_list<Stage> stages) {
+                auto command = [queue commandBuffer];
+                auto encoder = [command computeCommandEncoder];
+                require(command && encoder, "Enhanced null encoder");
+                [encoder setBuffer:arguments offset:0 atIndex:1];
+                [encoder setBytes:&parameters length:sizeof(parameters) atIndex:0];
+                [encoder setBuffer:environment offset:guard atIndex:7];
+                [encoder setBuffer:tables offset:guard atIndex:12];
+                for (auto buffer : buffers)
+                    [encoder useResource:buffer usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+                for (const auto &[pipeline, count] : stages) {
+                    [encoder setComputePipelineState:pipeline];
+                    [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+                        threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+                    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                }
+                [encoder endEncoding];
+                require(metal::complete(command, "Enhanced null ownership").empty(),
+                        "Enhanced null command failed");
+            };
+            const auto counters = [&] {
+                wf::Counters result{};
+                std::memcpy(&result, data(wf::counters_id), sizeof(result));
+                return result;
+            };
+            const auto guards = [&](bool scratch_modified = false) {
+                for (unsigned i = 0; i < buffers.size(); ++i) {
+                    const auto *bytes = static_cast<const unsigned char *>(buffers[i].contents);
+                    for (std::size_t j = 0; j < buffers[i].length; ++j) {
+                        if (j >= guard && j < guard + lengths[i]) {
+                            if (unrelated(i) && !(transport_touched && i == wf::hero_state_id) &&
+                                !(scratch_modified &&
+                                  (i == wf::enhanced_records_id || i == wf::enhanced_suffix_id)))
+                                require(bytes[j] == 0xff,
+                                        "Null owner touched ray/BSDF/unused pool");
+                        } else
+                            require(bytes[j] == 0xa5, "Null owner touched a buffer guard");
+                    }
+                }
+                if (!compact)
+                    for (std::size_t byte = 0; byte < lengths[wf::work_list_id]; ++byte)
+                        require(data(wf::work_list_id)[byte] == 0xa5,
+                                "Disabled work-list sentinel changed");
+                require(std::memcmp(data(wf::config_id), &config, sizeof(config)) == 0,
+                        "Null owner changed immutable config");
+                for (auto buffer : {tables, environment}) {
+                    const auto *bytes = static_cast<const unsigned char *>(buffer.contents);
+                    for (std::size_t j = 0; j < buffer.length; ++j)
+                        require(bytes[j] == 0xff, "Null owner modified unused external resource");
+                }
+                for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                    const auto replay = rypath_replay::fresh({pixel, 17, 19, 23, 29});
+                    require(std::memcmp(data(wf::replay_input_id) + pixel * sizeof(replay), &replay,
+                                        sizeof(replay)) == 0,
+                            "Null owner modified canonical replay");
+                }
+            };
+            if (compact) {
+                // Admission must complete imported null requests without creating a
+                // transport owner, even when every ray/BSDF/state byte is poisoned.
+                fresh();
+                execute({{reset, pixels}, {admit, pixels}, {finalize, 1}, {initialize, capacity}});
+                auto result = counters();
+                require(result.failure == 0 && result.current == 0 && result.work_count == 0 &&
+                            result.next_pixel == pixels && result.completed == pixels &&
+                            result.null_completed == pixels,
+                        "All-null admission must issue zero transport owners");
+                for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                    const auto *done = reinterpret_cast<const std::uint32_t *>(data(wf::done_id));
+                    const auto *request = reinterpret_cast<const cw::Evaluation *>(
+                        data(wf::contribution_evaluation_id));
+                    const auto *owned =
+                        reinterpret_cast<const ew::Evaluation *>(data(wf::enhanced_evaluation_id));
+                    require(done[pixel] == 1 && request[pixel].ready == 1 &&
+                                request[pixel].selected_slot == cw::enhanced_null_slot &&
+                                std::bit_cast<std::uint32_t>(request[pixel].normalizer) == 0 &&
+                                owned[pixel].ready == 1 && owned[pixel].target_h_fraction == .5f &&
+                                owned[pixel].target_h_exponent == 1,
+                            "Admission null must publish canonical CW/EW and done once");
+                }
+                for (unsigned id : {wf::work_list_id, wf::contribution_state_id})
+                    for (std::size_t byte = 0; byte < lengths[id]; ++byte)
+                        require(data(id)[byte] == 0xa5,
+                                "All-null admission touched an owner/list pool");
+                for (std::size_t byte = 0; byte < lengths[wf::raw_xyz_id]; ++byte)
+                    require(data(wf::raw_xyz_id)[byte] == 0,
+                            "Admission null XYZ must be positive zero");
+                guards();
+
+                // Distinct mutation scratch is invalidated; all source banks and
+                // same-reference records/tapes remain immutable byte witnesses.
+                fresh();
+                auto *owned = reinterpret_cast<ew::Evaluation *>(data(wf::enhanced_evaluation_id));
+                owned[0].result = {ew::fresh_bank, 0};
+                owned[0].suffix_context_low = 123;
+                owned[1].source = owned[1].result = {ew::fresh_bank, 1};
+                owned[1].suffix_context_low = 123;
+                execute({{reset, pixels}, {admit, pixels}, {finalize, 1}});
+                result = counters();
+                require(result.failure == 0 && result.completed == pixels,
+                        "Null mutation admission succeeds");
+                const auto empty_record = ew::empty_record();
+                const rypath_enhanced_suffix_tape::Entry empty_tape{};
+                for (unsigned bank = 0; bank < ew::bank_count; ++bank)
+                    for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                        const auto index = bank * pixels + pixel;
+                        const auto *record =
+                            data(wf::enhanced_records_id) + index * sizeof(ew::Record);
+                        const auto *tape =
+                            data(wf::enhanced_suffix_id) + index * sizeof(empty_tape);
+                        if (bank == ew::fresh_bank && pixel == 0) {
+                            require(std::memcmp(record, &empty_record, sizeof(empty_record)) == 0 &&
+                                        std::memcmp(tape, &empty_tape, sizeof(empty_tape)) == 0,
+                                    "Selected-null mutation clears only its exclusive scratch");
+                        } else {
+                            for (std::size_t byte = 0; byte < sizeof(ew::Record); ++byte)
+                                require(record[byte] == 0xff,
+                                        "Admission changed an immutable record");
+                            for (std::size_t byte = 0; byte < sizeof(empty_tape); ++byte)
+                                require(tape[byte] == 0xff, "Admission changed an immutable tape");
+                        }
+                    }
+
+                guards(true);
+
+                // Classification is structural: imported and fresh real requests retain
+                // their actual pixel IDs regardless of zero/poisoned source data.
+                for (const bool all_real : {false, true}) {
+                    fresh();
+                    auto *request =
+                        reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                    unsigned expected = 0;
+                    for (unsigned pixel = 0; pixel < pixels; ++pixel)
+                        if (all_real || pixel % 2 == 0) {
+                            request[pixel].requested_slot = all_real ? 0xffffffffu : 0u;
+                            if (all_real) {
+                                auto *receipts = reinterpret_cast<ew::Evaluation *>(
+                                    data(wf::enhanced_evaluation_id));
+                                receipts[pixel].source = ew::absent();
+                                receipts[pixel].result = {ew::fresh_bank, pixel};
+                            }
+                            ++expected;
+                        }
+                    execute({{reset, pixels}, {admit, pixels}, {finalize, 1}});
+                    result = counters();
+                    require(result.failure == 0 && result.work_count == expected &&
+                                result.null_completed == pixels - expected &&
+                                result.completed == pixels - expected &&
+                                result.current == std::min(capacity, expected) &&
+                                result.next_pixel == pixels - expected + result.current,
+                            "Mixed admission conserves logical and physical ownership");
+                    std::array<unsigned, pixels> seen{};
+                    const auto *list =
+                        reinterpret_cast<const std::uint32_t *>(data(wf::work_list_id));
+                    for (unsigned index = 0; index < expected; ++index) {
+                        require(list[index] < pixels && (all_real || list[index] % 2 == 0),
+                                "Work list must contain actual real-owner pixel IDs");
+                        require(++seen[list[index]] == 1, "Work list duplicated an admitted owner");
+                    }
+                    for (unsigned pixel = 0; pixel < pixels; ++pixel)
+                        require(seen[pixel] == unsigned(all_real || pixel % 2 == 0),
+                                "Work list dropped an admitted owner");
+                    for (std::size_t byte = expected * sizeof(std::uint32_t);
+                         byte < lengths[wf::work_list_id]; ++byte)
+                        require(data(wf::work_list_id)[byte] == 0xa5,
+                                "Admission exceeded work-list range");
+                    guards();
+                    // Initialize and refill are the production kernels. Only final
+                    // transport responses are synthetic: pair_probe publishes the
+                    // sidecar's actual owner pixel through the production done/free
+                    // helpers, without tracing or manufacturing CW/EW replies.
+                    transport_touched = true;
+                    execute({{initialize, capacity}});
+                    require(counters().failure == 0, "Compact real-owner initialization");
+                    unsigned rounds = 0;
+                    while (counters().completed != pixels) {
+                        require(rounds++ < pixels, "Compact refill must converge");
+                        execute({{pair_probe, capacity},
+                                 {prepare, 1},
+                                 {refill, capacity},
+                                 {advance, 1}});
+                        result = counters();
+                        require(result.failure == 0 && result.null_completed == pixels - expected &&
+                                    result.work_count == expected &&
+                                    result.completed <= result.next_pixel &&
+                                    result.current == result.next_pixel - result.completed,
+                                "Compact refill must preserve the logical queue equation");
+                        const auto physical_completed = result.completed - result.null_completed;
+                        const auto physical_issued = result.next_pixel - result.null_completed;
+                        const auto *done =
+                            reinterpret_cast<const std::uint32_t *>(data(wf::done_id));
+                        for (unsigned index = 0; index < expected; ++index)
+                            require(done[list[index]] == (index < physical_completed ? 1u
+                                                          : index < physical_issued  ? 2u
+                                                                                     : 0u),
+                                    "Refill must claim and complete actual pixels exactly once");
+                        guards();
+                        std::swap(buffers[wf::queue_in_id], buffers[wf::queue_out_id]);
+                        bind();
+                    }
+                    for (unsigned pixel = 0; pixel < pixels; ++pixel)
+                        require(reinterpret_cast<const std::uint32_t *>(data(wf::done_id))[pixel] ==
+                                    1,
+                                "Every compact logical owner must finish exactly once");
+                    for (std::size_t byte = 0; byte < lengths[wf::raw_xyz_id]; ++byte)
+                        require(data(wf::raw_xyz_id)[byte] == 0,
+                                "All compact completions publish raw zero");
+                }
+                // A duplicated real ID must fail during initialization or refill,
+                // including capacity1 where its first owner has already completed.
+                fresh();
+                auto *duplicates =
+                    reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                for (unsigned pixel = 0; pixel < pixels; ++pixel)
+                    duplicates[pixel].requested_slot = 0;
+                execute({{reset, pixels}, {admit, pixels}, {finalize, 1}});
+                auto *duplicate_list = reinterpret_cast<std::uint32_t *>(data(wf::work_list_id));
+                duplicate_list[1] = duplicate_list[0];
+                transport_touched = true;
+                execute({{initialize, capacity}});
+                if (capacity == 1)
+                    execute({{pair_probe, 1}, {prepare, 1}, {refill, 1}});
+                require(counters().failure == wf::duplicate_sample,
+                        "Duplicate compact list entry must fail before a second owner publishes");
+                guards();
+                // A single-lane malformed request must fail before publishing.
+                for (unsigned fault = 0; fault < 8; ++fault) {
+                    fresh();
+                    auto *request =
+                        reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                    owned = reinterpret_cast<ew::Evaluation *>(data(wf::enhanced_evaluation_id));
+                    switch (fault) {
+                    case 0:
+                        request[0].ready = 1;
+                        break;
+                    case 1:
+                        request[0].normalizer = 1;
+                        break;
+                    case 2:
+                        request[0].requested_slot = 1;
+                        break;
+                    case 3:
+                        owned[0].ready = 1;
+                        break;
+                    case 4:
+                        owned[0].source.bank = ew::bank_count;
+                        break;
+                    case 5:
+                        owned[0].result.pixel = pixels;
+                        break;
+                    case 6:
+                        owned[0].target_h_exponent = 1;
+                        break;
+                    case 7:
+                        owned[0].normalizer_exponent = 1;
+                        break;
+                    }
+                    execute({{reset, pixels}, {admit, 1}});
+                    result = counters();
+                    require(result.failure == wf::invalid_sample && result.completed == 0 &&
+                                result.null_completed == 0 && result.work_count == 0,
+                            "Malformed admission receipt must fail visibly before completion");
+                    guards();
+                }
+                for (const bool out_of_range : {false, true}) {
+                    fresh();
+                    auto *request =
+                        reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                    request[0].requested_slot = 0;
+                    execute({{reset, pixels}, {admit, pixels}, {finalize, 1}});
+                    auto *list = reinterpret_cast<std::uint32_t *>(data(wf::work_list_id));
+                    // pixel1 was completed analytically; reusing it must reject
+                    // duplicate ownership before transport initialization writes.
+                    list[0] = out_of_range ? pixels : 1u;
+                    execute({{initialize, 1}});
+                    require(counters().failure ==
+                                (out_of_range ? wf::invalid_sample : wf::duplicate_sample),
+                            "Damaged list must reject out-of-range and completed owner IDs");
+                    guards();
+                }
+                // Capacity overflow is checked before writes, including a damaged
+                // atomic append counter. Finalization independently rejects it.
+                fresh();
+                auto *request =
+                    reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                request[0].requested_slot = 0;
+                execute({{reset, pixels}});
+                result = counters();
+                result.work_count = pixels;
+                std::memcpy(data(wf::counters_id), &result, sizeof(result));
+                execute({{admit, 1}});
+                require(counters().failure == wf::queue_overflow,
+                        "Admission overflow must be sticky");
+                guards();
+                fresh();
+                execute({{reset, pixels}});
+                result = counters();
+                result.work_count = pixels + 1;
+                std::memcpy(data(wf::counters_id), &result, sizeof(result));
+                execute({{finalize, 1}});
+                require(counters().failure == wf::invalid_counters,
+                        "Finalization rejects damaged admission counts");
+                guards();
+                continue;
             }
-            require(std::memcmp(data(wf::config_id), &config, sizeof(config)) == 0,
-                    "Null owner changed immutable config");
-            for (auto buffer : {tables, environment}) {
-                const auto *bytes = static_cast<const unsigned char *>(buffer.contents);
-                for (std::size_t j = 0; j < buffer.length; ++j)
-                    require(bytes[j] == 0xff, "Null owner modified unused external resource");
-            }
-            for (unsigned pixel = 0; pixel < pixels; ++pixel) {
-                const auto replay = rypath_replay::fresh({pixel, 17, 19, 23, 29});
-                require(std::memcmp(data(wf::replay_input_id) + pixel * sizeof(replay), &replay,
-                                    sizeof(replay)) == 0,
-                        "Null owner modified canonical replay");
-            }
-        };
-        fresh();
-        execute({{reset, pixels}, {initialize, capacity}});
-        auto before = counters();
-        require(before.failure == 0 && before.current == capacity &&
-                    before.next_pixel == capacity && before.completed == 0 &&
-                    before.null_completed == 0,
-                "Null initialization must issue owners without completing or tracing");
-        guards();
-        unsigned rounds = 0;
-        while (before.completed != pixels) {
-            require(rounds < pixels, "Null owner refill failed to converge");
-            execute({{probe, capacity}, {prepare, 1}, {refill, capacity}, {advance, 1}});
-            const auto result = counters();
-            const auto completed = std::min(pixels, (rounds + 1) * capacity);
-            const auto issued = std::min(pixels, (rounds + 2) * capacity);
-            require(result.failure == 0 && result.completed == completed &&
-                        result.null_completed == completed && result.next_pixel == issued &&
-                        result.current == issued - completed && result.out == 0 &&
-                        result.free == 0 && result.refill_begin == 0 && result.rounds == rounds + 1,
-                    "Null owners must conserve completions through real refill/advance");
-            for (unsigned pixel = 0; pixel < pixels; ++pixel) {
-                cw::Evaluation evaluation{};
-                std::memcpy(&evaluation,
-                            data(wf::contribution_evaluation_id) + pixel * sizeof(evaluation),
-                            sizeof(evaluation));
-                require(evaluation.requested_slot == cw::enhanced_null_slot &&
-                            evaluation.selected_slot ==
-                                (pixel < completed ? cw::enhanced_null_slot : 0xffffffffu) &&
-                            std::bit_cast<std::uint32_t>(evaluation.normalizer) == 0 &&
-                            evaluation.ready == unsigned(pixel < completed),
-                        "Null result must publish ready exactly once with canonical zero");
-                ew::Evaluation owned{};
-                std::memcpy(&owned, data(wf::enhanced_evaluation_id) + pixel * sizeof(owned),
-                            sizeof(owned));
-                require(owned.source.bank == ew::history_bank_0 && owned.source.pixel == pixel &&
+            fresh();
+            execute({{reset, pixels}, {initialize, capacity}});
+            auto before = counters();
+            require(before.failure == 0 && before.current == capacity &&
+                        before.next_pixel == capacity && before.completed == 0 &&
+                        before.null_completed == 0 && before.work_count == 0,
+                    "Null initialization must issue owners without completing or tracing");
+            guards();
+            unsigned rounds = 0;
+            while (before.completed != pixels) {
+                require(rounds < pixels, "Null owner refill failed to converge");
+                execute({{probe, capacity}, {prepare, 1}, {refill, capacity}, {advance, 1}});
+                const auto result = counters();
+                const auto completed = std::min(pixels, (rounds + 1) * capacity);
+                const auto issued = std::min(pixels, (rounds + 2) * capacity);
+                require(result.failure == 0 && result.completed == completed &&
+                            result.null_completed == completed && result.next_pixel == issued &&
+                            result.current == issued - completed && result.out == 0 &&
+                            result.free == 0 && result.refill_begin == 0 &&
+                            result.rounds == rounds + 1,
+                        "Null owners must conserve completions through real refill/advance");
+                for (unsigned pixel = 0; pixel < pixels; ++pixel) {
+                    cw::Evaluation evaluation{};
+                    std::memcpy(&evaluation,
+                                data(wf::contribution_evaluation_id) + pixel * sizeof(evaluation),
+                                sizeof(evaluation));
+                    require(evaluation.requested_slot == cw::enhanced_null_slot &&
+                                evaluation.selected_slot ==
+                                    (pixel < completed ? cw::enhanced_null_slot : 0xffffffffu) &&
+                                std::bit_cast<std::uint32_t>(evaluation.normalizer) == 0 &&
+                                evaluation.ready == unsigned(pixel < completed),
+                            "Null result must publish ready exactly once with canonical zero");
+                    ew::Evaluation owned{};
+                    std::memcpy(&owned, data(wf::enhanced_evaluation_id) + pixel * sizeof(owned),
+                                sizeof(owned));
+                    require(
+                        owned.source.bank == ew::history_bank_0 && owned.source.pixel == pixel &&
                             owned.result.bank == ew::history_bank_0 &&
                             owned.result.pixel == pixel &&
                             std::bit_cast<std::uint32_t>(owned.target_h_fraction) ==
@@ -416,109 +708,111 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                             owned.ready == unsigned(pixel < completed) &&
                             owned.normalizer_exponent == 0,
                         "Null owner must publish unit h once without changing owned references");
-                std::uint32_t done;
-                std::memcpy(&done, data(wf::done_id) + pixel * sizeof(done), sizeof(done));
-                require(done == unsigned(pixel < completed), "Null done ownership mismatch");
-                for (std::size_t byte = 0; byte < sizeof(render_wire::Point); ++byte)
-                    require(data(wf::raw_xyz_id)[pixel * sizeof(render_wire::Point) + byte] ==
-                                (pixel < completed ? 0 : 0xa5),
-                            "Only completed null owners may publish raw zero");
-            }
-            guards();
-            std::swap(buffers[wf::queue_in_id], buffers[wf::queue_out_id]);
-            bind();
-            before = result;
-            ++rounds;
-        }
-        if (capacity != 2)
-            continue;
-        // Serial single-lane failures avoid a valid sibling racing publication.
-        // Every error must preserve zero physical/null completions and raw output.
-        for (unsigned fault = 0; fault < 17; ++fault) {
-            fresh();
-            auto *request =
-                reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
-            auto *owned = reinterpret_cast<ew::Evaluation *>(data(wf::enhanced_evaluation_id));
-            const bool fails_initialize = fault == 0 || (fault >= 5 && fault <= 12);
-            if (fault == 0)
-                request[0].ready = 1;
-            else if (fault == 5)
-                request[0].requested_slot = 1; // D0 has only slot0, plus the null tag.
-            else if (fault == 6)
-                owned[0].ready = 1;
-            else if (fault == 7)
-                owned[0].normalizer_exponent = 1;
-            else if (fault == 8)
-                owned[0].source.bank = ew::bank_count;
-            else if (fault == 9)
-                owned[0].source.pixel = pixels;
-            else if (fault == 10)
-                owned[0].result.bank = ew::bank_count;
-            else if (fault == 11)
-                owned[0].result.pixel = pixels;
-            else if (fault == 12)
-                owned[0].target_h_exponent = 1; // Pending h is exactly the zero sentinel.
-            execute({{reset, pixels}, {initialize, 1}});
-            if (!fails_initialize) {
-                if (fault == 1)
-                    request[0].requested_slot = 0; // Changed after null owner capture.
-                else if (fault == 2)
-                    request[0].ready = 1;
-                else if (fault == 3)
-                    reinterpret_cast<std::uint32_t *>(data(wf::done_id))[0] = 1;
-                else if (fault == 4) {
-                    auto value = counters();
-                    value.null_completed = 1; // Isolate null>completed under Enhanced constants.
-                    value.out = capacity; // All other advance conservation predicates are valid.
-                    std::memcpy(data(wf::counters_id), &value, sizeof(value));
-                } else if (fault == 13)
-                    owned[0].ready = 1;
-                else if (fault == 14)
-                    owned[0].normalizer_exponent = 1;
-                else if (fault == 15)
-                    owned[0].source.bank = ew::bank_count;
-                else if (fault == 16) {
-                    // The null path must not accept any started hybrid
-                    // preparation, even though it never loads ray/BSDF pools.
-                    const std::size_t hybrid_offset = contract.enhanced_state_bytes -
-                                                      sizeof(rypath_enhanced_hybrid::HybridState) -
-                                                      2 * sizeof(std::uint32_t);
-                    const std::size_t offset =
-                        hybrid_offset +
-                        offsetof(rypath_enhanced_hybrid::HybridState, primary_ready);
-                    const std::uint32_t poisoned = 1;
-                    std::memcpy(data(wf::contribution_state_id) + offset, &poisoned,
-                                sizeof(poisoned));
+                    std::uint32_t done;
+                    std::memcpy(&done, data(wf::done_id) + pixel * sizeof(done), sizeof(done));
+                    require(done == unsigned(pixel < completed), "Null done ownership mismatch");
+                    for (std::size_t byte = 0; byte < sizeof(render_wire::Point); ++byte)
+                        require(data(wf::raw_xyz_id)[pixel * sizeof(render_wire::Point) + byte] ==
+                                    (pixel < completed ? 0 : 0xa5),
+                                "Only completed null owners may publish raw zero");
                 }
-                execute(fault == 4 ? std::initializer_list<Stage>{{advance, 1}}
-                                   : std::initializer_list<Stage>{{probe, 1}});
+                guards();
+                std::swap(buffers[wf::queue_in_id], buffers[wf::queue_out_id]);
+                bind();
+                before = result;
+                ++rounds;
             }
-            const auto result = counters();
-            const auto failure = fault == 3   ? wf::duplicate_sample
-                                 : fault == 4 ? wf::invalid_counters
-                                              : wf::invalid_sample;
-            require(result.failure == failure && result.completed == 0 &&
-                        result.null_completed == (fault == 4 ? 1u : 0u) && result.free == 0,
-                    "Invalid null receipt must fail without completions at case " +
-                        std::to_string(fault));
-            for (std::size_t byte = 0; byte < lengths[wf::raw_xyz_id]; ++byte)
-                require(data(wf::raw_xyz_id)[byte] == 0xa5, "Failed null owner published raw");
-            guards();
+            if (capacity != 2)
+                continue;
+            // Serial single-lane failures avoid a valid sibling racing publication.
+            // Every error must preserve zero physical/null completions and raw output.
+            for (unsigned fault = 0; fault < 17; ++fault) {
+                fresh();
+                auto *request =
+                    reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
+                auto *owned = reinterpret_cast<ew::Evaluation *>(data(wf::enhanced_evaluation_id));
+                const bool fails_initialize = fault == 0 || (fault >= 5 && fault <= 12);
+                if (fault == 0)
+                    request[0].ready = 1;
+                else if (fault == 5)
+                    request[0].requested_slot = 1; // D0 has only slot0, plus the null tag.
+                else if (fault == 6)
+                    owned[0].ready = 1;
+                else if (fault == 7)
+                    owned[0].normalizer_exponent = 1;
+                else if (fault == 8)
+                    owned[0].source.bank = ew::bank_count;
+                else if (fault == 9)
+                    owned[0].source.pixel = pixels;
+                else if (fault == 10)
+                    owned[0].result.bank = ew::bank_count;
+                else if (fault == 11)
+                    owned[0].result.pixel = pixels;
+                else if (fault == 12)
+                    owned[0].target_h_exponent = 1; // Pending h is exactly the zero sentinel.
+                execute({{reset, pixels}, {initialize, 1}});
+                if (!fails_initialize) {
+                    if (fault == 1)
+                        request[0].requested_slot = 0; // Changed after null owner capture.
+                    else if (fault == 2)
+                        request[0].ready = 1;
+                    else if (fault == 3)
+                        reinterpret_cast<std::uint32_t *>(data(wf::done_id))[0] = 1;
+                    else if (fault == 4) {
+                        auto value = counters();
+                        value.null_completed =
+                            1; // Isolate null>completed under Enhanced constants.
+                        value.out =
+                            capacity; // All other advance conservation predicates are valid.
+                        std::memcpy(data(wf::counters_id), &value, sizeof(value));
+                    } else if (fault == 13)
+                        owned[0].ready = 1;
+                    else if (fault == 14)
+                        owned[0].normalizer_exponent = 1;
+                    else if (fault == 15)
+                        owned[0].source.bank = ew::bank_count;
+                    else if (fault == 16) {
+                        // The null path must not accept any started hybrid
+                        // preparation, even though it never loads ray/BSDF pools.
+                        const std::size_t hybrid_offset =
+                            contract.enhanced_state_bytes -
+                            sizeof(rypath_enhanced_hybrid::HybridState) - 2 * sizeof(std::uint32_t);
+                        const std::size_t offset =
+                            hybrid_offset +
+                            offsetof(rypath_enhanced_hybrid::HybridState, primary_ready);
+                        const std::uint32_t poisoned = 1;
+                        std::memcpy(data(wf::contribution_state_id) + offset, &poisoned,
+                                    sizeof(poisoned));
+                    }
+                    execute(fault == 4 ? std::initializer_list<Stage>{{advance, 1}}
+                                       : std::initializer_list<Stage>{{probe, 1}});
+                }
+                const auto result = counters();
+                const auto failure = fault == 3   ? wf::duplicate_sample
+                                     : fault == 4 ? wf::invalid_counters
+                                                  : wf::invalid_sample;
+                require(result.failure == failure && result.completed == 0 &&
+                            result.null_completed == (fault == 4 ? 1u : 0u) && result.free == 0,
+                        "Invalid null receipt must fail without completions at case " +
+                            std::to_string(fault));
+                for (std::size_t byte = 0; byte < lengths[wf::raw_xyz_id]; ++byte)
+                    require(data(wf::raw_xyz_id)[byte] == 0xa5, "Failed null owner published raw");
+                guards();
+            }
+            for (const auto mode : {std::array{true, false}, std::array{false, true}}) {
+                fresh();
+                auto mismatch = metal::load_pipeline(device, library, @"rypath_wavefront_reset",
+                                                     why, nil, constants_for(mode[0], mode[1]));
+                require(mismatch != nil, why);
+                execute({{mismatch, pixels}});
+                const auto result = counters();
+                require(result.failure == wf::invalid_config && result.current == 0 &&
+                            result.next_pixel == 0 && result.completed == 0 &&
+                            result.null_completed == 0,
+                        "Enhanced function/buffer mode mismatch must claim no owner");
+                guards();
+            }
         }
-        for (const auto mode : {std::array{true, false}, std::array{false, true}}) {
-            fresh();
-            auto mismatch = metal::load_pipeline(device, library, @"rypath_wavefront_reset", why,
-                                                 nil, constants_for(mode[0], mode[1]));
-            require(mismatch != nil, why);
-            execute({{mismatch, pixels}});
-            const auto result = counters();
-            require(result.failure == wf::invalid_config && result.current == 0 &&
-                        result.next_pixel == 0 && result.completed == 0 &&
-                        result.null_completed == 0,
-                    "Enhanced function/buffer mode mismatch must claim no owner");
-            guards();
-        }
-    }
 }
 // Protocol fixture only: transport responses are injected after production
 // prepare. The scalar reference uses direct double MIS formulas, not shared
@@ -1326,31 +1620,38 @@ int run(const std::filesystem::path &path) {
     require(argument_encoder != nil, "Queue argument encoder");
     auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
                                          options:MTLResourceStorageModeShared];
-    std::array<id<MTLBuffer>, wf::enhanced_suffix_id + 1> buffers{};
+    std::array<id<MTLBuffer>, wf::work_list_id + 1> buffers{};
     [argument_encoder setArgumentBuffer:arguments offset:0];
     for (unsigned i = 0; i < buffers.size(); ++i) {
-        buffers[i] = [device newBufferWithLength:i >= wf::contribution_evaluation_id ? 16 : 256
-                                         options:MTLResourceStorageModeShared];
+        const auto bytes = i == wf::enhanced_records_id      ? sizeof(enhanced_wire::Record)
+                           : i == wf::enhanced_evaluation_id ? sizeof(enhanced_wire::Evaluation)
+                           : i == wf::enhanced_suffix_id
+                               ? sizeof(rypath_enhanced_suffix_tape::Entry)
+                           : i >= wf::contribution_evaluation_id ? 16
+                                                                 : 256;
+        buffers[i] = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
         require(buffers[i] != nil, "Queue fault test allocation");
         [argument_encoder setBuffer:buffers[i] offset:0 atIndex:i];
     }
     auto queue = [device newCommandQueue];
     require(queue != nil && arguments != nil, "Queue fault test command resources");
     area_disabled_wire(device, library, queue);
-    const wf::Config config{4, 2, 0,     render_wire::pbrt_model, 32, 0, 1, 0, 0, 0, 0.f, 0,
-                            0, 0, {0, 0}};
+    const wf::Config config{4, 2, 0, render_wire::pbrt_model, 32, 0, 1, 0, 0, 0, 0.f, 0, 0,
+                            0, 0, 0};
     const std::array<wf::Counters, 9> cases{{
-        {2, 2, 0, 4, 2, 0, 7, 2, 0, {0, 0, 0}, 0}, // Valid two-owner continuation clears its range.
-        {2, 3, 0, 4, 1, 0, 7, 0, 0, {0, 0, 0}, 0}, // Output exceeds physical capacity.
-        {2, 1, 3, 4, 3, 0, 7, 0, 0, {0, 0, 0}, 0}, // Free list exceeds physical capacity.
-        {2, 0, 0, 4, 5, 0, 7, 0, 0, {0, 0, 0}, 0}, // More completions than pixels.
-        {2, 0, 0, 5, 4, 0, 7, 0, 0, {0, 0, 0}, 0}, // Allocator exceeds pixel domain.
-        {2, 0, 0, 4, 2, 0, 7, 0, 0, {0, 0, 0}, 0}, // Lost work cannot become an empty successful
-                                                   // queue.
-        {2, 2, 0, 4, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0}, // Producer overflow stays
-                                                                    // sticky.
-        {2, 2, 0, 4, 2, 0, 7, 0, 3, {0, 0, 0}, 0}, // Null completions exceed all completions.
-        {2, 2, 0, 4, 2, 0, 7, 0, 1, {0, 0, 0}, 0}, // Legacy mode cannot publish null completions.
+        {2, 2, 0, 4, 2, 0, 7, 2, 0, {0, 0, 0}, 0, 0}, // Valid two-owner continuation clears its
+                                                      // range.
+        {2, 3, 0, 4, 1, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Output exceeds physical capacity.
+        {2, 1, 3, 4, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Free list exceeds physical capacity.
+        {2, 0, 0, 4, 5, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // More completions than pixels.
+        {2, 0, 0, 5, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Allocator exceeds pixel domain.
+        {2, 0, 0, 4, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Lost work cannot become an empty successful
+                                                      // queue.
+        {2, 2, 0, 4, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0, 0}, // Producer overflow stays
+                                                                       // sticky.
+        {2, 2, 0, 4, 2, 0, 7, 0, 3, {0, 0, 0}, 0, 0}, // Null completions exceed all completions.
+        {2, 2, 0, 4, 2, 0, 7, 0, 1, {0, 0, 0}, 0, 0}, // Legacy mode cannot publish null
+                                                      // completions.
     }};
     for (std::size_t n = 0; n < cases.size(); ++n) {
         for (auto buffer : buffers)
@@ -1377,7 +1678,7 @@ int run(const std::filesystem::path &path) {
                     result.out == 0 && result.free == 0 && result.refill_begin == 0 &&
                     result.rounds == 8 && result.completed == cases[n].completed &&
                     result.next_pixel == cases[n].next_pixel &&
-                    result.null_completed == cases[n].null_completed,
+                    result.null_completed == cases[n].null_completed && result.work_count == 0,
                 "Queue corruption must fail explicitly without inventing completions");
         for (unsigned i = 0; i < buffers.size(); ++i) {
             const auto written = i == wf::counters_id ? sizeof(wf::Counters)
@@ -1393,20 +1694,22 @@ int run(const std::filesystem::path &path) {
     auto prepare = metal::load_pipeline(device, library, @"rypath_wavefront_prepare_refill", why);
     require(prepare != nil, why);
     const std::array<wf::Counters, 14> refill_cases{{
-        {2, 0, 2, 2, 2, 0, 7, 0, 0, {0, 0, 0}, 0}, // Full refill owns [2,4).
-        {2, 0, 2, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0}, // Partial final range owns [3,4).
-        {2, 0, 2, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0}, // Exhausted domain claims nothing.
-        {2, 1, 1, 3, 2, 0, 7, 0, 0, {0, 0, 0}, 0}, // One continuing owner plus one new owner.
-        {2, 2, 0, 2, 0, 0, 7, 0, 0, {0, 0, 0}, 0}, // All owners continue; no free slots.
-        {0, 0, 0, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0}, // Extra encoded round after all work completed.
-        {2, 0, 3, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0}, // Invalid free count.
-        {2, 0, 2, 5, 5, 0, 7, 0, 0, {0, 0, 0}, 0}, // Invalid next owner.
-        {2, 0, 2, 2, 3, 0, 7, 0, 0, {0, 0, 0}, 0}, // Completions exceed issued owners.
-        {2, 0, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0}, // Lost active owner.
-        {2, 1, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0}, // Continuing count disagrees with issued work.
-        {2, 0, 2, 2, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0},
-        {2, 0, 2, 2, 2, 0, 7, 0, 3, {0, 0, 0}, 0}, // Null count cannot exceed completions.
-        {2, 0, 2, 2, 2, 0, 7, 0, 1, {0, 0, 0}, 0}, // Legacy null count is invalid.
+        {2, 0, 2, 2, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Full refill owns [2,4).
+        {2, 0, 2, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Partial final range owns [3,4).
+        {2, 0, 2, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Exhausted domain claims nothing.
+        {2, 1, 1, 3, 2, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // One continuing owner plus one new owner.
+        {2, 2, 0, 2, 0, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // All owners continue; no free slots.
+        {0, 0, 0, 4, 4, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Extra encoded round after all work
+                                                      // completed.
+        {2, 0, 3, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Invalid free count.
+        {2, 0, 2, 5, 5, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Invalid next owner.
+        {2, 0, 2, 2, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Completions exceed issued owners.
+        {2, 0, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Lost active owner.
+        {2, 1, 1, 3, 3, 0, 7, 0, 0, {0, 0, 0}, 0, 0}, // Continuing count disagrees with issued
+                                                      // work.
+        {2, 0, 2, 2, 2, wf::queue_overflow, 7, 0, 0, {0, 0, 0}, 0, 0},
+        {2, 0, 2, 2, 2, 0, 7, 0, 3, {0, 0, 0}, 0, 0}, // Null count cannot exceed completions.
+        {2, 0, 2, 2, 2, 0, 7, 0, 1, {0, 0, 0}, 0, 0}, // Legacy null count is invalid.
     }};
     for (std::size_t n = 0; n < refill_cases.size(); ++n) {
         for (auto buffer : buffers)
@@ -1437,7 +1740,7 @@ int run(const std::filesystem::path &path) {
                 "Invalid range reservation must fail before claiming owners");
         require(result.completed == before.completed && result.current == before.current &&
                     result.out == before.out && result.rounds == before.rounds &&
-                    result.null_completed == before.null_completed &&
+                    result.null_completed == before.null_completed && result.work_count == 0 &&
                     result.next_pixel ==
                         (valid ? before.next_pixel + expected_count : before.next_pixel) &&
                     result.free == (valid ? expected_count : before.free) &&
@@ -1519,18 +1822,18 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v20", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v21", why);
     require(contract_pipeline != nil,
-            "Wavefront v20 contract unavailable; rebuild the metallib: " + why);
+            "Wavefront v21 contract unavailable; rebuild the metallib: " + why);
     for (NSString *stale in @[
              @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
              @"rypath_wavefront_contract_v13", @"rypath_wavefront_contract_v14",
              @"rypath_wavefront_contract_v15", @"rypath_wavefront_contract_v16",
              @"rypath_wavefront_contract_v17", @"rypath_wavefront_contract_v18",
-             @"rypath_wavefront_contract_v19"
+             @"rypath_wavefront_contract_v19", @"rypath_wavefront_contract_v20"
          ])
         require([library newFunctionWithName:stale] == nil,
-                "Stale Wavefront stage entry must not advertise the v20 ABI");
+                "Stale Wavefront stage entry must not advertise the v21 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");
@@ -1549,7 +1852,7 @@ int run(const std::filesystem::path &path) {
     std::memcpy(&history_contract, contract_buffer.contents, sizeof(history_contract));
     require(history_contract.version == wf::contract && history_contract.hero_bytes &&
                 history_contract.hero_cold_bytes && history_contract.hot_bytes &&
-                history_contract.config_bytes == 64 && history_contract.counters_bytes == 52 &&
+                history_contract.config_bytes == 64 && history_contract.counters_bytes == 56 &&
                 history_contract.dispatch_bytes == 12 &&
                 history_contract.contribution_state_bytes == 80 &&
                 history_contract.contribution_state_alignment == 4 &&
@@ -1614,8 +1917,8 @@ int run(const std::filesystem::path &path) {
         require(history_arguments != nil, "History storage arguments allocation");
         [history_arguments_encoder setArgumentBuffer:history_arguments offset:0];
         constexpr std::size_t guard_bytes = 256, slot_count = 7;
-        std::array<id<MTLBuffer>, wf::enhanced_suffix_id + 1> history_buffers{};
-        std::array<std::size_t, wf::enhanced_suffix_id + 1> strides{};
+        std::array<id<MTLBuffer>, wf::work_list_id + 1> history_buffers{};
+        std::array<std::size_t, wf::work_list_id + 1> strides{};
         strides[wf::packet_state_id] = history_contract.packet_bytes;
         strides[wf::packet_hot_id] = history_contract.hot_bytes;
         strides[wf::packet_cold_id] = history_contract.cold_bytes;
@@ -1623,6 +1926,10 @@ int run(const std::filesystem::path &path) {
         strides[wf::hero_cold_id] = history_contract.hero_cold_bytes;
         for (unsigned i = 0; i < history_buffers.size(); ++i) {
             const auto bytes = strides[i] ? 2 * guard_bytes + slot_count * strides[i]
+                               : i == wf::enhanced_records_id    ? sizeof(enhanced_wire::Record)
+                               : i == wf::enhanced_evaluation_id ? sizeof(enhanced_wire::Evaluation)
+                               : i == wf::enhanced_suffix_id
+                                   ? sizeof(rypath_enhanced_suffix_tape::Entry)
                                : i >= wf::contribution_evaluation_id ? 16
                                                                      : guard_bytes;
             history_buffers[i] = [device newBufferWithLength:bytes
@@ -1634,7 +1941,7 @@ int run(const std::filesystem::path &path) {
                                          atIndex:i];
         }
         const wf::Config history_config{
-            7, 7, 2, render_wire::pbrt_model, 1, 0, 1, layout, 0, 0, 0.f, 0, 0, 0, {0, 0}};
+            7, 7, 2, render_wire::pbrt_model, 1, 0, 1, layout, 0, 0, 0.f, 0, 0, 0, 0, 0};
         std::memcpy(history_buffers[wf::config_id].contents, &history_config,
                     sizeof(history_config));
         auto history_result = [device newBufferWithLength:guard_bytes

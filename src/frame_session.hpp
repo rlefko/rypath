@@ -105,6 +105,8 @@ struct FrameConfig {
     bool cache_temporal_evaluations = true;
     // Effective only for Enhanced Area prefix replay; disabled mode replays suffixes.
     bool enhanced_suffix_cache = true;
+    // Experimental admission of nonnull Enhanced requests; all fresh owners run.
+    bool compact_enhanced_pairs = false;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;
     // Automatic retains the legacy/adjacent defaults until a quality decision.
@@ -140,6 +142,9 @@ struct FrameInfo {
     bool history_used = false;
     bool temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
+    bool enhanced_pair_compaction = false;
+    // Subset of analytic_null_evaluations, never an additional completion count.
+    std::uint64_t compacted_null_evaluations = 0;
     std::array<std::uint64_t, 3> enhanced_suffix_hits{};
     std::uint64_t enhanced_suffix_misses = 0;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;

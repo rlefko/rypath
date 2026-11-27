@@ -213,6 +213,8 @@ FrameCapture capture(FrameSession &session, const FrameConfig &c, std::uint64_t 
     const auto info = submitted.frame->wait();
     const std::uint64_t pixels = std::uint64_t(c.width) * c.height;
     need(info.status == FrameStatus::complete, info.diagnostic);
+    need(!info.enhanced_pair_compaction && info.compacted_null_evaluations == 0,
+         "Pair compaction remains inactive outside Enhanced Area");
     need(info.sample_index == index && info.epoch == 73 && info.completed_samples == pixels &&
              info.fresh_candidates == pixels && info.command_count > 0,
          "Hero frame identity/accounting");
@@ -1660,6 +1662,133 @@ void enhanced_suffix_conductor() {
     std::cout << "suffix_conductor_exact totals hits=" << hits[0] << ',' << hits[1] << ','
               << hits[2] << " misses=" << misses << " referenced_records=" << records << '\n';
 }
+// Pair compaction changes execution only: exact output and published payloads
+// are compared on one shared AS at fixed seeds, including changed cameras.
+void enhanced_pair_compaction_controls() {
+    need(!FrameConfig{}.compact_enhanced_pairs, "Pair compaction is opt-in by default");
+    for (const auto domain : {FrameAreaPathDomain::summed, FrameAreaPathDomain::contribution}) {
+        auto c = contribution_config();
+        c.area_path_domain = domain;
+        c.compact_enhanced_pairs = true;
+        auto frames = session(diffuse(), c);
+        // These modes never publish analytic-null completions. The ordinary
+        // capture helper also checks effective-off metadata on every frame.
+        if (domain == FrameAreaPathDomain::summed)
+            capture(*frames, c, high_sample, false);
+        else {
+            auto submitted = frames->submit({.sample_index = high_sample, .epoch = 73});
+            need(submitted.status == GeometryStatus::success && submitted.frame,
+                 submitted.diagnostic);
+            const auto info = submitted.frame->wait();
+            need(info.status == FrameStatus::complete && !info.enhanced_pair_compaction &&
+                     info.compacted_null_evaluations == 0,
+                 "Contribution domain retains requested pair compaction as effective off");
+        }
+    }
+    auto independent = config();
+    independent.compact_enhanced_pairs = true;
+    auto independent_session = session(diffuse(), independent);
+    capture(*independent_session, independent, high_sample, false);
+    for (const bool black : {true, false}) {
+        auto scene = black ? early_emission(false) : enhanced_cavity();
+        if (black)
+            scene.area_emissions[0].radiance.fill(0);
+        frames(scene);
+        for (const auto replay : {FrameContributionReplay::prefix, FrameContributionReplay::full})
+            for (const unsigned mutations : {0u, 1u})
+                for (const unsigned capacity : {1u, 37u, 49u}) {
+                    auto off = enhanced_config();
+                    off.width = off.height = 7;
+                    off.capacity = capacity;
+                    off.mutation_steps = mutations;
+                    off.contribution_replay = replay;
+                    off.cache_temporal_evaluations = false;
+                    off.enhanced_suffix_cache = true;
+                    off.compact_enhanced_pairs = false;
+                    auto on = off;
+                    on.compact_enhanced_pairs = true;
+                    auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+                    need(pair.status == GeometryStatus::success && pair.shared_renderer &&
+                             pair.independent_history && pair.independent_owned_records,
+                         pair.diagnostic);
+                    FrameCamera moved{.camera = scene.camera,
+                                      .camera_medium = scene.camera_medium,
+                                      .raster_camera = scene.raster_camera,
+                                      .perspective_lens = scene.perspective_lens,
+                                      .texture_camera = scene.texture_camera};
+                    need(moved.raster_camera.has_value(),
+                         "Pair fixture has explicit raster camera");
+                    moved.raster_camera->origin.x += .0625f;
+                    std::uint64_t compacted = 0, physical = 0;
+                    for (unsigned frame = 0; frame < 4; ++frame) {
+                        const auto camera = frame >= 2 ? std::optional<FrameCamera>(moved)
+                                                       : std::optional<FrameCamera>{};
+                        auto a = enhanced_capture(*pair.sessions[0], off, scene.max_depth, frame,
+                                                  high_sample, camera);
+                        auto b = enhanced_capture(*pair.sessions[1], on, scene.max_depth, frame,
+                                                  high_sample, camera);
+                        exact(a.image, b.image);
+                        need(
+                            !a.info.enhanced_pair_compaction && b.info.enhanced_pair_compaction &&
+                                a.info.compacted_null_evaluations == 0 &&
+                                b.info.compacted_null_evaluations ==
+                                    b.info.analytic_null_evaluations &&
+                                a.info.completed_evaluations == b.info.completed_evaluations &&
+                                a.info.analytic_null_evaluations ==
+                                    b.info.analytic_null_evaluations &&
+                                a.info.cached_evaluations == b.info.cached_evaluations &&
+                                a.info.logical_evaluations == b.info.logical_evaluations &&
+                                a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
+                                a.info.mutation_accepts == b.info.mutation_accepts,
+                            "Compaction preserves raw, selection, mutation and logical accounting");
+                        compacted += b.info.compacted_null_evaluations;
+                        physical += b.info.completed_evaluations;
+                        const auto x =
+                            FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], frame);
+                        const auto y =
+                            FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], frame);
+                        need(x.status == GeometryStatus::success &&
+                                 y.status == GeometryStatus::success,
+                             x.diagnostic + y.diagnostic);
+                        need(x.front_bank == y.front_bank && x.serial == y.serial &&
+                                 x.generation == y.generation && x.epoch == y.epoch &&
+                                 x.history.size() == y.history.size() &&
+                                 x.temporal.size() == y.temporal.size() &&
+                                 std::memcmp(x.history.data(), y.history.data(),
+                                             x.history.size() * sizeof(area_wire::History)) == 0 &&
+                                 std::memcmp(x.temporal.data(), y.temporal.data(),
+                                             x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+                             "Compaction preserves exact published history and temporal tuples");
+                        const auto compare_record = [&](enhanced_wire::Reference ref) {
+                            if (enhanced_wire::absent(ref))
+                                return;
+                            need(enhanced_wire::valid(ref, 49), "Pair record reference bounds");
+                            const auto index = std::size_t(ref.bank) * 49 + ref.pixel;
+                            need(index < x.records.size() && index < y.records.size() &&
+                                     std::memcmp(&x.records[index], &y.records[index],
+                                                 sizeof(enhanced_wire::Record)) == 0,
+                                 "Compaction preserves referenced owned records exactly");
+                        };
+                        for (const auto &h : x.history)
+                            if (h.valid && h.selected_slot != contribution_wire::enhanced_null_slot)
+                                compare_record(h.record);
+                        for (const auto &t : x.temporal)
+                            if (t.normalizer > 0 && t.target > 0 &&
+                                t.selected_slot != contribution_wire::enhanced_null_slot)
+                                compare_record(t.record);
+                        if (!black)
+                            need(std::ranges::any_of(b.image.raw_xyz,
+                                                     [](const auto &xyz) { return xyz[1] > 0; }),
+                                 "Emitting pair fixture must retain positive real transport");
+                    }
+                    need(physical > 0, "Compaction never removes fresh transport owners");
+                    if (black)
+                        need(compacted > 0,
+                             "Black fixture must execute compacted selected-null work");
+                }
+    }
+    std::cout << "Enhanced pair compaction exact shared-AS controls passed\n";
+}
 void enhanced_suffix_controls() {
     namespace tape = rypath_enhanced_suffix_tape;
     auto scene = enhanced_cavity();
@@ -2006,12 +2135,13 @@ int main(int argc, char **argv) {
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
+        const bool enhanced_pairs = argc == 2 && std::string_view(argv[1]) == "--enhanced-pairs";
         const bool enhanced_suffix = argc == 2 && std::string_view(argv[1]) == "--enhanced-suffix";
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
         need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid ||
-                 enhanced_suffix,
+                 enhanced_suffix || enhanced_pairs,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
-             "--enhanced-hybrid or --enhanced-suffix");
+             "--enhanced-hybrid, --enhanced-suffix or --enhanced-pairs");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -2027,6 +2157,10 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_pairs) {
+            enhanced_pair_compaction_controls();
+            return 0;
+        }
         if (enhanced_suffix) {
             enhanced_suffix_controls();
             std::cout << "Enhanced sequential suffix exact controls passed\n";

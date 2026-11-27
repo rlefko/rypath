@@ -28,7 +28,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Dual-footprint eligibility, Eq. 5 | Runtime first-eligible selection, forward/inverse footprints and rolling predecessor veto |
 | Forced NEE endpoint reconnection, §6.2.3 | Enhanced owns triangle-area, positional/distant-mass and environment-direction endpoints; other shapes retain replay |
 | Cached suffix evaluation | Bounded two-operation sequential hero tape; exact prefix replay on misses |
-| Selective shift-pair compaction, §6.2.2 | Missing; ordinary wavefront compaction is a different operation |
+| Selective shift-pair compaction, §6.2.2 | Opt-in admission skips structurally selected-null requests; all nonnull requests retain canonical evaluation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
 | Reservoir reprojection and dual motion, §6.4 | Missing; denoiser motion vectors do not implement this |
 | Duplication maps, §5 | Missing; adaptive confidence introduces bias and must remain a separately labeled option |
@@ -441,6 +441,55 @@ compiler is Apple Metal 32023.883. No arithmetic tolerance or failure gate was
 relaxed; these boundaries are a measured code-generation workaround, not a claim
 that a compiler defect's root cause has been established. Failed diagnostic and
 optimization variants remain in the local validation archive.
+
+## Native suffix screen and selected-null admission
+
+At `fa09f29`, all four native 1920×1080 scenes retain exact raw XYZ, selected
+history, temporal payloads and referenced owned records through 40 shared-AS
+frames with suffix caching off/on. This correctness comparison disables temporal
+memoization in both arms. A separate static timing screen enables exact temporal
+memoization in both arms and includes signed temporal reconstruction with the
+conservative variance policy: eight warm-up frames, 32 measured frames, seed
+61002, one fresh visible-CDF hero path and one spectral-refresh mutation.
+
+| Scene | Cache off, ms/frame | Cache on, ms/frame | Cache on, FPS |
+| --- | ---: | ---: | ---: |
+| Cornell | 1210.41 | 1130.58 | 0.8845 |
+| Prism | 1690.36 | 1705.23 | 0.5864 |
+| Pavilion day | 3465.01 | 3476.91 | 0.2876 |
+| Pavilion night | 3502.30 | 3508.26 | 0.2850 |
+
+FPS is measured-frame count divided by total complete-pipeline wall time.
+Cornell gains about 7%; the other scenes show no established benefit in this
+single screen. All final raw/reconstructed captures are finite FLOAT RGB.
+These are single-frame estimates with history, not accumulated reference images.
+This screen establishes neither sustained throughput nor equal-quality speedup.
+It measures the current hybrid implementation; earlier scaled-weight timings
+predate interior reconnection and are not an execution-only cache baseline.
+The 50/100 ms targets remain unmet.
+
+`--area-pair-compaction on` adds a separate, default-off execution experiment
+for Enhanced Area. Each leaf validates every logical request before queue
+admission. Structurally selected-null requests publish their original zero result
+without loading transport state; real requests append actual pixel IDs and enter
+the existing wavefront. All fresh owners run. A damaged request fails rather than
+becoming a cheap null. Sources and source suffixes remain immutable; mutation
+scratch is cleared only for its exclusive result owner.
+
+The work list costs four bytes per pixel per frame slot. Completion claims and
+refill positions retain pixel identity through nondeterministic admission order.
+The reported compacted-null count is a subset of analytic-null evaluations,
+never additional work in the logical accounting. Wavefront contract 21 adds the
+work-list binding and admission count; Area remains 14. This implements selected
+null admission, not arbitrary prediction of positive suffix-cache hits. It keeps
+the four existing spatial leaves and their proposal coefficients.
+
+Seven focused Release tests pass (656.07 s), with Metal API validation on the
+GPU suites: CLI/schema checks, actual queue admission/refill guards, contribution
+and Enhanced transport, exact shared-AS compaction controls, and suffix controls.
+The compaction controls cover full/prefix replay, zero/one mutation, black/emitting
+fixtures, capacities 1/37/49 and static/changed camera contexts. Native performance
+adoption is separate; the option remains off by default.
 
 ## Camera-motion geometry foundation
 

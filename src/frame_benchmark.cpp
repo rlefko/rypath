@@ -63,6 +63,7 @@ struct Options {
     bool demo = false, profile_stages = false;
     bool cache_temporal_evaluations = true;
     bool enhanced_suffix_cache = true;
+    bool compact_enhanced_pairs = false;
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
@@ -159,6 +160,7 @@ const char *usage =
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
     "  [--area-suffix-cache on|off (Enhanced sequential suffix replay; default: on)]\n"
+    "  [--area-pair-compaction on|off (experimental Enhanced null admission; default: off)]\n"
     "  [--packet-events 1|2|4 (default: 1)] [--packet-layout "
     "packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
@@ -328,6 +330,10 @@ std::string parse(int argc, char **argv, Options &o) {
             if (value != "on" && value != "off")
                 return "area suffix cache must be on or off";
             o.enhanced_suffix_cache = value == "on";
+        } else if (key == "--area-pair-compaction") {
+            if (value != "on" && value != "off")
+                return "area pair compaction must be on or off";
+            o.compact_enhanced_pairs = value == "on";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
@@ -719,6 +725,8 @@ struct Observation : rypath::FrameStatisticsSample {
     std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
     bool history_used = false, temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
+    bool enhanced_pair_compaction = false;
+    std::uint64_t compacted_null_evaluations = 0;
     std::array<std::uint64_t, 3> enhanced_suffix_hits{};
     std::uint64_t enhanced_suffix_misses = 0;
     rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::legacy;
@@ -980,6 +988,22 @@ struct Report {
                            ? "true"
                            : "false")
                     : "null")
+            << ",\"requested_area_pair_compaction\":"
+            << (options.compact_enhanced_pairs ? "true" : "false") << ",\"area_pair_compaction\":"
+            << (options.execution == rypath::FrameExecution::wavefront &&
+                        options.estimator == rypath::FrameEstimator::area_replay &&
+                        options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                        options.compact_enhanced_pairs
+                    ? "true"
+                    : "false")
+            << ",\"effective_area_pair_compaction\":"
+            << (area_path_domain_effective
+                    ? (options.execution == rypath::FrameExecution::wavefront &&
+                               options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                               options.compact_enhanced_pairs
+                           ? "true"
+                           : "false")
+                    : "null")
             << ",\"target_scale\":" << options.target_scale
             << ",\"fresh_paths_per_pixel_per_frame\":1"
             << ",\"capacity\":" << options.capacity << ",\"effective_capacity\":"
@@ -1118,6 +1142,9 @@ struct Report {
                 << ",\"canonical_transport_version\":" << f.canonical_transport_version
                 << ",\"fresh_discovery_version\":" << f.fresh_discovery_version
                 << ",\"history_used\":" << (f.history_used ? "true" : "false")
+                << ",\"enhanced_pair_compaction\":"
+                << (f.enhanced_pair_compaction ? "true" : "false")
+                << ",\"compacted_null_evaluations\":" << f.compacted_null_evaluations
                 << ",\"enhanced_suffix_cache\":" << (f.enhanced_suffix_cache ? "true" : "false")
                 << ",\"enhanced_suffix_hits\":[" << f.enhanced_suffix_hits[0] << ','
                 << f.enhanced_suffix_hits[1] << ',' << f.enhanced_suffix_hits[2] << ']'
@@ -1386,6 +1413,7 @@ int run(const Options &options) {
         config.area_output = options.area_output;
         config.cache_temporal_evaluations = options.cache_temporal_evaluations;
         config.enhanced_suffix_cache = options.enhanced_suffix_cache;
+        config.compact_enhanced_pairs = options.compact_enhanced_pairs;
         config.target_scale = options.target_scale;
         config.mutation_steps = options.mutation_steps;
         config.mutation_policy = options.mutation_policy;
@@ -1484,6 +1512,13 @@ int run(const Options &options) {
                              options.contribution_replay ==
                                  rypath::FrameContributionReplay::prefix &&
                              options.enhanced_suffix_cache) &&
+                        info.enhanced_pair_compaction ==
+                            (options.execution == rypath::FrameExecution::wavefront &&
+                             options.estimator == rypath::FrameEstimator::area_replay &&
+                             options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                             options.compact_enhanced_pairs) &&
+                        info.compacted_null_evaluations <= info.analytic_null_evaluations &&
+                        (info.enhanced_pair_compaction || info.compacted_null_evaluations == 0) &&
                         info.completed_samples == pixels && evaluation_counts &&
                         info.area_path_domain == options.area_path_domain &&
                         info.canonical_transport_version ==
@@ -1509,6 +1544,8 @@ int run(const Options &options) {
                     observation.fresh_discovery_version = info.fresh_discovery_version;
                     observation.history_used = info.history_used;
                     observation.enhanced_suffix_cache = info.enhanced_suffix_cache;
+                    observation.enhanced_pair_compaction = info.enhanced_pair_compaction;
+                    observation.compacted_null_evaluations = info.compacted_null_evaluations;
                     observation.enhanced_suffix_hits = info.enhanced_suffix_hits;
                     observation.enhanced_suffix_misses = info.enhanced_suffix_misses;
                     observation.history_generation = info.history_generation;
@@ -1734,6 +1771,12 @@ int run(const Options &options) {
                      options.cache_temporal_evaluations ? "true" : "false"},
                     {"rypath.area.temporal_cache_used",
                      frame_info.temporal_evaluation_cache_used ? "true" : "false"},
+                    {"rypath.area.pair_compaction_requested",
+                     options.compact_enhanced_pairs ? "true" : "false"},
+                    {"rypath.area.pair_compaction_enabled",
+                     frame_info.enhanced_pair_compaction ? "true" : "false"},
+                    {"rypath.frame.compacted_null_evaluations",
+                     std::to_string(frame_info.compacted_null_evaluations)},
                     {"rypath.area.suffix_cache_requested",
                      options.enhanced_suffix_cache ? "true" : "false"},
                     {"rypath.area.suffix_cache_enabled",
@@ -1915,6 +1958,12 @@ int run(const Options &options) {
                     {"rypath.frame.intersections", profile_name(options.intersection_profile)},
                     {"rypath.frame.as_build",
                      std::string(rypath::acceleration_build_policy_name(options.as_build))},
+                    {"rypath.area.pair_compaction_requested",
+                     options.compact_enhanced_pairs ? "true" : "false"},
+                    {"rypath.area.pair_compaction_enabled",
+                     info.source.enhanced_pair_compaction ? "true" : "false"},
+                    {"rypath.frame.compacted_null_evaluations",
+                     std::to_string(info.source.compacted_null_evaluations)},
                     {"rypath.area.suffix_cache_requested",
                      options.enhanced_suffix_cache ? "true" : "false"},
                     {"rypath.area.suffix_cache_enabled",

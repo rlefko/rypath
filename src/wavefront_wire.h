@@ -5,7 +5,7 @@ namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 20,
+    contract = 21,
     default_capacity = 65536,
     packet_layout_constant = 23,
     packet_events_constant = 24,
@@ -43,7 +43,8 @@ enum Argument : Word {
     contribution_state_id,
     enhanced_records_id,
     enhanced_evaluation_id,
-    enhanced_suffix_id
+    enhanced_suffix_id,
+    work_list_id
 };
 struct Config {
     Word pixel_count, capacity, packet, model;
@@ -51,7 +52,7 @@ struct Config {
     Word contribution_mode, contribution_depth;
     float contribution_target_scale;
     Word contribution_replay; // full 0 / prefix 1; summed mode requires 0.
-    Word contribution_serial_low, contribution_serial_high, reserved2[2];
+    Word contribution_serial_low, contribution_serial_high, compact_enhanced_pairs, reserved2;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -64,6 +65,7 @@ struct Counters {
     Counter current, out, free, next_pixel, completed, failure, rounds, refill_begin;
     Counter null_completed;
     Counter suffix_hits[3], suffix_misses;
+    Counter work_count;
 };
 struct DispatchArguments {
     Word x, y, z;
@@ -80,7 +82,7 @@ struct Contract {
     Word enhanced_record_bytes, enhanced_evaluation_bytes;
     Word suffix_entry_bytes;
 };
-static_assert(sizeof(Config) == 64 && sizeof(Counters) == 52 && sizeof(DispatchArguments) == 12 &&
+static_assert(sizeof(Config) == 64 && sizeof(Counters) == 56 && sizeof(DispatchArguments) == 12 &&
                   sizeof(Contract) == 108,
               "Wavefront host/shader ABI");
 static_assert(contribution_evaluation_id == 18 && contribution_state_id == 19,
@@ -90,3 +92,9 @@ static_assert(contribution_evaluation_id == 18 && contribution_state_id == 19,
 
 static_assert(__builtin_offsetof(rypath::wavefront_wire::Config, contribution_replay) == 44,
               "Contribution replay consumes the original offset 44 reserved word");
+
+static_assert(rypath::wavefront_wire::work_list_id == 23 &&
+                  __builtin_offsetof(rypath::wavefront_wire::Config, compact_enhanced_pairs) ==
+                      56 &&
+                  __builtin_offsetof(rypath::wavefront_wire::Counters, work_count) == 52,
+              "Wavefront v21 compact request ABI");

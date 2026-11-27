@@ -71,6 +71,12 @@ bool frame_suffix_cache_enabled(const FrameConfig &config) {
            config.contribution_replay == FrameContributionReplay::prefix &&
            config.enhanced_suffix_cache;
 }
+bool frame_pair_compaction_enabled(const FrameConfig &config) {
+    return config.execution == FrameExecution::wavefront &&
+           config.estimator == FrameEstimator::area_replay &&
+           config.area_path_domain == FrameAreaPathDomain::enhanced &&
+           config.compact_enhanced_pairs;
+}
 static_assert(frame_area_canonical_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_canonical_law &&
               frame_area_discovery_version(FrameAreaPathDomain::enhanced) ==
@@ -78,7 +84,8 @@ static_assert(frame_area_canonical_version(FrameAreaPathDomain::enhanced) ==
 static_assert(wavefront_wire::enhanced_records_id == 20 &&
                   wavefront_wire::enhanced_evaluation_id == 21 &&
                   area_wire::enhanced_records_id == 11 && area_wire::enhanced_evaluation_id == 12 &&
-                  wavefront_wire::enhanced_suffix_id == 22 && area_wire::enhanced_suffix_id == 13,
+                  wavefront_wire::enhanced_suffix_id == 22 && area_wire::enhanced_suffix_id == 13 &&
+                  wavefront_wire::work_list_id == 23,
               "Enhanced owned-record argument bindings");
 
 // Execute the contract in the actual loaded library. A matching entry-point
@@ -2223,7 +2230,7 @@ struct FrameWavefrontBuffers {
     id<MTLBuffer> contribution_evaluation = nil, contribution_state = nil;
     id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
     id<MTLBuffer> queue[2]{nil, nil};
-    id<MTLBuffer> free_slots = nil, counters = nil, done = nil;
+    id<MTLBuffer> free_slots = nil, counters = nil, done = nil, work_list = nil;
     id<MTLBuffer> current_dispatch = nil, refill_dispatch = nil;
     id<MTLBuffer> arguments[2]{nil, nil};
     id<MTLBuffer> replay = nil;
@@ -2231,6 +2238,7 @@ struct FrameWavefrontBuffers {
 struct FrameWavefrontPrograms {
     id<MTLComputePipelineState> reset = nil, initialize = nil, trace = nil, shade = nil;
     id<MTLComputePipelineState> prepare_refill = nil, refill = nil, advance = nil;
+    id<MTLComputePipelineState> admit_all_pixels = nil, finalize_admission = nil;
     id<MTLIntersectionFunctionTable> trace_table = nil, shade_table = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
     wavefront_wire::Contract contract{};
@@ -2903,7 +2911,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v20", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v21", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
@@ -3029,6 +3037,14 @@ struct FrameSession::Impl {
         wavefront->reset = load(@"rypath_wavefront_reset");
         if (wavefront->reset == nil)
             return error;
+        if (frame_pair_compaction_enabled(config)) {
+            wavefront->admit_all_pixels = load(@"rypath_wavefront_admit_all_pixels");
+            if (wavefront->admit_all_pixels == nil)
+                return error;
+            wavefront->finalize_admission = load(@"rypath_wavefront_finalize_admission");
+            if (wavefront->finalize_admission == nil)
+                return error;
+        }
         wavefront->initialize = load(@"rypath_wavefront_initialize");
         if (wavefront->initialize == nil)
             return error;
@@ -3071,7 +3087,8 @@ struct FrameSession::Impl {
         }
         for (auto pipeline :
              {wavefront->reset, wavefront->initialize, wavefront->trace, wavefront->shade,
-              wavefront->prepare_refill, wavefront->refill, wavefront->advance})
+              wavefront->prepare_refill, wavefront->refill, wavefront->advance,
+              wavefront->admit_all_pixels, wavefront->finalize_admission})
             if (pipeline != nil && config.group_width > metal::group_width(r.device, pipeline))
                 return "Wavefront group width exceeds a pipeline or device limit";
         auto function =
@@ -3106,6 +3123,8 @@ struct FrameSession::Impl {
             std::uint64_t(config.width) * config.height * sizeof(wire::Point);
         const std::uint64_t done_bytes =
             std::uint64_t(config.width) * config.height * sizeof(std::uint32_t);
+        const std::uint64_t work_list_bytes =
+            frame_pair_compaction_enabled(config) ? done_bytes : 16;
         const auto argument_bytes = wavefront->argument_encoder.encodedLength;
         slot_bytes = 2 * raw_bytes + done_bytes + state_allocation + 16 +
                      3 * std::uint64_t(config.capacity) * sizeof(std::uint32_t) +
@@ -3123,12 +3142,16 @@ struct FrameSession::Impl {
         if (slot_bytes > std::numeric_limits<std::uint64_t>::max() - 48)
             return "Wavefront buffer byte count overflow";
         slot_bytes += 48;
+        if (work_list_bytes > std::numeric_limits<std::uint64_t>::max() - slot_bytes)
+            return "Wavefront work-list byte count overflow";
+        slot_bytes += work_list_bytes;
         if (slot_bytes > (std::numeric_limits<std::uint64_t>::max() - cie.length) / 2)
             return "Wavefront slots byte count overflow";
         const std::uint64_t total = 2 * std::uint64_t(slot_bytes) + cie.length;
         if (cold_bytes > r.device.maxBufferLength || hit_bytes > r.device.maxBufferLength ||
             state_allocation > r.device.maxBufferLength || raw_bytes > r.device.maxBufferLength ||
-            done_bytes > r.device.maxBufferLength || argument_bytes > r.device.maxBufferLength ||
+            done_bytes > r.device.maxBufferLength || work_list_bytes > r.device.maxBufferLength ||
+            argument_bytes > r.device.maxBufferLength ||
             contribution_state_bytes > r.device.maxBufferLength ||
             total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
             (r.device.recommendedMaxWorkingSetSize &&
@@ -3473,6 +3496,12 @@ struct FrameSession::Impl {
         }
         if (config.area_path_domain == FrameAreaPathDomain::enhanced && enhanced_records == nil)
             return "Enhanced wavefront requires shared Area owned-record storage";
+        const auto pixels = std::size_t(config.width) * config.height;
+        if (frame_pair_compaction_enabled(config) &&
+            pixels > std::numeric_limits<std::size_t>::max() / sizeof(wavefront_wire::Word))
+            return "Wavefront work-list byte count overflow";
+        const auto work_list_bytes =
+            frame_pair_compaction_enabled(config) ? pixels * sizeof(wavefront_wire::Word) : 16;
         const auto state_allocation = std::size_t(config.capacity) * state_bytes;
         const bool separated = config.packet_layout != FramePacketLayout::packed;
         const bool hero = r.parameters.packet_transport == 2;
@@ -3493,7 +3522,7 @@ struct FrameSession::Impl {
                           : 16) ||
             !allocate(b.replay, 32) || !allocate(b.contribution_evaluation, 16) ||
             !allocate(b.enhanced_records, 16) || !allocate(b.enhanced_evaluation, 16) ||
-            !allocate(b.enhanced_suffix, 16) ||
+            !allocate(b.enhanced_suffix, 16) || !allocate(b.work_list, work_list_bytes) ||
             !allocate(b.contribution_state,
                       contribution ? std::size_t(config.capacity) *
                                          (config.area_path_domain == FrameAreaPathDomain::enhanced
@@ -3530,13 +3559,14 @@ struct FrameSession::Impl {
             contribution ? static_cast<std::uint32_t>(config.contribution_replay) : 0u,
             0,
             0,
-            {0, 0}};
+            frame_pair_compaction_enabled(config) ? 1u : 0u,
+            0};
         std::memcpy(b.config.contents, &cfg, sizeof(cfg));
         std::memset(b.counters.contents, 0, b.counters.length);
         for (unsigned variant = 0; variant < 2; ++variant) {
             auto encoder = wavefront->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[variant] offset:0];
-            const std::array<id<MTLBuffer>, 23> resources{b.config,
+            const std::array<id<MTLBuffer>, 24> resources{b.config,
                                                           b.scalar_state,
                                                           b.packet_state,
                                                           b.queue[variant],
@@ -3558,7 +3588,8 @@ struct FrameSession::Impl {
                                                           b.contribution_state,
                                                           b.enhanced_records,
                                                           b.enhanced_evaluation,
-                                                          b.enhanced_suffix};
+                                                          b.enhanced_suffix,
+                                                          b.work_list};
             for (NSUInteger index = 0; index < resources.size(); ++index)
                 [encoder setBuffer:resources[index] offset:0 atIndex:index];
         }
@@ -3698,6 +3729,7 @@ struct FrameSession::Impl {
         int area_merge = -1;
         bool area_reset = true, area_finalizing = false;
         std::uint32_t leaf_completed = 0, leaf_null_completed = 0;
+        std::optional<std::uint32_t> leaf_admitted_work_count;
         std::uint64_t pending_cached_evaluations = 0;
         MetalRenderScene::Impl *renderer = nullptr; // retained by frame's resource lease
         FrameConfig config;
@@ -3817,7 +3849,11 @@ struct FrameSession::Impl {
                                       frame->info.completed_evaluations,
                                       frame->info.cached_evaluations,
                                       frame->info.logical_evaluations);
-                    if (!accounting)
+                    if (!accounting ||
+                        frame->info.compacted_null_evaluations >
+                            frame->info.analytic_null_evaluations ||
+                        (!frame_pair_compaction_enabled(config) &&
+                         frame->info.compacted_null_evaluations))
                         error = "Area evaluation accounting mismatch";
                     else {
                         history->front = history_destination_index;
@@ -3894,6 +3930,18 @@ struct FrameSession::Impl {
                 fail("GPU suffix cache counter accounting mismatch");
                 return;
             }
+            const bool compact_pairs = frame_pair_compaction_enabled(config);
+            if ((!compact_pairs && counters.work_count) ||
+                (compact_pairs &&
+                 (counters.work_count > pixels ||
+                  std::uint64_t(counters.work_count) + counters.null_completed != pixels ||
+                  counters.next_pixel < counters.null_completed ||
+                  counters.current > counters.work_count ||
+                  (leaf_admitted_work_count &&
+                   *leaf_admitted_work_count != counters.work_count)))) {
+                fail("GPU Enhanced pair admission counter accounting mismatch");
+                return;
+            }
             if (counters.failure || counters.null_completed > counters.completed ||
                 (config.area_path_domain != FrameAreaPathDomain::enhanced &&
                  counters.null_completed) ||
@@ -3907,6 +3955,8 @@ struct FrameSession::Impl {
                      std::to_string(counters.failure) + ")");
                 return;
             }
+            if (compact_pairs)
+                leaf_admitted_work_count = counters.work_count;
             if (counters.completed < leaf_completed ||
                 counters.null_completed < leaf_null_completed ||
                 counters.null_completed - leaf_null_completed >
@@ -3933,6 +3983,8 @@ struct FrameSession::Impl {
                 if (!history)
                     frame->info.completed_samples = counters.completed;
                 if (counters.completed == pixels) {
+                    if (compact_pairs)
+                        frame->info.compacted_null_evaluations += counters.null_completed;
                     for (unsigned op = 0; op < 3; ++op)
                         frame->info.enhanced_suffix_hits[op] += counters.suffix_hits[op];
                     frame->info.enhanced_suffix_misses += counters.suffix_misses;
@@ -3973,6 +4025,7 @@ struct FrameSession::Impl {
                 variant = 0;
                 leaf_completed = 0;
                 leaf_null_completed = 0;
+                leaf_admitted_work_count.reset();
                 launch();
                 return;
             }
@@ -4000,7 +4053,7 @@ struct FrameSession::Impl {
                             b.packet_cold.length + b.packet_hit.length + b.hero_state.length +
                             b.hero_cold.length + b.contribution_state.length +
                             b.enhanced_records.length + b.enhanced_evaluation.length +
-                            b.enhanced_suffix.length;
+                            b.enhanced_suffix.length + b.work_list.length;
                     }
                 }
                 const bool reverse = history && area_leaf == area_wire::temporal_reverse_config &&
@@ -4049,7 +4102,8 @@ struct FrameSession::Impl {
                                     b.contribution_state,
                                     b.enhanced_records,
                                     b.enhanced_evaluation,
-                                    b.enhanced_suffix})
+                                    b.enhanced_suffix,
+                                    b.work_list})
                     use_resource(buffer, read_write);
                 use_resource(b.config, MTLResourceUsageRead);
                 use_resource(cie, MTLResourceUsageRead);
@@ -4182,6 +4236,13 @@ struct FrameSession::Impl {
                 if (!area_finalizing && first) {
                     generic(programs->reset, std::uint64_t(config.width) * config.height, false,
                             "wavefront.reset");
+                    if (frame_pair_compaction_enabled(config)) {
+                        generic(programs->admit_all_pixels,
+                                std::uint64_t(config.width) * config.height, false,
+                                "wavefront.admit_all_pixels");
+                        generic(programs->finalize_admission, 1, false,
+                                "wavefront.finalize_admission");
+                    }
                     generic(programs->initialize, config.capacity, false, "wavefront.initialize");
                     first = false;
                 }
@@ -4478,6 +4539,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         frame->info.canonical_transport_version = frame_area_canonical_version(c.area_path_domain);
         frame->info.fresh_discovery_version = frame_area_discovery_version(c.area_path_domain);
         frame->info.enhanced_suffix_cache = frame_suffix_cache_enabled(c);
+        frame->info.enhanced_pair_compaction = frame_pair_compaction_enabled(c);
         frame->info.contribution_depth =
             frame_area_contribution_family(c.area_path_domain) ? p.max_depth : 0;
         if (slot->raw == nil)
@@ -4889,7 +4951,7 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
                                            const FrameConfig &b,
                                            const std::filesystem::path &library_path) {
     SharedSceneFrameSessions result;
-    // Compare every current FrameConfig field except the intended cache switches.
+    // Compare every current FrameConfig field except the intended cache/compaction switches.
     // Keep this list complete when the configuration gains another field.
     const auto same =
         a.profile_stages == b.profile_stages && a.width == b.width && a.height == b.height &&
@@ -4906,8 +4968,8 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
         a.mutation_policy == b.mutation_policy && a.area_stencil == b.area_stencil;
     if (!same) {
-        result.diagnostic =
-            "Shared-scene validation configurations differ beyond temporal/suffix caches";
+        result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
+                            "caches or pair compaction";
         return result;
     }
     if (a.execution != FrameExecution::wavefront || a.estimator != FrameEstimator::area_replay) {

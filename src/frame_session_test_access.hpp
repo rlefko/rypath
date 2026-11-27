@@ -71,7 +71,8 @@ struct FrameSessionTestAccess {
     static EnhancedSessionSnapshot snapshot_enhanced(FrameSession &, std::uint64_t expected_serial,
                                                      bool include_suffix = false);
     // Ordinary build_frame_session validates/builds the first session. The
-    // second uses the exact same renderer; only temporal/suffix cache flags may differ.
+    // second uses the exact same renderer; only temporal/suffix cache flags and
+    // experimental Enhanced pair compaction may differ.
     // Enhanced also uses exact caching when the complete evaluator context matches.
     // Callers must serialize both sessions, including their GPU consumers.
     static SharedSceneFrameSessions

@@ -44,13 +44,14 @@ struct Options {
     ResourceProfile resource_profile = ResourceProfile::standard;
     bool off_off = false;
     bool enhanced_suffix = false;
+    bool enhanced_pairs = false;
 };
 constexpr std::string_view usage =
     "Shared-AS Area correctness diagnostic (not a performance benchmark)\n"
     "  [--scene SCENE.pbrt] [--library FILE.metallib] [--output FRESH.json]\n"
     "  [--width 7] [--height 3] [--frames 8] [--warmup 0] [--seed 61002]\n"
     "  [--material-seed 0] [--intersections native|compensated] [--pair off-on|off-off]\n"
-    "  [--cache-feature temporal|enhanced-suffix (default: temporal)]\n"
+    "  [--cache-feature temporal|enhanced-suffix|enhanced-pairs (default: temporal)]\n"
     "  [--resource-profile standard|large (default: standard; Pavilion requires large)]\n"
     "frames includes warmup; every frame is compared; first mismatch returns failure\n";
 template <typename T> T number(std::string_view value) {
@@ -95,8 +96,10 @@ Options parse(int argc, char **argv) {
                 throw std::runtime_error("Invalid resource profile: " + std::string(value));
             o.resource_profile = *profile;
         } else if (key == "--cache-feature") {
-            need(value == "temporal" || value == "enhanced-suffix", "Invalid cache feature");
+            need(value == "temporal" || value == "enhanced-suffix" || value == "enhanced-pairs",
+                 "Invalid execution feature");
             o.enhanced_suffix = value == "enhanced-suffix";
+            o.enhanced_pairs = value == "enhanced-pairs";
         } else if (key == "--pair") {
             need(value == "off-on" || value == "off-off", "Invalid shared-scene pair");
             o.off_off = value == "off-off";
@@ -277,6 +280,9 @@ void accounting(const FrameInfo &i, const FrameConfig &c, unsigned ordinal) {
                                         c.enhanced_suffix_cache) &&
             (i.enhanced_suffix_cache || (i.enhanced_suffix_hits == std::array<std::uint64_t, 3>{} &&
                                          i.enhanced_suffix_misses == 0)) &&
+            i.enhanced_pair_compaction == (enhanced && c.compact_enhanced_pairs) &&
+            i.compacted_null_evaluations ==
+                (i.enhanced_pair_compaction ? i.analytic_null_evaluations : 0) &&
             i.completed_samples == pixels && i.fresh_candidates == pixels &&
             i.temporal_evaluation_cache_used == (history && c.cache_temporal_evaluations) &&
             evaluations &&
@@ -300,6 +306,8 @@ void info(std::ostream &out, const FrameInfo &i) {
         << ",\"suffix_hits_by_operations\":[" << i.enhanced_suffix_hits[0] << ','
         << i.enhanced_suffix_hits[1] << ',' << i.enhanced_suffix_hits[2] << ']'
         << ",\"suffix_misses\":" << i.enhanced_suffix_misses
+        << ",\"enhanced_pair_compaction\":" << (i.enhanced_pair_compaction ? "true" : "false")
+        << ",\"compacted_null_evaluations\":" << i.compacted_null_evaluations
         << ",\"physical_evaluations\":" << i.completed_evaluations
         << ",\"cached_evaluations\":" << i.cached_evaluations
         << ",\"analytic_null_evaluations\":" << i.analytic_null_evaluations
@@ -374,8 +382,10 @@ int run(const Options &o) {
     out << "{\"schema\":1,\"space\":\"raw XYZ float32\",\"scope\":\"same-AS raw XYZ correctness "
            "diagnostic; no performance "
            "claim\",\"pair\":"
-        << json_string(o.off_off ? "off-off" : "off-on")
-        << ",\"cache_feature\":" << json_string(o.enhanced_suffix ? "enhanced-suffix" : "temporal")
+        << json_string(o.off_off ? "off-off" : "off-on") << ",\"cache_feature\":"
+        << json_string(o.enhanced_suffix  ? "enhanced-suffix"
+                       : o.enhanced_pairs ? "enhanced-pairs"
+                                          : "temporal")
         << ",\"scene\":" << json_string(o.scene.empty() ? "builtin-diffuse" : o.scene.string())
         << ",\"build\":" << json_string(RYPATH_BUILD_DESCRIPTION)
         << ",\"library_argument\":" << json_string(o.library.string()) << ",\"width\":" << o.width
@@ -444,21 +454,25 @@ int run(const Options &o) {
         a.mutation_policy = FrameMutationPolicy::spectral_refresh;
         a.area_stencil = FrameAreaStencil::reciprocal16;
         a.cache_temporal_evaluations = false;
-        if (o.enhanced_suffix) {
+        if (o.enhanced_suffix || o.enhanced_pairs) {
             a.area_path_domain = FrameAreaPathDomain::enhanced;
             a.contribution_replay = FrameContributionReplay::prefix;
-            a.enhanced_suffix_cache = false;
+            a.enhanced_suffix_cache = o.enhanced_pairs;
         }
         auto b = a;
         if (o.enhanced_suffix)
             b.enhanced_suffix_cache = !o.off_off;
+        else if (o.enhanced_pairs)
+            b.compact_enhanced_pairs = !o.off_off;
         else
             b.cache_temporal_evaluations = !o.off_off;
         out << ",\"configured_cache_flags\":{\"off\":{\"temporal\":"
             << (a.cache_temporal_evaluations ? "true" : "false")
             << ",\"enhanced_suffix\":" << (a.enhanced_suffix_cache ? "true" : "false")
+            << ",\"enhanced_pairs\":" << (a.compact_enhanced_pairs ? "true" : "false")
             << "},\"other\":{\"temporal\":" << (b.cache_temporal_evaluations ? "true" : "false")
-            << ",\"enhanced_suffix\":" << (b.enhanced_suffix_cache ? "true" : "false") << "}}";
+            << ",\"enhanced_suffix\":" << (b.enhanced_suffix_cache ? "true" : "false")
+            << ",\"enhanced_pairs\":" << (b.compact_enhanced_pairs ? "true" : "false") << "}}";
         auto different = b;
         ++different.seed;
         const auto rejected =
@@ -479,7 +493,7 @@ int run(const Options &o) {
         independent = pair.independent_history;
         need(shared && independent,
              "Sessions need one renderer/AS owner and independent histories");
-        if (o.enhanced_suffix)
+        if (o.enhanced_suffix || o.enhanced_pairs)
             need(pair.independent_owned_records && (o.off_off || pair.independent_suffix_storage),
                  "Enhanced sessions require independent owned records and suffix storage");
         out << ",\"frames\":[";
@@ -537,7 +551,7 @@ int run(const Options &o) {
                            << std::setprecision(17) << d.maximum;
                 throw std::runtime_error(diagnostic.str());
             }
-            if (o.enhanced_suffix) {
+            if (o.enhanced_suffix || o.enhanced_pairs) {
                 record_witnesses += compare_publications(pair, ai, bi);
                 ++publications_compared;
                 need(ai.completed_evaluations == bi.completed_evaluations &&
@@ -557,7 +571,8 @@ int run(const Options &o) {
     out << ",\"shared_renderer_and_AS_owner\":" << (shared ? "true" : "false")
         << ",\"independent_history_banks\":" << (independent ? "true" : "false")
         << ",\"history_payloads_compared\":"
-        << (o.enhanced_suffix && publications_compared == o.frames ? "true" : "false")
+        << ((o.enhanced_suffix || o.enhanced_pairs) && publications_compared == o.frames ? "true"
+                                                                                         : "false")
         << ",\"history_frames_compared\":" << publications_compared
         << ",\"referenced_record_witnesses_compared\":" << record_witnesses
         << ",\"suffix_totals\":{\"off\":{\"hits_by_operations\":[" << suffix_hits[0][0] << ','
