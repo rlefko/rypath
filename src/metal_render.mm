@@ -3,6 +3,7 @@
 #include "metal_render.hpp"
 #include "analytic.hpp"
 #include "area_evaluation_context.hpp"
+#include "area_pair_atlas.hpp"
 #include "area_stencil_shared.h"
 #include "area_wire.h"
 #include "bsdf_table.hpp"
@@ -85,6 +86,15 @@ bool frame_motion_enabled(const FrameConfig &config) {
            config.enhanced_temporal_reprojection;
 }
 namespace motion_wire = enhanced_motion_wire;
+namespace paired = rypath_area_pair_atlas;
+bool frame_paired_atlas_enabled(const FrameConfig &config) {
+    return config.execution == FrameExecution::wavefront &&
+           config.estimator == FrameEstimator::area_replay &&
+           config.area_stencil == FrameAreaStencil::paired_gaussian16;
+}
+static_assert(sizeof(paired::Entry) == 2 && sizeof(paired::Config) == 112 &&
+              paired::tile_count == 4 && paired::total_entries * sizeof(paired::Entry) == 398304);
+static_assert(area_wire::paired_atlas_id == 15 && area_wire::paired_config_id == 16);
 static_assert(frame_area_canonical_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_canonical_law &&
               frame_area_discovery_version(FrameAreaPathDomain::enhanced) ==
@@ -512,6 +522,11 @@ id<MTLAccelerationStructure> build_empty_packet_structure(id<MTLDevice> device,
 
 } // namespace
 
+struct FramePairAtlasAsset {
+    id<MTLBuffer> entries = nil;
+    FrameAreaAtlasInfo identity;
+};
+
 struct MetalRenderScene::Impl {
     std::unique_ptr<MetalGeometryScene> geometry;
     id<MTLAccelerationStructure> empty_packet_structure = nil;
@@ -526,6 +541,8 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> triangles = nil;
     id<MTLBuffer> reconstruction_groups = nil;
     std::mutex reconstruction_groups_mutex;
+    std::mutex paired_atlas_mutex;
+    std::shared_ptr<const FramePairAtlasAsset> paired_atlas;
     std::uint64_t reconstruction_preparation_limit = 8ull << 30;
     std::uint32_t native_hint_mode = 0;
     bool opaque_shadows = false;
@@ -2263,6 +2280,7 @@ struct FrameAreaBuffers {
     id<MTLBuffer> contribution_evaluation = nil;
     id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
     id<MTLBuffer> donors = nil, motion_config = nil, motion_counters = nil, motion_arguments = nil;
+    id<MTLBuffer> paired_atlas = nil, paired_config = nil;
     id<MTLBuffer> config[area_wire::config_count]{};
     id<MTLBuffer> arguments[area_wire::config_count]{};
 };
@@ -2271,6 +2289,7 @@ struct FrameAreaPrograms {
     id<MTLComputePipelineState> temporal_finish = nil, spatial_begin = nil, finalize = nil;
     id<MTLComputePipelineState> mutation_prepare = nil, mutation_finish = nil;
     id<MTLArgumentEncoder> argument_encoder = nil;
+    id<MTLBuffer> paired_atlas = nil;
 };
 // Independent of frame slots: the published reservoir must retain the exact
 // physical evaluation context used to compute its stored source target.
@@ -2607,6 +2626,7 @@ struct FrameSession::Impl {
     std::shared_ptr<FrameWavefrontPrograms> wavefront;
     std::shared_ptr<FrameAreaPrograms> area;
     std::shared_ptr<FrameMotionPrograms> motion;
+    std::shared_ptr<const FramePairAtlasAsset> paired_atlas;
     std::shared_ptr<FrameAreaHistory> history;
     std::size_t state_bytes = 0, slot_bytes = 0;
     AccelerationBuildInfo acceleration_build_info() const {
@@ -2833,6 +2853,26 @@ struct FrameSession::Impl {
         if (copy_donors) {
             result.donors.resize(pixels);
             std::memcpy(result.donors.data(), donor_copy.contents, donor_bytes);
+        }
+        if (frame_paired_atlas_enabled(config)) {
+            if (latest->paired_atlas != area->paired_atlas || latest->paired_config == nil ||
+                latest->paired_config.length != sizeof(paired::Config)) {
+                result.diagnostic = "Enhanced atlas snapshot resource identity mismatch";
+                return result;
+            }
+            paired::Config actual{};
+            std::memcpy(&actual, latest->paired_config.contents, sizeof(actual));
+            const auto expected =
+                paired::frame_config(static_cast<std::uint32_t>(expected_serial),
+                                     static_cast<std::uint32_t>(expected_serial >> 32),
+                                     static_cast<std::uint32_t>(config.seed),
+                                     static_cast<std::uint32_t>(config.seed >> 32));
+            if (!paired::valid_config(actual) || expected.status != paired::Status::ok ||
+                std::memcmp(&actual, &expected.config, sizeof(actual)) != 0) {
+                result.diagnostic = "Enhanced atlas snapshot config is invalid";
+                return result;
+            }
+            result.paired_config = actual;
         }
         result.suffix_cache_enabled = suffix_enabled;
         result.suffix_context = history->contexts[history->front].suffix_context;
@@ -3308,12 +3348,54 @@ struct FrameSession::Impl {
                 return "Enhanced motion group width exceeds device or pipeline limit";
         return {};
     }
+    std::string prepare_paired_atlas() {
+        auto &r = *renderer->impl_;
+        if (!frame_paired_atlas_enabled(config)) {
+            area->paired_atlas = [r.device newBufferWithLength:16
+                                                       options:MTLResourceStorageModeShared];
+            if (area->paired_atlas == nil)
+                return "Area atlas sentinel allocation failed";
+            std::memset(area->paired_atlas.contents, 0, area->paired_atlas.length);
+            return {};
+        }
+        // One immutable asset per renderer/scene. Shared-scene sessions borrow
+        // the same bytes; pose storage remains private to each pending slot.
+        std::lock_guard lock(r.paired_atlas_mutex);
+        if (!r.paired_atlas) {
+            const auto generated = area_pair_atlas::generate();
+            if (!generated)
+                return "Area paired atlas generation failed: " + generated.diagnostic;
+            if (generated.entries.size() != paired::total_entries)
+                return "Area paired atlas generation returned an invalid entry count";
+            auto built = std::make_shared<FramePairAtlasAsset>();
+            built->entries =
+                [r.device newBufferWithBytes:generated.entries.data()
+                                      length:generated.entries.size() * sizeof(paired::Entry)
+                                     options:MTLResourceStorageModeShared];
+            if (built->entries == nil)
+                return "Area paired atlas upload failed";
+            auto &identity = built->identity;
+            identity.version = paired::version;
+            identity.entry_count = paired::total_entries;
+            identity.asset_bytes = generated.entries.size() * sizeof(paired::Entry);
+            identity.iterations = paired::shuffle_count;
+            identity.sigma = std::bit_cast<float>(paired::sigma_bits);
+            identity.seed = {paired::atlas_seed_low, paired::atlas_seed_high};
+            for (unsigned k = 0; k < 4; ++k)
+                identity.widths[k] = paired::tile_width(k);
+            identity.sha256 = digest_hex(generated.digest);
+            r.paired_atlas = std::move(built);
+        }
+        paired_atlas = r.paired_atlas;
+        area->paired_atlas = paired_atlas->entries;
+        return {};
+    }
     std::string prepare_area(id<MTLLibrary> library) {
         auto &r = *renderer->impl_;
         area = std::make_shared<FrameAreaPrograms>();
         history = std::make_shared<FrameAreaHistory>();
         std::string error;
-        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v15", error);
+        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v16", error);
         if (probe == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(area_wire::Contract)
@@ -3343,7 +3425,9 @@ struct FrameSession::Impl {
             contract.counters_bytes != sizeof(area_wire::Counters) ||
             contract.contribution_evaluation_bytes != sizeof(contribution_wire::Evaluation) ||
             contract.suffix_entry_bytes != sizeof(rypath_enhanced_suffix_tape::Entry) ||
-            contract.donor_bytes != sizeof(motion_wire::Donor))
+            contract.donor_bytes != sizeof(motion_wire::Donor) ||
+            contract.paired_config_bytes != sizeof(paired::Config) ||
+            contract.paired_entry_bytes != sizeof(paired::Entry))
             return "Metal Area shader contract mismatch; rebuild the metallib";
         const auto load = [&](NSString *name) {
             return metal::load_pipeline(r.device, library, name, error);
@@ -3438,6 +3522,10 @@ struct FrameSession::Impl {
             (!product_bytes(pixels, sizeof(motion_wire::Geometry), geometry_bytes) ||
              !product_bytes(pixels, sizeof(motion_wire::Donor), donor_bytes)))
             return "Enhanced motion geometry/donor byte count overflow";
+        std::uint64_t paired_atlas_bytes = 16;
+        if (frame_paired_atlas_enabled(config) &&
+            !product_bytes(paired::total_entries, sizeof(paired::Entry), paired_atlas_bytes))
+            return "Area paired atlas byte count overflow";
         std::uint64_t workspace_bytes = 0;
         for (const auto bytes :
              {replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes, cross_bytes,
@@ -3448,6 +3536,9 @@ struct FrameSession::Impl {
                        !add_bytes(workspace_bytes, sizeof(motion_wire::Counters)) ||
                        !add_bytes(workspace_bytes, motion->argument_encoder.encodedLength)))
             return "Enhanced motion per-slot byte count overflow";
+        // Reflected Config storage exists in old modes too, without any draw.
+        if (!add_bytes(workspace_bytes, sizeof(paired::Config)))
+            return "Area paired config byte count overflow";
         std::uint64_t argument_set_bytes = sizeof(area_wire::Config), all_arguments_bytes = 0;
         if (!add_bytes(argument_set_bytes, arguments_bytes) ||
             !product_bytes(area_wire::config_count, argument_set_bytes, all_arguments_bytes) ||
@@ -3471,23 +3562,37 @@ struct FrameSession::Impl {
             !add_bytes(total, enhanced_evaluation_bytes) ||
             !add_bytes(total, enhanced_suffix_bytes) || !add_bytes(total, geometry_bytes) ||
             !add_bytes(total, geometry_bytes) || !add_bytes(total, donor_bytes) ||
-            !add_bytes(total, cie.length))
+            !add_bytes(total, paired_atlas_bytes) || !add_bytes(total, cie.length))
             return "Area slots/history byte count overflow";
-        for (const auto bytes :
-             {history_bytes, replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes,
-              cross_bytes, evaluation_bytes, enhanced_record_bytes, enhanced_evaluation_bytes,
-              enhanced_suffix_bytes, geometry_bytes, donor_bytes,
-              std::uint64_t(motion ? sizeof(motion_wire::Config) : 0),
-              std::uint64_t(motion ? sizeof(motion_wire::Counters) : 0),
-              std::uint64_t(motion ? motion->argument_encoder.encodedLength : 0),
-              std::uint64_t(arguments_bytes), std::uint64_t(r.graph_nodes.length),
-              std::uint64_t(r.surface_transforms.length)})
+        for (const auto bytes : {history_bytes,
+                                 replay_bytes,
+                                 leaf_bytes,
+                                 temporal_bytes,
+                                 accumulator_bytes,
+                                 cross_bytes,
+                                 evaluation_bytes,
+                                 enhanced_record_bytes,
+                                 enhanced_evaluation_bytes,
+                                 enhanced_suffix_bytes,
+                                 geometry_bytes,
+                                 donor_bytes,
+                                 paired_atlas_bytes,
+                                 std::uint64_t(sizeof(paired::Config)),
+                                 std::uint64_t(motion ? sizeof(motion_wire::Config) : 0),
+                                 std::uint64_t(motion ? sizeof(motion_wire::Counters) : 0),
+                                 std::uint64_t(motion ? motion->argument_encoder.encodedLength : 0),
+                                 std::uint64_t(arguments_bytes),
+                                 std::uint64_t(r.graph_nodes.length),
+                                 std::uint64_t(r.surface_transforms.length)})
             if (bytes > r.device.maxBufferLength)
                 return "Area buffer exceeds the device limit";
         if (total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
             (r.device.recommendedMaxWorkingSetSize &&
              total > r.device.recommendedMaxWorkingSetSize))
             return "Area slots and history exceed the transient or device memory budget";
+        error = prepare_paired_atlas();
+        if (!error.empty())
+            return error;
         for (auto &bank : history->banks) {
             bank = [r.device newBufferWithLength:history_bytes
                                          options:MTLResourceStorageModePrivate];
@@ -3529,6 +3634,7 @@ struct FrameSession::Impl {
         b.enhanced_evaluation = history->enhanced_evaluation;
         b.enhanced_suffix = history->enhanced_suffix;
         b.donors = history->donors;
+        b.paired_atlas = area->paired_atlas;
         const auto allocate = [&](id<MTLBuffer> __strong &buffer, std::size_t bytes,
                                   bool shared = false) {
             if (buffer == nil)
@@ -3553,6 +3659,8 @@ struct FrameSession::Impl {
                           : 16) ||
             !allocate(b.failure, sizeof(area_wire::Counters), true))
             return "Area workspace allocation failed";
+        if (!allocate(b.paired_config, sizeof(paired::Config), true))
+            return "Area paired frame-config allocation failed";
         if (motion && (!allocate(b.motion_config, sizeof(motion_wire::Config), true) ||
                        !allocate(b.motion_counters, sizeof(motion_wire::Counters), true) ||
                        !allocate(b.motion_arguments, motion->argument_encoder.encodedLength, true)))
@@ -3614,7 +3722,9 @@ struct FrameSession::Impl {
                 config.mutation_policy == FrameMutationPolicy::spectral_refresh
                     ? area_wire::spectral_refresh_mutation
                     : area_wire::legacy_mutation,
-                config.area_stencil == FrameAreaStencil::reciprocal16
+                config.area_stencil == FrameAreaStencil::paired_gaussian16
+                    ? area_wire::paired_gaussian16_stencil
+                : config.area_stencil == FrameAreaStencil::reciprocal16
                     ? area_wire::reciprocal16_stencil
                     : area_wire::adjacent_stencil,
                 temporal_cache ? 1u : 0u,
@@ -3631,7 +3741,7 @@ struct FrameSession::Impl {
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
-            const std::array<id<MTLBuffer>, 15> resources{b.config[index],
+            const std::array<id<MTLBuffer>, 17> resources{b.config[index],
                                                           b.replay,
                                                           b.leaf,
                                                           b.accumulators,
@@ -3645,7 +3755,9 @@ struct FrameSession::Impl {
                                                           b.enhanced_records,
                                                           b.enhanced_evaluation,
                                                           b.enhanced_suffix,
-                                                          b.donors};
+                                                          b.donors,
+                                                          b.paired_atlas,
+                                                          b.paired_config};
             for (NSUInteger argument = 0; argument < resources.size(); ++argument)
                 [encoder setBuffer:resources[argument] offset:0 atIndex:argument];
         }
@@ -4391,6 +4503,8 @@ struct FrameSession::Impl {
                           a.enhanced_suffix, history_destination})
                         use_resource(buffer, read_write);
                     use_resource(a.donors, MTLResourceUsageRead);
+                    use_resource(a.paired_atlas, MTLResourceUsageRead);
+                    use_resource(a.paired_config, MTLResourceUsageRead);
                     if (motion_generate) {
                         use_resource(history->geometry[motion_destination], read_write);
                         use_resource(history->geometry[history->geometry_front],
@@ -4903,6 +5017,29 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     return result;
                 frame->info.camera_upload_bytes = camera_upload_bytes;
                 const auto serial = history.next_serial;
+                if (frame_paired_atlas_enabled(c)) {
+                    const auto frozen =
+                        paired::frame_config(static_cast<std::uint32_t>(serial),
+                                             static_cast<std::uint32_t>(serial >> 32),
+                                             static_cast<std::uint32_t>(c.seed),
+                                             static_cast<std::uint32_t>(c.seed >> 32));
+                    if (frozen.status != paired::Status::ok ||
+                        !paired::valid_config(frozen.config) || !impl_->paired_atlas) {
+                        result.diagnostic = "Area paired atlas pose generation failed";
+                        return result;
+                    }
+                    std::memcpy(slot->area->paired_config.contents, &frozen.config,
+                                sizeof(frozen.config));
+                    frame->info.paired_atlas = impl_->paired_atlas->identity;
+                    for (unsigned k = 0; k < 4; ++k) {
+                        const auto pose = frozen.config.poses[k];
+                        frame->info.paired_atlas.poses[k] = {pose.transform, pose.offset_x,
+                                                             pose.offset_y};
+                    }
+                } else {
+                    std::memset(slot->area->paired_config.contents, 0,
+                                slot->area->paired_config.length);
+                }
                 if (frame_motion_enabled(c)) {
                     if (history.geometry_front > 1 ||
                         (history.valid && (!history.geometry_valid ||
@@ -4961,6 +5098,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                                                     static_cast<std::uint32_t>(serial >> 32),
                                                     static_cast<std::uint32_t>(c.seed),
                                                     static_cast<std::uint32_t>(c.seed >> 32))
+                    : c.area_stencil == FrameAreaStencil::paired_gaussian16
+                        ? rypath_area_stencil::Offsets{{0, 0}, {0, 0}}
                         : rypath_area_stencil::Offsets{{-1, 0}, {0, -1}};
                 frame->info.area_stencil_offsets = {offsets.first.x, offsets.first.y,
                                                     offsets.second.x, offsets.second.y};
@@ -5139,7 +5278,8 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     }
     if (config.area_stencil != FrameAreaStencil::automatic &&
         config.area_stencil != FrameAreaStencil::adjacent &&
-        config.area_stencil != FrameAreaStencil::reciprocal16) {
+        config.area_stencil != FrameAreaStencil::reciprocal16 &&
+        config.area_stencil != FrameAreaStencil::paired_gaussian16) {
         result.diagnostic = "Invalid Area stencil";
         return result;
     }
@@ -5291,7 +5431,9 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.estimator == b.estimator && a.area_path_domain == b.area_path_domain &&
         a.contribution_replay == b.contribution_replay && a.target_scale == b.target_scale &&
         a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
-        a.mutation_policy == b.mutation_policy && a.area_stencil == b.area_stencil;
+        a.mutation_policy == b.mutation_policy &&
+        // Stencil changes spatial source domains, never an execution-only toggle.
+        a.area_stencil == b.area_stencil;
     if (!same) {
         result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
                             "caches, pair compaction or temporal reprojection";
@@ -5321,6 +5463,19 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         return result;
     }
     result.shared_renderer = first.session->impl_->renderer == second->renderer;
+    if (frame_paired_atlas_enabled(a)) {
+        const auto left = first.session->impl_->area->paired_atlas;
+        const auto right = second->area->paired_atlas;
+        result.paired_atlas_arenas = {reinterpret_cast<std::uintptr_t>((__bridge void *)left),
+                                      reinterpret_cast<std::uintptr_t>((__bridge void *)right)};
+        result.shared_paired_atlas_storage = left != nil && left == right;
+        if (!result.shared_paired_atlas_storage) {
+            result.status = GeometryStatus::failure;
+            result.diagnostic =
+                "Shared-scene atlas sessions require one renderer-owned immutable asset";
+            return result;
+        }
+    }
     const auto &first_history = first.session->impl_->history;
     const auto &second_history = second->history;
     result.independent_history = first_history && second_history && first_history != second_history;

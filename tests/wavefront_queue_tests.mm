@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_pair_atlas_oracle.hpp"
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "bsdf_table_fixture.hpp"
@@ -31,12 +32,15 @@ namespace wf = wavefront_wire;
 namespace aw = area_wire;
 static_assert(wf::contract == 22 && sizeof(wf::Contract) == 112 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 15 && sizeof(aw::Contract) == 40 && sizeof(aw::Config) == 104);
+static_assert(aw::contract == 16 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 104);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12 &&
               wf::enhanced_suffix_id == 22 && wf::work_list_id == 23 &&
-              aw::enhanced_suffix_id == 13);
+              aw::enhanced_suffix_id == 13 && aw::paired_atlas_id == 15 &&
+              aw::paired_config_id == 16);
+static_assert(sizeof(rypath_area_pair_atlas::Config) == 112 &&
+              sizeof(rypath_area_pair_atlas::Entry) == 2);
 static_assert(sizeof(wf::Counters) == 56 && offsetof(wf::Counters, work_count) == 52 &&
               offsetof(wf::Config, compact_enhanced_pairs) == 56 &&
               offsetof(wf::Config, mapped_evaluation) == 60);
@@ -50,30 +54,32 @@ void require(bool value, const std::string &why) {
 void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
     std::string why;
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_area_contract_v15", why);
+        metal::load_pipeline(device, library, @"rypath_area_contract_v16", why);
     require(contract_pipeline != nil, why);
-    require([library newFunctionWithName:@"rypath_area_contract"] == nil,
-            "Unversioned Area contract must be absent before reading the larger v15 descriptor");
+    require([library newFunctionWithName:@"rypath_area_contract"] == nil &&
+                [library newFunctionWithName:@"rypath_area_contract_v15"] == nil,
+            "Unversioned and stale Area contracts must be absent before reading v16");
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v15 contract allocation");
+    require(contract_buffer != nil, "Area v16 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v15 contract encoder");
+    require(command && encoder, "Area v16 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v15 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v16 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 15 && contract.config_bytes == 104 &&
+    require(contract.version == 16 && contract.config_bytes == 104 &&
                 contract.history_bytes == 88 && contract.temporal_bytes == 92 &&
                 contract.accumulator_bytes == 104 && contract.replay_bytes == 32 &&
                 contract.counters_bytes == 112 && contract.contribution_evaluation_bytes == 16 &&
-                contract.suffix_entry_bytes == 160 && contract.donor_bytes == 16,
-            "Area v15 contract mismatch; stale Area libraries are incompatible");
+                contract.suffix_entry_bytes == 160 && contract.donor_bytes == 16 &&
+                contract.paired_config_bytes == 112 && contract.paired_entry_bytes == 2,
+            "Area v16 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
@@ -88,8 +94,8 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(arguments != nil, "Area disabled arguments allocation");
     [argument_encoder setArgumentBuffer:arguments offset:0];
     constexpr unsigned pixels = 4, guard = 256;
-    std::array<id<MTLBuffer>, aw::donors_id + 1> buffers{};
-    const std::array<std::size_t, aw::donors_id + 1> lengths{
+    std::array<id<MTLBuffer>, aw::paired_config_id + 1> buffers{};
+    const std::array<std::size_t, aw::paired_config_id + 1> lengths{
         sizeof(aw::Config) + guard,
         pixels * sizeof(rypath_replay::ReplayState) + guard,
         pixels * sizeof(render_wire::Point) + guard,
@@ -104,7 +110,9 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
         sizeof(enhanced_wire::Record),
         sizeof(enhanced_wire::Evaluation),
         sizeof(rypath_enhanced_suffix_tape::Entry),
-        sizeof(enhanced_motion_wire::Donor)};
+        sizeof(enhanced_motion_wire::Donor),
+        16,
+        sizeof(rypath_area_pair_atlas::Config)};
     for (unsigned i = 0; i < buffers.size(); ++i) {
         buffers[i] = [device newBufferWithLength:lengths[i] options:MTLResourceStorageModeShared];
         require(buffers[i] != nil, "Area disabled pool allocation");
@@ -200,9 +208,9 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
                             accumulator.score_exponent == 0 && accumulator.target_exponent == 0,
                         "Legacy production must retain actual FLOAT values with zero exponents");
             }
-            for (unsigned id :
-                 {aw::contribution_evaluation_id, aw::enhanced_records_id,
-                  aw::enhanced_evaluation_id, aw::enhanced_suffix_id, aw::donors_id}) {
+            for (unsigned id : {aw::contribution_evaluation_id, aw::enhanced_records_id,
+                                aw::enhanced_evaluation_id, aw::enhanced_suffix_id, aw::donors_id,
+                                aw::paired_atlas_id, aw::paired_config_id}) {
                 const auto *bytes = static_cast<const unsigned char *>(buffers[id].contents);
                 for (std::size_t j = 0; j < buffers[id].length; ++j)
                     require(bytes[j] == 0xa5, "Legacy Area touched an inactive Enhanced sentinel");
@@ -931,23 +939,25 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
     auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
                                          options:MTLResourceStorageModeShared];
     require(arguments != nil, "Area protocol arguments");
-    std::array<id<MTLBuffer>, aw::donors_id + 1> buffers{};
-    std::array<std::size_t, aw::donors_id + 1> lengths{sizeof(aw::Config),
-                                                       pixels * sizeof(rypath_replay::ReplayState),
-                                                       pixels * sizeof(render_wire::Point),
-                                                       pixels * sizeof(aw::Accumulator),
-                                                       pixels * sizeof(aw::Temporal),
-                                                       pixels * sizeof(aw::History),
-                                                       pixels * sizeof(aw::History),
-                                                       pixels * sizeof(render_wire::Point),
-                                                       sizeof(aw::Counters),
-                                                       4 * pixels * (sizeof(float) + sizeof(int)),
-                                                       pixels * sizeof(cw::Evaluation),
-                                                       ew::bank_count * pixels * sizeof(ew::Record),
-                                                       pixels * sizeof(ew::Evaluation),
-                                                       sizeof(rypath_enhanced_suffix_tape::Entry),
-                                                       pixels *
-                                                           sizeof(enhanced_motion_wire::Donor)};
+    std::array<id<MTLBuffer>, aw::paired_config_id + 1> buffers{};
+    std::array<std::size_t, aw::paired_config_id + 1> lengths{
+        sizeof(aw::Config),
+        pixels * sizeof(rypath_replay::ReplayState),
+        pixels * sizeof(render_wire::Point),
+        pixels * sizeof(aw::Accumulator),
+        pixels * sizeof(aw::Temporal),
+        pixels * sizeof(aw::History),
+        pixels * sizeof(aw::History),
+        pixels * sizeof(render_wire::Point),
+        sizeof(aw::Counters),
+        4 * pixels * (sizeof(float) + sizeof(int)),
+        pixels * sizeof(cw::Evaluation),
+        ew::bank_count * pixels * sizeof(ew::Record),
+        pixels * sizeof(ew::Evaluation),
+        sizeof(rypath_enhanced_suffix_tape::Entry),
+        pixels * sizeof(enhanced_motion_wire::Donor),
+        16,
+        sizeof(rypath_area_pair_atlas::Config)};
     for (unsigned i = 0; i < buffers.size(); ++i) {
         buffers[i] = [device newBufferWithLength:lengths[i] + 2 * guard
                                          options:MTLResourceStorageModeShared];
@@ -1082,6 +1092,11 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
                 "Area protocol failure phase=" + std::to_string(config.phase) +
                     " candidate=" + std::to_string(config.candidate) +
                     " source_line=" + std::to_string(counters.first_failure.source_line));
+        if (config.stencil != aw::paired_gaussian16_stencil)
+            for (unsigned id : {aw::paired_atlas_id, aw::paired_config_id})
+                for (std::size_t j = 0; j < lengths[id]; ++j)
+                    require(data(id)[j] == 0xa5,
+                            "Nonpaired Area passes preserve typed atlas/config sentinels");
         if (!suffix_enabled) {
             const auto *bytes = reinterpret_cast<const unsigned char *>(suffixes);
             for (std::size_t j = 0; j < lengths[aw::enhanced_suffix_id]; ++j)
@@ -1854,6 +1869,167 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library,
             require(std::memcmp(frozen_history.data(), mapped_history, sizeof(frozen_history)) == 0,
                     "Many-to-one temporal reuse never mutates old source payloads");
         }
+    // Four handwritten involutions isolate SAME-k reverse targets from RNG
+    // and production atlas construction. All scalar/vector expectations below
+    // are finite-domain long-double pairwise MIS, not production score helpers.
+    namespace atlas = rypath_area_pair_atlas;
+    namespace oracle = atlas_oracle;
+    auto paired_config = atlas::base_config();
+    std::array<std::vector<atlas::Entry>, 4> tiles;
+    std::vector<atlas::Entry> packed_entries;
+    for (unsigned k = 0; k < 4; ++k) {
+        tiles[k] = oracle::handwritten(atlas::tile_width(k), k);
+        packed_entries.insert(packed_entries.end(), tiles[k].begin(), tiles[k].end());
+    }
+    lengths[aw::paired_atlas_id] = packed_entries.size() * sizeof(atlas::Entry);
+    buffers[aw::paired_atlas_id] =
+        [device newBufferWithLength:lengths[aw::paired_atlas_id] + 2 * guard
+                            options:MTLResourceStorageModeShared];
+    require(buffers[aw::paired_atlas_id] != nil, "Handwritten atlas guarded buffer");
+    std::memset(buffers[aw::paired_atlas_id].contents, 0xa5, buffers[aw::paired_atlas_id].length);
+    std::memcpy(data(aw::paired_atlas_id), packed_entries.data(), lengths[aw::paired_atlas_id]);
+    std::memcpy(data(aw::paired_config_id), &paired_config, sizeof(paired_config));
+    bind();
+    config.temporal_reprojection = 0;
+    config.stencil = aw::paired_gaussian16_stencil;
+    config.offset_x[0] = config.offset_x[1] = config.offset_y[0] = config.offset_y[1] = 0;
+    config.phase = aw::spatial;
+    config.candidate = 0;
+    std::array<aw::Temporal, pixels> frozen{};
+    std::array<ew::Record, pixels> frozen_records{};
+    for (unsigned p = 0; p < pixels; ++p) {
+        auto &t = temporal[p];
+        t = {};
+        t.payload = rypath_replay::fresh({p, 211, 223, 227, 229});
+        t.xyz = p % 5 == 1 ? render_wire::Point{} : render_wire::Point{float(4 + p), 0, 0};
+        t.selected_slot = p % 5 == 1 ? cw::enhanced_null_slot : 1u;
+        t.confidence = 1 + p % 7;
+        t.record = {ew::temporal_bank, p};
+        t.target_h_fraction = .5f;
+        t.target_h_exponent = 1;
+        const auto [T, e] = scale(proxy(t.xyz, 1));
+        t.target = T;
+        t.target_exponent = e;
+        t.normalizer = T;
+        t.normalizer_exponent = T == 0 ? 0 : e + 1 + int(p % 3);
+        record_at(t.record) =
+            t.selected_slot == cw::enhanced_null_slot ? ew::empty_record() : descriptor(p, 0);
+        frozen[p] = t;
+        frozen_records[p] = record_at(t.record);
+    }
+    std::array<std::array<unsigned, pixels>, 4> neighbors{};
+    std::array<std::array<long double, pixels>, 4> cross{};
+    std::array<std::array<render_wire::Point, pixels>, 4> reevaluated{};
+    bool duplicates = false, singleton = false;
+    for (unsigned p = 0; p < pixels; ++p) {
+        bool all_self = true;
+        for (unsigned k = 0; k < 4; ++k) {
+            neighbors[k][p] =
+                oracle::neighbor(tiles[k], atlas::tile_width(k), width, height, p, 0, 0, 0);
+            all_self &= neighbors[k][p] == p;
+        }
+        duplicates |= neighbors[0][p] != p && neighbors[0][p] == neighbors[1][p];
+        singleton |= all_self && frozen[p].normalizer > 0;
+    }
+    require(
+        duplicates && singleton,
+        "Handwritten fixture has duplicate candidate neighbors and positive all-edge singleton");
+    dispatch(spatial_begin);
+    for (unsigned k = 0; k < 4; ++k) {
+        config.candidate = k + 1;
+        dispatch(prepare);
+        for (unsigned p = 0; p < pixels; ++p) {
+            const unsigned source = neighbors[k][p];
+            require(same(replay[p], frozen[source].payload) &&
+                        same(evaluations[p].source, frozen[source].record),
+                    "Atlas Area prepare selects the independent candidate-k source payload/record");
+            const auto xyz =
+                frozen[source].selected_slot == cw::enhanced_null_slot
+                    ? render_wire::Point{}
+                    : render_wire::Point{float(9 + 11 * k + 2 * p + source), float(1 + k), 0};
+            reevaluated[k][p] = xyz;
+            cross[k][p] = proxy(xyz, 1);
+            response(p, xyz, 1, frozen[source].selected_slot);
+        }
+        dispatch(merge);
+    }
+    config.phase = aw::spatial_final;
+    config.candidate = 0;
+    dispatch(finalize);
+    const auto *history = reinterpret_cast<const aw::History *>(data(aw::history_destination_id));
+    bool wrong_reverse_separated = false;
+    for (unsigned p = 0; p < pixels; ++p) {
+        const auto &center = frozen[p];
+        const long double Zp = number(center.normalizer, center.normalizer_exponent),
+                          Tp = number(center.target, center.target_exponent),
+                          Mp = center.confidence;
+        long double expected_Z = 0, wrong_Z = 0;
+        std::array<long double, 3> expected_raw{};
+        unsigned expected_M = center.confidence;
+        const auto add = [&](long double score, render_wire::Point xyz, long double target) {
+            expected_Z += score;
+            if (target > 0) {
+                expected_raw[0] += score * xyz.x / target;
+                expected_raw[1] += score * xyz.y / target;
+                expected_raw[2] += score * xyz.z / target;
+            }
+        };
+        for (unsigned k = 0; k < 4; ++k) {
+            const unsigned s = neighbors[k][p];
+            if (s == p) {
+                add(Zp / 4, center.xyz, Tp);
+                wrong_Z += Zp / 4;
+                continue;
+            }
+            const auto &source = frozen[s];
+            expected_M += source.confidence;
+            const long double Zs = number(source.normalizer, source.normalizer_exponent),
+                              Ts = number(source.target, source.target_exponent),
+                              Ms = source.confidence, Td = cross[k][p];
+            const long double shifted =
+                (Zs == 0 || Td == 0) ? 0 : Zs * Ms * Td / (Ms * Ts + Mp * Td) / 4;
+            add(shifted, reevaluated[k][p], Td);
+            const long double reverse = cross[k][s];
+            const long double canonical = Zp == 0 ? 0 : Zp * Mp * Tp / (Mp * Tp + Ms * reverse) / 4;
+            add(canonical, center.xyz, Tp);
+            const long double old_reverse = cross[k ^ 1u][s];
+            wrong_Z += shifted + (Zp == 0 ? 0 : Zp * Mp * Tp / (Mp * Tp + Ms * old_reverse) / 4);
+        }
+        scalar_near(history[p].normalizer, history[p].normalizer_exponent, expected_Z,
+                    "Actual atlas SAME-k finite-domain scalar normalizer");
+        near(raw[p].x, expected_raw[0], "Actual atlas independent conditional X");
+        near(raw[p].y, expected_raw[1], "Actual atlas independent conditional Y");
+        near(raw[p].z, expected_raw[2], "Actual atlas independent conditional Z");
+        require(history[p].confidence == expected_M && history[p].record.pixel == p &&
+                    history[p].record.bank == 1u - config.history_source_bank,
+                "Duplicate/edge/null atlas slots preserve structural confidence and "
+                "destination-owned publication");
+        wrong_reverse_separated |=
+            std::abs(wrong_Z - expected_Z) >
+            1024.L * std::numeric_limits<float>::epsilon() * std::max(1.L, std::abs(expected_Z));
+        bool tuple = false;
+        if (same(history[p].payload, center.payload) && same(history[p].xyz, center.xyz) &&
+            same(record_at(history[p].record), frozen_records[p]))
+            tuple = true;
+        for (unsigned k = 0; k < 4; ++k) {
+            const auto source = neighbors[k][p];
+            if (source != p && same(history[p].payload, frozen[source].payload) &&
+                same(history[p].xyz, reevaluated[k][p]) &&
+                same(record_at(history[p].record), frozen_records[source]))
+                tuple = true;
+        }
+        require(tuple,
+                "Published atlas selection is one actual admitted owner/source evaluation tuple");
+        require(same(record_at(frozen[p].record), frozen_records[p]),
+                "Atlas reuse preserves every immutable source record");
+    }
+    require(wrong_reverse_separated,
+            "Old opposite-slot reverse targets fail the fixed atlas MIS oracle");
+    require(std::memcmp(frozen.data(), temporal, sizeof(frozen)) == 0 &&
+                std::memcmp(data(aw::paired_atlas_id), packed_entries.data(),
+                            lengths[aw::paired_atlas_id]) == 0 &&
+                std::memcmp(data(aw::paired_config_id), &paired_config, sizeof(paired_config)) == 0,
+            "Actual atlas passes preserve frozen source tuples, asset and all frame poses");
 }
 int run(const std::filesystem::path &path) {
     auto device = MTLCreateSystemDefaultDevice();

@@ -265,6 +265,19 @@ def qualification_checks(executable):
             base + ["--hero-wavelengths", "invalid"],
             base + ["--area-mutation-policy", "invalid"],
             base + ["--area-stencil", "invalid"],
+            base + ["--area-path-domain", "invalid"],
+            base + ["--area-contribution-replay", "invalid"],
+            base + ["--area-contribution-replay", "prefix"],
+            base + ["--area-suffix-cache", "true"],
+            base + ["--area-pair-compaction", "on"],
+            base + ["--area-pair-compaction", "invalid"],
+            base + ["--area-temporal-reprojection", "dual"],
+            base + ["--area-temporal-reprojection", "invalid"],
+            base + ["--mutation-arms", "1,0"],
+            base + ["--mutation-arms", "0,1,1"],
+            base + ["--variance-policy", "invalid"],
+            base + ["--variance-policy", "center", "--reconstruction", "metalfx"],
+            base + ["--resource-profile", "invalid"],
             [], ["--scene"], base + ["--unknown", "1"],
             base + ["--width", "0"], base + ["--height", "16385"],
             base + ["--width", "4294967296"],
@@ -310,7 +323,7 @@ def qualification_checks(executable):
                                 object_pairs_hook=unique_object)
             assert report["complete"] is False
             assert report["schema"] == 2
-            assert report["settings"]["area_contract"] == 15
+            assert report["settings"]["area_contract"] == 16
             assert report["settings"]["area_output"] == "conditional-mean"
             assert report["settings"]["area_target"] == "quarter-l1-v1"
             assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
@@ -328,7 +341,33 @@ def qualification_checks(executable):
         assert result.returncode != 0
         selected = json.loads((destination / "summary.json").read_text())
         assert selected["schema"] == 2 and selected["settings"]["area_output"] == "selected"
-        assert selected["settings"]["area_contract"] == 15
+        assert selected["settings"]["area_contract"] == 16
+        # These are requested settings of a failed preflight, never fabricated
+        # runtime evidence. Independent reference/arm stay separate from Area.
+        destination = root / "enhanced-configuration"
+        result = run(executable, ["--scene", source, "--output-dir", destination,
+                                 "--spectral-transport", "hero", "--area-path-domain", "enhanced",
+                                 "--area-contribution-replay", "prefix", "--area-suffix-cache", "off",
+                                 "--area-pair-compaction", "on", "--area-temporal-reprojection", "dual",
+                                 "--area-stencil", "paired-gaussian16", "--area-mutation-policy", "spectral-refresh",
+                                 "--mutation-arms", "0,1", "--resource-profile", "large",
+                                 "--variance-policy", "conservative"])
+        assert result.returncode != 0
+        report = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
+        assert report["complete"] is False and not list(destination.glob("*.exr"))
+        settings = report["settings"]
+        for key, value in {
+            "requested_area_path_domain": "enhanced", "requested_area_contribution_replay": "prefix",
+            "requested_area_suffix_cache": False, "requested_area_pair_compaction": True,
+            "requested_area_temporal_reprojection": "dual", "requested_area_stencil": "paired-gaussian16",
+            "requested_area_mutation_policy": "spectral-refresh", "mutation_arms": "0,1",
+            "resource_profile": "large", "variance_policy": "conservative",
+            "area_target": "quarter-l1-hybrid-scaled-zero-v4",
+            "area_source_mis": "enhanced-hybrid-confidence-scaled-mis-v4",
+        }.items():
+            assert settings[key] == value, (key, settings.get(key))
+        assert [row["arm"] for row in report["arms"]] == ["independent", "area-0", "area-1"]
+        assert settings["arms"] == ["independent", "area-0", "area-1"]
     print("Qualification CLI and failure publication checks passed")
 
 

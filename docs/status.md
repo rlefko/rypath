@@ -8,8 +8,9 @@ spectral suffix caching and selected-null compaction. Native static exactness an
 timing screens pass execution checks, but caching/compaction gains are limited
 and scene dependent. Camera-only dual-motion reprojection now passes focused
 CPU/GPU, mapped-domain and frame-publication controls; native moving-scene and
-quality qualification remain open. Paired spatial textures and duplication
-analysis remain follow-up work. This is not the complete paper implementation;
+quality qualification remain open. Paired Gaussian spatial textures now pass
+independent integer, GPU, rendered-frame and actual CLI controls; duplication
+analysis and the complete scene-quality/time study remain follow-up work. This is not the complete paper implementation;
 no Pavilion highlight repair is established, and the frame-rate targets are unmet.
 
 The [hero execution follow-up](hero-execution.md) combines exact temporal

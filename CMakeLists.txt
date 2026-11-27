@@ -187,6 +187,12 @@ target_include_directories(rypath_gltf PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(rypath_gltf PUBLIC rypath_pbrt_render PRIVATE rypath_checkpoint rypath_mesh_bundle)
 rypath_configure_host_target(rypath_gltf)
 
+# Deterministic immutable spatial pairing asset; uses the existing SHA256 code.
+add_library(rypath_area_pair_atlas STATIC src/area_pair_atlas.cpp)
+target_include_directories(rypath_area_pair_atlas PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(rypath_area_pair_atlas PRIVATE rypath_checkpoint)
+rypath_configure_host_target(rypath_area_pair_atlas)
+
 # Projection is shared by early raw-domain geometry and later reconstruction.
 # Keep it portable and below both libraries to avoid a backend/reconstruction cycle.
 add_library(rypath_reconstruction_camera STATIC src/reconstruction_camera.cpp)
@@ -195,7 +201,7 @@ rypath_configure_host_target(rypath_reconstruction_camera)
 
 add_library(rypath_metal_backend STATIC src/render_driver.cpp src/exr_output.cpp src/render_job.cpp src/shadow_traversal.cpp)
 target_include_directories(rypath_metal_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(rypath_metal_backend PRIVATE rypath_geometry rypath_render
+target_link_libraries(rypath_metal_backend PRIVATE rypath_geometry rypath_render rypath_area_pair_atlas
     PUBLIC rypath_checkpoint rypath_reconstruction_camera)
 rypath_configure_host_target(rypath_metal_backend)
 

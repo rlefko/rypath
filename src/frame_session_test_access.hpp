@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "area_pair_atlas_shared.h"
 #include "area_wire.h"
 #include "enhanced_motion_wire.h"
 #include "enhanced_suffix_tape_shared.h"
@@ -16,6 +17,8 @@ struct SharedSceneFrameSessions {
     std::string diagnostic;
     std::array<std::unique_ptr<FrameSession>, 2> sessions;
     bool shared_renderer = false;
+    std::array<std::uintptr_t, 2> paired_atlas_arenas{};
+    bool shared_paired_atlas_storage = false;
     bool independent_history = false;
     // Opaque identities only: callers cannot mutate the shared owned-path
     // storage or treat it as a completed-frame snapshot.
@@ -48,6 +51,8 @@ struct EnhancedSessionSnapshot {
     // THIS publication (empty when the static identity optimization skipped it).
     std::vector<enhanced_motion_wire::Geometry> geometry;
     std::vector<enhanced_motion_wire::Donor> donors;
+    // Actual per-slot Config copy; absent in old stencil modes. No GPU lease.
+    std::optional<rypath_area_pair_atlas::Config> paired_config;
 };
 struct EnhancedMotionState {
     GeometryStatus status = GeometryStatus::failure;

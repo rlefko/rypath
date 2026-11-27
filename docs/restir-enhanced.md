@@ -11,18 +11,20 @@ are not implicit ways to satisfy these targets.
 
 ## Current implementation and paper coverage
 
-The existing Area mode is a full-replay GRIS adaptation. It does not yet implement
-all of [ReSTIR PT Enhanced](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/)
-or the original paper's hybrid reconnection architecture. Its warm static frame
-performs six full path evaluations per pixel after exact temporal memoization:
+The default Area mode is a full-replay GRIS adaptation. The opt-in Enhanced mode
+adds the mechanisms below but does not yet reproduce every optimization in
+[ReSTIR PT Enhanced](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/)
+or all material/geometry cases in the original hybrid reconnection architecture.
+The default summed-domain warm static frame performs six full path evaluations per pixel after exact temporal memoization:
 one fresh evaluation, one mutation, and four spatial evaluations.
 
 | Mechanism | Current coverage |
 | --- | --- |
 | Contribution-aware resampling MIS | Source/destination target adaptation |
 | Confidence recurrence, §2.2 | Enhanced caps temporal input at 20 before MIS and sums structural spatial inputs |
-| Reciprocal spatial work sharing, §3 | Reciprocal stencil and shared reverse targets; not the paper's pairing textures |
+| Reciprocal spatial work sharing, §3 | Opt-in per-pixel Gaussian pairing atlases and shared same-pair reverse targets |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
+| NEE candidate sampling, §§6.1 and 7 | Existing light proposals; the evaluation's 32/B² light-candidate schedule is not reproduced |
 | Contribution-path reservoir, §§2.3 and 6.1 | Opt-in finite-depth `(U,j)` with fresh local selection; full or selected-prefix replay |
 | Hybrid reconnection and Jacobian, Eq. 2 | Owned triangle/world-direction charts for admitted diffuse and rough-conductor roots; forced incoming/outgoing evaluation and scaled chart densities |
 | Dual-footprint eligibility, Eq. 5 | Runtime first-eligible selection, forward/inverse footprints and rolling predecessor veto |
@@ -561,6 +563,52 @@ This stage supports static resident geometry with camera motion only, without
 object or deformation motion. The early geometry query duplicates the later
 reconstruction guide query; native cost and moving-camera raw quality remain
 unmeasured. No performance benefit is established.
+
+## Paired Gaussian spatial domains
+
+`--area-stencil paired-gaussian16` adds the paper's §3 pairing construction.
+Four immutable square tiles use widths 254/230/210/194, sigma 16, and 128 alternating
+2×2 permutation passes from Eq. 3. Equal initial labels occur exactly twice.
+Independent uniform permutation draws and deterministic endpoint discovery produce
+signed reciprocal deltas; independently seeded flips, transposition and offsets
+vary the pairs per accepted frame. Four tiles preserve our existing four-neighbor
+work/weight budget; the paper's evaluated configuration uses three. The fourth
+width and deterministic CPU endpoint discovery are declared adaptations.
+
+The infinite-plane pair map is an involution. A pair crossing the image boundary
+becomes a self singleton without wrapping/clamping the image. Reverse targets use
+the same atlas slot at the paired endpoint, rather than a neighboring legacy
+plus/minus slot. Duplicate slots keep their original coefficients. Integer
+coordinate reduction precedes sign transforms, avoiding signed 64-bit remainder
+operations in GPU lookups while retaining wide final image bounds. Malformed
+entries fail before boundary fallback.
+
+The immutable 199,152-entry asset occupies 398,304 bytes and is shared by sessions
+using one resident scene. Each frame slot retains its own 112-byte pose/config;
+legacy modes use typed sentinels without generating the asset. Area contract 16
+reports both element and config sizes; wavefront remains 22. JSON/EXR metadata
+retain the actual asset hash, sizes, seed, sigma, iteration count and per-frame
+poses. The version-one byte hash is
+`6d877656f1338b07f72e2a917fb5f491cfb1952a5a476fba981b027b3e2605db`.
+
+The CPU generator matches an independent complete-byte construction and frozen
+small/production goldens. Predeclared sigma/radial/covariance screens pass; these
+moments do not establish a complete Gaussian fit. All 20,884 CPU/GPU lookup
+controls pass, including finite-image reciprocity, malformed entries, full-range
+pixel coordinates and explicit premature-signed-cast negative controls. Actual
+Area pairwise-MIS and 53 qualification-identity controls pass. Integrated atlas
+rendering passes in 55.12 seconds, including exact cache/compaction/scheduling
+controls and a 32-seed emission-mean smoke comparison. This simple mean fixture
+does not qualify complex scene quality. Successful CLI checks cover an eight-frame
+paired-atlas/dual-motion/compaction sequence and a 48-frame, three-arm qualification
+run with 30 finite 16×8 FLOAT captures. The latter verifies actual configuration,
+accounting and output integration, not image quality or throughput.
+
+The qualification driver now exposes Enhanced/prefix, paired stencil, cache,
+compaction and motion controls, mutation-arm selection, large-scene budgets and
+temporal variance policy. It validates actual frame identity before labeling or
+reconstructing results, keeping independent hero references separate from Area
+arms. Complete scene-quality and native throughput qualification remain pending.
 
 ## Retained measurements and limitations
 

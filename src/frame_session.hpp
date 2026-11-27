@@ -44,7 +44,7 @@ inline constexpr const char *frame_contribution_replay_name(FrameContributionRep
     return "invalid";
 }
 enum class FrameMutationPolicy { automatic, legacy, spectral_refresh };
-enum class FrameAreaStencil { automatic, adjacent, reciprocal16 };
+enum class FrameAreaStencil { automatic, adjacent, reciprocal16, paired_gaussian16 };
 inline constexpr const char *frame_mutation_policy_name(FrameMutationPolicy policy) {
     switch (policy) {
     case FrameMutationPolicy::automatic:
@@ -64,6 +64,8 @@ inline constexpr const char *frame_area_stencil_name(FrameAreaStencil stencil) {
         return "adjacent";
     case FrameAreaStencil::reciprocal16:
         return "reciprocal16";
+    case FrameAreaStencil::paired_gaussian16:
+        return "paired-gaussian16";
     }
     return "invalid";
 }
@@ -130,6 +132,19 @@ struct FrameRequest {
     std::optional<FrameCamera> camera;
 };
 enum class FrameStatus { pending, complete, failed };
+// Actual immutable atlas identity and this frame's frozen poses. Version0 is
+// inactive; no inferred identity is reported before an asset is constructed.
+// Poses describe the accepted attempt; FrameStatus determines completion.
+struct FrameAreaAtlasInfo {
+    std::uint32_t version = 0, entry_count = 0, iterations = 0;
+    std::uint64_t asset_bytes = 0;
+    std::array<std::uint32_t, 4> widths{};
+    float sigma = 0;
+    std::array<std::uint32_t, 2> seed{};
+    std::string sha256;
+    // Per atlas: transform, offset_x, offset_y. Reserved pose words stay0 on wire.
+    std::array<std::array<std::uint32_t, 3>, 4> poses{};
+};
 struct FrameInfo {
     GPUStageDiagnostics gpu_stages{};
     FrameWorkDiagnostics path_work{};
@@ -156,11 +171,12 @@ struct FrameInfo {
     std::uint64_t enhanced_suffix_misses = 0;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::legacy;
     FrameAreaStencil area_stencil = FrameAreaStencil::adjacent;
+    FrameAreaAtlasInfo paired_atlas{};
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
     FrameContributionReplay contribution_replay = FrameContributionReplay::full;
     std::uint32_t contribution_depth = 0;
     std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
-    // Resolved immutable stencil, ordered d0.x, d0.y, d1.x, d1.y.
+    // Resolved legacy offsets, ordered d0.x,d0.y,d1.x,d1.y; zero for atlas poses.
     std::array<std::int32_t, 4> area_stencil_offsets{};
     std::uint64_t history_generation = 0;
     // Per-pixel pool sizes, including cached fresh/center candidates.

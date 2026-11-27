@@ -29,6 +29,7 @@ assert "--area-temporal-cache on|off" in help_text
 assert "--area-suffix-cache on|off" in help_text
 assert "--area-pair-compaction on|off" in help_text
 assert "--area-temporal-reprojection off|dual" in help_text
+assert "auto|adjacent|reciprocal16|paired-gaussian16" in help_text
 assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
              "--strict-spatial-segments on|off", "--metalfx-guide-policy primary|appearance",
@@ -441,9 +442,17 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 15
+    assert settings["area_contract"] == 16
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
+    for stencil in ("adjacent", "reciprocal16", "paired-gaussian16"):
+        destination = root / f"area-atlas-parse-{stencil}.json"
+        invoke(["--scene", str(malformed), "--output", str(destination),
+                "--estimator", "area-replay", "--area-path-domain", "enhanced",
+                "--spectral-transport", "hero", "--area-stencil", stencil])
+        atlas_settings = json.loads(destination.read_text())["settings"]
+        assert atlas_settings["requested_area_stencil"] == stencil
+        assert atlas_settings["paired_atlas_identity"] is None
     for domain in ("summed", "contribution", "enhanced"):
         destination = root / f"area-domain-{domain}.json"
         invoke(["--scene", str(malformed), "--output", str(destination),
@@ -568,6 +577,6 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 15
+        assert settings["area_contract"] == 16
         assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")

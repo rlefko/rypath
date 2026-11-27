@@ -158,7 +158,7 @@ const char *usage =
     "  [--spectral-transport auto|scalar|packet|hero (default: auto)]\n"
     "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
-    "auto|adjacent|reciprocal16\n"
+    "auto|adjacent|reciprocal16|paired-gaussian16\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
     "  [--area-suffix-cache on|off (Enhanced sequential suffix replay; default: on)]\n"
@@ -289,8 +289,11 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.area_stencil = rypath::FrameAreaStencil::adjacent;
             else if (value == "reciprocal16")
                 o.area_stencil = rypath::FrameAreaStencil::reciprocal16;
+            else if (value == "paired-gaussian16")
+                o.area_stencil = rypath::FrameAreaStencil::paired_gaussian16;
             else
-                throw std::runtime_error("Area stencil must be auto, adjacent, or reciprocal16");
+                throw std::runtime_error(
+                    "Area stencil must be auto, adjacent, reciprocal16, or paired-gaussian16");
         } else if (key == "--spectral-transport") {
             const auto selection = rypath::parse_spectral_transport(value);
             if (!selection)
@@ -743,6 +746,7 @@ struct Observation : rypath::FrameStatisticsSample {
     std::uint64_t enhanced_suffix_misses = 0;
     rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::legacy;
     rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::adjacent;
+    rypath::FrameAreaAtlasInfo paired_atlas{};
     rypath::FrameContributionReplay contribution_replay = rypath::FrameContributionReplay::full;
     std::array<std::int32_t, 4> area_stencil_offsets{};
     rypath::GPUStageDiagnostics gpu_stages;
@@ -850,7 +854,52 @@ void write_counters(std::ostream &out, const rypath::ReconstructionCounters &c) 
     }
     out << '}';
 }
+void write_paired_atlas(std::ostream &out, const rypath::FrameAreaAtlasInfo &atlas,
+                        bool include_poses = true) {
+    if (!atlas.version) {
+        out << "null";
+        return;
+    }
+    out << "{\"version\":" << atlas.version << ",\"widths\":[";
+    for (unsigned k = 0; k < 4; ++k) {
+        if (k)
+            out << ',';
+        out << atlas.widths[k];
+    }
+    out << "],\"sigma\":" << atlas.sigma << ",\"iterations\":" << atlas.iterations << ",\"seed\":["
+        << atlas.seed[0] << ',' << atlas.seed[1] << "]"
+        << ",\"sha256\":" << quote(atlas.sha256) << ",\"entry_count\":" << atlas.entry_count
+        << ",\"asset_bytes\":" << atlas.asset_bytes;
+    if (include_poses) {
+        out << ",\"poses\":[";
+        for (unsigned k = 0; k < 4; ++k) {
+            if (k)
+                out << ',';
+            out << '[' << atlas.poses[k][0] << ',' << atlas.poses[k][1] << ',' << atlas.poses[k][2]
+                << ']';
+        }
+        out << ']';
+    }
+    out << '}';
+}
+std::string paired_atlas_widths(const rypath::FrameAreaAtlasInfo &atlas) {
+    return std::to_string(atlas.widths[0]) + "," + std::to_string(atlas.widths[1]) + "," +
+           std::to_string(atlas.widths[2]) + "," + std::to_string(atlas.widths[3]);
+}
+std::string paired_atlas_poses(const rypath::FrameAreaAtlasInfo &atlas) {
+    std::ostringstream out;
+    out << '[';
+    for (unsigned k = 0; k < 4; ++k) {
+        if (k)
+            out << ',';
+        out << '[' << atlas.poses[k][0] << ',' << atlas.poses[k][1] << ',' << atlas.poses[k][2]
+            << ']';
+    }
+    out << ']';
+    return out.str();
+}
 struct Report {
+    rypath::FrameAreaAtlasInfo paired_atlas_identity{};
     Options options;
     rypath::AccelerationBuildInfo acceleration_build;
     std::string diagnostic, device, architecture, integrator, os, source_identity,
@@ -1034,7 +1083,9 @@ struct Report {
                                 ? "dual"
                                 : "off")
                     : "null")
-            << ",\"target_scale\":" << options.target_scale
+            << ",\"paired_atlas_identity\":";
+        write_paired_atlas(out, paired_atlas_identity, false);
+        out << ",\"target_scale\":" << options.target_scale
             << ",\"fresh_paths_per_pixel_per_frame\":1"
             << ",\"capacity\":" << options.capacity << ",\"effective_capacity\":"
             << (options.execution == rypath::FrameExecution::wavefront
@@ -1200,8 +1251,9 @@ struct Report {
                              : "not-applicable")
                 << ",\"area_stencil_offsets\":[" << f.area_stencil_offsets[0] << ','
                 << f.area_stencil_offsets[1] << ',' << f.area_stencil_offsets[2] << ','
-                << f.area_stencil_offsets[3] << ']'
-                << ",\"history_generation\":" << f.history_generation
+                << f.area_stencil_offsets[3] << ']' << ",\"paired_atlas\":";
+            write_paired_atlas(out, f.paired_atlas);
+            out << ",\"history_generation\":" << f.history_generation
                 << ",\"temporal_candidates\":" << f.temporal_candidates
                 << ",\"spatial_candidates\":" << f.spatial_candidates
                 << ",\"mutation_attempts\":" << f.mutation_attempts
@@ -1564,6 +1616,20 @@ int run(const Options &options) {
                             : (info.enhanced_geometry_generated == 0 &&
                                info.enhanced_geometry_reused == 0 && routes == 0 &&
                                !info.enhanced_temporal_reprojection_used);
+                    const bool paired =
+                        options.estimator == rypath::FrameEstimator::area_replay &&
+                        options.area_stencil == rypath::FrameAreaStencil::paired_gaussian16;
+                    const bool atlas_identity =
+                        paired ? (info.paired_atlas.version == 1 &&
+                                  info.paired_atlas.entry_count == 199152 &&
+                                  info.paired_atlas.asset_bytes == 398304 &&
+                                  info.paired_atlas.sigma == 16 &&
+                                  info.paired_atlas.iterations == 128 &&
+                                  info.paired_atlas.sha256.size() == 64 &&
+                                  info.paired_atlas.widths ==
+                                      std::array<std::uint32_t, 4>{254, 230, 210, 194} &&
+                                  info.area_stencil_offsets == std::array<std::int32_t, 4>{})
+                               : info.paired_atlas.version == 0;
                     observation.complete =
                         info.status == rypath::FrameStatus::complete &&
                         info.enhanced_suffix_cache ==
@@ -1572,7 +1638,7 @@ int run(const Options &options) {
                              options.contribution_replay ==
                                  rypath::FrameContributionReplay::prefix &&
                              options.enhanced_suffix_cache) &&
-                        motion_counts &&
+                        atlas_identity && motion_counts &&
                         info.enhanced_temporal_reprojection_requested ==
                             options.enhanced_temporal_reprojection &&
                         info.enhanced_temporal_reprojection ==
@@ -1605,6 +1671,9 @@ int run(const Options &options) {
                     observation.command_count = info.command_count;
                     observation.mutation_policy = info.mutation_policy;
                     observation.area_stencil = info.area_stencil;
+                    observation.paired_atlas = info.paired_atlas;
+                    if (info.paired_atlas.version)
+                        report.paired_atlas_identity = info.paired_atlas;
                     observation.area_stencil_offsets = info.area_stencil_offsets;
                     observation.area_serial = info.area_serial;
                     observation.contribution_replay = info.contribution_replay;
@@ -1836,6 +1905,23 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_stencil_name(frame_info.area_stencil)
                          : "not-applicable"},
+                    {"rypath.area.paired_atlas_version",
+                     std::to_string(frame_info.paired_atlas.version)},
+                    {"rypath.area.paired_atlas_widths",
+                     paired_atlas_widths(frame_info.paired_atlas)},
+                    {"rypath.area.paired_atlas_sigma",
+                     std::to_string(frame_info.paired_atlas.sigma)},
+                    {"rypath.area.paired_atlas_iterations",
+                     std::to_string(frame_info.paired_atlas.iterations)},
+                    {"rypath.area.paired_atlas_seed",
+                     std::to_string(frame_info.paired_atlas.seed[0]) + "," +
+                         std::to_string(frame_info.paired_atlas.seed[1])},
+                    {"rypath.area.paired_atlas_sha256", frame_info.paired_atlas.sha256},
+                    {"rypath.area.paired_atlas_entry_count",
+                     std::to_string(frame_info.paired_atlas.entry_count)},
+                    {"rypath.area.paired_atlas_asset_bytes",
+                     std::to_string(frame_info.paired_atlas.asset_bytes)},
+                    {"rypath.area.paired_atlas_poses", paired_atlas_poses(frame_info.paired_atlas)},
                     {"rypath.area.stencil_offsets",
                      std::to_string(frame_info.area_stencil_offsets[0]) + "," +
                          std::to_string(frame_info.area_stencil_offsets[1]) + "," +
@@ -2036,6 +2122,24 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_stencil_name(info.source.area_stencil)
                          : "not-applicable"},
+                    {"rypath.area.paired_atlas_version",
+                     std::to_string(info.source.paired_atlas.version)},
+                    {"rypath.area.paired_atlas_widths",
+                     paired_atlas_widths(info.source.paired_atlas)},
+                    {"rypath.area.paired_atlas_sigma",
+                     std::to_string(info.source.paired_atlas.sigma)},
+                    {"rypath.area.paired_atlas_iterations",
+                     std::to_string(info.source.paired_atlas.iterations)},
+                    {"rypath.area.paired_atlas_seed",
+                     std::to_string(info.source.paired_atlas.seed[0]) + "," +
+                         std::to_string(info.source.paired_atlas.seed[1])},
+                    {"rypath.area.paired_atlas_sha256", info.source.paired_atlas.sha256},
+                    {"rypath.area.paired_atlas_entry_count",
+                     std::to_string(info.source.paired_atlas.entry_count)},
+                    {"rypath.area.paired_atlas_asset_bytes",
+                     std::to_string(info.source.paired_atlas.asset_bytes)},
+                    {"rypath.area.paired_atlas_poses",
+                     paired_atlas_poses(info.source.paired_atlas)},
                     {"rypath.area.stencil_offsets",
                      std::to_string(info.source.area_stencil_offsets[0]) + "," +
                          std::to_string(info.source.area_stencil_offsets[1]) + "," +

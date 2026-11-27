@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_pair_atlas.hpp"
 #include "area_stencil_shared.h"
 #include "enhanced_chart_shared.h"
 #include "frame_session.hpp"
@@ -1665,6 +1666,193 @@ void enhanced_suffix_conductor() {
     std::cout << "suffix_conductor_exact totals hits=" << hits[0] << ',' << hits[1] << ','
               << hits[2] << " misses=" << misses << " referenced_records=" << records << '\n';
 }
+void atlas_metadata(const FrameInfo &info, const FrameConfig &c) {
+    namespace a = rypath_area_pair_atlas;
+    const auto &m = info.paired_atlas;
+    need(info.area_stencil == FrameAreaStencil::paired_gaussian16 && m.version == 1 &&
+             m.widths == std::array<std::uint32_t, 4>{254, 230, 210, 194} &&
+             m.entry_count == 199152 && m.asset_bytes == 398304 && m.iterations == 128 &&
+             m.sigma == 16 &&
+             m.seed == std::array<std::uint32_t, 2>{a::atlas_seed_low, a::atlas_seed_high} &&
+             m.sha256.size() == 64 && info.area_stencil_offsets == std::array<std::int32_t, 4>{},
+         "Actual atlas metadata identifies immutable asset and zero legacy offsets");
+    const auto pose =
+        a::frame_config(std::uint32_t(info.area_serial), std::uint32_t(info.area_serial >> 32),
+                        std::uint32_t(c.seed), std::uint32_t(c.seed >> 32));
+    need(pose.status == a::Status::ok, "Expected frame pose generation");
+    for (unsigned k = 0; k < 4; ++k)
+        need(m.poses[k] == std::array<std::uint32_t, 3>{pose.config.poses[k].transform,
+                                                        pose.config.poses[k].offset_x,
+                                                        pose.config.poses[k].offset_y},
+             "Atlas frame poses use accepted serial and declared frame seed");
+}
+void atlas_snapshot_equal(const EnhancedSessionSnapshot &x, const EnhancedSessionSnapshot &y) {
+    need(x.status == GeometryStatus::success && y.status == GeometryStatus::success,
+         x.diagnostic + y.diagnostic);
+    need(x.paired_config && y.paired_config &&
+             std::memcmp(&*x.paired_config, &*y.paired_config,
+                         sizeof(rypath_area_pair_atlas::Config)) == 0,
+         "Compared publications expose identical actual GPU atlas configurations");
+    need(x.front_bank == y.front_bank && x.history.size() == y.history.size() &&
+             x.temporal.size() == y.temporal.size() &&
+             std::memcmp(x.history.data(), y.history.data(),
+                         x.history.size() * sizeof(area_wire::History)) == 0 &&
+             std::memcmp(x.temporal.data(), y.temporal.data(),
+                         x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+         "Same atlas/poses execution variants preserve exact published history/temporal tuples");
+    const auto compare = [&](enhanced_wire::Reference ref) {
+        if (enhanced_wire::absent(ref))
+            return;
+        const auto index = std::size_t(ref.bank) * x.width * x.height + ref.pixel;
+        need(index < x.records.size() && index < y.records.size() &&
+                 std::memcmp(&x.records[index], &y.records[index], sizeof(enhanced_wire::Record)) ==
+                     0,
+             "Same atlas execution preserves referenced owned records");
+    };
+    for (const auto &h : x.history)
+        if (h.valid && h.selected_slot != contribution_wire::enhanced_null_slot)
+            compare(h.record);
+    for (const auto &t : x.temporal)
+        if (t.normalizer > 0 && t.target > 0 &&
+            t.selected_slot != contribution_wire::enhanced_null_slot)
+            compare(t.record);
+}
+void enhanced_atlas_execution_controls() {
+    auto scene = enhanced_cavity();
+    scene.max_depth = 3;
+    auto off = enhanced_config();
+    off.width = off.height = 17;
+    off.capacity = 37;
+    off.mutation_steps = 1;
+    off.area_stencil = FrameAreaStencil::paired_gaussian16;
+    off.contribution_replay = FrameContributionReplay::prefix;
+    off.cache_temporal_evaluations = false;
+    off.enhanced_suffix_cache = false;
+    off.compact_enhanced_pairs = false;
+    auto on = off;
+    on.enhanced_suffix_cache = true;
+    on.compact_enhanced_pairs = true;
+    auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+    need(pair.status == GeometryStatus::success && pair.shared_renderer &&
+             pair.shared_paired_atlas_storage,
+         pair.diagnostic);
+    auto wide = off;
+    wide.capacity = 289;
+    wide.quantum = 1;
+    auto alternate = session(scene, wide);
+    auto different = on;
+    different.area_stencil = FrameAreaStencil::reciprocal16;
+    const auto rejected = FrameSessionTestAccess::build_shared_scene(scene, off, different);
+    need(rejected.status == GeometryStatus::failure && !rejected.sessions[0] &&
+             !rejected.sessions[1],
+         "Shared-AS factory never treats different atlas stencils as execution-only toggles");
+    FrameCamera moved{.camera = scene.camera,
+                      .camera_medium = scene.camera_medium,
+                      .raster_camera = scene.raster_camera,
+                      .perspective_lens = scene.perspective_lens,
+                      .texture_camera = scene.texture_camera};
+    moved.raster_camera->origin.x += .0625f;
+    for (unsigned frame = 0; frame < 3; ++frame) {
+        const auto camera =
+            frame == 2 ? std::optional<FrameCamera>(moved) : std::optional<FrameCamera>{};
+        const auto a =
+            enhanced_capture(*pair.sessions[0], off, scene.max_depth, frame, high_sample, camera);
+        const auto b =
+            enhanced_capture(*pair.sessions[1], on, scene.max_depth, frame, high_sample, camera);
+        const auto c =
+            enhanced_capture(*alternate, wide, scene.max_depth, frame, high_sample, camera);
+        atlas_metadata(a.info, off);
+        atlas_metadata(b.info, on);
+        atlas_metadata(c.info, wide);
+        need(a.info.paired_atlas.sha256 == b.info.paired_atlas.sha256 &&
+                 a.info.paired_atlas.sha256 == c.info.paired_atlas.sha256 &&
+                 a.info.paired_atlas.poses == b.info.paired_atlas.poses &&
+                 a.info.paired_atlas.poses == c.info.paired_atlas.poses,
+             "Compared execution arms consume identical immutable atlas bytes and poses");
+        exact(a.image, b.image);
+        exact(a.image, c.image);
+        need(a.info.mutation_accepts == b.info.mutation_accepts &&
+                 a.info.mutation_accepts == c.info.mutation_accepts &&
+                 a.info.completed_evaluations == b.info.completed_evaluations &&
+                 a.info.analytic_null_evaluations == b.info.analytic_null_evaluations,
+             "Atlas suffix/compaction/scheduling variants preserve mutation and owner accounting");
+        const auto x = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], frame);
+        atlas_snapshot_equal(x,
+                             FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], frame));
+        atlas_snapshot_equal(x, FrameSessionTestAccess::snapshot_enhanced(*alternate, frame));
+    }
+}
+void enhanced_atlas_mean_controls() {
+    // Different spatial stencils select different domain pairs. Fixed32 run
+    // seeds, five empirical SE plus128epsilon, declared before GPU execution.
+    constexpr unsigned repeats = 32;
+    auto scene = enhanced_cavity();
+    scene.max_depth = 1;
+    std::array<std::array<double, 3>, repeats> differences{};
+    std::array<double, 3> reciprocal_mean{}, atlas_mean{};
+    for (unsigned run = 0; run < repeats; ++run) {
+        auto a = enhanced_config();
+        a.width = a.height = 7;
+        a.capacity = 37;
+        a.mutation_steps = 0;
+        a.seed = seed + 7919ull * run;
+        a.area_stencil = FrameAreaStencil::reciprocal16;
+        a.cache_temporal_evaluations = false;
+        a.contribution_replay = FrameContributionReplay::full;
+        auto b = a;
+        b.area_stencil = FrameAreaStencil::paired_gaussian16;
+        auto reciprocal = session(scene, a), paired = session(scene, b);
+        const auto x = enhanced_capture(*reciprocal, a, scene.max_depth, 0, high_sample);
+        const auto y = enhanced_capture(*paired, b, scene.max_depth, 0, high_sample);
+        atlas_metadata(y.info, b);
+        std::array<double, 3> xm{}, ym{};
+        for (unsigned p = 0; p < x.image.raw_xyz.size(); ++p)
+            for (unsigned k = 0; k < 3; ++k) {
+                xm[k] += double(x.image.raw_xyz[p][k]) / x.image.raw_xyz.size();
+                ym[k] += double(y.image.raw_xyz[p][k]) / y.image.raw_xyz.size();
+            }
+        for (unsigned k = 0; k < 3; ++k) {
+            differences[run][k] = ym[k] - xm[k];
+            reciprocal_mean[k] += xm[k] / repeats;
+            atlas_mean[k] += ym[k] / repeats;
+        }
+    }
+    for (unsigned k = 0; k < 3; ++k) {
+        double delta = 0, variance = 0;
+        for (const auto &d : differences)
+            delta += d[k] / repeats;
+        for (const auto &d : differences)
+            variance += (d[k] - delta) * (d[k] - delta) / double(repeats - 1);
+        const double se = std::sqrt(variance / repeats);
+        const double bound =
+            5 * se + 128 * std::numeric_limits<float>::epsilon() *
+                         std::max(std::abs(reciprocal_mean[k]), std::abs(atlas_mean[k]));
+        std::cout << "atlas_mean channel=" << k << " reciprocal=" << reciprocal_mean[k]
+                  << " atlas=" << atlas_mean[k] << " delta=" << delta << " SE=" << se
+                  << " bound=" << bound << '\n';
+        need(std::isfinite(se) && std::abs(delta) <= bound,
+             "Independent-seed reciprocal/paired raw mean smoke gate");
+    }
+}
+void enhanced_atlas_controls() {
+    // Paired spatial domains are also valid in the existing summed and
+    // contribution carriers; these tiny cold runs exercise both typed ABIs.
+    const auto emitter = early_emission(false);
+    for (const auto domain : {FrameAreaPathDomain::summed, FrameAreaPathDomain::contribution}) {
+        auto c = contribution_config();
+        c.width = 3;
+        c.height = 2;
+        c.capacity = 2;
+        c.mutation_steps = 0;
+        c.area_path_domain = domain;
+        c.area_stencil = FrameAreaStencil::paired_gaussian16;
+        auto candidate = session(emitter, c);
+        const auto result = contribution_capture(*candidate, c, emitter.max_depth, 0, high_sample);
+        atlas_metadata(result.info, c);
+    }
+    enhanced_atlas_execution_controls();
+    enhanced_atlas_mean_controls();
+}
 RenderScene motion_disocclusion_scene() {
     auto scene = base();
     scene.max_depth = 0;
@@ -2434,14 +2622,16 @@ int main(int argc, char **argv) {
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
+        const bool enhanced_atlas = argc == 2 && std::string_view(argv[1]) == "--enhanced-atlas";
         const bool enhanced_motion = argc == 2 && std::string_view(argv[1]) == "--enhanced-motion";
         const bool enhanced_pairs = argc == 2 && std::string_view(argv[1]) == "--enhanced-pairs";
         const bool enhanced_suffix = argc == 2 && std::string_view(argv[1]) == "--enhanced-suffix";
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
         need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid ||
-                 enhanced_suffix || enhanced_pairs || enhanced_motion,
+                 enhanced_suffix || enhanced_pairs || enhanced_motion || enhanced_atlas,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
-             "--enhanced-hybrid, --enhanced-suffix, --enhanced-pairs or --enhanced-motion");
+             "--enhanced-hybrid, --enhanced-suffix, --enhanced-pairs, --enhanced-motion or "
+             "--enhanced-atlas");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -2457,6 +2647,10 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_atlas) {
+            enhanced_atlas_controls();
+            return 0;
+        }
         if (enhanced_motion) {
             enhanced_motion_controls();
             return 0;

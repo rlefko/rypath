@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "area_evaluation_context.hpp"
 #include "area_wire.h"
+#include "frame_qualification_identity.hpp"
 #include "frame_session.hpp"
 #include "image_output.hpp"
 #include "pbrt_render.hpp"
 #include "reconstruction.hpp"
 #include "render_identity.hpp"
+#include "resource_limits.hpp"
 
 #include <algorithm>
 #include <array>
@@ -79,6 +81,12 @@ struct Options {
     std::optional<HeroWavelengthSampling> hero_wavelengths;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
     FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
+    FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
+    FrameContributionReplay contribution_replay = FrameContributionReplay::full;
+    ResourceProfile resource_profile = ResourceProfile::standard;
+    SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
+    bool suffix_cache = true, compact_pairs = false, temporal_reprojection = false;
+    std::vector<int> arms{-1, 0, 1, 2, 4};
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir;
     std::uint32_t width = 320, height = 180, frames = 32, seeds = 8;
@@ -89,6 +97,37 @@ struct Options {
 };
 const char *area_output_name(FrameAreaOutput output) {
     return output == FrameAreaOutput::selected ? "selected" : "conditional-mean";
+}
+const char *variance_name(SpatialVariancePolicy policy) {
+    return policy == SpatialVariancePolicy::paired   ? "paired"
+           : policy == SpatialVariancePolicy::center ? "center"
+                                                     : "conservative";
+}
+const char *target_name(const Options &o) {
+    return o.area_path_domain == FrameAreaPathDomain::enhanced ? "quarter-l1-hybrid-scaled-zero-v4"
+                                                               : "quarter-l1-v1";
+}
+const char *source_mis_name(const Options &o) {
+    return o.area_path_domain == FrameAreaPathDomain::enhanced
+               ? "enhanced-hybrid-confidence-scaled-mis-v4"
+               : "source-target-mis-v1";
+}
+std::string atlas_json(const FrameAreaAtlasInfo &atlas) {
+    if (!atlas.version)
+        return "null";
+    auto out = json_stream();
+    out << "{\"version\":" << atlas.version << ",\"entry_count\":" << atlas.entry_count
+        << ",\"asset_bytes\":" << atlas.asset_bytes << ",\"sigma\":" << atlas.sigma
+        << ",\"iterations\":" << atlas.iterations << ",\"sha256\":" << quote(atlas.sha256)
+        << ",\"seed\":[" << atlas.seed[0] << ',' << atlas.seed[1] << "],\"widths\":[";
+    for (unsigned i = 0; i < atlas.widths.size(); ++i)
+        out << (i ? "," : "") << atlas.widths[i];
+    out << "],\"poses\":[";
+    for (unsigned i = 0; i < atlas.poses.size(); ++i)
+        out << (i ? "," : "") << '[' << atlas.poses[i][0] << ',' << atlas.poses[i][1] << ','
+            << atlas.poses[i][2] << ']';
+    out << "]}";
+    return out.str();
 }
 const char *reconstruction_name(ReconstructionMode mode) {
     return mode == ReconstructionMode::temporal ? "temporal" : "metalfx";
@@ -102,7 +141,11 @@ const char *usage =
     "  --spectral-transport auto|scalar|packet|hero (default: auto)\n"
     "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
-    "auto|adjacent|reciprocal16\n"
+    "auto|adjacent|reciprocal16|paired-gaussian16\n"
+    "  [--area-path-domain summed|contribution|enhanced] [--area-contribution-replay full|prefix]\n"
+    "  [--area-suffix-cache on|off] [--area-pair-compaction on|off]\n"
+    "  [--area-temporal-reprojection off|dual] [--mutation-arms 0,1|0,1,2,4]\n"
+    "  [--resource-profile standard|large] [--variance-policy paired|center|conservative]\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
@@ -120,7 +163,37 @@ Options parse(int argc, char **argv) {
         require(i + 1 < argc && !std::string_view(argv[i + 1]).starts_with("--"),
                 "Missing qualification option value");
         const std::string_view value = argv[++i];
-        if (key == "--hero-wavelengths") {
+        if (key == "--area-path-domain") {
+            require(value == "summed" || value == "contribution" || value == "enhanced",
+                    "Area path domain must be summed, contribution, or enhanced");
+            o.area_path_domain = value == "summed"         ? FrameAreaPathDomain::summed
+                                 : value == "contribution" ? FrameAreaPathDomain::contribution
+                                                           : FrameAreaPathDomain::enhanced;
+        } else if (key == "--area-contribution-replay") {
+            require(value == "full" || value == "prefix",
+                    "Contribution replay must be full or prefix");
+            o.contribution_replay =
+                value == "full" ? FrameContributionReplay::full : FrameContributionReplay::prefix;
+        } else if (key == "--area-suffix-cache" || key == "--area-pair-compaction") {
+            require(value == "on" || value == "off", "Area execution switches must be on or off");
+            (key == "--area-suffix-cache" ? o.suffix_cache : o.compact_pairs) = value == "on";
+        } else if (key == "--area-temporal-reprojection") {
+            require(value == "off" || value == "dual", "Temporal reprojection must be off or dual");
+            o.temporal_reprojection = value == "dual";
+        } else if (key == "--mutation-arms") {
+            require(value == "0,1" || value == "0,1,2,4", "Mutation arms must be 0,1 or 0,1,2,4");
+            o.arms = value == "0,1" ? std::vector<int>{-1, 0, 1} : std::vector<int>{-1, 0, 1, 2, 4};
+        } else if (key == "--resource-profile") {
+            const auto profile = parse_resource_profile(value);
+            require(profile.has_value(), "Resource profile must be standard or large");
+            o.resource_profile = *profile;
+        } else if (key == "--variance-policy") {
+            require(value == "paired" || value == "center" || value == "conservative",
+                    "Variance policy must be paired, center, or conservative");
+            o.variance_policy = value == "paired"   ? SpatialVariancePolicy::paired
+                                : value == "center" ? SpatialVariancePolicy::center
+                                                    : SpatialVariancePolicy::conservative;
+        } else if (key == "--hero-wavelengths") {
             o.hero_wavelengths = parse_hero_wavelength_sampling(value);
             if (!o.hero_wavelengths)
                 throw std::runtime_error("Hero wavelengths must be uniform or visible");
@@ -141,8 +214,11 @@ Options parse(int argc, char **argv) {
                 o.area_stencil = FrameAreaStencil::adjacent;
             else if (value == "reciprocal16")
                 o.area_stencil = FrameAreaStencil::reciprocal16;
+            else if (value == "paired-gaussian16")
+                o.area_stencil = FrameAreaStencil::paired_gaussian16;
             else
-                throw std::runtime_error("Area stencil must be auto, adjacent, or reciprocal16");
+                throw std::runtime_error(
+                    "Area stencil must be auto, adjacent, reciprocal16, or paired-gaussian16");
         } else if (key == "--spectral-transport") {
             const auto selection = parse_spectral_transport(value);
             if (!selection)
@@ -193,6 +269,14 @@ Options parse(int argc, char **argv) {
         }
     }
     require(!o.scene.empty() && !o.output_dir.empty(), "--scene and --output-dir are required");
+    require(o.contribution_replay == FrameContributionReplay::full ||
+                frame_area_contribution_family(o.area_path_domain),
+            "Prefix replay requires contribution or enhanced path domain");
+    require((!o.compact_pairs && !o.temporal_reprojection) ||
+                o.area_path_domain == FrameAreaPathDomain::enhanced,
+            "Pair compaction and dual motion require enhanced path domain");
+    require(!seen.contains("--variance-policy") || o.reconstruction == ReconstructionMode::temporal,
+            "Variance policy requires temporal reconstruction");
     require(o.width <= reconstruction_dimension_limit && o.height <= reconstruction_dimension_limit,
             "Qualification dimensions exceed 16384");
     require(o.frames <= 1000000 && o.seeds <= 4096 && o.reference_spp <= 100000000 &&
@@ -402,14 +486,15 @@ struct Scene {
     std::vector<fs::path> dependencies;
 };
 Scene load_scene(const Options &o) {
-    auto checked = pbrt::check(o.scene);
+    const auto limits = resource_limits(o.resource_profile).pbrt;
+    auto checked = pbrt::check(o.scene, limits);
     require(checked.exit_code() == 0 && checked.scene.has_value(), pbrt::report(checked));
     Scene result;
     result.dependencies.push_back(o.scene);
     for (const auto &dependency : checked.document.dependencies)
         result.dependencies.push_back(dependency.resolved_path);
     result.provenance = overrides(checked, o);
-    auto translated = pbrt::translate(checked, {o.scene.string()}, {}, o.spectral_transport);
+    auto translated = pbrt::translate(checked, {o.scene.string()}, limits, o.spectral_transport);
     for (const auto &diagnostic : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(diagnostic);
     if (translated.exit_code() != 0)
@@ -437,6 +522,10 @@ Scene load_scene(const Options &o) {
         throw std::runtime_error("--hero-wavelengths requires effective hero transport");
     if (o.hero_wavelengths)
         scene.hero_wavelengths = *o.hero_wavelengths;
+    if (frame_area_contribution_family(o.area_path_domain))
+        require(scene.model == RenderModel::pbrt &&
+                    scene.spectral_transport == SpectralTransport::hero && scene.max_depth <= 65,
+                "Contribution domains require PBRT hero transport and finite authored depth 0..65");
     result.provenance.push_back(spectral_provenance);
     result.provenance.push_back("all arms and reference use native wavefront, independent tape, "
                                 "fixed footprint_samples=1, material_seed=0, unexposed output");
@@ -804,8 +893,16 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
     config.mutation_policy = o.mutation_policy;
     config.area_stencil = o.area_stencil;
     config.area_output = o.area_output;
+    if (mutations >= 0) {
+        config.area_path_domain = o.area_path_domain;
+        config.contribution_replay = o.contribution_replay;
+        config.enhanced_suffix_cache = o.suffix_cache;
+        config.compact_enhanced_pairs = o.compact_pairs;
+        config.enhanced_temporal_reprojection = o.temporal_reprojection;
+    }
     auto renderer = session(scene.value, config, device);
     aggregate.session_startup = elapsed(startup);
+    std::string atlas_digest; // Freeze the first validated immutable asset identity.
     std::unique_ptr<ReconstructionStream> reconstruction;
     const auto pixels = std::uint64_t(o.width) * o.height;
     const unsigned excluded = o.frames > 4 ? 4 : 0;
@@ -822,26 +919,17 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
             auto raw = frame(*renderer, sample, pixels, camera, pose.epoch);
             raw_info = raw->poll();
             const auto raw_wall = elapsed(start);
-            const bool evaluation_counts =
-                mutations < 0
-                    ? raw_info->completed_evaluations == pixels &&
-                          raw_info->cached_evaluations == 0 &&
-                          raw_info->logical_evaluations == pixels &&
-                          !raw_info->temporal_evaluation_cache_used
-                    : valid_area_evaluation_accounting(
-                          pixels, raw_info->history_used, unsigned(mutations),
-                          raw_info->temporal_evaluation_cache_used, raw_info->completed_evaluations,
-                          raw_info->cached_evaluations, raw_info->logical_evaluations);
-            require(raw_info->fresh_candidates == pixels && evaluation_counts,
-                    "Evaluation arm path accounting mismatch");
-            require(raw_info->mutation_attempts ==
-                            pixels * (mutations < 0 ? 0u : unsigned(mutations)) &&
-                        raw_info->mutation_accepts <= raw_info->mutation_attempts,
-                    "Evaluation arm mutation accounting mismatch");
+            std::string identity_diagnostic;
+            const bool identity_valid = valid_frame_qualification_identity(
+                config, *raw_info, scene.value.max_depth, &identity_diagnostic, atlas_digest);
+            require(identity_valid, identity_diagnostic);
+            if (raw_info->paired_atlas.version && atlas_digest.empty())
+                atlas_digest = raw_info->paired_atlas.sha256;
             const bool creation = !reconstruction;
             if (creation) {
                 const auto creation_start = Clock::now();
-                auto built = build_reconstruction_stream(*raw, {.mode = o.reconstruction});
+                auto built = build_reconstruction_stream(
+                    *raw, {.mode = o.reconstruction, .spatial_variance_policy = o.variance_policy});
                 aggregate.reconstruction_startup = elapsed(creation_start);
                 require(built.status == GeometryStatus::success && built.stream, built.diagnostic);
                 reconstruction = std::move(built.stream);
@@ -899,6 +987,26 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"fresh_candidates\":" << raw_info->fresh_candidates
                  << ",\"completed_evaluations\":" << raw_info->completed_evaluations
                  << ",\"cached_evaluations\":" << raw_info->cached_evaluations
+                 << ",\"analytic_null_evaluations\":" << raw_info->analytic_null_evaluations
+                 << ",\"compacted_null_evaluations\":" << raw_info->compacted_null_evaluations
+                 << ",\"enhanced_pair_compaction\":"
+                 << (raw_info->enhanced_pair_compaction ? "true" : "false")
+                 << ",\"enhanced_suffix_cache\":"
+                 << (raw_info->enhanced_suffix_cache ? "true" : "false")
+                 << ",\"enhanced_temporal_reprojection_enabled\":"
+                 << (raw_info->enhanced_temporal_reprojection ? "true" : "false")
+                 << ",\"enhanced_temporal_reprojection_used\":"
+                 << (raw_info->enhanced_temporal_reprojection_used ? "true" : "false")
+                 << ",\"area_path_domain\":"
+                 << quote(mutations < 0 ? "not-applicable"
+                                        : frame_area_path_domain_name(raw_info->area_path_domain))
+                 << ",\"area_contribution_replay\":"
+                 << quote(mutations < 0
+                              ? "not-applicable"
+                              : frame_contribution_replay_name(raw_info->contribution_replay))
+                 << ",\"canonical_transport_version\":" << raw_info->canonical_transport_version
+                 << ",\"fresh_discovery_version\":" << raw_info->fresh_discovery_version
+                 << ",\"paired_atlas\":" << atlas_json(raw_info->paired_atlas)
                  << ",\"logical_evaluations\":" << raw_info->logical_evaluations
                  << ",\"temporal_evaluation_cache_used\":"
                  << (raw_info->temporal_evaluation_cache_used ? "true" : "false")
@@ -909,9 +1017,8 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"area_contract\":" << (mutations < 0 ? 0 : area_wire::contract)
                  << ",\"area_output\":"
                  << quote(mutations < 0 ? "not-applicable" : area_output_name(o.area_output))
-                 << ",\"area_target\":" << quote(mutations < 0 ? "none" : "quarter-l1-v1")
-                 << ",\"area_source_mis\":"
-                 << quote(mutations < 0 ? "none" : "source-target-mis-v1")
+                 << ",\"area_target\":" << quote(mutations < 0 ? "none" : target_name(o))
+                 << ",\"area_source_mis\":" << quote(mutations < 0 ? "none" : source_mis_name(o))
                  << ",\"area_temporal_reuse\":" << (mutations < 0 ? 0 : 20)
 
                  << ",\"requested_area_mutation_policy\":"
@@ -1006,9 +1113,37 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                                             mutations < 0 ? "not-applicable"
                                                           : area_output_name(o.area_output));
                     attributes.emplace_back("rypath.area.target",
-                                            mutations < 0 ? "none" : "quarter-l1-v1");
+                                            mutations < 0 ? "none" : target_name(o));
                     attributes.emplace_back("rypath.area.source_mis",
-                                            mutations < 0 ? "none" : "source-target-mis-v1");
+                                            mutations < 0 ? "none" : source_mis_name(o));
+                    attributes.emplace_back(
+                        "rypath.area.path_domain",
+                        mutations < 0 ? "not-applicable"
+                                      : frame_area_path_domain_name(raw_info->area_path_domain));
+                    attributes.emplace_back("rypath.area.contribution_replay",
+                                            mutations < 0 ? "not-applicable"
+                                                          : frame_contribution_replay_name(
+                                                                raw_info->contribution_replay));
+                    attributes.emplace_back("rypath.area.canonical_transport_version",
+                                            std::to_string(raw_info->canonical_transport_version));
+                    attributes.emplace_back("rypath.area.fresh_discovery_version",
+                                            std::to_string(raw_info->fresh_discovery_version));
+                    attributes.emplace_back("rypath.area.paired_atlas",
+                                            atlas_json(raw_info->paired_atlas));
+                    attributes.emplace_back("rypath.area.suffix_cache_enabled",
+                                            raw_info->enhanced_suffix_cache ? "true" : "false");
+                    attributes.emplace_back("rypath.area.pair_compaction_enabled",
+                                            raw_info->enhanced_pair_compaction ? "true" : "false");
+                    attributes.emplace_back("rypath.area.temporal_reprojection_enabled",
+                                            raw_info->enhanced_temporal_reprojection ? "true"
+                                                                                     : "false");
+                    attributes.emplace_back(
+                        "rypath.area.temporal_reprojection_used",
+                        raw_info->enhanced_temporal_reprojection_used ? "true" : "false");
+                    attributes.emplace_back("rypath.recon.variance_policy",
+                                            variance_name(o.variance_policy));
+                    attributes.emplace_back("rypath.frame.resource_profile",
+                                            std::string(resource_profile_name(o.resource_profile)));
                     attributes.emplace_back("rypath.area.temporal_reuse",
                                             mutations < 0 ? "0" : "20");
                     attributes.emplace_back("rypath.area.mutation_steps",
@@ -1093,8 +1228,22 @@ std::string settings_json(const Options &o) {
         << ",\"height\":" << o.height << ",\"frames\":" << o.frames << ",\"seeds\":" << o.seeds
         << ",\"area_contract\":" << area_wire::contract
         << ",\"area_output\":" << quote(area_output_name(o.area_output))
-        << ",\"area_target\":\"quarter-l1-v1\",\"area_source_mis\":\"source-target-mis-v1\",\"area_"
-           "temporal_reuse\":20"
+        << ",\"area_target\":" << quote(target_name(o))
+        << ",\"area_source_mis\":" << quote(source_mis_name(o)) << ",\"area_temporal_reuse\":20"
+        << ",\"requested_area_path_domain\":"
+        << quote(frame_area_path_domain_name(o.area_path_domain))
+        << ",\"requested_area_contribution_replay\":"
+        << quote(frame_contribution_replay_name(o.contribution_replay))
+        << ",\"requested_area_suffix_cache\":" << (o.suffix_cache ? "true" : "false")
+        << ",\"requested_area_pair_compaction\":" << (o.compact_pairs ? "true" : "false")
+        << ",\"requested_area_temporal_reprojection\":"
+        << quote(o.temporal_reprojection ? "dual" : "off")
+        << ",\"requested_area_stencil\":" << quote(frame_area_stencil_name(o.area_stencil))
+        << ",\"requested_area_mutation_policy\":"
+        << quote(frame_mutation_policy_name(o.mutation_policy))
+        << ",\"resource_profile\":" << quote(resource_profile_name(o.resource_profile))
+        << ",\"variance_policy\":" << quote(variance_name(o.variance_policy))
+        << ",\"mutation_arms\":" << quote(o.arms.size() == 3 ? "0,1" : "0,1,2,4")
         << ",\"reference_spp\":" << o.reference_spp
         << ",\"reference_batches\":" << o.reference_batches
         << ",\"reference_spp_per_batch\":" << o.reference_spp / o.reference_batches
@@ -1139,7 +1288,13 @@ std::string settings_json(const Options &o) {
             out << ',';
         out << evaluation_seed(i);
     }
-    out << "],\"arms\":[\"independent\",\"area-0\",\"area-1\",\"area-2\",\"area-4\"]}";
+    out << "],\"arms\":[";
+    for (std::size_t i = 0; i < o.arms.size(); ++i) {
+        if (i)
+            out << ',';
+        out << quote(o.arms[i] < 0 ? "independent" : "area-" + std::to_string(o.arms[i]));
+    }
+    out << "]}";
     return out.str();
 }
 std::string summary_json(const Options &o, const std::vector<SeedAggregate> &aggregates,
@@ -1183,7 +1338,9 @@ std::string summary_json(const Options &o, const std::vector<SeedAggregate> &agg
            "its pipeline GPU is null\""
         << ",\"tone_map_mse\":null,\"arms\":[";
     bool first = true;
-    for (const auto arm : {"independent", "area-0", "area-1", "area-2", "area-4"}) {
+    for (const auto mutations : o.arms) {
+        const auto arm =
+            mutations < 0 ? std::string("independent") : "area-" + std::to_string(mutations);
         Statistic raw, denoised, presentation, latency;
         std::uint64_t metric_frames = 0, timed_frames = 0;
         std::array<Statistic, 3> raw_bias, denoised_bias;
@@ -1285,7 +1442,7 @@ int run(const Options &o) {
             for (auto &value : pixel)
                 value = std::clamp(value, 0., 65504.);
         // Rotate arm execution order across seeds to expose rather than freeze an order effect.
-        constexpr std::array<int, 5> arms{-1, 0, 1, 2, 4};
+        const auto &arms = o.arms;
         for (unsigned seed = 0; seed < o.seeds; ++seed)
             for (unsigned i = 0; i < arms.size(); ++i)
                 aggregates.push_back(evaluate(scene, o, *reference_image, presentation,

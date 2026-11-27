@@ -10,6 +10,7 @@
 #include "../src/mutation_shared.h"
 #include "../src/reuse_mis_shared.h"
 namespace aw = rypath::area_wire;
+namespace pair_atlas = rypath_area_pair_atlas;
 namespace cw = rypath::contribution_wire;
 namespace ew = rypath::enhanced_wire;
 namespace reservoir = rypath_reservoir;
@@ -37,6 +38,8 @@ struct AreaArguments {
     device ew::Evaluation *enhanced_evaluation [[id(aw::enhanced_evaluation_id)]];
     device rypath_enhanced_suffix_tape::Entry *enhanced_suffix [[id(aw::enhanced_suffix_id)]];
     device const rypath::enhanced_motion_wire::Donor *donors [[id(aw::donors_id)]];
+    device const pair_atlas::Entry *paired_atlas [[id(aw::paired_atlas_id)]];
+    device const pair_atlas::Config *paired_config [[id(aw::paired_config_id)]];
 };
 // The existing sticky flag atomic also selects the sole record writer. Other
 // lanes never read this record; command completion precedes every host read.
@@ -110,9 +113,9 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
         ulong(c.pixel_count) * c.mutation_steps > 0xfffffffful ||
         !reservoir::positive_normal(c.target_scale) ||
         c.output_mode > aw::conditional_mean_output ||
-        c.mutation_policy > aw::spectral_refresh_mutation || c.stencil > aw::reciprocal16_stencil ||
-        c.temporal_cache > 1 || (c.temporal_cache && !c.history_used) ||
-        c.temporal_reprojection > 1 ||
+        c.mutation_policy > aw::spectral_refresh_mutation ||
+        c.stencil > aw::paired_gaussian16_stencil || c.temporal_cache > 1 ||
+        (c.temporal_cache && !c.history_used) || c.temporal_reprojection > 1 ||
         (c.temporal_reprojection &&
          (c.contribution_mode != cw::enhanced || !c.history_used || c.temporal_cache)) ||
         c.contribution_mode > cw::enhanced ||
@@ -127,6 +130,16 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
         !schedule) {
         AREA_FAIL(a, aw::invalid_config);
         return false;
+    }
+    if (c.stencil == aw::paired_gaussian16_stencil) {
+        // Once per pixel/kernel, not once for each of finalize's four neighbors.
+        // Legacy modes never read their reflected-minimum typed sentinels.
+        const auto paired = *a.paired_config;
+        if (c.offset_x[0] || c.offset_x[1] || c.offset_y[0] || c.offset_y[1] ||
+            !pair_atlas::valid_config(paired)) {
+            AREA_FAIL(a, aw::invalid_config);
+            return false;
+        }
     }
     uint source;
     if (pixel < c.pixel_count && c.temporal_reprojection && !area_temporal_source(a, pixel, source))
@@ -257,6 +270,26 @@ inline bool area_selected_values(constant AreaArguments &a, uint slot, AreaNumbe
                      reservoir::positive_normal(target.fraction);
 }
 inline uint area_neighbor_direction(constant AreaArguments &a, uint pixel, uint direction) {
+    if (a.config->stencil == aw::paired_gaussian16_stencil) {
+        if (direction == 0)
+            return pixel;
+        if (direction > pair_atlas::tile_count) {
+            AREA_FAIL(a, aw::invalid_config);
+            return pixel;
+        }
+        const auto tile = a.paired_config->tiles[direction - 1];
+        const auto pose = a.paired_config->poses[direction - 1];
+        const auto result =
+            pair_atlas::neighbor_tile(tile, pose, pair_atlas::total_entries, a.paired_atlas, pixel,
+                                      a.config->width, a.config->height);
+        if (result.status != pair_atlas::Status::ok) {
+            AREA_DETAIL(a, aw::invalid_payload, result.status,
+                        uint4(direction, tile.first_entry, tile.width, pose.transform),
+                        uint4(pose.offset_x, pose.offset_y, pose.reserved, result.pixel));
+            return pixel; // Sticky failure forbids successful publication.
+        }
+        return result.pixel;
+    }
     if (a.config->stencil == aw::reciprocal16_stencil)
         return rypath_area_stencil::neighbor(pixel, a.config->width, a.config->height,
                                              {{a.config->offset_x[0], a.config->offset_y[0]},
@@ -278,6 +311,13 @@ inline uint area_neighbor_direction(constant AreaArguments &a, uint pixel, uint 
 }
 inline uint area_neighbor(constant AreaArguments &a, uint pixel) {
     return area_neighbor_direction(a, pixel, a.config->candidate);
+}
+inline uint area_reverse_direction(constant AreaArguments &a, uint direction) {
+    // Each atlas is its OWN involution. Other atlas candidates are independent;
+    // only legacy +/- vector stencils invert through the opposite slot.
+    return a.config->stencil == aw::paired_gaussian16_stencil
+               ? direction
+               : rypath_area_stencil::inverse_slot(direction);
 }
 inline bool area_same_payload(const thread rypath_replay::ReplayState &a,
                               const thread rypath_replay::ReplayState &b) {
@@ -378,7 +418,7 @@ inline void area_prepare_evaluation(constant AreaArguments &a, uint pixel, uint 
     }
 }
 inline bool area_owned_result(constant AreaArguments &a, uint pixel, thread ew::Reference &record,
-                              thread reuse_mis::Scaled &h) {
+                              thread reuse_mis::Scaled &h, uint spatial_neighbor = 0xffffffffu) {
     record = {0, 0};
     h = {0, 0};
     if (!area_enhanced(a))
@@ -408,9 +448,17 @@ inline bool area_owned_result(constant AreaArguments &a, uint pixel, thread ew::
         if (!area_temporal_source(a, pixel, source_pixel))
             return false;
         expected = a.history_source[source_pixel].record;
-    } else if (a.config->phase == aw::spatial)
-        expected = a.temporal[area_neighbor(a, pixel)].record;
-    else if (!fresh)
+    } else if (a.config->phase == aw::spatial) {
+        const uint neighbor =
+            spatial_neighbor == 0xffffffffu ? area_neighbor(a, pixel) : spatial_neighbor;
+        if (area_failed(a))
+            return false;
+        if (neighbor >= a.config->pixel_count) {
+            AREA_FAIL(a, aw::invalid_payload);
+            return false;
+        }
+        expected = a.temporal[neighbor].record;
+    } else if (!fresh)
         expected = a.temporal[pixel].record;
     const auto result =
         fresh || a.config->phase == aw::mutation ? ew::Reference{ew::fresh_bank, pixel} : expected;
@@ -767,7 +815,7 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, AreaNumber sc
     a.raw_xyz[pixel] = sum;
     return true;
 }
-kernel void rypath_area_contract_v15(device aw::Contract *out [[buffer(0)]]) {
+kernel void rypath_area_contract_v16(device aw::Contract *out [[buffer(0)]]) {
     *out = {aw::contract,
             sizeof(aw::Config),
             sizeof(aw::History),
@@ -777,7 +825,9 @@ kernel void rypath_area_contract_v15(device aw::Contract *out [[buffer(0)]]) {
             sizeof(aw::Counters),
             sizeof(cw::Evaluation),
             sizeof(rypath_enhanced_suffix_tape::Entry),
-            sizeof(rypath::enhanced_motion_wire::Donor)};
+            sizeof(rypath::enhanced_motion_wire::Donor),
+            sizeof(pair_atlas::Config),
+            sizeof(pair_atlas::Entry)};
 }
 kernel void rypath_area_reset(constant AreaArguments &a [[buffer(1)]],
                               uint lane [[thread_position_in_grid]]) {
@@ -832,7 +882,10 @@ kernel void rypath_area_prepare(constant wire::Parameters &p [[buffer(0)]],
             AREA_FAIL(a, aw::invalid_config);
             return;
         }
-        const aw::Temporal source = a.temporal[area_neighbor(a, pixel)];
+        const uint neighbor = area_neighbor(a, pixel);
+        if (area_failed(a))
+            return;
+        const aw::Temporal source = a.temporal[neighbor];
         if (!area_temporal_valid(a, pixel, source)) {
             return;
         }
@@ -935,7 +988,8 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
     auto xyz = a.leaf_xyz[pixel];
     ew::Reference record{};
     reuse_mis::Scaled h{};
-    if (!area_owned_result(a, pixel, record, h))
+    const uint spatial_neighbor = a.config->phase == aw::spatial ? area_neighbor(a, pixel) : pixel;
+    if (area_failed(a) || !area_owned_result(a, pixel, record, h, spatial_neighbor))
         return;
     AreaNumber target;
     if (!area_target(a, pixel, xyz, target, h))
@@ -1037,7 +1091,8 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
             AREA_FAIL(a, aw::invalid_config);
             return;
         }
-        const aw::Temporal source = a.temporal[area_neighbor(a, pixel)];
+        const uint neighbor = spatial_neighbor;
+        const aw::Temporal source = a.temporal[neighbor];
         if (!area_temporal_valid(a, pixel, source) || !area_same_payload(source.payload, payload) ||
             selected_slot != source.selected_slot) {
             AREA_DETAIL(a, aw::invalid_payload, 0, area_payload_head(source.payload),
@@ -1048,7 +1103,7 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         accumulator = a.accumulators[pixel];
         expected = a.config->candidate - 1;
         aw::Temporal center{};
-        const bool boundary = area_neighbor(a, pixel) == pixel;
+        const bool boundary = neighbor == pixel;
         if (area_enhanced(a)) {
             center = a.temporal[pixel];
             if (!area_temporal_valid(a, pixel, center))
@@ -1169,12 +1224,16 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
         spatial_confidence = confidence::spatial_begin({center.confidence, 1});
     for (uint direction = 1; direction <= 4; ++direction) {
         const uint neighbor = area_neighbor_direction(a, pixel, direction);
-        const uint opposite = rypath_area_stencil::inverse_slot(direction);
-        // A clamped self-neighbor does not have the ordinary opposite inverse.
+        if (area_failed(a))
+            return;
+        const uint reverse_direction = area_reverse_direction(a, direction);
+        // An edge singleton reads the center directly; an atlas pair reverses
+        // within this SAME candidate, while legacy offsets use their opposite.
         const AreaNumber reverse_target =
             neighbor == pixel
                 ? area_T(center)
-                : area_cross_load(a, ulong(opposite - 1) * a.config->pixel_count + neighbor);
+                : area_cross_load(a,
+                                  ulong(reverse_direction - 1) * a.config->pixel_count + neighbor);
         uint neighbor_confidence = 0;
         if (area_enhanced(a) && neighbor != pixel) {
             const auto source = a.temporal[neighbor];
@@ -1201,7 +1260,7 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
             AREA_DETAIL(a, aw::invalid_value, part.status,
                         as_type<uint4>(float4(center.normalizer, center.target,
                                               reverse_target.fraction, part.value.fraction)),
-                        uint4(direction, neighbor, opposite, 0));
+                        uint4(direction, neighbor, reverse_direction, 0));
             return;
         }
         const auto sum =
@@ -1213,7 +1272,7 @@ kernel void rypath_area_finalize(constant AreaArguments &a [[buffer(1)]],
             AREA_DETAIL(a, aw::invalid_value, sum.status,
                         as_type<uint4>(float4(center_score.fraction, part.value.fraction,
                                               sum.value.fraction, 0)),
-                        uint4(direction, neighbor, opposite, 0));
+                        uint4(direction, neighbor, reverse_direction, 0));
             return;
         }
         center_score = sum.value;

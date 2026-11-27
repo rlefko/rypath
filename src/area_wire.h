@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "area_pair_atlas_shared.h"
 #include "contribution_wire.h"
 #include "enhanced_motion_wire.h"
 #include "enhanced_wire.h"
@@ -10,7 +11,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 15,
+    contract = 16,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -27,7 +28,11 @@ enum Phase : Word {
 };
 enum Output : Word { selected_output = 0, conditional_mean_output = 1 };
 enum MutationPolicy : Word { legacy_mutation = 0, spectral_refresh_mutation = 1 };
-enum Stencil : Word { adjacent_stencil = 0, reciprocal16_stencil = 1 };
+enum Stencil : Word {
+    adjacent_stencil = 0,
+    reciprocal16_stencil = 1,
+    paired_gaussian16_stencil = 2
+};
 enum Failure : Word {
     invalid_config = 1,
     invalid_payload = 2,
@@ -128,12 +133,15 @@ enum Argument : Word {
     enhanced_records_id,
     enhanced_evaluation_id,
     enhanced_suffix_id,
-    donors_id
+    donors_id,
+    paired_atlas_id,
+    paired_config_id
 };
 struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
     Word accumulator_bytes, replay_bytes, counters_bytes, contribution_evaluation_bytes;
     Word suffix_entry_bytes, donor_bytes;
+    Word paired_config_bytes, paired_entry_bytes;
 };
 static_assert(__builtin_offsetof(History, confidence) == 60 &&
                   __builtin_offsetof(Temporal, confidence) == 64 &&
@@ -142,7 +150,7 @@ static_assert(__builtin_offsetof(History, confidence) == 60 &&
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
 static_assert(sizeof(Config) == 104 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
-                  sizeof(Accumulator) == 104 && sizeof(Contract) == 40 && sizeof(Counters) == 112,
+                  sizeof(Accumulator) == 104 && sizeof(Contract) == 48 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath
@@ -150,3 +158,6 @@ static_assert(sizeof(Config) == 104 && sizeof(History) == 88 && sizeof(Temporal)
 static_assert(rypath::area_wire::donors_id == 14 &&
                   __builtin_offsetof(rypath::area_wire::Config, temporal_reprojection) == 100,
               "Area v15 frozen temporal donor ABI");
+
+static_assert(rypath::area_wire::paired_atlas_id == 15 && rypath::area_wire::paired_config_id == 16,
+              "Area v16 immutable paired atlas arguments");
