@@ -159,6 +159,8 @@ void proof_controls() {
         case 11:
             s.environment_image = 0;
             break;
+        default:
+            throw std::logic_error("Unexpected diffuse scene proof control");
         }
         need(!scene_proves_diffuse_events(s), "Appearance/media proof negative admitted");
     }

@@ -28,14 +28,20 @@ h::Density density(h::Vector p) {
     return out;
 }
 long double total(V v) { return (v[0] + v[1]) + (v[2] + v[3]); }
-void independent_step(V &P, V &beta, h::Vector n, h::Vector pdf) {
-    const auto before = total(P);
+struct OracleWalk {
+    V density{}, beta{};
+};
+struct OracleEvent {
+    h::Vector numerator, pdf;
+};
+void independent_step(OracleWalk &walk, const OracleEvent &event) {
+    const auto before = total(walk.density);
     for (unsigned k = 0; k < 4; ++k)
-        P[k] *= pdf[k];
-    const auto after = total(P);
+        walk.density[k] *= event.pdf[k];
+    const auto after = total(walk.density);
     need(after > 0, "Independent rational branch support");
     for (unsigned k = 0; k < 4; ++k)
-        beta[k] = beta[k] * n[k] * before / after;
+        walk.beta[k] = walk.beta[k] * event.numerator[k] * before / after;
 }
 void ordinary_products() {
     const std::array<h::Vector, 3> n{{{.5f, .25f, 0, .75f}, {2, .5f, 3, 0}, {.25f, 2, 1, .5f}}};
@@ -43,9 +49,10 @@ void ordinary_products() {
         {{.25f, .5f, .125f, .75f}, {.5f, .125f, .75f, 1}, {.5f, 1, .25f, .125f}}};
     for (auto input : {h::Vector{1, 3, 2, 4}, h::Vector{7, 0, 5, 1}}) {
         auto state = s::begin();
-        V P{}, beta{2, 5, 0, 7}, N{1, 1, 1, 1}, D{1, 1, 1, 1}, MIS{};
+        OracleWalk expected{.density = {}, .beta = {2, 5, 0, 7}};
+        V N{1, 1, 1, 1}, D{1, 1, 1, 1}, MIS{};
         for (unsigned k = 0; k < 4; ++k)
-            P[k] = input[k];
+            expected.density[k] = input[k];
         for (unsigned event = 0; event < 3; ++event) {
             if (event == 2) {
                 need(s::snapshot_mis(state) == s::Status::ok, "Snapshot before final sample");
@@ -53,7 +60,7 @@ void ordinary_products() {
             }
             need(s::append(state, n[event], pdf[event]) == s::Status::ok,
                  "Ordinary coefficient append");
-            independent_step(P, beta, n[event], pdf[event]);
+            independent_step(expected, {.numerator = n[event], .pdf = pdf[event]});
             for (unsigned k = 0; k < 4; ++k) {
                 N[k] *= n[event][k];
                 D[k] *= pdf[event][k];
@@ -64,9 +71,9 @@ void ordinary_products() {
         for (unsigned k = 0; k < 4; ++k) {
             near(scalar(state.N[k]), N[k], 0, "Products retain physical numerators, never N/D");
             near(scalar(state.D_to_atom.lane[k]), D[k], 0, "Likelihood products independent");
-            near(result.beta[k], beta[k], std::abs(beta[k]) * 2e-6L + 1e-35L,
+            near(result.beta[k], expected.beta[k], std::abs(expected.beta[k]) * 2e-6L + 1e-35L,
                  "Telescoping equals independent long-double event recurrence");
-            near(scalar(result.to_atom.lane[k]), P[k], 0, "Atom density snapshot");
+            near(scalar(result.to_atom.lane[k]), expected.density[k], 0, "Atom density snapshot");
             near(scalar(result.to_MIS.lane[k]), input[k] * MIS[k], 0,
                  "MIS excludes preceding sample and differs from atom density");
         }

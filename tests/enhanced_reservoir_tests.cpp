@@ -17,10 +17,10 @@ void require(bool ok, const char *message) {
     if (!ok)
         throw std::runtime_error(message);
 }
-N number(float f, int exponent = 0) {
+N number(float f) {
     int shift = 0;
     const auto fraction = std::frexp(f, &shift);
-    return {fraction, exponent + shift};
+    return {fraction, shift};
 }
 // Independent host representation: no production sum/product/ratio helper.
 N reference_sum(N a, N b) {

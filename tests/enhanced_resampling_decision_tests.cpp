@@ -5,6 +5,7 @@
 #include "mutation_shared.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <set>
@@ -102,7 +103,7 @@ void exhaustive_addresses() {
                  "Every checked word must match the independent known-answer-bound reference");
         }
     }
-    need(seen.size() == 143 * 257, "Exhaustive 143x257 address count");
+    need(seen.size() == std::size_t{143} * std::size_t{257}, "Exhaustive 143x257 address count");
     const auto last = d::address(identity, d::fresh_site(130), 256);
     need(last.counter.w == 66816, "Largest declared counter remains far below Word overflow");
     for (const auto site : sites()) {

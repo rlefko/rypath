@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <iostream>
 #include <limits>
+#include <span>
 #include <stdexcept>
 namespace {
 namespace t = rypath_enhanced_suffix_tape;
@@ -493,9 +493,14 @@ void deferred_completion() {
                  exact_density(resumed.density, pending.density) &&
                  exact_density(resumed.mis_density, pending.mis_density),
              "Completion preserves the first readout throughput and both densities");
-        need(std::memcmp(&e, &e_before, sizeof(e)) == 0 &&
-                 std::memcmp(&x, &unready_before, sizeof(x)) == 0 &&
-                 std::memcmp(&pending, &pending_before, sizeof(pending)) == 0,
+        // The contract here is byte preservation, including poisoned FLOAT
+        // payloads and signed zeros, rather than numerical member equality.
+        need(std::ranges::equal(std::as_bytes(std::span{&e, 1}),
+                                std::as_bytes(std::span{&e_before, 1})) &&
+                 std::ranges::equal(std::as_bytes(std::span{&x, 1}),
+                                    std::as_bytes(std::span{&unready_before, 1})) &&
+                 std::ranges::equal(std::as_bytes(std::span{&pending, 1}),
+                                    std::as_bytes(std::span{&pending_before, 1})),
              "Readout and completion leave entry, input, and pending receipt unchanged");
         if (variant < 4)
             need(agrees(resumed.value, oracle(e, x_before).value),
@@ -548,6 +553,8 @@ void deferred_completion() {
         case 7:
             bad.mis_density.lane[0].fraction = poison;
             break;
+        default:
+            throw std::logic_error("Unexpected malformed suffix result variant");
         }
         const auto result = t::complete_immediate(e, bad, x.immediate_bsdf_pdf, 1, 15);
         need(result.status ==

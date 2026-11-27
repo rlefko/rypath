@@ -43,10 +43,13 @@ e::PreparedUpdate pending(const e::State &state, unsigned index, e::XYZ xyz, flo
     need(p.status == e::Status::ok, "prepare valid observation");
     return p;
 }
-void observe(e::State &s, e::XYZ xyz, float probability, unsigned word = 0) {
+struct DecisionWord {
+    unsigned value = 0;
+};
+void observe(e::State &s, e::XYZ xyz, float probability, DecisionWord word = {}) {
     auto p = pending(s, s.observed, xyz, probability);
     for (unsigned i = 0; !p.decision.decision.complete && i < er::maximum_random_words; ++i)
-        e::feed_random_word(p, word);
+        e::feed_random_word(p, word.value);
     need(e::commit_update(s, p).status == e::Status::ok, "commit valid observation");
 }
 // Independent long-double physical target; no production scaled helper.
@@ -348,7 +351,7 @@ void long_stream_and_readout() {
             float_sum += static_cast<float>(V(t.value)) / a;
             ++positives;
         }
-        observe(s, xyz, a, 0xffffffffu);
+        observe(s, xyz, a, {0xffffffffu});
         need(s.observed == i + 1 && e::valid_state(s), "all131 ordered observations valid");
     }
     need(positives == 87 && m::bits(float_sum) == m::bits(static_cast<float>(V(s.score_sum))),
