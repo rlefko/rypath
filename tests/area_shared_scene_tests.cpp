@@ -178,6 +178,11 @@ RenderScene fixture() {
     scene.point_lights.push_back(light);
     return scene;
 }
+RenderScene take_scene(std::optional<RenderScene> &&scene) {
+    if (!scene.has_value())
+        throw std::runtime_error("PBRT translation failed");
+    return std::move(*scene);
+}
 RenderScene load(const Options &o) {
     if (o.scene.empty())
         return fixture();
@@ -186,7 +191,8 @@ RenderScene load(const Options &o) {
     // increasing only image bytes would still leave mesh/dimension limits wrong.
     const auto limits = resource_limits(o.resource_profile).pbrt;
     auto checked = pbrt::check(o.scene, limits);
-    need(checked.exit_code() == 0 && checked.scene.has_value(), pbrt::report(checked));
+    if (checked.exit_code() != 0 || !checked.scene.has_value())
+        throw std::runtime_error(pbrt::report(checked));
     for (const auto &[name, type] : {std::pair{"Sampler", "independent"}, std::pair{"Film", "rgb"}})
         if (std::ranges::none_of(checked.scene->options,
                                  [&](const auto &d) { return d.authored.name == name; })) {
@@ -217,8 +223,9 @@ RenderScene load(const Options &o) {
         pbrt::translate(checked, {o.scene.string()}, limits, SpectralTransportSelection::hero);
     for (const auto &d : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(d);
-    need(translated.exit_code() == 0 && translated.scene.has_value(), "PBRT translation failed");
-    return std::move(*translated.scene);
+    if (translated.exit_code() != 0)
+        throw std::runtime_error("PBRT translation failed");
+    return take_scene(std::move(translated.scene));
 }
 struct Difference {
     std::uint64_t count = 0, nonfinite = 0;
@@ -545,6 +552,8 @@ int run(const Options &o) {
             out.flush();
             ++completed;
             if (d.count || d.nonfinite) {
+                if (!d.pixel.has_value())
+                    throw std::runtime_error("Raw mismatch has no first-pixel diagnostic");
                 std::ostringstream diagnostic;
                 diagnostic << "Raw XYZ differs at frame " << ordinal << ", pixel " << *d.pixel
                            << ", channel " << d.channel << ", maximum absolute difference "

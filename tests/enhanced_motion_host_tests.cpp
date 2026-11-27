@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "enhanced_motion_host.hpp"
+#include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <span>
 #include <stdexcept>
+#include <type_traits>
 
 namespace {
 using namespace rypath;
@@ -22,6 +25,22 @@ void close(double actual, double expected, double tolerance, const char *why) {
     need(std::isfinite(actual) && std::isfinite(expected) &&
              std::abs(actual - expected) <= tolerance,
          why);
+}
+template <class T> T &present(std::optional<T> &value) {
+    if (!value.has_value())
+        throw std::runtime_error("Expected initialized test fixture optional");
+    return *value;
+}
+template <class T> const T &present(const std::optional<T> &value) {
+    if (!value.has_value())
+        throw std::runtime_error("Expected initialized test fixture optional");
+    return *value;
+}
+template <class T> bool same_wire_bytes(const T &a, const T &b) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    // This is deliberately wire identity, including signed-zero/NaN/reserved
+    // bytes, rather than floating-point member equality.
+    return std::ranges::equal(std::as_bytes(std::span{&a, 1}), std::as_bytes(std::span{&b, 1}));
 }
 D3 point(GeometryPoint p) { return {p.x, p.y, p.z}; }
 D3 sub(D3 a, D3 b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
@@ -51,7 +70,7 @@ FrameCamera raster_camera(GeometryPoint origin = {}) {
 void camera_packing() {
     auto current = raster_camera({2, -3, 1});
     auto previous = raster_camera({-1, 2, .5f});
-    auto &raster = *previous.raster_camera;
+    auto &raster = present(previous.raster_camera);
     const auto rotated = [](GeometryPoint p) {
         constexpr double a = .37;
         return GeometryPoint{float(std::cos(a) * p.x + std::sin(a) * p.z), p.y,
@@ -64,7 +83,7 @@ void camera_packing() {
     need(packed.config.has_value() && packed.diagnostic.empty() && packed.current_camera &&
              packed.previous_camera && packed.current_used_raster && packed.previous_used_raster,
          "Valid raster pair returns complete config and camera metadata");
-    const auto &config = *packed.config;
+    const auto &config = present(packed.config);
     need(sizeof(config) == 352 && config.version == 1 && config.width == 128 &&
              config.height == 96 && config.history_valid == 1 && config.reserved == 0 &&
              config.serial_low == 0x76543210u && config.serial_high == 0xfedcba98u,
@@ -90,7 +109,8 @@ void camera_packing() {
         const auto relative = sub(world, packed.common_origin);
         for (bool old : {false, true}) {
             const auto &camera = old ? config.previous_camera : config.current_camera;
-            const auto &source = old ? *previous.raster_camera : *current.raster_camera;
+            const auto &source =
+                old ? present(previous.raster_camera) : present(current.raster_camera);
             const auto expected = oracle(source, world, 128, 96);
             const auto actual = motion::project(
                 camera, {float(relative[0]), float(relative[1]), float(relative[2])});
@@ -108,7 +128,7 @@ void camera_packing() {
     need(cold.config && cold.config->history_valid == 0 && cold.config->serial_low == 0xffffffffu &&
              cold.config->serial_high == 0xffffffffu,
          "Cold config retains full all-ones serial");
-    const auto before_near = motion::project(cold.config->current_camera, {0, 0, .0005f});
+    const auto before_near = motion::project(present(cold.config).current_camera, {0, 0, .0005f});
     need(before_near.status == motion::ProjectionStatus::before_near_plane,
          "Guide-only near remains a projection eligibility check");
 }
@@ -118,7 +138,7 @@ void raster_preference_and_ranges() {
     const auto preferred = host::pack_config(a, a, 16, 8, true, 0);
     need(preferred.config && preferred.current_used_raster && preferred.previous_used_raster,
          "Raster camera preferred over invalid RenderCamera fallback");
-    a.raster_camera->dx = {};
+    present(a.raster_camera).dx = {};
     a.camera = RenderCamera{}; // Valid fallback must NOT rescue an invalid explicit raster.
     auto failed = host::pack_config(a, a, 16, 8, true, 0);
     need(!failed.config && !failed.diagnostic.empty(),
@@ -133,7 +153,7 @@ void raster_preference_and_ranges() {
          "Invalid physical projection camera explicitly diagnosed");
     a = raster_camera();
     auto b = a;
-    b.raster_camera->corner.z = std::numeric_limits<float>::quiet_NaN();
+    present(b.raster_camera).corner.z = std::numeric_limits<float>::quiet_NaN();
     failed = host::pack_config(a, b, 16, 8, false, 0);
     need(!failed.config && failed.diagnostic.find("previous camera") != std::string::npos,
          "Cold history still requires structurally valid previous wire camera");
@@ -171,7 +191,7 @@ void large_origin() {
     const auto packed = host::pack_config(a, b, 128, 96, true, 1ull << 32);
     need(packed.config.has_value(),
          "Large camera origin pair packs without absolute FLOAT surface positions");
-    const auto &config = *packed.config;
+    const auto &config = present(packed.config);
     need(config.previous_camera.common_to_matrix_origin.x == -32 &&
              config.previous_camera.common_to_matrix_origin.y == 64 &&
              config.previous_camera.common_to_matrix_origin.z == -32 &&
@@ -180,7 +200,8 @@ void large_origin() {
          "Large-origin double differences retain exact sign and magnitude");
     const D3 world{double(base) + 3, -double(base) + 4, double(base) + 128};
     for (bool old : {false, true}) {
-        const auto expected = oracle(old ? *b.raster_camera : *a.raster_camera, world, 128, 96);
+        const auto expected =
+            oracle(old ? present(b.raster_camera) : present(a.raster_camera), world, 128, 96);
         const auto actual =
             motion::project(old ? config.previous_camera : config.current_camera, {3, 4, 128});
         need(actual.status == motion::ProjectionStatus::valid,
@@ -217,8 +238,7 @@ void resolved_wire_projection() {
             const auto result = host::pack_config_from_parameters(p, old, true, (1ull << 32) + 7);
             need(result.config && result.current_camera && result.previous_camera,
                  "Resolved wire camera pair packs");
-            need(std::memcmp(&p, &unchanged, sizeof(p)) == 0 &&
-                     std::memcmp(&old, &unchanged_old, sizeof(old)) == 0,
+            need(same_wire_bytes(p, unchanged) && same_wire_bytes(old, unchanged_old),
                  "Projection bridge preserves both physical wire parameter blocks");
             // For this exact 4:3 film and scale3/4, demo default box has
             // horizontal extent1 and vertical extent3/4. Centered-filter and
@@ -237,7 +257,8 @@ void resolved_wire_projection() {
                         oracle(previous ? expected_old : expected, world, 128, 96);
                     const auto relative = sub(world, result.common_origin);
                     const auto actual = motion::project(
-                        previous ? result.config->previous_camera : result.config->current_camera,
+                        previous ? present(result.config).previous_camera
+                                 : present(result.config).current_camera,
                         {float(relative[0]), float(relative[1]), float(relative[2])});
                     need(actual.status == motion::ProjectionStatus::valid,
                          "Resolved wire projection valid");
@@ -294,7 +315,7 @@ void deterministic_parameters() {
     const auto built = host::center_geometry_parameters(physical);
     need(built.parameters.has_value() && built.diagnostic.empty(),
          "Resolved geometry parameters copy succeeds");
-    need(std::memcmp(&physical, &unchanged, sizeof(physical)) == 0,
+    need(same_wire_bytes(physical, unchanged),
          "Physical transport parameters remain byte-identical");
     auto expected = physical;
     expected.sampler_kind = render_wire::independent_sampler;
@@ -303,7 +324,7 @@ void deterministic_parameters() {
     expected.lens_radius = 0;
     expected.pixel_begin = 0;
     expected.pixel_count = expected.lane_count = 17 * 19;
-    need(std::memcmp(&*built.parameters, &expected, sizeof(expected)) == 0,
+    need(same_wire_bytes(present(built.parameters), expected),
          "Only declared deterministic representative-query overrides change");
     auto labels = physical;
     labels.sample_low++;
@@ -312,7 +333,7 @@ void deterministic_parameters() {
     labels.seed_high++;
     const auto relabeled = host::center_geometry_parameters(labels);
     need(relabeled.parameters &&
-             std::memcmp(&*built.parameters, &*relabeled.parameters, sizeof(expected)) == 0,
+             same_wire_bytes(present(built.parameters), present(relabeled.parameters)),
          "Physical labels and seeds cannot affect representative parameters");
     auto bad = physical;
     bad.model = 0xffffffffu;
