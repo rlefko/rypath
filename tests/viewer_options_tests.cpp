@@ -59,6 +59,89 @@ void spectral_and_area_policies() {
     rejected({"--demo", "--area-mutation-policy", "invalid"}, "Invalid mutation policy");
     rejected({"--demo", "--area-stencil", "invalid"}, "Invalid area stencil");
 }
+void enhanced_configuration() {
+    const auto o = accepted({"--scene",
+                             "fixture.pbrt",
+                             "--estimator",
+                             "area-replay",
+                             "--spectral-transport",
+                             "hero",
+                             "--hero-wavelengths",
+                             "visible",
+                             "--area-path-domain",
+                             "enhanced",
+                             "--area-contribution-replay",
+                             "prefix",
+                             "--area-stencil",
+                             "paired-gaussian16",
+                             "--area-spatial-mode",
+                             "stochastic-shared",
+                             "--area-history-cap",
+                             "3",
+                             "--mutations",
+                             "0",
+                             "--resource-profile",
+                             "large",
+                             "--variance-policy",
+                             "conservative"});
+    const auto c = viewer::frame_configuration(o);
+    require(c.area_path_domain == FrameAreaPathDomain::enhanced &&
+                c.contribution_replay == FrameContributionReplay::prefix &&
+                c.area_stencil == FrameAreaStencil::paired_gaussian16 &&
+                c.spatial_mode == FrameSpatialMode::shared && c.enhanced_history_cap == 3 &&
+                c.mutation_steps == 0 && c.width == 1920 && c.height == 1080 && c.seed == 1 &&
+                c.footprint_samples == 1 && c.execution == FrameExecution::wavefront &&
+                c.intersection_profile == IntersectionProfile::native,
+            "Actual viewer FrameConfig preserves Enhanced shared0 and scheduling defaults");
+    require(o.resource_profile == ResourceProfile::large, "Large scene parsing profile preserved");
+    const auto r = viewer::reconstruction_configuration(o, ReconstructionMode::temporal);
+    require(r.mode == ReconstructionMode::temporal &&
+                r.spatial_variance_policy == SpatialVariancePolicy::conservative &&
+                r.near_plane == o.near_plane && r.cache_surface_guides,
+            "Actual viewer reconstruction preserves conservative variance");
+    for (const auto mode : {"all", "stochastic-pairs", "stochastic-shared"}) {
+        const auto chosen = accepted({"--scene", "fixture.pbrt", "--estimator", "area-replay",
+                                      "--area-path-domain", "enhanced", "--area-stencil",
+                                      "paired-gaussian16", "--area-spatial-mode", mode});
+        require(std::string(frame_spatial_mode_name(
+                    viewer::frame_configuration(chosen).spatial_mode)) == mode,
+                "All spatial modes reach native viewer configuration");
+    }
+    const auto defaults = viewer::frame_configuration(accepted({"--demo"}));
+    require(defaults.area_path_domain == FrameAreaPathDomain::summed &&
+                defaults.contribution_replay == FrameContributionReplay::full &&
+                defaults.spatial_mode == FrameSpatialMode::all &&
+                defaults.enhanced_history_cap == 20 && defaults.mutation_steps == 0,
+            "New opt-ins preserve independent and full-replay defaults");
+    for (const auto cap : {"0", "21", "-1", "4294967296", "1x"})
+        rejected({"--scene", "fixture.pbrt", "--estimator", "area-replay", "--area-path-domain",
+                  "enhanced", "--area-history-cap", cap},
+                 "Invalid Enhanced history cap");
+    for (const auto cap : {"1", "20"}) {
+        const auto bounded =
+            accepted({"--scene", "fixture.pbrt", "--estimator", "area-replay", "--area-path-domain",
+                      "enhanced", "--area-history-cap", cap});
+        require(viewer::frame_configuration(bounded).enhanced_history_cap == std::stoul(cap),
+                "Both fixed-cap endpoints reach native configuration");
+    }
+    rejected({"--demo", "--area-spatial-mode", "invalid"}, "Unknown spatial policy");
+    rejected({"--demo", "--area-path-domain", "invalid"}, "Unknown path domain");
+    rejected({"--demo", "--area-contribution-replay", "invalid"}, "Unknown replay policy");
+    rejected({"--demo", "--area-history-cap", "1"}, "Cap needs Enhanced");
+    rejected({"--scene", "fixture.pbrt", "--area-path-domain", "enhanced"},
+             "Path domain needs Area estimator");
+    rejected({"--demo", "--estimator", "area-replay", "--area-path-domain", "enhanced"},
+             "Enhanced needs PBRT");
+    rejected({"--scene", "fixture.pbrt", "--estimator", "area-replay", "--area-path-domain",
+              "enhanced", "--area-spatial-mode", "stochastic-shared"},
+             "Shared needs paired atlas");
+    rejected({"--demo", "--area-contribution-replay", "prefix"},
+             "Prefix needs contribution domain");
+    rejected({"--demo", "--resource-profile", "invalid"}, "Unknown resource budget");
+    rejected({"--demo", "--variance-policy", "invalid"}, "Unknown variance policy");
+    rejected({"--demo", "--mode", "metalfx", "--variance-policy", "conservative"},
+             "Variance option needs temporal mode");
+}
 void defaults_and_modes() {
     const auto defaults = accepted({"--demo"});
     require(defaults.demo && defaults.scene.empty() && !defaults.help, "Demo selection defaults");
@@ -209,6 +292,7 @@ void paths_are_only_parsed() {
 int main() {
     try {
         spectral_and_area_policies();
+        enhanced_configuration();
         defaults_and_modes();
         denoiser_selection_and_comparison();
         integer_boundaries();

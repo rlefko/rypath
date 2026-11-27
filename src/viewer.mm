@@ -174,7 +174,8 @@ RenderScene load_scene(const viewer::Options &options) {
             scene.hero_wavelengths = *options.hero_wavelengths;
         return scene;
     }
-    auto checked = pbrt::check(options.scene);
+    const auto limits = resource_limits(options.resource_profile).pbrt;
+    auto checked = pbrt::check(options.scene, limits);
     if (checked.exit_code() || !checked.scene) {
         std::cerr << pbrt::report(checked);
         throw std::runtime_error("PBRT preflight failed; viewer did not render");
@@ -223,7 +224,7 @@ RenderScene load_scene(const viewer::Options &options) {
         }
     }
     auto translated =
-        pbrt::translate(checked, {options.scene.string()}, {}, options.spectral_transport);
+        pbrt::translate(checked, {options.scene.string()}, limits, options.spectral_transport);
     for (const auto &d : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(d);
     for (const auto &p : translated.provenance)
@@ -349,18 +350,7 @@ class ViewerState {
         speed = movement_speed(scene);
         interfaces = std::ranges::any_of(scene.instance_media,
                                          [](const auto &m) { return m.inside != m.outside; });
-        FrameConfig config;
-        config.width = options.width;
-        config.height = options.height;
-        config.seed = options.seed;
-        config.footprint_samples = 1;
-        config.intersection_profile = IntersectionProfile::native;
-        config.execution = FrameExecution::wavefront;
-        config.estimator = options.estimator;
-        config.mutation_policy = options.mutation_policy;
-        config.area_stencil = options.area_stencil;
-        config.mutation_steps =
-            options.estimator == FrameEstimator::area_replay ? options.mutation_steps : 0;
+        const auto config = viewer::frame_configuration(options);
         auto built = build_frame_session(scene, config);
         if (built.status != GeometryStatus::success || !built.session)
             throw std::runtime_error(built.diagnostic);
@@ -370,6 +360,11 @@ class ViewerState {
                      "footprint=1, unclamped raw XYZ\n"
                   << "Native wavefront; estimator=" << estimator_name()
                   << "; mutations=" << config.mutation_steps
+                  << "; domain=" << frame_area_path_domain_name(config.area_path_domain)
+                  << "; replay=" << frame_contribution_replay_name(config.contribution_replay)
+                  << "; spatial=" << frame_spatial_mode_name(config.spatial_mode)
+                  << "; history cap=" << config.enhanced_history_cap
+                  << "; resources=" << resource_profile_name(options.resource_profile)
                   << "; spectral=" << spectral_transport_name(scene.spectral_transport)
                   << "; film exposure=" << scene.exposure << "; display EV=" << ev << '\n';
     }
@@ -671,6 +666,30 @@ class ViewerState {
              scene.spectral_transport == SpectralTransport::hero
                  ? std::string(hero_wavelength_sampling_name(scene.hero_wavelengths))
                  : "not-applicable"},
+            {"rypath.resource_profile",
+             std::string(resource_profile_name(options.resource_profile))},
+            {"rypath.variance_policy",
+             info.mode == ReconstructionMode::temporal
+                 ? (options.variance_policy == SpatialVariancePolicy::conservative ? "conservative"
+                    : options.variance_policy == SpatialVariancePolicy::center     ? "center"
+                                                                                   : "paired")
+                 : "not-applicable"},
+            {"rypath.area.requested_domain", frame_area_path_domain_name(options.area_path_domain)},
+            {"rypath.area.domain", options.estimator == FrameEstimator::area_replay
+                                       ? frame_area_path_domain_name(info.source.area_path_domain)
+                                       : "not-applicable"},
+            {"rypath.area.replay",
+             options.estimator == FrameEstimator::area_replay &&
+                     frame_area_contribution_family(info.source.area_path_domain)
+                 ? frame_contribution_replay_name(info.source.contribution_replay)
+                 : "not-applicable"},
+            {"rypath.area.spatial_mode", frame_spatial_mode_name(info.source.spatial_mode)},
+            {"rypath.area.forward_atlas", std::to_string(info.source.stochastic_forward_atlas)},
+            {"rypath.area.canonical_atlas", std::to_string(info.source.stochastic_canonical_atlas)},
+            {"rypath.area.requested_cap", std::to_string(options.enhanced_history_cap)},
+            {"rypath.area.history_cap", std::to_string(info.source.enhanced_history_cap)},
+            {"rypath.area.canonical_law", std::to_string(info.source.canonical_transport_version)},
+            {"rypath.area.discovery_law", std::to_string(info.source.fresh_discovery_version)},
             {"rypath.area.requested_mutation", frame_mutation_policy_name(options.mutation_policy)},
             {"rypath.area.requested_stencil", frame_area_stencil_name(options.area_stencil)},
             {"rypath.area.mutation_policy",
@@ -691,12 +710,20 @@ class ViewerState {
             {"rypath.area.output", options.estimator == FrameEstimator::area_replay
                                        ? "conditional-mean"
                                        : "not-applicable"},
-            {"rypath.area.target",
-             options.estimator == FrameEstimator::area_replay ? "quarter-l1-v1" : "none"},
+            {"rypath.area.target", options.estimator != FrameEstimator::area_replay ? "none"
+                                   : info.source.area_path_domain == FrameAreaPathDomain::enhanced
+                                       ? "quarter-l1-hybrid-scaled-zero-v4"
+                                       : "quarter-l1-v1"},
             {"rypath.area.source_mis",
-             options.estimator == FrameEstimator::area_replay ? "source-target-mis-v1" : "none"},
+             options.estimator != FrameEstimator::area_replay ? "none"
+             : info.source.area_path_domain == FrameAreaPathDomain::enhanced
+                 ? "enhanced-hybrid-confidence-scaled-mis-v4"
+                 : "source-target-mis-v1"},
             {"rypath.area.temporal_reuse",
-             options.estimator == FrameEstimator::area_replay ? "20" : "0"},
+             options.estimator != FrameEstimator::area_replay ? "0"
+             : info.source.area_path_domain == FrameAreaPathDomain::enhanced
+                 ? std::to_string(info.source.enhanced_history_cap)
+                 : "20"},
             {"rypath.mutations", std::to_string(options.estimator == FrameEstimator::area_replay
                                                     ? options.mutation_steps
                                                     : 0)},
@@ -786,7 +813,7 @@ class ViewerState {
                     if (!reconstruction || !stream_mode || *stream_mode != pipeline_mode) {
                         auto built = build_reconstruction_stream(
                             *pending_raw,
-                            {.mode = pipeline_mode, .near_plane = options.near_plane});
+                            viewer::reconstruction_configuration(options, pipeline_mode));
                         if (!built.stream) {
                             halt(built.diagnostic);
                             return;
