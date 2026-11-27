@@ -2,6 +2,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "bsdf_table_fixture.hpp"
+#include "enhanced_hybrid_state_shared.h"
 #include "enhanced_wire.h"
 #include "metal_execution.hpp"
 #include "rgb_spectrum.hpp"
@@ -12,6 +13,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
@@ -25,9 +27,10 @@ namespace {
 using namespace rypath;
 namespace wf = wavefront_wire;
 namespace aw = area_wire;
-static_assert(wf::contract == 18 && sizeof(wf::Contract) == 104 && sizeof(wf::Config) == 64);
+static_assert(wf::contract == 19 && sizeof(wf::Contract) == 104 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 12 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 92);
+static_assert(aw::contract == 13 && sizeof(aw::Contract) == 32 && sizeof(aw::Config) == 92);
+static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12);
 static_assert(sizeof(enhanced_wire::Record) == 48 && sizeof(enhanced_wire::Reference) == 8 &&
@@ -43,23 +46,23 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(contract_pipeline != nil, why);
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v12 contract allocation");
+    require(contract_buffer != nil, "Area v13 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v12 contract encoder");
+    require(command && encoder, "Area v13 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v12 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v13 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 12 && contract.config_bytes == 92 && contract.history_bytes == 88 &&
+    require(contract.version == 13 && contract.config_bytes == 92 && contract.history_bytes == 88 &&
                 contract.temporal_bytes == 92 && contract.accumulator_bytes == 104 &&
                 contract.replay_bytes == 32 && contract.counters_bytes == 112 &&
                 contract.contribution_evaluation_bytes == 16,
-            "Area v12 contract mismatch; stale Area libraries are incompatible");
+            "Area v13 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
@@ -424,7 +427,7 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
             continue;
         // Serial single-lane failures avoid a valid sibling racing publication.
         // Every error must preserve zero physical/null completions and raw output.
-        for (unsigned fault = 0; fault < 16; ++fault) {
+        for (unsigned fault = 0; fault < 17; ++fault) {
             fresh();
             auto *request =
                 reinterpret_cast<cw::Evaluation *>(data(wf::contribution_evaluation_id));
@@ -467,6 +470,18 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
                     owned[0].normalizer_exponent = 1;
                 else if (fault == 15)
                     owned[0].source.bank = ew::bank_count;
+                else if (fault == 16) {
+                    // The null path must not accept any started hybrid
+                    // preparation, even though it never loads ray/BSDF pools.
+                    const std::size_t hybrid_offset =
+                        contract.enhanced_state_bytes - sizeof(rypath_enhanced_hybrid::HybridState);
+                    const std::size_t offset =
+                        hybrid_offset +
+                        offsetof(rypath_enhanced_hybrid::HybridState, primary_ready);
+                    const std::uint32_t poisoned = 1;
+                    std::memcpy(data(wf::contribution_state_id) + offset, &poisoned,
+                                sizeof(poisoned));
+                }
                 execute(fault == 4 ? std::initializer_list<Stage>{{advance, 1}}
                                    : std::initializer_list<Stage>{{probe, 1}});
             }
@@ -1318,17 +1333,17 @@ int run(const std::filesystem::path &path) {
         }
     }
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v18", why);
+        metal::load_pipeline(device, library, @"rypath_wavefront_contract_v19", why);
     require(contract_pipeline != nil,
-            "Wavefront v18 contract unavailable; rebuild the metallib: " + why);
+            "Wavefront v19 contract unavailable; rebuild the metallib: " + why);
     for (NSString *stale in @[
              @"rypath_wavefront_contract_v11", @"rypath_wavefront_contract_v12",
              @"rypath_wavefront_contract_v13", @"rypath_wavefront_contract_v14",
              @"rypath_wavefront_contract_v15", @"rypath_wavefront_contract_v16",
-             @"rypath_wavefront_contract_v17"
+             @"rypath_wavefront_contract_v17", @"rypath_wavefront_contract_v18"
          ])
         require([library newFunctionWithName:stale] == nil,
-                "Stale Wavefront stage entry must not advertise the v18 ABI");
+                "Stale Wavefront stage entry must not advertise the v19 ABI");
     auto contract_buffer = [device newBufferWithLength:sizeof(wf::Contract)
                                                options:MTLResourceStorageModeShared];
     require(contract_buffer != nil, "History contract allocation");
@@ -1351,7 +1366,7 @@ int run(const std::filesystem::path &path) {
                 history_contract.dispatch_bytes == 12 &&
                 history_contract.contribution_state_bytes == 80 &&
                 history_contract.contribution_state_alignment == 4 &&
-                history_contract.enhanced_state_bytes == 128 &&
+                history_contract.enhanced_state_bytes == 284 &&
                 history_contract.enhanced_state_alignment == 4 &&
                 history_contract.enhanced_record_bytes == 48 &&
                 history_contract.enhanced_evaluation_bytes == 32,

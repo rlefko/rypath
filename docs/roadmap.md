@@ -211,10 +211,11 @@ quality/time qualification. Its target includes native 1080p, hero transport,
 Area reuse, one MCMC mutation and denoising: 20 FPS Cornell/Prism and 10+ FPS
 Pavilion. The merged acceleration stack and contribution-prefix runtime (#74–78) do not
 satisfy those budgets. The opt-in Enhanced domain adds canonical/discovery
-sampling, owned terminal-light reconnection and strict confidence. Canonical law 3
-adds bounded scaled weights; final GPU/native validation of that repair remains
-open. Adaptive interior reconnection, cached suffixes and complete quality/time
-qualification remain to be added; chart/geometry helpers are preparatory.
+sampling, owned terminal-light reconnection and strict confidence. The scaled
+range repair has a four-scene native baseline; law 4 adds geometry and neutral
+chart preparation with passing focused GPU controls. Forced connection,
+candidate activation, cached suffixes and complete quality/time qualification
+remain open; preparation is not runtime coverage of those mechanisms.
 
 [Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
 reduces retained AS memory with bounded exact image controls; it establishes no

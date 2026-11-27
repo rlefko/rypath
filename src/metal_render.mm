@@ -2721,7 +2721,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v18", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v19", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)

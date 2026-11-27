@@ -528,3 +528,133 @@ kernel void rypath_enhanced_discovery_finish(
     out[base + 34] = as_type<uint>(published.normalizer_exponent);
     out[base + 35] = sizeof(er::State);
 }
+
+// Actual v4 Sink chart routing without geometry/traversal integration. Every
+// incoming C is finite; only h is outside FLOAT range in the extreme cases.
+namespace hybrid_sink_probe {
+constant uint count = 17, words = 32;
+inline bool imported(uint n) { return (n >= 5 && n <= 12) || n == 16; }
+inline uint slot(uint n) { return n == 3 || n == 6 || n == 10 ? 5u : 4u; }
+inline rypath::enhanced_wire::Record interior(uint primitive = 1) {
+    namespace ew = rypath::enhanced_wire;
+    return {ew::record_version,
+            rypath_enhanced_chart::interior_zomega,
+            as_type<uint>(0.f),
+            1,
+            0,
+            primitive,
+            rypath::render_wire::triangle_primitive,
+            as_type<uint>(0.f),
+            {as_type<uint>(.25f), as_type<uint>(.25f), as_type<uint>(1.f), 0}};
+}
+inline rypath_reuse_mis::Scaled density(uint n) {
+    return n == 0 || n == 1 || n == 5 ? rypath_reuse_mis::Scaled{.5f, -159}
+           : n == 2 || n == 6         ? rypath_reuse_mis::Scaled{.5f, 161}
+                                      : rypath_reuse_mis::Scaled{.5f, 4};
+}
+} // namespace hybrid_sink_probe
+kernel void rypath_enhanced_hybrid_sink_witness(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *evaluations [[buffer(6)]],
+    uint n [[thread_position_in_grid]]) {
+    if (n >= hybrid_sink_probe::count)
+        return;
+    namespace hp = hybrid_sink_probe;
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace cw = rypath::contribution_wire;
+    const device auto &config = configs[n];
+    const cw::Evaluation request{hp::imported(n) ? hp::slot(n) : ep::fresh_slot, ep::fresh_slot, 0,
+                                 0};
+    const auto pending = evaluations[n];
+    auto state = er::begin(request, config, n, pending);
+    er::Sink sink{state, cie, p, config, n, records, evaluations};
+    rypath_bdpt::Wavelengths lambda{};
+    for (uint k = 0; k < 4; ++k) {
+        lambda.lambda[k] = 400 + 100 * k;
+        lambda.pdf[k] = float(1u << k);
+    }
+    const float4 basis(1, 2, 4, 8);
+    sink.begin_event();
+    for (uint slot = 0; slot < 4; ++slot)
+        sink.add(slot, n == 4 && slot == 0 ? basis : float4(0), lambda);
+    const uint base = hp::words * n;
+    out[base + 24] =
+        uint(sink.has_interior()) | (state.next_slot << 8) | (state.selection.observed << 16);
+    out[base + 25] = state.selection.selected_slot;
+    state.hybrid.first.selected = 2;
+    state.hybrid.first.next = 3;
+    const auto record = hp::interior(n == 8 ? 2u : 1u);
+    const auto h = hp::density(n);
+    const rypath_reuse_mis::Scaled generation =
+        n == 1 ? rypath_reuse_mis::Scaled{.5f, 2} : rypath_reuse_mis::Scaled{.5f, 1};
+    out[base + 19] = n == 7 ? 0u : uint(sink.activate_hybrid(record, h, generation));
+    out[base + 20] = n == 13 ? uint(sink.activate_hybrid(record, h, generation)) : 0u;
+    if (n == 11 || n == 14)
+        state.hybrid.outside = 1;
+    if (n == 16)
+        state.hybrid.outside = 2;
+    sink.begin_event();
+    const float coefficient = n == 0 || n == 1 || n == 5 ? 0x1p120f
+                              : n == 2 || n == 6         ? 0x1p-120f
+                                                         : 1.f;
+    for (uint slot = 4; slot < 7; ++slot)
+        sink.add(slot, n != 4 && slot == hp::slot(n) ? basis * coefficient : float4(0), lambda);
+    if (n == 15)
+        state.hybrid.outside = 1; // A second guard: add passed, finish must fail.
+    reinterpret_cast<device er::State *>(sidecars)[n] = state;
+}
+kernel void rypath_enhanced_hybrid_sink_finish(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *evaluations [[buffer(6)]],
+    uint n [[thread_position_in_grid]]) {
+    if (n >= hybrid_sink_probe::count)
+        return;
+    namespace hp = hybrid_sink_probe;
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace cw = rypath::contribution_wire;
+    const device auto &config = configs[n];
+    auto state = reinterpret_cast<device er::State *>(sidecars)[n];
+    er::Sink sink{state, cie, p, config, n, records, evaluations};
+    const cw::Evaluation request{hp::imported(n) ? hp::slot(n) : ep::fresh_slot, ep::fresh_slot, 0,
+                                 0};
+    cw::Evaluation result{};
+    float3 xyz(0);
+    const bool finished = sink.finish(request, xyz, result);
+    const auto receipt = evaluations[n];
+    const uint base = hp::words * n;
+    out[base] = uint(finished);
+    out[base + 1] = state.failed;
+    out[base + 2] = result.selected_slot;
+    out[base + 3] = receipt.ready;
+    out[base + 4] = as_type<uint>(result.normalizer);
+    out[base + 5] = as_type<uint>(receipt.normalizer_exponent);
+    out[base + 6] = as_type<uint>(state.selection.selected_target.fraction);
+    out[base + 7] = as_type<uint>(state.selection.selected_target.exponent);
+    out[base + 8] = as_type<uint>(xyz.x);
+    out[base + 9] = as_type<uint>(xyz.y);
+    out[base + 10] = as_type<uint>(xyz.z);
+    out[base + 11] = uint(sink.has_interior());
+    out[base + 12] = state.hybrid.active_record.tag;
+    out[base + 14] = state.selection.observed;
+    out[base + 15] = state.next_slot;
+    out[base + 16] = as_type<uint>(receipt.target_h_fraction);
+    out[base + 17] = as_type<uint>(receipt.target_h_exponent);
+    out[base + 18] = sizeof(er::State);
+    out[base + 21] = as_type<uint>(state.hybrid.active_generation_h.fraction);
+    out[base + 22] = as_type<uint>(state.hybrid.active_generation_h.exponent);
+    out[base + 23] = state.hybrid.first.selected;
+    out[base + 26] = state.hybrid.first.next;
+    out[base + 27] = as_type<uint>(state.hybrid.active_h.fraction);
+    out[base + 28] = as_type<uint>(state.hybrid.active_h.exponent);
+    out[base + 29] = as_type<uint>(state.selection.score_sum.fraction);
+    out[base + 30] = as_type<uint>(state.selection.score_sum.exponent);
+    out[base + 31] = state.selection.selected_slot;
+}

@@ -273,7 +273,8 @@ inline bool wavefront_complete_null(constant WavefrontArguments &a, uint slot) {
     if (pending.requested_slot == rypath::contribution_wire::enhanced_null_slot) {
         const uint pixel = pending.pixel;
         if (pending.failed || pixel >= a.config->pixel_count || pending.next_slot != 0 ||
-            pending.rr_cut != 0 || !rypath_enhanced_path::valid_state(pending.selection)) {
+            pending.rr_cut != 0 || !rypath_enhanced_path::valid_state(pending.selection) ||
+            !rypath_enhanced_runtime::unstarted_hybrid(pending.hybrid)) {
             wavefront_fail(a, wf::invalid_sample);
             return true;
         }
@@ -389,7 +390,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
 }
 // Version the entry when its output grows: an older host must fail function
 // lookup before binding its shorter contract buffer to this kernel.
-kernel void rypath_wavefront_contract_v18(device wf::Contract *out [[buffer(0)]]) {
+kernel void rypath_wavefront_contract_v19(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),

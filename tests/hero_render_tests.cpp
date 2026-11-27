@@ -836,7 +836,7 @@ ContributionCapture enhanced_capture(FrameSession &frames, const FrameConfig &c,
              info.history_generation == std::uint64_t(ordinal) + 1 &&
              info.area_path_domain == FrameAreaPathDomain::enhanced &&
              info.contribution_replay == c.contribution_replay &&
-             info.contribution_depth == depth && info.canonical_transport_version == 3 &&
+             info.contribution_depth == depth && info.canonical_transport_version == 4 &&
              info.fresh_discovery_version == 1 && info.history_used == history &&
              info.temporal_candidates == (history ? 2u : 1u) && info.spatial_candidates == 5 &&
              info.completed_samples == pixels && info.fresh_candidates == pixels &&

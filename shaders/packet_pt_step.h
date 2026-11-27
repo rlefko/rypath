@@ -37,6 +37,9 @@ template <> struct PTNeighbor<true> {
 
 // Owned-light evaluation consumes the original hero technique helpers above.
 #include "enhanced_light.h"
+
+// Hybrid direction queries share those BSDF and scaled geometry conventions.
+#include "enhanced_hybrid_geometry.h"
 template <typename Previous, bool Compact = false> struct PTWalkState {
     enum { compact_hero = Compact };
     using Neighbor = typename PTNeighbor<Compact>::Type;
@@ -133,6 +136,9 @@ inline SurfaceHit packet_pt_trace(thread Resources &r, thread wire::Sample &samp
                ? trace_masked_surface(incoming, r.scene, all_visible, r.alpha)
                : trace_surface(closest, incoming, r.scene, all_visible, r.intersection_table);
 }
+
+// Fixed-chart certification uses precisely the ordinary closest-hit route.
+#include "enhanced_hybrid_runtime.h"
 
 // The ordinary function expands to f0d8494's original body and statement order.
 // Only the split variant replaces event tracing; all event arithmetic is shared.

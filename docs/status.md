@@ -8,10 +8,11 @@ as its default oracle. A separate opt-in Enhanced domain now evaluates canonical
 atoms without outer roulette and uses independently weighted discovery roulette
 for fresh paths. It also owns supported terminal-light endpoints for forced NEE
 reconnection and carries strict temporal/spatial confidence in resampling MIS.
-Canonical law 3 adds bounded scaled reservoir weights after a native Pavilion-day
-failure on a legitimate positive weight below normal FLOAT range. Four focused
-CPU checks and the injected production queue check pass; remaining GPU and native
-qualification is pending. Earlier timings do not measure this repair.
+The scaled-weight repair at `3335bba` completes the four-scene native screen;
+its intermediate timings remain below target. Canonical law 4 now prepares
+primary/secondary geometry and neutral interior charts. Focused physical, NEE,
+geometry and utility GPU checks pass. Forced connection and candidate activation
+remain absent, with no new native-v4 image or timing claim.
 Adaptive interior reconnection and cached suffixes remain unfinished, so this is
 not yet the complete Enhanced algorithm. The frame-rate targets are unmet.
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "enhanced_footprint_shared.h"
 #include <array>
+#include <bit>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -168,6 +169,104 @@ void support_and_faults() {
     need(f::classify(v).decision == f::Decision::unsupported,
          "Unsupported material remains a declared generic-map case");
 }
+void inverse_certificate() {
+    // Fixture construction uses the standard library, not the production
+    // decompose/product/quotient helpers whose boundary law is being checked.
+    const auto normalized = [](float v) {
+        int exponent;
+        const float fraction = std::frexp(v, &exponent);
+        return f::Number{fraction, exponent};
+    };
+    const float D = std::bit_cast<float>(0x4085281bu);
+    const float cosine = std::bit_cast<float>(0x3f28b96eu);
+    const float threshold = std::bit_cast<float>(0x3dca13e2u);
+    const float q = std::bit_cast<float>(0x427ff1f1u);
+    // Pinned normal-range counterexample found independently by the reviewer.
+    // These ordinary FLOAT operations have no intermediate range issue; their
+    // hardcoded results distinguish the original law from an algebraic rewrite.
+    const float denominator = q * cosine;
+    const float backward = D / denominator;
+    const float reordered_denominator = cosine * threshold;
+    const float wrong_qmax = D / reordered_denominator;
+    need(std::bit_cast<unsigned>(backward) == 0x3dca13e2u &&
+             std::bit_cast<unsigned>(wrong_qmax) == 0x427ff1f0u && q > wrong_qmax,
+         "Pinned FLOAT witness: original inclusive equality passes, rewritten q_max rejects");
+    const auto evaluate = [&](float t) {
+        return f::inverse_footprint(normalized(D), normalized(q), cosine, normalized(t));
+    };
+    need(evaluate(threshold).status == f::Status::ok &&
+             evaluate(threshold).decision == f::Decision::eligible &&
+             evaluate(std::nextafter(threshold, 0.f)).decision == f::Decision::eligible &&
+             evaluate(std::nextafter(threshold, std::numeric_limits<float>::infinity())).decision ==
+                 f::Decision::ineligible,
+         "Certificate preserves inclusive equality and both adjacent threshold decisions");
+    auto v = fixture();
+    v.edge_distance_squared = normalized(D);
+    v.cosine_at_predecessor = cosine;
+    v.pivot_outgoing_pdf = normalized(q);
+    v.primary_distance_squared = normalized(6.376402854919434f);
+    v.primary_cosine = .16241540014743805f;
+    const auto primary = f::primary_threshold(v.primary_distance_squared, v.primary_cosine);
+    need(primary.status == f::Status::ok && value(primary.area) == threshold &&
+             f::classify(v).status == f::Status::ok && f::classify(v).forward_pass &&
+             f::classify(v).inverse_pass && f::classify(v).decision == f::Decision::eligible,
+         "Full classifier retains the independently pinned certificate boundary");
+    for (unsigned field = 0; field < 4; ++field) {
+        auto d = normalized(D), density = normalized(q), t = normalized(threshold);
+        float c = cosine;
+        if (field == 0)
+            d = {0, 0};
+        if (field == 1)
+            density = {0, 0};
+        if (field == 2)
+            c = -0.f;
+        if (field == 3)
+            t = {-0.f, 0};
+        const auto result = f::inverse_footprint(d, density, c, t);
+        need(result.status == f::Status::ok && result.decision == f::Decision::zero_support,
+             "Certificate zero support is explicit and never an infinity comparison");
+    }
+    for (const auto bad : {f::Number{1, 0}, f::Number{-.5f, 1},
+                           f::Number{-std::numeric_limits<float>::denorm_min(), 0}, f::Number{0, 1},
+                           f::Number{std::numeric_limits<float>::quiet_NaN(), 0},
+                           f::Number{std::numeric_limits<float>::infinity(), 0},
+                           f::Number{.5f, std::numeric_limits<int>::max()},
+                           f::Number{.5f, std::numeric_limits<int>::min()}}) {
+        for (unsigned field = 0; field < 3; ++field) {
+            const auto result = f::inverse_footprint(field == 0 ? bad : normalized(D),
+                                                     field == 1 ? bad : normalized(q), cosine,
+                                                     field == 2 ? bad : normalized(threshold));
+            need(result.status == f::Status::invalid_input &&
+                     result.decision == f::Decision::ineligible,
+                 "Certificate rejects poisoned Number fields before arithmetic");
+        }
+    }
+    for (float bad_cosine :
+         {-std::numeric_limits<float>::denorm_min(), -.5f, std::nextafter(1.f, 2.f),
+          std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+        need(f::inverse_footprint(normalized(D), normalized(q), bad_cosine, normalized(threshold))
+                     .status == f::Status::invalid_input,
+             "Certificate rejects negative subnormal/nonfinite/out-of-range cosines by bits");
+    const auto tiny_cosine =
+        f::inverse_footprint(normalized(D), normalized(q), std::numeric_limits<float>::denorm_min(),
+                             normalized(threshold));
+    need(tiny_cosine.status == f::Status::ok && tiny_cosine.decision == f::Decision::eligible,
+         "Positive subnormal cosine remains supported through scaled division");
+    // The old classifier permits derived thresholds beyond serialized input
+    // exponent bounds. Extraction must not introduce a new range rejection.
+    for (int exponent : {-1024, 1024}) {
+        const auto t = f::primary_threshold(
+            {.5f, exponent}, exponent > 0 ? std::numeric_limits<float>::denorm_min() : 1.f);
+        need(t.status == f::Status::ok &&
+                 (exponent < 0 ? t.area.exponent < -1024 : t.area.exponent > 1024),
+             "Derived primary threshold extends beyond serialized distance/PDF bounds");
+        const auto result = f::inverse_footprint(normalized(1), normalized(1), 1, t.area);
+        need(result.status == f::Status::ok &&
+                 result.decision ==
+                     (exponent < 0 ? f::Decision::eligible : f::Decision::ineligible),
+             "Wide derived threshold comparison preserves the original classification domain");
+    }
+}
 void first_eligible() {
     auto pass = fixture(), fail = fixture();
     fail.predecessor_alpha = .1f;
@@ -202,6 +301,7 @@ int main() {
         numerical_and_units();
         boundaries_and_inverse();
         support_and_faults();
+        inverse_certificate();
         first_eligible();
         std::cout << "Enhanced paper dual-footprint tests passed\n";
         return 0;

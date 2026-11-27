@@ -933,13 +933,13 @@ struct Report {
             << ",\"area_target\":"
             << quote(options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "quarter-l1-owned-scaled-zero-v3"
+                                ? "quarter-l1-hybrid-scaled-zero-v4"
                                 : "quarter-l1-v1")
                          : "none")
             << ",\"area_source_mis\":"
             << quote(options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "enhanced-confidence-scaled-mis-v3"
+                                ? "enhanced-hybrid-confidence-scaled-mis-v4"
                                 : "source-target-mis-v1")
                          : "none")
             << ",\"area_temporal_reuse\":"
@@ -1653,13 +1653,13 @@ int run(const Options &options) {
                     {"rypath.area.target",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "quarter-l1-owned-scaled-zero-v3"
+                                ? "quarter-l1-hybrid-scaled-zero-v4"
                                 : "quarter-l1-v1")
                          : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "enhanced-confidence-scaled-mis-v3"
+                                ? "enhanced-hybrid-confidence-scaled-mis-v4"
                                 : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
@@ -1813,13 +1813,13 @@ int run(const Options &options) {
                     {"rypath.area.target",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "quarter-l1-owned-scaled-zero-v3"
+                                ? "quarter-l1-hybrid-scaled-zero-v4"
                                 : "quarter-l1-v1")
                          : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "enhanced-confidence-scaled-mis-v3"
+                                ? "enhanced-hybrid-confidence-scaled-mis-v4"
                                 : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",

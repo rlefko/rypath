@@ -24,8 +24,8 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Reciprocal spatial work sharing, §3 | Reciprocal stencil and shared reverse targets; not the paper's pairing textures |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
 | Contribution-path reservoir, §§2.3 and 6.1 | Opt-in finite-depth `(U,j)` with fresh local selection; full or selected-prefix replay |
-| Hybrid reconnection and Jacobian, Eq. 2 | Missing; imported keys use full or selected-prefix replay |
-| Dual-footprint eligibility, Eq. 5 | Missing |
+| Hybrid reconnection and Jacobian, Eq. 2 | Runtime preparation and neutral chart validation; forced connection and candidate activation remain missing |
+| Dual-footprint eligibility, Eq. 5 | Preparation helpers; no activated hybrid candidate |
 | Forced NEE endpoint reconnection, §6.2.3 | Enhanced owns triangle-area, positional/distant-mass and environment-direction endpoints; other shapes retain replay |
 | Selective shift-pair compaction, §6.2.2 | Missing; ordinary wavefront compaction is a different operation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
@@ -197,9 +197,8 @@ excluded from main.
 ## Owned terminal-light stage
 
 The owned terminal-light stage introduced Enhanced canonical law version 2;
-the scaled-weight stage below advances the current law to version 3. Its disjoint
-terminal NEE charts own a
-LightID and either triangle area coordinates, a positional/distant counting mass,
+the scaled-weight stage introduced version 3, followed by the version-4
+preparation stage below. Its disjoint terminal NEE charts own a LightID and either triangle area coordinates, a positional/distant counting mass,
 or an environment direction in solid angle. Unsupported emitter shapes retain
 generic replay. An imported generic atom that belongs to an owned chart at its
 destination has zero mapped support; it does not silently change charts. The
@@ -290,8 +289,9 @@ controls, and legacy contribution, Enhanced physical/mean and Enhanced NEE tests
 The queue probe includes the exact Pavilion range case and a smaller positive
 history whose final XYZ rounds to zero. The first scene-test run stopped at a
 stale version-2 assertion; after correcting the asserted version to 3, both
-Enhanced suites passed. Native reruns remain pending. These checks do not qualify
-four-scene quality, performance or the complete Enhanced algorithm. The chart
+Enhanced suites passed. At `3335bba`, the native rerun completes all 160 submitted frames and eight finite
+1920×1080 FLOAT captures. The four-scene timing screen below is complete; quality
+and the complete Enhanced algorithm remain unqualified. The chart
 and geometry helpers remain preparation for future runtime shifts.
 
 For context, the superseded `6a5091e` native screen measured Cornell at
@@ -299,6 +299,56 @@ For context, the superseded `6a5091e` native screen measured Cornell at
 on submitted frame 18, and no Pavilion-night run was obtained, so neither has an
 FPS result from that screen. These are bounded pre-repair observations, not final
 timings or measurements of the scaled-weight revision.
+
+The repaired `3335bba` runtime uses native 1920×1080, one fresh hero-visible path,
+Enhanced owned-light prefix reuse, one spectral-refresh mutation and signed
+temporal denoising. Eight warmup and 32 measured static frames per scene, seed
+61002, give the following complete-pipeline CPU wall times (startup/export
+excluded):
+
+| Scene | Mean frame | FPS |
+| --- | ---: | ---: |
+| Cornell | 727.31 ms | 1.375 |
+| Prism | 1077.60 ms | 0.928 |
+| Pavilion day | 3128.71 ms | 0.320 |
+| Pavilion night | 2942.07 ms | 0.340 |
+
+This is the verified intermediate baseline before adaptive interior reconnection
+and suffix reuse. It fixes the failed Pavilion range sequence; it establishes no
+speedup over the merged baseline, and both Pavilion scenes are slower. One static
+run per scene is not sustained/motion or converged-quality qualification.
+
+## Hybrid preparation stage
+
+The in-progress canonical law 4 captures primary geometry and uses a common
+geometric BSDF `wo` (toward the preceding physical vertex) for admitted secondary
+diffuse/rough-conductor roots in `direct=0/1` events, including events rejected by
+footprint eligibility. A neutral interior chart
+(tag 5) has a structural codec, Sink projection, persistent state and validators;
+terminal-surface tag 6 is rejected. Forced connections and hybrid candidate
+activation are not implemented. Suffix reuse, dual motion and shift-pair
+compaction remain pending.
+
+Prepared BSDF payloads can retain the union of needed lanes while physical
+history keeps its original active mask. The predecessor certificate carries a
+separate query mask, applied only to a query copy; zero-beta lanes retain needed
+likelihood/PDF information. The predecessor snapshot includes the normal offset
+used to reconstruct its query origin. The Enhanced Sink state is 284 bytes,
+including a 156-byte hybrid state, 36-byte predecessor snapshot and 20-byte
+certificate. Wavefront/Area contracts are 19/13, canonical/record versions are
+4/2, and discovery remains version 1. This preparation changes the numerical
+reference; the `3335bba` table above measures the earlier range-repair baseline.
+No v4 native image or timing result is claimed.
+
+Current focused checks pass for CLI controls, footprint and chart arithmetic,
+the prefix/Sink suite (69.07 seconds, including 17 Sink controls), and geometry.
+The production queue probe initially exposed a premature record read; lazy
+validation fixes that failure, and the rerun passes in 4.84 seconds. The latest
+focused GPU run passes `metal.hero_enhanced` (174.51 seconds),
+`metal.hero_enhanced_nee` (11.29 seconds), and the geometry arithmetic probe
+(4.14 seconds), including all 17 new utility cases. These bounded results do not
+establish forced-connection correctness, complete Enhanced coverage, image
+quality or native-v4 performance.
 
 ## Retained measurements and limitations
 

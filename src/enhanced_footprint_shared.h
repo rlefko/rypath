@@ -67,6 +67,36 @@ inline Threshold primary_threshold(Number primary_distance_squared, float primar
     t.decision = Decision::eligible;
     return t;
 }
+struct InverseResult {
+    Decision decision = Decision::ineligible;
+    Status status = Status::ok;
+};
+// A primary threshold is DERIVED, not an Input's serialized distance/PDF.
+// Input exponents +/-1024, a binary32 cosine down to 2^-149, and the fixed
+// primary factor produce exponents strictly within +/-2048. In particular,
+// rejecting thresholds outside +/-1024 would narrow classify's existing domain.
+inline bool valid_primary_threshold(Number v) {
+    return zero(v) || (math::positive_normal(v.fraction) && v.fraction >= .5f && v.fraction < 1 &&
+                       v.exponent >= -2048 && v.exponent <= 2048);
+}
+// Shared by the full classifier and its rolling predecessor certificate.
+// Preserve D/(q*cos)>=threshold in this exact represented operation order.
+// The algebraically equivalent q<=D/(cos*threshold) has different FLOAT boundary
+// decisions and is NOT this numerical law. Zero input support never divides.
+inline InverseResult inverse_footprint(Number edge_distance_squared, Number outgoing_pdf,
+                                       float cosine_at_predecessor, Number threshold) {
+    if (!valid_number(edge_distance_squared) || !valid_number(outgoing_pdf) ||
+        !valid_cosine(cosine_at_predecessor) || !valid_primary_threshold(threshold))
+        return {Decision::ineligible, Status::invalid_input};
+    if (zero(edge_distance_squared) || zero(outgoing_pdf) || cosine_zero(cosine_at_predecessor) ||
+        zero(threshold))
+        return {Decision::zero_support, Status::ok};
+    const auto backward = scaled::quotient(
+        edge_distance_squared,
+        scaled::product(outgoing_pdf, scaled::decompose_positive(cosine_at_predecessor)));
+    return {!scaled::less(backward, threshold) ? Decision::eligible : Decision::ineligible,
+            Status::ok};
+}
 struct Input {
     Family predecessor = Family::unsupported, pivot = Family::unsupported;
     // Alpha is the actual NDF width of the sampled predecessor lobe. For an
@@ -136,11 +166,12 @@ inline Result classify(Input v) {
     result.forward_pass = !scaled::less(forward, threshold.area);
     result.inverse_pass = !inverse;
     if (inverse) {
-        const auto backward =
-            scaled::quotient(v.edge_distance_squared,
-                             scaled::product(v.pivot_outgoing_pdf,
-                                             scaled::decompose_positive(v.cosine_at_predecessor)));
-        result.inverse_pass = !scaled::less(backward, threshold.area);
+        const auto backward = inverse_footprint(v.edge_distance_squared, v.pivot_outgoing_pdf,
+                                                v.cosine_at_predecessor, threshold.area);
+        result.status = backward.status;
+        if (result.status != Status::ok)
+            return result;
+        result.inverse_pass = backward.decision == Decision::eligible;
     }
     if (result.forward_pass && result.inverse_pass)
         result.decision = Decision::eligible;

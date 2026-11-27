@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "contribution_wire.h"
 #include "enhanced_wire.h"
 #include "metal_execution.hpp"
 #include "render_wire.h"
@@ -15,7 +16,8 @@ namespace {
 using namespace rypath;
 namespace w = render_wire;
 namespace wf = wavefront_wire;
-static_assert(wf::contract == 18 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 104);
+static_assert(wf::contract == 19 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 104);
+static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 constexpr unsigned variants = 16, guard = 256, instances_count = 136;
 void need(bool ok, const std::string &why) {
     if (!ok)
@@ -391,7 +393,7 @@ int run(const std::filesystem::path &path) {
     auto discovery_finish =
         metal::load_pipeline(device, library, @"rypath_enhanced_discovery_finish", error);
     need(discovery_finish != nil, error);
-    constexpr unsigned discovery_count = 6, discovery_words = 36, enhanced_bytes = 128;
+    constexpr unsigned discovery_count = 6, discovery_words = 36, enhanced_bytes = 284;
     std::array<id<MTLBuffer>, 7> d{};
     d[0] = allocate(sizeof(w::Parameters));
     d[1] = allocate(discovery_count * sizeof(wf::Config));
@@ -563,8 +565,185 @@ int run(const std::filesystem::path &path) {
     }
     std::cout << "6 actual Enhanced sink controls passed: first/second RR cutoff, both survive, "
                  "unit gates, fixed import, all-black null; independent alpha/a normalizer, "
-                 "selected XYZ/target, sensor PDFs and device state128 and owned-record/receipt "
+                 "selected XYZ/target, sensor PDFs and device state284 and owned-record/receipt "
                  "checks; no AS/transport\n";
+    // Actual v4 Sink: no geometry is involved, and the host oracle does not use
+    // production target/projection or selector helpers.
+    auto hybrid_witness =
+        metal::load_pipeline(device, library, @"rypath_enhanced_hybrid_sink_witness", error);
+    auto hybrid_finish =
+        metal::load_pipeline(device, library, @"rypath_enhanced_hybrid_sink_finish", error);
+    need(hybrid_witness && hybrid_finish, error);
+    constexpr unsigned hybrid_count = 17, hybrid_words = 32;
+    std::array<id<MTLBuffer>, 7> hb{};
+    hb[0] = allocate(sizeof(w::Parameters));
+    hb[1] = allocate(hybrid_count * sizeof(wf::Config));
+    hb[2] = allocate(471 * sizeof(w::Point));
+    hb[3] = allocate(hybrid_count * enhanced_bytes + 2 * guard, true);
+    hb[4] = allocate(hybrid_count * hybrid_words * sizeof(unsigned) + 2 * guard, true);
+    hb[5] = allocate(ew::bank_count * hybrid_count * sizeof(ew::Record) + 2 * guard, true);
+    hb[6] = allocate(hybrid_count * sizeof(ew::Evaluation) + 2 * guard, true);
+    auto *hp = static_cast<w::Parameters *>(hb[0].contents);
+    *hp = *dp;
+    hp->width = hp->pixel_count = hp->lane_count = hybrid_count;
+    auto *hc = static_cast<wf::Config *>(hb[1].contents);
+    auto *sensor = static_cast<w::Point *>(hb[2].contents);
+    for (unsigned wavelength : {400u, 500u, 600u, 700u})
+        sensor[wavelength - 360] = {1, -2, 4};
+    auto *hr = reinterpret_cast<ew::Record *>(static_cast<unsigned char *>(hb[5].contents) + guard);
+    auto *he =
+        reinterpret_cast<ew::Evaluation *>(static_cast<unsigned char *>(hb[6].contents) + guard);
+    const auto imported_hybrid = [](unsigned n) { return (n >= 5 && n <= 12) || n == 16; };
+    const auto hybrid_slot = [](unsigned n) { return n == 3 || n == 6 || n == 10 ? 5u : 4u; };
+    const auto chart_record = [&](unsigned primitive) {
+        return ew::Record{ew::record_version,
+                          5,
+                          bits(0),
+                          1,
+                          0,
+                          primitive,
+                          w::triangle_primitive,
+                          bits(0),
+                          {bits(.25f), bits(.25f), bits(1), 0}};
+    };
+    const auto source_record = [&](unsigned n) {
+        if (n == 9)
+            return ew::empty_record();
+        if (n == 10)
+            return ew::Record{ew::record_version, ew::positional_mass, 0, 2,           ew::invalid,
+                              ew::invalid,        ew::invalid,         0, {0, 0, 0, 0}};
+        if (n == 12)
+            return ew::Record{ew::record_version,
+                              6,
+                              0,
+                              2,
+                              0,
+                              1,
+                              w::triangle_primitive,
+                              0,
+                              {bits(.25f), bits(.25f), 0, 0}};
+        return chart_record(1);
+    };
+    std::array<ew::Record, ew::bank_count * hybrid_count> expected_hybrid_records{};
+    std::memset(expected_hybrid_records.data(), 0xa5, sizeof(expected_hybrid_records));
+    for (unsigned n = 0; n < hybrid_count; ++n) {
+        hc[n] = dc[0];
+        hc[n].pixel_count = hc[n].capacity = hybrid_count;
+        hc[n].contribution_depth = 3;
+        const auto source =
+            imported_hybrid(n) ? ew::Reference{ew::history_bank_0, n} : ew::absent();
+        const ew::Reference result{ew::fresh_bank, n};
+        he[n] = {source, result, 0, 0, 0, 0};
+        if (imported_hybrid(n)) {
+            hr[ew::history_bank_0 * hybrid_count + n] = source_record(n);
+            expected_hybrid_records[ew::history_bank_0 * hybrid_count + n] = source_record(n);
+            if (n != 12 && n != 16)
+                expected_hybrid_records[ew::fresh_bank * hybrid_count + n] = source_record(n);
+        } else if (n <= 4 || n == 15) {
+            expected_hybrid_records[ew::fresh_bank * hybrid_count + n] =
+                n == 4 ? ew::empty_record() : chart_record(1);
+        }
+    }
+    command = [queue commandBuffer];
+    encoder = [command computeCommandEncoder];
+    need(command && encoder, "Hybrid Sink encoder");
+    [encoder setComputePipelineState:hybrid_witness];
+    for (unsigned i = 0; i < hb.size(); ++i)
+        [encoder setBuffer:hb[i] offset:i >= 3 ? guard : 0 atIndex:i];
+    [encoder dispatchThreads:MTLSizeMake(hybrid_count, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    [encoder setComputePipelineState:hybrid_finish];
+    [encoder dispatchThreads:MTLSizeMake(hybrid_count, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    [encoder endEncoding];
+    error = metal::complete(command, "Actual hybrid Sink record/projection controls");
+    need(error.empty(), error);
+    const auto *hybrid_output = reinterpret_cast<const unsigned *>(
+        static_cast<const unsigned char *>(hb[4].contents) + guard);
+    const auto close_hybrid = [&](long double actual, long double expected,
+                                  const std::string &label) {
+        // Chosen before execution: <=16 float eps for target/product/ordered
+        // sum rounding. Every spectral F oracle here is an exact dyadic.
+        const long double bound = 16.L * std::numeric_limits<float>::epsilon() * std::abs(expected);
+        need(std::isfinite(actual) && std::abs(actual - expected) <= bound, label);
+    };
+    for (unsigned n = 0; n < hybrid_count; ++n) {
+        const auto *v = hybrid_output + hybrid_words * n;
+        const std::string label = "Hybrid Sink fixture=" + std::to_string(n);
+        const bool imported = imported_hybrid(n);
+        const bool failed = n >= 12;
+        need(v[0] == unsigned(!failed) && v[1] == unsigned(failed && n != 15) &&
+                 v[3] == unsigned(!failed) && v[18] == enhanced_bytes,
+             label + " finish/failure/device ABI");
+        need(v[24] == ((4u << 8) | ((imported ? 0u : 4u) << 16)) &&
+                 v[25] == (n == 4 ? 0u : null_slot),
+             label + " activation follows earlier atoms and never rewrites their winner");
+        need(v[19] == unsigned(n != 7) && v[20] == 0 && v[11] == unsigned(n != 7) &&
+                 v[12] == (n == 7 ? 0u : 5u) && v[23] == 2 && v[26] == 3,
+             label + " single-activation/firsteligible/active record persistence");
+        const auto source = imported ? ew::Reference{ew::history_bank_0, n} : ew::absent();
+        need(he[n].source.bank == source.bank && he[n].source.pixel == source.pixel &&
+                 he[n].result.bank == ew::fresh_bank && he[n].result.pixel == n,
+             label + " immutable record owner receipts");
+        const int active_h_exponent = n == 7                       ? 1
+                                      : n == 0 || n == 1 || n == 5 ? -159
+                                      : n == 2 || n == 6           ? 161
+                                                                   : 4;
+        need(v[27] == bits(.5f) && exponent(v[28]) == active_h_exponent && v[21] == bits(.5f) &&
+                 exponent(v[22]) == (n == 1 ? 2 : 1),
+             label + " active density/device tail persistence independent of WRS winner");
+        if (failed) {
+            need(bits(he[n].target_h_fraction) == 0 && he[n].target_h_exponent == 0 &&
+                     he[n].normalizer_exponent == 0,
+                 label + " failed frame never publishes owned density");
+            if (n == 15)
+                need(v[31] == 4 && decode(v[29], v[30]) > 0,
+                     label + " finish outside guard tested after valid positive selection");
+            continue;
+        }
+        const bool mapped_zero = n >= 7 && n <= 11;
+        const int h_power = n == 0 || n == 1 || n == 5 ? -160 : n == 2 || n == 6 ? 160 : 3;
+        const int coefficient_power = n == 0 || n == 1 || n == 5 ? 120
+                                      : n == 2 || n == 6         ? -120
+                                                                 : 0;
+        const long double h_value = std::ldexp(1.L, h_power);
+        const long double generation = n == 1 ? 2.L : 1.L;
+        const long double base = n == 4 ? 1.L : std::ldexp(1.L, coefficient_power) * h_value;
+        const std::array<long double, 3> F{{base, -2 * base, 4 * base}};
+        for (unsigned channel = 0; channel < 3; ++channel)
+            close_hybrid(f32(v[8 + channel]), mapped_zero ? 0.L : F[channel],
+                         label + " independent signed Fchart");
+        const long double query_h = mapped_zero || n == 4 ? 1.L : h_value;
+        close_hybrid(decode(v[16], v[17]), query_h, label + " query h (not hgen)");
+        need(v[2] == (imported ? hybrid_slot(n)
+                      : n == 4 ? 0u
+                               : hybrid_slot(n)),
+             label + " parity-independent selected slot");
+        if (imported) {
+            need(v[4] == 0 && v[5] == 0 && v[14] == 0 && v[31] == null_slot,
+                 label + " fixed import never creates fresh WRS mass");
+        } else {
+            const long double target_h = n == 4 ? 1.L : h_value;
+            const long double T = ((std::abs(F[0]) / 4 + std::abs(F[1]) / 4) + std::abs(F[2]) / 4) +
+                                  target_h * static_cast<long double>(1e-6f);
+            close_hybrid(decode(v[6], v[7]), T, label + " independent canonical target");
+            close_hybrid(decode(v[4], v[5]), T / generation, label + " hgen only in fresh score");
+            need(v[14] == 7 && v[15] == 7, label + " complete ordered zero prefix and suffix");
+        }
+        need(v[13] == 0xa5a5a5a5u, label + " unrelated output word untouched");
+    }
+    need(std::memcmp(hr, expected_hybrid_records.data(), sizeof(expected_hybrid_records)) == 0,
+         "Hybrid actual record copies, parity-independent winner and all untouched banks");
+    for (unsigned i : {3u, 4u, 5u, 6u}) {
+        const auto *bytes = static_cast<const unsigned char *>(hb[i].contents);
+        for (unsigned k = 0; k < guard; ++k)
+            need(bytes[k] == 0xa5 && bytes[hb[i].length - guard + k] == 0xa5,
+                 "Hybrid Sink sidecar/result/record/receipt guard");
+    }
+    std::cout << "17 actual hybrid Sink controls passed: scaled signed F/hgen, E/N record routing, "
+                 "earlier winner, partial import maps, tag6/doubleactivation/outside failures; no "
+                 "traversal\n";
     return 0;
 }
 } // namespace

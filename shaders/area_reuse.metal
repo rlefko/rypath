@@ -168,6 +168,9 @@ inline bool area_owned_value_valid(constant AreaArguments &a, uint slot, ew::Ref
     if (!area_enhanced(a))
         return record.bank == 0 && record.pixel == 0 && as_type<uint>(h.fraction) == 0 &&
                h.exponent == 0;
+    // A zero mapped candidate may be rejected without ever materializing its
+    // record. Validate record bytes only when publishing/copying or reading a
+    // cached evaluator result; scalar validation must not add a false lifetime.
     return ew::valid(record, a.config->pixel_count) && enhanced_path::valid_density(h) &&
            (!area_null(a, slot) || enhanced_path::unit_density(h));
 }
@@ -188,8 +191,8 @@ inline bool area_copy_record(constant AreaArguments &a, uint pixel, uint slot, e
     ew::Record record = ew::empty_record();
     if (!area_null(a, slot)) {
         record = a.enhanced_records[ulong(source.bank) * a.config->pixel_count + source.pixel];
-        if (!rypath_bdpt::enhanced_light::valid_record(record, slot / 2u) ||
-            ((slot & 1u) == 0 && record.tag != ew::generic)) {
+        if (record.tag == rypath_enhanced_chart::terminal_surface ||
+            !rypath_enhanced_chart::valid_chart(record, slot, a.config->contribution_depth)) {
             AREA_FAIL(a, aw::invalid_payload);
             return false;
         }
@@ -794,8 +797,9 @@ inline bool area_publish_cached(constant AreaArguments &a, uint pixel,
             const auto record =
                 a.enhanced_records[ulong(source.record.bank) * a.config->pixel_count +
                                    source.record.pixel];
-            if (!rypath_bdpt::enhanced_light::valid_record(record, source.selected_slot / 2u) ||
-                ((source.selected_slot & 1u) == 0 && record.tag != ew::generic)) {
+            if (record.tag == rypath_enhanced_chart::terminal_surface ||
+                !rypath_enhanced_chart::valid_chart(record, source.selected_slot,
+                                                    a.config->contribution_depth)) {
                 AREA_FAIL(a, aw::invalid_payload);
                 return false;
             }

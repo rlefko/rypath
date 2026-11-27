@@ -71,7 +71,7 @@ target_compile_options(rypath_enhanced_reprojection_tests PRIVATE
     "$<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
 add_test(NAME render.enhanced_reprojection COMMAND rypath_enhanced_reprojection_tests)
 set_tests_properties(render.enhanced_reprojection PROPERTIES TIMEOUT 30)
-foreach(component enhanced_reservoir enhanced_resampling_decision)
+foreach(component enhanced_reservoir enhanced_resampling_decision enhanced_chart)
     add_executable(rypath_${component}_tests ${component}_tests.cpp)
     target_include_directories(rypath_${component}_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
     rypath_configure_host_target(rypath_${component}_tests)
@@ -2124,6 +2124,26 @@ if(RYPATH_ENABLE_METAL)
     if(RYPATH_ALLOW_NO_METAL_DEVICE)
         target_compile_definitions(rypath_enhanced_light_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
         set_tests_properties(metal.enhanced_light_math PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_enhanced_hybrid_geometry_probe enhanced_hybrid_geometry_probe.mm)
+    target_link_libraries(rypath_enhanced_hybrid_geometry_probe PRIVATE rypath_metal_backend)
+    target_compile_options(rypath_enhanced_hybrid_geometry_probe PRIVATE -fobjc-arc
+        "$<$<COMPILE_LANG_AND_ID:OBJCXX,AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>")
+    set_target_properties(rypath_enhanced_hybrid_geometry_probe PROPERTIES OBJCXX_STANDARD 20
+        OBJCXX_STANDARD_REQUIRED YES OBJCXX_EXTENSIONS NO
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    rypath_configure_host_target(rypath_enhanced_hybrid_geometry_probe)
+    add_dependencies(rypath_enhanced_hybrid_geometry_probe rypath_enhanced_hybrid_geometry_shader)
+    add_test(NAME metal.enhanced_hybrid_geometry_math COMMAND rypath_enhanced_hybrid_geometry_probe
+        "${rypath_enhanced_hybrid_geometry_library}")
+    set_tests_properties(metal.enhanced_hybrid_geometry_math PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+        ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    if(RYPATH_ALLOW_NO_METAL_DEVICE)
+        target_compile_definitions(rypath_enhanced_hybrid_geometry_probe PRIVATE RYPATH_ALLOW_NO_METAL_DEVICE=1)
+        set_tests_properties(metal.enhanced_hybrid_geometry_math PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()
 

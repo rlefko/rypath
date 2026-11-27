@@ -230,6 +230,34 @@
             sample.status = wire::invalid_arithmetic;
             break;
         }
+#if RYPATH_PACKET_EVENT_ENHANCED
+        // Canonical v4 uses one incoming-direction law for every admitted
+        // secondary event, including footprint rejects. Material preparation
+        // above is incoming-independent for these direct PBRT families.
+        if (count == 1) {
+            if (enhanced_hybrid_runtime::prepare_primary(sink.state.hybrid,
+                                                         state.latest.point.position, v.point) !=
+                enhanced_hybrid_geometry::Status::ok) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+        } else if (enhanced_hybrid_runtime::direct_root(r, v.instance, v.primitive, v.kind)) {
+            const auto family = enhanced_hybrid_geometry::classify(v.bsdf);
+            if (family.status == enhanced_hybrid_geometry::Status::invalid_arithmetic) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            if (family.status == enhanced_hybrid_geometry::Status::ok) {
+                const auto direction = enhanced_hybrid_geometry::physical_direction(
+                    v.point.position, state.latest.point.position);
+                if (direction.status != enhanced_hybrid_geometry::Status::ok) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                v.wo = direction.direction;
+            }
+        }
+#endif
         float3 ray_position = fma(float3(hit.distance), incoming.direction, incoming.origin);
         float3 ray_error =
             gamma_bound(2) * (abs(hit.distance * incoming.direction) + abs(incoming.origin));

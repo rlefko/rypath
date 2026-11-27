@@ -6,7 +6,7 @@ namespace rypath {
 namespace enhanced_wire {
 using Word = render_wire::Word;
 enum : Word {
-    record_version = 1,
+    record_version = 2,
     invalid = 0xffffffffu,
     history_bank_0 = 0,
     history_bank_1 = 1,

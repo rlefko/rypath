@@ -2,6 +2,7 @@
 #pragma once
 #include "../src/contribution_wire.h"
 #include "../src/enhanced_decision_shared.h"
+#include "../src/enhanced_hybrid_state_shared.h"
 #include "../src/enhanced_path_shared.h"
 #include "../src/enhanced_resampling_decision_shared.h"
 #include "../src/enhanced_wire.h"
@@ -15,6 +16,8 @@ namespace rw = rypath::render_wire;
 namespace wf = rypath::wavefront_wire;
 namespace ew = rypath::enhanced_wire;
 namespace decision = rypath_enhanced_resampling_decision;
+namespace chart = rypath_enhanced_chart;
+namespace hybrid = rypath_enhanced_hybrid;
 struct State {
     ep::State selection;
     ep::DiscoveryState discovery;
@@ -23,8 +26,9 @@ struct State {
     float arrival_probability, direct_probability;
     uint rr_cut, failed;
     ep::reuse::Scaled requested_h{.5f, 1};
+    hybrid::HybridState hybrid;
 };
-static_assert(sizeof(State) == 128 && alignof(State) == 4, "Enhanced sidecar ABI");
+static_assert(sizeof(State) == 284 && alignof(State) == 4, "Enhanced sidecar ABI");
 static_assert(decision::maximum_random_words == ep::er::maximum_random_words,
               "Scaled selector entropy budget");
 static_assert(ep::null_slot == cw::enhanced_null_slot &&
@@ -38,6 +42,25 @@ inline bool pending_owned(const thread ew::Evaluation &e, uint pixels, uint pixe
                 ? ew::absent(e.source) && e.result.bank == ew::fresh_bank && e.result.pixel == pixel
                 : ew::valid(e.source, pixels) &&
                       (same || (e.result.bank == ew::fresh_bank && e.result.pixel == pixel)));
+}
+inline bool unstarted_hybrid(const thread hybrid::HybridState &h) {
+    if (!chart::canonical_generic(h.active_record) || !ep::unit_density(h.active_h) ||
+        !ep::unit_density(h.active_generation_h) || h.first.next != 2 ||
+        h.first.selected != hybrid::fp::no_pivot || h.first.status != hybrid::fp::Status::ok ||
+        !ep::er::zero(h.primary_distance_squared) || as_type<uint>(h.primary_cosine) ||
+        h.primary_ready || h.predecessor.path_id != ew::invalid ||
+        as_type<uint>(h.predecessor.normal_offset) || h.predecessor_valid || h.outside ||
+        !ep::er::zero(h.certificate.edge_distance_squared) ||
+        as_type<uint>(h.certificate.cosine_at_predecessor) || h.certificate.base_admissible ||
+        h.certificate.query_mask)
+        return false;
+    for (uint k = 0; k < 4; ++k)
+        if (as_type<uint>(h.predecessor.beta[k]))
+            return false;
+    for (uint k = 0; k < 3; ++k)
+        if (as_type<uint>(h.predecessor.wo[k]))
+            return false;
+    return true;
 }
 inline State begin(const thread cw::Evaluation &request, device const wf::Config &config,
                    uint pixel, const thread ew::Evaluation &owned) {
@@ -69,21 +92,48 @@ struct Sink {
     ew::Record atom_record = ew::empty_record();
     ep::reuse::Scaled atom_h{.5f, 1}, atom_generation_h{.5f, 1};
 
+    bool has_interior() const thread {
+        return state.hybrid.active_record.tag == chart::interior_zomega;
+    }
+    bool activate_hybrid(const thread ew::Record &record, ep::reuse::Scaled h_eval,
+                         ep::reuse::Scaled h_gen) thread {
+        if (state.failed || state.hybrid.outside || has_interior() ||
+            record.tag != chart::interior_zomega ||
+            record.event_ordinal >= config.contribution_depth ||
+            !chart::valid_chart(record, 2u * (record.event_ordinal + 1u),
+                                config.contribution_depth) ||
+            !ep::valid_density(h_eval) || !ep::valid_density(h_gen) ||
+            !hybrid::fp::valid_first(state.hybrid.first) ||
+            state.hybrid.first.selected != record.event_ordinal + 1u) {
+            state.failed = 1;
+            return false;
+        }
+        state.hybrid.active_record = record;
+        state.hybrid.active_h = h_eval;
+        state.hybrid.active_generation_h = h_gen;
+        return true;
+    }
     bool mapping_import(uint event) const thread {
-        return !fresh() && state.requested_slot == 2u * event + 1u;
+        return !has_interior() && !fresh() && state.requested_slot == 2u * event + 1u;
     }
     void reset_atom() thread {
-        atom_record = ew::empty_record();
-        atom_h = atom_generation_h = {.5f, 1};
+        atom_record = has_interior() ? state.hybrid.active_record : ew::empty_record();
+        atom_h = has_interior() ? state.hybrid.active_h : ep::reuse::Scaled{.5f, 1};
+        atom_generation_h =
+            has_interior() ? state.hybrid.active_generation_h : ep::reuse::Scaled{.5f, 1};
     }
     void set_atom(const thread ew::Record &record, ep::reuse::Scaled h,
                   ep::reuse::Scaled generation_h) thread {
+        if (has_interior()) {
+            state.failed = 1; // Terminal-light coordinates cannot replace an active interior chart.
+            return;
+        }
         atom_record = record;
         atom_h = h;
         atom_generation_h = generation_h;
     }
     ew::Record imported_record() thread {
-        if (fresh())
+        if (fresh() || state.requested_slot == ep::null_slot)
             return ew::empty_record();
         const auto receipt = evaluations[pixel];
         if (!pending_owned(receipt, config.pixel_count, pixel, false)) {
@@ -92,13 +142,14 @@ struct Sink {
         }
         const auto record =
             records[ulong(receipt.source.bank) * config.pixel_count + receipt.source.pixel];
-        if (!rypath_bdpt::enhanced_light::valid_record(record, state.requested_slot / 2u) ||
-            ((state.requested_slot & 1u) == 0 && record.tag != ew::generic)) {
+        if (record.tag == chart::terminal_surface ||
+            !chart::valid_chart(record, state.requested_slot, config.contribution_depth)) {
             state.failed = 1;
             return ew::empty_record();
         }
         return record;
     }
+    ew::Record support_record() thread { return imported_record(); }
     bool fresh() const thread { return state.requested_slot == ep::fresh_slot; }
     bool selected_prefix() const thread {
         return !fresh() && config.contribution_replay == cw::prefix_replay;
@@ -110,6 +161,7 @@ struct Sink {
         return selected_prefix() && depth >= state.requested_slot / 2u;
     }
     void begin_event() thread {
+        reset_atom();
         state.arrival_probability = state.direct_probability = state.discovery.probability;
     }
     bool continue_discovery(float4 beta, const thread rypath_bdpt::HeroTrack &track,
@@ -158,6 +210,61 @@ struct Sink {
         // Canonical physical beta is NEVER divided by this discovery q.
         return result.survived;
     }
+    static bool same_record(const thread ew::Record &a, const thread ew::Record &b) {
+        if (a.version != b.version || a.tag != b.tag || a.light_id != b.light_id ||
+            a.event_ordinal != b.event_ordinal || a.instance != b.instance ||
+            a.primitive != b.primitive || a.kind != b.kind || a.reserved != b.reserved)
+            return false;
+        for (uint k = 0; k < 4; ++k)
+            if (a.coordinate_bits[k] != b.coordinate_bits[k])
+                return false;
+        return true;
+    }
+    template <typename Wavelengths>
+    bool project_interior(float4 term, const thread Wavelengths &lambda, ep::reuse::Scaled h,
+                          thread float3 &xyz) thread {
+        if (!ep::valid_density(h))
+            return false;
+        float sums[3]{0, 0, 0};
+        for (uint lane = 0; lane < 4; ++lane) {
+            const float wavelength = lambda.lambda[lane], pdf = lambda.pdf[lane];
+            const uint term_bits = as_type<uint>(term[lane]);
+            if (!(wavelength >= 360 && wavelength <= 830) || !chart::finite(pdf) ||
+                (as_type<uint>(pdf) & 0x80000000u) || (as_type<uint>(pdf) & 0x7fffffffu) == 0 ||
+                ((term_bits & 0x80000000u) && (term_bits & 0x7fffffffu)))
+                return false;
+            const float3 response = rypath_frame_sensor::cie(cie, wavelength, false);
+            if (!all(isfinite(response)))
+                return false;
+            for (uint channel = 0; channel < 3; ++channel) {
+                const uint response_bits = as_type<uint>(response[channel]);
+                const uint sign = (response_bits ^ term_bits) & 0x80000000u;
+                float value = ep::reuse::from_bits(sign);
+                if ((term_bits & 0x7fffffffu) && (response_bits & 0x7fffffffu)) {
+                    const auto t = ep::reuse::decompose_positive(term[lane]);
+                    const auto c = ep::reuse::decompose_positive(
+                        ep::reuse::from_bits(response_bits & 0x7fffffffu));
+                    auto projected = ep::reuse::quotient(ep::reuse::product(t, c),
+                                                         ep::reuse::decompose_positive(pdf));
+                    projected.exponent -= 2;
+                    projected = ep::reuse::product(projected, h);
+                    // v4 defines F from represented incoming C and the owned
+                    // chart scale BEFORE the sole final FLOAT conversion. No
+                    // materialize-then-undo product, clamp or positive floor.
+                    const auto materialized = ep::reuse::materialize_contribution(projected);
+                    if (materialized.status != ep::math::Status::ok)
+                        return false;
+                    value = ep::reuse::from_bits(as_type<uint>(materialized.value) | sign);
+                }
+                const auto sum = ep::reuse::signed_sum(sums[channel], value);
+                if (sum.status != ep::math::Status::ok)
+                    return false;
+                sums[channel] = sum.value;
+            }
+        }
+        xyz = {sums[0], sums[1], sums[2]};
+        return true;
+    }
     template <typename Wavelengths>
     void add(uint index, float4 term, const thread Wavelengths &lambda) thread {
         if (state.failed)
@@ -167,22 +274,57 @@ struct Sink {
             state.failed = 1;
             return;
         }
-        float3 xyz = 0;
-        for (uint lane = 0; lane < 4; ++lane) {
-            const float wavelength = lambda.lambda[lane], pdf = lambda.pdf[lane];
-            if (!(wavelength >= 360 && wavelength <= 830 && isfinite(pdf) && pdf > 0)) {
-                state.failed = 1;
-                return;
-            }
-            xyz += rypath_frame_sensor::cie(cie, wavelength, false) * (term[lane] / pdf / 4.f);
-        }
-        if (!all(isfinite(xyz))) {
+        const bool direct = (index & 1u) != 0;
+        const bool interior = has_interior();
+        const auto record = interior ? state.hybrid.active_record
+                            : direct ? atom_record
+                                     : ew::empty_record();
+        const auto h = interior ? state.hybrid.active_h
+                       : direct ? atom_h
+                                : ep::reuse::Scaled{.5f, 1};
+        const auto generation_h = interior ? state.hybrid.active_generation_h
+                                  : direct ? atom_generation_h
+                                           : ep::reuse::Scaled{.5f, 1};
+        if (record.tag == chart::terminal_surface ||
+            !chart::valid_chart(record, index, config.contribution_depth) ||
+            !ep::valid_density(h) || !ep::valid_density(generation_h) || state.hybrid.outside > 1 ||
+            (fresh() && state.hybrid.outside)) {
             state.failed = 1;
             return;
         }
-        const bool direct = (index & 1u) != 0;
-        const auto h = direct ? atom_h : ep::reuse::Scaled{.5f, 1};
-        const auto generation_h = direct ? atom_generation_h : ep::reuse::Scaled{.5f, 1};
+        if (!fresh() && index == state.requested_slot) {
+            const auto requested = imported_record();
+            if (state.failed)
+                return;
+            const bool requested_interior = requested.tag == chart::interior_zomega;
+            if (state.hybrid.outside || requested_interior != interior ||
+                (requested_interior && !same_record(requested, state.hybrid.active_record))) {
+                state.requested_xyz = {};
+                state.requested_h = {.5f, 1};
+                state.next_slot = index + 1u;
+                return; // Partial chart map: absence is zero, never chart substitution.
+            }
+        }
+        float3 xyz = 0;
+        if (interior) {
+            if (!project_interior(term, lambda, h, xyz)) {
+                state.failed = 1;
+                return;
+            }
+        } else {
+            for (uint lane = 0; lane < 4; ++lane) {
+                const float wavelength = lambda.lambda[lane], pdf = lambda.pdf[lane];
+                if (!(wavelength >= 360 && wavelength <= 830 && isfinite(pdf) && pdf > 0)) {
+                    state.failed = 1;
+                    return;
+                }
+                xyz += rypath_frame_sensor::cie(cie, wavelength, false) * (term[lane] / pdf / 4.f);
+            }
+            if (!all(isfinite(xyz))) {
+                state.failed = 1;
+                return;
+            }
+        }
         if (fresh()) {
             const float probability =
                 (index & 1u) ? state.direct_probability : state.arrival_probability;
@@ -214,7 +356,7 @@ struct Sink {
                     return;
                 }
                 records[ulong(receipt.result.bank) * config.pixel_count + receipt.result.pixel] =
-                    direct ? atom_record : ew::empty_record();
+                    record;
             }
         } else if (index == state.requested_slot) {
             state.requested_xyz = {xyz.x, xyz.y, xyz.z};
@@ -224,7 +366,8 @@ struct Sink {
     }
     bool finish(const thread cw::Evaluation &request, thread float3 &xyz,
                 thread cw::Evaluation &result) thread {
-        if (state.failed || state.pixel != pixel || request.ready != 0 ||
+        if (state.failed || state.hybrid.outside > 1 || (fresh() && state.hybrid.outside) ||
+            state.pixel != pixel || request.ready != 0 ||
             request.requested_slot != state.requested_slot ||
             request.selected_slot != ep::fresh_slot || as_type<uint>(request.normalizer) != 0 ||
             state.next_slot > state.selection.descriptor.slot_count)
@@ -251,6 +394,13 @@ struct Sink {
             if (selected.selected_slot == ep::null_slot)
                 records[ulong(receipt.result.bank) * config.pixel_count + receipt.result.pixel] =
                     ew::empty_record();
+            else {
+                const auto record =
+                    records[ulong(receipt.result.bank) * config.pixel_count + receipt.result.pixel];
+                if (record.tag == chart::terminal_surface ||
+                    !chart::valid_chart(record, selected.selected_slot, config.contribution_depth))
+                    return false;
+            }
         } else if (state.requested_slot != ep::null_slot) {
             const auto record = imported_record();
             if (state.failed)
