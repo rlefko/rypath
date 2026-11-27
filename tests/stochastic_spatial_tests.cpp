@@ -121,6 +121,12 @@ int main() {
             need(st::evaluations(s) == (s.forward == s.canonical ? 1u : 2u),
                  "evaluation accounting");
             ++histogram[s.forward - 1][s.canonical - 1];
+            const auto shared = st::draw(serial, 7, 61002, 0, st::Mode::shared);
+            need(shared.forward == s.forward && shared.canonical == s.forward &&
+                     st::evaluations(shared) == 1,
+                 "shared draw identity/pass count");
+            const auto disabled = st::draw(serial, 7, 61002, 0, st::Mode::all);
+            need(disabled.forward == 0 && disabled.canonical == 0, "disabled mode sentinel");
         }
         for (auto &row : histogram)
             for (auto n : row)
@@ -203,25 +209,33 @@ int main() {
                     for (unsigned k = 0; k < 4; ++k)
                         oracle +=
                             (donor[k] * donor_F_over_T[k] + canonical[k] * center_F_over_T) / 4;
-                    double conditional = 0, selected = 0;
+                    double conditional = 0, selected = 0, diagonal = 0, selected_diagonal = 0;
                     for (unsigned f = 0; f < 4; ++f)
                         for (unsigned c = 0; c < 4; ++c) {
                             const double S = donor[f] + canonical[c];
                             const double mean =
                                 donor[f] * donor_F_over_T[f] + canonical[c] * center_F_over_T;
                             conditional += mean / 16;
+                            if (f == c)
+                                diagonal += mean / 4;
                             // Exhaust both ordinary categorical-reservoir outcomes. The
                             // selected UCW is S/T_selected. No division by2 or confidence.
-                            if (S > 0)
-                                selected += (donor[f] / S * S * donor_F_over_T[f] +
-                                             canonical[c] / S * S * center_F_over_T) /
-                                            16;
+                            if (S > 0) {
+                                const auto result = donor[f] / S * S * donor_F_over_T[f] +
+                                                    canonical[c] / S * S * center_F_over_T;
+                                selected += result / 16;
+                                if (f == c)
+                                    selected_diagonal += result / 4;
+                            }
                             ++cases;
                         }
                     need(std::abs(conditional - oracle) < 1e-10,
                          "conditional mean differs from all-pair sum");
                     need(std::abs(selected - oracle) < 1e-10,
                          "selected UCW differs from conditional mean");
+                    need(std::abs(diagonal - oracle) < 1e-10 &&
+                             std::abs(selected_diagonal - oracle) < 1e-10,
+                         "four diagonal conditional/selected terms differ from full sum");
                     total_output += probability * conditional;
                     total_selected += probability * selected;
                     unsigned expected = 3;

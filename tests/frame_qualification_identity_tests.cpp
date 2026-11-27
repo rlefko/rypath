@@ -213,7 +213,8 @@ void atlas() {
     {
         auto requested = c;
         auto actual = f;
-        requested.stochastic_spatial_pairs = actual.stochastic_spatial_pairs = true;
+        requested.spatial_mode = actual.spatial_mode = FrameSpatialMode::independent;
+        actual.stochastic_spatial_pairs = true;
         const auto selected = rypath_stochastic_spatial::draw(17, 0, std::uint32_t(c.seed),
                                                               std::uint32_t(c.seed >> 32));
         actual.stochastic_forward_atlas = selected.forward;
@@ -232,7 +233,22 @@ void atlas() {
         bad = actual;
         bad.logical_evaluations += 6;
         check(!valid_frame_qualification_identity(requested, bad, 6), "fake all-pair accounting");
-        requested.stochastic_spatial_pairs = false;
+        requested.spatial_mode = actual.spatial_mode = FrameSpatialMode::shared;
+        const auto shared = rypath_stochastic_spatial::draw(
+            17, 0, std::uint32_t(c.seed), std::uint32_t(c.seed >> 32), FrameSpatialMode::shared);
+        const auto independent_evaluations = rypath_stochastic_spatial::evaluations(selected);
+        actual.logical_evaluations -= (independent_evaluations - 1) * 6;
+        actual.completed_evaluations -= (independent_evaluations - 1) * 6;
+        actual.stochastic_forward_atlas = shared.forward;
+        actual.stochastic_canonical_atlas = shared.canonical;
+        check(valid_frame_qualification_identity(requested, actual, 6), "shared policy positive");
+        bad = actual;
+        bad.spatial_mode = FrameSpatialMode::independent;
+        check(!valid_frame_qualification_identity(requested, bad, 6), "independent/shared alias");
+        bad = actual;
+        bad.stochastic_canonical_atlas = 1 + shared.forward % 4;
+        check(!valid_frame_qualification_identity(requested, bad, 6), "shared non-diagonal IDs");
+        requested.spatial_mode = FrameSpatialMode::all;
         check(!valid_frame_qualification_identity(requested, actual, 6),
               "unrequested sampled mode");
     }

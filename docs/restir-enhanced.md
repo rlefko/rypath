@@ -686,7 +686,24 @@ existing canonical contribution and add no donor confidence. No map is skipped
 based on its observed radiance or sampled target. Motion, cuts and suffix-cache
 support retain their existing physical replay and publication rules.
 
-Area contract 17 adds the opt-in flag and two 1-based IDs to the 116-byte config.
+`--area-spatial-mode stochastic-shared` is a separate opt-in policy. Draw one
+uniform atlas `K` and use `I=J=K`: scores are `4*D_K` and `4*C_K`, evaluated from
+one completed target map. The average over the four diagonal choices equals the
+same original sum. Independence between the two term sums is unnecessary for
+this linear expectation; sharing can change variance and spatial correlation.
+Its forward draw is exactly the independent policy's forward RNG site. The
+independent `stochastic-pairs` mode remains available, and `all` remains default.
+No data-dependent index choice or retry is introduced.
+
+The independent pilot used Area contract 17. Contract 18 retains the 116-byte
+config, declares the three-valued policy and two 1-based IDs, and rejects
+non-diagonal IDs in shared mode. Both CLI/API policy identities distinguish the
+two stochastic estimators. CPU checks enumerate 16 independent pairs and four
+diagonal pairs, then recursively propagate the selected normalizer for three
+generations with signed, null and border cases, comparing selected and conditional
+means. Production-kernel tests contain explicit policy controls; native shared-mode
+validation remains separate from the frozen independent pilot.
+
 Disabled configs use zero IDs. Completion accounting reports actual spatial map
 work and validates the serial/seed-derived choices; this is not four completed
 spatial evaluations relabeled as one. Cross-target storage currently retains its

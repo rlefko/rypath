@@ -451,7 +451,7 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 17
+    assert settings["area_contract"] == 18
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
     for mode in ("off", "initial-seed", "initial-atom", "current"):
@@ -594,6 +594,15 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 17
+        assert settings["area_contract"] == 18
         assert settings["area_source_mis"] == "source-target-mis-v1"
+    destination = root / "shared-spatial-mode.json"
+    invoke(["--scene", str(malformed), "--output", str(destination),
+            "--estimator", "area-replay", "--spectral-transport", "hero",
+            "--area-path-domain", "enhanced", "--area-stencil", "paired-gaussian16",
+            "--area-spatial-mode", "stochastic-shared"])
+    shared_settings = json.loads(destination.read_text())["settings"]
+    assert shared_settings["requested_area_spatial_mode"] == "stochastic-shared"
+    assert shared_settings["effective_area_spatial_mode"] is None
+    assert shared_settings["area_spatial_mode"] == "not-applicable"
 print("frame benchmark CLI checks passed")

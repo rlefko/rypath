@@ -36,9 +36,12 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
     const bool paired = area && wavefront && c.area_stencil == FrameAreaStencil::paired_gaussian16;
     const auto selection = rypath_stochastic_spatial::draw(
         static_cast<std::uint32_t>(f.area_serial), static_cast<std::uint32_t>(f.area_serial >> 32),
-        static_cast<std::uint32_t>(c.seed), static_cast<std::uint32_t>(c.seed >> 32));
-    if (f.stochastic_spatial_pairs != c.stochastic_spatial_pairs ||
-        (c.stochastic_spatial_pairs
+        static_cast<std::uint32_t>(c.seed), static_cast<std::uint32_t>(c.seed >> 32),
+        c.spatial_mode);
+    if (!rypath_stochastic_spatial::valid_mode(c.spatial_mode) ||
+        f.spatial_mode != c.spatial_mode ||
+        f.stochastic_spatial_pairs != rypath_stochastic_spatial::enabled(c.spatial_mode) ||
+        (rypath_stochastic_spatial::enabled(c.spatial_mode)
              ? !enhanced || !paired || f.stochastic_forward_atlas != selection.forward ||
                    f.stochastic_canonical_atlas != selection.canonical
              : f.stochastic_forward_atlas != 0 || f.stochastic_canonical_atlas != 0))
@@ -81,7 +84,7 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
                          n, f.history_used, mutations, f.temporal_evaluation_cache_used,
                          f.completed_evaluations, f.cached_evaluations, f.analytic_null_evaluations,
                          f.logical_evaluations,
-                         c.stochastic_spatial_pairs
+                         rypath_stochastic_spatial::enabled(c.spatial_mode)
                              ? rypath_stochastic_spatial::evaluations(
                                    {f.stochastic_forward_atlas, f.stochastic_canonical_atlas})
                              : 4u)

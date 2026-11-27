@@ -11,7 +11,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 17,
+    contract = 18,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -56,7 +56,8 @@ struct Config {
     // Zero disables all suffix-arena reads/writes, including sentinel indexing.
     Word suffix_context_low, suffix_context_high;
     Word temporal_reprojection;
-    Word stochastic_spatial_pairs, forward_atlas, canonical_atlas;
+    // 0=all, 1=independent uniform terms, 2=one shared uniform pair.
+    Word spatial_mode, forward_atlas, canonical_atlas;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;

@@ -3,6 +3,7 @@
 #include "frame_work_diagnostics.hpp"
 #include "gpu_diagnostics.hpp"
 #include "metal_render.hpp"
+#include "stochastic_spatial_shared.h"
 #include <vector>
 
 namespace rypath {
@@ -45,6 +46,18 @@ inline constexpr const char *frame_contribution_replay_name(FrameContributionRep
     return "invalid";
 }
 enum class FrameMutationPolicy { automatic, legacy, spectral_refresh };
+using FrameSpatialMode = rypath_stochastic_spatial::Mode;
+inline constexpr const char *frame_spatial_mode_name(FrameSpatialMode mode) {
+    switch (mode) {
+    case FrameSpatialMode::all:
+        return "all";
+    case FrameSpatialMode::independent:
+        return "stochastic-pairs";
+    case FrameSpatialMode::shared:
+        return "stochastic-shared";
+    }
+    return "invalid";
+}
 enum class FrameAreaStencil { automatic, adjacent, reciprocal16, paired_gaussian16 };
 inline constexpr const char *frame_mutation_policy_name(FrameMutationPolicy policy) {
     switch (policy) {
@@ -154,7 +167,7 @@ struct FrameConfig {
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
     bool compact_enhanced_pairs = false;
     // Unbiased stochastic evaluation of the four pairwise spatial MIS terms.
-    bool stochastic_spatial_pairs = false;
+    FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     FrameAreaDuplication area_duplication = FrameAreaDuplication::off;
     // Experimental static-geometry, camera-only temporal donor selection.
     bool enhanced_temporal_reprojection = false;
@@ -210,6 +223,7 @@ struct FrameInfo {
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
     bool stochastic_spatial_pairs = false;
+    FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     std::uint32_t stochastic_forward_atlas = 0, stochastic_canonical_atlas = 0;
     bool enhanced_temporal_reprojection_requested = false;
     bool enhanced_temporal_reprojection = false, enhanced_temporal_reprojection_used = false;
