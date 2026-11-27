@@ -122,6 +122,45 @@ would require evidence on independently held-out frames. The fixed cap applies
 the same confidence to both complementary temporal weights. Lin et al.'s
 sample-dependent duplication adjustment has a different derivation and bias.
 
+## What the Prism filter retains
+
+Eight additional Prism evaluation seeds used 32 static frames at 320×180. At
+the last frame, each filter received the same retained raw input within its
+sampling policy. Both policy outputs were scored against one finite 2048-SPP
+reference in signed linear RGB.
+
+| Frame 32 output | Exhaustive MSE | One-map MSE |
+| --- | ---: | ---: |
+| Raw Area estimate | 0.02195 | 0.02329 |
+| Signed, one frame of history and five spatial iterations | 0.02190 | 0.02324 |
+| Signed, 64-frame limit and zero spatial iterations | 0.04781 | 0.04983 |
+| Signed, 64-frame limit and five spatial iterations | 0.04781 | 0.04983 |
+| Native MetalFX | 0.00619 | 0.00639 |
+
+Enabling 64-frame temporal history with spatial filtering disabled raised
+endpoint MSE in all eight seeds for each Area policy. The same history setting
+lowered error in all eight independent-PT controls. In a separate frame-series
+check against each run's 128-SPP reference, raw Area error averaged 0.141 and
+0.143 over the first eight frames, falling to 0.026 and 0.028 over the last
+eight. The signed filter continued to average the noisier early frames. One
+large red corner sample from the two-seed pilot did not recur at comparable
+magnitude across the eight held-out endpoints. A narrow spectrum region still
+accounted for about 88% of the signed endpoint error under both policies. The
+captures identify a reconstruction-history effect without identifying an
+individual source path or measuring color fidelity during motion.
+
+## Other execution experiments
+
+An exact shortcut for supported primary paths ending at a light passed
+same-scene controls on diffuse and rough-conductor paths, including occlusion
+and unsupported-material fallback. On two warmups and three measured frames per
+process, the first version raised complete native frame time by 21% on Cornell
+and 27% on Prism. A second version removed production admission counters and
+shared the fallback hit. It still raised frame time by 12% and 17%, respectively.
+Both remain separate experiments. An axis-aligned normal shortcut also passed
+its differential controls. Its Prism timing was flat, and its Cornell change
+fell inside the variation between baseline runs.
+
 ## Reproducing a native run
 
 Run a Release build on a Mac with hardware ray tracing. This command uses the
@@ -148,3 +187,23 @@ Use `--area-spatial-mode all` for the four-map control. The motion sequence
 adds `--area-temporal-reprojection dual --motion-offset 0.15`. Pavilion requires
 its external scene assets and `--resource-profile large`. For native MetalFX,
 select `--reconstruction metalfx` and omit the two signed-filter options.
+
+The lower-resolution comparison uses separate evaluation streams and computes
+an independent reference for every physical pose visited by the moving camera.
+The command below runs the one-map arm and its independent-PT control. Repeat
+with `--area-spatial-mode all` and a separate output directory for exhaustive
+reuse. Omit both motion options and the reprojection option for static frames.
+
+```sh
+build/release/rypath-pipeline-qualification \
+  --scene tests/fixtures/pbrt-render/cornell-box-adapted.pbrt \
+  --output-dir cornell-moving-one-map --width 320 --height 180 \
+  --frames 32 --seeds 8 --first-evaluation-seed-index 100 \
+  --reference-spp 128 --reference-batches 4 --motion-references every-pose \
+  --motion-offset 0.15 --area-temporal-reprojection dual \
+  --spectral-transport hero --hero-wavelengths visible --area-path-domain enhanced \
+  --area-contribution-replay prefix --area-stencil paired-gaussian16 \
+  --area-spatial-mode stochastic-shared --area-history-cap 20 --mutation-arms 0 \
+  --area-output conditional-mean --area-mutation-policy spectral-refresh \
+  --reconstruction temporal --variance-policy conservative --compare-reconstruction on
+```
