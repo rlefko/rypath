@@ -149,6 +149,48 @@ accounted for about 88% of the signed endpoint error under both policies. The
 captures identify a reconstruction-history effect without identifying an
 individual source path or measuring color fidelity during motion.
 
+## Pavilion texture and reflection detail
+
+At native 1080p, one additional daylight run fed 104 identical source frames
+to each filter within each of its two arms, independent PT and one-map Area.
+Each filter used its own input conversion, guides and history. We compared
+frame 104 with a separate 256-SPP reference in signed linear luminance.
+Four independent 64-SPP reference batches allowed an estimate of repeatable
+texture contrast. Regions were chosen on a reference before scoring.
+
+| Daylight region, medium-scale contrast | Temporal only | Signed with five spatial passes | Native MetalFX |
+| --- | ---: | ---: | ---: |
+| Left concrete wall | 1.00 | 0.92 | 0.92 |
+| Central green marble | 1.33 | 0.87 | 3.14 |
+| Stone floor | 0.99 | 0.99 | 1.07 |
+
+Values are reference-aligned gains in the difference between Gaussian bands
+at 2 and 6 pixels. A gain of one matches estimated reference contrast. On the
+left wall, signed and MetalFX had similar gains, yet their correlations to
+reference detail were 0.64 and 0.96 respectively. Residual grain obscures the
+wall in the signed output. Applying the signed spatial passes reduced both
+contrast and band error on the marble and wall. Disabling the passes would
+restore some contrast at the expense of more noise.
+
+The nighttime pool-light reflection showed a different effect. In the fine
+and medium bands, signed retained 95% and 96% of reference contrast, while
+MetalFX retained 12% and 30%. The signed output had lower band error against
+all four reference batches. The two nighttime filters ran in separate
+processes. Their final raw pixels agreed exactly inside this crop, although
+the comparison does not establish equal histories. In the same-input
+daylight run, toggling the signed spatial passes left the water crop
+byte-identical in both arms. These measurements cover fixed regions and
+single native endpoints. Primary pinhole guides approximate the finite lens.
+
+The signed filter uses albedo to guide filtering of combined radiance.
+Schied et al. remove visible material modulation before filtering illumination
+and restore it afterward. A focused follow-up is to retain the opaque diffuse
+substrate contribution separately through reconstruction, then test the wall
+and marble against the same references while protecting coated and reflected
+light. This requires a suitable signal from transport rather than dividing
+the combined spectral image by a primary RGB guide.
+[Spatiotemporal Variance-Guided Filtering](https://research.nvidia.com/labs/rtr/publication/schied2017spatiotemporal/)
+
 ## Other execution experiments
 
 An exact shortcut for supported primary paths ending at a light passed
