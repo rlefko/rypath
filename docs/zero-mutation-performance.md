@@ -10,21 +10,24 @@ separately from the complete-frame CPU wall interval.
 
 ## Where the frame goes
 
-The same-build static screen on `3dc8b9d` uses seed 61002, one warmup and two
-measured frames. The guide cache becomes eligible on the second measured
-frame. The contribution control uses reciprocal16, and Enhanced uses paired
-Gaussian maps, prefix replay and the sequential suffix cache. These are
-different estimators. The earlier and current measurements belong to their
-respective workloads.
+On `d9ffd80`, six static arms each used seed 61002, two warmups and three
+measured frames. All entries are mean complete wall time in milliseconds.
+Bare PT and fresh-only Enhanced return the raw estimator. Contribution Area
+uses reciprocal16. The three full Enhanced arms use paired Gaussian maps,
+prefix replay and the sequential suffix cache.
 
-| Scene | Bare PT, ms | Contribution Area + signed, ms | Enhanced + signed, ms | Enhanced + native MetalFX, ms |
-| --- | ---: | ---: | ---: | ---: |
-| Cornell | 116.28 | 660.61 | 824.79 | 799.32 |
-| Prism | 124.72 | 672.33 | 1267.43 | 1247.26 |
-| Pavilion day | 422.48 | 1729.85 | 2158.38 | 2147.67 |
-| Pavilion night | 445.39 | 1771.77 | 2230.42 | 2199.98 |
+| Scene | Bare PT | Enhanced fresh only | Contribution + signed | Four maps + signed | One map + signed | One map + native MetalFX |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cornell | 117.2 | 260.8 | 663.5 | 841.5 | 440.7 | 418.4 |
+| Prism | 126.8 | 293.2 | 667.1 | 1272.1 | 577.9 | 557.2 |
+| Pavilion day | 417.6 | 617.7 | 1727.5 | 2387.1 | 1049.1 | 1035.1 |
+| Pavilion night | 442.5 | 667.1 | 1755.4 | 2434.0 | 1095.2 | 1088.4 |
 
-A separate instrumented run isolates one warm frame. Summed GPU command
+These short runs isolate large costs. Fresh selection and path evaluation
+already exceed the complete-frame budget on every scene, before spatial reuse
+or filtering. The sustained comparison below uses a longer temporal history.
+
+An earlier instrumented run on `3dc8b9d` isolates one warm frame. Summed GPU command
 intervals for fresh discovery and the four spatial passes are 262/484 ms on
 Cornell, 291/923 ms on Prism, 612/1322 ms on Pavilion day and 664/1336 ms on
 Pavilion night. Finalization takes 9–11 ms. Instrumentation adds work. Bare
@@ -71,41 +74,32 @@ guidance motivates checking register pressure and temporary storage in the
 compiled kernel. Whole-frame timing decides whether the change pays off.
 [Metal shader performance](https://developer.apple.com/videos/play/tech-talks/111373/)
 
-## Short native cross-check
+## Sustained native frame time
 
-Both arms below use `a19feb2`, cap 20, generic shading, identical native
-settings and signed denoising on the 40-core M4 Max (macOS 26.6, Xcode 26.6).
-One process per arm uses two warmups and four measured static frames. Every
-frame completed 2,073,600 fresh paths. The shared arm evaluated exactly one
-spatial map and combined two reservoir candidates. The exhaustive arm
-evaluated four maps and combined five candidates.
+The paired Release runs used `a19feb2`, generic shading and signed temporal
+reconstruction on the 40-core M4 Max (macOS 26.6, Xcode 26.6). For each arm
+and scene, seeds 61002–61004 each supplied 96 measured frames after eight
+warmups. Every frame completed 2,073,600 fresh paths. The static columns
+use all 288 measured frames per arm. FPS is the reciprocal of mean wall time.
+The pooled P95 is descriptive because successive frames share history.
 
-| Scene | Exhaustive, ms | Shared, ms | Shared FPS | Speedup |
-| --- | ---: | ---: | ---: | ---: |
-| Cornell | 854.90 | 444.04 | 2.25 | 1.93× |
-| Prism | 1269.60 | 576.62 | 1.73 | 2.20× |
-| Pavilion day | 2423.39 | 1058.33 | 0.94 | 2.29× |
-| Pavilion night | 2461.40 | 1108.35 | 0.90 | 2.22× |
+| Scene | Four maps, static ms | One map, static ms | One map P95, ms | One map FPS | Static speedup | One map, translation only ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cornell | 884.9 | 453.9 | 461.4 | 2.20 | 1.95× | 742.5 |
+| Prism | 1303.1 | 584.0 | 591.7 | 1.71 | 2.23× | 1039.4 |
+| Pavilion day | 2585.4 | 1144.6 | 1161.2 | 0.87 | 2.26× | 1850.5 |
+| Pavilion night | 2635.7 | 1188.9 | 1205.3 | 0.84 | 2.22× | 1874.6 |
 
-These short means measure rendering and reconstruction through completion.
-The larger history and variance changes require separate image checks.
+The motion runs used the same seeds, warmup and frame count. The last column
+includes only the 24 translating frames per seed. Both arms use fixed cap 20
+and zero mutations. One map combines two candidates and four maps combine
+five. The speedup compares equal fresh sample counts. The held-out quality
+study below measures the effect on error.
 
-## Sustained static frame time
-
-A separate Release build on `fe1b28c` repeated the full one-map pipeline at
-native 1920×1080 on all four scenes. Each run used eight warmup frames, 96
-measured frames, seed 61002, generic shading and the signed temporal denoiser.
-Mean and P95 are measured frame wall times. FPS is the reciprocal of the mean.
-
-| Scene | Mean, ms | P95, ms | FPS |
-| --- | ---: | ---: | ---: |
-| Cornell | 453.75 | 460.64 | 2.20 |
-| Prism | 582.31 | 590.84 | 1.72 |
-| Pavilion day | 1150.69 | 1171.84 | 0.87 |
-| Pavilion night | 1186.58 | 1202.38 | 0.84 |
-
-The 96 frames share one camera and a temporal history. Separate runs are
-needed to compare seeds or movement.
+A second Release build on `fe1b28c` repeated the static one-map pipeline
+for 96 measured frames on seed 61002. Mean complete frame times were
+453.75 ms on Cornell, 582.31 ms on Prism, 1150.69 ms on Pavilion day and
+1186.58 ms on Pavilion night.
 
 ## Spatial cost and remaining fresh work
 
@@ -238,6 +232,32 @@ light. This requires a suitable signal from transport rather than dividing
 the combined spectral image by a primary RGB guide.
 [Spatiotemporal Variance-Guided Filtering](https://research.nvidia.com/labs/rtr/publication/schied2017spatiotemporal/)
 
+## Held-out spatial-reuse quality
+
+Eight paired seeds (indices 100–107) ran both spatial estimators for 32 frames
+with a fixed cap of 20. Static endpoints use one common 2048-SPP reference.
+Motion uses four independent reference batches at each of nine camera poses,
+128 SPP per pose in total. Cornell and Prism were 320×180 and Pavilion
+was 320×170. Each raw frame was also given to signed reconstruction and
+native MetalFX so filter comparisons within a run share the same input.
+
+| Scene | Signed MSE, four maps | Signed MSE, one map | MetalFX MSE, four maps | MetalFX MSE, one map |
+| --- | ---: | ---: | ---: | ---: |
+| Cornell | 0.01136 | 0.01421 | 0.01238 | 0.01177 |
+| Prism | 0.04781 | 0.04983 | 0.00618 | 0.00639 |
+| Pavilion day | 6.0904 | 6.0899 | 0.03043 | 0.03045 |
+| Pavilion night | 9.0388 | 9.0151 | 0.09246 | 0.09299 |
+
+All eight static Cornell signed endpoints favored four maps. Seven of eight
+Prism signed endpoints did so. One-map signed MSE was also higher during
+translation on all four scenes. On Pavilion night, the direction reversed
+while the camera held still. As a descriptive time-to-quality check, each
+seed's four-map final-four-frame mean supplied a target for the one-map
+rolling mean. By frame 32 the signed one-map arm reached that target on
+0/8 Cornell, 1/8 Prism, 6/8 Pavilion day and 4/8 Pavilion night seeds.
+These measurements support an opt-in sampling tradeoff. A shorter frame
+interval alone does not establish a speedup at equal error.
+
 ## Pavilion night highlight persistence
 
 We traced a fixed screen-space grid on the roof, stone and reflected lights in
@@ -296,6 +316,15 @@ shared the fallback hit. It still raised frame time by 12% and 17%, respectively
 Both remain separate experiments. An axis-aligned normal shortcut also passed
 its differential controls. Its Prism timing was flat, and its Cornell change
 fell inside the variation between baseline runs.
+
+An additional experiment executed a second eligible fresh path step within
+one shade dispatch. Counted and counter-free replay fixtures passed their
+same-acceleration-structure checks. At 1080p on Cornell, an uninstrumented
+off/on/on/off run gave median complete frame times of 439.60 ms off and
+467.30 ms on, a 6.30% regression. Baseline endpoint drift was 0.31%.
+This failed the prespecified limit of a 2% complete-frame regression.
+The experiment was retained separately. Prism confirmed second-step
+admission. We stopped before Prism warm timing or a fresh-stage speed claim.
 
 ## Reproducing a native run
 
