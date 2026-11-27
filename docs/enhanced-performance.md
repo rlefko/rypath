@@ -61,16 +61,20 @@ shares are not native-resolution performance measurements. Apple's
 [GPU profiling guidance](https://developer.apple.com/videos/play/tech-talks/111374/)
 motivate reducing live state and measuring resulting allocation and occupancy.
 
-## Isolated outlining experiments
+## Isolated execution experiments
 
-Two single-annotation experiments retain the original operation bodies. Each
-uses separate frozen runtimes and ABBA order, with two warmup and three measured
+Two single-annotation outlining experiments retain the original operation bodies.
+A third explicitly gathers a 112-byte completion view instead of copying the
+292-byte Enhanced state again after the event; its completion formulas and
+persistent state remain unchanged. Each experiment uses separate frozen runtimes
+and ABBA order, with two warmup and three measured
 frames per process under the native settings above.
 
 | Change | Cornell mean change | Prism mean change | Decision |
 | --- | ---: | ---: | --- |
 | Outline hybrid geometric edge helper | −0.78% | −2.21% | Insufficient to recover regression |
 | Outline connection-certification helper | +5.08% | +3.56% | Rejected for speed |
+| Gather smaller completion view | +0.92% | −1.76% | Mixed, insufficient recovery |
 
 All Cornell/Prism final raw/reconstructed FLOAT comparisons are bit-exact,
 including baseline/baseline and candidate/candidate controls. The edge experiment's
@@ -79,7 +83,7 @@ its strict control: the final unchanged baseline differs at one pixel from the
 first baseline and both candidates. Its cause is unresolved; this is not evidence
 of an outlining-induced error or an accepted numerical tolerance. The original
 Pavilion harness failure from noncanonical dependency paths is retained separately
-from its corrected fresh study and this numerical control failure. Neither
+from its corrected fresh study and this numerical control failure. No
 experiment is adopted.
 
 ## Reproduction and validation scope
@@ -89,8 +93,9 @@ retain frozen runtimes, exact commands, source/build/scene hashes, settings,
 per-frame accounting and raw/reconstructed FLOATs. Relevant studies are
 `enhanced-regression-native-001`, `enhanced-event-count-native-001`,
 `profiling/enhanced-regression-small-capture-001`,
-`enhanced-edge-outline-native-001`, `enhanced-edge-outline-pavilion-recovery-001`
-and `enhanced-certification-outline-native-001`. Independent review receipts
+`enhanced-edge-outline-native-001`, `enhanced-edge-outline-pavilion-recovery-001`,
+`enhanced-certification-outline-native-001` and `enhanced-finish-view-native-001`.
+Independent review receipts
 are in `enhanced-followup-research/`. These large local artifacts are excluded
 from Git; this record does not claim that they accompany a clone.
 
@@ -103,7 +108,13 @@ Actual profiled/unprofiled frame controls preserve raw output. Native diagnostic
 evidence covers 36 completed frames, with per-leaf accounting independently
 checked. These checks validate measurement, not a rendering speedup.
 
-Next experiments reduce the completion-state copy and specialize complete
-material events. Both require actual compiler resource evidence, equivalent
+The completion-view prototype passes its 24-case full-state/view GPU differential
+and the queue, selected-null compaction and sequential suffix controls. Its
+native screen completes 40 frames and preserves all 24 final raw/reconstructed
+FLOAT comparisons. These controls establish the bounded execution result; the
+mixed timing prevents adoption as a performance repair.
+
+Complete material-event specialization is the next bounded experiment.
+It requires actual compiler resource evidence, equivalent
 event/frame outputs and lower complete-frame cost before adoption. Unsupported
 charts, coatings and spectral effects remain part of the renderer's contract.
