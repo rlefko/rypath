@@ -1254,7 +1254,6 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
         const auto dd = [&](unsigned id) {
             return static_cast<unsigned char *>(diagnostic[id].contents) + guard;
         };
-        auto *source_ids = reinterpret_cast<dup::Label *>(dd(dw::history_source_labels_id));
         auto *destination_ids =
             reinterpret_cast<dup::Label *>(dd(dw::history_destination_labels_id));
         auto *temporal_ids = reinterpret_cast<dup::Label *>(dd(dw::temporal_labels_id));
@@ -1386,7 +1385,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
         bind();
         std::swap(diagnostic[dw::history_source_labels_id],
                   diagnostic[dw::history_destination_labels_id]);
-        source_ids = reinterpret_cast<dup::Label *>(dd(dw::history_source_labels_id));
+        auto *source_ids = reinterpret_cast<dup::Label *>(dd(dw::history_source_labels_id));
         destination_ids = reinterpret_cast<dup::Label *>(dd(dw::history_destination_labels_id));
         bind_diagnostic();
         auto *old = reinterpret_cast<aw::History *>(data(aw::history_source_id));
