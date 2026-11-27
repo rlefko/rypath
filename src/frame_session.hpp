@@ -163,6 +163,8 @@ struct FrameConfig {
     // replay both directions. False provides a full-replay validation control.
     bool cache_temporal_evaluations = true;
     // Effective only for Enhanced Area prefix replay; disabled mode replays suffixes.
+    std::uint32_t enhanced_history_cap =
+        20; // Fixed prior-frame confidence, independent of samples.
     bool enhanced_suffix_cache = true;
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
     bool compact_enhanced_pairs = false;
@@ -220,6 +222,7 @@ struct FrameInfo {
     std::uint64_t area_serial = 0;
     bool history_used = false;
     bool temporal_evaluation_cache_used = false;
+    std::uint32_t enhanced_history_cap = 0; // Zero outside the Enhanced estimator.
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
     bool stochastic_spatial_pairs = false;

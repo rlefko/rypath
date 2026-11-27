@@ -33,7 +33,7 @@ namespace wf = wavefront_wire;
 namespace aw = area_wire;
 static_assert(wf::contract == 23 && sizeof(wf::Contract) == 112 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 18 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 116);
+static_assert(aw::contract == 19 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 120);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12 &&
@@ -55,7 +55,7 @@ void require(bool value, const std::string &why) {
 void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
     std::string why;
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_area_contract_v18", why);
+        metal::load_pipeline(device, library, @"rypath_area_contract_v19", why);
     require(contract_pipeline != nil, why);
     require([library newFunctionWithName:@"rypath_area_contract"] == nil &&
                 [library newFunctionWithName:@"rypath_area_contract_v15"] == nil,
@@ -74,7 +74,7 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(metal::complete(command, "Area v18 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 18 && contract.config_bytes == 116 &&
+    require(contract.version == 19 && contract.config_bytes == 120 &&
                 contract.history_bytes == 88 && contract.temporal_bytes == 92 &&
                 contract.accumulator_bytes == 104 && contract.replay_bytes == 32 &&
                 contract.counters_bytes == 112 && contract.contribution_evaluation_bytes == 16 &&
@@ -1629,6 +1629,9 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
         old[p].confidence = 40 + p;
         std::memset(&record_at(old[p].record), 0xff, sizeof(ew::Record));
     }
+    // A fixed cap applies to the inverse and forward weights, the published
+    // temporal confidence, and subsequent spatial inputs even for a null donor.
+    config.enhanced_history_cap = 4;
     config.history_source_bank = 1;
     config.history_used = 1;
     config.serial_low = 1;
@@ -1664,7 +1667,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
         temporal_Z[p] = fresh_alpha[p] == 0
                             ? 0
                             : static_cast<long double>(fresh_Z[p]) * fresh_alpha[p] /
-                                  (fresh_alpha[p] + 20.L * inverse_alpha);
+                                  (fresh_alpha[p] + 4.L * inverse_alpha);
     }
     dispatch(merge);
     for (unsigned p = 0; p < pixels; ++p)
@@ -1679,7 +1682,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
     dispatch(merge);
     dispatch(finish);
     for (unsigned p = 0; p < pixels; ++p) {
-        require(temporal[p].confidence == 21 && temporal[p].record.bank == ew::temporal_bank &&
+        require(temporal[p].confidence == 5 && temporal[p].record.bank == ew::temporal_bank &&
                     temporal[p].record.pixel == p,
                 "Warm temporal retains capped-null history confidence and current target");
         scalar_near(temporal[p].target, temporal[p].target_exponent, fresh_alpha[p],
@@ -1727,7 +1730,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
             "One MH attempt per domain, two guaranteed accepts, zero/null rejections");
     for (unsigned p = 0; p < pixels; ++p) {
         const bool accept = p == 0 || p == 4;
-        require(temporal[p].confidence == 21 && temporal[p].record.bank == ew::temporal_bank &&
+        require(temporal[p].confidence == 5 && temporal[p].record.bank == ew::temporal_bank &&
                     temporal[p].record.pixel == p,
                 "MH must preserve M and normalize accepted refs");
         if (accept) {
@@ -1781,6 +1784,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
     // positive, so center attenuation cannot be removed from the denominator.
     // The second run shifts Z by another 128 exponent bits: a final FLOAT
     // readout rounds to zero, but the reusable selected history must stay positive.
+    config.enhanced_history_cap = 20;
     constexpr unsigned owner = width + 1;
     const float evidence_Z = std::bit_cast<float>(0x03d76154u);
     const float evidence_alpha = std::bit_cast<float>(0x33f892fcu);

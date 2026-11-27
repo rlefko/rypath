@@ -64,7 +64,8 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
         f.contribution_depth !=
             (frame_area_contribution_family(c.area_path_domain) ? scene_depth : 0u))
         return fail("Qualification path domain/replay/law/depth mismatch");
-    if (f.enhanced_suffix_cache != suffix || f.enhanced_pair_compaction != compact ||
+    if (f.enhanced_history_cap != (enhanced ? c.enhanced_history_cap : 0u) ||
+        f.enhanced_suffix_cache != suffix || f.enhanced_pair_compaction != compact ||
         f.enhanced_temporal_reprojection_requested != c.enhanced_temporal_reprojection ||
         f.enhanced_temporal_reprojection != motion)
         return fail("Qualification effective execution feature mismatch");

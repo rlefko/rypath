@@ -91,7 +91,7 @@ struct Options {
     rypath::FrameContributionReplay contribution_replay = rypath::FrameContributionReplay::full;
     rypath::FrameAreaOutput area_output = rypath::FrameAreaOutput::conditional_mean;
     float target_scale = 1.f;
-    std::uint32_t mutation_steps = 1;
+    std::uint32_t mutation_steps = 1, enhanced_history_cap = 20;
     std::uint32_t capacity = rypath::FrameConfig{}.capacity;
     std::uint32_t quantum = rypath::FrameConfig{}.quantum;
     std::uint32_t group_width = rypath::FrameConfig{}.group_width;
@@ -156,6 +156,7 @@ const char *usage =
     "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
+    "  [--area-history-cap N (Enhanced fixed temporal confidence, 1 through 20)]\n"
     "  [--area-path-domain summed|contribution|enhanced (Area only; default: summed)]\n"
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
     "  [--area-contribution-replay full|prefix (contribution only; default: full)]\n"
@@ -369,6 +370,10 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.area_duplication = rypath::FrameAreaDuplication::current;
             else
                 return "area duplication must be off, initial-seed, initial-atom, or current";
+        } else if (key == "--area-history-cap") {
+            if (!integer(value, o.enhanced_history_cap) || o.enhanced_history_cap < 1 ||
+                o.enhanced_history_cap > 20)
+                return "area history cap must be 1 through 20";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
@@ -462,6 +467,10 @@ std::string parse(int argc, char **argv, Options &o) {
     }
     if (seen.contains("--area-output") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area output requires area-replay estimator";
+    if (seen.contains("--area-history-cap") &&
+        (o.estimator != rypath::FrameEstimator::area_replay ||
+         o.area_path_domain != rypath::FrameAreaPathDomain::enhanced))
+        return "area history cap requires Enhanced Area replay";
     if (seen.contains("--area-path-domain") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area path domain requires area-replay estimator";
     if (seen.contains("--area-contribution-replay") &&
@@ -776,6 +785,7 @@ struct Observation : rypath::FrameStatisticsSample {
     bool diffuse_events = false;
     bool history_used = false, temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
+    std::uint32_t enhanced_history_cap = 0;
     bool enhanced_pair_compaction = false;
     bool stochastic_spatial_pairs = false;
     rypath::FrameSpatialMode spatial_mode = rypath::FrameSpatialMode::all;
@@ -1110,7 +1120,9 @@ struct Report {
                                 : "source-target-mis-v1")
                          : "none")
             << ",\"area_temporal_reuse\":"
-            << (options.estimator == rypath::FrameEstimator::area_replay ? 20 : 0)
+            << (options.estimator == rypath::FrameEstimator::area_replay
+                    ? options.enhanced_history_cap
+                    : 0u)
             << ",\"mutation_steps\":" << options.mutation_steps << ",\"effective_mutation_steps\":"
             << (options.estimator == rypath::FrameEstimator::area_replay ? options.mutation_steps
                                                                          : 0)
@@ -1348,6 +1360,7 @@ struct Report {
                                         {f.stochastic_forward_atlas, f.stochastic_canonical_atlas})
                                   : 4u)
                         : "null")
+                << ",\"enhanced_history_cap\":" << f.enhanced_history_cap
                 << ",\"compacted_null_evaluations\":" << f.compacted_null_evaluations
                 << ",\"enhanced_suffix_cache\":" << (f.enhanced_suffix_cache ? "true" : "false")
                 << ",\"enhanced_suffix_hits\":[" << f.enhanced_suffix_hits[0] << ','
@@ -1617,6 +1630,7 @@ int run(const Options &options) {
         config.contribution_replay = options.contribution_replay;
         config.area_output = options.area_output;
         config.cache_temporal_evaluations = options.cache_temporal_evaluations;
+        config.enhanced_history_cap = options.enhanced_history_cap;
         config.enhanced_suffix_cache = options.enhanced_suffix_cache;
         config.compact_enhanced_pairs = options.compact_enhanced_pairs;
         config.spatial_mode = options.spatial_mode;
@@ -1782,6 +1796,10 @@ int run(const Options &options) {
                              options.estimator == rypath::FrameEstimator::area_replay &&
                              options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
                              options.enhanced_temporal_reprojection) &&
+                        info.enhanced_history_cap ==
+                            (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                 ? options.enhanced_history_cap
+                                 : 0u) &&
                         info.enhanced_pair_compaction ==
                             (options.execution == rypath::FrameExecution::wavefront &&
                              options.estimator == rypath::FrameEstimator::area_replay &&
@@ -1823,6 +1841,7 @@ int run(const Options &options) {
                     observation.fresh_discovery_version = info.fresh_discovery_version;
                     observation.history_used = info.history_used;
                     observation.enhanced_suffix_cache = info.enhanced_suffix_cache;
+                    observation.enhanced_history_cap = info.enhanced_history_cap;
                     observation.enhanced_pair_compaction = info.enhanced_pair_compaction;
                     observation.stochastic_spatial_pairs = info.stochastic_spatial_pairs;
                     observation.spatial_mode = info.spatial_mode;
@@ -2033,7 +2052,9 @@ int run(const Options &options) {
                                 : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
-                     options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? std::to_string(options.enhanced_history_cap)
+                         : "0"},
                     {"rypath.area.spatial_mode_requested",
                      rypath::frame_spatial_mode_name(options.spatial_mode)},
                     {"rypath.area.stochastic_forward_atlas",
@@ -2254,7 +2275,9 @@ int run(const Options &options) {
                                 : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
-                     options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? std::to_string(options.enhanced_history_cap)
+                         : "0"},
                     {"rypath.area.mutations",
                      std::to_string(options.estimator == rypath::FrameEstimator::area_replay
                                         ? options.mutation_steps

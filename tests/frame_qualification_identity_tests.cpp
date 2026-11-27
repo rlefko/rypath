@@ -24,6 +24,7 @@ FrameInfo enhanced() {
     f.canonical_transport_version = 4;
     f.fresh_discovery_version = 1;
     f.contribution_depth = 6;
+    f.enhanced_history_cap = 20;
     f.enhanced_suffix_cache = true;
     f.mutation_policy = FrameMutationPolicy::legacy;
     f.area_stencil = FrameAreaStencil::adjacent;
@@ -79,6 +80,7 @@ void controls() {
     reject([](auto &x) { x.canonical_transport_version = 0; }, "wrong canonical law");
     reject([](auto &x) { x.fresh_discovery_version = 0; }, "wrong discovery law");
     reject([](auto &x) { x.contribution_depth = 5; }, "wrong depth");
+    reject([](auto &x) { x.enhanced_history_cap = 1; }, "incorrect effective history cap");
     reject([](auto &x) { x.enhanced_suffix_cache = false; }, "ignored requested suffix");
     reject([](auto &x) { x.status = FrameStatus::failed; }, "failed status");
     reject([](auto &x) { x.width = 3; }, "wrong dimensions");
@@ -141,6 +143,7 @@ void legacy_and_independent() {
     f.area_path_domain = FrameAreaPathDomain::summed;
     f.contribution_replay = FrameContributionReplay::full;
     f.canonical_transport_version = f.fresh_discovery_version = f.contribution_depth = 0;
+    f.enhanced_history_cap = 0;
     f.enhanced_suffix_cache = false;
     f.completed_evaluations = 36;
     f.analytic_null_evaluations = 0;

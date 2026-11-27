@@ -3569,7 +3569,7 @@ struct FrameSession::Impl {
         area = std::make_shared<FrameAreaPrograms>();
         history = std::make_shared<FrameAreaHistory>();
         std::string error;
-        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v18", error);
+        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v19", error);
         if (probe == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(area_wire::Contract)
@@ -3996,7 +3996,8 @@ struct FrameSession::Impl {
                 mapped_motion ? 1u : 0u,
                 static_cast<std::uint32_t>(config.spatial_mode),
                 spatial.forward,
-                spatial.canonical};
+                spatial.canonical,
+                config.enhanced_history_cap};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
@@ -5303,6 +5304,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                                               : FrameContributionReplay::full;
         frame->info.canonical_transport_version = frame_area_canonical_version(c.area_path_domain);
         frame->info.fresh_discovery_version = frame_area_discovery_version(c.area_path_domain);
+        frame->info.enhanced_history_cap =
+            c.area_path_domain == FrameAreaPathDomain::enhanced ? c.enhanced_history_cap : 0u;
         frame->info.enhanced_suffix_cache = frame_suffix_cache_enabled(c);
         frame->info.enhanced_pair_compaction = frame_pair_compaction_enabled(c);
         frame->info.stochastic_spatial_pairs = rypath_stochastic_spatial::enabled(c.spatial_mode);
@@ -5699,6 +5702,14 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         result.diagnostic = "Stochastic spatial pairs require wavefront Enhanced paired-gaussian16";
         return result;
     }
+    if (config.enhanced_history_cap == 0 || config.enhanced_history_cap > 20 ||
+        (config.enhanced_history_cap != 20 &&
+         (config.estimator != FrameEstimator::area_replay ||
+          config.area_path_domain != FrameAreaPathDomain::enhanced))) {
+        result.diagnostic =
+            "Enhanced history cap must be 1 through 20 and requires Enhanced Area replay";
+        return result;
+    }
     if (config.mutation_steps != 0 && config.mutation_steps != 1 && config.mutation_steps != 2 &&
         config.mutation_steps != 4) {
         result.diagnostic = "Area mutation steps must be 0, 1, 2, or 4";
@@ -5849,7 +5860,8 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
         a.mutation_policy == b.mutation_policy &&
         // Stencil changes spatial source domains, never an execution-only toggle.
-        a.area_stencil == b.area_stencil && a.spatial_mode == b.spatial_mode;
+        a.area_stencil == b.area_stencil && a.spatial_mode == b.spatial_mode &&
+        a.enhanced_history_cap == b.enhanced_history_cap;
     if (!same) {
         result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
                             "caches, diffuse specialization, pair compaction, temporal "

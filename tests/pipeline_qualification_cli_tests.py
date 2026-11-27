@@ -277,6 +277,9 @@ def qualification_checks(executable):
             base + ["--area-temporal-reprojection", "invalid"],
             base + ["--compare-reconstruction", "invalid"],
             base + ["--compare-reconstruction", "on", "--reconstruction", "metalfx"],
+            base + ["--area-history-cap", "0"],
+            base + ["--area-history-cap", "21"],
+            base + ["--area-history-cap", "2"],
             base + ["--mutation-arms", "1,0"],
             base + ["--mutation-arms", "0,1,1"],
             base + ["--variance-policy", "invalid"],
@@ -327,7 +330,7 @@ def qualification_checks(executable):
                                 object_pairs_hook=unique_object)
             assert report["complete"] is False
             assert report["schema"] == 2
-            assert report["settings"]["area_contract"] == 18
+            assert report["settings"]["area_contract"] == 19
             assert report["settings"]["area_output"] == "conditional-mean"
             assert report["settings"]["area_target"] == "quarter-l1-v1"
             assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
@@ -345,7 +348,7 @@ def qualification_checks(executable):
         assert result.returncode != 0
         selected = json.loads((destination / "summary.json").read_text())
         assert selected["schema"] == 2 and selected["settings"]["area_output"] == "selected"
-        assert selected["settings"]["area_contract"] == 18
+        assert selected["settings"]["area_contract"] == 19
         # These are requested settings of a failed preflight, never fabricated
         # runtime evidence. Independent reference/arm stay separate from Area.
         destination = root / "enhanced-configuration"

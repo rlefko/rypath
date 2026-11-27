@@ -807,3 +807,13 @@ Primary foundations: [GRIS](https://graphics.cs.utah.edu/research/projects/gris/
 [corrected MCMC mutations](https://arxiv.org/abs/2211.00166),
 [Area ReSTIR](https://research.nvidia.com/publication/2024-07_area-restir-resampling-real-time-defocus-and-antialiasing),
 and [wavefront path tracing](https://research.nvidia.com/publication/2013-07_megakernels-considered-harmful-wavefront-path-tracing-gpus).
+
+## Fixed temporal confidence
+
+`--area-history-cap N` sets the previous frame's maximum confidence for
+Enhanced replay. The supported range is 1 through 20. The default is 20.
+The cap enters both sides of temporal MIS and the published temporal
+confidence. Spatial passes accumulate the confidence of all admitted sources
+as before. The cap stays constant over the session and is independent of each
+sample's radiance, selection, or duplication. Lin et al. describe a separate
+sample-dependent cap in section 5 and measure its bias.

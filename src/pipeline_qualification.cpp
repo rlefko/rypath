@@ -86,6 +86,7 @@ struct Options {
     ResourceProfile resource_profile = ResourceProfile::standard;
     SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
     bool suffix_cache = true, compact_pairs = false, temporal_reprojection = false;
+    std::uint32_t enhanced_history_cap = 20;
     bool compare_reconstruction = false;
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     std::vector<int> arms{-1, 0, 1, 2, 4};
@@ -151,6 +152,7 @@ const char *usage =
     "  [--resource-profile standard|large] [--variance-policy paired|center|conservative]\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
+    "  [--area-history-cap N (Enhanced fixed temporal confidence, 1 through 20)]\n"
     "  [--compare-reconstruction on|off (same-frame signed filter ablations and native MetalFX)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
     "  [--reference-spp 4096] [--reference-batches 8] [--motion-offset WORLD_X]\n"
@@ -269,7 +271,10 @@ Options parse(int argc, char **argv) {
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
             require(result.ec == std::errc{} && result.ptr == value.data() + value.size() && number,
                     "Qualification counts/dimensions must be positive uint32 values");
-            if (key == "--width")
+            if (key == "--area-history-cap") {
+                require(number <= 20, "Area history cap must be 1 through 20");
+                o.enhanced_history_cap = number;
+            } else if (key == "--width")
                 o.width = number;
             else if (key == "--height")
                 o.height = number;
@@ -298,6 +303,9 @@ Options parse(int argc, char **argv) {
             "Pair compaction and dual motion require enhanced path domain");
     require(!seen.contains("--variance-policy") || o.reconstruction == ReconstructionMode::temporal,
             "Variance policy requires temporal reconstruction");
+    require(!seen.contains("--area-history-cap") ||
+                o.area_path_domain == FrameAreaPathDomain::enhanced,
+            "Area history cap requires Enhanced path domain");
     require(!o.compare_reconstruction || o.reconstruction == ReconstructionMode::temporal,
             "Same-frame comparison requires temporal as the primary reconstruction");
     require(o.width <= reconstruction_dimension_limit && o.height <= reconstruction_dimension_limit,
@@ -978,6 +986,7 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
     if (mutations >= 0) {
         config.area_path_domain = o.area_path_domain;
         config.contribution_replay = o.contribution_replay;
+        config.enhanced_history_cap = o.enhanced_history_cap;
         config.enhanced_suffix_cache = o.suffix_cache;
         config.compact_enhanced_pairs = o.compact_pairs;
         config.spatial_mode = o.spatial_mode;
@@ -1118,7 +1127,7 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << quote(mutations < 0 ? "not-applicable" : area_output_name(o.area_output))
                  << ",\"area_target\":" << quote(mutations < 0 ? "none" : target_name(o))
                  << ",\"area_source_mis\":" << quote(mutations < 0 ? "none" : source_mis_name(o))
-                 << ",\"area_temporal_reuse\":" << (mutations < 0 ? 0 : 20)
+                 << ",\"area_temporal_reuse\":" << (mutations < 0 ? 0u : o.enhanced_history_cap)
 
                  << ",\"requested_area_mutation_policy\":"
                  << quote(frame_mutation_policy_name(o.mutation_policy))
@@ -1259,7 +1268,8 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                     attributes.emplace_back("rypath.frame.resource_profile",
                                             std::string(resource_profile_name(o.resource_profile)));
                     attributes.emplace_back("rypath.area.temporal_reuse",
-                                            mutations < 0 ? "0" : "20");
+                                            mutations < 0 ? "0"
+                                                          : std::to_string(o.enhanced_history_cap));
                     attributes.emplace_back("rypath.area.mutation_steps",
                                             std::to_string(mutations < 0 ? 0 : mutations));
                     attributes.emplace_back("rypath.hero.requested",
@@ -1343,7 +1353,8 @@ std::string settings_json(const Options &o) {
         << ",\"area_contract\":" << area_wire::contract
         << ",\"area_output\":" << quote(area_output_name(o.area_output))
         << ",\"area_target\":" << quote(target_name(o))
-        << ",\"area_source_mis\":" << quote(source_mis_name(o)) << ",\"area_temporal_reuse\":20"
+        << ",\"area_source_mis\":" << quote(source_mis_name(o))
+        << ",\"area_temporal_reuse\":" << o.enhanced_history_cap
         << ",\"requested_area_path_domain\":"
         << quote(frame_area_path_domain_name(o.area_path_domain))
         << ",\"requested_area_contribution_replay\":"

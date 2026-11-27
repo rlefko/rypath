@@ -125,6 +125,9 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
           !rypath_stochastic_spatial::valid({c.forward_atlas, c.canonical_atlas}))) ||
         (c.spatial_mode == 2 && c.forward_atlas != c.canonical_atlas) ||
         (!c.spatial_mode && (c.forward_atlas || c.canonical_atlas)) ||
+        c.enhanced_history_cap == 0 || c.enhanced_history_cap > confidence::default_temporal_cap ||
+        (c.contribution_mode != cw::enhanced &&
+         c.enhanced_history_cap != confidence::default_temporal_cap) ||
         c.contribution_mode > cw::enhanced ||
         (c.contribution_mode == cw::summed && c.contribution_depth != 0) ||
         (c.contribution_mode != cw::summed && c.contribution_depth > 65) ||
@@ -383,7 +386,7 @@ inline bool area_temporal_confidence(constant AreaArguments &a, uint pixel,
             return false;
         previous = {source.confidence, 1};
     }
-    result = confidence::temporal(previous);
+    result = confidence::temporal(previous, a.config->enhanced_history_cap);
     if (result.status != confidence::Status::ok) {
         AREA_DETAIL(a, aw::invalid_value, result.status,
                     uint4(previous.confidence, previous.present, 0, 0));
@@ -822,7 +825,7 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, AreaNumber sc
     a.raw_xyz[pixel] = sum;
     return true;
 }
-kernel void rypath_area_contract_v18(device aw::Contract *out [[buffer(0)]]) {
+kernel void rypath_area_contract_v19(device aw::Contract *out [[buffer(0)]]) {
     *out = {aw::contract,
             sizeof(aw::Config),
             sizeof(aw::History),
