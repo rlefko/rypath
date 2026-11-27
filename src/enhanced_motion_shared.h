@@ -56,7 +56,10 @@ struct Camera {
     Word width = 0, height = 0;
 };
 inline bool dimensions(Word width, Word height) {
-    return width && height && Wide(width) * height <= Wide(0xffffffffu);
+    // Binary32 represents every i+.5 pixel center through this axis bound.
+    // This does not bound matrix/projection arithmetic error near image edges.
+    return width && height && width <= (1u << 23) && height <= (1u << 23) &&
+           Wide(width) * height <= Wide(0xffffffffu);
 }
 enum class ProjectionStatus : Word { valid, invalid_input, behind_camera, before_near_plane };
 struct Projection {
@@ -119,7 +122,7 @@ inline Vec2 alternate(Vec2 old_blocker, Vec2 current_point, Vec2 current_blocker
             old_blocker.y + (current_point.y - current_blocker.y)};
 }
 enum class Geometry : Word { finite_surface, sky, unsupported, error };
-constexpr Word absent_group = 0xffffffffu;
+enum : Word { absent_group = 0xffffffffu };
 struct Surface {
     Vec3 common_position{}, geometric_normal{};
     // Positive local world-space size of one pixel, explicitly supplied by the

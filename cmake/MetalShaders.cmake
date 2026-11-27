@@ -45,7 +45,10 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/camera_medium.metal"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_medium_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/reconstruction_guides.metal"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/reconstruction_guide_wire.h")
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/reconstruction_guide_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_motion.metal"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_motion_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_motion_shared.h")
     endif()
     if(shader STREQUAL "render" OR shader STREQUAL "medium_probe")
         list(APPEND shader_options -fno-fast-math)

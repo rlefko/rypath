@@ -21,6 +21,7 @@
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -64,6 +65,7 @@ struct Options {
     bool cache_temporal_evaluations = true;
     bool enhanced_suffix_cache = true;
     bool compact_enhanced_pairs = false;
+    bool enhanced_temporal_reprojection = false;
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
@@ -161,6 +163,8 @@ const char *usage =
     "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
     "  [--area-suffix-cache on|off (Enhanced sequential suffix replay; default: on)]\n"
     "  [--area-pair-compaction on|off (experimental Enhanced null admission; default: off)]\n"
+    "  [--area-temporal-reprojection off|dual (experimental camera-only Enhanced motion; default: "
+    "off)]\n"
     "  [--packet-events 1|2|4 (default: 1)] [--packet-layout "
     "packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
@@ -334,6 +338,10 @@ std::string parse(int argc, char **argv, Options &o) {
             if (value != "on" && value != "off")
                 return "area pair compaction must be on or off";
             o.compact_enhanced_pairs = value == "on";
+        } else if (key == "--area-temporal-reprojection") {
+            if (value != "off" && value != "dual")
+                return "area temporal reprojection must be off or dual";
+            o.enhanced_temporal_reprojection = value == "dual";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
@@ -726,6 +734,10 @@ struct Observation : rypath::FrameStatisticsSample {
     bool history_used = false, temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
+    bool enhanced_temporal_reprojection_requested = false;
+    bool enhanced_temporal_reprojection = false, enhanced_temporal_reprojection_used = false;
+    std::uint64_t enhanced_geometry_generated = 0, enhanced_geometry_reused = 0;
+    std::array<std::uint64_t, 4> enhanced_motion_routes{};
     std::uint64_t compacted_null_evaluations = 0;
     std::array<std::uint64_t, 3> enhanced_suffix_hits{};
     std::uint64_t enhanced_suffix_misses = 0;
@@ -1004,6 +1016,24 @@ struct Report {
                            ? "true"
                            : "false")
                     : "null")
+            << ",\"requested_area_temporal_reprojection\":"
+            << quote(options.enhanced_temporal_reprojection ? "dual" : "off")
+            << ",\"area_temporal_reprojection\":"
+            << quote(options.execution == rypath::FrameExecution::wavefront &&
+                             options.estimator == rypath::FrameEstimator::area_replay &&
+                             options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                             options.enhanced_temporal_reprojection
+                         ? "dual"
+                         : "off")
+            << ",\"effective_area_temporal_reprojection\":"
+            << (area_path_domain_effective
+                    ? quote(options.execution == rypath::FrameExecution::wavefront &&
+                                    options.area_path_domain ==
+                                        rypath::FrameAreaPathDomain::enhanced &&
+                                    options.enhanced_temporal_reprojection
+                                ? "dual"
+                                : "off")
+                    : "null")
             << ",\"target_scale\":" << options.target_scale
             << ",\"fresh_paths_per_pixel_per_frame\":1"
             << ",\"capacity\":" << options.capacity << ",\"effective_capacity\":"
@@ -1142,7 +1172,17 @@ struct Report {
                 << ",\"canonical_transport_version\":" << f.canonical_transport_version
                 << ",\"fresh_discovery_version\":" << f.fresh_discovery_version
                 << ",\"history_used\":" << (f.history_used ? "true" : "false")
-                << ",\"enhanced_pair_compaction\":"
+                << ",\"enhanced_temporal_reprojection_requested\":"
+                << (f.enhanced_temporal_reprojection_requested ? "true" : "false")
+                << ",\"enhanced_temporal_reprojection\":"
+                << (f.enhanced_temporal_reprojection ? "true" : "false")
+                << ",\"enhanced_temporal_reprojection_used\":"
+                << (f.enhanced_temporal_reprojection_used ? "true" : "false")
+                << ",\"enhanced_geometry_generated\":" << f.enhanced_geometry_generated
+                << ",\"enhanced_geometry_reused\":" << f.enhanced_geometry_reused
+                << ",\"enhanced_motion_routes\":[" << f.enhanced_motion_routes[0] << ','
+                << f.enhanced_motion_routes[1] << ',' << f.enhanced_motion_routes[2] << ','
+                << f.enhanced_motion_routes[3] << ']' << ",\"enhanced_pair_compaction\":"
                 << (f.enhanced_pair_compaction ? "true" : "false")
                 << ",\"compacted_null_evaluations\":" << f.compacted_null_evaluations
                 << ",\"enhanced_suffix_cache\":" << (f.enhanced_suffix_cache ? "true" : "false")
@@ -1414,6 +1454,7 @@ int run(const Options &options) {
         config.cache_temporal_evaluations = options.cache_temporal_evaluations;
         config.enhanced_suffix_cache = options.enhanced_suffix_cache;
         config.compact_enhanced_pairs = options.compact_enhanced_pairs;
+        config.enhanced_temporal_reprojection = options.enhanced_temporal_reprojection;
         config.target_scale = options.target_scale;
         config.mutation_steps = options.mutation_steps;
         config.mutation_policy = options.mutation_policy;
@@ -1504,6 +1545,25 @@ int run(const Options &options) {
                                   info.analytic_null_evaluations == 0 &&
                                   info.logical_evaluations == pixels &&
                                   !info.temporal_evaluation_cache_used;
+                    const auto routes =
+                        std::accumulate(info.enhanced_motion_routes.begin(),
+                                        info.enhanced_motion_routes.end(), std::uint64_t{0});
+                    const bool motion_counts =
+                        info.enhanced_temporal_reprojection
+                            ? (info.enhanced_geometry_generated + info.enhanced_geometry_reused ==
+                                   pixels &&
+                               (info.enhanced_geometry_generated
+                                    ? (info.enhanced_geometry_generated == pixels &&
+                                       routes == pixels &&
+                                       info.enhanced_temporal_reprojection_used ==
+                                           info.history_used &&
+                                       info.enhanced_motion_routes[0] ==
+                                           (info.history_used ? 0 : pixels))
+                                    : (info.enhanced_geometry_reused == pixels && routes == 0 &&
+                                       !info.enhanced_temporal_reprojection_used)))
+                            : (info.enhanced_geometry_generated == 0 &&
+                               info.enhanced_geometry_reused == 0 && routes == 0 &&
+                               !info.enhanced_temporal_reprojection_used);
                     observation.complete =
                         info.status == rypath::FrameStatus::complete &&
                         info.enhanced_suffix_cache ==
@@ -1512,6 +1572,14 @@ int run(const Options &options) {
                              options.contribution_replay ==
                                  rypath::FrameContributionReplay::prefix &&
                              options.enhanced_suffix_cache) &&
+                        motion_counts &&
+                        info.enhanced_temporal_reprojection_requested ==
+                            options.enhanced_temporal_reprojection &&
+                        info.enhanced_temporal_reprojection ==
+                            (options.execution == rypath::FrameExecution::wavefront &&
+                             options.estimator == rypath::FrameEstimator::area_replay &&
+                             options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                             options.enhanced_temporal_reprojection) &&
                         info.enhanced_pair_compaction ==
                             (options.execution == rypath::FrameExecution::wavefront &&
                              options.estimator == rypath::FrameEstimator::area_replay &&
@@ -1545,6 +1613,15 @@ int run(const Options &options) {
                     observation.history_used = info.history_used;
                     observation.enhanced_suffix_cache = info.enhanced_suffix_cache;
                     observation.enhanced_pair_compaction = info.enhanced_pair_compaction;
+                    observation.enhanced_temporal_reprojection_requested =
+                        info.enhanced_temporal_reprojection_requested;
+                    observation.enhanced_temporal_reprojection =
+                        info.enhanced_temporal_reprojection;
+                    observation.enhanced_temporal_reprojection_used =
+                        info.enhanced_temporal_reprojection_used;
+                    observation.enhanced_geometry_generated = info.enhanced_geometry_generated;
+                    observation.enhanced_geometry_reused = info.enhanced_geometry_reused;
+                    observation.enhanced_motion_routes = info.enhanced_motion_routes;
                     observation.compacted_null_evaluations = info.compacted_null_evaluations;
                     observation.enhanced_suffix_hits = info.enhanced_suffix_hits;
                     observation.enhanced_suffix_misses = info.enhanced_suffix_misses;
@@ -1771,6 +1848,24 @@ int run(const Options &options) {
                      options.cache_temporal_evaluations ? "true" : "false"},
                     {"rypath.area.temporal_cache_used",
                      frame_info.temporal_evaluation_cache_used ? "true" : "false"},
+                    {"rypath.area.temporal_reprojection_requested",
+                     options.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_enabled",
+                     frame_info.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_used",
+                     frame_info.enhanced_temporal_reprojection_used ? "true" : "false"},
+                    {"rypath.area.geometry_generated",
+                     std::to_string(frame_info.enhanced_geometry_generated)},
+                    {"rypath.area.geometry_reused",
+                     std::to_string(frame_info.enhanced_geometry_reused)},
+                    {"rypath.area.motion_cold",
+                     std::to_string(frame_info.enhanced_motion_routes[0])},
+                    {"rypath.area.motion_ordinary",
+                     std::to_string(frame_info.enhanced_motion_routes[1])},
+                    {"rypath.area.motion_dual",
+                     std::to_string(frame_info.enhanced_motion_routes[2])},
+                    {"rypath.area.motion_fallback",
+                     std::to_string(frame_info.enhanced_motion_routes[3])},
                     {"rypath.area.pair_compaction_requested",
                      options.compact_enhanced_pairs ? "true" : "false"},
                     {"rypath.area.pair_compaction_enabled",
@@ -1958,6 +2053,24 @@ int run(const Options &options) {
                     {"rypath.frame.intersections", profile_name(options.intersection_profile)},
                     {"rypath.frame.as_build",
                      std::string(rypath::acceleration_build_policy_name(options.as_build))},
+                    {"rypath.area.temporal_reprojection_requested",
+                     options.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_enabled",
+                     info.source.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_used",
+                     info.source.enhanced_temporal_reprojection_used ? "true" : "false"},
+                    {"rypath.area.geometry_generated",
+                     std::to_string(info.source.enhanced_geometry_generated)},
+                    {"rypath.area.geometry_reused",
+                     std::to_string(info.source.enhanced_geometry_reused)},
+                    {"rypath.area.motion_cold",
+                     std::to_string(info.source.enhanced_motion_routes[0])},
+                    {"rypath.area.motion_ordinary",
+                     std::to_string(info.source.enhanced_motion_routes[1])},
+                    {"rypath.area.motion_dual",
+                     std::to_string(info.source.enhanced_motion_routes[2])},
+                    {"rypath.area.motion_fallback",
+                     std::to_string(info.source.enhanced_motion_routes[3])},
                     {"rypath.area.pair_compaction_requested",
                      options.compact_enhanced_pairs ? "true" : "false"},
                     {"rypath.area.pair_compaction_enabled",

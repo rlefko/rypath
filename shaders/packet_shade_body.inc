@@ -31,6 +31,19 @@ auto state = wavefront_load_packet_separated(a, slot);
 #else
 auto state = wavefront_load_packet(a, slot);
 #endif
+uint owner = state.sample.pixel;
+uint evaluation_pixel = state.sample.pixel;
+#if RYPATH_PACKET_SHADE_HERO && !RYPATH_PACKET_SHADE_SEPARATED
+if (wavefront_enhanced()) {
+    owner =
+        reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot].pixel;
+    if (!wavefront_evaluation_pixel(a, owner, evaluation_pixel) ||
+        state.sample.pixel != evaluation_pixel) {
+        wavefront_fail(a, wf::invalid_sample);
+        return;
+    }
+}
+#endif
 const GraphResources graph{
     graph_nodes,
     graph_knots,
@@ -50,11 +63,11 @@ rypath_bdpt::Resources resources{
     environment_cdf, light_images, &tables,   scene,    intersection_table};
 rypath_replay::ReplayState replay{};
 if (a.config->replay_enabled) {
-    if (state.sample.pixel >= a.config->pixel_count) {
+    if (owner >= a.config->pixel_count) {
         wavefront_fail(a, wf::invalid_sample);
         return;
     }
-    replay = a.replay_input[state.sample.pixel];
+    replay = a.replay_input[owner];
     if (!rypath_replay::valid(replay)) {
         wavefront_fail(a, wf::invalid_sample);
         return;
@@ -73,19 +86,31 @@ rypath_bdpt::packet_pt_step_pretraced(resources, state,
 #elif RYPATH_PACKET_SHADE_EVENTS == 1
 #if RYPATH_PACKET_SHADE_HERO && !RYPATH_PACKET_SHADE_SEPARATED
 if (wavefront_enhanced()) {
-    auto enhanced = reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
-    rypath_enhanced_runtime::Sink sink{enhanced, a.cie, p, *a.config, state.sample.pixel, a.enhanced_records, a.enhanced_evaluation, a.enhanced_suffix, a.counters};
+    auto enhanced =
+        reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
+    rypath_enhanced_runtime::Sink sink{enhanced,
+                                       a.cie,
+                                       p,
+                                       *a.config,
+                                       owner,
+                                       a.enhanced_records,
+                                       a.enhanced_evaluation,
+                                       a.enhanced_suffix,
+                                       a.counters};
     rypath_bdpt::packet_pt_step_enhanced(resources, state, &replay, sink);
-    reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot] = enhanced;
+    reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot] =
+        enhanced;
     if (enhanced.failed) {
         wavefront_fail(a, wf::invalid_sample);
         return;
     }
 } else if (wavefront_contribution()) {
-    auto contribution = reinterpret_cast<device rypath_contribution_runtime::State *>(a.contribution_state)[slot];
+    auto contribution =
+        reinterpret_cast<device rypath_contribution_runtime::State *>(a.contribution_state)[slot];
     rypath_contribution_runtime::Sink sink{contribution, a.cie, p, *a.config, state.sample.pixel};
     rypath_bdpt::packet_pt_step_contribution(resources, state, &replay, sink);
-    reinterpret_cast<device rypath_contribution_runtime::State *>(a.contribution_state)[slot] = contribution;
+    reinterpret_cast<device rypath_contribution_runtime::State *>(a.contribution_state)[slot] =
+        contribution;
     if (contribution.failed) {
         wavefront_fail(a, wf::invalid_sample);
         return;
@@ -107,17 +132,27 @@ wavefront_store_packet(a, slot, state);
 #endif
 if (state.complete) {
     const auto result = rypath_bdpt::packet_pt_result(state, p);
-    const uint pixel = result.pixel;
+    const uint pixel = owner;
     float3 value;
-    if (pixel >= a.config->pixel_count ||
-        !rypath_frame_sensor::packet(result, pixel, p.sample_low, p.sample_high, a.cie, value)) {
+    if (pixel >= a.config->pixel_count || evaluation_pixel >= a.config->pixel_count ||
+        !rypath_frame_sensor::packet(result, evaluation_pixel, p.sample_low, p.sample_high, a.cie,
+                                     value)) {
         wavefront_fail(a, wf::invalid_sample);
         return;
     }
 #if RYPATH_PACKET_SHADE_HERO && !RYPATH_PACKET_SHADE_SEPARATED
     if (wavefront_enhanced()) {
-        auto enhanced = reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
-        rypath_enhanced_runtime::Sink sink{enhanced, a.cie, p, *a.config, pixel, a.enhanced_records, a.enhanced_evaluation, a.enhanced_suffix, a.counters};
+        auto enhanced =
+            reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
+        rypath_enhanced_runtime::Sink sink{enhanced,
+                                           a.cie,
+                                           p,
+                                           *a.config,
+                                           pixel,
+                                           a.enhanced_records,
+                                           a.enhanced_evaluation,
+                                           a.enhanced_suffix,
+                                           a.counters};
         const auto request = a.contribution_evaluation[pixel];
         rypath::contribution_wire::Evaluation evaluated;
         if (!sink.finish(request, value, evaluated)) {
@@ -126,7 +161,8 @@ if (state.complete) {
         }
         a.contribution_evaluation[pixel] = evaluated;
     } else if (wavefront_contribution()) {
-        auto contribution = reinterpret_cast<device rypath_contribution_runtime::State *>(a.contribution_state)[slot];
+        auto contribution = reinterpret_cast<device rypath_contribution_runtime::State *>(
+            a.contribution_state)[slot];
         rypath_contribution_runtime::Sink sink{contribution, a.cie, p, *a.config, pixel};
         const auto request = a.contribution_evaluation[pixel];
         rypath::contribution_wire::Evaluation evaluated;

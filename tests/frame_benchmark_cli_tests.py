@@ -28,6 +28,7 @@ assert "--area-contribution-replay full|prefix" in help_text
 assert "--area-temporal-cache on|off" in help_text
 assert "--area-suffix-cache on|off" in help_text
 assert "--area-pair-compaction on|off" in help_text
+assert "--area-temporal-reprojection off|dual" in help_text
 assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
              "--strict-spatial-segments on|off", "--metalfx-guide-policy primary|appearance",
@@ -84,6 +85,7 @@ for option, values in (
     ("--area-temporal-cache", ("invalid", "On", "0")),
     ("--area-suffix-cache", ("invalid", "On", "0")),
     ("--area-pair-compaction", ("invalid", "On", "0")),
+    ("--area-temporal-reprojection", ("invalid", "Dual", "on", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
@@ -276,6 +278,9 @@ with tempfile.TemporaryDirectory() as directory:
     assert data["settings"]["contribution_depth"] is None
     assert data["settings"]["contribution_slot_count"] is None
     assert data["settings"]["replay_contract"] == 0
+    assert data["settings"]["requested_area_temporal_reprojection"] == "off"
+    assert data["settings"]["area_temporal_reprojection"] == "off"
+    assert data["settings"]["effective_area_temporal_reprojection"] is None
     assert data["settings"]["requested_area_pair_compaction"] is False
     assert data["settings"]["area_pair_compaction"] is False
     assert data["settings"]["effective_area_pair_compaction"] is None
@@ -436,7 +441,7 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 14
+    assert settings["area_contract"] == 15
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
     for domain in ("summed", "contribution", "enhanced"):
@@ -449,6 +454,9 @@ with tempfile.TemporaryDirectory() as directory:
         assert selected["effective_area_path_domain"] is None
         assert selected["canonical_transport_version"] == (4 if domain == "enhanced" else 0)
         assert selected["fresh_discovery_version"] == (1 if domain == "enhanced" else 0)
+        assert selected["requested_area_temporal_reprojection"] == "off"
+        assert selected["area_temporal_reprojection"] == "off"
+        assert selected["effective_area_temporal_reprojection"] is None
         assert selected["requested_area_pair_compaction"] is False
         assert selected["area_pair_compaction"] is False
         assert selected["effective_area_pair_compaction"] is None
@@ -528,6 +536,25 @@ with tempfile.TemporaryDirectory() as directory:
         assert pair_settings["requested_area_pair_compaction"] == (enabled == "on")
         assert pair_settings["area_pair_compaction"] is False
         assert pair_settings["effective_area_pair_compaction"] is None
+    for domain in ("summed", "contribution", "enhanced"):
+        for replay in (("full",) if domain == "summed" else ("full", "prefix")):
+            for mode in ("off", "dual"):
+                destination = root / f"area-temporal-reprojection-{domain}-{replay}-{mode}.json"
+                invoke(["--scene", str(malformed), "--output", str(destination),
+                        "--estimator", "area-replay", "--area-path-domain", domain,
+                        *(["--area-contribution-replay", replay] if domain != "summed" else []),
+                        "--spectral-transport", "hero", "--area-temporal-reprojection", mode])
+                motion_settings = json.loads(destination.read_text())["settings"]
+                assert motion_settings["requested_area_temporal_reprojection"] == mode
+                assert motion_settings["area_temporal_reprojection"] == (mode if domain == "enhanced" else "off")
+                assert motion_settings["effective_area_temporal_reprojection"] is None
+    destination = root / "independent-temporal-reprojection.json"
+    invoke(["--scene", str(malformed), "--output", str(destination),
+            "--area-temporal-reprojection", "dual"])
+    motion_settings = json.loads(destination.read_text())["settings"]
+    assert motion_settings["requested_area_temporal_reprojection"] == "dual"
+    assert motion_settings["area_temporal_reprojection"] == "off"
+    assert motion_settings["effective_area_temporal_reprojection"] is None
     assert settings["target_scale"] == 0.125 and settings["fresh_paths_per_pixel_per_frame"] == 1
     for count in (0, 1, 2, 4):
         destination = root / f"area-mutations-{count}.json"
@@ -541,6 +568,6 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 14
+        assert settings["area_contract"] == 15
         assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")

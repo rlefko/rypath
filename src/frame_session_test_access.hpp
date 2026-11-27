@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "area_wire.h"
+#include "enhanced_motion_wire.h"
 #include "enhanced_suffix_tape_shared.h"
 #include "frame_session.hpp"
 #include <optional>
@@ -21,7 +22,7 @@ struct SharedSceneFrameSessions {
     std::array<std::uintptr_t, 2> enhanced_record_arenas{}, enhanced_evaluations{};
     bool independent_owned_records = false;
     std::array<std::uintptr_t, 2> enhanced_suffix_arenas{};
-    bool independent_suffix_storage = false;
+    bool independent_suffix_storage = false, independent_motion_storage = false;
     ShadowTraversalSelection shadow_traversal{};
     AccelerationBuildInfo acceleration_build{};
 };
@@ -40,6 +41,22 @@ struct EnhancedSessionSnapshot {
     std::uint64_t suffix_context = 0;
     // Populated only when explicitly requested and suffix caching is enabled.
     std::vector<rypath_enhanced_suffix_tape::Entry> enhanced_suffix;
+    bool motion_enabled = false, geometry_valid = false, motion_map_generated = false;
+    unsigned geometry_front = 0;
+    std::uint64_t geometry_generation = 0;
+    // Optional owned copies: committed geometry, and only a map generated for
+    // THIS publication (empty when the static identity optimization skipped it).
+    std::vector<enhanced_motion_wire::Geometry> geometry;
+    std::vector<enhanced_motion_wire::Donor> donors;
+};
+struct EnhancedMotionState {
+    GeometryStatus status = GeometryStatus::failure;
+    std::string diagnostic;
+    bool geometry_valid = false, history_valid = false;
+    unsigned geometry_front = 0;
+    std::uint64_t geometry_generation = 0, history_generation = 0, next_serial = 0,
+                  pending_serial = 0;
+    std::optional<std::uint64_t> committed_serial;
 };
 // CPU allocator diagnostics only; these identities do not expose GPU scratch.
 // Successful state reads always have no pending frame.
@@ -53,6 +70,14 @@ struct EnhancedSuffixContextState {
     bool exhausted = false, valid = false;
 };
 struct FrameSessionTestAccess {
+    // Externally serialized, enabled motion session, no pending frame. CPU
+    // publication identity remains inspectable after a failed attempt; GPU
+    // scratch/full-snapshot eligibility is unchanged.
+    static EnhancedMotionState motion_state(FrameSession &);
+    // Test-only one-shot host rejection at the next completed Area publication,
+    // after GPU validation and before either reservoir/geometry is committed.
+    // Empty diagnostic means armed; rejects pending/disabled/already-armed state.
+    static std::string force_next_motion_publication_failure(FrameSession &);
     // Externally serialize submissions and consumers. Both methods require
     // enabled Enhanced prefix caching and reject pending/moved-from sessions.
     // A failed GPU attempt may be inspected without granting a full snapshot.
@@ -69,10 +94,13 @@ struct FrameSessionTestAccess {
     // attempt invalidates full snapshots even when old history remains eligible.
     // Temporal bank3 is the fresh tuple only on a cold frame with zero mutations.
     static EnhancedSessionSnapshot snapshot_enhanced(FrameSession &, std::uint64_t expected_serial,
-                                                     bool include_suffix = false);
+                                                     bool include_suffix = false,
+                                                     bool include_motion = false);
     // Ordinary build_frame_session validates/builds the first session. The
     // second uses the exact same renderer; only temporal/suffix cache flags and
-    // experimental Enhanced pair compaction may differ.
+    // experimental Enhanced pair compaction/temporal reprojection may differ.
+    // Reprojection changes source domains: moving contrasts need raw mean tests;
+    // exact equality is asserted only for unchanged static identity contexts.
     // Enhanced also uses exact caching when the complete evaluator context matches.
     // Callers must serialize both sessions, including their GPU consumers.
     static SharedSceneFrameSessions

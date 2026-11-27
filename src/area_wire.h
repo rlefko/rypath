@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "contribution_wire.h"
+#include "enhanced_motion_wire.h"
 #include "enhanced_wire.h"
 #include "render_wire.h"
 #include "replay_shared.h"
@@ -9,7 +10,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 14,
+    contract = 15,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -49,6 +50,7 @@ struct Config {
     // Actual evaluator context; temporal_reverse uses the frozen source context.
     // Zero disables all suffix-arena reads/writes, including sentinel indexing.
     Word suffix_context_low, suffix_context_high;
+    Word temporal_reprojection;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -125,12 +127,13 @@ enum Argument : Word {
     contribution_evaluation_id,
     enhanced_records_id,
     enhanced_evaluation_id,
-    enhanced_suffix_id
+    enhanced_suffix_id,
+    donors_id
 };
 struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
     Word accumulator_bytes, replay_bytes, counters_bytes, contribution_evaluation_bytes;
-    Word suffix_entry_bytes;
+    Word suffix_entry_bytes, donor_bytes;
 };
 static_assert(__builtin_offsetof(History, confidence) == 60 &&
                   __builtin_offsetof(Temporal, confidence) == 64 &&
@@ -138,8 +141,12 @@ static_assert(__builtin_offsetof(History, confidence) == 60 &&
               "Area v10 structural confidence word offsets");
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 100 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
-                  sizeof(Accumulator) == 104 && sizeof(Contract) == 36 && sizeof(Counters) == 112,
+static_assert(sizeof(Config) == 104 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
+                  sizeof(Accumulator) == 104 && sizeof(Contract) == 40 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
 } // namespace rypath
+
+static_assert(rypath::area_wire::donors_id == 14 &&
+                  __builtin_offsetof(rypath::area_wire::Config, temporal_reprojection) == 100,
+              "Area v15 frozen temporal donor ABI");

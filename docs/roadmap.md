@@ -215,9 +215,10 @@ sampling, owned terminal-light reconnection and strict confidence. The scaled
 range repair has a four-scene native baseline; law 4 activates supported interior
 charts with forced connections and first-eligible checks. Focused physical,
 matched-mean and frame-history controls pass. Bounded two-operation suffix caching
-passes focused CPU/GPU and exact diffuse/conductor controls. Native-resolution
-cache qualification, dual motion, shift-pair compaction and complete quality/time
-qualification remain open.
+passes focused CPU/GPU and exact diffuse/conductor controls. Native static cache/null-compaction screens retain exact controls but show limited,
+scene-dependent gains. Camera-only dual motion passes focused runtime controls.
+Paired spatial textures, duplication analysis, moving-scene and complete
+quality/time qualification remain open.
 
 [Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
 reduces retained AS memory with bounded exact image controls; it establishes no

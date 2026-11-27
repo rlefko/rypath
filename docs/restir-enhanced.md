@@ -30,13 +30,16 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Cached suffix evaluation | Bounded two-operation sequential hero tape; exact prefix replay on misses |
 | Selective shift-pair compaction, §6.2.2 | Opt-in admission skips structurally selected-null requests; all nonnull requests retain canonical evaluation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
-| Reservoir reprojection and dual motion, §6.4 | Missing; denoiser motion vectors do not implement this |
+| Reservoir reprojection and dual motion, §6.4 | Implemented opt-in camera-only dual motion; runtime qualification pending |
 | Duplication maps, §5 | Missing; adaptive confidence introduces bias and must remain a separately labeled option |
 
 Published performance is evidence about that implementation and hardware, not a
 forecast for M4 Max or for our spectral/coated-material model.
 
 ## Implementation order and contracts
+
+These staged contracts are retained for context; the runtime sections below
+record the implemented mechanisms and their separate validation evidence.
 
 1. Establish controlled long-history comparisons. The repeated native study has
    unresolved Pavilion differences, including differences between unchanged
@@ -249,10 +252,11 @@ path/confidence/footprint/suffix/reprojection arithmetic, context accounting, CL
 and injected queue protocol checks pass in Release. These are focused stage
 checks; final Debug publication checks are separate.
 These checks do not qualify four-scene quality, eliminate physical glints, or
-establish a speedup. Adaptive surface reconnection, suffix caching, shift-pair
-compaction, dual-motion integration and duplication diagnostics remain pending.
-The footprint, suffix-product and reprojection helpers are preparatory algebra;
-their presence alone is not runtime coverage of those mechanisms.
+establish a speedup. At this owned-terminal stage, adaptive surface reconnection,
+suffix caching, shift-pair compaction, dual motion and duplication diagnostics
+were still pending. The helper checks did not establish their runtime coverage;
+later sections describe the implemented reconnection, suffix, null-admission and
+camera-only motion stages.
 
 ## Scaled-weight stage
 
@@ -284,7 +288,7 @@ are 88/92/104 bytes, and each Enhanced cross-target cell is 8 bytes. The owned-l
 record and evaluation receipt remain 48/32 bytes. Cached/imported/null evaluation
 receipts retain a zero fresh-normalizer exponent; prepare clears it before reuse.
 
-The current stage passes the three focused CPU path, scaled-reservoir and
+The scaled-weight stage passed the three focused CPU path, scaled-reservoir and
 entropy checks, CLI metadata checks, production GPU queue protocol and selected-prefix
 controls, and legacy contribution, Enhanced physical/mean and Enhanced NEE tests.
 The queue probe includes the exact Pavilion range case and a smaller positive
@@ -292,8 +296,8 @@ history whose final XYZ rounds to zero. The first scene-test run stopped at a
 stale version-2 assertion; after correcting the asserted version to 3, both
 Enhanced suites passed. At `3335bba`, the native rerun completes all 160 submitted frames and eight finite
 1920×1080 FLOAT captures. The four-scene timing screen below is complete; quality
-and the complete Enhanced algorithm remain unqualified. The chart
-and geometry helpers remain preparation for future runtime shifts.
+and the complete Enhanced algorithm remain unqualified. At that stage, chart
+and geometry helpers were preparation for the runtime shifts described below.
 
 For context, the superseded `6a5091e` native screen measured Cornell at
 724.195 ms (1.38084 FPS) and Prism at 1073.467 ms (0.931561 FPS). Pavilion day failed
@@ -321,13 +325,14 @@ run per scene is not sustained/motion or converged-quality qualification.
 
 ## Hybrid preparation stage
 
-The in-progress canonical law 4 captures primary geometry and uses a common
+The canonical law 4 preparation captured primary geometry and used a common
 geometric BSDF `wo` (toward the preceding physical vertex) for admitted secondary
 diffuse/rough-conductor roots in `direct=0/1` events, including events rejected by
 footprint eligibility. A neutral interior chart
 (tag 5) has a structural codec, Sink projection, persistent state and validators;
 terminal-surface tag 6 is rejected. The subsequent runtime stage below activates
-these charts. Suffix reuse, dual motion and shift-pair compaction remain pending.
+these charts. Suffix reuse, dual motion and shift-pair compaction were absent from
+this preparation stage; their runtime stages are described below.
 
 Prepared BSDF payloads can retain the union of needed lanes while physical
 history keeps its original active mask. The predecessor certificate carries a
@@ -419,7 +424,7 @@ Each scalar entry is 160 bytes. Four banks at 1920×1080 require 1,327,104,000 b
 (about 1.24 GiB), in addition to existing transport/history storage. Allocation
 and transient budgets are checked. Reports expose actual enablement, hits for
 zero/one/two operations and total misses; these counts are not ray counts or a
-per-reason miss histogram. Contracts are wavefront 20 and Area 14, with a
+per-reason miss histogram. This stage used wavefront 20 and Area 14, with a
 40-byte owned evaluation receipt and 292-byte live Enhanced sidecar.
 
 The focused Release controls pass 192 independent CPU tape checks and 17 pure
@@ -479,9 +484,10 @@ scratch is cleared only for its exclusive result owner.
 The work list costs four bytes per pixel per frame slot. Completion claims and
 refill positions retain pixel identity through nondeterministic admission order.
 The reported compacted-null count is a subset of analytic-null evaluations,
-never additional work in the logical accounting. Wavefront contract 21 adds the
-work-list binding and admission count; Area remains 14. This implements selected
-null admission, not arbitrary prediction of positive suffix-cache hits. It keeps
+never additional work in the logical accounting. The admission stage used
+wavefront contract 21 for the work-list binding and admission count, with Area 14.
+This implements selected null admission, not arbitrary prediction of positive
+suffix-cache hits. It keeps
 the four existing spatial leaves and their proposal coefficients.
 
 Seven focused Release tests pass (656.07 s), with Metal API validation on the
@@ -491,22 +497,70 @@ The compaction controls cover full/prefix replay, zero/one mutation, black/emitt
 fixtures, capacities 1/37/49 and static/changed camera contexts. Native performance
 adoption is separate; the option remains off by default.
 
-## Camera-motion geometry foundation
+At `62dca50`, all four native-1080p shared-AS controls preserve exact raw XYZ,
+history, temporal tuples, referenced records and mutation decisions for eight
+frames from cold history. Each scene exercises selected-null admission. Separate
+static timing arms use seed 61002, eight warmup and 32 measured frames, one fresh
+hero-visible path, Enhanced prefix reuse, one spectral-refresh mutation and signed
+temporal conservative reconstruction. Suffix caching and exact temporal
+memoization are enabled in both arms:
 
-Portable camera projection and geometry compatibility helpers now cover a
-camera-only dual-motion donor construction from the old foreground point:
-`project_old(O) + project_current(X) - project_current(O)`. The 129 CPU controls
-use independent double-precision camera/parallax expectations, common-origin
-rebasing, discrete foreground anchors and explicit geometry thresholds. Invalid
-projection inputs fail; valid offscreen/near-plane cases retain a labeled
-same-pixel domain fallback. This follows the geometric construction in
+| Scene | Compaction off | Compaction on | On FPS |
+| --- | ---: | ---: | ---: |
+| Cornell | 1184.44 ms | 1138.57 ms | 0.878 |
+| Prism | 1704.68 ms | 1743.25 ms | 0.574 |
+| Pavilion day | 3465.19 ms | 3608.62 ms | 0.277 |
+| Pavilion night | 3551.44 ms | 3668.69 ms | 0.273 |
+
+All 16 final raw/reconstructed FLOAT captures are finite at 1920×1080. This
+single static screen finds a 4.0% Cornell FPS improvement and 2.2–4.0% regressions
+elsewhere; it supports retaining the option off by default. Exactness covers the
+shared-AS eight-frame controls, not independent-process timing captures. These
+are complete frame latencies excluding preparation/export, not sustained, p95,
+convergence or matched-quality results.
+
+## Camera-only temporal reprojection
+
+`--area-temporal-reprojection dual` enables experimental camera-only temporal
+source selection for Enhanced wavefront Area; `off` remains the default. Before
+Area resampling, a deterministic center-film, center-lens query from the resolved
+physical camera captures geometry and freezes one map `donor[d]=s`, independently
+of physical replay coordinates and selected atoms. Ordinary correspondence uses the old visible surface; disocclusion uses
+the stored old foreground point `O` and current point `X`:
+`project_old(O) + project_current(X) - project_current(O)`. Unusable correspondence
+retains the explicit same-pixel source domain `s=d`; it does not discard history
+or clamp an offscreen donor. The construction follows
 [Zeng et al., §4.3](https://sites.cs.ucsb.edu/~lingqi/publications/paper_trmv.pdf).
 
-These helpers do not yet produce GPU geometry, retain matching history geometry,
-or map the reverse transport owner to the selected old pixel. Runtime integration
-must consolidate the existing projection-level donor helper with this geometry
-layer and validate both domain directions. No dual-motion quality or performance
-benefit is claimed by the CPU controls.
+Forward evaluation uses the current context at `d` with history from `s`;
+reverse evaluation uses the previous context at that same `s` with fresh replay
+from `d`. Old targets, normalizers and confidence also come from `s`. Multiple
+owners may share a donor. Camera sampling and sensor validation use `s` for the
+mapped reverse evaluation, while receipts, mutation scratch, completion and
+output remain owned by `d`. Physical transport and MIS formulas are unchanged;
+the selected temporal source domains can differ. This runtime uses wavefront 22
+and Area 15.
+
+An unchanged complete evaluator context reuses committed geometry and skips the
+donor pass, retaining same-pixel temporal memoization. Geometry and reservoir
+history publish together only after successful completion and matching serial
+validation. Their fronts are independent; a failed attempt cannot expose dirty
+geometry as committed history, and cuts invalidate both eligibility states.
+
+The historical 129 CPU geometry/projection controls cover independent parallax,
+rebasing and discrete foreground anchors. The integrated Release stage passes 11
+focused suites in 666.94 seconds, including actual GPU donor generation, mapped
+queue/Area protocol, moving-frame publication/recovery, legacy contribution,
+Enhanced physical/mean, compaction and suffix controls. Metal API validation is
+enabled on GPU suites. A separate successful 7×7 eight-frame CLI sequence checks
+reported serials/generations, translation, static memoization and camera cuts.
+The moving depth-zero mean control is a bias smoke test, not general scene-quality
+qualification.
+
+This stage supports static resident geometry with camera motion only, without
+object or deformation motion. The early geometry query duplicates the later
+reconstruction guide query; native cost and moving-camera raw quality remain
+unmeasured. No performance benefit is established.
 
 ## Retained measurements and limitations
 

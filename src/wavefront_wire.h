@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "enhanced_motion_wire.h"
 #include "render_wire.h"
 namespace rypath {
 namespace wavefront_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 21,
+    contract = 22,
     default_capacity = 65536,
     packet_layout_constant = 23,
     packet_events_constant = 24,
@@ -44,7 +45,8 @@ enum Argument : Word {
     enhanced_records_id,
     enhanced_evaluation_id,
     enhanced_suffix_id,
-    work_list_id
+    work_list_id,
+    donors_id
 };
 struct Config {
     Word pixel_count, capacity, packet, model;
@@ -52,7 +54,8 @@ struct Config {
     Word contribution_mode, contribution_depth;
     float contribution_target_scale;
     Word contribution_replay; // full 0 / prefix 1; summed mode requires 0.
-    Word contribution_serial_low, contribution_serial_high, compact_enhanced_pairs, reserved2;
+    Word contribution_serial_low, contribution_serial_high, compact_enhanced_pairs,
+        mapped_evaluation;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -80,10 +83,10 @@ struct Contract {
     Word contribution_state_bytes, contribution_state_alignment;
     Word enhanced_state_bytes, enhanced_state_alignment;
     Word enhanced_record_bytes, enhanced_evaluation_bytes;
-    Word suffix_entry_bytes;
+    Word suffix_entry_bytes, donor_bytes;
 };
 static_assert(sizeof(Config) == 64 && sizeof(Counters) == 56 && sizeof(DispatchArguments) == 12 &&
-                  sizeof(Contract) == 108,
+                  sizeof(Contract) == 112,
               "Wavefront host/shader ABI");
 static_assert(contribution_evaluation_id == 18 && contribution_state_id == 19,
               "Wavefront v17 contribution argument ABI");
@@ -98,3 +101,7 @@ static_assert(rypath::wavefront_wire::work_list_id == 23 &&
                       56 &&
                   __builtin_offsetof(rypath::wavefront_wire::Counters, work_count) == 52,
               "Wavefront v21 compact request ABI");
+
+static_assert(rypath::wavefront_wire::donors_id == 24 &&
+                  __builtin_offsetof(rypath::wavefront_wire::Config, mapped_evaluation) == 60,
+              "Wavefront v22 mapped evaluation ABI");

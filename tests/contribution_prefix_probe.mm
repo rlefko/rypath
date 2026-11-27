@@ -17,7 +17,7 @@ namespace {
 using namespace rypath;
 namespace w = render_wire;
 namespace wf = wavefront_wire;
-static_assert(wf::contract == 21 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 108);
+static_assert(wf::contract == 22 && sizeof(wf::Config) == 64 && sizeof(wf::Contract) == 112);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 constexpr unsigned variants = 16, guard = 256, instances_count = 136;
 void need(bool ok, const std::string &why) {

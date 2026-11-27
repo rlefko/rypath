@@ -107,6 +107,8 @@ struct FrameConfig {
     bool enhanced_suffix_cache = true;
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
     bool compact_enhanced_pairs = false;
+    // Experimental static-geometry, camera-only temporal donor selection.
+    bool enhanced_temporal_reprojection = false;
     // Corrected MH steps after temporal reuse; independent rendering applies zero.
     std::uint32_t mutation_steps = 1;
     // Automatic retains the legacy/adjacent defaults until a quality decision.
@@ -143,6 +145,11 @@ struct FrameInfo {
     bool temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
+    bool enhanced_temporal_reprojection_requested = false;
+    bool enhanced_temporal_reprojection = false, enhanced_temporal_reprojection_used = false;
+    std::uint64_t enhanced_geometry_generated = 0, enhanced_geometry_reused = 0;
+    // cold, ordinary, dual, same-pixel fallback; zero for skipped identity passes.
+    std::array<std::uint64_t, 4> enhanced_motion_routes{};
     // Subset of analytic_null_evaluations, never an additional completion count.
     std::uint64_t compacted_null_evaluations = 0;
     std::array<std::uint64_t, 3> enhanced_suffix_hits{};

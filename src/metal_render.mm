@@ -7,6 +7,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "enhanced_motion_host.hpp"
 #include "enhanced_wire.h"
 #include "frame_session.hpp"
 #include "frame_session_test_access.hpp"
@@ -77,6 +78,13 @@ bool frame_pair_compaction_enabled(const FrameConfig &config) {
            config.area_path_domain == FrameAreaPathDomain::enhanced &&
            config.compact_enhanced_pairs;
 }
+bool frame_motion_enabled(const FrameConfig &config) {
+    return config.execution == FrameExecution::wavefront &&
+           config.estimator == FrameEstimator::area_replay &&
+           config.area_path_domain == FrameAreaPathDomain::enhanced &&
+           config.enhanced_temporal_reprojection;
+}
+namespace motion_wire = enhanced_motion_wire;
 static_assert(frame_area_canonical_version(FrameAreaPathDomain::enhanced) ==
                   contribution_wire::enhanced_canonical_law &&
               frame_area_discovery_version(FrameAreaPathDomain::enhanced) ==
@@ -85,7 +93,8 @@ static_assert(wavefront_wire::enhanced_records_id == 20 &&
                   wavefront_wire::enhanced_evaluation_id == 21 &&
                   area_wire::enhanced_records_id == 11 && area_wire::enhanced_evaluation_id == 12 &&
                   wavefront_wire::enhanced_suffix_id == 22 && area_wire::enhanced_suffix_id == 13 &&
-                  wavefront_wire::work_list_id == 23,
+                  wavefront_wire::work_list_id == 23 && wavefront_wire::donors_id == 24 &&
+                  area_wire::donors_id == 14,
               "Enhanced owned-record argument bindings");
 
 // Execute the contract in the actual loaded library. A matching entry-point
@@ -2230,7 +2239,7 @@ struct FrameWavefrontBuffers {
     id<MTLBuffer> contribution_evaluation = nil, contribution_state = nil;
     id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
     id<MTLBuffer> queue[2]{nil, nil};
-    id<MTLBuffer> free_slots = nil, counters = nil, done = nil, work_list = nil;
+    id<MTLBuffer> free_slots = nil, counters = nil, done = nil, work_list = nil, donors = nil;
     id<MTLBuffer> current_dispatch = nil, refill_dispatch = nil;
     id<MTLBuffer> arguments[2]{nil, nil};
     id<MTLBuffer> replay = nil;
@@ -2243,11 +2252,17 @@ struct FrameWavefrontPrograms {
     id<MTLArgumentEncoder> argument_encoder = nil;
     wavefront_wire::Contract contract{};
 };
+struct FrameMotionPrograms {
+    id<MTLComputePipelineState> reset = nil, geometry = nil, donors = nil;
+    id<MTLIntersectionFunctionTable> table = nil;
+    id<MTLArgumentEncoder> argument_encoder = nil;
+};
 struct FrameAreaBuffers {
     id<MTLBuffer> replay = nil, leaf = nil, accumulators = nil, temporal = nil, failure = nil;
     id<MTLBuffer> cross_targets = nil;
     id<MTLBuffer> contribution_evaluation = nil;
     id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
+    id<MTLBuffer> donors = nil, motion_config = nil, motion_counters = nil, motion_arguments = nil;
     id<MTLBuffer> config[area_wire::config_count]{};
     id<MTLBuffer> arguments[area_wire::config_count]{};
 };
@@ -2288,6 +2303,11 @@ struct FrameAreaHistory {
     // this arena; history banks 0/1 publish under the same completion token.
     id<MTLBuffer> enhanced_records = nil, enhanced_evaluation = nil, enhanced_suffix = nil;
     FrameAreaContext contexts[2];
+    id<MTLBuffer> geometry[2]{nil, nil}, donors = nil;
+    unsigned geometry_front = 0;
+    bool geometry_valid = false, fail_next_motion_publication = false;
+    std::uint64_t geometry_generation = 0;
+    bool latest_motion_generated = false;
     bool pending = false, valid = false, epoch_known = false, serial_exhausted = false;
     std::uint64_t epoch = 0, generation = 0, next_serial = 0, pending_serial = 0;
     // Last successful publication, independent of the latest accepted attempt.
@@ -2586,6 +2606,7 @@ struct FrameSession::Impl {
     id<MTLLibrary> frame_library = nil;
     std::shared_ptr<FrameWavefrontPrograms> wavefront;
     std::shared_ptr<FrameAreaPrograms> area;
+    std::shared_ptr<FrameMotionPrograms> motion;
     std::shared_ptr<FrameAreaHistory> history;
     std::size_t state_bytes = 0, slot_bytes = 0;
     AccelerationBuildInfo acceleration_build_info() const {
@@ -2641,8 +2662,8 @@ struct FrameSession::Impl {
         return result;
     }
 
-    EnhancedSessionSnapshot snapshot_enhanced(std::uint64_t expected_serial,
-                                              bool include_suffix) const {
+    EnhancedSessionSnapshot snapshot_enhanced(std::uint64_t expected_serial, bool include_suffix,
+                                              bool include_motion) const {
         EnhancedSessionSnapshot result;
         if (config.estimator != FrameEstimator::area_replay ||
             config.area_path_domain != FrameAreaPathDomain::enhanced || !history) {
@@ -2678,7 +2699,8 @@ struct FrameSession::Impl {
             }
         }
         if (!latest || latest->enhanced_records != history->enhanced_records ||
-            latest->enhanced_suffix != history->enhanced_suffix) {
+            latest->enhanced_suffix != history->enhanced_suffix ||
+            latest->donors != history->donors) {
             result.diagnostic = "Enhanced snapshot completed slot is unavailable";
             return result;
         }
@@ -2705,6 +2727,20 @@ struct FrameSession::Impl {
             result.diagnostic = "Enhanced snapshot buffer ownership or size mismatch";
             return result;
         }
+        const bool motion_enabled = frame_motion_enabled(config);
+        const bool copy_geometry = include_motion && motion_enabled;
+        const bool copy_donors = copy_geometry && history->latest_motion_generated;
+        const std::size_t geometry_bytes = pixels * sizeof(motion_wire::Geometry);
+        const std::size_t donor_bytes = pixels * sizeof(motion_wire::Donor);
+        if (motion_enabled &&
+            (!history->geometry_valid || history->geometry_front > 1 ||
+             history->geometry_generation != history->generation ||
+             history->geometry[history->geometry_front] == nil ||
+             history->geometry[history->geometry_front].length != geometry_bytes ||
+             history->donors == nil || history->donors.length != donor_bytes)) {
+            result.diagnostic = "Enhanced motion snapshot publication identity/size mismatch";
+            return result;
+        }
         auto &r = *renderer->impl_;
         auto history_copy = [r.device newBufferWithLength:history_bytes
                                                   options:MTLResourceStorageModeShared];
@@ -2716,8 +2752,17 @@ struct FrameSession::Impl {
             copy_suffix
                 ? [r.device newBufferWithLength:suffix_bytes options:MTLResourceStorageModeShared]
                 : nil;
+        id<MTLBuffer> geometry_copy =
+            copy_geometry
+                ? [r.device newBufferWithLength:geometry_bytes options:MTLResourceStorageModeShared]
+                : nil;
+        id<MTLBuffer> donor_copy = copy_donors
+                                       ? [r.device newBufferWithLength:donor_bytes
+                                                               options:MTLResourceStorageModeShared]
+                                       : nil;
         if (history_copy == nil || temporal_copy == nil || record_copy == nil ||
-            (copy_suffix && suffix_copy == nil)) {
+            (copy_suffix && suffix_copy == nil) || (copy_geometry && geometry_copy == nil) ||
+            (copy_donors && donor_copy == nil)) {
             result.diagnostic = "Enhanced snapshot staging allocation failed";
             return result;
         }
@@ -2748,6 +2793,18 @@ struct FrameSession::Impl {
                            toBuffer:suffix_copy
                   destinationOffset:0
                                size:suffix_bytes];
+        if (copy_geometry)
+            [encoder copyFromBuffer:history->geometry[history->geometry_front]
+                       sourceOffset:0
+                           toBuffer:geometry_copy
+                  destinationOffset:0
+                               size:geometry_bytes];
+        if (copy_donors)
+            [encoder copyFromBuffer:history->donors
+                       sourceOffset:0
+                           toBuffer:donor_copy
+                  destinationOffset:0
+                               size:donor_bytes];
         [encoder endEncoding];
         result.diagnostic = metal::complete(command, "Enhanced test snapshot");
         if (!result.diagnostic.empty())
@@ -2761,6 +2818,21 @@ struct FrameSession::Impl {
         if (copy_suffix) {
             result.enhanced_suffix.resize(record_count);
             std::memcpy(result.enhanced_suffix.data(), suffix_copy.contents, suffix_bytes);
+        }
+        result.motion_enabled = motion_enabled;
+        if (motion_enabled) {
+            result.geometry_valid = history->geometry_valid;
+            result.geometry_front = history->geometry_front;
+            result.geometry_generation = history->geometry_generation;
+            result.motion_map_generated = history->latest_motion_generated;
+        }
+        if (copy_geometry) {
+            result.geometry.resize(pixels);
+            std::memcpy(result.geometry.data(), geometry_copy.contents, geometry_bytes);
+        }
+        if (copy_donors) {
+            result.donors.resize(pixels);
+            std::memcpy(result.donors.data(), donor_copy.contents, donor_bytes);
         }
         result.suffix_cache_enabled = suffix_enabled;
         result.suffix_context = history->contexts[history->front].suffix_context;
@@ -2911,7 +2983,7 @@ struct FrameSession::Impl {
             return error;
         wavefront = std::make_shared<FrameWavefrontPrograms>();
         auto handshake =
-            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v21", error);
+            metal::load_pipeline(r.device, library, @"rypath_wavefront_contract_v22", error);
         if (handshake == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(wavefront_wire::Contract)
@@ -2957,7 +3029,8 @@ struct FrameSession::Impl {
             !alignment_valid(contract.enhanced_state_bytes, contract.enhanced_state_alignment) ||
             contract.enhanced_record_bytes != sizeof(enhanced_wire::Record) ||
             contract.enhanced_evaluation_bytes != sizeof(enhanced_wire::Evaluation) ||
-            contract.suffix_entry_bytes != sizeof(rypath_enhanced_suffix_tape::Entry))
+            contract.suffix_entry_bytes != sizeof(rypath_enhanced_suffix_tape::Entry) ||
+            contract.donor_bytes != sizeof(motion_wire::Donor))
             return "Metal wavefront shader contract mismatch; rebuild the metallib";
         // Verify the actual selected packet entry before reporting any policy
         // as effective. Older/unrelated libraries must not silently ignore the
@@ -3145,6 +3218,9 @@ struct FrameSession::Impl {
         if (work_list_bytes > std::numeric_limits<std::uint64_t>::max() - slot_bytes)
             return "Wavefront work-list byte count overflow";
         slot_bytes += work_list_bytes;
+        if (slot_bytes > std::numeric_limits<std::uint64_t>::max() - sizeof(motion_wire::Donor))
+            return "Wavefront donor sentinel byte count overflow";
+        slot_bytes += sizeof(motion_wire::Donor);
         if (slot_bytes > (std::numeric_limits<std::uint64_t>::max() - cie.length) / 2)
             return "Wavefront slots byte count overflow";
         const std::uint64_t total = 2 * std::uint64_t(slot_bytes) + cie.length;
@@ -3161,12 +3237,83 @@ struct FrameSession::Impl {
             return prepare_area(library);
         return {};
     }
+    std::string prepare_motion(id<MTLLibrary> library) {
+        if (!frame_motion_enabled(config))
+            return {};
+        auto &r = *renderer->impl_;
+        std::string error;
+        motion = std::make_shared<FrameMotionPrograms>();
+        auto probe =
+            metal::load_pipeline(r.device, library, @"rypath_enhanced_motion_contract_v1", error);
+        if (probe == nil)
+            return error;
+        auto check = [r.device newBufferWithLength:sizeof(motion_wire::Contract)
+                                           options:MTLResourceStorageModeShared];
+        if (check == nil)
+            return "Enhanced motion contract allocation failed";
+        std::memset(check.contents, 0, check.length);
+        auto command = [r.queue commandBuffer];
+        auto encoder = [command computeCommandEncoder];
+        if (command == nil || encoder == nil)
+            return "Enhanced motion contract encoder failed";
+        [encoder setComputePipelineState:probe];
+        [encoder setBuffer:check offset:0 atIndex:0];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [encoder endEncoding];
+        error = metal::complete(command, "Enhanced motion contract");
+        if (!error.empty())
+            return error;
+        motion_wire::Contract actual{};
+        std::memcpy(&actual, check.contents, sizeof(actual));
+        if (actual.version != motion_wire::contract ||
+            actual.config_bytes != sizeof(motion_wire::Config) ||
+            actual.geometry_bytes != sizeof(motion_wire::Geometry) ||
+            actual.donor_bytes != sizeof(motion_wire::Donor) ||
+            actual.counters_bytes != sizeof(motion_wire::Counters) ||
+            actual.camera_bytes != sizeof(rypath_enhanced_motion::Camera))
+            return "Enhanced motion shader contract mismatch; rebuild the metallib";
+        motion->reset =
+            metal::load_pipeline(r.device, library, @"rypath_enhanced_motion_reset", error);
+        if (motion->reset == nil)
+            return error;
+        motion->donors =
+            metal::load_pipeline(r.device, library, @"rypath_enhanced_motion_donors", error);
+        if (motion->donors == nil)
+            return error;
+        MTLFunctionConstantValues *constants = [r.function_constants copy];
+        if (constants == nil)
+            return "Enhanced motion specialization allocation failed";
+        const bool off = false;
+        [constants setConstantValue:&off type:MTLDataTypeBool atIndex:20];
+        [constants setConstantValue:&off type:MTLDataTypeBool atIndex:25];
+        auto intersection = metal::load_patch_intersection(library, error);
+        if (intersection == nil)
+            return error;
+        motion->geometry = metal::load_pipeline(
+            r.device, library, @"rypath_enhanced_motion_geometry", error, intersection, constants);
+        if (motion->geometry == nil)
+            return error;
+        motion->table = metal::make_intersection_table(motion->geometry, intersection, error);
+        if (motion->table == nil)
+            return error;
+        auto function =
+            metal::load_function(library, @"rypath_enhanced_motion_geometry", error, constants);
+        if (function == nil)
+            return error;
+        motion->argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
+        if (motion->argument_encoder == nil)
+            return "Enhanced motion argument encoder allocation failed";
+        for (auto pipeline : {motion->reset, motion->geometry, motion->donors})
+            if (config.group_width > metal::group_width(r.device, pipeline))
+                return "Enhanced motion group width exceeds device or pipeline limit";
+        return {};
+    }
     std::string prepare_area(id<MTLLibrary> library) {
         auto &r = *renderer->impl_;
         area = std::make_shared<FrameAreaPrograms>();
         history = std::make_shared<FrameAreaHistory>();
         std::string error;
-        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v14", error);
+        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v15", error);
         if (probe == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(area_wire::Contract)
@@ -3195,7 +3342,8 @@ struct FrameSession::Impl {
             contract.replay_bytes != sizeof(rypath_replay::ReplayState) ||
             contract.counters_bytes != sizeof(area_wire::Counters) ||
             contract.contribution_evaluation_bytes != sizeof(contribution_wire::Evaluation) ||
-            contract.suffix_entry_bytes != sizeof(rypath_enhanced_suffix_tape::Entry))
+            contract.suffix_entry_bytes != sizeof(rypath_enhanced_suffix_tape::Entry) ||
+            contract.donor_bytes != sizeof(motion_wire::Donor))
             return "Metal Area shader contract mismatch; rebuild the metallib";
         const auto load = [&](NSString *name) {
             return metal::load_pipeline(r.device, library, name, error);
@@ -3238,6 +3386,9 @@ struct FrameSession::Impl {
         area->argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
         if (area->argument_encoder == nil)
             return "Area argument encoder creation failed";
+        error = prepare_motion(library);
+        if (!error.empty())
+            return error;
         const std::uint64_t pixels = std::uint64_t(config.width) * config.height;
         const std::uint64_t history_bytes = pixels * sizeof(area_wire::History);
         const std::uint64_t replay_bytes = pixels * sizeof(rypath_replay::ReplayState);
@@ -3281,12 +3432,22 @@ struct FrameSession::Impl {
                             enhanced_record_bytes) ||
              !product_bytes(pixels, sizeof(enhanced_wire::Evaluation), enhanced_evaluation_bytes)))
             return "Enhanced records/evaluation byte count overflow";
+        std::uint64_t geometry_bytes = sizeof(motion_wire::Geometry),
+                      donor_bytes = sizeof(motion_wire::Donor);
+        if (frame_motion_enabled(config) &&
+            (!product_bytes(pixels, sizeof(motion_wire::Geometry), geometry_bytes) ||
+             !product_bytes(pixels, sizeof(motion_wire::Donor), donor_bytes)))
+            return "Enhanced motion geometry/donor byte count overflow";
         std::uint64_t workspace_bytes = 0;
         for (const auto bytes :
              {replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes, cross_bytes,
               evaluation_bytes, std::uint64_t(sizeof(area_wire::Counters))})
             if (!add_bytes(workspace_bytes, bytes))
                 return "Area workspace byte count overflow";
+        if (motion && (!add_bytes(workspace_bytes, sizeof(motion_wire::Config)) ||
+                       !add_bytes(workspace_bytes, sizeof(motion_wire::Counters)) ||
+                       !add_bytes(workspace_bytes, motion->argument_encoder.encodedLength)))
+            return "Enhanced motion per-slot byte count overflow";
         std::uint64_t argument_set_bytes = sizeof(area_wire::Config), all_arguments_bytes = 0;
         if (!add_bytes(argument_set_bytes, arguments_bytes) ||
             !product_bytes(area_wire::config_count, argument_set_bytes, all_arguments_bytes) ||
@@ -3295,7 +3456,7 @@ struct FrameSession::Impl {
         // Replace the per-slot replay(32), contribution evaluation(16), and
         // Enhanced records/evaluation/suffix(48) sentinels. The latter buffers belong
         // to the history and are charged once, including in legacy Area mode.
-        constexpr std::uint64_t replaced_sentinels = 32 + 16 + 48;
+        constexpr std::uint64_t replaced_sentinels = 32 + 16 + 48 + sizeof(motion_wire::Donor);
         if (slot_bytes < replaced_sentinels)
             return "Area slot accounting underflow";
         std::uint64_t per_slot_bytes = slot_bytes - replaced_sentinels;
@@ -3308,13 +3469,19 @@ struct FrameSession::Impl {
             !product_bytes(2, context_bytes, context_bytes) || !add_bytes(total, context_bytes) ||
             !add_bytes(total, enhanced_record_bytes) ||
             !add_bytes(total, enhanced_evaluation_bytes) ||
-            !add_bytes(total, enhanced_suffix_bytes) || !add_bytes(total, cie.length))
+            !add_bytes(total, enhanced_suffix_bytes) || !add_bytes(total, geometry_bytes) ||
+            !add_bytes(total, geometry_bytes) || !add_bytes(total, donor_bytes) ||
+            !add_bytes(total, cie.length))
             return "Area slots/history byte count overflow";
         for (const auto bytes :
              {history_bytes, replay_bytes, leaf_bytes, temporal_bytes, accumulator_bytes,
               cross_bytes, evaluation_bytes, enhanced_record_bytes, enhanced_evaluation_bytes,
-              enhanced_suffix_bytes, std::uint64_t(arguments_bytes),
-              std::uint64_t(r.graph_nodes.length), std::uint64_t(r.surface_transforms.length)})
+              enhanced_suffix_bytes, geometry_bytes, donor_bytes,
+              std::uint64_t(motion ? sizeof(motion_wire::Config) : 0),
+              std::uint64_t(motion ? sizeof(motion_wire::Counters) : 0),
+              std::uint64_t(motion ? motion->argument_encoder.encodedLength : 0),
+              std::uint64_t(arguments_bytes), std::uint64_t(r.graph_nodes.length),
+              std::uint64_t(r.surface_transforms.length)})
             if (bytes > r.device.maxBufferLength)
                 return "Area buffer exceeds the device limit";
         if (total > std::min<std::uint64_t>(config.transient_byte_limit, 8ull << 30) ||
@@ -3336,6 +3503,16 @@ struct FrameSession::Impl {
         if (history->enhanced_records == nil || history->enhanced_evaluation == nil ||
             history->enhanced_suffix == nil)
             return "Enhanced owned-record storage allocation failed";
+        for (auto &geometry : history->geometry) {
+            geometry = [r.device newBufferWithLength:geometry_bytes
+                                             options:MTLResourceStorageModePrivate];
+            if (geometry == nil)
+                return "Enhanced motion geometry allocation failed";
+        }
+        history->donors = [r.device newBufferWithLength:donor_bytes
+                                                options:MTLResourceStorageModePrivate];
+        if (history->donors == nil)
+            return "Enhanced motion donor allocation failed";
         // Contents are produced/validated by Area prepare/finish, never cleared
         // here or during slot reuse. Front publication is the validity boundary.
         return {};
@@ -3351,6 +3528,7 @@ struct FrameSession::Impl {
         b.enhanced_records = history->enhanced_records;
         b.enhanced_evaluation = history->enhanced_evaluation;
         b.enhanced_suffix = history->enhanced_suffix;
+        b.donors = history->donors;
         const auto allocate = [&](id<MTLBuffer> __strong &buffer, std::size_t bytes,
                                   bool shared = false) {
             if (buffer == nil)
@@ -3375,6 +3553,10 @@ struct FrameSession::Impl {
                           : 16) ||
             !allocate(b.failure, sizeof(area_wire::Counters), true))
             return "Area workspace allocation failed";
+        if (motion && (!allocate(b.motion_config, sizeof(motion_wire::Config), true) ||
+                       !allocate(b.motion_counters, sizeof(motion_wire::Counters), true) ||
+                       !allocate(b.motion_arguments, motion->argument_encoder.encodedLength, true)))
+            return "Enhanced motion pending-frame allocation failed";
         for (unsigned index = 0; index < area_wire::config_count; ++index)
             if (!allocate(b.config[index], sizeof(area_wire::Config), true) ||
                 !allocate(b.arguments[index], area->argument_encoder.encodedLength, true))
@@ -3384,7 +3566,8 @@ struct FrameSession::Impl {
     void configure_area(Slot &slot, id<MTLBuffer> raw, std::uint64_t serial, bool history_used,
                         bool temporal_cache, id<MTLBuffer> source, id<MTLBuffer> destination,
                         rypath_area_stencil::Offsets offsets, unsigned history_source_bank,
-                        std::uint64_t suffix_context, std::uint64_t source_suffix_context) {
+                        std::uint64_t suffix_context, std::uint64_t source_suffix_context,
+                        bool mapped_motion) {
         auto &b = *slot.area;
         if (frame_area_contribution_family(config.area_path_domain)) {
             // The free frame slot owns this shared config until completion.
@@ -3443,11 +3626,12 @@ struct FrameSession::Impl {
                     : 0u,
                 config.area_path_domain == FrameAreaPathDomain::enhanced ? history_source_bank : 0u,
                 static_cast<std::uint32_t>(actual_context),
-                static_cast<std::uint32_t>(actual_context >> 32)};
+                static_cast<std::uint32_t>(actual_context >> 32),
+                mapped_motion ? 1u : 0u};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
-            const std::array<id<MTLBuffer>, 14> resources{b.config[index],
+            const std::array<id<MTLBuffer>, 15> resources{b.config[index],
                                                           b.replay,
                                                           b.leaf,
                                                           b.accumulators,
@@ -3460,7 +3644,8 @@ struct FrameSession::Impl {
                                                           b.contribution_evaluation,
                                                           b.enhanced_records,
                                                           b.enhanced_evaluation,
-                                                          b.enhanced_suffix};
+                                                          b.enhanced_suffix,
+                                                          b.donors};
             for (NSUInteger argument = 0; argument < resources.size(); ++argument)
                 [encoder setBuffer:resources[argument] offset:0 atIndex:argument];
         }
@@ -3469,7 +3654,8 @@ struct FrameSession::Impl {
                                    id<MTLBuffer> contribution_evaluation = nil,
                                    id<MTLBuffer> enhanced_records = nil,
                                    id<MTLBuffer> enhanced_evaluation = nil,
-                                   id<MTLBuffer> enhanced_suffix = nil) {
+                                   id<MTLBuffer> enhanced_suffix = nil,
+                                   id<MTLBuffer> donors = nil) {
         auto &r = *renderer->impl_;
         if (!slot.wavefront)
             slot.wavefront = std::make_shared<FrameWavefrontBuffers>();
@@ -3482,6 +3668,8 @@ struct FrameSession::Impl {
                                                               : MTLResourceStorageModePrivate];
             return buffer != nil;
         };
+        if (donors != nil)
+            b.donors = donors;
         if (replay != nil)
             b.replay = replay;
         if (contribution_evaluation != nil)
@@ -3523,6 +3711,7 @@ struct FrameSession::Impl {
             !allocate(b.replay, 32) || !allocate(b.contribution_evaluation, 16) ||
             !allocate(b.enhanced_records, 16) || !allocate(b.enhanced_evaluation, 16) ||
             !allocate(b.enhanced_suffix, 16) || !allocate(b.work_list, work_list_bytes) ||
+            !allocate(b.donors, sizeof(motion_wire::Donor)) ||
             !allocate(b.contribution_state,
                       contribution ? std::size_t(config.capacity) *
                                          (config.area_path_domain == FrameAreaPathDomain::enhanced
@@ -3566,7 +3755,7 @@ struct FrameSession::Impl {
         for (unsigned variant = 0; variant < 2; ++variant) {
             auto encoder = wavefront->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[variant] offset:0];
-            const std::array<id<MTLBuffer>, 24> resources{b.config,
+            const std::array<id<MTLBuffer>, 25> resources{b.config,
                                                           b.scalar_state,
                                                           b.packet_state,
                                                           b.queue[variant],
@@ -3589,7 +3778,8 @@ struct FrameSession::Impl {
                                                           b.enhanced_records,
                                                           b.enhanced_evaluation,
                                                           b.enhanced_suffix,
-                                                          b.work_list};
+                                                          b.work_list,
+                                                          b.donors};
             for (NSUInteger index = 0; index < resources.size(); ++index)
                 [encoder setBuffer:resources[index] offset:0 atIndex:index];
         }
@@ -3722,7 +3912,11 @@ struct FrameSession::Impl {
         std::shared_ptr<Frame::Impl> frame;
         std::shared_ptr<FrameWavefrontPrograms> programs;
         std::shared_ptr<FrameAreaPrograms> area_programs;
+        std::shared_ptr<FrameMotionPrograms> motion_programs;
         std::shared_ptr<FrameAreaHistory> history;
+        bool motion_generate = false, motion_mapped = false, motion_validated = false;
+        unsigned motion_destination = 0;
+        wire::Parameters motion_parameters{};
         id<MTLBuffer> history_source = nil, history_destination = nil;
         unsigned history_destination_index = 0, area_leaf = 0;
         FrameAreaContext source_context;
@@ -3832,6 +4026,8 @@ struct FrameSession::Impl {
                     error = "Area history publication token mismatch";
                 else if (history->generation == std::numeric_limits<std::uint64_t>::max())
                     error = "Area history generation exhausted";
+                else if (motion_generate && !motion_validated)
+                    error = "Enhanced motion geometry was not validated before publication";
                 else {
                     std::lock_guard frame_lock(frame->info_mutex);
                     const bool accounting =
@@ -3855,11 +4051,22 @@ struct FrameSession::Impl {
                         (!frame_pair_compaction_enabled(config) &&
                          frame->info.compacted_null_evaluations))
                         error = "Area evaluation accounting mismatch";
-                    else {
+                    else if (frame_motion_enabled(config) &&
+                             history->fail_next_motion_publication) {
+                        history->fail_next_motion_publication = false;
+                        error = "Enhanced motion test forced publication failure";
+                    } else {
                         history->front = history_destination_index;
                         history->valid = true;
                         history->committed_serial = frame->info.area_serial;
                         ++history->generation;
+                        if (frame_motion_enabled(config)) {
+                            if (motion_generate)
+                                history->geometry_front = motion_destination;
+                            history->geometry_valid = true;
+                            history->geometry_generation = history->generation;
+                            history->latest_motion_generated = motion_generate;
+                        }
                         history->pending = false;
                         frame->info.history_generation = history->generation;
                         frame->info.completed_samples = pixels;
@@ -3909,6 +4116,27 @@ struct FrameSession::Impl {
             if (time_valid)
                 gpu_seconds += command.GPUEndTime - command.GPUStartTime;
             all_gpu_times_valid &= std::isfinite(gpu_seconds);
+            if (motion_generate && !motion_validated) {
+                motion_wire::Counters c{};
+                std::memcpy(&c, frame->retention->area->motion_counters.contents, sizeof(c));
+                const auto n = std::uint64_t(config.width) * config.height;
+                const auto geometry_total =
+                    std::uint64_t(c.geometry_hits) + c.geometry_sky + c.geometry_unsupported;
+                const auto route_total = std::uint64_t(c.cold) + c.ordinary + c.dual + c.fallback;
+                if (c.failure || c.reserved0 || c.reserved1 || c.geometry_completed != n ||
+                    geometry_total != n || c.donor_completed != n || route_total != n ||
+                    (motion_mapped ? c.cold != 0
+                                   : (c.cold != n || c.ordinary || c.dual || c.fallback))) {
+                    fail("GPU Enhanced motion counter validation failed (flags " +
+                         std::to_string(c.failure) + ")");
+                    return;
+                }
+                motion_validated = true;
+                std::lock_guard lock(frame->info_mutex);
+                frame->info.enhanced_geometry_generated = c.geometry_completed;
+                frame->info.enhanced_temporal_reprojection_used = motion_mapped;
+                frame->info.enhanced_motion_routes = {c.cold, c.ordinary, c.dual, c.fallback};
+            }
             if (area_failed()) {
                 fail(area_failure_diagnostic());
                 return;
@@ -4053,11 +4281,15 @@ struct FrameSession::Impl {
                             b.packet_cold.length + b.packet_hit.length + b.hero_state.length +
                             b.hero_cold.length + b.contribution_state.length +
                             b.enhanced_records.length + b.enhanced_evaluation.length +
-                            b.enhanced_suffix.length + b.work_list.length;
+                            b.enhanced_suffix.length + b.work_list.length + b.donors.length;
                     }
                 }
                 const bool reverse = history && area_leaf == area_wire::temporal_reverse_config &&
                                      !frame->info.temporal_evaluation_cache_used;
+                // launch follows completion of the prior consuming command. No
+                // in-flight command observes mutation of this slot-owned config.
+                auto *wavefront_config = static_cast<wavefront_wire::Config *>(b.config.contents);
+                wavefront_config->mapped_evaluation = motion_mapped && reverse ? 1u : 0u;
                 const auto &evaluation_parameters =
                     reverse ? source_context.parameters : parameters;
                 const auto &evaluation_texture = reverse ? source_context.texture : texture;
@@ -4106,6 +4338,7 @@ struct FrameSession::Impl {
                                     b.work_list})
                     use_resource(buffer, read_write);
                 use_resource(b.config, MTLResourceUsageRead);
+                use_resource(b.donors, MTLResourceUsageRead);
                 use_resource(cie, MTLResourceUsageRead);
                 const auto barrier = [&] {
                     [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -4157,6 +4390,15 @@ struct FrameSession::Impl {
                           a.contribution_evaluation, a.enhanced_records, a.enhanced_evaluation,
                           a.enhanced_suffix, history_destination})
                         use_resource(buffer, read_write);
+                    use_resource(a.donors, MTLResourceUsageRead);
+                    if (motion_generate) {
+                        use_resource(history->geometry[motion_destination], read_write);
+                        use_resource(history->geometry[history->geometry_front],
+                                     MTLResourceUsageRead);
+                        use_resource(history->donors, read_write);
+                        use_resource(a.motion_counters, read_write);
+                        use_resource(a.motion_config, MTLResourceUsageRead);
+                    }
                     use_resource(history_source, MTLResourceUsageRead);
                     for (auto buffer : a.config)
                         use_resource(buffer, MTLResourceUsageRead);
@@ -4176,6 +4418,32 @@ struct FrameSession::Impl {
                         barrier();
                     };
                     const auto pixels = std::uint64_t(config.width) * config.height;
+                    if (area_reset && motion_generate) {
+                        const auto dispatch_motion = [&](id<MTLComputePipelineState> pipeline,
+                                                         NSUInteger count, const char *label,
+                                                         bool geometry) {
+                            if (stages && !stages->begin(command, encoder, label))
+                                return;
+                            [encoder setComputePipelineState:pipeline];
+                            if (geometry)
+                                r.bind(encoder, motion_parameters, texture, a.motion_arguments,
+                                       frame->retention->graph_nodes,
+                                       frame->retention->surface_transforms, true,
+                                       motion_programs->table);
+                            else
+                                [encoder setBuffer:a.motion_arguments offset:0 atIndex:1];
+                            [encoder dispatchThreads:MTLSizeMake(count, 1, 1)
+                                threadsPerThreadgroup:MTLSizeMake(count == 1 ? 1
+                                                                             : config.group_width,
+                                                                  1, 1)];
+                            if (stages)
+                                stages->end(encoder);
+                            barrier();
+                        };
+                        dispatch_motion(motion_programs->reset, 1, "motion.reset", false);
+                        dispatch_motion(motion_programs->geometry, pixels, "motion.geometry", true);
+                        dispatch_motion(motion_programs->donors, pixels, "motion.donors", false);
+                    }
                     if (area_reset) {
                         area_dispatch(area_programs->reset, 0, 1, "area.reset");
                         area_reset = false;
@@ -4540,6 +4808,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         frame->info.fresh_discovery_version = frame_area_discovery_version(c.area_path_domain);
         frame->info.enhanced_suffix_cache = frame_suffix_cache_enabled(c);
         frame->info.enhanced_pair_compaction = frame_pair_compaction_enabled(c);
+        frame->info.enhanced_temporal_reprojection_requested = c.enhanced_temporal_reprojection;
+        frame->info.enhanced_temporal_reprojection = frame_motion_enabled(c);
         frame->info.contribution_depth =
             frame_area_contribution_family(c.area_path_domain) ? p.max_depth : 0;
         if (slot->raw == nil)
@@ -4580,7 +4850,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                 impl_->history ? slot->area->contribution_evaluation : nil,
                 impl_->history ? slot->area->enhanced_records : nil,
                 impl_->history ? slot->area->enhanced_evaluation : nil,
-                impl_->history ? slot->area->enhanced_suffix : nil);
+                impl_->history ? slot->area->enhanced_suffix : nil,
+                impl_->history ? slot->area->donors : nil);
             if (!result.diagnostic.empty())
                 return result;
             frame->retention->wavefront = slot->wavefront;
@@ -4613,6 +4884,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     history.epoch_known = true;
                     history.epoch = request.epoch;
                     history.valid = false;
+                    history.geometry_valid = false;
                 }
                 const unsigned destination_index = history.front ^ 1;
                 result.diagnostic = impl_->snapshot_area_context(
@@ -4622,13 +4894,58 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     return result;
                 if (history.valid &&
                     !same_area_path_domain_context(history.contexts[history.front].domain,
-                                                   history.contexts[destination_index].domain))
+                                                   history.contexts[destination_index].domain)) {
                     history.valid = false;
+                    history.geometry_valid = false;
+                }
                 result.diagnostic = impl_->assign_suffix_context(destination_index);
                 if (!result.diagnostic.empty())
                     return result;
                 frame->info.camera_upload_bytes = camera_upload_bytes;
                 const auto serial = history.next_serial;
+                if (frame_motion_enabled(c)) {
+                    if (history.geometry_front > 1 ||
+                        (history.valid && (!history.geometry_valid ||
+                                           history.geometry_generation != history.generation))) {
+                        result.diagnostic =
+                            "Enhanced motion published geometry/context identity mismatch";
+                        return result;
+                    }
+                    const bool same =
+                        history.valid && history.geometry_valid &&
+                        same_area_evaluation_context(history.contexts[history.front],
+                                                     history.contexts[destination_index]);
+                    runner->motion_programs = impl_->motion;
+                    runner->motion_generate = !same;
+                    runner->motion_mapped = !same && history.valid;
+                    runner->motion_destination = history.geometry_front ^ 1u;
+                    if (same)
+                        frame->info.enhanced_geometry_reused = std::uint64_t(c.width) * c.height;
+                    else {
+                        const auto packed = enhanced_motion_host::pack_config_from_parameters(
+                            p, history.valid ? history.contexts[history.front].parameters : p,
+                            history.valid, serial);
+                        const auto geometry = enhanced_motion_host::center_geometry_parameters(p);
+                        if (!packed.config || !geometry.parameters) {
+                            result.diagnostic =
+                                !packed.config ? packed.diagnostic : geometry.diagnostic;
+                            return result;
+                        }
+                        runner->motion_parameters = *geometry.parameters;
+                        auto &a = *slot->area;
+                        std::memcpy(a.motion_config.contents, &*packed.config,
+                                    sizeof(*packed.config));
+                        std::memset(a.motion_counters.contents, 0, a.motion_counters.length);
+                        auto encoder = impl_->motion->argument_encoder;
+                        [encoder setArgumentBuffer:a.motion_arguments offset:0];
+                        const std::array<id<MTLBuffer>, 5> resources{
+                            a.motion_config, history.geometry[runner->motion_destination],
+                            history.geometry[history.geometry_front], history.donors,
+                            a.motion_counters};
+                        for (NSUInteger index = 0; index < resources.size(); ++index)
+                            [encoder setBuffer:resources[index] offset:0 atIndex:index];
+                    }
+                }
                 if (serial == std::numeric_limits<std::uint64_t>::max())
                     history.serial_exhausted = true;
                 else
@@ -4649,7 +4966,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                                                     offsets.second.x, offsets.second.y};
                 frame->info.history_used = history.valid;
                 frame->info.temporal_evaluation_cache_used =
-                    history.valid && c.cache_temporal_evaluations &&
+                    history.valid && c.cache_temporal_evaluations && !runner->motion_mapped &&
                     same_area_evaluation_context(history.contexts[history.front],
                                                  history.contexts[destination_index]);
                 frame->info.history_generation = history.generation;
@@ -4666,7 +4983,8 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     frame->info.temporal_evaluation_cache_used, runner->history_source,
                     runner->history_destination, offsets, history.front,
                     history.contexts[destination_index].suffix_context,
-                    history.valid ? history.contexts[history.front].suffix_context : 0);
+                    history.valid ? history.contexts[history.front].suffix_context : 0,
+                    runner->motion_mapped);
             }
 
             slot->active = frame->retention;
@@ -4806,6 +5124,11 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     if (!pixels || pixels > max_index || !config.footprint_samples ||
         !config.transient_byte_limit) {
         result.diagnostic = "Invalid frame dimensions, footprint budget, or memory budget";
+        return result;
+    }
+    if (frame_motion_enabled(config) &&
+        !enhanced_motion_host::valid_dimensions(config.width, config.height)) {
+        result.diagnostic = "Enhanced motion dimensions must be 1..2^23 with a 32-bit pixel count";
         return result;
     }
     if (config.mutation_policy != FrameMutationPolicy::automatic &&
@@ -4951,8 +5274,10 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
                                            const FrameConfig &b,
                                            const std::filesystem::path &library_path) {
     SharedSceneFrameSessions result;
-    // Compare every current FrameConfig field except the intended cache/compaction switches.
-    // Keep this list complete when the configuration gains another field.
+    // Cache/compaction toggles are execution controls. Motion additionally
+    // changes temporal source-domain selection: only static identity contrasts
+    // imply exact equality; moving contrasts require matched raw mean tests.
+    // Compare every other FrameConfig field, including unrelated seeds/policy.
     const auto same =
         a.profile_stages == b.profile_stages && a.width == b.width && a.height == b.height &&
         a.seed == b.seed && a.material_seed == b.material_seed &&
@@ -4969,7 +5294,7 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.mutation_policy == b.mutation_policy && a.area_stencil == b.area_stencil;
     if (!same) {
         result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
-                            "caches or pair compaction";
+                            "caches, pair compaction or temporal reprojection";
         return result;
     }
     if (a.execution != FrameExecution::wavefront || a.estimator != FrameEstimator::area_replay) {
@@ -5004,6 +5329,12 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
             for (auto right : second_history->banks)
                 result.independent_history &= left != right;
     if (first_history && second_history) {
+        result.independent_motion_storage = true;
+        for (auto left :
+             {first_history->geometry[0], first_history->geometry[1], first_history->donors})
+            for (auto right :
+                 {second_history->geometry[0], second_history->geometry[1], second_history->donors})
+                result.independent_motion_storage &= left != nil && right != nil && left != right;
         result.enhanced_record_arenas = {
             reinterpret_cast<std::uintptr_t>((__bridge void *)first_history->enhanced_records),
             reinterpret_cast<std::uintptr_t>((__bridge void *)second_history->enhanced_records)};
@@ -5025,7 +5356,9 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
                 result.independent_owned_records &= left != right;
     }
     if (!result.shared_renderer || !result.independent_history ||
-        !result.independent_owned_records || !result.independent_suffix_storage) {
+        !result.independent_owned_records || !result.independent_suffix_storage ||
+        ((frame_motion_enabled(a) || frame_motion_enabled(b)) &&
+         !result.independent_motion_storage)) {
         result.status = GeometryStatus::failure;
         result.diagnostic = "Shared-scene validation requires one renderer/AS and independent "
                             "history/owned records";
@@ -5035,6 +5368,40 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
     result.sessions[1].reset(new FrameSession(std::move(second)));
     result.status = GeometryStatus::success;
     return result;
+}
+
+EnhancedMotionState FrameSessionTestAccess::motion_state(FrameSession &session) {
+    EnhancedMotionState result;
+    if (!session.impl_ || !frame_motion_enabled(session.impl_->config) || !session.impl_->history) {
+        result.diagnostic = "Motion state requires an enabled Enhanced motion session";
+        return result;
+    }
+    auto &h = *session.impl_->history;
+    std::lock_guard lock(h.mutex);
+    if (h.pending) {
+        result.diagnostic = "Motion state requires no pending frame";
+        return result;
+    }
+    result.status = GeometryStatus::success;
+    result.geometry_valid = h.geometry_valid;
+    result.history_valid = h.valid;
+    result.geometry_front = h.geometry_front;
+    result.geometry_generation = h.geometry_generation;
+    result.history_generation = h.generation;
+    result.next_serial = h.next_serial;
+    result.pending_serial = h.pending_serial;
+    result.committed_serial = h.committed_serial;
+    return result;
+}
+std::string FrameSessionTestAccess::force_next_motion_publication_failure(FrameSession &session) {
+    if (!session.impl_ || !frame_motion_enabled(session.impl_->config) || !session.impl_->history)
+        return "Motion failure control requires an enabled Enhanced motion session";
+    auto &h = *session.impl_->history;
+    std::lock_guard lock(h.mutex);
+    if (h.pending || h.fail_next_motion_publication)
+        return "Motion failure control requires idle, unarmed history";
+    h.fail_next_motion_publication = true;
+    return {};
 }
 
 EnhancedSuffixContextState FrameSessionTestAccess::suffix_context_state(FrameSession &session) {
@@ -5053,12 +5420,14 @@ FrameSessionTestAccess::seed_next_suffix_context(FrameSession &session,
 
 EnhancedSessionSnapshot FrameSessionTestAccess::snapshot_enhanced(FrameSession &session,
                                                                   std::uint64_t expected_serial,
-                                                                  bool include_suffix) {
+                                                                  bool include_suffix,
+                                                                  bool include_motion) {
     @autoreleasepool {
         if (!session.impl_)
             return {.diagnostic = "Enhanced snapshot session is moved-from"};
         try {
-            return session.impl_->snapshot_enhanced(expected_serial, include_suffix);
+            return session.impl_->snapshot_enhanced(expected_serial, include_suffix,
+                                                    include_motion);
         } catch (const std::bad_alloc &) {
             return {.diagnostic = "Enhanced snapshot CPU allocation failed"};
         }

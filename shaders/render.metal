@@ -2559,9 +2559,11 @@ kernel void rypath_render_packets(constant wire::Parameters &p [[buffer(0)]],
     *reinterpret_cast<device packet_storage::Result *>(workspace) = result;
 }
 
+// Runtime kernels depend on definitions from the preceding includes.
+// clang-format off
 #include "wavefront.metal"
-
 #include "area_reuse.metal"
 #include "reconstruction_guides.metal"
-
+#include "enhanced_motion.metal"
 #include "camera_medium.metal"
+// clang-format on

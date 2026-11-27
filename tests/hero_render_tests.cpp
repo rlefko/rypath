@@ -213,8 +213,11 @@ FrameCapture capture(FrameSession &session, const FrameConfig &c, std::uint64_t 
     const auto info = submitted.frame->wait();
     const std::uint64_t pixels = std::uint64_t(c.width) * c.height;
     need(info.status == FrameStatus::complete, info.diagnostic);
-    need(!info.enhanced_pair_compaction && info.compacted_null_evaluations == 0,
-         "Pair compaction remains inactive outside Enhanced Area");
+    need(!info.enhanced_pair_compaction && info.compacted_null_evaluations == 0 &&
+             !info.enhanced_temporal_reprojection && !info.enhanced_temporal_reprojection_used &&
+             info.enhanced_geometry_generated == 0 && info.enhanced_geometry_reused == 0 &&
+             info.enhanced_motion_routes == std::array<std::uint64_t, 4>{},
+         "Enhanced execution features remain inactive outside Enhanced Area");
     need(info.sample_index == index && info.epoch == 73 && info.completed_samples == pixels &&
              info.fresh_candidates == pixels && info.command_count > 0,
          "Hero frame identity/accounting");
@@ -1662,6 +1665,299 @@ void enhanced_suffix_conductor() {
     std::cout << "suffix_conductor_exact totals hits=" << hits[0] << ',' << hits[1] << ','
               << hits[2] << " misses=" << misses << " referenced_records=" << records << '\n';
 }
+RenderScene motion_disocclusion_scene() {
+    auto scene = base();
+    scene.max_depth = 0;
+    scene.raster_camera = RasterCamera{{}, {-1, 1, 1}, {2, 0, 0}, {0, -2, 0}};
+    SpectralMaterial material;
+    material.kind = SpectralMaterialKind::constant;
+    material.constant = .5f;
+    scene.materials.push_back(material);
+    AreaEmission emission;
+    emission.radiance.fill(emitted);
+    emission.two_sided = true;
+    scene.area_emissions.push_back(emission);
+    plane(scene, 8, false, 0, 0);
+    GeometryMesh blocker;
+    blocker.positions = {{-.75f, -4, 2}, {.75f, -4, 2}, {.75f, 4, 2}, {-.75f, 4, 2}};
+    blocker.triangles = {{0, 2, 1}, {0, 3, 2}};
+    const auto mesh = unsigned(scene.geometry.meshes.size());
+    scene.geometry.meshes.push_back(std::move(blocker));
+    scene.geometry.instances.push_back({mesh, {}});
+    scene.instance_materials.push_back(0);
+    scene.instance_emissions.push_back(no_area_emission);
+    scene.instance_surface_transforms.emplace_back();
+    frames(scene);
+    return scene;
+}
+FrameCamera motion_pan(const RenderScene &scene) {
+    FrameCamera camera{.camera = scene.camera,
+                       .camera_medium = scene.camera_medium,
+                       .raster_camera = scene.raster_camera,
+                       .perspective_lens = scene.perspective_lens,
+                       .texture_camera = scene.texture_camera};
+    need(camera.raster_camera.has_value(), "Motion fixture has raster camera");
+    camera.raster_camera->origin.x += 1;
+    return camera;
+}
+ContributionCapture motion_capture(FrameSession &session, std::optional<FrameCamera> camera = {},
+                                   std::uint64_t epoch = 73,
+                                   std::unique_ptr<Frame> *retained = nullptr) {
+    auto submitted =
+        session.submit({.sample_index = high_sample, .epoch = epoch, .camera = camera});
+    need(submitted.status == GeometryStatus::success && submitted.frame, submitted.diagnostic);
+    auto info = submitted.frame->wait();
+    need(info.status == FrameStatus::complete, info.diagnostic);
+    auto image = submitted.frame->capture();
+    need(image.status == GeometryStatus::success, image.diagnostic);
+    if (retained)
+        *retained = std::move(submitted.frame);
+    return {std::move(image), std::move(info)};
+}
+void enhanced_motion_static_controls() {
+    auto scene = motion_disocclusion_scene();
+    auto off = enhanced_config();
+    off.width = off.height = 7;
+    off.capacity = 37;
+    off.mutation_steps = 1;
+    off.contribution_replay = FrameContributionReplay::prefix;
+    off.cache_temporal_evaluations = true;
+    auto on = off;
+    on.enhanced_temporal_reprojection = true;
+    auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+    need(pair.status == GeometryStatus::success && pair.shared_renderer && pair.independent_history,
+         pair.diagnostic);
+    std::vector<enhanced_motion_wire::Geometry> first_geometry;
+    unsigned geometry_front = 0;
+    for (unsigned frame = 0; frame < 4; ++frame) {
+        auto a = motion_capture(*pair.sessions[0]);
+        auto b = motion_capture(*pair.sessions[1]);
+        exact(a.image, b.image);
+        need(a.info.mutation_accepts == b.info.mutation_accepts &&
+                 a.info.completed_evaluations == b.info.completed_evaluations &&
+                 a.info.cached_evaluations == b.info.cached_evaluations &&
+                 a.info.analytic_null_evaluations == b.info.analytic_null_evaluations &&
+                 !a.info.enhanced_temporal_reprojection && b.info.enhanced_temporal_reprojection &&
+                 !b.info.enhanced_temporal_reprojection_used,
+             "Static identity motion preserves exact raw, mutation and transport accounting");
+        const auto x = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], frame);
+        const auto y =
+            FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], frame, false, true);
+        need(x.status == GeometryStatus::success && y.status == GeometryStatus::success,
+             x.diagnostic + y.diagnostic);
+        need(
+            y.motion_enabled && y.geometry_valid &&
+                y.geometry_generation == b.info.history_generation && y.geometry.size() == 49 &&
+                y.motion_map_generated == (frame == 0) &&
+                y.donors.size() == (frame == 0 ? 49u : 0u) &&
+                std::memcmp(x.history.data(), y.history.data(),
+                            x.history.size() * sizeof(area_wire::History)) == 0 &&
+                std::memcmp(x.temporal.data(), y.temporal.data(),
+                            x.temporal.size() * sizeof(area_wire::Temporal)) == 0,
+            "Static identity exposes paired geometry generation and exact history/temporal tuples");
+        if (frame == 0) {
+            geometry_front = y.geometry_front;
+            first_geometry = y.geometry;
+            need(b.info.enhanced_geometry_generated == 49 && b.info.enhanced_geometry_reused == 0 &&
+                     b.info.enhanced_motion_routes == std::array<std::uint64_t, 4>{49, 0, 0, 0},
+                 "Cold motion generates one representative query per pixel");
+        } else {
+            need(y.geometry_front == geometry_front && b.info.enhanced_geometry_generated == 0 &&
+                     b.info.enhanced_geometry_reused == 49 &&
+                     b.info.enhanced_motion_routes == std::array<std::uint64_t, 4>{} &&
+                     std::memcmp(first_geometry.data(), y.geometry.data(),
+                                 49 * sizeof(enhanced_motion_wire::Geometry)) == 0,
+                 "Static identity reuses immutable geometry without inventing donor work");
+        }
+        const auto compare_record = [&](enhanced_wire::Reference ref) {
+            if (enhanced_wire::absent(ref))
+                return;
+            const auto index = std::size_t(ref.bank) * 49 + ref.pixel;
+            need(index < x.records.size() && index < y.records.size() &&
+                     std::memcmp(&x.records[index], &y.records[index],
+                                 sizeof(enhanced_wire::Record)) == 0,
+                 "Static motion preserves referenced owned records");
+        };
+        for (const auto &h : x.history)
+            if (h.valid && h.selected_slot != contribution_wire::enhanced_null_slot)
+                compare_record(h.record);
+        for (const auto &t : x.temporal)
+            if (t.normalizer > 0 && t.target > 0 &&
+                t.selected_slot != contribution_wire::enhanced_null_slot)
+                compare_record(t.record);
+    }
+}
+void enhanced_motion_lifetime_controls() {
+    const auto scene = motion_disocclusion_scene();
+    const auto moved = motion_pan(scene);
+    auto c = enhanced_config();
+    c.width = 32;
+    c.height = 16;
+    c.capacity = 37;
+    c.mutation_steps = 0;
+    c.enhanced_temporal_reprojection = true;
+    c.compact_enhanced_pairs = true;
+    c.contribution_replay = FrameContributionReplay::prefix;
+    auto candidate = session(scene, c);
+    std::unique_ptr<Frame> retained;
+    const auto a = motion_capture(*candidate, {}, 73, &retained);
+    const auto initial = FrameSessionTestAccess::motion_state(*candidate);
+    need(initial.status == GeometryStatus::success && initial.geometry_valid &&
+             initial.history_valid,
+         initial.diagnostic);
+    const auto snapshot_a =
+        FrameSessionTestAccess::snapshot_enhanced(*candidate, a.info.area_serial, false, true);
+    need(snapshot_a.status == GeometryStatus::success && snapshot_a.geometry.size() == 512,
+         snapshot_a.diagnostic);
+    need(FrameSessionTestAccess::force_next_motion_publication_failure(*candidate).empty(),
+         "Arm failure after GPU work and before joint motion/reservoir publication");
+    auto failed = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = moved});
+    need(failed.status == GeometryStatus::success && failed.frame, failed.diagnostic);
+    need(failed.frame->wait().status == FrameStatus::failed,
+         "Injected changed-camera publication fails");
+    const auto after_failure = FrameSessionTestAccess::motion_state(*candidate);
+    need(after_failure.status == GeometryStatus::success && after_failure.geometry_valid &&
+             after_failure.history_valid &&
+             after_failure.geometry_front == initial.geometry_front &&
+             after_failure.geometry_generation == initial.geometry_generation &&
+             after_failure.history_generation == initial.history_generation &&
+             after_failure.committed_serial == initial.committed_serial,
+         "Same-epoch failure preserves the committed geometry/reservoir pair");
+    need(FrameSessionTestAccess::snapshot_enhanced(*candidate, a.info.area_serial, false, true)
+                 .status == GeometryStatus::failure,
+         "Latest failed attempt cannot expose stale full GPU snapshots");
+    failed.frame.reset();
+    const auto b = motion_capture(*candidate, moved);
+    const auto snapshot_b =
+        FrameSessionTestAccess::snapshot_enhanced(*candidate, b.info.area_serial, false, true);
+    // Actual representative hits must round-trip to their owner at pixel
+    // centers under an independent double pinhole projection, not a matrix
+    // helper or the physical stochastic primary sample.
+    for (const auto *snapshot : {&snapshot_a, &snapshot_b})
+        for (unsigned owner = 0; owner < snapshot->geometry.size(); ++owner) {
+            const auto &g = snapshot->geometry[owner];
+            if (g.status != enhanced_motion_wire::finite)
+                continue;
+            const auto p = g.camera_relative_position;
+            need(p.z > 0 && std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z),
+                 "Actual representative geometry is finite camera-relative data");
+            const double x = (double(p.x) / p.z + 1) * 16;
+            const double y = (1 - double(p.y) / p.z) * 8;
+            need(x >= 0 && x < 32 && y >= 0 && y < 16 &&
+                     unsigned(std::floor(y)) * 32 + unsigned(std::floor(x)) == owner,
+                 "Actual center geometry independently round-trips to its owner");
+            need(std::abs(p.z - (g.instance == 0 ? 8.f : 2.f)) <=
+                         32 * std::numeric_limits<float>::epsilon() * p.z &&
+                     g.geometric_normal.z == -1.f && g.pixel_footprint > 0,
+                 "Actual representative hit agrees with independent opaque plane geometry");
+        }
+    need(snapshot_b.status == GeometryStatus::success && snapshot_b.geometry_valid &&
+             snapshot_b.motion_map_generated &&
+             snapshot_b.geometry_front != snapshot_a.geometry_front &&
+             snapshot_b.geometry_generation == b.info.history_generation &&
+             snapshot_b.donors.size() == 512 && b.info.enhanced_temporal_reprojection_used &&
+             b.info.enhanced_geometry_generated == 512 && b.info.enhanced_geometry_reused == 0 &&
+             b.info.enhanced_motion_routes[2] > 0,
+         "Actual translated foreground/background scene produces positive dual donor work after "
+         "recovery");
+    std::array<std::uint64_t, 4> routes{};
+    for (const auto &donor : snapshot_b.donors) {
+        need(donor.source_pixel < 512 && donor.classification < 4 &&
+                 donor.serial_low == std::uint32_t(b.info.area_serial) &&
+                 donor.serial_high == std::uint32_t(b.info.area_serial >> 32),
+             "Published donor map retains owner bounds and successful serial");
+        ++routes[donor.classification];
+    }
+    need(routes == b.info.enhanced_motion_routes,
+         "Actual geometry donor counts match immutable map readback");
+    const auto hold = motion_capture(*candidate, moved);
+    const auto held =
+        FrameSessionTestAccess::snapshot_enhanced(*candidate, hold.info.area_serial, false, true);
+    need(held.status == GeometryStatus::success &&
+             held.geometry_front == snapshot_b.geometry_front && !held.motion_map_generated &&
+             held.donors.empty() && hold.info.enhanced_geometry_reused == 512,
+         "Hold B reuses geometry independently of reservoir bank alternation");
+    need(FrameSessionTestAccess::force_next_motion_publication_failure(*candidate).empty(),
+         "Arm failed cut");
+    auto cut_failed = candidate->submit({.sample_index = high_sample, .epoch = 74});
+    need(cut_failed.status == GeometryStatus::success && cut_failed.frame &&
+             cut_failed.frame->wait().status == FrameStatus::failed,
+         "Epoch cut can fail before joint publication");
+    const auto cut_state = FrameSessionTestAccess::motion_state(*candidate);
+    need(cut_state.status == GeometryStatus::success && !cut_state.geometry_valid &&
+             !cut_state.history_valid,
+         "Failed cut invalidates both history and geometry eligibility");
+    cut_failed.frame.reset();
+    const auto recovered = motion_capture(*candidate, {}, 74);
+    need(!recovered.info.history_used && recovered.info.enhanced_geometry_generated == 512 &&
+             !recovered.info.enhanced_temporal_reprojection_used,
+         "Recovery from failed cut recaptures a cold geometry/reservoir pair");
+    candidate.reset();
+    exact(a.image, retained->capture());
+}
+void enhanced_motion_mean_controls() {
+    // Fixed 32 independent run seeds, declared before execution. Compare raw XYZ
+    // means using five empirical standard errors plus128epsilon rounding. This
+    // is an estimator smoke test, not a universal image-identity requirement.
+    constexpr unsigned repeats = 32;
+    const auto scene = motion_disocclusion_scene();
+    const auto moved = motion_pan(scene);
+    std::array<std::array<double, 3>, repeats> differences{};
+    std::array<double, 3> first_mean{}, second_mean{};
+    for (unsigned run = 0; run < repeats; ++run) {
+        auto off = enhanced_config();
+        off.width = 8;
+        off.height = 4;
+        off.capacity = 7;
+        off.mutation_steps = 0;
+        off.seed = seed + 7919ull * run;
+        off.contribution_replay = FrameContributionReplay::full;
+        off.cache_temporal_evaluations = false;
+        auto on = off;
+        on.enhanced_temporal_reprojection = true;
+        auto pair = FrameSessionTestAccess::build_shared_scene(scene, off, on);
+        need(pair.status == GeometryStatus::success, pair.diagnostic);
+        motion_capture(*pair.sessions[0]);
+        motion_capture(*pair.sessions[1]);
+        const auto a = motion_capture(*pair.sessions[0], moved),
+                   b = motion_capture(*pair.sessions[1], moved);
+        std::array<double, 3> x{}, y{};
+        for (unsigned p = 0; p < a.image.raw_xyz.size(); ++p)
+            for (unsigned k = 0; k < 3; ++k) {
+                need(std::isfinite(a.image.raw_xyz[p][k]) && std::isfinite(b.image.raw_xyz[p][k]),
+                     "Moving motion raw values finite");
+                x[k] += double(a.image.raw_xyz[p][k]) / a.image.raw_xyz.size();
+                y[k] += double(b.image.raw_xyz[p][k]) / b.image.raw_xyz.size();
+            }
+        for (unsigned k = 0; k < 3; ++k) {
+            differences[run][k] = y[k] - x[k];
+            first_mean[k] += x[k] / repeats;
+            second_mean[k] += y[k] / repeats;
+        }
+    }
+    for (unsigned k = 0; k < 3; ++k) {
+        double delta = 0, variance = 0;
+        for (const auto &d : differences)
+            delta += d[k] / repeats;
+        for (const auto &d : differences)
+            variance += (d[k] - delta) * (d[k] - delta) / double(repeats - 1);
+        const double se = std::sqrt(variance / repeats);
+        const double bound =
+            5 * se + 128 * std::numeric_limits<float>::epsilon() *
+                         std::max(std::abs(first_mean[k]), std::abs(second_mean[k]));
+        std::cout << "motion_mean channel=" << k << " off=" << first_mean[k]
+                  << " on=" << second_mean[k] << " delta=" << delta << " SE=" << se
+                  << " bound=" << bound << '\n';
+        need(std::isfinite(se) && std::abs(delta) <= bound,
+             "Fixed-seed moving motion raw mean smoke gate");
+    }
+}
+void enhanced_motion_controls() {
+    need(!FrameConfig{}.enhanced_temporal_reprojection, "Motion reprojection defaults off");
+    enhanced_motion_static_controls();
+    enhanced_motion_lifetime_controls();
+    enhanced_motion_mean_controls();
+}
 // Pair compaction changes execution only: exact output and published payloads
 // are compared on one shared AS at fixed seeds, including changed cameras.
 void enhanced_pair_compaction_controls() {
@@ -1670,6 +1966,7 @@ void enhanced_pair_compaction_controls() {
         auto c = contribution_config();
         c.area_path_domain = domain;
         c.compact_enhanced_pairs = true;
+        c.enhanced_temporal_reprojection = true;
         auto frames = session(diffuse(), c);
         // These modes never publish analytic-null completions. The ordinary
         // capture helper also checks effective-off metadata on every frame.
@@ -1681,12 +1978,14 @@ void enhanced_pair_compaction_controls() {
                  submitted.diagnostic);
             const auto info = submitted.frame->wait();
             need(info.status == FrameStatus::complete && !info.enhanced_pair_compaction &&
-                     info.compacted_null_evaluations == 0,
+                     info.compacted_null_evaluations == 0 && !info.enhanced_temporal_reprojection &&
+                     info.enhanced_geometry_generated == 0 && info.enhanced_geometry_reused == 0,
                  "Contribution domain retains requested pair compaction as effective off");
         }
     }
     auto independent = config();
     independent.compact_enhanced_pairs = true;
+    independent.enhanced_temporal_reprojection = true;
     auto independent_session = session(diffuse(), independent);
     capture(*independent_session, independent, high_sample, false);
     for (const bool black : {true, false}) {
@@ -2135,13 +2434,14 @@ int main(int argc, char **argv) {
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
+        const bool enhanced_motion = argc == 2 && std::string_view(argv[1]) == "--enhanced-motion";
         const bool enhanced_pairs = argc == 2 && std::string_view(argv[1]) == "--enhanced-pairs";
         const bool enhanced_suffix = argc == 2 && std::string_view(argv[1]) == "--enhanced-suffix";
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
         need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid ||
-                 enhanced_suffix || enhanced_pairs,
+                 enhanced_suffix || enhanced_pairs || enhanced_motion,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
-             "--enhanced-hybrid, --enhanced-suffix or --enhanced-pairs");
+             "--enhanced-hybrid, --enhanced-suffix, --enhanced-pairs or --enhanced-motion");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -2157,6 +2457,10 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_motion) {
+            enhanced_motion_controls();
+            return 0;
+        }
         if (enhanced_pairs) {
             enhanced_pair_compaction_controls();
             return 0;
