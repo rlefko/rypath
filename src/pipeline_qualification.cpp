@@ -86,6 +86,7 @@ struct Options {
     ResourceProfile resource_profile = ResourceProfile::standard;
     SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
     bool suffix_cache = true, compact_pairs = false, temporal_reprojection = false;
+    bool compare_reconstruction = false;
     std::vector<int> arms{-1, 0, 1, 2, 4};
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir;
@@ -144,10 +145,11 @@ const char *usage =
     "auto|adjacent|reciprocal16|paired-gaussian16\n"
     "  [--area-path-domain summed|contribution|enhanced] [--area-contribution-replay full|prefix]\n"
     "  [--area-suffix-cache on|off] [--area-pair-compaction on|off]\n"
-    "  [--area-temporal-reprojection off|dual] [--mutation-arms 0,1|0,1,2,4]\n"
+    "  [--area-temporal-reprojection off|dual] [--mutation-arms 0|0,1|0,1,2,4]\n"
     "  [--resource-profile standard|large] [--variance-policy paired|center|conservative]\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
+    "  [--compare-reconstruction on|off (same-frame signed filter ablations and native MetalFX)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
     "  [--reference-spp 4096] [--reference-batches 8] [--motion-offset WORLD_X]\n"
     "Reference SPP must divide equally across at least two independent batches.\n"
@@ -181,8 +183,15 @@ Options parse(int argc, char **argv) {
             require(value == "off" || value == "dual", "Temporal reprojection must be off or dual");
             o.temporal_reprojection = value == "dual";
         } else if (key == "--mutation-arms") {
-            require(value == "0,1" || value == "0,1,2,4", "Mutation arms must be 0,1 or 0,1,2,4");
-            o.arms = value == "0,1" ? std::vector<int>{-1, 0, 1} : std::vector<int>{-1, 0, 1, 2, 4};
+            if (value == "0")
+                o.arms = {-1, 0};
+            else if (value == "0,1")
+                o.arms = {-1, 0, 1};
+            else
+                require(value == "0,1,2,4", "Mutation arms must be 0, 0,1 or 0,1,2,4");
+        } else if (key == "--compare-reconstruction") {
+            require(value == "on" || value == "off", "Reconstruction comparison must be on or off");
+            o.compare_reconstruction = value == "on";
         } else if (key == "--resource-profile") {
             const auto profile = parse_resource_profile(value);
             require(profile.has_value(), "Resource profile must be standard or large");
@@ -277,6 +286,8 @@ Options parse(int argc, char **argv) {
             "Pair compaction and dual motion require enhanced path domain");
     require(!seen.contains("--variance-policy") || o.reconstruction == ReconstructionMode::temporal,
             "Variance policy requires temporal reconstruction");
+    require(!o.compare_reconstruction || o.reconstruction == ReconstructionMode::temporal,
+            "Same-frame comparison requires temporal as the primary reconstruction");
     require(o.width <= reconstruction_dimension_limit && o.height <= reconstruction_dimension_limit,
             "Qualification dimensions exceed 16384");
     require(o.frames <= 1000000 && o.seeds <= 4096 && o.reference_spp <= 100000000 &&
@@ -876,6 +887,65 @@ struct SeedAggregate {
 std::optional<double> gpu_time(double value, bool valid) {
     return valid && std::isfinite(value) && value >= 0 ? std::optional(value) : std::nullopt;
 }
+// Each variant owns a history stream for the entire seed/arm. The primary result
+// already covers history 64 with five spatial passes. Submit each remaining
+// variant the exact completed raw Frame before the transport session advances.
+struct ComparisonFilter {
+    const char *name;
+    ReconstructionConfig config;
+    std::unique_ptr<ReconstructionStream> stream{};
+};
+void compare_filters(std::ostream &line, std::span<ComparisonFilter> filters, const Frame &raw,
+                     const FrameInfo &source_frame, const Image *truth, const Options &o,
+                     Output &output, std::string_view arm, std::string_view source,
+                     std::uint32_t seed_index, std::uint32_t sample) {
+    line << ",\"comparison_filters\":{";
+    for (auto &filter : filters) {
+        if (!filter.stream) {
+            auto built = build_reconstruction_stream(raw, filter.config);
+            require(built.status == GeometryStatus::success && built.stream, built.diagnostic);
+            filter.stream = std::move(built.stream);
+        }
+        auto submitted = filter.stream->submit(raw);
+        require(submitted.status == GeometryStatus::success && submitted.frame && !submitted.busy,
+                submitted.diagnostic);
+        const auto info = submitted.frame->wait();
+        const auto pixels = std::uint64_t(o.width) * o.height;
+        require(info.status == ReconstructionStatus::complete && info.mode == filter.config.mode &&
+                    info.width == o.width && info.height == o.height &&
+                    info.source.epoch == source_frame.epoch &&
+                    info.source.sample_index == source_frame.sample_index &&
+                    info.counters.completed == pixels && !info.counters.failure,
+                info.diagnostic.empty() ? "Comparison filter frame incomplete" : info.diagnostic);
+        auto image = reconstructed_rgb(submitted.frame->capture(), pixels);
+        line << (&filter == filters.data() ? "" : ",") << quote(filter.name)
+             << ":{\"history_reset\":" << (info.history_reset ? "true" : "false")
+             << ",\"gpu_seconds\":"
+             << optional_number(gpu_time(info.gpu_seconds, info.gpu_time_valid))
+             << ",\"physical\":";
+        if (truth)
+            metric_json(line, metric(image, *truth));
+        else
+            line << "null";
+        line << '}';
+        if (sample + 1 == o.frames) {
+            auto attrs =
+                metadata(o, std::string(source), reconstructed_kind(info.mode),
+                         std::to_string(evaluation_seed(seed_index)), std::string(arm), sample);
+            for (auto &[key, value] : attrs) {
+                if (key == "rypath.qual.reconstruction")
+                    value = reconstruction_name(info.mode);
+                if (key == "rypath.frame.epoch")
+                    value = std::to_string(info.source.epoch);
+            }
+            attrs.emplace_back("rypath.qual.filter", filter.name);
+            output.exr(std::string(arm) + "-seed-" + std::to_string(seed_index) + "-final-" +
+                           filter.name + ".exr",
+                       image, o, attrs);
+        }
+    }
+    line << '}';
+}
 SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &reference,
                        const Image &presentation_reference,
                        const std::optional<Reference> &end_reference,
@@ -904,6 +974,17 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
     aggregate.session_startup = elapsed(startup);
     std::string atlas_digest; // Freeze the first validated immutable asset identity.
     std::unique_ptr<ReconstructionStream> reconstruction;
+    std::array<ComparisonFilter, 4> comparison{
+        {{"temporal-h1-s0",
+          {.mode = ReconstructionMode::temporal, .history_limit = 1, .spatial_iterations = 0}},
+         {"temporal-h1-s5",
+          {.mode = ReconstructionMode::temporal, .history_limit = 1, .spatial_iterations = 5}},
+         {"temporal-h64-s0",
+          {.mode = ReconstructionMode::temporal, .history_limit = 64, .spatial_iterations = 0}},
+         {"metalfx-native", {.mode = ReconstructionMode::metalfx}}}};
+    for (auto &filter : comparison)
+        if (filter.config.mode == ReconstructionMode::temporal)
+            filter.config.spatial_variance_policy = o.variance_policy;
     const auto pixels = std::uint64_t(o.width) * o.height;
     const unsigned excluded = o.frames > 4 ? 4 : 0;
     for (std::uint32_t sample = 0; sample < o.frames; ++sample) {
@@ -1067,6 +1148,13 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                 metric_json(line, *presentation);
             else
                 line << "null";
+            if (o.compare_reconstruction) {
+                const Image *truth =
+                    pose.metric_valid ? &(pose.end_reference ? end_reference->mean : reference.mean)
+                                      : nullptr;
+                compare_filters(line, comparison, *raw, *raw_info, truth, o, output, aggregate.arm,
+                                source_id, seed_index, sample);
+            }
             line << "}\n";
             if (sample >= excluded) {
                 ++aggregate.warm_frames;
@@ -1243,7 +1331,10 @@ std::string settings_json(const Options &o) {
         << quote(frame_mutation_policy_name(o.mutation_policy))
         << ",\"resource_profile\":" << quote(resource_profile_name(o.resource_profile))
         << ",\"variance_policy\":" << quote(variance_name(o.variance_policy))
-        << ",\"mutation_arms\":" << quote(o.arms.size() == 3 ? "0,1" : "0,1,2,4")
+        << ",\"mutation_arms\":"
+        << quote(o.arms.size() == 2   ? "0"
+                 : o.arms.size() == 3 ? "0,1"
+                                      : "0,1,2,4")
         << ",\"reference_spp\":" << o.reference_spp
         << ",\"reference_batches\":" << o.reference_batches
         << ",\"reference_spp_per_batch\":" << o.reference_spp / o.reference_batches
@@ -1252,6 +1343,8 @@ std::string settings_json(const Options &o) {
            "1,\"material_seed\":0"
         << ",\"sampler\":\"independent\",\"target_scale\":1,\"reconstruction\":"
         << quote(reconstruction_name(o.reconstruction))
+        << ",\"same_frame_reconstruction_comparison\":"
+        << (o.compare_reconstruction ? "true" : "false")
         << ",\"reconstruction_resolution\":\"native\",\"reconstructed_output_kind\":"
         << quote(reconstructed_kind(o.reconstruction)) << ",\"reconstructed_storage\":"
         << quote(o.reconstruction == ReconstructionMode::temporal ? "signed-rgba32-float"

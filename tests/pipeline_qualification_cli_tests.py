@@ -273,6 +273,8 @@ def qualification_checks(executable):
             base + ["--area-pair-compaction", "invalid"],
             base + ["--area-temporal-reprojection", "dual"],
             base + ["--area-temporal-reprojection", "invalid"],
+            base + ["--compare-reconstruction", "invalid"],
+            base + ["--compare-reconstruction", "on", "--reconstruction", "metalfx"],
             base + ["--mutation-arms", "1,0"],
             base + ["--mutation-arms", "0,1,1"],
             base + ["--variance-policy", "invalid"],
