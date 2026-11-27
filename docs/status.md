@@ -18,6 +18,12 @@ remains follow-up work. This is not the
 complete paper implementation; no Pavilion highlight repair is established, and
 the frame-rate targets are unmet.
 
+Cold expansion arithmetic repairs a reproduced Enhanced geometric-cancellation
+failure. Its 185 GPU geometry controls pass, and the formerly failing native
+Pavilion-night sequence completes all 40 submissions with finite final raw and
+reconstructed FLOAT captures. This is numerical recovery, not scene-quality or
+performance qualification; see the [validation record](restir-enhanced.md#geometric-cancellation-recovery).
+
 The [hero execution follow-up](hero-execution.md) combines exact temporal
 memoization with smaller current, historical and sampled-light state. Its short
 native-1080p Area-one screen retains exact final raw/reconstructed FLOAT pixels

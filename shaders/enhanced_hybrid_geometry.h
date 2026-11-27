@@ -174,6 +174,81 @@ inline Signed dot_scaled(const thread Signed *direction, float3 normal,
     }
     return sum;
 }
+// Error-free General TwoSum on normalized signed-scaled values. For gap>25
+// the significand bitranges are disjoint, so retain both without alignment.
+inline void exact_scaled_sum(Signed a, Signed b, thread Signed &high, thread Signed &low) {
+    low = {};
+    if (empty(a) || empty(b)) {
+        high = empty(a) ? b : a;
+        return;
+    }
+    if (a.magnitude.exponent < b.magnitude.exponent) {
+        const auto swap = a;
+        a = b;
+        b = swap;
+    }
+    const int gap = a.magnitude.exponent - b.magnitude.exponent;
+    if (gap > 25) {
+        high = a;
+        low = b;
+        return;
+    }
+    // Aligned inputs lie in [2^-26,1); their least possible bit is 2^-49.
+    // Every nonzero TwoSum intermediate is therefore normal (no FTZ reliance).
+    const float av = a.magnitude.fraction * (a.negative ? -1.f : 1.f);
+    const float bv =
+        rypath_reservoir::scale(b.magnitude.fraction, -gap) * (b.negative ? -1.f : 1.f);
+    const float sum = av + bv;
+    const float b_virtual = sum - av;
+    const float a_virtual = sum - b_virtual;
+    const float b_roundoff = bv - b_virtual;
+    const float a_roundoff = av - a_virtual;
+    const float error = a_roundoff + b_roundoff;
+    high = sum == 0 ? Signed{} : Signed{rm::normalized(abs(sum), a.magnitude.exponent), sum < 0};
+    low =
+        error == 0 ? Signed{} : Signed{rm::normalized(abs(error), a.magnitude.exponent), error < 0};
+}
+// Cold exact expansion of at most three products of represented Signed inputs.
+// Each normalized factor has 24 bits in [.5,1); product high is in [.25,1),
+// and its explicit FMA residual is exact and either zero or >=2^-48, normal.
+// Both pieces use the ORIGINAL exponent sum, before high normalization.
+// General TwoSum grow preserves disjoint significand bitranges and the exact
+// sum in <=6 components. Empty certifies exact zero; the largest component H
+// certifies sign and |X-H|/|X| < 1/(2^23-1). H is not promised correctly rounded.
+// Exponents come only from finite geometry components and bounded arithmetic;
+// this private helper does not accept arbitrary serialized Scaled exponents.
+[[clang::noinline]] Signed resolve_empty_dot(const thread Signed *direction, float3 normal) {
+    Signed expansion[6];
+    uint count = 0;
+    for (uint k = 0; k < 3; ++k) {
+        const auto n = component(normal[k]);
+        if (empty(n) || empty(direction[k]))
+            continue;
+        const float a = direction[k].magnitude.fraction, b = n.magnitude.fraction;
+        const float product = a * b;
+        const float residual = fma(a, b, -product);
+        const int exponent = direction[k].magnitude.exponent + n.magnitude.exponent;
+        const bool negative = direction[k].negative != n.negative;
+        for (uint part = 0; part < 2; ++part) {
+            const float value = part == 0 ? residual : product;
+            if (value == 0)
+                continue;
+            Signed q{rm::normalized(abs(value), exponent), negative != (value < 0)};
+            uint next = 0;
+            for (uint i = 0; i < count; ++i) {
+                Signed high, low;
+                exact_scaled_sum(q, expansion[i], high, low);
+                if (!empty(low))
+                    expansion[next++] = low;
+                q = high;
+            }
+            if (!empty(q))
+                expansion[next++] = q;
+            count = next;
+        }
+    }
+    return count == 0 ? Signed{} : expansion[count - 1];
+}
 inline rm::Scaled square_root(rm::Scaled x) {
     if (x.exponent & 1) {
         x.fraction *= 2;
@@ -190,9 +265,11 @@ inline bool same_magnitude(rm::Scaled a, rm::Scaled b) {
 inline Status normalized_cosine(const thread Signed *direction, float3 normal,
                                 thread rm::Scaled &cosine) {
     bool uncertain = false;
-    const auto dot_value = dot_scaled(direction, normal, uncertain);
+    auto dot_value = dot_scaled(direction, normal, uncertain);
+    if (empty(dot_value) && uncertain)
+        dot_value = resolve_empty_dot(direction, normal);
     if (empty(dot_value))
-        return uncertain ? Status::invalid_arithmetic : Status::outside_support;
+        return Status::outside_support;
     rm::Scaled cross_squared{0, 0};
     bool have_cross = false;
     for (uint k = 0; k < 3; ++k) {
@@ -210,13 +287,11 @@ inline Status normalized_cosine(const thread Signed *direction, float3 normal,
         Signed terms[3]{direction[j], direction[l], {}};
         terms[1].negative = !terms[1].negative;
         bool cross_uncertain = false;
-        const auto cross_value =
-            dot_scaled(terms, float3(normal[l], normal[j], 0), cross_uncertain);
-        if (empty(cross_value)) {
-            if (cross_uncertain)
-                return Status::invalid_arithmetic;
+        auto cross_value = dot_scaled(terms, float3(normal[l], normal[j], 0), cross_uncertain);
+        if (empty(cross_value) && cross_uncertain)
+            cross_value = resolve_empty_dot(terms, float3(normal[l], normal[j], 0));
+        if (empty(cross_value))
             continue;
-        }
         const auto square = rm::product(cross_value.magnitude, cross_value.magnitude);
         cross_squared = have_cross ? rm::sum(cross_squared, square) : square;
         have_cross = true;

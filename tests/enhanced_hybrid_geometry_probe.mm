@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "metal_execution.hpp"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -28,6 +29,9 @@ struct Case {
     bool duplicate_primary = false;
     unsigned geometric_status = ok, edge_status = ok;
     bool exact_ray = false;
+    unsigned recovered_fraction = 0;
+    int recovered_exponent = 0;
+    bool recovered_negative = false, captured_cross = false, exact_zero_cross = false;
 };
 void need(bool value, const std::string &message) {
     if (!value)
@@ -237,12 +241,13 @@ std::vector<Case> cases() {
     all.push_back(edge({0, 0, 0}, {0, 0, 2}, {1, 0, 0}));
     c = edge({0, 0, 0}, {1, 1e-20f, 1}, {.70710677f, 1e-20f, -.70710677f});
     // Independent cancellation oracle: identical x/z products cancel exactly;
-    // the positive y*y residual is materializable. A lossy dot must report
-    // uncertain arithmetic, never physical outside-support.
+    // the positive y*y residual is materializable and must be recovered.
     c.cosine = c.direction[1] * static_cast<long double>(1e-20f);
     need(c.cosine > 0 && static_cast<float>(c.cosine) > 0,
          "Cancellation fixture independently positive representable cosine");
-    c.status = invalid;
+    c.destination_cosine = c.cosine;
+    c.G = c.destination_G = c.cosine / c.r2;
+    c.status = ok;
     all.push_back(c);
     all.push_back(edge({0, 0, 0}, {0, 0, 0x1p-100f}, {0, 0, 1}));
     all.push_back(edge({0, 0, 0}, {0, 0, std::numeric_limits<float>::denorm_min()}, {0, 0, 1}));
@@ -518,6 +523,82 @@ std::vector<Case> cases() {
              false);
     incoming({0, 0, 0}, {maximum, std::numeric_limits<float>::denorm_min(), 0}, {0, 0, 1}, invalid,
              invalid, invalid, false);
+    // Exact dyadic fixture expectations follow directly from product algebra:
+    // (.5+2^-24)^2 - .5*(.5+2^-23) = 2^-48. No production
+    // arithmetic is reused by this oracle. Exercise all six product orders and
+    // both signs, including the middle term discarded before large cancellation.
+    struct ProductFixture {
+        std::array<float, 3> a, b;
+        unsigned fraction;
+        int exponent;
+        bool negative;
+    };
+    const float u = 0x1p-24f;
+    const std::array fixtures{
+        ProductFixture{{.5f + u, -.5f, -0.f}, {.5f + u, .5f + 2 * u, .5f}, bits(.5f), -47, false},
+        ProductFixture{{.5f + u, -(.5f + u), 0}, {.5f + u, .5f + u, .5f}, 0, 0, false},
+        ProductFixture{{.5f, 0x1p-101f, -.5f}, {.5f, 0x1p-101f, .5f}, bits(.5f), -201, false},
+        ProductFixture{{.5f, -0x1p-26f, -.5f}, {.5f, .5f, .5f}, bits(.5f), -26, true},
+        ProductFixture{{.5f, -0x1p-27f, -.5f}, {.5f, .5f, .5f}, bits(.5f), -27, true},
+        ProductFixture{{.5f, -.5f, -0.f}, {.5f, .5f, .5f}, 0, 0, false}};
+    for (const auto &fixture : fixtures) {
+        std::array<unsigned, 3> order{0, 1, 2};
+        do {
+            for (bool negate : {false, true}) {
+                Case value;
+                value.query[0] = 9;
+                long double dot = 0, a2 = 0, b2 = 0;
+                // The exact expected dot is pinned above, avoiding cancellation
+                // in host FLOAT/long-double evaluation of the tiny-term case.
+                for (unsigned k = 0; k < 3; ++k) {
+                    const float a = fixture.a[order[k]] * (negate ? -1.f : 1.f);
+                    const float b = fixture.b[order[k]];
+                    value.query[4 + k] = bits(a);
+                    value.query[8 + k] = bits(b);
+                    a2 += static_cast<long double>(a) * a;
+                    b2 += static_cast<long double>(b) * b;
+                }
+                value.recovered_fraction = fixture.fraction;
+                value.recovered_exponent = fixture.exponent;
+                value.recovered_negative = fixture.fraction && (fixture.negative != negate);
+                dot = std::ldexp(static_cast<long double>(f32(fixture.fraction)), fixture.exponent);
+                value.cosine = dot / std::sqrt(a2 * b2);
+                value.status = fixture.fraction ? ok : outside;
+                all.push_back(value);
+            }
+        } while (std::next_permutation(order.begin(), order.end()));
+    }
+    // Parallel literal vectors with different scaled magnitudes avoid the
+    // pre-existing factor-identity shortcut. Their k2 cross products each have
+    // nonzero FMA residuals, but their exact difference is zero.
+    Case parallel;
+    parallel.query[0] = 9;
+    parallel.query[4] = bits(.5f + u);
+    parallel.query[5] = bits(.75f);
+    parallel.query[8] = bits(1.f + 2 * u);
+    parallel.query[9] = bits(1.5f);
+    parallel.recovered_fraction = 0x3f500001;
+    parallel.recovered_exponent = 1;
+    parallel.cosine = 1;
+    parallel.exact_zero_cross = true;
+    all.push_back(parallel);
+    // Native Pavilion night sample38 receipt: these FLOATs exactly materialize
+    // the captured Signed operands. Fraction oracle: cross k1=-4999589/2^49.
+    Case captured;
+    captured.query[0] = 9;
+    captured.query[4] = bits(std::ldexp(f32(0x3f467475), -1));
+    captured.query[5] = bits(std::ldexp(f32(0x3f23214b), -2));
+    captured.query[6] = 0xbf686fbc;
+    captured.query[8] = 0xbeb896de;
+    captured.query[9] = 0xbecabf81;
+    captured.query[10] = 0x3f583259;
+    // The cold exact dot's leading component is the independently rounded
+    // exact Fraction dot; the production fast path MUST retain its older value.
+    captured.recovered_fraction = 0x3f783871;
+    captured.recovered_negative = true;
+    captured.cosine = .9696111582342922L;
+    captured.captured_cross = true;
+    all.push_back(captured);
     return all;
 }
 int run(const std::filesystem::path &path) {
@@ -574,7 +655,9 @@ int run(const std::filesystem::path &path) {
         const auto &c = fixtures[i];
         const auto &v = data[i];
         const std::string label = "Hybrid geometry case" + std::to_string(i);
-        need(v[0] == c.status, label + " status");
+        need(v[0] == c.status, label + " status actual=" + std::to_string(v[0]) +
+                                   " expected=" + std::to_string(c.status) +
+                                   " query mode=" + std::to_string(c.query[0]));
         if (c.query[0] == 0) {
             need(v[1] == c.family, label + " family");
             for (unsigned k = 0; k < 4; ++k)
@@ -598,8 +681,30 @@ int run(const std::filesystem::path &path) {
             close(scaled(v[24], v[25]), c.r2, label + " scaled distance²");
             close(scaled(v[26], v[27]), c.destination_G, label + " destinationG");
             close(scaled(v[28], v[29]), c.G, label + " sourceG");
-            close(f32(v[30]), c.cosine, label + " source cosine");
-            close(f32(v[31]), c.destination_cosine, label + " destination cosine");
+            // FLOAT cosine materialization has a half-subnormal-ulp rounding
+            // budget; compare with the independently rounded expected FLOAT.
+            // Scaled G above retains the positive unmaterialized cosine oracle.
+            close(f32(v[30]), static_cast<float>(c.cosine), label + " source cosine");
+            close(f32(v[31]), static_cast<float>(c.destination_cosine),
+                  label + " destination cosine");
+        } else if (c.query[0] == 9) {
+            need(v[1] == c.recovered_fraction &&
+                     v[2] == std::bit_cast<unsigned>(c.recovered_exponent) &&
+                     v[3] == unsigned(c.recovered_negative),
+                 label + " independently exact recovered component/sign/zero");
+            if (c.status == ok)
+                close(scaled(v[8], v[9]), c.cosine, label + " independent normalized cosine");
+            if (c.exact_zero_cross)
+                need(v[13] == 4 && v[14] == 0 && v[8] == bits(.5f) && v[9] == 1,
+                     label + " uncertain true-zero cross continues with cosine one");
+            if (c.captured_cross) {
+                need(v[13] == 2 && v[14] == 2,
+                     label + " actual cross branch recovers uncertain nonzero");
+                need(v[4] == 0x3f783870 && v[5] == 0 && v[6] == 1 && v[7] == 1,
+                     label + " captured nonzero uncertain fast dot unchanged");
+                need(v[10] == 0x3f18934a && v[11] == std::bit_cast<unsigned>(-26) && v[12] == 1,
+                     label + " captured nonzero cross exact Fraction receipt");
+            }
         } else if (c.query[0] == 3) {
             if (c.status != ok)
                 continue;

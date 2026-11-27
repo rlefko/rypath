@@ -200,6 +200,37 @@ converged reference images. PR #78 passed all 279 local Debug tests and all eigh
 hosted checks before merging. Slower execution experiments remain archived and
 excluded from main.
 
+## Geometric cancellation recovery
+
+The normalized-cosine calculation now resolves an uncertain rounded zero with
+a cold, non-inlined expansion of the three represented signed-scaled products.
+Each product retains its explicit FMA residual; General TwoSum preserves up to
+six nonoverlapping components without discarding distant exponents. This adapts
+[Shewchuk's expansion arithmetic](https://www.cs.cmu.edu/~quake/robust.html) to
+the existing scaled representation. The expansion certifies zero and sign for
+the represented inputs. Its largest component has relative error less than
+`1/(2^23-1)`; correct rounding and recovery of earlier geometric rounding are
+not claimed. Nonzero fast-path results remain unchanged. A certified zero dot
+retains outside-support semantics, while a certified zero cross component is
+omitted from the norm. No tolerance, clamping or sample rejection is introduced.
+
+This repairs a reproduced Pavilion-night failure at sample 38: two rounded
+products cancelled, although their exact difference was `-4999589/2^49`.
+The recovered value is exactly representable in the scaled format. Release
+validation passes 185 GPU geometry/family/query cases with Metal API validation,
+including these captured operands, true-zero cancellation, residual-only sums,
+widely separated exponents, permutations and signs. The unchanged native
+1920×1080 protocol (seed 61002, eight warmup plus 32 measured submissions,
+Enhanced paired reuse, zero mutations, suffix caching and signed temporal
+reconstruction) now completes all 40 frames. Both final sample-39 FLOAT images
+are finite and their metadata/accounting pass independent audit. These checks
+establish recovery of that failed sequence, not a quality or speed improvement.
+The Wavefront/Area/canonical versions remain 22/16/4; source fingerprint
+`4e2db06a` identifies the measured numerical repair. Local evidence is retained
+in `enhanced-followup-validation/cancellation-release-001` and
+`enhanced-night-cancellation-repair-001` under the hero-performance validation
+artifact directory.
+
 ## Owned terminal-light stage
 
 The owned terminal-light stage introduced Enhanced canonical law version 2;

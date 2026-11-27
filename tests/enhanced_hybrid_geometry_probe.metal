@@ -96,6 +96,47 @@ kernel void rypath_enhanced_hybrid_geometry_probe(device const uint *queries [[b
         // of the material/normal chart's geometric-cosine support predicate.
         const auto e = g::edge(from, float3(1, 0, 0), to, float3(1, 0, 0));
         out[32] = uint(e.status);
+    } else if (q[0] == 9) {
+        g::Signed direction[3];
+        for (uint k = 0; k < 3; ++k)
+            direction[k] = g::component(as_type<float>(q[4 + k]));
+        const float3 normal(as_type<float>(q[8]), as_type<float>(q[9]), as_type<float>(q[10]));
+        bool uncertain = false;
+        const auto fast = g::dot_scaled(direction, normal, uncertain);
+        const auto recovered = g::resolve_empty_dot(direction, normal);
+        out[1] = as_type<uint>(recovered.magnitude.fraction);
+        out[2] = as_type<uint>(recovered.magnitude.exponent);
+        out[3] = uint(recovered.negative);
+        out[4] = as_type<uint>(fast.magnitude.fraction);
+        out[5] = as_type<uint>(fast.magnitude.exponent);
+        out[6] = uint(fast.negative);
+        out[7] = uint(uncertain);
+        rypath_reuse_mis::Scaled cosine{0, 0};
+        out[0] = uint(g::normalized_cosine(direction, normal, cosine));
+        out[8] = as_type<uint>(cosine.fraction);
+        out[9] = as_type<uint>(cosine.exponent);
+        for (uint k = 0; k < 3; ++k) {
+            const uint j = (k + 1) % 3, l = (k + 2) % 3;
+            g::Signed terms[3]{direction[j], direction[l], {}};
+            terms[1].negative = !terms[1].negative;
+            bool cross_uncertain = false;
+            const auto value =
+                g::dot_scaled(terms, float3(normal[l], normal[j], 0), cross_uncertain);
+            if (g::empty(value) && cross_uncertain) {
+                out[13] |= 1u << k;
+                const auto recovered_value =
+                    g::resolve_empty_dot(terms, float3(normal[l], normal[j], 0));
+                if (!g::empty(recovered_value))
+                    out[14] |= 1u << k;
+            }
+        }
+        // Captured cross k1, using the same represented Signed operands.
+        g::Signed cross[3]{direction[2], direction[0], {}};
+        cross[1].negative = !cross[1].negative;
+        const auto recovered_cross = g::resolve_empty_dot(cross, float3(normal.x, normal.z, 0));
+        out[10] = as_type<uint>(recovered_cross.magnitude.fraction);
+        out[11] = as_type<uint>(recovered_cross.magnitude.exponent);
+        out[12] = uint(recovered_cross.negative);
     } else if (q[0] == 8) {
         const float3 current(as_type<float>(q[4]), as_type<float>(q[5]), as_type<float>(q[6]));
         const float3 previous(as_type<float>(q[12]), as_type<float>(q[13]), as_type<float>(q[14]));
