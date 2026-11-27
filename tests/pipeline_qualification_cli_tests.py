@@ -255,6 +255,8 @@ sys.exit(main(sys.argv[2:]))
 def qualification_checks(executable):
     help_result = run(executable, ["--help"])
     assert help_result.returncode == 0 and "reference-spp" in help_result.stdout
+    assert "--first-evaluation-seed-index N (default: 0)" in help_result.stdout
+    assert "--motion-references anchors|every-pose (default: anchors)" in help_result.stdout
     assert all(word in help_result.stdout for word in ("reconstruction", "temporal", "metalfx", "--area-output"))
     with tempfile.TemporaryDirectory(prefix="rypath-qualification-cli-") as temporary:
         root = Path(temporary)
@@ -262,6 +264,14 @@ def qualification_checks(executable):
         source = root / "missing.pbrt"
         base = ["--scene", source, "--output-dir", destination]
         invalid = [
+            base + ["--first-evaluation-seed-index", "-1"],
+            base + ["--first-evaluation-seed-index", "4294967296"],
+            base + ["--first-evaluation-seed-index", "1junk"],
+            base + ["--first-evaluation-seed-index", "4294967295", "--seeds", "2"],
+            base + ["--motion-references", "invalid"],
+            base + ["--motion-references", "Every-pose"],
+            base + ["--motion-references", "every-pose", "--motion-offset", ".25",
+                    "--frames", "1000000", "--width", "320", "--height", "180"],
             base + ["--hero-wavelengths", "invalid"],
             base + ["--area-mutation-policy", "invalid"],
             base + ["--area-stencil", "invalid"],
@@ -335,6 +345,10 @@ def qualification_checks(executable):
             assert report["settings"]["area_target"] == "quarter-l1-v1"
             assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
             assert report["settings"]["area_temporal_reuse"] == 20
+            assert report["settings"]["first_evaluation_seed_index"] == 0
+            assert report["settings"]["motion_references"] == "anchors"
+            assert report["settings"]["additional_reference_export_upper_bound_bytes"] == 0
+            assert report["settings"]["evaluation_seeds"] == [2**60 + i + 1 for i in range(8)]
             expected = selected or "temporal"
             assert report["settings"]["reconstruction"] == expected
             assert report["settings"]["reconstruction_resolution"] == "native"
@@ -393,9 +407,34 @@ def qualification_checks(executable):
         assert result.returncode != 0
         fresh = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
         assert fresh["settings"]["requested_area_reuse"] == "fresh"
+        assert fresh["settings"]["area_temporal_reuse"] == 0
         assert fresh["settings"]["mutation_arms"] == "0"
         assert fresh["settings"]["area_source_mis"] == "fresh-local-selection-v1"
         assert fresh["settings"]["arms"] == ["independent", "area-0"]
+        # Held-out evaluation indices do not alter either anchor reference stream.
+        destination = root / "held-out-every-pose"
+        result = run(executable, ["--scene", source, "--output-dir", destination,
+                                 "--first-evaluation-seed-index", "123", "--seeds", "2",
+                                 "--motion-references", "every-pose", "--motion-offset", ".25",
+                                 "--width", "8", "--height", "4", "--frames", "8",
+                                 "--reference-spp", "4", "--reference-batches", "2"])
+        assert result.returncode != 0
+        held = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
+        settings = held["settings"]
+        assert settings["first_evaluation_seed_index"] == 123
+        assert settings["evaluation_seeds"] == [2**60 + 124, 2**60 + 125]
+        assert settings["reference_seeds"] == [2**61 + 1, 2**61 + 2]
+        assert settings["reference_end_seeds"] == [3 * 2**60 + 1, 3 * 2**60 + 2]
+        assert settings["motion_references"] == "every-pose"
+        assert "every-pose" in settings["metric_scope"]
+        assert settings["additional_reference_export_upper_bound_bytes"] == 4 * (16 * 32 + 2**20)
+        assert not held["complete"] and not list(destination.glob("*.exr"))
+        destination = root / "last-seed-index"
+        result = run(executable, ["--scene", source, "--output-dir", destination,
+                                 "--first-evaluation-seed-index", "4294967295", "--seeds", "1"])
+        assert result.returncode != 0
+        last = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
+        assert last["settings"]["evaluation_seeds"] == [2**60 + 2**32]
     print("Qualification CLI and failure publication checks passed")
 
 

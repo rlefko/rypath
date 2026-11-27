@@ -95,10 +95,29 @@ struct Options {
     fs::path scene, output_dir;
     std::uint32_t width = 320, height = 180, frames = 32, seeds = 8;
     std::uint32_t reference_spp = 4096, reference_batches = 8;
+    std::uint32_t first_evaluation_seed_index = 0;
+    bool every_pose_references = false;
     ReconstructionMode reconstruction = ReconstructionMode::temporal;
     FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
     std::optional<float> motion_offset;
 };
+std::uint64_t additional_reference_export_bound(const Options &o) {
+    if (!o.every_pose_references || !o.motion_offset)
+        return 0;
+    const auto multiply = [](std::uint64_t a, std::uint64_t b) {
+        require(!a || b <= std::numeric_limits<std::uint64_t>::max() / a,
+                "Motion reference export bound overflow");
+        return a * b;
+    };
+    const auto pixels = multiply(o.width, o.height);
+    const auto payload = multiply(16, pixels);
+    require(payload <= std::numeric_limits<std::uint64_t>::max() - (1ull << 20),
+            "Motion reference image bound overflow");
+    // FLOAT RGB plus conservative chunk/header overhead; uncompressed upper bound.
+    const auto per_image = payload + (1ull << 20);
+    const auto extra_contexts = o.frames / 4 - 1;
+    return multiply(multiply(extra_contexts, std::uint64_t(o.reference_batches) + 2), per_image);
+}
 const char *area_output_name(FrameAreaOutput output) {
     return output == FrameAreaOutput::selected ? "selected" : "conditional-mean";
 }
@@ -159,6 +178,8 @@ const char *usage =
     "  [--area-history-cap N (Enhanced fixed temporal confidence, 1 through 20)]\n"
     "  [--compare-reconstruction on|off (same-frame signed filter ablations and native MetalFX)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
+    "  [--first-evaluation-seed-index N (default: 0)]\n"
+    "  [--motion-references anchors|every-pose (default: anchors)]\n"
     "  [--reference-spp 4096] [--reference-batches 8] [--motion-offset WORLD_X]\n"
     "Reference SPP must divide equally across at least two independent batches.\n"
     "Explicit native-resolution reconstruction; optional four-phase translation; one fresh "
@@ -265,6 +286,15 @@ Options parse(int argc, char **argv) {
                     "Area output must be selected or conditional-mean");
             o.area_output =
                 value == "selected" ? FrameAreaOutput::selected : FrameAreaOutput::conditional_mean;
+        } else if (key == "--motion-references") {
+            require(value == "anchors" || value == "every-pose",
+                    "Motion references must be anchors or every-pose");
+            o.every_pose_references = value == "every-pose";
+        } else if (key == "--first-evaluation-seed-index") {
+            const auto result = std::from_chars(value.data(), value.data() + value.size(),
+                                                o.first_evaluation_seed_index);
+            require(result.ec == std::errc{} && result.ptr == value.data() + value.size(),
+                    "First evaluation seed index must be a uint32 value");
         } else if (key == "--motion-offset") {
             float offset = 0;
             std::istringstream parsed{std::string(value)};
@@ -330,13 +360,25 @@ Options parse(int argc, char **argv) {
             "Counts exceed qualification limits or reference SPP does not divide into >=2 batches");
     require(!o.motion_offset || (o.frames >= 8 && o.frames % 4 == 0),
             "Motion requires at least eight frames divisible by four");
+    require(std::uint64_t(o.first_evaluation_seed_index) + o.seeds <= (1ull << 32),
+            "Evaluation seed index range exceeds uint32");
+    // Opt-in references retain three double RGB images per additional context.
+    // A conservative pose bound is checked before scene loading or GPU work.
+    const std::uint64_t extra_poses =
+        o.every_pose_references && o.motion_offset ? o.frames / 4 - 1 : 0;
+    const auto pixels = std::uint64_t(o.width) * o.height;
+    require(pixels * ((o.motion_offset ? 320u : 192u) + 72 * extra_poses) <= (1ull << 30),
+            "Qualification per-pose reference workspace exceeds 1 GiB");
+    (void)additional_reference_export_bound(o); // Checked arithmetic before output reservation.
     // Bound this driver's simultaneously retained CPU means, variance, and captures.
     require(std::uint64_t(o.width) * o.height * (o.motion_offset ? 320u : 192u) <= (1ull << 30),
             "Qualification CPU image workspace exceeds 1 GiB");
     return o;
 }
 std::uint64_t evaluation_seed(std::uint32_t i) { return 0x1000000000000000ull + i + 1; }
-std::uint64_t reference_seed(std::uint32_t i, bool end = false) {
+std::uint64_t reference_seed(std::uint32_t i, bool end = false, std::uint32_t context = 0) {
+    if (context >= 2)
+        return 0x4000000000000000ull + (std::uint64_t(context - 2) << 32) + i + 1;
     return (end ? 0x3000000000000000ull : 0x2000000000000000ull) + i + 1;
 }
 
@@ -744,22 +786,43 @@ Metadata metadata(const Options &o, const std::string &source, std::string kind,
             {"rypath.output.width", std::to_string(o.width)},
             {"rypath.output.height", std::to_string(o.height)}};
 }
+std::string camera_key(const FrameCamera &camera) {
+    auto out = json_stream();
+    write_camera(out, camera);
+    return out.str();
+}
 struct Reference {
-    Image mean, variance_of_mean;
+    Image mean, variance_of_mean, presentation;
     double noise_floor_mse = 0;
+    float offset = 0;
+    std::uint32_t context = 0;
+    std::string prefix, camera, context_identity;
 };
 Reference reference(const Scene &scene, const Options &o, Output &output, MetalDeviceInfo &device,
-                    bool end = false) {
+                    bool end = false, std::optional<float> intermediate = {},
+                    std::uint32_t context = 0) {
     require(!end || o.motion_offset.has_value(), "End reference requires motion");
-    const float offset = end ? o.motion_offset.value_or(0) : 0;
-    const std::string prefix = o.motion_offset ? (end ? "end-" : "start-") : "";
+    const float offset = intermediate.value_or(end ? o.motion_offset.value_or(0) : 0);
+    const std::string prefix = intermediate      ? "pose-" + std::to_string(context) + "-"
+                               : o.motion_offset ? (end ? "end-" : "start-")
+                                                 : "";
     const auto camera =
         o.motion_offset ? std::optional(camera_pose(scene.value, offset)) : std::nullopt;
     const auto pixels = std::uint64_t(o.width) * o.height;
-    Reference result{Image(pixels), Image(pixels)};
+    Reference result;
+    result.mean.resize(pixels);
+    result.variance_of_mean.resize(pixels);
+    result.offset = offset;
+    result.context = end ? 1u : context;
+    result.prefix = prefix;
+    result.camera = camera_key(camera ? *camera : camera_pose(scene.value, 0));
+    const auto base_identity = identity(scene.value, o, 1);
+    const auto context_text = "qualification-camera-context-v1:" + base_identity + result.camera;
+    result.context_identity = digest_hex(
+        sha256({reinterpret_cast<const std::uint8_t *>(context_text.data()), context_text.size()}));
     const auto count = o.reference_spp / o.reference_batches;
     for (std::uint32_t batch = 0; batch < o.reference_batches; ++batch) {
-        const auto seed = reference_seed(batch, end);
+        const auto seed = reference_seed(batch, end, context);
         auto renderer = session(scene.value, configuration(o, seed), device);
         Image sum(pixels);
         for (std::uint32_t sample = 0; sample < count; ++sample) {
@@ -792,6 +855,7 @@ Reference reference(const Scene &scene, const Options &o, Output &output, MetalD
         auto attributes =
             metadata(o, identity(scene.value, o, seed), "independent-reference-batch-mean",
                      std::to_string(seed), "independent", count - 1);
+        attributes.emplace_back("rypath.reference.context", result.context_identity);
         attributes.emplace_back("rypath.reference.spp", std::to_string(count));
         attributes.emplace_back("rypath.camera.offset_x", optional_number(offset));
         output.exr(prefix + "reference-batch-" + std::to_string(batch) + ".exr", batch_mean, o,
@@ -804,15 +868,33 @@ Reference reference(const Scene &scene, const Options &o, Output &output, MetalD
                     "Invalid reference batch variance of the mean");
             result.noise_floor_mse += value / (3 * double(pixels));
         }
-    auto attributes =
-        metadata(o, identity(scene.value, o, 1), "independent-reference-aggregate-mean",
-                 "disjoint-reference-seed-batches", "independent");
+    auto attributes = metadata(o, base_identity, "independent-reference-aggregate-mean",
+                               "disjoint-reference-seed-batches", "independent");
+    attributes.emplace_back("rypath.reference.context", result.context_identity);
     attributes.emplace_back("rypath.reference.spp", std::to_string(o.reference_spp));
     attributes.emplace_back("rypath.reference.batches", std::to_string(o.reference_batches));
     attributes.emplace_back("rypath.camera.offset_x", optional_number(offset));
     output.exr(prefix + "reference.exr", result.mean, o, attributes);
     attributes.front().second = "physical-rgb-reference-variance-of-mean";
     output.exr(prefix + "reference-variance-of-mean.exr", result.variance_of_mean, o, attributes);
+    result.presentation = result.mean;
+    for (auto &pixel : result.presentation)
+        for (auto &value : pixel)
+            value = std::clamp(value, 0., 65504.);
+    auto receipt = json_stream();
+    receipt << "{\"schema\":1,\"reference_context_id\":" << quote(result.context_identity)
+            << ",\"base_source_identity\":" << quote(base_identity)
+            << ",\"camera_offset_x\":" << offset << result.camera
+            << ",\"reference_spp\":" << o.reference_spp
+            << ",\"reference_batches\":" << o.reference_batches
+            << ",\"noise_floor_physical_rgb_mse\":" << result.noise_floor_mse
+            << ",\"mean\":" << quote(prefix + "reference.exr")
+            << ",\"variance_of_mean\":" << quote(prefix + "reference-variance-of-mean.exr")
+            << ",\"seeds\":[";
+    for (unsigned i = 0; i < o.reference_batches; ++i)
+        receipt << (i ? "," : "") << reference_seed(i, end, context);
+    receipt << "]}\n";
+    output.text(prefix + "reference-context.json", receipt.str());
     return result;
 }
 struct Metric {
@@ -885,6 +967,7 @@ struct SeedAggregate {
     std::string arm;
     std::string reconstruction;
     std::uint64_t seed = 0;
+    std::uint32_t evaluation_seed_index = 0;
     std::uint32_t warm_frames = 0, metric_frames = 0, valid_gpu_frames = 0;
     double raw_mse = 0, reconstructed_mse = 0, presentation_mse = 0, wall = 0, gpu = 0;
     double session_startup = 0, reconstruction_startup = 0;
@@ -892,6 +975,7 @@ struct SeedAggregate {
     std::string json() const {
         auto out = json_stream();
         out << "{\"arm\":" << quote(arm) << ",\"seed\":" << seed
+            << ",\"evaluation_seed_index\":" << evaluation_seed_index
             << ",\"reconstruction\":" << quote(reconstruction)
             << ",\"valid_metric_frames\":" << metric_frames << ",\"warm_frames\":" << warm_frames
             << ",\"raw_mse_mean\":" << raw_mse / metric_frames
@@ -980,14 +1064,15 @@ void compare_filters(std::ostream &line, std::span<ComparisonFilter> filters, co
     line << '}';
 }
 SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &reference,
-                       const Image &presentation_reference,
                        const std::optional<Reference> &end_reference,
-                       const Image &end_presentation_reference, std::uint32_t seed_index,
-                       Output &output, int mutations, MetalDeviceInfo &device) {
+                       const std::vector<Reference> &intermediate_references,
+                       std::uint32_t seed_index, Output &output, int mutations,
+                       MetalDeviceInfo &device) {
     SeedAggregate aggregate;
     aggregate.arm = mutations < 0 ? "independent" : "area-" + std::to_string(mutations);
     aggregate.reconstruction = reconstruction_name(o.reconstruction);
     aggregate.seed = evaluation_seed(seed_index);
+    aggregate.evaluation_seed_index = seed_index;
     const auto source_id = identity(scene.value, o, aggregate.seed);
     const auto startup = Clock::now();
     auto config = configuration(o, aggregate.seed);
@@ -1075,24 +1160,47 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
             const auto raw_image = raw_rgb(raw->capture(), scene.value.model, pixels);
             const auto denoised = reconstructed_rgb(submitted.frame->capture(), pixels);
             std::optional<Metric> physical, reconstructed_physical, presentation;
-            if (pose.metric_valid) {
-                const auto &truth = pose.end_reference ? end_reference->mean : reference.mean;
-                const auto &display_truth =
-                    pose.end_reference ? end_presentation_reference : presentation_reference;
-                physical = metric(raw_image, truth);
-                reconstructed_physical = metric(denoised, truth);
-                presentation = metric(denoised, display_truth, true);
+            const Reference *truth_reference = nullptr;
+            if (o.every_pose_references) {
+                const auto key = camera_key(camera ? *camera : camera_pose(scene.value, 0));
+                if (reference.camera == key)
+                    truth_reference = &reference;
+                else if (end_reference && end_reference->camera == key)
+                    truth_reference = &*end_reference;
+                else
+                    for (const auto &candidate : intermediate_references)
+                        if (candidate.camera == key) {
+                            truth_reference = &candidate;
+                            break;
+                        }
+                require(truth_reference, "Missing exact physical-pose reference");
+            } else if (pose.metric_valid)
+                truth_reference = pose.end_reference ? &*end_reference : &reference;
+            if (truth_reference) {
+                physical = metric(raw_image, truth_reference->mean);
+                reconstructed_physical = metric(denoised, truth_reference->mean);
+                presentation = metric(denoised, truth_reference->presentation, true);
             }
             auto line = json_stream();
             line << "{\"complete\":true,\"source_identity\":" << quote(source_id)
-                 << ",\"seed\":" << aggregate.seed << ",\"arm\":" << quote(aggregate.arm)
+                 << ",\"seed\":" << aggregate.seed << ",\"evaluation_seed_index\":" << seed_index
+                 << ",\"arm\":" << quote(aggregate.arm)
                  << ",\"reconstruction\":" << quote(reconstruction_name(o.reconstruction))
                  << ",\"reconstructed_output_kind\":" << quote(reconstructed_kind(o.reconstruction))
                  << ",\"sample_index\":" << sample << ",\"phase\":" << quote(pose.phase)
                  << ",\"camera_offset_x\":" << pose.offset;
             write_camera(line, camera ? *camera : camera_pose(scene.value, 0));
             line << ",\"quality_reference_anchor\":"
-                 << (pose.metric_valid ? quote(pose.end_reference ? "end" : "start") : "null")
+                 << (truth_reference
+                         ? quote(truth_reference == &reference ? "start"
+                                 : end_reference && truth_reference == &*end_reference
+                                     ? "end"
+                                     : "pose-" + std::to_string(truth_reference->context))
+                         : "null")
+                 << ",\"reference_context_id\":"
+                 << (truth_reference ? quote(truth_reference->context_identity) : "null")
+                 << ",\"reference_noise_floor_physical_rgb_mse\":"
+                 << (truth_reference ? optional_number(truth_reference->noise_floor_mse) : "null")
                  << ",\"epoch\":" << pose.epoch
                  << ",\"warm\":" << (sample >= excluded ? "true" : "false")
                  << ",\"pipeline_wall_seconds\":" << wall << ",\"raw_wall_seconds\":" << raw_wall
@@ -1194,9 +1302,7 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
             else
                 line << "null";
             if (o.compare_reconstruction) {
-                const Image *truth =
-                    pose.metric_valid ? &(pose.end_reference ? end_reference->mean : reference.mean)
-                                      : nullptr;
+                const Image *truth = truth_reference ? &truth_reference->mean : nullptr;
                 compare_filters(line, comparison, *raw, *raw_info, truth, o, output, aggregate.arm,
                                 source_id, seed_index, sample);
             }
@@ -1398,7 +1504,10 @@ std::string settings_json(const Options &o) {
         << quote(o.arms.size() == 2   ? "0"
                  : o.arms.size() == 3 ? "0,1"
                                       : "0,1,2,4")
-        << ",\"reference_spp\":" << o.reference_spp
+        << ",\"first_evaluation_seed_index\":" << o.first_evaluation_seed_index
+        << ",\"motion_references\":" << quote(o.every_pose_references ? "every-pose" : "anchors")
+        << ",\"additional_reference_export_upper_bound_bytes\":"
+        << additional_reference_export_bound(o) << ",\"reference_spp\":" << o.reference_spp
         << ",\"reference_batches\":" << o.reference_batches
         << ",\"reference_spp_per_batch\":" << o.reference_spp / o.reference_batches
         << ",\"warm_frames_excluded\":" << (o.frames > 4 ? 4 : 0)
@@ -1419,10 +1528,16 @@ std::string settings_json(const Options &o) {
         << ",\"reconstruction_substitution\":false,\"exposure\":1"
         << ",\"motion_offset\":" << optional_number(o.motion_offset) << ",\"metric_scope\":"
         << quote(o.motion_offset
-                     ? "anchor-only mixed-pose warm-frame means; translation metrics null"
+                     ? (o.every_pose_references
+                            ? "every-pose signed physical RGB metrics; mixed-pose warm-frame means"
+                            : "anchor-only mixed-pose warm-frame means; translation metrics null")
                      : "static warm-frame means")
-        << ",\"motion_phase_schedule\":\"equal quarters: hold-start, translate fractions 1/q..1, "
-           "hold-end, cut-start epoch 1; all translation metrics null\""
+        << ",\"motion_phase_schedule\":"
+        << quote(o.every_pose_references
+                     ? "equal quarters: hold-start, translate fractions 1/q..1, hold-end, "
+                       "cut-start epoch 1; metrics against shared physical-pose references"
+                     : "equal quarters: hold-start, translate fractions 1/q..1, hold-end, "
+                       "cut-start epoch 1; all translation metrics null")
         << ",\"motion_limitations\":\"translation only; fixed orientation/lens; no distinct medium "
            "interfaces\""
         << ",\"reference_end_seeds\":[";
@@ -1442,7 +1557,7 @@ std::string settings_json(const Options &o) {
     for (unsigned i = 0; i < o.seeds; ++i) {
         if (i)
             out << ',';
-        out << evaluation_seed(i);
+        out << evaluation_seed(o.first_evaluation_seed_index + i);
     }
     out << "],\"arms\":[";
     for (std::size_t i = 0; i < o.arms.size(); ++i) {
@@ -1460,9 +1575,10 @@ std::string summary_json(const Options &o, const std::vector<SeedAggregate> &agg
                          std::string_view diagnostic, bool complete) {
     auto out = json_stream();
     out << "{\"schema\":2,\"complete\":" << (complete ? "true" : "false")
-        << ",\"quality_pass_claimed\":false,\"scope\":\"static/translation anchor measurement; not "
-           "a "
-           "quality acceptance gate\""
+        << ",\"quality_pass_claimed\":false,\"scope\":"
+        << quote(o.every_pose_references
+                     ? "static/translation every-pose measurement; not a quality acceptance gate"
+                     : "static/translation anchor measurement; not a quality acceptance gate")
         << ",\"diagnostic\":" << quote(diagnostic) << ",\"settings\":" << settings_json(o)
         << ",\"source_identity\":" << quote(source_id)
         << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"device\":" << quote(device.name)
@@ -1541,11 +1657,23 @@ int run(const Options &o) {
     const auto start = Clock::now();
     std::unique_ptr<Output> output;
     std::optional<Reference> reference_image, end_reference;
+    std::vector<Reference> intermediate_references;
     std::vector<SeedAggregate> aggregates;
     MetalDeviceInfo device;
     std::string source_id;
     try {
         output = std::make_unique<Output>(o.output_dir);
+        std::optional<std::uint64_t> available_reference_bytes;
+        const auto export_bound = additional_reference_export_bound(o);
+        if (export_bound) {
+            std::error_code error;
+            const auto space = fs::space(o.output_dir, error);
+            require(!error && space.available != std::uintmax_t(-1),
+                    "Cannot determine available disk for additional pose references");
+            available_reference_bytes = space.available;
+            require(export_bound <= space.available,
+                    "Additional pose reference export bound exceeds available disk");
+        }
         const auto scene = load_scene(o);
         if (o.motion_offset) {
             // Validate both anchors and the smallest translation before any GPU work.
@@ -1558,7 +1686,12 @@ int run(const Options &o) {
         auto manifest = json_stream();
         manifest << "{\"schema\":2,\"complete\":false,\"status\":\"running; summary.json "
                     "determines final completion\",\"settings\":"
-                 << settings_json(o) << ",\"source_identity\":" << quote(source_id)
+                 << settings_json(o) << ",\"available_reference_export_bytes_at_preflight\":"
+                 << (available_reference_bytes ? std::to_string(*available_reference_bytes)
+                                               : "null")
+                 << ",\"additional_reference_export_bound_method\":\"16 bytes/pixel plus 1 MiB per "
+                    "image; batch means, mean and variance; upper bound on distinct extra poses\""
+                 << ",\"source_identity\":" << quote(source_id)
                  << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"sensor_model\":"
                  << quote(scene.value.model == RenderModel::pbrt ? "pbrt" : "demo")
 
@@ -1589,21 +1722,43 @@ int run(const Options &o) {
         reference_image = reference(scene, o, *output, device);
         if (o.motion_offset)
             end_reference = reference(scene, o, *output, device, true);
-        Image end_presentation = end_reference ? end_reference->mean : Image{};
-        for (auto &pixel : end_presentation)
-            for (auto &value : pixel)
-                value = std::clamp(value, 0., 65504.);
-        Image presentation = reference_image->mean;
-        for (auto &pixel : presentation)
-            for (auto &value : pixel)
-                value = std::clamp(value, 0., 65504.);
+        if (o.every_pose_references && o.motion_offset) {
+            std::set<std::string> contexts{reference_image->camera, end_reference->camera};
+            for (unsigned sample = o.frames / 4; sample < o.frames / 2; ++sample) {
+                const auto pose = pose_at(o, sample);
+                const auto camera = camera_pose(scene.value, pose.offset);
+                if (contexts.insert(camera_key(camera)).second)
+                    intermediate_references.push_back(
+                        reference(scene, o, *output, device, false, pose.offset,
+                                  2u + static_cast<std::uint32_t>(intermediate_references.size())));
+            }
+        }
+        auto reference_index = json_stream();
+        reference_index << "{\"schema\":1,\"complete\":true,\"contexts\":[";
+        bool first_context = true;
+        const auto index_reference = [&](const Reference &value) {
+            reference_index << (first_context ? "" : ",")
+                            << "{\"reference_context_id\":" << quote(value.context_identity)
+                            << ",\"receipt\":" << quote(value.prefix + "reference-context.json")
+                            << '}';
+            first_context = false;
+        };
+        index_reference(*reference_image);
+        if (end_reference)
+            index_reference(*end_reference);
+        for (const auto &value : intermediate_references)
+            index_reference(value);
+        reference_index << "]}\n";
+        output->text("reference-contexts.json", reference_index.str());
         // Rotate arm execution order across seeds to expose rather than freeze an order effect.
         const auto &arms = o.arms;
-        for (unsigned seed = 0; seed < o.seeds; ++seed)
+        for (unsigned seed = 0; seed < o.seeds; ++seed) {
+            const auto seed_index = o.first_evaluation_seed_index + seed;
             for (unsigned i = 0; i < arms.size(); ++i)
-                aggregates.push_back(evaluate(scene, o, *reference_image, presentation,
-                                              end_reference, end_presentation, seed, *output,
-                                              arms[(i + seed) % arms.size()], device));
+                aggregates.push_back(evaluate(
+                    scene, o, *reference_image, end_reference, intermediate_references, seed_index,
+                    *output, arms[(std::uint64_t(i) + seed_index) % arms.size()], device));
+        }
         require(aggregates.size() == std::uint64_t(o.seeds) * arms.size(),
                 "Completed seed-arm count mismatch");
         output->text("summary.json", summary_json(o, aggregates, reference_image, end_reference,
