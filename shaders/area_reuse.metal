@@ -190,6 +190,10 @@ inline enhanced_reservoir::State area_selector(const thread aw::Accumulator &s) 
             s.state.selected_index,
             s.state.status};
 }
+// In stochastic mode only the canonical atlas is ever read after the maps finish.
+inline ulong area_cross_index(constant AreaArguments &a, uint atlas, uint pixel) {
+    return a.config->spatial_mode ? ulong(pixel) : ulong(atlas - 1) * a.config->pixel_count + pixel;
+}
 inline void area_cross_store(constant AreaArguments &a, ulong index, AreaNumber x) {
     if (area_enhanced(a))
         reinterpret_cast<device AreaNumber *>(a.cross_targets)[index] = x;
@@ -825,7 +829,7 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, AreaNumber sc
     a.raw_xyz[pixel] = sum;
     return true;
 }
-kernel void rypath_area_contract_v19(device aw::Contract *out [[buffer(0)]]) {
+kernel void rypath_area_contract_v20(device aw::Contract *out [[buffer(0)]]) {
     *out = {aw::contract,
             sizeof(aw::Config),
             sizeof(aw::History),
@@ -1117,8 +1121,7 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
                 AREA_FAIL(a, aw::invalid_config);
                 return;
             }
-            area_cross_store(a, ulong(a.config->candidate - 1) * a.config->pixel_count + pixel,
-                             target);
+            area_cross_store(a, area_cross_index(a, a.config->candidate, pixel), target);
             area_consume_evaluation(a, pixel);
             return;
         }
@@ -1149,7 +1152,8 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         score = checked.value;
         // The inverse direction at the neighboring pixel provides the center
         // payload's reverse target after all four immutable-cache passes finish.
-        area_cross_store(a, ulong(a.config->candidate - 1) * a.config->pixel_count + pixel, target);
+        if (!a.config->spatial_mode || a.config->candidate == a.config->canonical_atlas)
+            area_cross_store(a, area_cross_index(a, a.config->candidate, pixel), target);
         if (!area_add_output(a, pixel, score, xyz, target))
             return;
     } else {
@@ -1299,8 +1303,7 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
             !selected_canonical ? AreaNumber{0, 0}
             : neighbor == pixel
                 ? area_T(center)
-                : area_cross_load(a,
-                                  ulong(reverse_direction - 1) * a.config->pixel_count + neighbor);
+                : area_cross_load(a, area_cross_index(a, reverse_direction, neighbor));
         uint neighbor_confidence = 0;
         if (area_enhanced(a) && neighbor != pixel) {
             const auto source = a.temporal[neighbor];

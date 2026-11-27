@@ -6,6 +6,7 @@
 #include "enhanced_duplication_wire.h"
 #include "enhanced_hybrid_state_shared.h"
 #include "enhanced_motion_wire.h"
+#include "enhanced_reservoir_shared.h"
 #include "enhanced_suffix_tape_shared.h"
 #include "enhanced_wire.h"
 #include "metal_execution.hpp"
@@ -33,7 +34,7 @@ namespace wf = wavefront_wire;
 namespace aw = area_wire;
 static_assert(wf::contract == 23 && sizeof(wf::Contract) == 112 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 19 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 120);
+static_assert(aw::contract == 20 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 120);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12 &&
@@ -55,32 +56,32 @@ void require(bool value, const std::string &why) {
 void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
     std::string why;
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_area_contract_v19", why);
+        metal::load_pipeline(device, library, @"rypath_area_contract_v20", why);
     require(contract_pipeline != nil, why);
     require([library newFunctionWithName:@"rypath_area_contract"] == nil &&
-                [library newFunctionWithName:@"rypath_area_contract_v15"] == nil,
-            "Unversioned and stale Area contracts must be absent before reading v16");
+                [library newFunctionWithName:@"rypath_area_contract_v19"] == nil,
+            "Unversioned and stale Area contracts must be absent before reading v20");
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v18 contract allocation");
+    require(contract_buffer != nil, "Area v20 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v18 contract encoder");
+    require(command && encoder, "Area v20 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v18 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v20 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 19 && contract.config_bytes == 120 &&
+    require(contract.version == 20 && contract.config_bytes == 120 &&
                 contract.history_bytes == 88 && contract.temporal_bytes == 92 &&
                 contract.accumulator_bytes == 104 && contract.replay_bytes == 32 &&
                 contract.counters_bytes == 112 && contract.contribution_evaluation_bytes == 16 &&
                 contract.suffix_entry_bytes == 160 && contract.donor_bytes == 16 &&
                 contract.paired_config_bytes == 112 && contract.paired_entry_bytes == 2,
-            "Area v18 contract mismatch; stale Area libraries are incompatible");
+            "Area v20 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
@@ -2381,9 +2382,19 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
                     }
                     dispatch(merge);
                 };
+                const auto *scratch =
+                    reinterpret_cast<const unsigned char *>(data(aw::cross_targets_id));
+                const auto untouched = [&](std::size_t begin) {
+                    return std::all_of(scratch + begin, scratch + lengths[aw::cross_targets_id],
+                                       [](unsigned char byte) { return byte == 0xa5; });
+                };
                 evaluate(forward);
-                if (canonical != forward)
+                if (canonical != forward) {
+                    require(untouched(0), "Donor-only pass must leave canonical scratch untouched");
                     evaluate(canonical);
+                }
+                require(untouched(pixels * sizeof(rypath_enhanced_reservoir::Number)),
+                        "All stochastic atlas IDs share a single physical target map");
                 config.phase = aw::spatial_final;
                 config.candidate = 0;
                 dispatch(finalize);

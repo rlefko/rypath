@@ -330,7 +330,7 @@ def qualification_checks(executable):
                                 object_pairs_hook=unique_object)
             assert report["complete"] is False
             assert report["schema"] == 2
-            assert report["settings"]["area_contract"] == 19
+            assert report["settings"]["area_contract"] == 20
             assert report["settings"]["area_output"] == "conditional-mean"
             assert report["settings"]["area_target"] == "quarter-l1-v1"
             assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
@@ -348,7 +348,7 @@ def qualification_checks(executable):
         assert result.returncode != 0
         selected = json.loads((destination / "summary.json").read_text())
         assert selected["schema"] == 2 and selected["settings"]["area_output"] == "selected"
-        assert selected["settings"]["area_contract"] == 19
+        assert selected["settings"]["area_contract"] == 20
         # These are requested settings of a failed preflight, never fabricated
         # runtime evidence. Independent reference/arm stay separate from Area.
         destination = root / "enhanced-configuration"

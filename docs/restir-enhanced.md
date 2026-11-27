@@ -706,8 +706,10 @@ validation remains separate from the frozen independent pilot.
 
 Disabled configs use zero IDs. Completion accounting reports actual spatial map
 work and validates the serial/seed-derived choices; this is not four completed
-spatial evaluations relabeled as one. Cross-target storage currently retains its
-four-map allocation. CPU exhaustive checks and production-kernel controls cover
+spatial evaluations relabeled as one. Area contract 20 binds one scaled cross-target map per slot for either stochastic
+policy. The donor-only pass writes its score directly into the accumulator. Only
+the canonical atlas writes the reverse target needed by the final pass. This saves
+99,532,800 bytes across two native 1080p slots, compared with four maps per slot. CPU exhaustive checks and production-kernel controls cover
 all sixteen choices, signed means, nulls, borders, duplicate neighbors, selected
 weights and immutable records. Their results do not establish native throughput.
 

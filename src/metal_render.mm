@@ -76,9 +76,11 @@ bool frame_duplication_enabled(const FrameConfig &c) {
 // Enhanced cross-target cells serialize a FLOAT mantissa and a signed exponent.
 constexpr std::size_t enhanced_cross_target_bytes = sizeof(float) + sizeof(std::int32_t);
 static_assert(enhanced_cross_target_bytes == 8);
-constexpr std::size_t area_cross_target_pixel_bytes(FrameAreaPathDomain domain) {
-    return 4 *
-           (domain == FrameAreaPathDomain::enhanced ? enhanced_cross_target_bytes : sizeof(float));
+constexpr std::size_t area_cross_target_pixel_bytes(const FrameConfig &config) {
+    const unsigned maps = rypath_stochastic_spatial::enabled(config.spatial_mode) ? 1 : 4;
+    return maps * (config.area_path_domain == FrameAreaPathDomain::enhanced
+                       ? enhanced_cross_target_bytes
+                       : sizeof(float));
 }
 bool frame_suffix_cache_enabled(const FrameConfig &config) {
     return config.estimator == FrameEstimator::area_replay &&
@@ -3569,7 +3571,7 @@ struct FrameSession::Impl {
         area = std::make_shared<FrameAreaPrograms>();
         history = std::make_shared<FrameAreaHistory>();
         std::string error;
-        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v19", error);
+        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v20", error);
         if (probe == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(area_wire::Contract)
@@ -3679,8 +3681,7 @@ struct FrameSession::Impl {
             return true;
         };
         std::uint64_t cross_bytes = 0;
-        if (!product_bytes(pixels, area_cross_target_pixel_bytes(config.area_path_domain),
-                           cross_bytes))
+        if (!product_bytes(pixels, area_cross_target_pixel_bytes(config), cross_bytes))
             return "Area cross-target byte count overflow";
         const bool enhanced = config.area_path_domain == FrameAreaPathDomain::enhanced;
         std::uint64_t enhanced_record_bytes = 16, enhanced_evaluation_bytes = 16;
@@ -3865,7 +3866,7 @@ struct FrameSession::Impl {
             return buffer != nil;
         };
         const auto pixels = std::size_t(config.width) * config.height;
-        const auto cross_target_stride = area_cross_target_pixel_bytes(config.area_path_domain);
+        const auto cross_target_stride = area_cross_target_pixel_bytes(config);
         if (pixels > std::numeric_limits<std::size_t>::max() / cross_target_stride)
             return "Area cross-target byte count overflow";
         const auto cross_bytes = pixels * cross_target_stride;
