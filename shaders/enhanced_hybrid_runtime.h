@@ -156,10 +156,11 @@ inline uint needed_lanes(const thread rypath_hero::Density &P, float4 beta) {
             result |= 1u << k;
     return result;
 }
+template <typename BSDF>
 inline bool prepare_future_payload(const thread Resources &r, const device wire::Material &material,
                                    graph_wire::Context context, const thread Wavelengths &lambda,
-                                   thread HeroFrozenBSDF &old, const thread rypath_hero::Density &P,
-                                   float4 beta, thread HeroFrozenBSDF &future) {
+                                   thread BSDF &old, const thread rypath_hero::Density &P,
+                                   float4 beta, thread BSDF &future) {
     const uint needed = needed_lanes(P, beta);
     if (!(needed & 1u) || (needed & ~15u))
         return false;
@@ -181,7 +182,8 @@ inline bool prepare_future_payload(const thread Resources &r, const device wire:
     future.active_mask = needed;
     return true;
 }
-inline rypath_hero_scattering::Sample forced_sample(const thread HeroFrozenBSDF &bsdf,
+template <typename BSDF>
+inline rypath_hero_scattering::Sample forced_sample(const thread BSDF &bsdf,
                                                     const thread ScatteringFrame &frame, float3 wo,
                                                     float3 wi, uint seed) {
     const auto value = g::forced_direction(bsdf, frame, wo, wi, seed);
@@ -258,7 +260,8 @@ struct Pending {
     uint active_mask = 0;
     bool activate = false;
 };
-inline g::Status admission_status(const thread Resources &r, const thread HeroCurrentVertex &v) {
+template <typename Current>
+inline g::Status admission_status(const thread Resources &r, const thread Current &v) {
     if (v.type != surface_vertex || !direct_root(r, v.instance, v.primitive, v.kind))
         return g::Status::unsupported;
     return g::classify(v.bsdf).status;
@@ -282,10 +285,9 @@ inline bool scan_needed(const thread State &walk, const thread Sink &sink) {
 // may install future beta/P/ray early, but keeps current's physical payload mask
 // and all fields consumed by current E/N intact. No old throughput is divided
 // back out: both incoming and outgoing hero likelihoods are advanced anew.
-template <typename State, typename Sink>
-inline g::Status candidate(thread Resources &r, thread State &walk,
-                           thread HeroCurrentVertex &current, const device wire::Material &material,
-                           graph_wire::Context context,
+template <typename State, typename Sink, typename Current>
+inline g::Status candidate(thread Resources &r, thread State &walk, thread Current &current,
+                           const device wire::Material &material, graph_wire::Context context,
                            const thread rypath_hero::Density &predecessor_density,
                            float incoming_generation_q, float outgoing_generation_q, float3 omega,
                            thread ray &future_ray, thread Sink &sink, thread Pending &pending) {
@@ -376,7 +378,7 @@ inline g::Status candidate(thread Resources &r, thread State &walk,
             predecessor_density, snapshot_beta(hybrid.predecessor), incoming.numerator, incoming.q);
         if (!rebased.valid)
             return g::Status::invalid_arithmetic;
-        HeroFrozenBSDF future;
+        decltype(current.bsdf) future;
         if (!prepare_future_payload(r, material, context, walk.lambda, current.bsdf,
                                     rebased.density, rebased.beta, future))
             return g::Status::invalid_arithmetic;
@@ -446,10 +448,10 @@ inline g::Status candidate(thread Resources &r, thread State &walk,
     return g::Status::ok;
 }
 
-template <typename State, typename Sink>
-inline bool commit_candidate(const thread Resources &r, thread State &walk,
-                             thread HeroCurrentVertex &current, float4 old_direct_beta,
-                             const thread Pending &pending, thread Sink &sink) {
+template <typename State, typename Sink, typename Current>
+inline bool commit_candidate(const thread Resources &r, thread State &walk, thread Current &current,
+                             float4 old_direct_beta, const thread Pending &pending,
+                             thread Sink &sink) {
     if (sink.state.hybrid.outside)
         return true;
     float4 snapshot = old_direct_beta;

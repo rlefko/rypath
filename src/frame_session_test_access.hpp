@@ -122,12 +122,12 @@ struct FrameSessionTestAccess {
                                                      bool include_motion = false,
                                                      bool include_duplication = false);
     // Ordinary build_frame_session validates/builds the first session. The
-    // second uses the exact same renderer; only temporal/suffix cache flags and
-    // experimental Enhanced pair compaction/temporal reprojection and diagnostic modes may differ.
-    // Reprojection changes source domains: moving contrasts need raw mean tests;
-    // exact equality is asserted only for unchanged static identity contexts.
-    // Enhanced also uses exact caching when the complete evaluator context matches.
-    // Callers must serialize both sessions, including their GPU consumers.
+    // second uses the exact same renderer; only diffuse specialization, temporal/suffix cache flags
+    // and experimental Enhanced pair compaction/temporal reprojection and diagnostic modes may
+    // differ. Reprojection changes source domains: moving contrasts need raw mean tests; exact
+    // equality is asserted only for unchanged static identity contexts. Enhanced also uses exact
+    // caching when the complete evaluator context matches. Callers must serialize both sessions,
+    // including their GPU consumers.
     static SharedSceneFrameSessions
     build_shared_scene(const RenderScene &, const FrameConfig &, const FrameConfig &,
                        const std::filesystem::path &library_path = {});

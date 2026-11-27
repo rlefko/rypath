@@ -4,8 +4,8 @@
 namespace enhanced_suffix_runtime {
 // Keep the live boundary-PDF query and deferred result outside the large
 // event shader closure; exact full-frame controls qualify this call boundary.
-template <typename State, typename Sink>
-[[clang::noinline]] inline bool lookup(thread State &walk, const thread HeroCurrentVertex &pivot,
+template <typename State, typename Sink, typename Current>
+[[clang::noinline]] inline bool lookup(thread State &walk, const thread Current &pivot,
                                        thread Sink &sink) {
     thread auto &cache = sink.cache_sink();
     if (walk.complete || !sink.has_interior() || !cache.selected_prefix())

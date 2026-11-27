@@ -93,6 +93,7 @@ struct Options {
     std::uint32_t capacity = rypath::FrameConfig{}.capacity;
     std::uint32_t quantum = rypath::FrameConfig{}.quantum;
     std::uint32_t group_width = rypath::FrameConfig{}.group_width;
+    bool specialize_diffuse_events = false;
     std::uint32_t packet_events = 1;
     rypath::FramePacketLayout packet_layout = rypath::FramePacketLayout::packed;
     std::uint32_t width = 1920, height = 1080;
@@ -167,6 +168,7 @@ const char *usage =
     "  [--area-pair-compaction on|off (experimental Enhanced null admission; default: off)]\n"
     "  [--area-temporal-reprojection off|dual (experimental camera-only Enhanced motion; default: "
     "off)]\n"
+    "  [--diffuse-events auto|generic (default: generic)]\n"
     "  [--packet-events 1|2|4 (default: 1)] [--packet-layout "
     "packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
@@ -402,6 +404,10 @@ std::string parse(int argc, char **argv, Options &o) {
             if (!integer(value, o.packet_events) ||
                 (o.packet_events != 1 && o.packet_events != 2 && o.packet_events != 4))
                 return "packet events must be 1, 2, or 4";
+        } else if (key == "--diffuse-events") {
+            if (value != "auto" && value != "generic")
+                return "diffuse events must be auto or generic";
+            o.specialize_diffuse_events = value == "auto";
         } else if (key == "--group-width") {
             if (!integer(value, o.group_width) || !o.group_width || o.group_width > 256)
                 return "group width must be in [1,256]";
@@ -752,6 +758,7 @@ struct Observation : rypath::FrameStatisticsSample {
                   mutation_accepts = 0;
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
     std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
+    bool diffuse_events = false;
     bool history_used = false, temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
@@ -956,6 +963,7 @@ struct Report {
     std::uint64_t registry_id = 0, warmup_completed = 0, frames_completed = 0;
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
+    std::optional<bool> effective_diffuse_events;
     bool packet_controls_effective = false;
     bool area_path_domain_effective = false;
     std::vector<std::string> provenance;
@@ -1145,6 +1153,10 @@ struct Report {
                     ? std::to_string(std::min<std::uint64_t>(
                           options.capacity, std::uint64_t(options.width) * options.height))
                     : "null")
+            << ",\"requested_diffuse_events\":"
+            << quote(options.specialize_diffuse_events ? "auto" : "generic")
+            << ",\"effective_diffuse_events\":"
+            << (effective_diffuse_events ? (*effective_diffuse_events ? "true" : "false") : "null")
             << ",\"packet_layout\":" << quote(packet_layout_name(options.packet_layout))
             << ",\"packet_events\":" << options.packet_events << ",\"effective_packet_events\":"
             << (packet_controls_effective ? std::to_string(options.packet_events) : "null")
@@ -1270,6 +1282,7 @@ struct Report {
                 << ",\"complete\":" << (f.complete ? "true" : "false")
                 << ",\"completed_samples\":" << f.completed_samples
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
+                << ",\"diffuse_events\":" << (f.diffuse_events ? "true" : "false")
                 << ",\"command_count\":" << f.command_count << ",\"area_serial\":" << f.area_serial
                 << ",\"area_contribution_replay\":"
                 << (f.complete && rypath::frame_area_contribution_family(options.area_path_domain)
@@ -1570,6 +1583,7 @@ int run(const Options &options) {
         config.capacity = options.capacity;
         config.quantum = options.quantum;
         config.group_width = options.group_width;
+        config.specialize_diffuse_events = options.specialize_diffuse_events;
         config.packet_events = options.packet_events;
         config.packet_layout = options.packet_layout;
         auto built = rypath::build_frame_session(scene, config);
@@ -1732,6 +1746,12 @@ int run(const Options &options) {
                     if (info.paired_atlas.version)
                         report.paired_atlas_identity = info.paired_atlas;
                     observation.area_stencil_offsets = info.area_stencil_offsets;
+                    observation.diffuse_events = info.diffuse_events;
+                    if (report.effective_diffuse_events &&
+                        *report.effective_diffuse_events != info.diffuse_events)
+                        throw std::runtime_error(
+                            "Diffuse event dispatch changed during immutable session");
+                    report.effective_diffuse_events = info.diffuse_events;
                     observation.area_serial = info.area_serial;
                     observation.contribution_replay = info.contribution_replay;
                     observation.canonical_transport_version = info.canonical_transport_version;

@@ -112,6 +112,9 @@ struct FrameAreaDuplicationInfo {
 };
 enum class FrameAreaOutput { selected, conditional_mean };
 struct FrameConfig {
+    // Opt-in execution experiment pending sustained quality/tail qualification.
+    // False retains the generic entry as the default and differential oracle.
+    bool specialize_diffuse_events = false;
     bool profile_stages = false;
     std::uint32_t width = 0, height = 0;
     std::uint64_t seed = 1;
@@ -188,6 +191,8 @@ struct FrameAreaAtlasInfo {
     std::array<std::array<std::uint32_t, 3>, 4> poses{};
 };
 struct FrameInfo {
+    // Effective entry selection, after scene proof/configuration/library admission.
+    bool diffuse_events = false;
     GPUStageDiagnostics gpu_stages{};
     FrameWorkDiagnostics path_work{};
     std::uint32_t width = 0, height = 0;

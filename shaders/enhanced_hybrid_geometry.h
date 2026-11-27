@@ -45,6 +45,14 @@ inline FamilyInfo classify(const thread HeroFrozenBSDF &p) {
         as_type<uint>(hero.alpha_x) < as_type<uint>(hero.alpha_y) ? hero.alpha_x : hero.alpha_y;
     return {fp::Family::rough_conductor, alpha, Status::ok};
 }
+inline FamilyInfo classify(const thread DiffuseBSDF &p) {
+    if (!hero_current_structure(p))
+        return {fp::Family::unsupported, 0, Status::invalid_arithmetic};
+    for (uint k = 0; k < 4; ++k)
+        if ((p.active_mask & (1u << k)) && !el::nonnegative(p.reflectance[k]))
+            return {fp::Family::unsupported, 0, Status::invalid_arithmetic};
+    return {fp::Family::diffuse, 1, Status::ok};
+}
 inline bool unit(float3 v) { return all(isfinite(v)) && abs(dot(v, v) - 1.f) <= 0x1p-16f; }
 inline bool frame_valid(const thread ScatteringFrame &f) {
     return unit(f.x) && unit(f.y) && unit(f.z) && abs(dot(f.x, f.y)) <= 0x1p-16f &&
@@ -90,6 +98,40 @@ inline Forced forced_direction(const thread HeroFrozenBSDF &p, const thread Scat
             if (!rypath_conductor::unit(wo + wi, m) || !(m.z * m.z * m.z * m.z < 1e-16f))
                 return out;
         }
+        out.q[k] = e.pdf;
+        out.numerator[k] = e.f * cosine;
+        if (!el::nonnegative(out.numerator[k]) ||
+            (el::positive(e.f) && el::positive(cosine) && !el::positive(out.numerator[k])))
+            return out; // Nonzero product outside FLOAT range is not physical black.
+    }
+    (void)seed; // Supported families have no hidden-walk/random evaluation.
+    out.status = Status::ok;
+    out.support = el::positive(out.q[0]);
+    return out;
+}
+inline Forced forced_direction(const thread DiffuseBSDF &p, const thread ScatteringFrame &frame,
+                               float3 wo_world, float3 wi_world, uint seed) {
+    Forced out;
+    const auto family = classify(p);
+    out.status = family.status;
+    if (out.status != Status::ok)
+        return out;
+    out.status = Status::invalid_arithmetic;
+    if (!frame_valid(frame) || !unit(wo_world) || !unit(wi_world))
+        return out;
+    const float3 wo = frame.local(wo_world), wi = frame.local(wi_world);
+    const float cosine = abs(wi.z);
+    for (uint k = 0; k < 4; ++k) {
+        if (!(p.active_mask & (1u << k)))
+            continue;
+        const auto e = rypath_transmission::diffuse_evaluate(p.reflectance[k], 0, wo, wi);
+        if (!e.valid || !el::nonnegative(e.f) || !el::nonnegative(e.pdf))
+            return out;
+        const bool continuous_side =
+            el::positive(abs(wo.z)) && el::positive(abs(wi.z)) &&
+            ((as_type<uint>(wo.z) ^ as_type<uint>(wi.z)) & 0x80000000u) == 0;
+        if (continuous_side && el::positive(p.reflectance[k]) && !el::positive(e.f))
+            return out; // A mathematically positive continuous factor was lost numerically.
         out.q[k] = e.pdf;
         out.numerator[k] = e.f * cosine;
         if (!el::nonnegative(out.numerator[k]) ||
@@ -421,11 +463,11 @@ struct FootprintInput {
     fp::Input value;
     Status status = Status::invalid_arithmetic;
 };
+template <typename PivotBSDF>
 inline FootprintInput footprint_input(const thread HeroFrozenBSDF &previous,
-                                      const thread HeroFrozenBSDF &pivot,
-                                      const thread Edge &primary, const thread Edge &connection,
-                                      float previous_q, float pivot_out_q,
-                                      bool terminal_emission = false) {
+                                      const thread PivotBSDF &pivot, const thread Edge &primary,
+                                      const thread Edge &connection, float previous_q,
+                                      float pivot_out_q, bool terminal_emission = false) {
     FootprintInput out;
     const auto a = classify(previous), b = classify(pivot);
     if (a.status != Status::ok || (!terminal_emission && b.status != Status::ok)) {

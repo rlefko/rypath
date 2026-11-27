@@ -62,3 +62,5 @@ inline rypath_hero_scattering::Evaluation hero_evaluate_current(const thread Her
                                                                 float3 wo, float3 wi, uint seed) {
     return hero_current_evaluate(p, wo, wi, seed);
 }
+
+#include "diffuse_current.h"

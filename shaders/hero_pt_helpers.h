@@ -50,6 +50,17 @@ inline bool hero_prepare_future(thread HeroTrack &track, thread float4 &beta,
     bsdf.active_mask = track.active_mask;
     return true;
 }
+inline bool hero_connectible(const thread DiffuseBSDF &p) { return hero_current_connectible(p); }
+inline bool hero_prepare_future(thread HeroTrack &track, thread float4 &beta,
+                                thread DiffuseBSDF &p) {
+    (void)beta;
+    p.active_mask = track.active_mask;
+    return true;
+}
+inline rypath_hero_scattering::Evaluation hero_history_evaluate(const thread DiffuseBSDF &p,
+                                                                float3 wo, float3 wi, uint seed) {
+    return hero_evaluate_current(p, wo, wi, seed);
+}
 // One cyclically invariant gate precedes BOTH the next light sample and BSDF
 // continuation. Thus its density is common to the joint techniques and cancels
 // from their balance weights. Arrival emission is evaluated before this gate.

@@ -24,6 +24,8 @@ if (wavefront_enhanced() && wavefront_complete_null(a, slot))
 #endif
 #if RYPATH_PACKET_SHADE_HERO && RYPATH_PACKET_SHADE_SEPARATED
 auto state = wavefront_load_hero_separated(a, slot);
+#elif defined(RYPATH_PACKET_SHADE_DIFFUSE)
+auto state = wavefront_load_hero_layout<false, rypath_bdpt::DiffuseWalk>(a, slot);
 #elif RYPATH_PACKET_SHADE_HERO
 auto state = wavefront_load_hero_packed(a, slot);
 #elif RYPATH_PACKET_SHADE_SEPARATED

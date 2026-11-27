@@ -17,6 +17,10 @@ def invoke(args, expected=1):
 help_text = invoke(["--help"], 0).stdout
 assert "--intersections native|compensated" in help_text
 assert "--packet-layout packed|hot-cold|split-trace" in help_text
+assert "--diffuse-events auto|generic (default: generic)" in help_text
+for value in ("invalid", "Auto", ""):
+    result = invoke(["--demo", "--output", "x.json", "--diffuse-events", value])
+    assert "must be" in result.stderr, result.stderr
 assert "--shadow-traversal query|opaque-auto" in help_text
 assert "--resource-profile standard|large (default: standard)" in help_text
 assert "--as-build default|fast-blas|fast-tlas|fast-all" in help_text

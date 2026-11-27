@@ -40,10 +40,12 @@ template <> struct PTNeighbor<true> {
 
 // Hybrid direction queries share those BSDF and scaled geometry conventions.
 #include "enhanced_hybrid_geometry.h"
-template <typename Previous, bool Compact = false> struct PTWalkState {
+template <typename Previous, bool Compact = false,
+          typename CurrentType = typename PTCurrent<Compact>::Type>
+struct PTWalkState {
     enum { compact_hero = Compact };
     using Neighbor = typename PTNeighbor<Compact>::Type;
-    using Current = typename PTCurrent<Compact>::Type;
+    using Current = CurrentType;
     // PT retains only its latest frozen BSDF/frame. The older endpoint enters
     // represented_scattering_pdf only through type and position: a continuing
     // walk contains camera/surface history, never a terminal environment vertex.
@@ -225,6 +227,10 @@ packet_pt_step_contribution_pretraced(thread Resources &r, thread State &state,
 #undef RYPATH_PACKET_EVENT_PRETRACED
 }
 inline void packet_pt_step(thread Resources &r, thread HeroWalkState &state,
+                           thread const rypath_replay::ReplayState *replay = nullptr) {
+    packet_pt_step_compact_inplace(r, state, replay);
+}
+inline void packet_pt_step(thread Resources &r, thread DiffuseWalk &state,
                            thread const rypath_replay::ReplayState *replay = nullptr) {
     packet_pt_step_compact_inplace(r, state, replay);
 }

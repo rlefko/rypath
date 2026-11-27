@@ -138,6 +138,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_frozen_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_current_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_current_vertex.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/diffuse_current.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_stencil_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_pair_atlas_shared.h"

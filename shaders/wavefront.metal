@@ -168,11 +168,10 @@ inline rypath_bdpt::PacketPTHot wavefront_packet_hot(const thread State &state) 
 inline rypath_bdpt::PacketPTState wavefront_load_packet(constant WavefrontArguments &a, uint slot) {
     return wavefront_packet(a, slot);
 }
-template <bool Separated>
-inline rypath_bdpt::HeroWalkState wavefront_load_hero_layout(constant WavefrontArguments &a,
-                                                             uint slot) {
+template <bool Separated, typename State = rypath_bdpt::HeroWalkState>
+inline State wavefront_load_hero_layout(constant WavefrontArguments &a, uint slot) {
     const auto hot = Separated ? a.packet_hot[slot] : wavefront_hero_persistent(a, slot).hot;
-    rypath_bdpt::HeroWalkState state;
+    State state;
     state.latest =
         Separated ? wavefront_hero_cold(a, slot) : wavefront_hero_persistent(a, slot).latest;
     state.preceding_position = hot.preceding_position;
@@ -208,8 +207,9 @@ inline rypath_bdpt::HeroWalkState wavefront_load_hero(constant WavefrontArgument
     return wavefront_packet_layout() == 0 ? wavefront_load_hero_packed(a, slot)
                                           : wavefront_load_hero_separated(a, slot);
 }
+template <typename State>
 inline void wavefront_store_hero_packed(constant WavefrontArguments &a, uint slot,
-                                        const thread rypath_bdpt::HeroWalkState &state) {
+                                        const thread State &state) {
     wavefront_hero_persistent(a, slot) = {state.latest, wavefront_packet_hot(state)};
 }
 inline void wavefront_store_packet_separated(constant WavefrontArguments &a, uint slot,
@@ -839,6 +839,22 @@ rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
 #undef RYPATH_PACKET_SHADE_PRETRACED
 #undef RYPATH_PACKET_SHADE_EVENTS
 #undef RYPATH_PACKET_SHADE_SEPARATED
+}
+
+// Host selects this entry only after a conservative immutable whole-scene proof.
+kernel void
+rypath_wavefront_shade_diffuse(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_DIFFUSE 1
+#define RYPATH_PACKET_SHADE_HERO 1
+#define RYPATH_PACKET_SHADE_SEPARATED 0
+#define RYPATH_PACKET_SHADE_EVENTS 1
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+#undef RYPATH_PACKET_SHADE_HERO
+#undef RYPATH_PACKET_SHADE_DIFFUSE
 }
 
 kernel void rypath_wavefront_shade_packet_packed_2(

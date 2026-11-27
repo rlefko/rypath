@@ -8,6 +8,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "diffuse_event_eligibility.hpp"
 #include "enhanced_duplication_wire.h"
 #include "enhanced_motion_host.hpp"
 #include "enhanced_wire.h"
@@ -587,6 +588,7 @@ struct MetalRenderScene::Impl {
     id<MTLBuffer> output = nil;
     wire::Parameters parameters{};
     bool dielectrics = false;
+    bool diffuse_event_proof = false;
 
     std::string append_light_tables(const RenderScene &scene, std::vector<wire::Word> &data,
                                     std::span<const LightSamplingInput> area) {
@@ -3082,6 +3084,7 @@ struct FrameSession::Impl {
             return "Frame slots exceed the transient or device memory budget";
         return {};
     }
+    bool diffuse_events = false;
     std::string prepare_wavefront(id<MTLLibrary> library) {
         auto &r = *renderer->impl_;
         NSString *shade_entry = @"rypath_wavefront_shade_scalar";
@@ -3098,6 +3101,21 @@ struct FrameSession::Impl {
                                                 : @"rypath_wavefront_shade_packet_hot_cold_4";
             else
                 shade_entry = @"rypath_wavefront_shade_packet_split";
+        }
+        // No generic branch exists in this separate typed entry. Missing optional
+        // entry falls back to generic without claiming effective specialization.
+        diffuse_events = config.specialize_diffuse_events && r.diffuse_event_proof &&
+                         r.parameters.packet_transport == 2 &&
+                         config.packet_layout == FramePacketLayout::packed &&
+                         config.packet_events == 1 &&
+                         (config.estimator == FrameEstimator::independent ||
+                          config.area_path_domain == FrameAreaPathDomain::enhanced);
+        if (diffuse_events) {
+            const bool available =
+                [library.functionNames containsObject:@"rypath_wavefront_shade_diffuse"];
+            diffuse_events = available;
+            if (available)
+                shade_entry = @"rypath_wavefront_shade_diffuse";
         }
         std::string error;
         if (r.opaque_shadows &&
@@ -5241,6 +5259,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                        .sample_index = request.sample_index,
                        .epoch = request.epoch,
                        .camera_upload_bytes = camera_upload_bytes};
+        frame->info.diffuse_events = impl_->diffuse_events;
         frame->info.area_path_domain = c.area_path_domain;
         frame->info.contribution_replay = frame_area_contribution_family(c.area_path_domain)
                                               ? c.contribution_replay
@@ -5772,13 +5791,13 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         // Stencil changes spatial source domains, never an execution-only toggle.
         a.area_stencil == b.area_stencil;
     if (!same) {
-        result.diagnostic =
-            "Shared-scene validation configurations differ beyond temporal/suffix "
-            "caches, pair compaction, temporal reprojection or duplication diagnostics";
+        result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
+                            "caches, diffuse specialization, pair compaction, temporal "
+                            "reprojection or duplication diagnostics";
         return result;
     }
-    if (a.execution != FrameExecution::wavefront || a.estimator != FrameEstimator::area_replay) {
-        result.diagnostic = "Shared-scene validation requires wavefront Area replay";
+    if (a.execution != FrameExecution::wavefront) {
+        result.diagnostic = "Shared-scene validation requires wavefront execution";
         return result;
     }
     auto first = build_frame_session(scene, a, library_path);
@@ -5861,8 +5880,10 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
                  {second_history->enhanced_records, second_history->enhanced_evaluation})
                 result.independent_owned_records &= left != right;
     }
-    if (!result.shared_renderer || !result.independent_history ||
-        !result.independent_owned_records || !result.independent_suffix_storage ||
+    if (!result.shared_renderer ||
+        (a.estimator == FrameEstimator::area_replay &&
+         (!result.independent_history || !result.independent_owned_records ||
+          !result.independent_suffix_storage)) ||
         ((frame_motion_enabled(a) || frame_motion_enabled(b)) &&
          !result.independent_motion_storage)) {
         result.status = GeometryStatus::failure;
@@ -6181,6 +6202,7 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         }
         impl->parameters = parameters;
         impl->dielectrics = scene_has_dielectrics(scene);
+        impl->diffuse_event_proof = scene_proves_diffuse_events(scene);
         impl->parameters.instance_count =
             static_cast<wire::Word>(MetalGeometryAccess::instance_count(*impl->geometry));
 
