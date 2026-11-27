@@ -3531,7 +3531,7 @@ RenderTranslation Translator::run() {
             result_.provenance.push_back(lens.str());
         }
         if (scene_.spectral_transport == SpectralTransport::hero)
-            result_.provenance.emplace_back("Hero sampling: four uniform visible wavelengths; "
+            result_.provenance.emplace_back("Hero sampling: four visible wavelengths; "
                                             "cumulative spectral and direct-light balance MIS");
         else if (scene_.spectral_transport == SpectralTransport::packet)
             result_.provenance.emplace_back("Packet sampling: fixed dimension allocation [0,920); "

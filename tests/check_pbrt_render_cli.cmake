@@ -74,7 +74,7 @@ function(check_render input sampler seed warning_pattern result selection transp
     set(expected_sampler "${sampler}")
     if(transport STREQUAL "hero")
         string(APPEND expected_sampler "; hero PT fixed packet dimension blocks; keyed material-local Philox streams; independent coating hash/PCG domains")
-        set(spectral_description "Hero sampling: four uniform visible wavelengths; cumulative spectral and direct-light balance MIS")
+        set(spectral_description "Hero sampling: four visible wavelengths; cumulative spectral and direct-light balance MIS")
     elseif(transport STREQUAL "packet")
         string(APPEND expected_sampler "; packet fixed dimension allocation [0,920); keyed material-local Philox streams; independent coating hash/PCG domains")
         set(spectral_description "Packet sampling: fixed dimension allocation [0,920); keyed material-local Philox streams; independent coating hash/PCG domains")
