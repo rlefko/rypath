@@ -14,7 +14,8 @@ diagnostics pass focused off/on exactness, provenance and publication controls.
 The original paired-atlas zero-mutation native screen completes Cornell, Prism
 and Pavilion day, but fails Pavilion night at sample 38. The numerical recovery
 below completes that sequence; the original failed study remains preserved.
-The complete scene-quality/time study remains follow-up work. This is not the
+The lower-resolution static quality diagnostic below is complete; native
+quality/time qualification remains follow-up work. This is not the
 complete paper implementation; no Pavilion highlight repair is established,
 and the frame-rate targets are unmet.
 
@@ -27,10 +28,19 @@ performance qualification; see the [validation record](restir-enhanced.md#geomet
 The [Enhanced execution investigation](enhanced-performance.md) confirms a native
 zero-mutation regression relative to contribution-prefix replay. Exact diagnostic
 counts show fewer path-step calls, while current shader profiles show greater
-spill storage. Two outlining experiments and a smaller completion-state view
-provide no useful recovery and remain unadopted. Complete material-event
-specialization is the next bounded experiment. These measurements do not
-qualify image quality.
+spill storage. Outlining, completion-state, queue and fresh-reservoir experiments
+provide no useful recovery and remain unadopted; their failed image controls are
+preserved. The complete-event specialization probe still has an unresolved
+store/readout discrepancy. The integration at `3dc8b9d` passes all 311 required
+Debug tests and a full Release build, without meeting the frame-rate targets.
+
+The fixed four-scene lower-resolution study completes 3072 evaluation frames
+and 424 finite FLOAT captures with independent artifact/metric review. Enhanced
+reduces the reported Cornell/Prism raw MSE relative to PT, but signed temporal
+reconstruction produces higher MSE than reconstructed PT. Pavilion has large
+seed variation; highlight repair is unestablished. The study has no prior Area
+quality arm and supplies no native-FPS or equal-quality speedup claim. See the
+[quality evidence](enhanced-performance.md#lower-resolution-quality-screen).
 
 The [hero execution follow-up](hero-execution.md) combines exact temporal
 memoization with smaller current, historical and sampled-light state. Its short

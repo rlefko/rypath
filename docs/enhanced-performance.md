@@ -86,6 +86,85 @@ Pavilion harness failure from noncanonical dependency paths is retained separate
 from its corrected fresh study and this numerical control failure. No
 experiment is adopted.
 
+Two further native four-scene ABBA experiments compare integration `3dc8b9d`
+with isolated execution changes under the same settings:
+
+| Change | Cornell | Prism | Pavilion day | Pavilion night |
+| --- | ---: | ---: | ---: | ---: |
+| Aggregate queue reservations within SIMD groups | −0.32% | −1.00% | −7.41% | −0.36% |
+| Avoid repeated preparation inside fresh reservoir selection | −2.42% | +0.01% | −1.00% | −0.82% |
+
+These are descriptive changes in mean frame time, not qualified speedups. The
+queue study's daytime mean includes a substantially slower first baseline run.
+Both studies complete all 80 frames with finite captures, but fail strict image
+controls. The queue study repeats the same daytime pixel difference across
+libraries; its A/A and B/B controls match. The reservoir study repeats that
+daytime difference and adds two differing raw night pixels, including a B/B
+failure; reconstruction spreads that night difference across 62 pixels.
+Neither candidate is adopted. Cornell/Prism final controls remain exact in both
+studies, but their small or absent timing gains do not recover the regression.
+
+A separate Pavilion-day test shares an acceleration structure within each A/A
+or A/B contrast while keeping shader programs and mutable session state separate.
+All ten raw XYZ comparisons are exact across 62,208,000 finite float pairs.
+Its wrapper failed a device-name metadata comparison; an independent audit
+passed with only the previously identified name-only correction, preserving the
+original failure. This diagnostic does not prove the cause of the separate-AS
+differences or clear either failed performance study.
+
+## Lower-resolution quality screen
+
+A fixed diagnostic at `3dc8b9d` compares independent PT, Enhanced with zero
+mutations and Enhanced with one mutation. Cornell/Prism use 320×180; Pavilion
+uses 320×170. Each arm has eight independent seed/session groups and 32 total
+frames; warm summaries exclude the first four frames. References use current
+visible-hero PT, with eight independent 256-SPP batches totaling 2048 SPP.
+Area uses paired Gaussian reuse, prefix replay and suffix caching; signed temporal
+reconstruction uses the conservative spatial variance policy. Motion, compaction
+and duplication diagnostics are off.
+
+All four jobs, 3072 evaluation frames and 424 finite FLOAT images complete.
+Independent review checks the bindings, accounting, aggregation and fixed-region
+endpoint analysis. Completion establishes usable evidence, not quality acceptance.
+The table gives signed linear-RGB MSE against the finite reference: mean of eight
+warm-frame seed means ± standard error across those means. Correlated frames
+and spatial pixels are not additional independent replicates.
+
+| Scene | Arm | Raw MSE ± SE | Reconstructed MSE ± SE |
+| --- | --- | ---: | ---: |
+| Cornell | PT | 0.053682 ± 0.000346 | 0.00272235 ± 0.000113 |
+| Cornell | Enhanced, 0 mutations | 0.0189578 ± 0.000298 | 0.0198204 ± 0.000525 |
+| Cornell | Enhanced, 1 mutation | 0.0195118 ± 0.000221 | 0.0146241 ± 0.000447 |
+| Prism | PT | 0.261897 ± 0.00190 | 0.0180322 ± 0.000408 |
+| Prism | Enhanced, 0 mutations | 0.0553819 ± 0.00425 | 0.104921 ± 0.00886 |
+| Prism | Enhanced, 1 mutation | 0.0557436 ± 0.00410 | 0.102237 ± 0.00812 |
+| Pavilion day | PT | 4.03583 ± 2.57 | 1.59747 ± 1.25 |
+| Pavilion day | Enhanced, 0 mutations | 1.10382 ± 0.772 | 0.848167 ± 0.786 |
+| Pavilion day | Enhanced, 1 mutation | 1.29325 ± 0.813 | 0.468991 ± 0.415 |
+| Pavilion night | PT | 38.7148 ± 22.2 | 2.85327 ± 2.17 |
+| Pavilion night | Enhanced, 0 mutations | 0.602171 ± 0.100 | 0.758789 ± 0.100 |
+| Pavilion night | Enhanced, 1 mutation | 0.547265 ± 0.0967 | 0.584455 ± 0.0921 |
+
+Reference MSE noise floors are respectively 0.0000248126, 0.000132460,
+0.0302598 and 0.0498214. They are retained separately, not subtracted or clipped.
+Cornell/Prism raw means improve relative to PT, while their reconstructed means
+are worse than reconstructed PT. Enhanced zero-mutation reconstruction also
+worsens its own raw mean in both scenes. The conservative policy does not
+explicitly model Area temporal covariance; correlation is a hypothesis for
+investigation, not an established cause. A same-input temporal/spatial filtering
+ablation is needed to isolate the reconstruction interaction.
+
+Pavilion has substantial seed variation, especially in daytime results and
+independent PT's bright outliers. The fixed-region analysis preserves signed
+values, raw positive tails and finite-reference sensitivity. It does not establish
+highlight repair. Its sample-31 endpoint contrasts are a different population
+from the warm-frame means above.
+
+There is no older contribution-domain Area quality arm. This screen cannot
+isolate Enhanced's quality benefit over that implementation or establish that
+quality compensates for the native slowdown. Reduced-resolution measurements
+do not establish native FPS, convergence or time to equal quality.
+
 ## Reproduction and validation scope
 
 Local artifacts under `.cache/validation/hero-performance-implementation-001/`
@@ -94,7 +173,10 @@ per-frame accounting and raw/reconstructed FLOATs. Relevant studies are
 `enhanced-regression-native-001`, `enhanced-event-count-native-001`,
 `profiling/enhanced-regression-small-capture-001`,
 `enhanced-edge-outline-native-001`, `enhanced-edge-outline-pavilion-recovery-001`,
-`enhanced-certification-outline-native-001` and `enhanced-finish-view-native-001`.
+`enhanced-certification-outline-native-001`, `enhanced-finish-view-native-001`,
+`enhanced-simd-queues-native-001`, `enhanced-fresh-transaction-native-001`,
+`enhanced-shared-as-pavilion-001`, `enhanced-quality-screen-001` and
+`enhanced-quality-screen-001-analysis`.
 Independent review receipts
 are in `enhanced-followup-research/`. These large local artifacts are excluded
 from Git; this record does not claim that they accompany a clone.
@@ -114,7 +196,13 @@ native screen completes 40 frames and preserves all 24 final raw/reconstructed
 FLOAT comparisons. These controls establish the bounded execution result; the
 mixed timing prevents adoption as a performance repair.
 
-Complete material-event specialization is the next bounded experiment.
-It requires actual compiler resource evidence, equivalent
-event/frame outputs and lower complete-frame cost before adoption. Unsupported
-charts, coatings and spectral effects remain part of the renderer's contract.
+The integration build at `3dc8b9d` passes the required Debug script, including
+all 311 tests, and a full Release build. This is mechanical and bounded numerical
+validation; it does not overturn the performance or reconstruction findings.
+
+The complete material-event specialization probe remains unqualified. An
+instrumented event observes the expected local selector update, while a separate
+serializer reports zeros. That store/readout boundary must be resolved before
+the probe can establish equivalent events or support compiler-resource claims.
+Production adoption still requires lower complete-frame cost and preserved
+transport, including unsupported charts, coatings and spectral behavior.

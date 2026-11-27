@@ -223,6 +223,12 @@ off/on rendering and publication-lifetime controls; native diagnostic cost,
 moving-scene quality and complete quality/time qualification remain open. Adaptive biased caps remain outside this
 diagnostic.
 
+The [Enhanced cost and quality investigation](enhanced-performance.md) confirms
+a native frame-time regression. Small execution experiments have not recovered
+it. The completed four-scene lower-resolution diagnostic exposes a reconstruction
+interaction in Cornell/Prism and uncertain Pavilion tails; prior-Area comparisons,
+native quality/time qualification and the frame-rate targets remain open.
+
 [Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
 reduces retained AS memory with bounded exact image controls; it establishes no
 frame-rate gain. Further geometry work still needs complete-pipeline evidence.
