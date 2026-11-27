@@ -1,7 +1,7 @@
 # Enhanced ReSTIR development
 
 The target is native 1920×1080, one fresh four-wavelength hero path per pixel,
-Area ReSTIR, one corrected MCMC mutation, and denoising: **20 FPS for Cornell and
+Area ReSTIR with optional corrected MCMC, and denoising: **20 FPS for Cornell and
 Prism, and at least 10 FPS for Pavilion day and night**. These are complete-pipeline
 budgets of 50 ms and 100 ms per frame. Bare path-tracing throughput is diagnostic,
 not the acceptance criterion. Report static and moving-camera results, frame-time
@@ -21,7 +21,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Mechanism | Current coverage |
 | --- | --- |
 | Contribution-aware resampling MIS | Source/destination target adaptation |
-| Confidence recurrence, §2.2 | Enhanced caps temporal input at 20 before MIS and sums structural spatial inputs |
+| Confidence recurrence, §2.2 | Enhanced uses a fixed temporal cap (default 20) before MIS and sums structural spatial inputs |
 | Reciprocal spatial work sharing, §3 | Opt-in per-pixel Gaussian pairing atlases and shared same-pair reverse targets |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
 | NEE candidate sampling, §§6.1 and 7 | Existing light proposals; the evaluation's 32/B² light-candidate schedule is not reproduced |

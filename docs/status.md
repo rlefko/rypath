@@ -1,5 +1,10 @@
 # Project status
 
+The [zero-mutation performance study](zero-mutation-performance.md) measures
+fresh spectral paths, reciprocal spatial reuse and reconstruction separately.
+The native budgets are 50 ms for Cornell/Prism and 100 ms for Pavilion. The
+stochastic spatial estimators and fixed temporal-confidence controls are opt-in.
+
 The [Enhanced ReSTIR follow-up](restir-enhanced.md) targets native-1080p,
 Area reuse, one mutation and denoising at 20 FPS for Cornell/Prism and 10+ FPS
 for Pavilion day/night. Its opt-in finite-depth domain includes weighted fresh
