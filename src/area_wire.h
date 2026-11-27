@@ -11,7 +11,7 @@ namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 16,
+    contract = 17,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
@@ -56,6 +56,7 @@ struct Config {
     // Zero disables all suffix-arena reads/writes, including sentinel indexing.
     Word suffix_context_low, suffix_context_high;
     Word temporal_reprojection;
+    Word stochastic_spatial_pairs, forward_atlas, canonical_atlas;
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -149,7 +150,7 @@ static_assert(__builtin_offsetof(History, confidence) == 60 &&
               "Area v10 structural confidence word offsets");
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 104 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
+static_assert(sizeof(Config) == 116 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
                   sizeof(Accumulator) == 104 && sizeof(Contract) == 48 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire

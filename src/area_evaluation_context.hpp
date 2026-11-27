@@ -134,8 +134,12 @@ inline bool valid_enhanced_area_evaluation_accounting(std::uint64_t pixels, bool
                                                       std::uint32_t mutations, bool cache_used,
                                                       std::uint64_t physical, std::uint64_t cached,
                                                       std::uint64_t analytic_null,
-                                                      std::uint64_t logical) {
-    const auto expected = logical_area_evaluations(pixels, history, mutations);
+                                                      std::uint64_t logical,
+                                                      std::uint32_t spatial_evaluations = 4) {
+    if (spatial_evaluations < 1 || spatial_evaluations > 4)
+        return false;
+    const auto expected =
+        logical_area_evaluations(pixels, history, mutations) - (4 - spatial_evaluations) * pixels;
     const auto expected_cached = cache_used && history ? 2 * pixels : 0;
     return (!cache_used || history) && logical == expected && cached == expected_cached &&
            physical >= pixels && physical <= expected - expected_cached &&

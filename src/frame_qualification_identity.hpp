@@ -4,6 +4,7 @@
 #include "area_pair_atlas_shared.h"
 #include "area_stencil_shared.h"
 #include "frame_session.hpp"
+#include "stochastic_spatial_shared.h"
 #include <algorithm>
 #include <limits>
 #include <string>
@@ -33,6 +34,15 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
     const bool compact = enhanced && wavefront && c.compact_enhanced_pairs;
     const bool motion = enhanced && wavefront && c.enhanced_temporal_reprojection;
     const bool paired = area && wavefront && c.area_stencil == FrameAreaStencil::paired_gaussian16;
+    const auto selection = rypath_stochastic_spatial::draw(
+        static_cast<std::uint32_t>(f.area_serial), static_cast<std::uint32_t>(f.area_serial >> 32),
+        static_cast<std::uint32_t>(c.seed), static_cast<std::uint32_t>(c.seed >> 32));
+    if (f.stochastic_spatial_pairs != c.stochastic_spatial_pairs ||
+        (c.stochastic_spatial_pairs
+             ? !enhanced || !paired || f.stochastic_forward_atlas != selection.forward ||
+                   f.stochastic_canonical_atlas != selection.canonical
+             : f.stochastic_forward_atlas != 0 || f.stochastic_canonical_atlas != 0))
+        return fail("Qualification stochastic spatial identity mismatch");
     const auto mutations = area ? c.mutation_steps : 0u;
     // Bound arithmetic used by the exact accounting helpers, including mutations.
     if (!n || n > std::numeric_limits<std::uint32_t>::max() ||
@@ -70,7 +80,11 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
         : enhanced ? valid_enhanced_area_evaluation_accounting(
                          n, f.history_used, mutations, f.temporal_evaluation_cache_used,
                          f.completed_evaluations, f.cached_evaluations, f.analytic_null_evaluations,
-                         f.logical_evaluations)
+                         f.logical_evaluations,
+                         c.stochastic_spatial_pairs
+                             ? rypath_stochastic_spatial::evaluations(
+                                   {f.stochastic_forward_atlas, f.stochastic_canonical_atlas})
+                             : 4u)
                    : f.analytic_null_evaluations == 0 &&
                          valid_area_evaluation_accounting(
                              n, f.history_used, mutations, f.temporal_evaluation_cache_used,

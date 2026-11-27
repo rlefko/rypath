@@ -11,6 +11,7 @@
 #include "reconstruction.hpp"
 #include "render_identity.hpp"
 #include "resource_limits.hpp"
+#include "stochastic_spatial_shared.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -65,6 +66,7 @@ struct Options {
     bool cache_temporal_evaluations = true;
     bool enhanced_suffix_cache = true;
     bool compact_enhanced_pairs = false;
+    bool stochastic_spatial_pairs = false;
     bool enhanced_temporal_reprojection = false;
     rypath::FrameAreaDuplication area_duplication = rypath::FrameAreaDuplication::off;
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
@@ -165,6 +167,7 @@ const char *usage =
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
     "  [--area-suffix-cache on|off (Enhanced sequential suffix replay; default: on)]\n"
+    "  [--area-spatial-mode all|stochastic-pairs (default: all)]\n"
     "  [--area-pair-compaction on|off (experimental Enhanced null admission; default: off)]\n"
     "  [--area-temporal-reprojection off|dual (experimental camera-only Enhanced motion; default: "
     "off)]\n"
@@ -341,6 +344,10 @@ std::string parse(int argc, char **argv, Options &o) {
             if (value != "on" && value != "off")
                 return "area suffix cache must be on or off";
             o.enhanced_suffix_cache = value == "on";
+        } else if (key == "--area-spatial-mode") {
+            if (value != "all" && value != "stochastic-pairs")
+                return "area spatial mode must be all or stochastic-pairs";
+            o.stochastic_spatial_pairs = value == "stochastic-pairs";
         } else if (key == "--area-pair-compaction") {
             if (value != "on" && value != "off")
                 return "area pair compaction must be on or off";
@@ -466,6 +473,12 @@ std::string parse(int argc, char **argv, Options &o) {
             o.spectral_transport == rypath::SpectralTransportSelection::packet)
             return "contribution path domain requires a PBRT scene with effective hero transport";
     }
+    if (o.stochastic_spatial_pairs &&
+        (o.execution != rypath::FrameExecution::wavefront ||
+         o.estimator != rypath::FrameEstimator::area_replay ||
+         o.area_path_domain != rypath::FrameAreaPathDomain::enhanced ||
+         o.area_stencil != rypath::FrameAreaStencil::paired_gaussian16))
+        return "stochastic spatial pairs require wavefront Enhanced paired-gaussian16";
     if (o.area_duplication != rypath::FrameAreaDuplication::off &&
         (o.execution != rypath::FrameExecution::wavefront ||
          o.estimator != rypath::FrameEstimator::area_replay ||
@@ -762,6 +775,8 @@ struct Observation : rypath::FrameStatisticsSample {
     bool history_used = false, temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
+    bool stochastic_spatial_pairs = false;
+    std::uint32_t stochastic_forward_atlas = 0, stochastic_canonical_atlas = 0;
     bool enhanced_temporal_reprojection_requested = false;
     bool enhanced_temporal_reprojection = false, enhanced_temporal_reprojection_used = false;
     std::uint64_t enhanced_geometry_generated = 0, enhanced_geometry_reused = 0;
@@ -1015,6 +1030,18 @@ struct Report {
             << ",\"hero_wavelengths\":" << quote(hero_wavelengths)
             << ",\"requested_area_mutation_policy\":"
             << quote(rypath::frame_mutation_policy_name(options.mutation_policy))
+            << ",\"requested_area_spatial_mode\":"
+            << quote(options.stochastic_spatial_pairs ? "stochastic-pairs" : "all")
+            << ",\"area_spatial_mode\":"
+            << quote(area_path_domain_effective
+                         ? (options.stochastic_spatial_pairs ? "stochastic-pairs" : "all")
+                         : "not-applicable")
+            << ",\"effective_area_spatial_mode\":"
+            << (area_path_domain_effective
+                    ? quote(options.stochastic_spatial_pairs ? "stochastic-pairs" : "all")
+                    : "null")
+            << ",\"stochastic_spatial_law\":"
+            << (options.stochastic_spatial_pairs ? rypath_stochastic_spatial::law_version : 0)
             << ",\"requested_area_stencil\":"
             << quote(rypath::frame_area_stencil_name(options.area_stencil))
             << ",\"estimator\":" << quote(estimator_name(options.estimator))
@@ -1303,6 +1330,18 @@ struct Report {
                 << f.enhanced_motion_routes[1] << ',' << f.enhanced_motion_routes[2] << ','
                 << f.enhanced_motion_routes[3] << ']' << ",\"enhanced_pair_compaction\":"
                 << (f.enhanced_pair_compaction ? "true" : "false")
+                << ",\"stochastic_spatial_pairs\":"
+                << (f.stochastic_spatial_pairs ? "true" : "false")
+                << ",\"stochastic_forward_atlas\":" << f.stochastic_forward_atlas
+                << ",\"stochastic_canonical_atlas\":" << f.stochastic_canonical_atlas
+                << ",\"spatial_evaluation_maps\":"
+                << (f.complete && options.estimator == rypath::FrameEstimator::area_replay
+                        ? std::to_string(
+                              f.stochastic_spatial_pairs
+                                  ? rypath_stochastic_spatial::evaluations(
+                                        {f.stochastic_forward_atlas, f.stochastic_canonical_atlas})
+                                  : 4u)
+                        : "null")
                 << ",\"compacted_null_evaluations\":" << f.compacted_null_evaluations
                 << ",\"enhanced_suffix_cache\":" << (f.enhanced_suffix_cache ? "true" : "false")
                 << ",\"enhanced_suffix_hits\":[" << f.enhanced_suffix_hits[0] << ','
@@ -1574,6 +1613,7 @@ int run(const Options &options) {
         config.cache_temporal_evaluations = options.cache_temporal_evaluations;
         config.enhanced_suffix_cache = options.enhanced_suffix_cache;
         config.compact_enhanced_pairs = options.compact_enhanced_pairs;
+        config.stochastic_spatial_pairs = options.stochastic_spatial_pairs;
         config.enhanced_temporal_reprojection = options.enhanced_temporal_reprojection;
         config.area_duplication = options.area_duplication;
         config.target_scale = options.target_scale;
@@ -1654,7 +1694,12 @@ int run(const Options &options) {
                                          pixels, info.history_used, options.mutation_steps,
                                          info.temporal_evaluation_cache_used,
                                          info.completed_evaluations, info.cached_evaluations,
-                                         info.analytic_null_evaluations, info.logical_evaluations)
+                                         info.analytic_null_evaluations, info.logical_evaluations,
+                                         options.stochastic_spatial_pairs
+                                             ? rypath_stochastic_spatial::evaluations(
+                                                   {info.stochastic_forward_atlas,
+                                                    info.stochastic_canonical_atlas})
+                                             : 4u)
                                    : info.analytic_null_evaluations == 0 &&
                                          rypath::valid_area_evaluation_accounting(
                                              pixels, info.history_used, options.mutation_steps,
@@ -1701,8 +1746,20 @@ int run(const Options &options) {
                                       std::array<std::uint32_t, 4>{254, 230, 210, 194} &&
                                   info.area_stencil_offsets == std::array<std::int32_t, 4>{})
                                : info.paired_atlas.version == 0;
+                    const auto spatial_selection = rypath_stochastic_spatial::draw(
+                        static_cast<std::uint32_t>(info.area_serial),
+                        static_cast<std::uint32_t>(info.area_serial >> 32),
+                        static_cast<std::uint32_t>(options.seed),
+                        static_cast<std::uint32_t>(options.seed >> 32));
+                    const bool spatial_selection_valid =
+                        info.stochastic_spatial_pairs == options.stochastic_spatial_pairs &&
+                        (options.stochastic_spatial_pairs
+                             ? info.stochastic_forward_atlas == spatial_selection.forward &&
+                                   info.stochastic_canonical_atlas == spatial_selection.canonical
+                             : info.stochastic_forward_atlas == 0 &&
+                                   info.stochastic_canonical_atlas == 0);
                     observation.complete =
-                        info.status == rypath::FrameStatus::complete &&
+                        spatial_selection_valid && info.status == rypath::FrameStatus::complete &&
                         info.enhanced_suffix_cache ==
                             (options.estimator == rypath::FrameEstimator::area_replay &&
                              options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
@@ -1759,6 +1816,9 @@ int run(const Options &options) {
                     observation.history_used = info.history_used;
                     observation.enhanced_suffix_cache = info.enhanced_suffix_cache;
                     observation.enhanced_pair_compaction = info.enhanced_pair_compaction;
+                    observation.stochastic_spatial_pairs = info.stochastic_spatial_pairs;
+                    observation.stochastic_forward_atlas = info.stochastic_forward_atlas;
+                    observation.stochastic_canonical_atlas = info.stochastic_canonical_atlas;
                     observation.duplication = info.duplication;
                     observation.enhanced_temporal_reprojection_requested =
                         info.enhanced_temporal_reprojection_requested;
@@ -1965,6 +2025,12 @@ int run(const Options &options) {
                          : "none"},
                     {"rypath.area.temporal_reuse",
                      options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
+                    {"rypath.area.spatial_mode_requested",
+                     options.stochastic_spatial_pairs ? "stochastic-pairs" : "all"},
+                    {"rypath.area.stochastic_forward_atlas",
+                     std::to_string(frame_info.stochastic_forward_atlas)},
+                    {"rypath.area.stochastic_canonical_atlas",
+                     std::to_string(frame_info.stochastic_canonical_atlas)},
                     {"rypath.area.serial", std::to_string(frame_info.area_serial)},
                     {"rypath.hero.requested",
                      options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
@@ -1973,6 +2039,8 @@ int run(const Options &options) {
                     {"rypath.hero.effective", report.hero_wavelengths},
                     {"rypath.area.requested_mutation",
                      rypath::frame_mutation_policy_name(options.mutation_policy)},
+                    {"rypath.area.spatial_mode",
+                     options.stochastic_spatial_pairs ? "stochastic-pairs" : "all"},
                     {"rypath.area.requested_stencil",
                      rypath::frame_area_stencil_name(options.area_stencil)},
                     {"rypath.area.mutation_policy",
@@ -2182,6 +2250,12 @@ int run(const Options &options) {
                      std::to_string(options.estimator == rypath::FrameEstimator::area_replay
                                         ? options.mutation_steps
                                         : 0)},
+                    {"rypath.area.spatial_mode_requested",
+                     options.stochastic_spatial_pairs ? "stochastic-pairs" : "all"},
+                    {"rypath.area.stochastic_forward_atlas",
+                     std::to_string(info.source.stochastic_forward_atlas)},
+                    {"rypath.area.stochastic_canonical_atlas",
+                     std::to_string(info.source.stochastic_canonical_atlas)},
                     {"rypath.area.serial", std::to_string(info.source.area_serial)},
                     {"rypath.hero.requested",
                      options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
@@ -2190,6 +2264,8 @@ int run(const Options &options) {
                     {"rypath.hero.effective", report.hero_wavelengths},
                     {"rypath.area.requested_mutation",
                      rypath::frame_mutation_policy_name(options.mutation_policy)},
+                    {"rypath.area.spatial_mode",
+                     options.stochastic_spatial_pairs ? "stochastic-pairs" : "all"},
                     {"rypath.area.requested_stencil",
                      rypath::frame_area_stencil_name(options.area_stencil)},
                     {"rypath.area.mutation_policy",

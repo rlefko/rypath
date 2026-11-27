@@ -153,6 +153,8 @@ struct FrameConfig {
     bool enhanced_suffix_cache = true;
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
     bool compact_enhanced_pairs = false;
+    // Unbiased stochastic evaluation of the four pairwise spatial MIS terms.
+    bool stochastic_spatial_pairs = false;
     FrameAreaDuplication area_duplication = FrameAreaDuplication::off;
     // Experimental static-geometry, camera-only temporal donor selection.
     bool enhanced_temporal_reprojection = false;
@@ -207,6 +209,8 @@ struct FrameInfo {
     bool temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
+    bool stochastic_spatial_pairs = false;
+    std::uint32_t stochastic_forward_atlas = 0, stochastic_canonical_atlas = 0;
     bool enhanced_temporal_reprojection_requested = false;
     bool enhanced_temporal_reprojection = false, enhanced_temporal_reprojection_used = false;
     std::uint64_t enhanced_geometry_generated = 0, enhanced_geometry_reused = 0;

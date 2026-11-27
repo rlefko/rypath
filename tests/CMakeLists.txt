@@ -2328,3 +2328,10 @@ add_test(NAME render.diffuse_event_proof COMMAND rypath_diffuse_event_tests --pr
     add_test(NAME metal.diffuse_events COMMAND rypath_diffuse_event_tests)
     set_tests_properties(metal.diffuse_events PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE ENVIRONMENT "MTL_DEBUG_LAYER=1")
 endif()
+add_executable(rypath_stochastic_spatial_tests stochastic_spatial_tests.cpp)
+target_include_directories(rypath_stochastic_spatial_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+rypath_configure_host_target(rypath_stochastic_spatial_tests)
+target_compile_options(rypath_stochastic_spatial_tests PRIVATE
+    $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-ffp-contract=off;-fno-fast-math>)
+add_test(NAME render.stochastic_spatial COMMAND rypath_stochastic_spatial_tests)
+set_tests_properties(render.stochastic_spatial PROPERTIES TIMEOUT 30)

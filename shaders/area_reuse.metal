@@ -9,6 +9,7 @@
 #include "../src/enhanced_resampling_decision_shared.h"
 #include "../src/mutation_shared.h"
 #include "../src/reuse_mis_shared.h"
+#include "../src/stochastic_spatial_shared.h"
 namespace aw = rypath::area_wire;
 namespace pair_atlas = rypath_area_pair_atlas;
 namespace cw = rypath::contribution_wire;
@@ -118,6 +119,11 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
         (c.temporal_cache && !c.history_used) || c.temporal_reprojection > 1 ||
         (c.temporal_reprojection &&
          (c.contribution_mode != cw::enhanced || !c.history_used || c.temporal_cache)) ||
+        c.stochastic_spatial_pairs > 1 ||
+        (c.stochastic_spatial_pairs &&
+         (c.contribution_mode != cw::enhanced || c.stencil != aw::paired_gaussian16_stencil ||
+          !rypath_stochastic_spatial::valid({c.forward_atlas, c.canonical_atlas}))) ||
+        (!c.stochastic_spatial_pairs && (c.forward_atlas || c.canonical_atlas)) ||
         c.contribution_mode > cw::enhanced ||
         (c.contribution_mode == cw::summed && c.contribution_depth != 0) ||
         (c.contribution_mode != cw::summed && c.contribution_depth > 65) ||
@@ -815,7 +821,7 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, AreaNumber sc
     a.raw_xyz[pixel] = sum;
     return true;
 }
-kernel void rypath_area_contract_v16(device aw::Contract *out [[buffer(0)]]) {
+kernel void rypath_area_contract_v17(device aw::Contract *out [[buffer(0)]]) {
     *out = {aw::contract,
             sizeof(aw::Config),
             sizeof(aw::History),
@@ -1100,8 +1106,20 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
                         area_payload_tail(payload));
             return;
         }
+        // A canonical-only leaf builds the inverse-target map without adding
+        // a donor proposal or touching the conditional-mean output/reservoir.
+        if (a.config->stochastic_spatial_pairs && a.config->candidate != a.config->forward_atlas) {
+            if (a.config->candidate != a.config->canonical_atlas) {
+                AREA_FAIL(a, aw::invalid_config);
+                return;
+            }
+            area_cross_store(a, ulong(a.config->candidate - 1) * a.config->pixel_count + pixel,
+                             target);
+            area_consume_evaluation(a, pixel);
+            return;
+        }
         accumulator = a.accumulators[pixel];
-        expected = a.config->candidate - 1;
+        expected = a.config->stochastic_spatial_pairs ? 0u : a.config->candidate - 1;
         aw::Temporal center{};
         const bool boundary = neighbor == pixel;
         if (area_enhanced(a)) {
@@ -1111,13 +1129,13 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
             source_confidence = boundary ? 0u : source.confidence;
         }
         const auto checked =
-            area_enhanced(a)
-                ? boundary ? AreaNumberResult{{0, 0}, reservoir::Status::ok}
-                           : enhanced_path::pair_score({area_Z(source), area_T(source), target,
-                                                        float(source.confidence),
-                                                        float(center.confidence), .25f})
-                : area_legacy(reuse_mis::spatial_pair_score(source.normalizer, target.fraction,
-                                                            source.target));
+            area_enhanced(a) ? boundary ? AreaNumberResult{{0, 0}, reservoir::Status::ok}
+                                        : enhanced_path::pair_score(
+                                              {area_Z(source), area_T(source), target,
+                                               float(source.confidence), float(center.confidence),
+                                               a.config->stochastic_spatial_pairs ? 1.f : .25f})
+                             : area_legacy(reuse_mis::spatial_pair_score(
+                                   source.normalizer, target.fraction, source.target));
         if (checked.status != reservoir::Status::ok) {
             AREA_DETAIL(a, aw::invalid_value, checked.status,
                         as_type<uint4>(float4(source.normalizer, target.fraction, source.target,
@@ -1252,7 +1270,7 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
         return;
     }
     auto accumulator = a.accumulators[pixel];
-    if (area_count(a, accumulator) != 4) {
+    if (area_count(a, accumulator) != (a.config->stochastic_spatial_pairs ? 1u : 4u)) {
         AREA_DETAIL(a, aw::invalid_count, accumulator.state.status,
                     area_state_values(accumulator.state));
         return;
@@ -1269,10 +1287,13 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
         if (area_failed(a))
             return;
         const uint reverse_direction = area_reverse_direction(a, direction);
+        const bool selected_canonical =
+            !a.config->stochastic_spatial_pairs || direction == a.config->canonical_atlas;
         // An edge singleton reads the center directly; an atlas pair reverses
         // within this SAME candidate, while legacy offsets use their opposite.
         const AreaNumber reverse_target =
-            neighbor == pixel
+            !selected_canonical ? AreaNumber{0, 0}
+            : neighbor == pixel
                 ? area_T(center)
                 : area_cross_load(a,
                                   ulong(reverse_direction - 1) * a.config->pixel_count + neighbor);
@@ -1290,12 +1311,15 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
             AREA_FAIL(a, aw::invalid_count);
             return;
         }
+        if (!selected_canonical)
+            continue;
         const auto part = area_enhanced(a)
                               ? enhanced_path::canonical_score(
                                     area_Z(center), area_T(center),
                                     neighbor == pixel ? AreaNumber{0, 0} : reverse_target,
                                     float(center.confidence),
-                                    neighbor == pixel ? 1.f : float(neighbor_confidence), .25f)
+                                    neighbor == pixel ? 1.f : float(neighbor_confidence),
+                                    a.config->stochastic_spatial_pairs ? 1.f : .25f)
                               : area_legacy(reuse_mis::spatial_pair_score(
                                     center.normalizer, center.target, reverse_target.fraction));
         if (part.status != reservoir::Status::ok) {
@@ -1319,6 +1343,17 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
         }
         center_score = sum.value;
     }
+    if (a.config->stochastic_spatial_pairs) {
+        const uint donor = area_neighbor_direction(a, pixel, a.config->forward_atlas);
+        const uint sampled_confidence = donor == pixel ? 0u : a.temporal[donor].confidence;
+        if (accumulator.confidence != sampled_confidence || area_failed(a)) {
+            AREA_FAIL(a, aw::invalid_count);
+            return;
+        }
+        // Confidence describes all structurally admitted domains, not the two
+        // Monte Carlo term choices, even when a sampled score or shift is null.
+        accumulator.confidence = spatial_confidence.confidence - center.confidence;
+    }
     if (area_enhanced(a) &&
         (spatial_confidence.status != confidence::Status::ok ||
          accumulator.confidence != spatial_confidence.confidence - center.confidence)) {
@@ -1332,7 +1367,8 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
         !area_add_output(a, pixel, center_score, center.xyz, area_T(center)))
         return;
     AreaNumber normalizer;
-    if (!area_finish(a, pixel, accumulator, aw::spatial_candidates, normalizer))
+    if (!area_finish(a, pixel, accumulator,
+                     a.config->stochastic_spatial_pairs ? 2u : aw::spatial_candidates, normalizer))
         return;
     if (a.config->output_mode == aw::selected_output) {
         wire::Point weighted;

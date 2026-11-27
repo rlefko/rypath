@@ -18,6 +18,7 @@
 #include "metal_gpu_diagnostics.hpp"
 #include "native_hint_budget.hpp"
 #include "render_timings.hpp"
+#include "stochastic_spatial_shared.h"
 #include "wavefront_wire.h"
 
 #include "environment_sampling.hpp"
@@ -3568,7 +3569,7 @@ struct FrameSession::Impl {
         area = std::make_shared<FrameAreaPrograms>();
         history = std::make_shared<FrameAreaHistory>();
         std::string error;
-        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v16", error);
+        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v17", error);
         if (probe == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(area_wire::Contract)
@@ -3902,6 +3903,13 @@ struct FrameSession::Impl {
                         std::uint64_t suffix_context, std::uint64_t source_suffix_context,
                         bool mapped_motion) {
         auto &b = *slot.area;
+        const auto spatial =
+            config.stochastic_spatial_pairs
+                ? rypath_stochastic_spatial::draw(static_cast<std::uint32_t>(serial),
+                                                  static_cast<std::uint32_t>(serial >> 32),
+                                                  static_cast<std::uint32_t>(config.seed),
+                                                  static_cast<std::uint32_t>(config.seed >> 32))
+                : rypath_stochastic_spatial::Selection{};
         if (duplication) {
             edw::Config c{edw::contract,
                           config.width,
@@ -3985,7 +3993,10 @@ struct FrameSession::Impl {
                 config.area_path_domain == FrameAreaPathDomain::enhanced ? history_source_bank : 0u,
                 static_cast<std::uint32_t>(actual_context),
                 static_cast<std::uint32_t>(actual_context >> 32),
-                mapped_motion ? 1u : 0u};
+                mapped_motion ? 1u : 0u,
+                config.stochastic_spatial_pairs ? 1u : 0u,
+                spatial.forward,
+                spatial.canonical};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
@@ -4438,7 +4449,12 @@ struct FrameSession::Impl {
                                   frame->info.temporal_evaluation_cache_used,
                                   frame->info.completed_evaluations, frame->info.cached_evaluations,
                                   frame->info.analytic_null_evaluations,
-                                  frame->info.logical_evaluations)
+                                  frame->info.logical_evaluations,
+                                  config.stochastic_spatial_pairs
+                                      ? rypath_stochastic_spatial::evaluations(
+                                            {frame->info.stochastic_forward_atlas,
+                                             frame->info.stochastic_canonical_atlas})
+                                      : 4u)
                             : frame->info.analytic_null_evaluations == 0 &&
                                   valid_area_evaluation_accounting(
                                       pixels, frame->info.history_used, config.mutation_steps,
@@ -4649,20 +4665,34 @@ struct FrameSession::Impl {
                     return;
                 }
                 area_merge = static_cast<int>(area_leaf);
-                if (area_leaf == 6)
+                const unsigned spatial_first =
+                    config.stochastic_spatial_pairs ? 2 + frame->info.stochastic_forward_atlas : 3u;
+                const unsigned spatial_last = config.stochastic_spatial_pairs
+                                                  ? 2 + frame->info.stochastic_canonical_atlas
+                                                  : 6u;
+                if ((config.stochastic_spatial_pairs && area_leaf == spatial_last &&
+                     area_leaf >= 3 && area_leaf <= 6) ||
+                    (!config.stochastic_spatial_pairs && area_leaf == 6))
                     area_finalizing = true;
+                else if (config.stochastic_spatial_pairs && area_leaf == spatial_first &&
+                         area_leaf >= 3 && area_leaf <= 6)
+                    area_leaf = spatial_last;
                 else if (area_leaf == 0 && frame->info.history_used)
                     area_leaf = area_wire::temporal_reverse_config;
                 else if (area_leaf == area_wire::temporal_reverse_config)
                     area_leaf = 1;
                 else if (area_leaf == 0 || area_leaf == 1)
-                    area_leaf = config.mutation_steps ? area_wire::mutation_config_begin : 3;
+                    area_leaf = config.mutation_steps
+                                    ? area_wire::mutation_config_begin
+                                    : (config.stochastic_spatial_pairs
+                                           ? 2 + frame->info.stochastic_forward_atlas
+                                           : 3u);
                 else if (area_leaf >= area_wire::mutation_config_begin &&
                          area_leaf < area_wire::temporal_reverse_config)
                     area_leaf =
                         area_leaf - area_wire::mutation_config_begin + 1 < config.mutation_steps
                             ? area_leaf + 1
-                            : 3;
+                            : spatial_first;
                 else
                     ++area_leaf;
                 first = true;
@@ -4943,8 +4973,11 @@ struct FrameSession::Impl {
                                 area_dispatch(area_programs->spatial_begin, 2, pixels,
                                               "area.spatial_begin");
                             pending_cached_evaluations += 2 * pixels;
-                            area_leaf =
-                                config.mutation_steps ? area_wire::mutation_config_begin : 3;
+                            area_leaf = config.mutation_steps
+                                            ? area_wire::mutation_config_begin
+                                            : (config.stochastic_spatial_pairs
+                                                   ? 2 + frame->info.stochastic_forward_atlas
+                                                   : 3u);
                         }
                     }
                     if (area_finalizing) {
@@ -5268,6 +5301,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         frame->info.fresh_discovery_version = frame_area_discovery_version(c.area_path_domain);
         frame->info.enhanced_suffix_cache = frame_suffix_cache_enabled(c);
         frame->info.enhanced_pair_compaction = frame_pair_compaction_enabled(c);
+        frame->info.stochastic_spatial_pairs = c.stochastic_spatial_pairs;
         frame->info.enhanced_temporal_reprojection_requested = c.enhanced_temporal_reprojection;
         frame->info.enhanced_temporal_reprojection = frame_motion_enabled(c);
         frame->info.contribution_depth =
@@ -5363,6 +5397,15 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                     return result;
                 frame->info.camera_upload_bytes = camera_upload_bytes;
                 const auto serial = history.next_serial;
+                if (c.stochastic_spatial_pairs) {
+                    const auto selected =
+                        rypath_stochastic_spatial::draw(static_cast<std::uint32_t>(serial),
+                                                        static_cast<std::uint32_t>(serial >> 32),
+                                                        static_cast<std::uint32_t>(c.seed),
+                                                        static_cast<std::uint32_t>(c.seed >> 32));
+                    frame->info.stochastic_forward_atlas = selected.forward;
+                    frame->info.stochastic_canonical_atlas = selected.canonical;
+                }
                 if (frame_paired_atlas_enabled(c)) {
                     const auto frozen =
                         paired::frame_config(static_cast<std::uint32_t>(serial),
@@ -5639,6 +5682,14 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         result.diagnostic = "Invalid Area stencil";
         return result;
     }
+    if (config.stochastic_spatial_pairs &&
+        (config.execution != FrameExecution::wavefront ||
+         config.estimator != FrameEstimator::area_replay ||
+         config.area_path_domain != FrameAreaPathDomain::enhanced ||
+         config.area_stencil != FrameAreaStencil::paired_gaussian16)) {
+        result.diagnostic = "Stochastic spatial pairs require wavefront Enhanced paired-gaussian16";
+        return result;
+    }
     if (config.mutation_steps != 0 && config.mutation_steps != 1 && config.mutation_steps != 2 &&
         config.mutation_steps != 4) {
         result.diagnostic = "Area mutation steps must be 0, 1, 2, or 4";
@@ -5789,7 +5840,8 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
         a.mutation_policy == b.mutation_policy &&
         // Stencil changes spatial source domains, never an execution-only toggle.
-        a.area_stencil == b.area_stencil;
+        a.area_stencil == b.area_stencil &&
+        a.stochastic_spatial_pairs == b.stochastic_spatial_pairs;
     if (!same) {
         result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
                             "caches, diffuse specialization, pair compaction, temporal "

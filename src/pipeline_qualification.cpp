@@ -87,6 +87,7 @@ struct Options {
     SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
     bool suffix_cache = true, compact_pairs = false, temporal_reprojection = false;
     bool compare_reconstruction = false;
+    bool stochastic_spatial_pairs = false;
     std::vector<int> arms{-1, 0, 1, 2, 4};
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir;
@@ -144,6 +145,7 @@ const char *usage =
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
     "auto|adjacent|reciprocal16|paired-gaussian16\n"
     "  [--area-path-domain summed|contribution|enhanced] [--area-contribution-replay full|prefix]\n"
+    "  [--area-spatial-mode all|stochastic-pairs (default: all)]\n"
     "  [--area-suffix-cache on|off] [--area-pair-compaction on|off]\n"
     "  [--area-temporal-reprojection off|dual] [--mutation-arms 0|0,1|0,1,2,4]\n"
     "  [--resource-profile standard|large] [--variance-policy paired|center|conservative]\n"
@@ -179,6 +181,10 @@ Options parse(int argc, char **argv) {
         } else if (key == "--area-suffix-cache" || key == "--area-pair-compaction") {
             require(value == "on" || value == "off", "Area execution switches must be on or off");
             (key == "--area-suffix-cache" ? o.suffix_cache : o.compact_pairs) = value == "on";
+        } else if (key == "--area-spatial-mode") {
+            require(value == "all" || value == "stochastic-pairs",
+                    "Area spatial mode must be all or stochastic-pairs");
+            o.stochastic_spatial_pairs = value == "stochastic-pairs";
         } else if (key == "--area-temporal-reprojection") {
             require(value == "off" || value == "dual", "Temporal reprojection must be off or dual");
             o.temporal_reprojection = value == "dual";
@@ -278,6 +284,9 @@ Options parse(int argc, char **argv) {
         }
     }
     require(!o.scene.empty() && !o.output_dir.empty(), "--scene and --output-dir are required");
+    require(!o.stochastic_spatial_pairs || (o.area_path_domain == FrameAreaPathDomain::enhanced &&
+                                            o.area_stencil == FrameAreaStencil::paired_gaussian16),
+            "Stochastic spatial pairs require Enhanced paired-gaussian16");
     require(o.contribution_replay == FrameContributionReplay::full ||
                 frame_area_contribution_family(o.area_path_domain),
             "Prefix replay requires contribution or enhanced path domain");
@@ -968,6 +977,7 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
         config.contribution_replay = o.contribution_replay;
         config.enhanced_suffix_cache = o.suffix_cache;
         config.compact_enhanced_pairs = o.compact_pairs;
+        config.stochastic_spatial_pairs = o.stochastic_spatial_pairs;
         config.enhanced_temporal_reprojection = o.temporal_reprojection;
     }
     auto renderer = session(scene.value, config, device);
@@ -1072,6 +1082,12 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"compacted_null_evaluations\":" << raw_info->compacted_null_evaluations
                  << ",\"enhanced_pair_compaction\":"
                  << (raw_info->enhanced_pair_compaction ? "true" : "false")
+                 << ",\"requested_area_spatial_mode\":"
+                 << quote(o.stochastic_spatial_pairs ? "stochastic-pairs" : "all")
+                 << ",\"area_spatial_mode\":"
+                 << quote(raw_info->stochastic_spatial_pairs ? "stochastic-pairs" : "all")
+                 << ",\"stochastic_forward_atlas\":" << raw_info->stochastic_forward_atlas
+                 << ",\"stochastic_canonical_atlas\":" << raw_info->stochastic_canonical_atlas
                  << ",\"enhanced_suffix_cache\":"
                  << (raw_info->enhanced_suffix_cache ? "true" : "false")
                  << ",\"enhanced_temporal_reprojection_enabled\":"
@@ -1216,6 +1232,16 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                                             std::to_string(raw_info->canonical_transport_version));
                     attributes.emplace_back("rypath.area.fresh_discovery_version",
                                             std::to_string(raw_info->fresh_discovery_version));
+                    attributes.emplace_back("rypath.area.requested_spatial_mode",
+                                            o.stochastic_spatial_pairs ? "stochastic-pairs"
+                                                                       : "all");
+                    attributes.emplace_back("rypath.area.spatial_mode",
+                                            raw_info->stochastic_spatial_pairs ? "stochastic-pairs"
+                                                                               : "all");
+                    attributes.emplace_back("rypath.area.stochastic_forward_atlas",
+                                            std::to_string(raw_info->stochastic_forward_atlas));
+                    attributes.emplace_back("rypath.area.stochastic_canonical_atlas",
+                                            std::to_string(raw_info->stochastic_canonical_atlas));
                     attributes.emplace_back("rypath.area.paired_atlas",
                                             atlas_json(raw_info->paired_atlas));
                     attributes.emplace_back("rypath.area.suffix_cache_enabled",
@@ -1325,7 +1351,8 @@ std::string settings_json(const Options &o) {
         << ",\"requested_area_suffix_cache\":" << (o.suffix_cache ? "true" : "false")
         << ",\"requested_area_pair_compaction\":" << (o.compact_pairs ? "true" : "false")
         << ",\"requested_area_temporal_reprojection\":"
-        << quote(o.temporal_reprojection ? "dual" : "off")
+        << quote(o.temporal_reprojection ? "dual" : "off") << ",\"requested_area_spatial_mode\":"
+        << quote(o.stochastic_spatial_pairs ? "stochastic-pairs" : "all")
         << ",\"requested_area_stencil\":" << quote(frame_area_stencil_name(o.area_stencil))
         << ",\"requested_area_mutation_policy\":"
         << quote(frame_mutation_policy_name(o.mutation_policy))

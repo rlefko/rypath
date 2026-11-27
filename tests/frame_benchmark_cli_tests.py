@@ -32,6 +32,9 @@ assert "--area-contribution-replay full|prefix" in help_text
 assert "--area-temporal-cache on|off" in help_text
 assert "--area-suffix-cache on|off" in help_text
 assert "--area-pair-compaction on|off" in help_text
+assert "--area-spatial-mode all|stochastic-pairs" in help_text
+for value in ("invalid", "stochastic-pairs"):
+    invoke(["--demo", "--output", "x.json", "--area-spatial-mode", value])
 assert "--area-temporal-reprojection off|dual" in help_text
 assert "--area-duplication off|initial-seed|initial-atom|current" in help_text
 assert "auto|adjacent|reciprocal16|paired-gaussian16" in help_text
@@ -448,7 +451,7 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 16
+    assert settings["area_contract"] == 17
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
     for mode in ("off", "initial-seed", "initial-atom", "current"):
@@ -591,6 +594,6 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 16
+        assert settings["area_contract"] == 17
         assert settings["area_source_mis"] == "source-target-mis-v1"
 print("frame benchmark CLI checks passed")

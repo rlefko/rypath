@@ -655,6 +655,45 @@ at sample 38. The failure is retained for diagnosis; the four-scene timing study
 is incomplete. Optional duplication diagnostics were absent from that runtime
 and do not establish a repair.
 
+## Experimental stochastic spatial terms
+
+`--area-spatial-mode stochastic-pairs` opts into our stochastic evaluation of
+four existing pairwise-MIS terms. It requires Enhanced wavefront Area and
+`paired-gaussian16`; `all` remains the default. Both the benchmark and
+qualification CLI retain requested/effective mode and actual per-frame atlas IDs.
+This changes the estimator's variance and selected history, not the physical
+transport model. It is not a paper performance result or a quality qualification.
+
+Condition on frozen temporal reservoirs and all four frame atlas poses. Write
+`D_k` for the donor score and `C_k` for the center score, each already including
+its existing coefficient `1/4`. Before spatial work, draw independent uniform
+`I,J` in `{1,2,3,4}` from separate Philox addresses keyed by accepted frame serial
+and seed. They are shared by all pixels, preserving atlas `J`'s actual involution
+for the reverse-target lookup. Reservoir resampling combines scores `4*D_I` and
+`4*C_J`. Its selected normalizer is their sum; there is no extra division by two,
+four, or confidence. Conditional-mean readout uses the same two weighted terms.
+Averaging over the sixteen index pairs restores the original four-term sums.
+This conditional identity preserves the ordinary input-UCW argument; independent
+raw scene quality and correlation behavior remain separate validation work.
+
+Evaluate the immutable donor-target map for atlas `I`, and independently the map
+for atlas `J` needed by the center's reverse lookup. When `I==J`, one completed
+map supplies both roles. A canonical-only pass never adds another donor or enters
+selected history. Each frame therefore evaluates one or two spatial maps, while
+retaining every admitted domain's structural confidence across all four atlases,
+including duplicate slots and zero/null draws. Border singletons retain their
+existing canonical contribution and add no donor confidence. No map is skipped
+based on its observed radiance or sampled target. Motion, cuts and suffix-cache
+support retain their existing physical replay and publication rules.
+
+Area contract 17 adds the opt-in flag and two 1-based IDs to the 116-byte config.
+Disabled configs use zero IDs. Completion accounting reports actual spatial map
+work and validates the serial/seed-derived choices; this is not four completed
+spatial evaluations relabeled as one. Cross-target storage currently retains its
+four-map allocation. CPU exhaustive checks and production-kernel controls cover
+all sixteen choices, signed means, nulls, borders, duplicate neighbors, selected
+weights and immutable records. Their results do not establish native throughput.
+
 ## Optional duplication diagnostics
 
 `--area-duplication off|initial-seed|initial-atom|current` is diagnostic-only and

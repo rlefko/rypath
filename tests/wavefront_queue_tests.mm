@@ -33,7 +33,7 @@ namespace wf = wavefront_wire;
 namespace aw = area_wire;
 static_assert(wf::contract == 23 && sizeof(wf::Contract) == 112 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 16 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 104);
+static_assert(aw::contract == 17 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 116);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12 &&
@@ -55,32 +55,32 @@ void require(bool value, const std::string &why) {
 void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
     std::string why;
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_area_contract_v16", why);
+        metal::load_pipeline(device, library, @"rypath_area_contract_v17", why);
     require(contract_pipeline != nil, why);
     require([library newFunctionWithName:@"rypath_area_contract"] == nil &&
                 [library newFunctionWithName:@"rypath_area_contract_v15"] == nil,
             "Unversioned and stale Area contracts must be absent before reading v16");
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v16 contract allocation");
+    require(contract_buffer != nil, "Area v17 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v16 contract encoder");
+    require(command && encoder, "Area v17 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v16 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v17 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 16 && contract.config_bytes == 104 &&
+    require(contract.version == 17 && contract.config_bytes == 116 &&
                 contract.history_bytes == 88 && contract.temporal_bytes == 92 &&
                 contract.accumulator_bytes == 104 && contract.replay_bytes == 32 &&
                 contract.counters_bytes == 112 && contract.contribution_evaluation_bytes == 16 &&
                 contract.suffix_entry_bytes == 160 && contract.donor_bytes == 16 &&
                 contract.paired_config_bytes == 112 && contract.paired_entry_bytes == 2,
-            "Area v16 contract mismatch; stale Area libraries are incompatible");
+            "Area v17 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
@@ -2332,6 +2332,86 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
     }
     require(wrong_reverse_separated,
             "Old opposite-slot reverse targets fail the fixed atlas MIS oracle");
+    // Exhaust both independent atlas choices through ACTUAL production kernels.
+    // Uncomputed maps contain invalid Numbers so accidental cross-slot reads fail.
+    // The canonical-only leaf must not add another donor or alter the mean.
+    config.stochastic_spatial_pairs = 1;
+    for (unsigned forward = 0; forward < 4; ++forward)
+        for (unsigned canonical = 0; canonical < 4; ++canonical) {
+            config.forward_atlas = forward + 1;
+            config.canonical_atlas = canonical + 1;
+            config.phase = aw::spatial;
+            config.candidate = 0;
+            std::memset(data(aw::cross_targets_id), 0xa5, lengths[aw::cross_targets_id]);
+            dispatch(spatial_begin);
+            const auto evaluate = [&](unsigned k) {
+                config.candidate = k + 1;
+                dispatch(prepare);
+                for (unsigned p = 0; p < pixels; ++p) {
+                    const auto source = neighbors[k][p];
+                    response(p, reevaluated[k][p], 1, frozen[source].selected_slot);
+                }
+                dispatch(merge);
+            };
+            evaluate(forward);
+            if (canonical != forward)
+                evaluate(canonical);
+            config.phase = aw::spatial_final;
+            config.candidate = 0;
+            dispatch(finalize);
+            for (unsigned p = 0; p < pixels; ++p) {
+                const auto &center = frozen[p];
+                const long double Zp = number(center.normalizer, center.normalizer_exponent),
+                                  Tp = number(center.target, center.target_exponent),
+                                  Mp = center.confidence;
+                const unsigned donor = neighbors[forward][p];
+                const auto &source = frozen[donor];
+                const long double Zs = number(source.normalizer, source.normalizer_exponent),
+                                  Ts = number(source.target, source.target_exponent),
+                                  Ms = source.confidence, Td = cross[forward][p];
+                const long double shifted =
+                    donor == p || Zs == 0 || Td == 0 ? 0 : Zs * Ms * Td / (Ms * Ts + Mp * Td);
+                const unsigned reverse_source = neighbors[canonical][p];
+                const long double reverse = cross[canonical][reverse_source];
+                const long double center_score =
+                    Zp == 0 ? 0
+                    : reverse_source == p
+                        ? Zp
+                        : Zp * Mp * Tp / (Mp * Tp + frozen[reverse_source].confidence * reverse);
+                unsigned expected_M = center.confidence;
+                for (unsigned k = 0; k < 4; ++k)
+                    if (neighbors[k][p] != p)
+                        expected_M += frozen[neighbors[k][p]].confidence;
+                std::array<long double, 3> expected_raw{};
+                const auto add = [&](long double weight, render_wire::Point xyz,
+                                     long double target) {
+                    if (target > 0) {
+                        expected_raw[0] += weight * xyz.x / target;
+                        expected_raw[1] += weight * xyz.y / target;
+                        expected_raw[2] += weight * xyz.z / target;
+                    }
+                };
+                add(shifted, reevaluated[forward][p], Td);
+                add(center_score, center.xyz, Tp);
+                scalar_near(history[p].normalizer, history[p].normalizer_exponent,
+                            shifted + center_score,
+                            "Stochastic pair actual two-candidate normalizer");
+                near(raw[p].x, expected_raw[0], "Stochastic pair independent conditional X");
+                near(raw[p].y, expected_raw[1], "Stochastic pair independent conditional Y");
+                near(raw[p].z, expected_raw[2], "Stochastic pair independent conditional Z");
+                require(history[p].confidence == expected_M,
+                        "Stochastic sampling retains ALL four structural confidences");
+                const bool center_tuple =
+                    same(history[p].payload, center.payload) && same(history[p].xyz, center.xyz);
+                const bool donor_tuple = donor != p && same(history[p].payload, source.payload) &&
+                                         same(history[p].xyz, reevaluated[forward][p]);
+                require(center_tuple || donor_tuple ||
+                            (shifted + center_score == 0 &&
+                             history[p].selected_slot == cw::enhanced_null_slot),
+                        "Canonical-only leaf never enters selected history");
+            }
+        }
+    config.stochastic_spatial_pairs = config.forward_atlas = config.canonical_atlas = 0;
     require(std::memcmp(frozen.data(), temporal, sizeof(frozen)) == 0 &&
                 std::memcmp(data(aw::paired_atlas_id), packed_entries.data(),
                             lengths[aw::paired_atlas_id]) == 0 &&

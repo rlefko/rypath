@@ -210,6 +210,32 @@ void atlas() {
     reject([](auto &x) { x.paired_atlas.poses[2][0] ^= 1; }, "wrong paired transform");
     reject([](auto &x) { ++x.paired_atlas.poses[1][1]; }, "wrong paired offset");
     reject([](auto &x) { ++x.area_serial; }, "stale paired serial");
+    {
+        auto requested = c;
+        auto actual = f;
+        requested.stochastic_spatial_pairs = actual.stochastic_spatial_pairs = true;
+        const auto selected = rypath_stochastic_spatial::draw(17, 0, std::uint32_t(c.seed),
+                                                              std::uint32_t(c.seed >> 32));
+        actual.stochastic_forward_atlas = selected.forward;
+        actual.stochastic_canonical_atlas = selected.canonical;
+        const auto saved = (4 - rypath_stochastic_spatial::evaluations(selected)) * 6;
+        actual.completed_evaluations -= saved;
+        actual.logical_evaluations -= saved;
+        check(valid_frame_qualification_identity(requested, actual, 6),
+              "stochastic spatial identity/accounting positive");
+        auto bad = actual;
+        bad.stochastic_forward_atlas = 0;
+        check(!valid_frame_qualification_identity(requested, bad, 6), "missing forward atlas");
+        bad = actual;
+        bad.stochastic_canonical_atlas = 1 + bad.stochastic_canonical_atlas % 4;
+        check(!valid_frame_qualification_identity(requested, bad, 6), "wrong canonical atlas");
+        bad = actual;
+        bad.logical_evaluations += 6;
+        check(!valid_frame_qualification_identity(requested, bad, 6), "fake all-pair accounting");
+        requested.stochastic_spatial_pairs = false;
+        check(!valid_frame_qualification_identity(requested, actual, 6),
+              "unrequested sampled mode");
+    }
     check(valid_frame_qualification_identity(c, f, 6, nullptr, std::string(64, 'a')),
           "stable asset digest");
     check(!valid_frame_qualification_identity(c, f, 6, nullptr, std::string(64, 'b')),
