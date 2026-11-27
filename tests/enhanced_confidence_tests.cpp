@@ -2,6 +2,7 @@
 #include "enhanced_confidence_shared.h"
 #include "enhanced_path_shared.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iostream>
@@ -142,6 +143,57 @@ void complementary_and_cap_timing() {
     need(c::spatial_finish(merged).source.confidence == 41,
          "Quarter MIS partition is not a confidence-count divisor");
 }
+void fixed_cap_controls() {
+    for (unsigned cap : {1u, 4u, 20u}) {
+        const auto absent = c::temporal({}, cap);
+        need(absent.status == c::Status::ok && absent.fresh.confidence == 1 &&
+                 absent.history.present == 0 && absent.history.confidence == 0 &&
+                 absent.output.confidence == 1,
+             "Every fixed cap preserves canonical absence");
+        for (unsigned prior :
+             std::array<unsigned, 5>{1u, cap, cap + 1u, 105u, c::maximum_confidence}) {
+            const auto t = c::temporal({prior, 1}, cap);
+            const unsigned bounded = prior < cap ? prior : cap;
+            need(t.status == c::Status::ok && t.history.confidence == bounded &&
+                     t.fresh.confidence == 1 && t.output.confidence == bounded + 1,
+                 "Fixed cap enters prior coefficient before fresh addition");
+        }
+        c::Source prior{};
+        unsigned expected = 0;
+        for (unsigned frame = 0; frame < 100; ++frame) {
+            const unsigned temporal_expected = (prior.present ? std::min(expected, cap) : 0) + 1;
+            const auto t = c::temporal(prior, cap);
+            auto spatial = c::spatial_begin(t.output);
+            for (unsigned neighbor = 0; neighbor < 4; ++neighbor)
+                need(c::add_neighbor(spatial, t.output) == c::Status::ok,
+                     "Fixed-cap spatial structural source");
+            prior = c::spatial_finish(spatial).source;
+            expected = 5 * temporal_expected;
+            need(prior.confidence == expected, "Independent fixed-cap recursive confidence");
+        }
+        need(expected == 5 * (cap + 1), "Cap1/4/20 stable recurrence keeps full spatial sum");
+        const auto t = c::temporal({105, 1}, cap);
+        const float fresh = c::coefficient(t.fresh).value;
+        const float history = c::coefficient(t.history).value;
+        const auto center = e::canonical_score(number(2), number(2), number(4), fresh, history);
+        const auto shifted = e::pair_score({number(4), number(4), number(2), history, fresh});
+        const long double denominator = 2 + 4.L * cap;
+        near(value(center.value), 4.L / denominator, 3e-7L,
+             "Independent fresh coefficient uses chosen fixed cap");
+        near(value(shifted.value), 8.L * cap / denominator, 3e-7L,
+             "Independent positive history coefficient uses same chosen fixed cap");
+        near(value(center.value) + value(shifted.value), 2, 3e-7L,
+             "Both fixed-cap MIS terms retain the complementary partition");
+        const auto wrong = e::pair_score({number(4), number(4), number(2), 105.f, fresh});
+        need(std::abs(value(center.value) + value(wrong.value) - 2) > .03L,
+             "Cap on only reverse/fresh term fails for each supported experiment");
+        // A realized zero/null does not delete the prior structural domain.
+        const auto zero = e::pair_score({number(0), number(0), number(2), history, fresh});
+        need(zero.status == m::Status::ok && er::zero(zero.value) && t.history.present == 1 &&
+                 t.history.confidence == cap && t.output.confidence == cap + 1,
+             "Fixed cap retains null prior domain");
+    }
+}
 void faults_and_limits() {
     need(c::coefficient({c::maximum_confidence, 1}).value == 16777216.f,
          "Maximum coefficient is exactly representable binary32");
@@ -182,6 +234,7 @@ int main() {
         recurrence();
         structural_not_sampled();
         complementary_and_cap_timing();
+        fixed_cap_controls();
         faults_and_limits();
         std::cout << "Enhanced strict structural-confidence tests passed\n";
         return 0;

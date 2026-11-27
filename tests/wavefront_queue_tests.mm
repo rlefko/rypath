@@ -1629,154 +1629,159 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
         old[p].confidence = 40 + p;
         std::memset(&record_at(old[p].record), 0xff, sizeof(ew::Record));
     }
-    // A fixed cap applies to the inverse and forward weights, the published
-    // temporal confidence, and subsequent spatial inputs even for a null donor.
-    config.enhanced_history_cap = 4;
-    config.history_source_bank = 1;
-    config.history_used = 1;
-    config.serial_low = 1;
-    config.mutation_steps = 1;
-    config.stencil = aw::adjacent_stencil;
-    config.phase = aw::fresh;
-    config.candidate = 0;
-    parameters.sample_low = 1;
-    dispatch(reset, 1);
-    dispatch(prepare);
-    std::array<render_wire::Point, pixels> fresh_xyz{};
-    std::array<float, pixels> fresh_h{}, fresh_alpha{}, fresh_Z{};
-    for (unsigned p = 0; p < pixels; ++p) {
-        fresh_h[p] = p == 0 || (p & 1u) ? 1.f : (p == 4 ? 4.f : 2.f);
-        fresh_xyz[p] = p & 1u ? render_wire::Point{}
-                              : render_wire::Point{float(4 + 2 * p), float(-2 - int(p)), 0};
-        fresh_alpha[p] = proxy(fresh_xyz[p], fresh_h[p]);
-        fresh_Z[p] = 2 * fresh_alpha[p];
-        response(p, fresh_xyz[p], fresh_h[p], p & 1u ? cw::enhanced_null_slot : 1u, fresh_Z[p]);
-        if (!(p & 1u))
-            record_at(evaluations[p].result) = descriptor(p, 0);
-    }
-    dispatch(merge);
-    config.phase = aw::temporal_reverse;
-    dispatch(prepare);
-    check_cached(temporal);
-    std::array<long double, pixels> temporal_Z{};
-    for (unsigned p = 0; p < pixels; ++p) {
-        const render_wire::Point inverse{fresh_xyz[p].x * .5f, fresh_xyz[p].y * .5f, 0};
-        const float h = p == 0 || (p & 1u) ? 1.f : 2 * fresh_h[p];
-        const float inverse_alpha = proxy(inverse, h);
-        response(p, inverse, h, p & 1u ? cw::enhanced_null_slot : 1u);
-        temporal_Z[p] = fresh_alpha[p] == 0
-                            ? 0
-                            : static_cast<long double>(fresh_Z[p]) * fresh_alpha[p] /
-                                  (fresh_alpha[p] + 4.L * inverse_alpha);
-    }
-    dispatch(merge);
-    for (unsigned p = 0; p < pixels; ++p)
-        scalar_near(accumulator[p].state.score_sum, accumulator[p].score_exponent, temporal_Z[p],
-                    "Temporal cap-before-MIS coefficient");
-    config.phase = aw::temporal;
-    config.candidate = 1;
-    dispatch(prepare);
-    check_cached(old);
-    for (unsigned p = 0; p < pixels; ++p)
-        response(p, {}, 1, cw::enhanced_null_slot);
-    dispatch(merge);
-    dispatch(finish);
-    for (unsigned p = 0; p < pixels; ++p) {
-        require(temporal[p].confidence == 5 && temporal[p].record.bank == ew::temporal_bank &&
-                    temporal[p].record.pixel == p,
-                "Warm temporal retains capped-null history confidence and current target");
-        scalar_near(temporal[p].target, temporal[p].target_exponent, fresh_alpha[p],
-                    "Warm temporal selected canonical target");
-        scalar_near(temporal[p].normalizer, temporal[p].normalizer_exponent, temporal_Z[p],
-                    "Warm temporal independent normalizer");
-        if (!(p & 1u))
-            require(
-                temporal[p].target_h_fraction == scale(fresh_h[p]).first &&
-                    temporal[p].target_h_exponent == scale(fresh_h[p]).second &&
-                    same(record_at(temporal[p].record), descriptor(p, 0)),
-                "Fresh record/h must materialize in temporal without unit-density substitution");
-        else
-            require(same(record_at(temporal[p].record), ew::empty_record()),
-                    "Null temporal winner must not read poisoned source records");
-    }
-    std::array<aw::Temporal, pixels> before_mutation{};
-    std::array<ew::Record, pixels> before_records{};
-    std::memcpy(before_mutation.data(), temporal, sizeof(before_mutation));
-    for (unsigned p = 0; p < pixels; ++p)
-        before_records[p] = record_at(temporal[p].record);
-    // Mutation reuses fresh storage. Its old bytes cannot remain a dependency
-    // of the already materialized temporal source, including rejected proposals.
-    std::memset(records + ew::fresh_bank * pixels, 0xff, pixels * sizeof(ew::Record));
-    config.phase = aw::mutation;
-    config.candidate = 0;
-    dispatch(mutation_prepare);
-    std::array<rypath_replay::ReplayState, pixels> proposed_payloads{};
-    std::memcpy(proposed_payloads.data(), data(aw::replay_id), sizeof(proposed_payloads));
-    for (unsigned p = 0; p < pixels; ++p) {
-        const bool accept = p == 0 || p == 4;
-        const auto &source = before_mutation[p];
-        const render_wire::Point xyz =
-            accept ? render_wire::Point{source.xyz.x * 2, source.xyz.y * 2, 0}
-                   : render_wire::Point{};
-        const float h = accept ? fresh_h[p] * (p == 0 ? 1.f : 2.f) : 1.f;
-        response(p, xyz, h, source.selected_slot);
-        if (accept)
-            record_at(evaluations[p].result) = descriptor(p, 1);
-    }
-    dispatch(mutation_finish);
-    aw::Counters counters{};
-    std::memcpy(&counters, data(aw::failure_id), sizeof(counters));
-    require(counters.mutations == pixels && counters.accepted == 2,
-            "One MH attempt per domain, two guaranteed accepts, zero/null rejections");
-    for (unsigned p = 0; p < pixels; ++p) {
-        const bool accept = p == 0 || p == 4;
-        require(temporal[p].confidence == 5 && temporal[p].record.bank == ew::temporal_bank &&
-                    temporal[p].record.pixel == p,
-                "MH must preserve M and normalize accepted refs");
-        if (accept) {
-            const auto alpha = proxy(leaf[p], p == 0 ? fresh_h[p] : fresh_h[p] * 2);
+    for (unsigned cap : {1u, 4u, 20u}) {
+        // A fixed cap applies to the inverse and forward weights, the published
+        // temporal confidence, and subsequent spatial inputs even for a null donor.
+        config.enhanced_history_cap = cap;
+        config.history_source_bank = 1;
+        config.history_used = 1;
+        config.serial_low = 1;
+        config.mutation_steps = 1;
+        config.stencil = aw::adjacent_stencil;
+        config.phase = aw::fresh;
+        config.candidate = 0;
+        parameters.sample_low = 1;
+        dispatch(reset, 1);
+        dispatch(prepare);
+        std::array<render_wire::Point, pixels> fresh_xyz{};
+        std::array<float, pixels> fresh_h{}, fresh_alpha{}, fresh_Z{};
+        for (unsigned p = 0; p < pixels; ++p) {
+            fresh_h[p] = p == 0 || (p & 1u) ? 1.f : (p == 4 ? 4.f : 2.f);
+            fresh_xyz[p] = p & 1u ? render_wire::Point{}
+                                  : render_wire::Point{float(4 + 2 * p), float(-2 - int(p)), 0};
+            fresh_alpha[p] = proxy(fresh_xyz[p], fresh_h[p]);
+            fresh_Z[p] = 2 * fresh_alpha[p];
+            response(p, fresh_xyz[p], fresh_h[p], p & 1u ? cw::enhanced_null_slot : 1u, fresh_Z[p]);
+            if (!(p & 1u))
+                record_at(evaluations[p].result) = descriptor(p, 0);
+        }
+        dispatch(merge);
+        config.phase = aw::temporal_reverse;
+        dispatch(prepare);
+        check_cached(temporal);
+        std::array<long double, pixels> temporal_Z{};
+        for (unsigned p = 0; p < pixels; ++p) {
+            const render_wire::Point inverse{fresh_xyz[p].x * .5f, fresh_xyz[p].y * .5f, 0};
+            const float h = p == 0 || (p & 1u) ? 1.f : 2 * fresh_h[p];
+            const float inverse_alpha = proxy(inverse, h);
+            response(p, inverse, h, p & 1u ? cw::enhanced_null_slot : 1u);
+            temporal_Z[p] =
+                fresh_alpha[p] == 0
+                    ? 0
+                    : static_cast<long double>(fresh_Z[p]) * fresh_alpha[p] /
+                          (fresh_alpha[p] + static_cast<long double>(cap) * inverse_alpha);
+        }
+        dispatch(merge);
+        for (unsigned p = 0; p < pixels; ++p)
+            scalar_near(accumulator[p].state.score_sum, accumulator[p].score_exponent,
+                        temporal_Z[p], "Temporal cap-before-MIS coefficient");
+        config.phase = aw::temporal;
+        config.candidate = 1;
+        dispatch(prepare);
+        check_cached(old);
+        for (unsigned p = 0; p < pixels; ++p)
+            response(p, {}, 1, cw::enhanced_null_slot);
+        dispatch(merge);
+        dispatch(finish);
+        for (unsigned p = 0; p < pixels; ++p) {
+            require(temporal[p].confidence == cap + 1u &&
+                        temporal[p].record.bank == ew::temporal_bank &&
+                        temporal[p].record.pixel == p,
+                    "Warm temporal retains capped-null history confidence and current target");
+            scalar_near(temporal[p].target, temporal[p].target_exponent, fresh_alpha[p],
+                        "Warm temporal selected canonical target");
+            scalar_near(temporal[p].normalizer, temporal[p].normalizer_exponent, temporal_Z[p],
+                        "Warm temporal independent normalizer");
+            if (!(p & 1u))
+                require(temporal[p].target_h_fraction == scale(fresh_h[p]).first &&
+                            temporal[p].target_h_exponent == scale(fresh_h[p]).second &&
+                            same(record_at(temporal[p].record), descriptor(p, 0)),
+                        "Fresh record/h must materialize in temporal without unit-density "
+                        "substitution");
+            else
+                require(same(record_at(temporal[p].record), ew::empty_record()),
+                        "Null temporal winner must not read poisoned source records");
+        }
+        std::array<aw::Temporal, pixels> before_mutation{};
+        std::array<ew::Record, pixels> before_records{};
+        std::memcpy(before_mutation.data(), temporal, sizeof(before_mutation));
+        for (unsigned p = 0; p < pixels; ++p)
+            before_records[p] = record_at(temporal[p].record);
+        // Mutation reuses fresh storage. Its old bytes cannot remain a dependency
+        // of the already materialized temporal source, including rejected proposals.
+        std::memset(records + ew::fresh_bank * pixels, 0xff, pixels * sizeof(ew::Record));
+        config.phase = aw::mutation;
+        config.candidate = 0;
+        dispatch(mutation_prepare);
+        std::array<rypath_replay::ReplayState, pixels> proposed_payloads{};
+        std::memcpy(proposed_payloads.data(), data(aw::replay_id), sizeof(proposed_payloads));
+        for (unsigned p = 0; p < pixels; ++p) {
+            const bool accept = p == 0 || p == 4;
             const auto &source = before_mutation[p];
-            const auto source_alpha = number(source.target, source.target_exponent);
-            const auto source_Z = number(source.normalizer, source.normalizer_exponent);
-            require(alpha > source_alpha, "Accepted MH fixture must be strictly uphill");
-            // Z is alpha*UCW. Uphill forward acceptance is 1, while the
-            // represented reverse probability is the rounded 24-bit mantissa
-            // ratio times the EXACT power-of-two exponent difference. Derive
-            // that probability independently, without production MIS helpers.
-            int old_exponent, new_exponent;
-            const long double old_fraction = std::frexp(source_alpha, &old_exponent);
-            const long double new_fraction = std::frexp(alpha, &new_exponent);
-            const float rounded_ratio = static_cast<float>(old_fraction / new_fraction);
-            const long double reverse_probability =
-                std::ldexp(static_cast<long double>(rounded_ratio), old_exponent - new_exponent);
-            require(reverse_probability > 0 && reverse_probability < 1,
-                    "Represented reverse MH probability must be nontrivial");
-            const auto expected_Z = source_Z * reverse_probability * alpha / source_alpha;
-            // Production materializes its correction with intermediate FLOAT
-            // rounding; the existing 64-epsilon bound includes those 3 operations.
-            scalar_near(temporal[p].normalizer, temporal[p].normalizer_exponent, expected_Z,
-                        "Accepted MH represented-dyadic normalizer");
-            const auto wrong_Z = source_Z * alpha / source_alpha;
-            require(std::abs(wrong_Z - expected_Z) > 1024.L *
-                                                         std::numeric_limits<float>::epsilon() *
-                                                         std::max(1.L, std::abs(expected_Z)),
-                    "Negative control must reject treating stored Z as UCW");
-            const auto h = scale(p == 0 ? fresh_h[p] : fresh_h[p] * 2);
-            require(same(temporal[p].payload, proposed_payloads[p]) &&
-                        same(temporal[p].xyz, leaf[p]) &&
-                        temporal[p].target_h_fraction == h.first &&
-                        temporal[p].target_h_exponent == h.second &&
-                        same(record_at(temporal[p].record), descriptor(p, 1)),
-                    "Accepted mutation must publish its actual candidate tuple");
-            scalar_near(temporal[p].target, temporal[p].target_exponent, alpha,
-                        "Accepted mutation scaled canonical target");
-        } else
-            require(same(temporal[p], before_mutation[p]) &&
-                        same(record_at(temporal[p].record), before_records[p]),
-                    "Rejected/zero/null mutation must retain source bytes and record");
+            const render_wire::Point xyz =
+                accept ? render_wire::Point{source.xyz.x * 2, source.xyz.y * 2, 0}
+                       : render_wire::Point{};
+            const float h = accept ? fresh_h[p] * (p == 0 ? 1.f : 2.f) : 1.f;
+            response(p, xyz, h, source.selected_slot);
+            if (accept)
+                record_at(evaluations[p].result) = descriptor(p, 1);
+        }
+        dispatch(mutation_finish);
+        aw::Counters counters{};
+        std::memcpy(&counters, data(aw::failure_id), sizeof(counters));
+        require(counters.mutations == pixels && counters.accepted == 2,
+                "One MH attempt per domain, two guaranteed accepts, zero/null rejections");
+        for (unsigned p = 0; p < pixels; ++p) {
+            const bool accept = p == 0 || p == 4;
+            require(temporal[p].confidence == cap + 1u &&
+                        temporal[p].record.bank == ew::temporal_bank &&
+                        temporal[p].record.pixel == p,
+                    "MH must preserve M and normalize accepted refs");
+            if (accept) {
+                const auto alpha = proxy(leaf[p], p == 0 ? fresh_h[p] : fresh_h[p] * 2);
+                const auto &source = before_mutation[p];
+                const auto source_alpha = number(source.target, source.target_exponent);
+                const auto source_Z = number(source.normalizer, source.normalizer_exponent);
+                require(alpha > source_alpha, "Accepted MH fixture must be strictly uphill");
+                // Z is alpha*UCW. Uphill forward acceptance is 1, while the
+                // represented reverse probability is the rounded 24-bit mantissa
+                // ratio times the EXACT power-of-two exponent difference. Derive
+                // that probability independently, without production MIS helpers.
+                int old_exponent, new_exponent;
+                const long double old_fraction = std::frexp(source_alpha, &old_exponent);
+                const long double new_fraction = std::frexp(alpha, &new_exponent);
+                const float rounded_ratio = static_cast<float>(old_fraction / new_fraction);
+                const long double reverse_probability = std::ldexp(
+                    static_cast<long double>(rounded_ratio), old_exponent - new_exponent);
+                require(reverse_probability > 0 && reverse_probability < 1,
+                        "Represented reverse MH probability must be nontrivial");
+                const auto expected_Z = source_Z * reverse_probability * alpha / source_alpha;
+                // Production materializes its correction with intermediate FLOAT
+                // rounding; the existing 64-epsilon bound includes those 3 operations.
+                scalar_near(temporal[p].normalizer, temporal[p].normalizer_exponent, expected_Z,
+                            "Accepted MH represented-dyadic normalizer");
+                const auto wrong_Z = source_Z * alpha / source_alpha;
+                require(std::abs(wrong_Z - expected_Z) > 1024.L *
+                                                             std::numeric_limits<float>::epsilon() *
+                                                             std::max(1.L, std::abs(expected_Z)),
+                        "Negative control must reject treating stored Z as UCW");
+                const auto h = scale(p == 0 ? fresh_h[p] : fresh_h[p] * 2);
+                require(same(temporal[p].payload, proposed_payloads[p]) &&
+                            same(temporal[p].xyz, leaf[p]) &&
+                            temporal[p].target_h_fraction == h.first &&
+                            temporal[p].target_h_exponent == h.second &&
+                            same(record_at(temporal[p].record), descriptor(p, 1)),
+                        "Accepted mutation must publish its actual candidate tuple");
+                scalar_near(temporal[p].target, temporal[p].target_exponent, alpha,
+                            "Accepted mutation scaled canonical target");
+            } else
+                require(same(temporal[p], before_mutation[p]) &&
+                            same(record_at(temporal[p].record), before_records[p]),
+                        "Rejected/zero/null mutation must retain source bytes and record");
+        }
+        spatial(false);
+        spatial(true); // Two identical valid reciprocal offsets are two structural slots.
     }
-    spatial(false);
-    spatial(true); // Two identical valid reciprocal offsets are two structural slots.
 
     // Reproduce the native Pavilion operands in the ACTUAL production spatial
     // kernels. Only the center draw is positive; every surrounding null draw
@@ -2028,158 +2033,174 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
     config.history_used = 1;
     config.mutation_steps = 0;
     ++config.serial_low;
-    for (const bool many_to_one : {false, true})
-        for (const bool positive_forward : {false, true}) {
-            for (unsigned source = 0; source < pixels; ++source) {
-                auto &h = mapped_history[source];
-                h = {};
-                h.payload = rypath_replay::fresh({source, 111, 113, 127, 131});
-                h.valid = 1;
-                h.xyz = {float(4 + source), 0, 0};
-                h.selected_slot = 1;
-                h.confidence = 2 + source;
-                h.record = {config.history_source_bank, source};
-                h.target_h_fraction = .5f;
-                h.target_h_exponent = 1;
-                const auto [alpha, exponent] = scale(proxy(h.xyz, 1));
-                h.target = alpha;
-                h.target_exponent = exponent;
-                h.normalizer = alpha;
-                h.normalizer_exponent = exponent + 1 + int(source % 3);
-                record_at(h.record) = descriptor(source, 0);
-            }
-            std::array<aw::History, pixels> frozen_history{};
-            std::memcpy(frozen_history.data(), mapped_history, sizeof(frozen_history));
-            for (unsigned owner = 0; owner < pixels; ++owner)
-                donors[owner] = {many_to_one ? owner / 2 : (owner + 1) % pixels,
-                                 unsigned(rypath_enhanced_motion::Classification::ordinary),
-                                 config.serial_low, config.serial_high};
-            config.phase = aw::fresh;
-            config.candidate = 0;
-            dispatch(reset, 1);
-            dispatch(prepare);
-            std::array<float, pixels> alpha{}, normalizer{};
-            for (unsigned owner = 0; owner < pixels; ++owner) {
-                const render_wire::Point xyz{float(12 + owner), 0, 0};
-                alpha[owner] = proxy(xyz, 1);
-                normalizer[owner] = 2 * alpha[owner];
-                response(owner, xyz, 1, 1, normalizer[owner]);
-                record_at(evaluations[owner].result) = descriptor(owner, 1);
-            }
-            dispatch(merge);
-            config.phase = aw::temporal_reverse;
-            dispatch(prepare);
-            std::array<long double, pixels> expected_Z{};
-            for (unsigned owner = 0; owner < pixels; ++owner) {
-                const auto source = donors[owner].source_pixel;
-                require(same(replay[owner], temporal[owner].payload) &&
+    for (unsigned cap : {1u, 4u, 20u}) {
+        config.enhanced_history_cap = cap;
+        for (const bool many_to_one : {false, true})
+            for (const bool positive_forward : {false, true}) {
+                for (unsigned source = 0; source < pixels; ++source) {
+                    auto &h = mapped_history[source];
+                    h = {};
+                    h.payload = rypath_replay::fresh({source, 111, 113, 127, 131});
+                    h.valid = 1;
+                    h.xyz = {float(4 + source), 0, 0};
+                    h.selected_slot = 1;
+                    h.confidence = 2 + source;
+                    h.record = {config.history_source_bank, source};
+                    h.target_h_fraction = .5f;
+                    h.target_h_exponent = 1;
+                    const auto [alpha, exponent] = scale(proxy(h.xyz, 1));
+                    h.target = alpha;
+                    h.target_exponent = exponent;
+                    h.normalizer = alpha;
+                    h.normalizer_exponent = exponent + 1 + int(source % 3);
+                    record_at(h.record) = descriptor(source, 0);
+                }
+                std::array<aw::History, pixels> frozen_history{};
+                std::memcpy(frozen_history.data(), mapped_history, sizeof(frozen_history));
+                for (unsigned owner = 0; owner < pixels; ++owner)
+                    donors[owner] = {many_to_one ? owner / 2 : (owner + 1) % pixels,
+                                     unsigned(rypath_enhanced_motion::Classification::ordinary),
+                                     config.serial_low, config.serial_high};
+                config.phase = aw::fresh;
+                config.candidate = 0;
+                dispatch(reset, 1);
+                dispatch(prepare);
+                std::array<float, pixels> alpha{}, normalizer{};
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    const render_wire::Point xyz{float(12 + owner), 0, 0};
+                    alpha[owner] = proxy(xyz, 1);
+                    normalizer[owner] = 2 * alpha[owner];
+                    response(owner, xyz, 1, 1, normalizer[owner]);
+                    record_at(evaluations[owner].result) = descriptor(owner, 1);
+                }
+                dispatch(merge);
+                config.phase = aw::temporal_reverse;
+                dispatch(prepare);
+                std::array<long double, pixels> expected_Z{};
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    const auto source = donors[owner].source_pixel;
+                    require(
+                        same(replay[owner], temporal[owner].payload) &&
                             same(evaluations[owner].source, ew::Reference{ew::fresh_bank, owner}),
                         "Mapped reverse retains fresh owner payload and receipt identity");
-                const render_wire::Point inverse{float(8 + 3 * source), 0, 0};
-                const auto inverse_alpha = proxy(inverse, 1);
-                const auto M = std::min(20u, mapped_history[source].confidence);
-                expected_Z[owner] = static_cast<long double>(normalizer[owner]) * alpha[owner] /
-                                    (alpha[owner] + static_cast<long double>(M) * inverse_alpha);
-                response(owner, inverse, 1, 1);
-            }
-            dispatch(merge);
-            bool negative_control = false;
-            for (unsigned owner = 0; owner < pixels; ++owner) {
-                scalar_near(accumulator[owner].state.score_sum, accumulator[owner].score_exponent,
-                            expected_Z[owner], "Mapped reverse uses donor source confidence");
-                if (donors[owner].source_pixel != owner)
-                    negative_control |= mapped_history[owner].confidence !=
-                                        mapped_history[donors[owner].source_pixel].confidence;
-            }
-            require(negative_control,
-                    "Owner-indexed reverse coefficient is a failing negative control");
-            config.phase = aw::temporal;
-            config.candidate = 1;
-            dispatch(prepare);
-            bool wrong_owner_separated = false, wrong_denominator_separated = false;
-            bool wrong_Z_separated = false, wrong_target_separated = false;
-            for (unsigned owner = 0; owner < pixels; ++owner) {
-                const auto source = donors[owner].source_pixel;
-                require(same(replay[owner], mapped_history[source].payload) &&
+                    const render_wire::Point inverse{float(8 + 3 * source), 0, 0};
+                    const auto inverse_alpha = proxy(inverse, 1);
+                    const auto M = std::min(cap, mapped_history[source].confidence);
+                    expected_Z[owner] =
+                        static_cast<long double>(normalizer[owner]) * alpha[owner] /
+                        (alpha[owner] + static_cast<long double>(M) * inverse_alpha);
+                    response(owner, inverse, 1, 1);
+                }
+                dispatch(merge);
+                bool negative_control = false;
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    scalar_near(accumulator[owner].state.score_sum,
+                                accumulator[owner].score_exponent, expected_Z[owner],
+                                "Mapped reverse uses donor source confidence");
+                    if (donors[owner].source_pixel != owner)
+                        negative_control |=
+                            std::min(cap, mapped_history[owner].confidence) !=
+                            std::min(cap, mapped_history[donors[owner].source_pixel].confidence);
+                }
+                require(cap == 1 ? !negative_control : negative_control,
+                        "Cap1 coefficients are identical; cap4/20 distinguish wrong owner M");
+                config.phase = aw::temporal;
+                config.candidate = 1;
+                dispatch(prepare);
+                bool wrong_owner_separated = false, wrong_denominator_separated = false;
+                bool wrong_Z_separated = false, wrong_target_separated = false;
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    const auto source = donors[owner].source_pixel;
+                    require(
+                        same(replay[owner], mapped_history[source].payload) &&
                             same(evaluations[owner].source, mapped_history[source].record) &&
                             requests[owner].requested_slot == mapped_history[source].selected_slot,
                         "Mapped forward uses donor payload, selected atom and owned record at s");
-                // Retain the zero reevaluation control and add a positive one.
-                // Expected arithmetic decodes the wire Number directly in long
-                // double; no production score or scaled-arithmetic helper is used.
-                const render_wire::Point destination_xyz =
-                    positive_forward ? render_wire::Point{float(7 + 2 * owner + source), 0, 0}
-                                     : render_wire::Point{};
-                const long double destination_target = proxy(destination_xyz, 1);
-                const auto &h = mapped_history[source];
-                const long double source_Z = number(h.normalizer, h.normalizer_exponent);
-                const long double source_target = number(h.target, h.target_exponent);
-                const long double M = std::min(20u, h.confidence);
-                const long double shifted =
-                    source_Z * M * destination_target / (M * source_target + destination_target);
-                const long double canonical = expected_Z[owner];
-                expected_Z[owner] = canonical + shifted;
-                if (positive_forward) {
-                    const auto &wrong = mapped_history[owner];
-                    const long double wrong_M = std::min(20u, wrong.confidence);
-                    const long double wrong_Z = number(wrong.normalizer, wrong.normalizer_exponent);
-                    const long double wrong_target = number(wrong.target, wrong.target_exponent);
-                    const long double owner_indexed =
-                        canonical + wrong_Z * wrong_M * destination_target /
-                                        (wrong_M * wrong_target + destination_target);
-                    const long double swapped_denominator =
-                        canonical + source_Z * M * destination_target /
-                                        (M * destination_target + source_target);
-                    const long double owner_Z_only =
-                        canonical +
-                        wrong_Z * M * destination_target / (M * source_target + destination_target);
-                    const long double owner_target_only =
-                        canonical +
-                        source_Z * M * destination_target / (M * wrong_target + destination_target);
-                    // Strongly separated BEFORE the GPU result is observed. These
-                    // bounds exceed the unchanged64epsilon score comparison gate.
-                    const long double separation = 1024.L * std::numeric_limits<float>::epsilon() *
-                                                   std::max(1.L, std::abs(expected_Z[owner]));
-                    wrong_owner_separated |=
-                        std::abs(owner_indexed - expected_Z[owner]) > separation;
-                    wrong_denominator_separated |=
-                        std::abs(swapped_denominator - expected_Z[owner]) > separation;
-                    wrong_Z_separated |= std::abs(owner_Z_only - expected_Z[owner]) > separation;
-                    wrong_target_separated |=
-                        std::abs(owner_target_only - expected_Z[owner]) > separation;
+                    // Retain the zero reevaluation control and add a positive one.
+                    // Expected arithmetic decodes the wire Number directly in long
+                    // double; no production score or scaled-arithmetic helper is used.
+                    const render_wire::Point destination_xyz =
+                        positive_forward ? render_wire::Point{float(7 + 2 * owner + source), 0, 0}
+                                         : render_wire::Point{};
+                    const long double destination_target = proxy(destination_xyz, 1);
+                    const auto &h = mapped_history[source];
+                    const long double source_Z = number(h.normalizer, h.normalizer_exponent);
+                    const long double source_target = number(h.target, h.target_exponent);
+                    const long double M = std::min(cap, h.confidence);
+                    const long double shifted = source_Z * M * destination_target /
+                                                (M * source_target + destination_target);
+                    const long double canonical = expected_Z[owner];
+                    expected_Z[owner] = canonical + shifted;
+                    if (positive_forward) {
+                        const auto &wrong = mapped_history[owner];
+                        const long double wrong_M = std::min(cap, wrong.confidence);
+                        const long double wrong_Z =
+                            number(wrong.normalizer, wrong.normalizer_exponent);
+                        const long double wrong_target =
+                            number(wrong.target, wrong.target_exponent);
+                        const long double owner_indexed =
+                            canonical + wrong_Z * wrong_M * destination_target /
+                                            (wrong_M * wrong_target + destination_target);
+                        const long double swapped_denominator =
+                            canonical + source_Z * M * destination_target /
+                                            (M * destination_target + source_target);
+                        const long double owner_Z_only =
+                            canonical + wrong_Z * M * destination_target /
+                                            (M * source_target + destination_target);
+                        const long double owner_target_only =
+                            canonical + source_Z * M * destination_target /
+                                            (M * wrong_target + destination_target);
+                        // Strongly separated BEFORE the GPU result is observed. These
+                        // bounds exceed the unchanged64epsilon score comparison gate.
+                        const long double separation = 1024.L *
+                                                       std::numeric_limits<float>::epsilon() *
+                                                       std::max(1.L, std::abs(expected_Z[owner]));
+                        wrong_owner_separated |=
+                            std::abs(owner_indexed - expected_Z[owner]) > separation;
+                        wrong_denominator_separated |=
+                            std::abs(swapped_denominator - expected_Z[owner]) > separation;
+                        wrong_Z_separated |=
+                            std::abs(owner_Z_only - expected_Z[owner]) > separation;
+                        wrong_target_separated |=
+                            std::abs(owner_target_only - expected_Z[owner]) > separation;
+                    }
+                    response(owner, destination_xyz, 1, 1);
                 }
-                response(owner, destination_xyz, 1, 1);
-            }
-            if (positive_forward)
-                require(wrong_owner_separated && wrong_denominator_separated && wrong_Z_separated &&
-                            wrong_target_separated,
-                        "Positive mapped score must reject owner-indexed Z/T/M and reversed "
-                        "denominator orientation");
-            dispatch(merge);
-            for (unsigned owner = 0; owner < pixels; ++owner)
-                scalar_near(accumulator[owner].state.score_sum, accumulator[owner].score_exponent,
-                            expected_Z[owner],
-                            "Mapped forward adds independent positive source score");
-            dispatch(finish);
-            for (unsigned owner = 0; owner < pixels; ++owner) {
-                const auto source = donors[owner].source_pixel;
-                require(temporal[owner].confidence ==
-                                1 + std::min(20u, mapped_history[source].confidence) &&
-                            temporal[owner].record.bank == ew::temporal_bank &&
-                            temporal[owner].record.pixel == owner,
-                        "Mapped temporal confidence and publication use source s and owner d "
-                        "respectively");
-                scalar_near(
-                    temporal[owner].normalizer, temporal[owner].normalizer_exponent,
-                    expected_Z[owner],
-                    positive_forward
-                        ? "Mapped positive temporal normalizer is the sum of canonical and shifted "
-                          "scores"
-                        : "Mapped zero-forward temporal normalizer retains the canonical score");
-            }
-            require(std::memcmp(frozen_history.data(), mapped_history, sizeof(frozen_history)) == 0,
+                if (positive_forward)
+                    require(wrong_owner_separated &&
+                                (cap == 1 ? !wrong_denominator_separated
+                                          : wrong_denominator_separated) &&
+                                wrong_Z_separated && wrong_target_separated,
+                            "Positive mapped score must reject owner-indexed Z/T/M and reversed "
+                            "denominator orientation");
+                dispatch(merge);
+                for (unsigned owner = 0; owner < pixels; ++owner)
+                    scalar_near(accumulator[owner].state.score_sum,
+                                accumulator[owner].score_exponent, expected_Z[owner],
+                                "Mapped forward adds independent positive source score");
+                dispatch(finish);
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    const auto source = donors[owner].source_pixel;
+                    require(temporal[owner].confidence ==
+                                    1 + std::min(cap, mapped_history[source].confidence) &&
+                                temporal[owner].record.bank == ew::temporal_bank &&
+                                temporal[owner].record.pixel == owner,
+                            "Mapped temporal confidence and publication use source s and owner d "
+                            "respectively");
+                    scalar_near(temporal[owner].normalizer, temporal[owner].normalizer_exponent,
+                                expected_Z[owner],
+                                positive_forward ? "Mapped positive temporal normalizer is the sum "
+                                                   "of canonical and shifted "
+                                                   "scores"
+                                                 : "Mapped zero-forward temporal normalizer "
+                                                   "retains the canonical score");
+                }
+                require(
+                    std::memcmp(frozen_history.data(), mapped_history, sizeof(frozen_history)) == 0,
                     "Many-to-one temporal reuse never mutates old source payloads");
-        }
+            }
+    }
+    config.enhanced_history_cap = 20;
     // Four handwritten involutions isolate SAME-k reverse targets from RNG
     // and production atlas construction. All scalar/vector expectations below
     // are finite-domain long-double pairwise MIS, not production score helpers.
