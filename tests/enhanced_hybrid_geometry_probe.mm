@@ -407,6 +407,64 @@ std::vector<Case> cases() {
     lanes(1, {1, -0.f, -0.f, 0}, 1);
     lanes(0, {0, 0, std::numeric_limits<float>::denorm_min(), 0}, 4);
     lanes(0, {0, 0, 0, 0}, 0);
+    // Actual rolling predicate, with independent hemisphere and normal-incidence
+    // PDF arithmetic. No AS or candidate-builder oracle is used here.
+    const auto certificate = [](Case value) {
+        value.query[0] = 7;
+        value.query[3] = 1;
+        value.query[4] = 15;
+        value.query[5] = 0;
+        value.query[6] = 1;
+        value.query[40] = value.query[44] = bits(.5f);
+        value.query[41] = value.query[45] = 1;
+        value.query[42] = value.query[46] = bits(1);
+        value.query[47] = 1;
+        value.needed = 1;
+        return value;
+    };
+    c = certificate(diffuse());
+    all.push_back(c);
+    c.query[38] = bits(-1);
+    c.needed = 0;
+    all.push_back(c); // Diffuse finite hemisphere support is part of the veto.
+    c.query[36] = bits(1);
+    c.query[38] = 0;
+    all.push_back(c); // Tangent has no continuous support.
+    c = certificate(diffuse());
+    c.query[3] = 0;
+    c.query[5] = 1;
+    c.needed = 0;
+    all.push_back(c); // No base certificate means no earlier candidate.
+    c.query[3] = 1;
+    c.status = invalid;
+    all.push_back(c); // A nonempty certificate binds its predecessor identity.
+    c = certificate(diffuse());
+    c.query[47] = 0;
+    c.status = invalid;
+    all.push_back(c);
+    c = certificate(diffuse());
+    c.query[4] = 0;
+    c.status = invalid;
+    all.push_back(c);
+    c = certificate(diffuse());
+    c.query[2] = 1;
+    c.query[4] = 3;
+    c.query[9] = bits(std::numeric_limits<float>::quiet_NaN());
+    c.status = invalid;
+    all.push_back(c); // Query mask must expose a needed lane absent from physical history.
+    c = certificate(diffuse());
+    c.query[2] = 1;
+    c.query[4] = 3;
+    c.query[9] = 0;
+    all.push_back(c); // Zero reflectance is valid, and its likelihood is still queried.
+    c = certificate(conductor());
+    all.push_back(c);
+    c.query[45] = std::bit_cast<unsigned>(-15); // D=2^-16.
+    c.needed = 0;
+    const long double q0 = 1 / (4 * std::acos(-1.L) * .25L * .5L);
+    need(std::ldexp(1.L, -16) / q0 < .0002L * 4 * std::acos(-1.L),
+         "Declared rough inverse-footprint negative has separated independent bound");
+    all.push_back(c);
     return all;
 }
 int run(const std::filesystem::path &path) {
@@ -519,6 +577,9 @@ int run(const std::filesystem::path &path) {
                      label + " exact original offset and independent CPU outward rounding");
         } else if (c.query[0] == 6) {
             need(v[40] == c.needed, label + " union of positive density and beta requirements");
+        } else if (c.query[0] == 7) {
+            need(v[40] == (c.status == ok ? c.needed : 0),
+                 label + " actual rolling predecessor support/inverse-footprint predicate");
         } else if (c.status == ok) {
             need(v[40] == 0 && v[41] == c.footprint_decision && v[42] == 1,
                  label + " actual footprint classifier");

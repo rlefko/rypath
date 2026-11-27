@@ -40,6 +40,24 @@
     sample.wavelength = lambda.lambda[0];
     const uint old_count = count;
     bool terminated = true;
+#if RYPATH_PACKET_EVENT_ENHANCED
+    namespace hybrid_runtime = enhanced_hybrid_runtime;
+    namespace hybrid_geometry = enhanced_hybrid_geometry;
+    namespace hybrid_chart = ::rypath_enhanced_chart;
+    const float incoming_generation_q = pdf;
+    hybrid_runtime::Pending hybrid_pending;
+    const auto hybrid_import = sink.support_record();
+    const bool forced_pivot = !sink.has_interior() &&
+                              hybrid_import.tag == hybrid_chart::interior_zomega &&
+                              count == hybrid_import.event_ordinal + 1u;
+    bool forced_continuation = false;
+    float3 forced_omega = 0;
+    if (sink.state.failed) {
+        sample.status = wire::invalid_arithmetic;
+        state.complete = true;
+        return;
+    }
+#endif
     // Keep the current event local until its endpoint/direct contributions have
     // consumed both historical endpoints. It need not survive another dispatch.
     typename State::Current current{};
@@ -53,9 +71,9 @@
         }
         r.alpha.incoming = incoming;
 #if RYPATH_PACKET_EVENT_PRETRACED
-        const auto hit = pretraced;
+        auto hit = pretraced;
 #else
-        const auto hit =
+        auto hit =
             p.instance_count == 0 ? SurfaceHit{intersection_type::none, 0, 0, 0, 0, float2(0), true}
             : (native_triangle_hint_mode & 2u)
                 ? trace_packet_seeded_closest(incoming, r.scene, all_visible, r.intersection_table,
@@ -68,6 +86,21 @@
             sample.status = wire::invalid_hit;
             break;
         }
+#if RYPATH_PACKET_EVENT_ENHANCED
+        if (forced_pivot) {
+            if (hit.type != intersection_type::triangle || hit.geometry_id != 0 ||
+                hit.instance_id != hybrid_import.instance ||
+                hit.primitive_id != hybrid_import.primitive ||
+                hit.primitive_kind != wire::triangle_primitive) {
+                hybrid_runtime::outside(state, sink);
+                break;
+            }
+            // Traversal certifies identity. The chart owns UV, so an offset
+            // ray's returned coordinates can never change the fixed endpoint.
+            hit.coordinates = float2(as_type<float>(hybrid_import.coordinate_bits[0]),
+                                     as_type<float>(hybrid_import.coordinate_bits[1]));
+        }
+#endif
         if (hit.type == intersection_type::none) {
             if (mode == Mode::Radiance) {
 #if RYPATH_PACKET_EVENT_REUSE_CURRENT
@@ -126,9 +159,23 @@
                            ? instance.triangle_count + hit.primitive_id
                            : instance.triangle_count + instance.patch_count + hit.primitive_id);
         v.wo = -incoming.direction;
-        if (!surface_point(hit.coordinates, kind, instance, hit.primitive_id, r.alpha.positions,
-                           r.alpha.triangles, r.alpha.patches, r.alpha.normals, p.normal_count,
-                           PointSource::native_hit, v.point, r.alpha.material_data)) {
+#if RYPATH_PACKET_EVENT_ENHANCED
+        if (forced_pivot) {
+            const auto support = hybrid_runtime::owned_point(
+                r, hybrid_import, sink.state.requested_slot, p.max_depth, v.point);
+            if (support == hybrid_geometry::Status::invalid_arithmetic) {
+                sample.status = wire::invalid_arithmetic;
+                break;
+            }
+            if (support != hybrid_geometry::Status::ok) {
+                hybrid_runtime::outside(state, sink);
+                break;
+            }
+        } else
+#endif
+            if (!surface_point(hit.coordinates, kind, instance, hit.primitive_id, r.alpha.positions,
+                               r.alpha.triangles, r.alpha.patches, r.alpha.normals, p.normal_count,
+                               PointSource::native_hit, v.point, r.alpha.material_data)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -226,7 +273,7 @@
                  incoming.direction)) ||
             !scattering_frame(frame, v.frame) ||
             !prepare_event_bsdf(r, material, context, lambda, beta, v.bsdf,
-                             hero ? state.hero.active_mask : 15u)) {
+                                hero ? state.hero.active_mask : 15u)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -272,7 +319,10 @@
                                   128 * FLT_MIN;
             }
         }
-        v.point.error += abs(v.point.position - ray_position) + ray_error;
+#if RYPATH_PACKET_EVENT_ENHANCED
+        if (!forced_pivot)
+#endif
+            v.point.error += abs(v.point.position - ray_position) + ray_error;
         if (!all(isfinite(v.point.error))) {
             sample.status = wire::invalid_arithmetic;
             break;
@@ -307,14 +357,19 @@
         // collapse, roulette or direction sample. Keep full/fresh collectors on
         // their original path, including collectors that request both atoms.
         const uint selected_event_slot = 2u * (count - 2u);
-        const bool selected_event_only = sink.stop_after(count - 2u) &&
-                                         (sink.wanted(selected_event_slot) !=
-                                          sink.wanted(selected_event_slot + 1u));
+        const bool selected_event_only =
+            sink.stop_after(count - 2u) &&
+            (sink.wanted(selected_event_slot) != sink.wanted(selected_event_slot + 1u));
         if (selected_event_only && sink.wanted(selected_event_slot))
             break;
 #endif
-        const auto draws =
+        auto draws =
             random(r, sample, index, (mode == Mode::Radiance ? 4u : 69u) + count - 2, replay);
+#if RYPATH_PACKET_EVENT_ENHANCED && defined(RYPATH_ENHANCED_DIRECTION_DRAW_CONTROL)
+        // Validation-only poisoning of direction coordinates removed by the
+        // owned chart. Production has no hook, branch or alternate RNG address.
+        RYPATH_ENHANCED_DIRECTION_DRAW_CONTROL(draws, hybrid_import, count - 2u, sample, p);
+#endif
         const float3 sampled_wo_local = v.frame.local(v.wo);
         rypath_packet::Sample continuation{};
         if (hero) {
@@ -340,9 +395,58 @@
             if (selected_event_only && sink.wanted(selected_event_slot + 1u))
                 break;
 #endif
-            const auto proposed = hero_sample_current(
-                current.bsdf, sampled_wo_local, sample_uniform(p, draws.x), uniform2(p, draws.yz),
-                v.seed, mode);
+            rypath_hero_scattering::Sample proposed;
+#if RYPATH_PACKET_EVENT_ENHANCED
+            const uint event = count - 2u;
+            forced_continuation = !sink.has_interior() &&
+                                  hybrid_import.tag == hybrid_chart::interior_zomega &&
+                                  (event + 1u == hybrid_import.event_ordinal || forced_pivot);
+            if (forced_continuation) {
+                const auto admission = hybrid_runtime::admission_status(r, current);
+                if (admission == hybrid_geometry::Status::invalid_arithmetic) {
+                    sample.status = wire::invalid_arithmetic;
+                    break;
+                }
+                if (admission != hybrid_geometry::Status::ok) {
+                    hybrid_runtime::outside(state, sink);
+                    break;
+                }
+                forced_omega = hybrid_runtime::world_omega(hybrid_import);
+                if (!forced_pivot) {
+                    SurfacePoint target;
+                    const auto support = hybrid_runtime::owned_point(
+                        r, hybrid_import, sink.state.requested_slot, p.max_depth, target);
+                    if (support == hybrid_geometry::Status::invalid_arithmetic) {
+                        sample.status = wire::invalid_arithmetic;
+                        break;
+                    }
+                    if (support != hybrid_geometry::Status::ok) {
+                        hybrid_runtime::outside(state, sink);
+                        break;
+                    }
+                    const auto direction = hybrid_geometry::physical_direction(
+                        current.point.position, target.position);
+                    if (direction.status == hybrid_geometry::Status::invalid_arithmetic) {
+                        sample.status = wire::invalid_arithmetic;
+                        break;
+                    }
+                    if (direction.status != hybrid_geometry::Status::ok) {
+                        hybrid_runtime::outside(state, sink);
+                        break;
+                    }
+                    forced_omega = direction.direction;
+                }
+                proposed = hybrid_runtime::forced_sample(current.bsdf, current.frame, current.wo,
+                                                         forced_omega, current.seed);
+                if (proposed.valid && !proposed.accepted) {
+                    hybrid_runtime::outside(state, sink);
+                    break;
+                }
+            } else
+#endif
+                proposed =
+                    hero_sample_current(current.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
+                                        uniform2(p, draws.yz), v.seed, mode);
             continuation.wi = proposed.wi;
             continuation.pdf = proposed.fallback ? proposed.fallback_pdf : proposed.pdf[0];
             continuation.reverse_pdf = continuation.pdf;
@@ -357,8 +461,8 @@
                     // Its directional MIS proxy is NOT a cumulative likelihood.
                     beta *= proposed.fallback_weight;
                 } else {
-                    const auto advanced = rypath_hero::advance(
-                        direct_density, beta, proposed.numerator, proposed.pdf);
+                    const auto advanced = rypath_hero::advance(direct_density, beta,
+                                                               proposed.numerator, proposed.pdf);
                     continuation.valid = advanced.valid;
                     if (advanced.valid) {
                         beta = advanced.beta;
@@ -373,8 +477,9 @@
                         state.hero.active_mask |= 1u << k;
             }
         } else if constexpr (!State::compact_hero) {
-            continuation = rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
-                                                  uniform2(p, draws.yz), v.seed, mode);
+            continuation =
+                rypath_packet::sample(v.bsdf, sampled_wo_local, sample_uniform(p, draws.x),
+                                      uniform2(p, draws.yz), v.seed, mode);
         }
         if (!continuation.valid) {
             sample.status = wire::invalid_arithmetic;
@@ -391,7 +496,12 @@
         stored.sampled_next_id = (mode == Mode::Importance ? 0x80000000u : 0u) | count;
         stored.pair_valid = true;
         float3 wi = v.frame.world(continuation.wi);
-        if (!rypath_surface_detail::unit_vector(wi, wi)) {
+#if RYPATH_PACKET_EVENT_ENHANCED
+        if (forced_continuation)
+            wi = forced_omega;
+        else
+#endif
+            if (!rypath_surface_detail::unit_vector(wi, wi)) {
             sample.status = wire::invalid_arithmetic;
             break;
         }
@@ -432,6 +542,17 @@
             break;
         }
         incoming = ray(origin, wi);
+#if RYPATH_PACKET_EVENT_ENHANCED
+        const auto candidate_status = hybrid_runtime::candidate(
+            r, state, current, material, context, previous_density, incoming_generation_q,
+            continuation.pdf, wi, incoming, sink, hybrid_pending);
+        if (candidate_status != hybrid_geometry::Status::ok) {
+            sample.status = wire::invalid_arithmetic;
+            break;
+        }
+        if (sink.state.hybrid.outside)
+            break;
+#endif
         if (!hero && !packet_bidirectional_enabled(p) && mode == Mode::Radiance) {
             rypath_packet_roulette::account_transmission(roulette_eta, continuation.eta,
                                                          continuation.transmission);
@@ -452,6 +573,19 @@
     state.ray_max_distance = incoming.max_distance;
     state.complete =
         terminated || sample.status != wire::success || count >= capacity || !nonzero(beta);
+#if RYPATH_PACKET_EVENT_ENHANCED
+    if (sink.state.hybrid.outside) {
+        state.complete = true;
+        return; // A partial chart map is exactly zero, with no substituted suffix.
+    }
+    if (count == old_count && !state.complete) {
+        // The next physical surface follows an intervening null/invisible
+        // boundary; it cannot own a direct predecessor-to-pivot connection.
+        sink.state.hybrid.predecessor_valid = 0;
+        sink.state.hybrid.predecessor = {};
+        sink.state.hybrid.certificate = {};
+    }
+#endif
     if (count != old_count && sample.status == wire::success) {
         const thread auto &pt = current;
         const thread auto &previous = state.latest;
@@ -466,8 +600,8 @@
 #if RYPATH_PACKET_EVENT_CONTRIBUTION
             const uint endpoint_slot = 2u * (count - 2u);
             if (sink.wanted(endpoint_slot)) {
-                const auto endpoint = hero_endpoint(r, sample, lambda, pt, previous, before, count,
-                                                      previous_density);
+                const auto endpoint =
+                    hero_endpoint(r, sample, lambda, pt, previous, before, count, previous_density);
 #if !RYPATH_PACKET_EVENT_ENHANCED
                 state.radiance += endpoint;
 #endif
@@ -477,11 +611,15 @@
             if (sample.status == wire::success && count < capacity && direct_allowed &&
                 sink.wanted(endpoint_slot + 1u)) {
 #if RYPATH_PACKET_EVENT_ENHANCED
-                const auto direct = hero_direct_enhanced(r, sample, lambda, index, pt, previous, count,
-                                                          direct_beta, direct_density, replay, sink);
+                const auto direct =
+                    sink.has_interior()
+                        ? hero_direct(r, sample, lambda, index, pt, previous, count, direct_beta,
+                                      direct_density, replay)
+                        : hero_direct_enhanced(r, sample, lambda, index, pt, previous, count,
+                                               direct_beta, direct_density, replay, sink);
 #else
                 const auto direct = hero_direct(r, sample, lambda, index, pt, previous, count,
-                                                  direct_beta, direct_density, replay);
+                                                direct_beta, direct_density, replay);
 #endif
 #if !RYPATH_PACKET_EVENT_ENHANCED
                 state.radiance += direct;
@@ -494,11 +632,11 @@
             if (sink.stop_after(count - 2u))
                 state.complete = true;
 #else
-            state.radiance += hero_endpoint(r, sample, lambda, pt, previous, before, count,
-                                             previous_density);
+            state.radiance +=
+                hero_endpoint(r, sample, lambda, pt, previous, before, count, previous_density);
             if (sample.status == wire::success && count < capacity && direct_allowed)
                 state.radiance += hero_direct(r, sample, lambda, index, pt, previous, count,
-                                               direct_beta, direct_density, replay);
+                                              direct_beta, direct_density, replay);
 #endif
         } else if constexpr (!State::compact_hero) {
             state.radiance += packet_pt_endpoint(r, sample, lambda, pt, previous, before, count);
@@ -510,6 +648,14 @@
             sample.status = wire::invalid_arithmetic;
         if (sample.status != wire::success)
             state.complete = true;
+#if RYPATH_PACKET_EVENT_ENHANCED
+        if (sample.status == wire::success && !sink.state.failed &&
+            !hybrid_runtime::commit_candidate(r, state, current, direct_beta, hybrid_pending,
+                                              sink)) {
+            sample.status = wire::invalid_arithmetic;
+            state.complete = true;
+        }
+#endif
     }
     if (count != old_count) {
         // Null/invisible boundaries leave count unchanged and preserve history.

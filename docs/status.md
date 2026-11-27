@@ -9,12 +9,13 @@ atoms without outer roulette and uses independently weighted discovery roulette
 for fresh paths. It also owns supported terminal-light endpoints for forced NEE
 reconnection and carries strict temporal/spatial confidence in resampling MIS.
 The scaled-weight repair at `3335bba` completes the four-scene native screen;
-its intermediate timings remain below target. Canonical law 4 now prepares
-primary/secondary geometry and neutral interior charts. Focused physical, NEE,
-geometry and utility GPU checks pass. Forced connection and candidate activation
-remain absent, with no new native-v4 image or timing claim.
-Adaptive interior reconnection and cached suffixes remain unfinished, so this is
-not yet the complete Enhanced algorithm. The frame-rate targets are unmet.
+its intermediate timings remain below target. Canonical law 4 now activates
+supported interior charts, forces their incoming/outgoing connections and checks
+first-eligible support. Focused physical, NEE, geometry, matched-mean and
+frame-history checks pass; native forced-evaluation qualification remains in
+progress, with no new native-v4 scene timing claim. Cached suffixes, dual motion
+and shift-pair compaction remain unfinished, so this is not yet the complete
+Enhanced algorithm. The frame-rate targets are unmet.
 
 The [hero execution follow-up](hero-execution.md) combines exact temporal
 memoization with smaller current, historical and sampled-light state. Its short

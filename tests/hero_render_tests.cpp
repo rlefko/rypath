@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_stencil_shared.h"
+#include "enhanced_chart_shared.h"
 #include "frame_session.hpp"
 #include "frame_session_test_access.hpp"
 #include "hero_spectrum_shared.h"
@@ -999,24 +1001,126 @@ void enhanced_null_transitions() {
                  "Camera miss/emitter transitions actually change canonical support");
     }
 }
+template <typename T> bool hybrid_same_words(const T &a, const T &b) {
+    static_assert(sizeof(T) % sizeof(std::uint32_t) == 0);
+    using Words = std::array<std::uint32_t, sizeof(T) / sizeof(std::uint32_t)>;
+    return std::bit_cast<Words>(a) == std::bit_cast<Words>(b);
+}
+struct HybridWitnesses {
+    std::uint64_t fresh = 0, nonself_edges = 0, imported = 0;
+};
+HybridWitnesses hybrid_witnesses(const EnhancedSessionSnapshot &snapshot, const FrameInfo &info,
+                                 unsigned depth) {
+    need(snapshot.status == GeometryStatus::success, snapshot.diagnostic);
+    const auto pixels = std::uint32_t(info.width * info.height);
+    need(snapshot.width == 17 && snapshot.height == 17 && snapshot.width == info.width &&
+             snapshot.height == info.height && snapshot.serial == info.area_serial &&
+             snapshot.generation == info.history_generation && snapshot.epoch == info.epoch &&
+             snapshot.history.size() == pixels && snapshot.temporal.size() == pixels &&
+             snapshot.records.size() == std::size_t(pixels) * enhanced_wire::bank_count &&
+             !info.history_used && info.mutation_attempts == 0 && info.cached_evaluations == 0,
+         "Hybrid witness requires an exact cold publication with immutable fresh temporal tuples");
+    const auto positive = [](float fraction, int exponent) {
+        return std::isfinite(fraction) && fraction >= .5f && fraction < 1.f && exponent >= -4096 &&
+               exponent <= 4096;
+    };
+    const auto record = [&](const auto &tuple) -> const enhanced_wire::Record * {
+        if (!positive(tuple.normalizer, tuple.normalizer_exponent) ||
+            !positive(tuple.target, tuple.target_exponent) ||
+            !enhanced_wire::valid(tuple.record, pixels))
+            return nullptr;
+        const auto &value =
+            snapshot.records[std::size_t(tuple.record.bank) * pixels + tuple.record.pixel];
+        if (value.tag != rypath_enhanced_chart::interior_zomega)
+            return nullptr;
+        need(std::isfinite(tuple.xyz.x) && std::isfinite(tuple.xyz.y) &&
+                 std::isfinite(tuple.xyz.z) && tuple.xyz.x >= 0 && tuple.xyz.y >= 0 &&
+                 tuple.xyz.z >= 0 && (tuple.xyz.x > 0 || tuple.xyz.y > 0 || tuple.xyz.z > 0),
+             "Positive interior witness retains finite nonnegative nonzero physical XYZ");
+        need(rypath_enhanced_chart::validate_chart(value, tuple.selected_slot, depth) ==
+                 rypath_enhanced_chart::Status::ok,
+             "Positive interior witness must have a structurally valid owned record");
+        return &value;
+    };
+    const auto d = info.area_stencil_offsets;
+    const rypath_area_stencil::Offsets offsets{{d[0], d[1]}, {d[2], d[3]}};
+    HybridWitnesses result;
+    for (std::uint32_t p = 0; p < pixels; ++p) {
+        const auto &local = snapshot.temporal[p];
+        if (record(local)) {
+            need(local.record.bank == enhanced_wire::temporal_bank && local.record.pixel == p,
+                 "Fresh witness resolves the immutable per-pixel temporal bank3 record");
+            ++result.fresh;
+        }
+        const auto &destination = snapshot.history[p];
+        const auto *selected = destination.valid == 1 ? record(destination) : nullptr;
+        if (selected)
+            need(destination.record.bank == snapshot.front_bank && destination.record.pixel == p,
+                 "Published witness resolves the receiver-owned front history record");
+        bool selected_donor = false;
+        for (unsigned slot = 1; slot <= 4; ++slot) {
+            const auto q = rypath_area_stencil::neighbor(p, info.width, info.height, offsets, slot);
+            if (q == p)
+                continue;
+            ++result.nonself_edges;
+            need(rypath_area_stencil::neighbor(q, info.width, info.height, offsets,
+                                               rypath_area_stencil::inverse_slot(slot)) == p,
+                 "Hybrid donor witness follows an actual reciprocal nonself edge");
+            const auto &donor = snapshot.temporal[q];
+            const auto *source = record(donor);
+            if (selected && source && !hybrid_same_words(destination.payload, local.payload) &&
+                hybrid_same_words(destination.payload, donor.payload) &&
+                destination.selected_slot == donor.selected_slot &&
+                hybrid_same_words(*selected, *source))
+                selected_donor = true;
+        }
+        if (selected_donor)
+            ++result.imported; // Unique destination pixels, even for duplicate stencil slots.
+    }
+    return result;
+}
 void enhanced_mean_contrast(const RenderScene &scene, std::string_view label,
-                            std::optional<float> analytic_radiance = {}) {
+                            std::optional<float> analytic_radiance = {}, bool hybrid = false) {
     // Replication is by32 independent run seeds, never by correlated pixels.
     // Same predeclared5 empiricalSE +128epsilon criterion for both contrasts.
     constexpr unsigned repeats = 32;
     std::array<std::array<double, 3>, repeats> differences{};
     std::array<double, 3> reference_mean{}, candidate_mean{};
     std::array<std::array<double, 3>, repeats> reference_samples{}, candidate_samples{};
+    HybridWitnesses witnesses;
     for (unsigned n = 0; n < repeats; ++n) {
         auto c = enhanced_config();
         c.seed = seed + 7919ull * n;
         c.mutation_steps = 0;
         c.cache_temporal_evaluations = false;
+        if (hybrid) {
+            c.width = c.height = 17;
+            c.capacity = 289;
+        }
         auto control = c;
         control.area_path_domain = FrameAreaPathDomain::summed;
         auto reference = session(scene, control), candidate = session(scene, c);
+        if (hybrid && n == 0)
+            need(FrameSessionTestAccess::snapshot_enhanced(*candidate, 0).status ==
+                     GeometryStatus::failure,
+                 "Unsubmitted Enhanced snapshot must be rejected");
         const auto a = contribution_capture(*reference, control, scene.max_depth, 0, high_sample);
         const auto b = enhanced_capture(*candidate, c, scene.max_depth, 0, high_sample);
+        if (hybrid) {
+            const auto found = hybrid_witnesses(
+                FrameSessionTestAccess::snapshot_enhanced(*candidate, b.info.area_serial), b.info,
+                scene.max_depth);
+            witnesses.fresh += found.fresh;
+            witnesses.nonself_edges += found.nonself_edges;
+            witnesses.imported += found.imported;
+            std::cout << "hybrid_witness seed=" << c.seed << " positive_fresh_tag5=" << found.fresh
+                      << " nonself_edges=" << found.nonself_edges
+                      << " positive_selected_donor_pixels=" << found.imported << std::endl;
+            if (n == 0)
+                need(FrameSessionTestAccess::snapshot_enhanced(*candidate, 1).status ==
+                         GeometryStatus::failure,
+                     "Mismatched Enhanced snapshot serial must be rejected");
+        }
         std::array<double, 3> x{}, y{};
         for (std::size_t p = 0; p < a.image.raw_xyz.size(); ++p)
             for (unsigned k = 0; k < 3; ++k) {
@@ -1085,6 +1189,14 @@ void enhanced_mean_contrast(const RenderScene &scene, std::string_view label,
                      "Closed-cavity mean agrees with finite-depth analytic transport");
             }
     }
+    if (hybrid) {
+        std::cout << "hybrid_witness_summary seeds=32 positive_fresh_tag5=" << witnesses.fresh
+                  << " nonself_edges=" << witnesses.nonself_edges
+                  << " positive_selected_donor_pixels=" << witnesses.imported << std::endl;
+        need(witnesses.fresh > 0 && witnesses.nonself_edges > 0 && witnesses.imported > 0,
+             "Hybrid mean screen must exercise positive fresh and selected nonself imported tag5 "
+             "atoms");
+    }
 }
 RenderScene enhanced_cavity() {
     auto scene = base();
@@ -1130,6 +1242,119 @@ RenderScene enhanced_cavity() {
         }
     frames(scene);
     return scene;
+}
+void enhanced_snapshot_failed_attempt() {
+    // Same real nonfinite sensor failure used by the wavefront failure tests.
+    // D0 primary emission initially hides the finite, overflowing environment.
+    auto scene = early_emission(false);
+    // D0 performs no NEE; pin the unused proposal policy explicitly.
+    scene.light_sampler = LightSamplerKind::uniform;
+    // The light table builds alias PMFs even for a uniform proposal. Keep its
+    // area/environment ratio in normal range while the visible emitter's
+    // sensor value is finite by many orders of magnitude.
+    scene.area_emissions[0].radiance.fill(1e30f);
+    scene.environment.fill(std::numeric_limits<float>::max());
+    frames(scene);
+    auto c = enhanced_config();
+    c.width = c.height = 17;
+    c.capacity = 289;
+    c.mutation_steps = 0;
+    c.cache_temporal_evaluations = false;
+    auto candidate = session(scene, c);
+    std::unique_ptr<Frame> saved;
+    const auto first = enhanced_capture(*candidate, c, 0, 0, high_sample, {}, &saved);
+    const auto committed = FrameSessionTestAccess::snapshot_enhanced(*candidate, 0);
+    need(committed.status == GeometryStatus::success, committed.diagnostic);
+    FrameCamera miss{.camera = scene.camera,
+                     .camera_medium = scene.camera_medium,
+                     .raster_camera = scene.raster_camera,
+                     .perspective_lens = scene.perspective_lens,
+                     .texture_camera = scene.texture_camera};
+    need(miss.raster_camera.has_value(), "Failure camera has explicit raster rays");
+    miss.raster_camera->origin.x = 100.f;
+    auto failed = candidate->submit({.sample_index = high_sample, .epoch = 73, .camera = miss});
+    need(failed.status == GeometryStatus::success && failed.frame && !failed.busy,
+         failed.diagnostic);
+    const auto bad = failed.frame->wait();
+    need(bad.status == FrameStatus::failed && !bad.diagnostic.empty() && bad.area_serial == 1 &&
+             bad.history_generation == first.info.history_generation && bad.command_count > 0,
+         "Accepted sensor failure consumes a serial without committing history");
+    need(FrameSessionTestAccess::snapshot_enhanced(*candidate, 1).status ==
+                 GeometryStatus::failure &&
+             FrameSessionTestAccess::snapshot_enhanced(*candidate, 0).status ==
+                 GeometryStatus::failure,
+         "Failed attempt cannot alias old committed history or expose mismatched scratch");
+    const auto recaptured = saved->capture();
+    need(recaptured.status == GeometryStatus::success, recaptured.diagnostic);
+    exact(first.image, recaptured);
+    failed.frame.reset();
+    auto recovered = candidate->submit({.sample_index = high_sample, .epoch = 73});
+    need(recovered.status == GeometryStatus::success && recovered.frame && !recovered.busy,
+         recovered.diagnostic);
+    const auto good = recovered.frame->wait();
+    need(good.status == FrameStatus::complete && good.area_serial == 2 && good.history_used &&
+             good.history_generation == first.info.history_generation + 1,
+         "Recovery commits exactly once after the failed attempt");
+    const auto snapshot = FrameSessionTestAccess::snapshot_enhanced(*candidate, 2);
+    need(snapshot.status == GeometryStatus::success && snapshot.serial == 2 &&
+             snapshot.generation == good.history_generation,
+         snapshot.diagnostic);
+}
+void enhanced_hybrid_controls() {
+    enhanced_snapshot_failed_attempt();
+    auto scene = enhanced_cavity();
+    auto c = enhanced_config();
+    c.width = c.height = 17;
+    c.seed = seed + 7919ull * 4; // Fixed predeclared seed82677: cold offset(+16,0).
+    c.mutation_steps = 1;
+    c.cache_temporal_evaluations = false;
+    std::array<SharedSceneFrameSessions, 2> pairs;
+    std::array<std::array<FrameConfig, 2>, 2> configurations;
+    for (unsigned replay = 0; replay < 2; ++replay) {
+        auto &settings = configurations[replay];
+        settings[0] = c;
+        settings[0].capacity = replay == 0 ? 37 : 289;
+        settings[0].contribution_replay =
+            replay == 0 ? FrameContributionReplay::full : FrameContributionReplay::prefix;
+        settings[1] = settings[0];
+        settings[1].cache_temporal_evaluations = true;
+        pairs[replay] = FrameSessionTestAccess::build_shared_scene(scene, settings[0], settings[1]);
+        need(pairs[replay].status == GeometryStatus::success && pairs[replay].shared_renderer &&
+                 pairs[replay].independent_history && pairs[replay].independent_owned_records,
+             pairs[replay].diagnostic);
+    }
+    for (unsigned ordinal = 0; ordinal < 3; ++ordinal) {
+        std::array<std::array<ContributionCapture, 2>, 2> captures;
+        for (unsigned replay = 0; replay < 2; ++replay) {
+            for (unsigned cached = 0; cached < 2; ++cached)
+                captures[replay][cached] = enhanced_capture(*pairs[replay].sessions[cached],
+                                                            configurations[replay][cached],
+                                                            scene.max_depth, ordinal, high_sample);
+            const auto &a = captures[replay][0];
+            const auto &b = captures[replay][1];
+            exact(a.image, b.image);
+            need(a.info.area_serial == b.info.area_serial &&
+                     a.info.history_generation == b.info.history_generation &&
+                     a.info.area_stencil_offsets == b.info.area_stencil_offsets &&
+                     a.info.mutation_accepts == b.info.mutation_accepts &&
+                     a.info.completed_evaluations + a.info.analytic_null_evaluations ==
+                         b.info.completed_evaluations + b.info.analytic_null_evaluations +
+                             b.info.cached_evaluations,
+                 "Hybrid shared-AS full/prefix cacheoff/on retains history, accounting and "
+                 "decisions");
+            if (ordinal == 1)
+                need(FrameSessionTestAccess::snapshot_enhanced(*pairs[replay].sessions[0], 0)
+                             .status == GeometryStatus::failure,
+                     "Superseded completed Enhanced snapshot serial must be rejected");
+        }
+        // Each cache pair shares one AS. This additional full/prefix comparison
+        // spans the two independently built pairs, without claiming a shared AS.
+        exact(captures[0][0].image, captures[1][0].image);
+        need(captures[0][0].info.mutation_accepts == captures[1][0].info.mutation_accepts,
+             "Hybrid full/prefix retains corrected mutation decisions");
+    }
+    // Exactly the old fixed32-seed ensemble and unchanged5SE+128epsilon gates.
+    enhanced_mean_contrast(scene, "D3-hybrid-17x17", .234375f, true);
 }
 void enhanced_mean() {
     auto scene = diffuse();
@@ -1368,8 +1593,10 @@ int main(int argc, char **argv) {
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool enhanced_only = argc == 2 && std::string_view(argv[1]) == "--enhanced";
         const bool enhanced_nee = argc == 2 && std::string_view(argv[1]) == "--enhanced-nee";
-        need(argc == 1 || contribution_only || enhanced_only || enhanced_nee,
-             "Expected optional --contribution-only, --enhanced or --enhanced-nee");
+        const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
+        need(argc == 1 || contribution_only || enhanced_only || enhanced_nee || enhanced_hybrid,
+             "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
+             "--enhanced-hybrid");
         // Device availability is checked once. Unsupported arithmetic/scene
         // failures below are failures, never reclassified as hardware skips.
         std::cout << "Hero native: capability and cold pipelines" << std::endl;
@@ -1385,6 +1612,11 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (enhanced_hybrid) {
+            enhanced_hybrid_controls();
+            std::cout << "Enhanced hybrid positive fresh/nonself/mean/cache controls passed\n";
+            return 0;
+        }
         if (enhanced_nee) {
             enhanced_nee_controls();
             std::cout

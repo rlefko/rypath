@@ -24,8 +24,8 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Reciprocal spatial work sharing, §3 | Reciprocal stencil and shared reverse targets; not the paper's pairing textures |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
 | Contribution-path reservoir, §§2.3 and 6.1 | Opt-in finite-depth `(U,j)` with fresh local selection; full or selected-prefix replay |
-| Hybrid reconnection and Jacobian, Eq. 2 | Runtime preparation and neutral chart validation; forced connection and candidate activation remain missing |
-| Dual-footprint eligibility, Eq. 5 | Preparation helpers; no activated hybrid candidate |
+| Hybrid reconnection and Jacobian, Eq. 2 | Owned triangle/world-direction charts for admitted diffuse and rough-conductor roots; forced incoming/outgoing evaluation and scaled chart densities |
+| Dual-footprint eligibility, Eq. 5 | Runtime first-eligible selection, forward/inverse footprints and rolling predecessor veto |
 | Forced NEE endpoint reconnection, §6.2.3 | Enhanced owns triangle-area, positional/distant-mass and environment-direction endpoints; other shapes retain replay |
 | Selective shift-pair compaction, §6.2.2 | Missing; ordinary wavefront compaction is a different operation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
@@ -325,9 +325,8 @@ geometric BSDF `wo` (toward the preceding physical vertex) for admitted secondar
 diffuse/rough-conductor roots in `direct=0/1` events, including events rejected by
 footprint eligibility. A neutral interior chart
 (tag 5) has a structural codec, Sink projection, persistent state and validators;
-terminal-surface tag 6 is rejected. Forced connections and hybrid candidate
-activation are not implemented. Suffix reuse, dual motion and shift-pair
-compaction remain pending.
+terminal-surface tag 6 is rejected. The subsequent runtime stage below activates
+these charts. Suffix reuse, dual motion and shift-pair compaction remain pending.
 
 Prepared BSDF payloads can retain the union of needed lanes while physical
 history keeps its original active mask. The predecessor certificate carries a
@@ -340,15 +339,46 @@ certificate. Wavefront/Area contracts are 19/13, canonical/record versions are
 reference; the `3335bba` table above measures the earlier range-repair baseline.
 No v4 native image or timing result is claimed.
 
-Current focused checks pass for CLI controls, footprint and chart arithmetic,
-the prefix/Sink suite (69.07 seconds, including 17 Sink controls), and geometry.
-The production queue probe initially exposed a premature record read; lazy
-validation fixes that failure, and the rerun passes in 4.84 seconds. The latest
-focused GPU run passes `metal.hero_enhanced` (174.51 seconds),
-`metal.hero_enhanced_nee` (11.29 seconds), and the geometry arithmetic probe
-(4.14 seconds), including all 17 new utility cases. These bounded results do not
-establish forced-connection correctness, complete Enhanced coverage, image
-quality or native-v4 performance.
+Historical preparation checks passed for CLI controls, footprint and chart
+arithmetic, prefix/Sink controls and geometry. The queue probe exposed a premature
+record read; lazy validation corrected that failure. Those checks did not cover
+forced connections.
+
+## Forced interior reconnection
+
+A successful continuation can now select the first eligible supported interior
+pivot. Its chart owns triangle UV and a represented world direction. Native
+closest-hit traversal certifies the incoming connection's primitive identity;
+it cannot overwrite the owned UV. Imports force the predecessor-to-pivot direction
+and the pivot's stored outgoing direction, making the replaced direction draws
+inert. Wrong identity, blocked connections, unsupported fixed pivots, or a changed
+first-eligible label have zero support in that chart; they do not substitute a
+generic path. Invalid arithmetic remains an error.
+
+The rolling predecessor certificate checks whether the newly forced direction
+would have made the preceding vertex eligible. Incoming and outgoing hero
+updates are recomputed from the saved predecessor beta and density, without
+undoing a rounded old update. Evaluation density uses queried PDFs and geometry;
+fresh generation density separately uses actual sampling PDFs. Current arrival
+emission and direct-light atoms retain their original incoming state; the new
+chart is installed only for later atoms. The physical model and finite authored
+depth remain unchanged; this extends the canonical-v4 estimator, not just its
+execution schedule.
+
+The new 17×17 frame test uses 32 predeclared seeds in a closed diffuse cavity.
+Paired raw means and an independent analytic radiance check pass their declared
+five-standard-error bounds. It observes 1,060 positive fresh interior records and
+20 positive published nonself donor pixels; these are witnesses, not independent
+sample counts. Full/prefix replay, queue capacities, exact temporal-cache controls,
+and failed-submission recovery also pass. Eleven additional rolling-certificate
+controls bring the geometry probe to 92 cases. The native diffuse and rough-.5
+conductor probe passes in 63.24 seconds: 16 and seven supported source charts,
+respectively, with positive E/N witnesses, full/prefix and replaced-draw controls,
+and independent long-double update, geometry and spectral-projection checks.
+Discovery is fixed at one in that arithmetic fixture; it is not a mean oracle.
+Blocked-connection and changed-first-label controls, suffix-cache integration and
+full-scene qualification remain pending. No new native scene timing or Pavilion
+highlight improvement is claimed at this stage.
 
 ## Retained measurements and limitations
 

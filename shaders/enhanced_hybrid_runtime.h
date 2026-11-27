@@ -246,4 +246,226 @@ inline g::Status predecessor_would_reconnect(const thread hs::HybridState &state
     eligible = inverse.decision == fp::Decision::eligible;
     return g::Status::ok;
 }
+
+// Only the future walk changes at a newly selected pivot. Current E/N consume
+// the original arrival, BSDF mask and point error before commit_candidate().
+struct Pending {
+    ew::Record record = ew::empty_record();
+    Number h{.5f, 1}, generation_h{.5f, 1};
+    hs::PredecessorCertificate certificate{};
+    float3 error = 0;
+    float4 direct_beta = 0;
+    uint active_mask = 0;
+    bool activate = false;
+};
+inline g::Status admission_status(const thread Resources &r, const thread HeroCurrentVertex &v) {
+    if (v.type != surface_vertex || !direct_root(r, v.instance, v.primitive, v.kind))
+        return g::Status::unsupported;
+    return g::classify(v.bsdf).status;
+}
+template <typename State, typename Sink>
+inline void outside(thread State &walk, thread Sink &sink) {
+    if (sink.fresh())
+        walk.sample.status = wire::invalid_arithmetic;
+    else
+        sink.state.hybrid.outside = 1;
+    walk.complete = true;
+}
+template <typename State, typename Sink>
+inline bool scan_needed(const thread State &walk, const thread Sink &sink) {
+    // event=path_id-1. No selected atom depends on a future pivot at its event.
+    return !sink.has_interior() &&
+           (sink.fresh() || walk.count - 2u < sink.state.requested_slot / 2u);
+}
+
+// Called once after a successful continuation, before current E/N. The helper
+// may install future beta/P/ray early, but keeps current's physical payload mask
+// and all fields consumed by current E/N intact. No old throughput is divided
+// back out: both incoming and outgoing hero likelihoods are advanced anew.
+template <typename State, typename Sink>
+inline g::Status candidate(thread Resources &r, thread State &walk,
+                           thread HeroCurrentVertex &current, const device wire::Material &material,
+                           graph_wire::Context context,
+                           const thread rypath_hero::Density &predecessor_density,
+                           float incoming_generation_q, float outgoing_generation_q, float3 omega,
+                           thread ray &future_ray, thread Sink &sink, thread Pending &pending) {
+    if (!scan_needed(walk, sink))
+        return g::Status::ok;
+    thread auto &hybrid = sink.state.hybrid;
+    const uint k = walk.count - 1u;
+    if (k < 2)
+        return g::Status::ok;
+    bool eligible = false;
+    const auto imported = sink.support_record();
+    if (sink.state.failed)
+        return g::Status::invalid_arithmetic;
+    const bool imported_pivot =
+        !sink.fresh() && imported.tag == chart::interior_zomega && imported.event_ordinal + 1u == k;
+    do {
+        const auto admission = admission_status(r, current);
+        if (admission == g::Status::invalid_arithmetic)
+            return admission;
+        if (admission != g::Status::ok || !hybrid.predecessor_valid)
+            break;
+        const thread auto &previous = walk.latest;
+        if (!snapshot_valid(hybrid, previous))
+            return g::Status::invalid_arithmetic;
+        const auto a = g::classify(previous.bsdf), b = g::classify(current.bsdf);
+        if (a.status == g::Status::invalid_arithmetic || b.status == g::Status::invalid_arithmetic)
+            return g::Status::invalid_arithmetic;
+        if (a.status != g::Status::ok || b.status != g::Status::ok)
+            break;
+        const chart::Surface surface{
+            chart::interior_zomega, k - 1u,       current.instance, current.primitive,
+            current.kind,           current.uv.x, current.uv.y,     {omega.x, omega.y, omega.z}};
+        const auto encoded = chart::encode(surface, 2u * k, r.alpha.parameters->max_depth);
+        if (encoded.status != chart::Status::ok)
+            return g::Status::invalid_arithmetic;
+        pending.record = imported_pivot ? imported : encoded.value;
+        SurfacePoint owned{};
+        const auto owned_status =
+            owned_point(r, pending.record, 2u * k, r.alpha.parameters->max_depth, owned);
+        if (owned_status == g::Status::invalid_arithmetic)
+            return owned_status;
+        if (owned_status != g::Status::ok)
+            break;
+        const auto edge = g::edge(previous.point.position, previous.point.geometric_normal,
+                                  owned.position, owned.geometric_normal);
+        if (edge.status == g::Status::invalid_arithmetic)
+            return edge.status;
+        if (edge.status != g::Status::ok)
+            break;
+        const auto incoming =
+            g::forced_direction(previous.bsdf, previous.frame, snapshot_wo(hybrid.predecessor),
+                                edge.direction, previous.seed);
+        if (incoming.status != g::Status::ok)
+            return g::Status::invalid_arithmetic;
+        if (!incoming.support)
+            break;
+        fp::Input footprint;
+        footprint.predecessor = a.family;
+        // First retain the outgoing-independent half of eligibility. Both
+        // diffuse and conductor need a certificate for the later rolling veto.
+        footprint.pivot = fp::Family::diffuse;
+        footprint.predecessor_alpha = a.alpha;
+        footprint.primary_distance_squared = hybrid.primary_distance_squared;
+        footprint.primary_cosine = hybrid.primary_cosine;
+        footprint.edge_distance_squared = edge.distance_squared;
+        footprint.predecessor_pdf = g::rm::decompose_positive(incoming.q[0]);
+        footprint.cosine_at_pivot = edge.cosine_destination;
+        footprint.cosine_at_predecessor = edge.cosine_source;
+        const auto forward = fp::classify(footprint);
+        if (forward.status != fp::Status::ok || hybrid.primary_ready != 1)
+            return g::Status::invalid_arithmetic;
+        if (forward.decision != fp::Decision::eligible)
+            break;
+        bool earlier = false;
+        const auto earlier_status =
+            predecessor_would_reconnect(hybrid, previous, edge.direction, earlier);
+        if (earlier_status != g::Status::ok)
+            return earlier_status;
+        if (earlier)
+            break;
+        const auto certified = certify_connection(r, walk.sample, walk.lambda, hybrid, previous,
+                                                  pending.record, edge.direction);
+        if (certified == g::Status::invalid_arithmetic)
+            return certified;
+        if (certified != g::Status::ok)
+            break;
+        const auto rebased = rypath_hero::advance(
+            predecessor_density, snapshot_beta(hybrid.predecessor), incoming.numerator, incoming.q);
+        if (!rebased.valid)
+            return g::Status::invalid_arithmetic;
+        HeroFrozenBSDF future;
+        if (!prepare_future_payload(r, material, context, walk.lambda, current.bsdf,
+                                    rebased.density, rebased.beta, future))
+            return g::Status::invalid_arithmetic;
+        pending.certificate = {edge.distance_squared, edge.cosine_source, 1, future.active_mask};
+        const auto outgoing = g::forced_direction(future, current.frame, current.wo,
+                                                  world_omega(pending.record), current.seed);
+        if (outgoing.status != g::Status::ok)
+            return g::Status::invalid_arithmetic;
+        if (!outgoing.support)
+            break;
+        footprint.pivot = b.family;
+        footprint.pivot_outgoing_pdf = g::rm::decompose_positive(outgoing.q[0]);
+        const auto full = fp::classify(footprint);
+        if (full.status != fp::Status::ok)
+            return g::Status::invalid_arithmetic;
+        if (full.decision != fp::Decision::eligible)
+            break;
+        eligible = true;
+        pending.h = g::rm::product(g::rm::product(footprint.predecessor_pdf, edge.G_destination),
+                                   footprint.pivot_outgoing_pdf);
+        if (!ep::valid_density(pending.h))
+            return g::Status::invalid_arithmetic;
+        if (sink.fresh()) {
+            if (!enhanced_light::positive(incoming_generation_q) ||
+                !enhanced_light::positive(outgoing_generation_q))
+                return g::Status::invalid_arithmetic;
+            pending.generation_h =
+                g::rm::product(g::rm::product(g::rm::decompose_positive(incoming_generation_q),
+                                              edge.G_destination),
+                               g::rm::decompose_positive(outgoing_generation_q));
+            if (!ep::valid_density(pending.generation_h))
+                return g::Status::invalid_arithmetic;
+        } else {
+            pending.generation_h = pending.h;
+        }
+        const auto advanced =
+            rypath_hero::advance(rebased.density, rebased.beta, outgoing.numerator, outgoing.q);
+        if (!advanced.valid)
+            return g::Status::invalid_arithmetic;
+        const float3 fixed_omega = world_omega(pending.record);
+        const auto origin =
+            round_out(owned.position + dot(abs(owned.geometric_normal), owned.error) *
+                                           (dot(fixed_omega, owned.geometric_normal) < 0
+                                                ? -owned.geometric_normal
+                                                : owned.geometric_normal),
+                      dot(fixed_omega, owned.geometric_normal) < 0 ? -owned.geometric_normal
+                                                                   : owned.geometric_normal);
+        if (!all(isfinite(origin)))
+            return g::Status::invalid_arithmetic;
+        future_ray = ray(origin, fixed_omega);
+        walk.beta = advanced.beta;
+        walk.hero.previous = rebased.density;
+        walk.hero.density = advanced.density;
+        walk.hero.active_mask = needed_lanes(advanced.density, advanced.beta);
+        walk.pdf = outgoing.q[0];
+        pending.error = owned.error;
+        pending.direct_beta = rebased.beta;
+        pending.active_mask = future.active_mask;
+        pending.activate = true;
+    } while (false);
+    if (!record_choice(hybrid, k, eligible))
+        return g::Status::invalid_arithmetic;
+    if (!sink.fresh() && (eligible != imported_pivot)) {
+        outside(walk, sink);
+        pending.activate = false;
+    }
+    return g::Status::ok;
+}
+
+template <typename State, typename Sink>
+inline bool commit_candidate(const thread Resources &r, thread State &walk,
+                             thread HeroCurrentVertex &current, float4 old_direct_beta,
+                             const thread Pending &pending, thread Sink &sink) {
+    if (sink.state.hybrid.outside)
+        return true;
+    float4 snapshot = old_direct_beta;
+    if (pending.activate) {
+        if (!sink.activate_hybrid(pending.record, pending.h, pending.generation_h))
+            return false;
+        current.point.error = pending.error;
+        current.bsdf.active_mask = pending.active_mask;
+        current.beta = pending.direct_beta;
+        current.sampled_wo_local = current.frame.local(current.wo);
+        current.sampled_wi_local = current.frame.local(world_omega(pending.record));
+        snapshot = pending.direct_beta;
+    }
+    const auto admission = admission_status(r, current);
+    return admission != g::Status::invalid_arithmetic &&
+           capture_predecessor(sink.state.hybrid, current, snapshot, admission == g::Status::ok,
+                               pending.certificate);
+}
 } // namespace enhanced_hybrid_runtime

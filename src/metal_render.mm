@@ -2274,6 +2274,8 @@ struct FrameAreaHistory {
     FrameAreaContext contexts[2];
     bool pending = false, valid = false, epoch_known = false, serial_exhausted = false;
     std::uint64_t epoch = 0, generation = 0, next_serial = 0, pending_serial = 0;
+    // Last successful publication, independent of the latest accepted attempt.
+    std::optional<std::uint64_t> committed_serial;
     unsigned front = 0;
 };
 struct Frame::Impl {
@@ -2583,6 +2585,114 @@ struct FrameSession::Impl {
     };
     std::array<Slot, 2> slots;
     std::size_t tile_count = 0, scratch_bytes = 0;
+
+    EnhancedSessionSnapshot snapshot_enhanced(std::uint64_t expected_serial) const {
+        EnhancedSessionSnapshot result;
+        if (config.estimator != FrameEstimator::area_replay ||
+            config.area_path_domain != FrameAreaPathDomain::enhanced || !history) {
+            result.diagnostic = "Enhanced snapshot requires an Enhanced Area session";
+            return result;
+        }
+        // Submission is externally serialized. Keep the publication locked until
+        // copies complete; a retained Frame alone does not freeze shared arenas.
+        std::lock_guard lock(history->mutex);
+        if (history->pending || !history->valid || !history->generation ||
+            !history->committed_serial || *history->committed_serial != expected_serial ||
+            history->pending_serial != *history->committed_serial || history->front >= 2) {
+            result.diagnostic = "Enhanced snapshot publication is pending, invalid or stale";
+            return result;
+        }
+        std::shared_ptr<FrameAreaBuffers> latest;
+        for (const auto &slot : slots) {
+            if (!slot.area || slot.area->config[0] == nil ||
+                slot.area->config[0].length != sizeof(area_wire::Config))
+                continue;
+            area_wire::Config submitted{};
+            std::memcpy(&submitted, slot.area->config[0].contents, sizeof(submitted));
+            const auto serial =
+                std::uint64_t(submitted.serial_low) | (std::uint64_t(submitted.serial_high) << 32);
+            if (serial == expected_serial && submitted.phase == area_wire::fresh &&
+                submitted.width == config.width && submitted.height == config.height &&
+                submitted.contribution_mode == contribution_wire::enhanced) {
+                if (latest) {
+                    result.diagnostic = "Enhanced snapshot has ambiguous slot identity";
+                    return result;
+                }
+                latest = slot.area;
+            }
+        }
+        if (!latest || latest->enhanced_records != history->enhanced_records) {
+            result.diagnostic = "Enhanced snapshot completed slot is unavailable";
+            return result;
+        }
+        const auto pixels = std::size_t(config.width) * config.height;
+        if (!pixels || pixels > std::numeric_limits<std::size_t>::max() /
+                                    (enhanced_wire::bank_count * sizeof(enhanced_wire::Record))) {
+            result.diagnostic = "Enhanced snapshot byte count overflow";
+            return result;
+        }
+        const std::size_t history_bytes = pixels * sizeof(area_wire::History);
+        const std::size_t temporal_bytes = pixels * sizeof(area_wire::Temporal);
+        const std::size_t record_count = pixels * enhanced_wire::bank_count;
+        const std::size_t record_bytes = record_count * sizeof(enhanced_wire::Record);
+        const auto source_history = history->banks[history->front];
+        if (source_history == nil || source_history.length != history_bytes ||
+            latest->temporal == nil || latest->temporal.length != temporal_bytes ||
+            history->enhanced_records == nil || history->enhanced_records.length != record_bytes) {
+            result.diagnostic = "Enhanced snapshot buffer ownership or size mismatch";
+            return result;
+        }
+        auto &r = *renderer->impl_;
+        auto history_copy = [r.device newBufferWithLength:history_bytes
+                                                  options:MTLResourceStorageModeShared];
+        auto temporal_copy = [r.device newBufferWithLength:temporal_bytes
+                                                   options:MTLResourceStorageModeShared];
+        auto record_copy = [r.device newBufferWithLength:record_bytes
+                                                 options:MTLResourceStorageModeShared];
+        if (history_copy == nil || temporal_copy == nil || record_copy == nil) {
+            result.diagnostic = "Enhanced snapshot staging allocation failed";
+            return result;
+        }
+        auto command = [r.queue commandBuffer];
+        auto encoder = [command blitCommandEncoder];
+        if (command == nil || encoder == nil) {
+            result.diagnostic = "Enhanced snapshot encoder creation failed";
+            return result;
+        }
+        [encoder copyFromBuffer:source_history
+                   sourceOffset:0
+                       toBuffer:history_copy
+              destinationOffset:0
+                           size:history_bytes];
+        [encoder copyFromBuffer:latest->temporal
+                   sourceOffset:0
+                       toBuffer:temporal_copy
+              destinationOffset:0
+                           size:temporal_bytes];
+        [encoder copyFromBuffer:history->enhanced_records
+                   sourceOffset:0
+                       toBuffer:record_copy
+              destinationOffset:0
+                           size:record_bytes];
+        [encoder endEncoding];
+        result.diagnostic = metal::complete(command, "Enhanced test snapshot");
+        if (!result.diagnostic.empty())
+            return result;
+        result.history.resize(pixels);
+        result.temporal.resize(pixels);
+        result.records.resize(record_count);
+        std::memcpy(result.history.data(), history_copy.contents, history_bytes);
+        std::memcpy(result.temporal.data(), temporal_copy.contents, temporal_bytes);
+        std::memcpy(result.records.data(), record_copy.contents, record_bytes);
+        result.width = config.width;
+        result.height = config.height;
+        result.front_bank = history->front;
+        result.serial = expected_serial;
+        result.generation = history->generation;
+        result.epoch = history->epoch;
+        result.status = GeometryStatus::success;
+        return result;
+    }
 
     std::string prepare(std::shared_ptr<MetalRenderScene> owner, const RenderScene &scene,
                         const FrameConfig &settings, const std::filesystem::path &library_path) {
@@ -3594,6 +3704,7 @@ struct FrameSession::Impl {
                     else {
                         history->front = history_destination_index;
                         history->valid = true;
+                        history->committed_serial = frame->info.area_serial;
                         ++history->generation;
                         history->pending = false;
                         frame->info.history_generation = history->generation;
@@ -4717,6 +4828,19 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
     result.sessions[1].reset(new FrameSession(std::move(second)));
     result.status = GeometryStatus::success;
     return result;
+}
+
+EnhancedSessionSnapshot FrameSessionTestAccess::snapshot_enhanced(FrameSession &session,
+                                                                  std::uint64_t expected_serial) {
+    @autoreleasepool {
+        if (!session.impl_)
+            return {.diagnostic = "Enhanced snapshot session is moved-from"};
+        try {
+            return session.impl_->snapshot_enhanced(expected_serial);
+        } catch (const std::bad_alloc &) {
+            return {.diagnostic = "Enhanced snapshot CPU allocation failed"};
+        }
+    }
 }
 
 namespace {

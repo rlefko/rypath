@@ -148,6 +148,28 @@ kernel void rypath_enhanced_hybrid_geometry_probe(device const uint *queries [[b
                           as_type<float>(q[35]));
         out[0] = uint(g::Status::ok);
         out[40] = rypath_bdpt::enhanced_hybrid_runtime::needed_lanes(P, beta);
+    } else if (q[0] == 7) {
+        namespace runtime = rypath_bdpt::enhanced_hybrid_runtime;
+        HeroPrevious previous{};
+        previous.type = surface_vertex;
+        previous.path_id = 2;
+        previous.bsdf = material;
+        previous.frame = {float3(1, 0, 0), float3(0, 1, 0), float3(0, 0, 1)};
+        rypath_enhanced_hybrid::HybridState state{};
+        state.predecessor_valid = q[47];
+        state.predecessor.path_id = 2 + q[5];
+        state.predecessor.beta[0] = 1;
+        for (uint k = 0; k < 3; ++k)
+            state.predecessor.wo[k] = as_type<float>(q[32 + k]);
+        state.primary_ready = q[6];
+        state.primary_distance_squared = {as_type<float>(q[40]), as_type<int>(q[41])};
+        state.primary_cosine = as_type<float>(q[42]);
+        state.certificate = {
+            {as_type<float>(q[44]), as_type<int>(q[45])}, as_type<float>(q[46]), q[3], q[4]};
+        const float3 direction(as_type<float>(q[36]), as_type<float>(q[37]), as_type<float>(q[38]));
+        bool eligible = false;
+        out[0] = uint(runtime::predecessor_would_reconnect(state, previous, direction, eligible));
+        out[40] = uint(eligible);
     } else {
         auto pivot = material;
         pivot.kind = q[4];

@@ -528,6 +528,24 @@ add_custom_command(OUTPUT "${rypath_enhanced_hybrid_geometry_library}"
     VERBATIM)
 add_custom_target(rypath_enhanced_hybrid_geometry_shader DEPENDS "${rypath_enhanced_hybrid_geometry_library}")
 
+# Actual native-AS fixed-chart source/import controls and removed-coordinate poisoning.
+set(rypath_enhanced_hybrid_runtime_library "${rypath_runtime_directory}/rypath-enhanced-hybrid-runtime-probe.metallib")
+set(rypath_enhanced_hybrid_runtime_air "${rypath_runtime_directory}/CMakeFiles/rypath-enhanced-hybrid-runtime-probe.air")
+add_custom_command(OUTPUT "${rypath_enhanced_hybrid_runtime_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/enhanced_hybrid_runtime_probe.metal"
+        -o "${rypath_enhanced_hybrid_runtime_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_enhanced_hybrid_runtime_air}"
+        "${rypath_runtime_directory}/CMakeFiles/rypath-geometry.air"
+        -o "${rypath_enhanced_hybrid_runtime_library}"
+    DEPENDS ${rypath_hero_current_headers}
+        "${rypath_runtime_directory}/CMakeFiles/rypath-geometry.air"
+        "${CMAKE_SOURCE_DIR}/tests/enhanced_hybrid_runtime_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_enhanced_hybrid_runtime_shader DEPENDS "${rypath_enhanced_hybrid_runtime_library}")
+
 # Full-render-TU differential: genuine Vertex and compact current/light endpoints.
 set(rypath_hero_light_endpoint_library "${rypath_runtime_directory}/rypath-hero-light-endpoint.metallib")
 set(rypath_hero_light_endpoint_air "${rypath_runtime_directory}/CMakeFiles/rypath-hero-light-endpoint.air")
