@@ -17,6 +17,7 @@ struct Options {
     FrameContributionReplay contribution_replay = FrameContributionReplay::full;
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     std::uint32_t enhanced_history_cap = FrameConfig{}.enhanced_history_cap;
+    FrameHistoryCapPolicy history_cap_policy = FrameHistoryCapPolicy::fixed;
     ResourceProfile resource_profile = ResourceProfile::standard;
     SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
     FrameEstimator estimator = FrameEstimator::independent;

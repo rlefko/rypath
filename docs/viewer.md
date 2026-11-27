@@ -35,7 +35,8 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | `--area-contribution-replay full\|prefix` | Full or selected-prefix replay in contribution domains |
 | `--area-stencil auto\|adjacent\|reciprocal16\|paired-gaussian16` | Explicit spatial source domains |
 | `--area-spatial-mode all\|stochastic-pairs\|stochastic-shared` | All four spatial terms by default; opt-in independent or shared stochastic terms require Enhanced paired atlas |
-| `--area-history-cap N` | Fixed Enhanced prior-frame confidence cap, 1–20; default 20 |
+| `--area-history-cap N` | Maximum Enhanced prior-frame confidence, 1–20 (default 20) |
+| `--area-history-cap-policy fixed\|duplication` | Fixed by default. The experimental sample-dependent policy limits the reuse of locally duplicated initial seeds and can introduce bias |
 | `--resource-profile standard\|large` | Existing PBRT scene loading budgets; Pavilion requires large |
 | `--variance-policy paired\|center\|conservative` | Temporal reconstruction policy; paired remains default |
 | `--mutations 0\|1\|2\|4` | Area replay uses one corrected mutation by default; independent uses zero |

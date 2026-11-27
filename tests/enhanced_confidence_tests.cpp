@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "area_wire.h"
 #include "enhanced_confidence_shared.h"
 #include "enhanced_path_shared.h"
 
@@ -194,6 +195,159 @@ void fixed_cap_controls() {
              "Fixed cap retains null prior domain");
     }
 }
+
+struct CapInput {
+    unsigned maximum, count;
+};
+long double cap_oracle(CapInput input) {
+    // Independent real-valued Lin section5 formula. No production pow/helper,
+    // confidence encoding, clamp or recurrence is reused by this oracle.
+    const long double D = static_cast<long double>(input.count) / 288.L;
+    return static_cast<long double>(input.maximum) +
+           (1.L - static_cast<long double>(input.maximum)) * std::pow(D, .1L);
+}
+void fractional_cap_and_wire() {
+    namespace f = c::fractional;
+    namespace a = rypath::area_wire;
+    constexpr long double tolerance = 128.L * std::numeric_limits<float>::epsilon();
+    for (unsigned H : {1u, 4u, 20u})
+        for (unsigned count : {0u, 1u, 36u, 287u, 288u}) {
+            const auto expected = cap_oracle({H, count});
+            const auto t = f::temporal({105.f, 1}, H, count, false);
+            need(t.status == c::Status::ok && t.fresh.confidence == 1 && t.history.present == 1 &&
+                     t.output.present == 1,
+                 "Adaptive prior is a structural domain");
+            near(t.history.confidence, expected, tolerance,
+                 "Independent fractional cap: count/288 and alpha0.1");
+            near(t.output.confidence, expected + 1, tolerance,
+                 "Adaptive cap applies BEFORE adding fresh1");
+            near(t.history.confidence, expected, tolerance,
+                 "MIS consumes the fractional history coefficient");
+            if (H > 1 && (count == 1 || count == 36))
+                need(std::abs(t.history.confidence - std::floor(t.history.confidence)) > .1f,
+                     "Noninteger cap cannot be rounded, truncated or cast to Word");
+            if (count == 0)
+                need(t.history.confidence == float(H), "Zero duplication retains H exactly");
+            if (count == 288)
+                need(t.history.confidence == 1.f, "Full duplication reaches minimum1 exactly");
+            const auto word = a::encode_confidence(t.history.confidence, 1);
+            need(word == std::bit_cast<unsigned>(t.history.confidence) &&
+                     std::bit_cast<unsigned>(a::decode_confidence(word, 1)) == word,
+                 "Adaptive wire is FLOAT bits with no quantization");
+        }
+    for (unsigned old : std::array<unsigned, 6>{1u, 4u, 20u, 21u, 105u, c::maximum_confidence}) {
+        need(a::encode_confidence(float(old), 0) == old &&
+                 a::decode_confidence(old, 0) == float(old),
+             "Fixed wire words retain their old INTEGER bytes");
+        const auto integer = c::temporal({old, 1}, 20);
+        const auto floating = f::temporal({float(old), 1}, 20, 0, false);
+        need(floating.status == c::Status::ok &&
+                 floating.history.confidence == float(integer.history.confidence) &&
+                 floating.output.confidence == float(integer.output.confidence),
+             "Fixed float recurrence matches existing strict integer oracle");
+    }
+    need(!f::valid_source({a::decode_confidence(20, 1), 1}) &&
+             !c::valid_source({a::encode_confidence(20.f, 1), 1}),
+         "Wrong confidence encoding cannot masquerade as a valid source");
+}
+void fractional_complementary_weights() {
+    namespace f = c::fractional;
+    for (unsigned count : {1u, 36u, 288u}) {
+        const auto expected_M = cap_oracle({20, count});
+        const auto t = f::temporal({105.f, 1}, 20, count, false);
+        need(t.status == c::Status::ok && f::valid_source(t.fresh) && f::valid_source(t.history),
+             "Adaptive sources validate before MIS");
+        const float fresh = t.fresh.confidence, history = t.history.confidence;
+        const auto center = e::canonical_score(number(2), number(2), number(4), fresh, history);
+        const auto shifted = e::pair_score({number(4), number(4), number(2), history, fresh});
+        const long double denominator = 2 + 4 * expected_M;
+        near(value(center.value), 4 / denominator, 2e-6L,
+             "Fresh MIS uses the SAME fractional source cap");
+        near(value(shifted.value), 8 * expected_M / denominator, 2e-6L,
+             "Historical MIS uses fractional cap with correct denominator orientation");
+        near(value(center.value) + value(shifted.value), 2, 2e-6L,
+             "Conditional complementary pair partitions the integrand");
+        // This local algebra does not prove the sample-dependent policy unbiased:
+        // Lin section5 explicitly introduces bias across sample-dependent domains.
+        const auto wrong = e::pair_score({number(4), number(4), number(2), 105.f, fresh});
+        need(std::abs(value(center.value) + value(wrong.value) - 2) > .03L,
+             "Capping only the fresh/reverse term breaks the complementary pair");
+        if (count != 288) {
+            const auto rounded =
+                e::canonical_score(number(2), number(2), number(4), 1, std::floor(history));
+            need(std::abs(value(rounded.value) - value(center.value)) > .001L,
+                 "Rounding both coefficients could preserve partition but changes weights");
+        }
+    }
+}
+void fractional_propagation_and_null() {
+    namespace f = c::fractional;
+    f::Source previous{};
+    long double expected = 0;
+    constexpr std::array<unsigned, 6> counts{0, 1, 36, 288, 0, 36};
+    for (unsigned frame = 0; frame < 48; ++frame) {
+        const auto count = counts[frame % counts.size()];
+        const auto t = f::temporal(previous, 20, count, false);
+        const long double temporal =
+            (previous.present ? std::min(expected, cap_oracle({20, count})) : 0.L) + 1.L;
+        auto spatial = f::spatial_begin(t.output);
+        for (unsigned neighbor = 0; neighbor < 4; ++neighbor)
+            need(f::add_neighbor(spatial, t.output) == c::Status::ok,
+                 "Fractional spatial structural input admitted");
+        const auto result = f::spatial_finish(spatial);
+        expected = 5 * temporal;
+        need(t.status == c::Status::ok && result.status == c::Status::ok && spatial.admitted == 5 &&
+                 spatial.considered == 5,
+             "Fractional recurrence retains all spatial domains");
+        near(result.source.confidence, expected, 1e-4L,
+             "Independent temporal/spatial recurrence retains fractional mass");
+        previous = result.source;
+    }
+    const auto null = f::temporal({7.25f, 1}, 20, 0xffffu, true);
+    need(null.status == c::Status::ok && null.history.confidence == 7.25f &&
+             null.history.present == 1 && null.output.confidence == 8.25f,
+         "Null history has no duplication label yet retains its fractional domain");
+    for (unsigned count : {0u, 1u, 36u, 288u, 0xffffu}) {
+        const auto cold = f::temporal({}, 20, count, false);
+        need(cold.status == c::Status::ok && cold.fresh.confidence == 1 &&
+                 cold.history.present == 0 && cold.output.confidence == 1,
+             "Cut or missing donor ignores unavailable map and starts fresh1");
+    }
+    const auto zero = e::pair_score({number(0), number(0), number(2), 7.25f, 1});
+    need(zero.status == m::Status::ok && er::zero(zero.value),
+         "Null target has zero score without deleting structural confidence");
+    auto structural = f::spatial_begin({2.25f, 1});
+    need(f::add_neighbor(structural, {7.25f, 1}) == c::Status::ok &&
+             f::add_neighbor(structural, {}) == c::Status::ok &&
+             f::spatial_finish(structural).source.confidence == 9.5f && structural.admitted == 2 &&
+             structural.considered == 3,
+         "Spatial fractional confidence includes a null domain but excludes rejected donor");
+}
+void fractional_faults() {
+    namespace f = c::fractional;
+    for (float value : {0.f, .5f, -1.f, std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::quiet_NaN()}) {
+        const f::Source invalid{value, 1};
+        need(!f::valid_source(invalid) &&
+                 f::temporal(invalid, 20, 0, false).status == c::Status::invalid_source,
+             "Adaptive invalid confidence fails, never clamps into a valid domain");
+    }
+    for (unsigned count : {0u, 1u, 36u, 288u})
+        need(f::temporal({5.f, 1}, 20, count, true).status == c::Status::invalid_source,
+             "A null draw requires the missing-label count sentinel");
+    for (unsigned count : {289u, 0xffffu, 0xffffffffu})
+        need(f::temporal({5.f, 1}, 20, count, false).status == c::Status::invalid_source,
+             "Present nonnull history rejects missing or out-of-range counts");
+    for (unsigned cap : std::array<unsigned, 3>{0u, 21u, c::maximum_confidence})
+        need(f::temporal({5.f, 1}, cap, 36, false).status == c::Status::invalid_cap,
+             "Adaptive policy rejects unsupported H rather than silently clipping");
+    auto overflow = f::spatial_begin({float(c::maximum_confidence), 1});
+    need(f::add_neighbor(overflow, {1.f, 1}) == c::Status::count_overflow &&
+             overflow.confidence == float(c::maximum_confidence) &&
+             f::spatial_finish(overflow).status == c::Status::count_overflow,
+         "Fractional sum overflow cannot round back to maximum and report success");
+}
+
 void faults_and_limits() {
     need(c::coefficient({c::maximum_confidence, 1}).value == 16777216.f,
          "Maximum coefficient is exactly representable binary32");
@@ -236,6 +390,10 @@ int main() {
         complementary_and_cap_timing();
         fixed_cap_controls();
         faults_and_limits();
+        fractional_cap_and_wire();
+        fractional_complementary_weights();
+        fractional_propagation_and_null();
+        fractional_faults();
         std::cout << "Enhanced strict structural-confidence tests passed\n";
         return 0;
     } catch (const std::exception &error) {

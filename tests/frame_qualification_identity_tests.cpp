@@ -47,6 +47,46 @@ FrameConfig config() {
     c.contribution_replay = FrameContributionReplay::prefix;
     return c;
 }
+void history_cap_controls() {
+    auto c = config();
+    auto f = enhanced();
+    check(c.history_cap_policy == FrameHistoryCapPolicy::fixed &&
+              f.history_cap_policy == FrameHistoryCapPolicy::fixed,
+          "fixed history cap remains default");
+    c.history_cap_policy = FrameHistoryCapPolicy::duplication;
+    check(!valid_frame_qualification_identity(c, f, 6), "ignored adaptive cap rejected");
+    f.history_cap_policy = FrameHistoryCapPolicy::duplication;
+    check(!valid_frame_qualification_identity(c, f, 6), "missing adaptive diagnostic rejected");
+    f.duplication.mode = FrameAreaDuplication::initial_seed;
+    check(valid_frame_qualification_identity(c, f, 6), "adaptive implies initial seed diagnostic");
+    c.area_duplication = FrameAreaDuplication::initial_seed;
+    check(valid_frame_qualification_identity(c, f, 6), "explicit initial seed compatible");
+    c.enhanced_history_cap = 1;
+    f.enhanced_history_cap = 1;
+    check(valid_frame_qualification_identity(c, f, 6), "adaptive maximum one receipt");
+    c.area_duplication = FrameAreaDuplication::current;
+    f.duplication.mode = FrameAreaDuplication::current;
+    check(!valid_frame_qualification_identity(c, f, 6), "adaptive conflicting diagnostic rejected");
+    c.area_duplication = FrameAreaDuplication::initial_seed;
+    f.duplication.mode = FrameAreaDuplication::initial_seed;
+    c.area_reuse = FrameAreaReuse::fresh;
+    check(!valid_frame_qualification_identity(c, f, 6), "adaptive fresh-only rejected");
+    c.area_reuse = FrameAreaReuse::full;
+    c.area_path_domain = FrameAreaPathDomain::contribution;
+    check(!valid_frame_qualification_identity(c, f, 6), "adaptive contribution rejected");
+    c = config();
+    f = enhanced();
+    f.history_cap_policy = FrameHistoryCapPolicy::duplication;
+    check(!valid_frame_qualification_identity(c, f, 6), "unrequested adaptive cap rejected");
+    f.history_cap_policy = FrameHistoryCapPolicy::fixed;
+    f.duplication.mode = FrameAreaDuplication::initial_seed;
+    check(!valid_frame_qualification_identity(c, f, 6), "unrequested diagnostics rejected");
+    // Deliberately malformed caller input must not be relabeled as fixed.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    c.history_cap_policy = static_cast<FrameHistoryCapPolicy>(99);
+    f.history_cap_policy = c.history_cap_policy;
+    check(!valid_frame_qualification_identity(c, f, 6), "invalid cap policy rejected");
+}
 void fresh_controls() {
     auto c = config();
     c.area_reuse = FrameAreaReuse::fresh;
@@ -294,6 +334,7 @@ void atlas() {
 } // namespace
 int main() {
     try {
+        history_cap_controls();
         fresh_controls();
         controls();
         legacy_and_independent();

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "replay_shared.h"
+#if !defined(__METAL_VERSION__)
+#include <cmath>
+#endif
 #if defined(__METAL_VERSION__)
 #define RYPATH_CONFIDENCE_THREAD thread
 #else
@@ -119,5 +122,106 @@ inline Result spatial_finish(Spatial state) {
 static_assert(sizeof(Source) == 8 && alignof(Source) == 4 && sizeof(Spatial) == 16 &&
                   sizeof(Temporal) == 28,
               "Strict confidence shared CPU/Metal word layout");
+
+// Section 5 is an explicitly biased, sample-dependent policy. Keep its typed
+// floating-point recurrence separate from the strict fixed integer law above.
+namespace fractional {
+using ::rypath_enhanced_confidence::Status;
+struct Source {
+    float confidence = 0;
+    Word present = 0;
+};
+inline bool valid_source(Source source) {
+    return source.present == 0 ? source.confidence == 0
+                               : source.present == 1 && source.confidence >= 1 &&
+                                     source.confidence <= float(maximum_confidence);
+}
+struct Temporal {
+    Source fresh, history, output;
+    Status status = Status::ok;
+};
+struct Spatial {
+    float confidence = 0;
+    Word considered = 0;
+    Word admitted = 0;
+    Status status = Status::ok;
+};
+inline bool valid_spatial(Spatial state) {
+    return state.status == Status::ok && state.considered >= 1 &&
+           state.considered <= maximum_spatial_sources && state.admitted >= 1 &&
+           state.admitted <= state.considered && state.confidence >= state.admitted &&
+           state.confidence <= float(maximum_confidence);
+}
+inline Spatial spatial_begin(Source center) {
+    if (!valid_source(center) || !center.present)
+        return {0, 0, 0, Status::invalid_source};
+    return {center.confidence, 1, 1, Status::ok};
+}
+inline Status add_neighbor(RYPATH_CONFIDENCE_THREAD Spatial &state, Source neighbor) {
+    if (state.status != Status::ok)
+        return state.status;
+    if (!valid_spatial(state))
+        state.status = Status::invalid_state;
+    else if (!valid_source(neighbor))
+        state.status = Status::invalid_source;
+    else if (state.considered == maximum_spatial_sources ||
+             neighbor.confidence > float(maximum_confidence) - state.confidence)
+        state.status = Status::count_overflow;
+    else {
+        ++state.considered; // Even rejected donors remain scheduling observations.
+        if (neighbor.present) {
+            state.confidence += neighbor.confidence;
+            ++state.admitted;
+        }
+    }
+    return state.status;
+}
+struct Result {
+    Source source;
+    Status status = Status::ok;
+};
+inline Result spatial_finish(Spatial state) {
+    if (state.status != Status::ok)
+        return {{}, state.status};
+    if (!valid_spatial(state))
+        return {{}, Status::invalid_state};
+    return {{state.confidence, 1}, Status::ok};
+}
+
+inline Temporal temporal(Source previous, Word maximum_cap, Word count, bool selected_null) {
+    Temporal result;
+    if (!valid_source(previous)) {
+        result.status = Status::invalid_source;
+        return result;
+    }
+    if (!maximum_cap || maximum_cap > default_temporal_cap) {
+        result.status = Status::invalid_cap;
+        return result;
+    }
+    // No history means no map access/requirement. With history, the missing
+    // sentinel is legal exactly for a validated null draw; all other mismatches
+    // are failures rather than an invented zero-duplication measurement.
+    if (previous.present &&
+        ((selected_null && count != 0xffffu) || (!selected_null && count > 288u))) {
+        result.status = Status::invalid_source;
+        return result;
+    }
+    result.fresh = {1, 1};
+    if (previous.present) {
+        const float d = selected_null ? 0.f : float(count) / 288.f;
+#if defined(__METAL_VERSION__)
+        const float power = metal::pow(d, .1f);
+#else
+        const float power = std::pow(d, .1f);
+#endif
+        const float cap = float(maximum_cap) + (1.f - float(maximum_cap)) * power;
+        result.history = {previous.confidence < cap ? previous.confidence : cap, 1};
+    }
+    result.output = {result.history.confidence + 1.f, 1};
+    return result;
+}
+static_assert(sizeof(Source) == 8 && sizeof(Temporal) == 28 && sizeof(Spatial) == 16,
+              "Fractional confidence CPU/Metal layout");
+} // namespace fractional
 } // namespace rypath_enhanced_confidence
 #undef RYPATH_CONFIDENCE_THREAD

@@ -77,6 +77,12 @@ std::string optional_number(std::optional<double> value) {
     stream << *value;
     return stream.str();
 }
+std::string temporal_cap_value(FrameHistoryCapPolicy policy, FrameEstimator estimator,
+                               FrameAreaReuse reuse, std::uint32_t maximum, bool json = true) {
+    if (policy == FrameHistoryCapPolicy::duplication)
+        return json ? "null" : "adaptive-duplication";
+    return std::to_string(frame_temporal_reuse_cap(estimator, reuse, maximum));
+}
 struct Options {
     std::optional<HeroWavelengthSampling> hero_wavelengths;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
@@ -87,6 +93,7 @@ struct Options {
     SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
     bool suffix_cache = true, compact_pairs = false, temporal_reprojection = false;
     std::uint32_t enhanced_history_cap = 20;
+    FrameHistoryCapPolicy history_cap_policy = FrameHistoryCapPolicy::fixed;
     bool compare_reconstruction = false;
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     FrameAreaReuse area_reuse = FrameAreaReuse::full;
@@ -175,7 +182,9 @@ const char *usage =
     "  [--resource-profile standard|large] [--variance-policy paired|center|conservative]\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
-    "  [--area-history-cap N (Enhanced fixed temporal confidence, 1 through 20)]\n"
+    "  [--area-history-cap N (Enhanced maximum temporal confidence, 1 through 20)]\n"
+    "  [--area-history-cap-policy fixed|duplication (default: fixed; duplication implies "
+    "initial-seed)]\n"
     "  [--compare-reconstruction on|off (same-frame signed filter ablations and native MetalFX)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
     "  [--first-evaluation-seed-index N (default: 0)]\n"
@@ -208,6 +217,10 @@ Options parse(int argc, char **argv) {
         } else if (key == "--area-suffix-cache" || key == "--area-pair-compaction") {
             require(value == "on" || value == "off", "Area execution switches must be on or off");
             (key == "--area-suffix-cache" ? o.suffix_cache : o.compact_pairs) = value == "on";
+        } else if (key == "--area-history-cap-policy") {
+            const auto policy = parse_frame_history_cap_policy(value);
+            require(policy.has_value(), "Area history cap policy must be fixed or duplication");
+            o.history_cap_policy = policy.value_or(FrameHistoryCapPolicy::fixed);
         } else if (key == "--area-reuse") {
             require(value == "full" || value == "fresh", "Area reuse must be full or fresh");
             o.area_reuse = value == "fresh" ? FrameAreaReuse::fresh : FrameAreaReuse::full;
@@ -347,9 +360,12 @@ Options parse(int argc, char **argv) {
             "Pair compaction and dual motion require enhanced path domain");
     require(!seen.contains("--variance-policy") || o.reconstruction == ReconstructionMode::temporal,
             "Variance policy requires temporal reconstruction");
-    require(!seen.contains("--area-history-cap") ||
+    require((!seen.contains("--area-history-cap") && !seen.contains("--area-history-cap-policy")) ||
                 o.area_path_domain == FrameAreaPathDomain::enhanced,
-            "Area history cap requires Enhanced path domain");
+            "Area history cap and policy require Enhanced path domain");
+    require(o.history_cap_policy != FrameHistoryCapPolicy::duplication ||
+                o.area_reuse == FrameAreaReuse::full,
+            "Duplication history cap requires full-reuse Enhanced Area");
     require(!o.compare_reconstruction || o.reconstruction == ReconstructionMode::temporal,
             "Same-frame comparison requires temporal as the primary reconstruction");
     require(o.width <= reconstruction_dimension_limit && o.height <= reconstruction_dimension_limit,
@@ -967,6 +983,9 @@ void write_counters(std::ostream &out, const ReconstructionCounters &c) {
 struct SeedAggregate {
     std::string arm;
     std::string reconstruction;
+    FrameHistoryCapPolicy history_cap_policy = FrameHistoryCapPolicy::fixed;
+    FrameAreaDuplication duplication = FrameAreaDuplication::off;
+    std::uint32_t history_cap_max = 0;
     std::uint64_t seed = 0;
     std::uint32_t evaluation_seed_index = 0;
     std::uint32_t warm_frames = 0, metric_frames = 0, valid_gpu_frames = 0;
@@ -978,6 +997,10 @@ struct SeedAggregate {
         out << "{\"arm\":" << quote(arm) << ",\"seed\":" << seed
             << ",\"evaluation_seed_index\":" << evaluation_seed_index
             << ",\"reconstruction\":" << quote(reconstruction)
+            << ",\"effective_area_history_cap_policy\":"
+            << quote(frame_history_cap_policy_name(history_cap_policy))
+            << ",\"effective_area_duplication\":" << quote(frame_area_duplication_name(duplication))
+            << ",\"effective_area_history_cap_max\":" << history_cap_max
             << ",\"valid_metric_frames\":" << metric_frames << ",\"warm_frames\":" << warm_frames
             << ",\"raw_mse_mean\":" << raw_mse / metric_frames
             << ",\"reconstructed_physical_mse_mean\":" << reconstructed_mse / metric_frames
@@ -1082,16 +1105,30 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
     config.mutation_policy = o.mutation_policy;
     config.area_stencil = o.area_stencil;
     config.area_output = o.area_output;
+    // Independent controls never inherit an Area arm's adaptive policy/diagnostics.
+    config.history_cap_policy = FrameHistoryCapPolicy::fixed;
+    config.area_duplication = FrameAreaDuplication::off;
     if (mutations >= 0) {
         config.area_path_domain = o.area_path_domain;
         config.contribution_replay = o.contribution_replay;
         config.enhanced_history_cap = o.enhanced_history_cap;
+        config.history_cap_policy = o.history_cap_policy;
+        config.area_duplication = o.history_cap_policy == FrameHistoryCapPolicy::duplication
+                                      ? FrameAreaDuplication::initial_seed
+                                      : FrameAreaDuplication::off;
         config.enhanced_suffix_cache = o.suffix_cache;
         config.compact_enhanced_pairs = o.compact_pairs;
         config.spatial_mode = o.spatial_mode;
         config.area_reuse = o.area_reuse;
         config.enhanced_temporal_reprojection = o.temporal_reprojection;
     }
+    aggregate.history_cap_policy = config.history_cap_policy;
+    aggregate.duplication = config.area_duplication;
+    aggregate.history_cap_max =
+        mutations >= 0 && o.area_path_domain == FrameAreaPathDomain::enhanced
+            ? frame_temporal_reuse_cap(config.estimator, config.area_reuse,
+                                       config.enhanced_history_cap)
+            : 0;
     auto renderer = session(scene.value, config, device);
     aggregate.session_startup = elapsed(startup);
     std::string atlas_digest; // Freeze the first validated immutable asset identity.
@@ -1252,9 +1289,22 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << quote(mutations < 0 ? "not-applicable" : area_output_name(o.area_output))
                  << ",\"area_target\":" << quote(mutations < 0 ? "none" : target_name(o))
                  << ",\"area_source_mis\":" << quote(mutations < 0 ? "none" : source_mis_name(o))
+                 << ",\"requested_area_history_cap_policy\":"
+                 << quote(frame_history_cap_policy_name(o.history_cap_policy))
+                 << ",\"effective_area_history_cap_policy\":"
+                 << quote(frame_history_cap_policy_name(raw_info->history_cap_policy))
+                 << ",\"effective_area_duplication\":"
+                 << quote(frame_area_duplication_name(raw_info->duplication.mode))
+                 << ",\"effective_area_history_cap_max\":" << raw_info->enhanced_history_cap
+                 << ",\"duplication_version\":" << raw_info->duplication.version
+                 << ",\"duplication_denominator\":" << raw_info->duplication.denominator
+                 << ",\"duplication_valid_pixels\":" << raw_info->duplication.valid_pixels
+                 << ",\"duplication_null_pixels\":" << raw_info->duplication.null_pixels
+                 << ",\"duplication_unknown_pixels\":" << raw_info->duplication.unknown_pixels
+                 << ",\"duplication_mean_d\":" << raw_info->duplication.mean_d
                  << ",\"area_temporal_reuse\":"
-                 << frame_temporal_reuse_cap(config.estimator, config.area_reuse,
-                                             config.enhanced_history_cap)
+                 << temporal_cap_value(raw_info->history_cap_policy, config.estimator,
+                                       config.area_reuse, config.enhanced_history_cap)
 
                  << ",\"requested_area_mutation_policy\":"
                  << quote(frame_mutation_policy_name(o.mutation_policy))
@@ -1395,9 +1445,17 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                     attributes.emplace_back("rypath.frame.resource_profile",
                                             std::string(resource_profile_name(o.resource_profile)));
                     attributes.emplace_back(
-                        "rypath.area.temporal_reuse",
-                        std::to_string(frame_temporal_reuse_cap(config.estimator, config.area_reuse,
-                                                                config.enhanced_history_cap)));
+                        "rypath.area.history_cap_policy",
+                        frame_history_cap_policy_name(raw_info->history_cap_policy));
+                    attributes.emplace_back("rypath.area.history_cap_max",
+                                            std::to_string(raw_info->enhanced_history_cap));
+                    attributes.emplace_back(
+                        "rypath.area.duplication",
+                        frame_area_duplication_name(raw_info->duplication.mode));
+                    attributes.emplace_back("rypath.area.temporal_reuse",
+                                            temporal_cap_value(raw_info->history_cap_policy,
+                                                               config.estimator, config.area_reuse,
+                                                               config.enhanced_history_cap, false));
                     attributes.emplace_back("rypath.area.mutation_steps",
                                             std::to_string(mutations < 0 ? 0 : mutations));
                     attributes.emplace_back("rypath.hero.requested",
@@ -1482,10 +1540,20 @@ std::string settings_json(const Options &o) {
         << ",\"area_output\":" << quote(area_output_name(o.area_output))
         << ",\"area_target\":" << quote(target_name(o))
         << ",\"area_source_mis\":" << quote(source_mis_name(o))
-        << ",\"requested_area_history_cap\":" << o.enhanced_history_cap
+        << ",\"requested_area_history_cap_policy\":"
+        << quote(frame_history_cap_policy_name(o.history_cap_policy))
+        << ",\"requested_area_history_cap_max\":" << o.enhanced_history_cap
+        << ",\"requested_area_history_cap\":"
+        << (o.history_cap_policy == FrameHistoryCapPolicy::fixed
+                ? std::to_string(o.enhanced_history_cap)
+                : "null")
+        << ",\"area_history_cap_min\":"
+        << (o.history_cap_policy == FrameHistoryCapPolicy::duplication ? "1" : "null")
+        << ",\"area_history_cap_alpha\":"
+        << (o.history_cap_policy == FrameHistoryCapPolicy::duplication ? "0.1" : "null")
         << ",\"area_temporal_reuse\":"
-        << frame_temporal_reuse_cap(FrameEstimator::area_replay, o.area_reuse,
-                                    o.enhanced_history_cap)
+        << temporal_cap_value(o.history_cap_policy, FrameEstimator::area_replay, o.area_reuse,
+                              o.enhanced_history_cap)
         << ",\"requested_area_path_domain\":"
         << quote(frame_area_path_domain_name(o.area_path_domain))
         << ",\"requested_area_contribution_replay\":"
@@ -1634,6 +1702,28 @@ std::string summary_json(const Options &o, const std::vector<SeedAggregate> &agg
             out << ',';
         first = false;
         out << "{\"arm\":" << quote(arm) << ",\"valid_metric_frames\":" << metric_frames
+            << ",\"configured_area_history_cap_policy\":"
+            << quote(frame_history_cap_policy_name(mutations < 0 ? FrameHistoryCapPolicy::fixed
+                                                                 : o.history_cap_policy))
+            << ",\"effective_area_history_cap_policy\":"
+            << (metric_frames
+                    ? quote(frame_history_cap_policy_name(
+                          mutations < 0 ? FrameHistoryCapPolicy::fixed : o.history_cap_policy))
+                    : "null")
+            << ",\"effective_area_duplication\":"
+            << (metric_frames
+                    ? quote(mutations < 0 || o.history_cap_policy == FrameHistoryCapPolicy::fixed
+                                ? "off"
+                                : "initial-seed")
+                    : "null")
+            << ",\"effective_area_history_cap_max\":"
+            << (metric_frames
+                    ? std::to_string(
+                          mutations < 0 || o.area_path_domain != FrameAreaPathDomain::enhanced
+                              ? 0
+                              : frame_temporal_reuse_cap(FrameEstimator::area_replay, o.area_reuse,
+                                                         o.enhanced_history_cap))
+                    : "null")
             << ",\"timed_warm_frames\":" << timed_frames << ",\"raw_mse\":" << raw.json()
             << ",\"reconstructed_physical_mse\":" << denoised.json()
             << ",\"reconstructed_presentation_mse\":" << presentation.json()

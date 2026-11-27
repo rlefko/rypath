@@ -70,8 +70,22 @@ static_assert(static_cast<unsigned>(FrameAreaDuplication::off) == edw::shared::o
               static_cast<unsigned>(FrameAreaDuplication::initial_atom) ==
                   edw::shared::initial_atom &&
               static_cast<unsigned>(FrameAreaDuplication::current) == edw::shared::current);
+std::string validate_history_cap_policy(const FrameConfig &c) {
+    if (static_cast<unsigned>(c.history_cap_policy) > 1)
+        return "Invalid Area history cap policy";
+    if (c.history_cap_policy == FrameHistoryCapPolicy::duplication &&
+        (c.execution != FrameExecution::wavefront || c.estimator != FrameEstimator::area_replay ||
+         c.area_path_domain != FrameAreaPathDomain::enhanced ||
+         c.area_reuse != FrameAreaReuse::full ||
+         (c.area_duplication != FrameAreaDuplication::off &&
+          c.area_duplication != FrameAreaDuplication::initial_seed)))
+        return "Duplication history cap requires Enhanced wavefront Area replay and initial-seed "
+               "ancestry";
+    return {};
+}
 bool frame_duplication_enabled(const FrameConfig &c) {
-    return c.area_duplication != FrameAreaDuplication::off;
+    return c.area_duplication != FrameAreaDuplication::off ||
+           c.history_cap_policy == FrameHistoryCapPolicy::duplication;
 }
 // Enhanced cross-target cells serialize a FLOAT mantissa and a signed exponent.
 constexpr std::size_t enhanced_cross_target_bytes = sizeof(float) + sizeof(std::int32_t);
@@ -2986,6 +3000,10 @@ struct FrameSession::Impl {
                         const FrameConfig &settings, const std::filesystem::path &library_path) {
         renderer = std::move(owner);
         config = settings;
+        if (const auto error = validate_history_cap_policy(config); !error.empty())
+            return error;
+        if (config.history_cap_policy == FrameHistoryCapPolicy::duplication)
+            config.area_duplication = FrameAreaDuplication::initial_seed;
         if (const auto error = validate_area_reuse(config); !error.empty())
             return error;
         if (frame_duplication_enabled(config) &&
@@ -3588,7 +3606,7 @@ struct FrameSession::Impl {
         area = std::make_shared<FrameAreaPrograms>();
         history = std::make_shared<FrameAreaHistory>();
         std::string error;
-        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v20", error);
+        auto probe = metal::load_pipeline(r.device, library, @"rypath_area_contract_v21", error);
         if (probe == nil)
             return error;
         auto check = [r.device newBufferWithLength:sizeof(area_wire::Contract)
@@ -4022,27 +4040,32 @@ struct FrameSession::Impl {
                 static_cast<std::uint32_t>(config.spatial_mode),
                 spatial.forward,
                 spatial.canonical,
-                config.enhanced_history_cap};
+                config.enhanced_history_cap,
+                static_cast<std::uint32_t>(config.history_cap_policy)};
             std::memcpy(b.config[index].contents, &cfg, sizeof(cfg));
             auto encoder = area->argument_encoder;
             [encoder setArgumentBuffer:b.arguments[index] offset:0];
-            const std::array<id<MTLBuffer>, 17> resources{b.config[index],
-                                                          b.replay,
-                                                          b.leaf,
-                                                          b.accumulators,
-                                                          b.temporal,
-                                                          source,
-                                                          destination,
-                                                          raw,
-                                                          b.failure,
-                                                          b.cross_targets,
-                                                          b.contribution_evaluation,
-                                                          b.enhanced_records,
-                                                          b.enhanced_evaluation,
-                                                          b.enhanced_suffix,
-                                                          b.donors,
-                                                          b.paired_atlas,
-                                                          b.paired_config};
+            const std::array<id<MTLBuffer>, 18> resources{
+                b.config[index],
+                b.replay,
+                b.leaf,
+                b.accumulators,
+                b.temporal,
+                source,
+                destination,
+                raw,
+                b.failure,
+                b.cross_targets,
+                b.contribution_evaluation,
+                b.enhanced_records,
+                b.enhanced_evaluation,
+                b.enhanced_suffix,
+                b.donors,
+                b.paired_atlas,
+                b.paired_config,
+                config.history_cap_policy == FrameHistoryCapPolicy::duplication
+                    ? history->duplication_counts[history_source_bank]
+                    : b.failure};
             for (NSUInteger argument = 0; argument < resources.size(); ++argument)
                 [encoder setBuffer:resources[argument] offset:0 atIndex:argument];
         }
@@ -4883,6 +4906,9 @@ struct FrameSession::Impl {
                     if (duplication_programs) {
                         use_resource(a.duplication_config, MTLResourceUsageRead);
                         use_resource(a.duplication_counters, read_write);
+                        if (config.history_cap_policy == FrameHistoryCapPolicy::duplication)
+                            use_resource(history->duplication_counts[history_destination_index ^ 1],
+                                         MTLResourceUsageRead);
                         use_resource(history->duplication_labels[history_destination_index ^ 1],
                                      MTLResourceUsageRead);
                         use_resource(history->duplication_labels[history_destination_index],
@@ -5345,6 +5371,7 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                                               : FrameContributionReplay::full;
         frame->info.canonical_transport_version = frame_area_canonical_version(c.area_path_domain);
         frame->info.fresh_discovery_version = frame_area_discovery_version(c.area_path_domain);
+        frame->info.history_cap_policy = c.history_cap_policy;
         frame->info.enhanced_history_cap =
             c.area_path_domain == FrameAreaPathDomain::enhanced
                 ? frame_temporal_reuse_cap(c.estimator, c.area_reuse, c.enhanced_history_cap)
@@ -5708,6 +5735,10 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     FrameSessionBuildResult result;
     result.shadow_traversal.requested = config.shadow_traversal;
     result.acceleration_build.requested = config.acceleration_build_policy;
+    if (const auto error = validate_history_cap_policy(config); !error.empty()) {
+        result.diagnostic = error;
+        return result;
+    }
     const auto pixels = std::uint64_t(config.width) * config.height;
     if (!pixels || pixels > max_index || !config.footprint_samples ||
         !config.transient_byte_limit) {
@@ -5918,6 +5949,8 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         // Stencil changes spatial source domains, never an execution-only toggle.
         a.area_stencil == b.area_stencil && a.spatial_mode == b.spatial_mode &&
         a.enhanced_history_cap == b.enhanced_history_cap;
+    // A policy contrast is an explicit statistical test arm, like the existing
+    // fresh/full contrast above; all other physical configuration remains matched.
     if (!same) {
         result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
                             "caches, diffuse specialization, pair compaction, temporal "

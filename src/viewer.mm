@@ -363,7 +363,9 @@ class ViewerState {
                   << "; domain=" << frame_area_path_domain_name(config.area_path_domain)
                   << "; replay=" << frame_contribution_replay_name(config.contribution_replay)
                   << "; spatial=" << frame_spatial_mode_name(config.spatial_mode)
-                  << "; history cap=" << config.enhanced_history_cap
+                  << "; history cap policy="
+                  << frame_history_cap_policy_name(config.history_cap_policy)
+                  << "; history cap maximum=" << config.enhanced_history_cap
                   << "; resources=" << resource_profile_name(options.resource_profile)
                   << "; spectral=" << spectral_transport_name(scene.spectral_transport)
                   << "; film exposure=" << scene.exposure << "; display EV=" << ev << '\n';
@@ -687,7 +689,13 @@ class ViewerState {
             {"rypath.area.forward_atlas", std::to_string(info.source.stochastic_forward_atlas)},
             {"rypath.area.canonical_atlas", std::to_string(info.source.stochastic_canonical_atlas)},
             {"rypath.area.requested_cap", std::to_string(options.enhanced_history_cap)},
-            {"rypath.area.history_cap", std::to_string(info.source.enhanced_history_cap)},
+            {"rypath.area.history_cap_policy",
+             frame_history_cap_policy_name(info.source.history_cap_policy)},
+            {"rypath.area.maximum_history_cap", std::to_string(info.source.enhanced_history_cap)},
+            {"rypath.area.history_cap",
+             info.source.history_cap_policy == FrameHistoryCapPolicy::duplication
+                 ? "adaptive"
+                 : std::to_string(info.source.enhanced_history_cap)},
             {"rypath.area.canonical_law", std::to_string(info.source.canonical_transport_version)},
             {"rypath.area.discovery_law", std::to_string(info.source.fresh_discovery_version)},
             {"rypath.area.requested_mutation", frame_mutation_policy_name(options.mutation_policy)},
@@ -720,7 +728,8 @@ class ViewerState {
                  ? "enhanced-hybrid-confidence-scaled-mis-v4"
                  : "source-target-mis-v1"},
             {"rypath.area.temporal_reuse",
-             options.estimator != FrameEstimator::area_replay ? "0"
+             options.estimator != FrameEstimator::area_replay                       ? "0"
+             : info.source.history_cap_policy == FrameHistoryCapPolicy::duplication ? "adaptive"
              : info.source.area_path_domain == FrameAreaPathDomain::enhanced
                  ? std::to_string(info.source.enhanced_history_cap)
                  : "20"},

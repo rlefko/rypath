@@ -18,7 +18,8 @@ namespace reservoir = rypath_reservoir;
 namespace mutation = rypath_mutation;
 namespace reuse_mis = rypath_reuse_mis;
 namespace enhanced_path = rypath_enhanced_path;
-namespace confidence = rypath_enhanced_confidence;
+namespace fixed_confidence = rypath_enhanced_confidence;
+namespace confidence = rypath_enhanced_confidence::fractional;
 namespace enhanced_reservoir = rypath_enhanced_reservoir;
 namespace enhanced_entropy = rypath_enhanced_resampling_decision;
 using AreaNumber = enhanced_reservoir::Number;
@@ -41,6 +42,7 @@ struct AreaArguments {
     device const rypath::enhanced_motion_wire::Donor *donors [[id(aw::donors_id)]];
     device const pair_atlas::Entry *paired_atlas [[id(aw::paired_atlas_id)]];
     device const pair_atlas::Config *paired_config [[id(aw::paired_config_id)]];
+    device const ushort *previous_duplication_counts [[id(aw::previous_duplication_counts_id)]];
 };
 // The existing sticky flag atomic also selects the sole record writer. Other
 // lanes never read this record; command completion precedes every host read.
@@ -124,10 +126,12 @@ inline bool area_config(constant AreaArguments &a, uint pixel) {
          (c.contribution_mode != cw::enhanced || c.stencil != aw::paired_gaussian16_stencil ||
           !rypath_stochastic_spatial::valid({c.forward_atlas, c.canonical_atlas}))) ||
         (c.spatial_mode == 2 && c.forward_atlas != c.canonical_atlas) ||
-        (!c.spatial_mode && (c.forward_atlas || c.canonical_atlas)) ||
-        c.enhanced_history_cap == 0 || c.enhanced_history_cap > confidence::default_temporal_cap ||
+        (!c.spatial_mode && (c.forward_atlas || c.canonical_atlas)) || c.history_cap_policy > 1 ||
+        (c.history_cap_policy && c.contribution_mode != cw::enhanced) ||
+        c.enhanced_history_cap == 0 ||
+        c.enhanced_history_cap > fixed_confidence::default_temporal_cap ||
         (c.contribution_mode != cw::enhanced &&
-         c.enhanced_history_cap != confidence::default_temporal_cap) ||
+         c.enhanced_history_cap != fixed_confidence::default_temporal_cap) ||
         c.contribution_mode > cw::enhanced ||
         (c.contribution_mode == cw::summed && c.contribution_depth != 0) ||
         (c.contribution_mode != cw::summed && c.contribution_depth > 65) ||
@@ -205,8 +209,17 @@ inline AreaNumber area_cross_load(constant AreaArguments &a, ulong index) {
                ? reinterpret_cast<device AreaNumber *>(a.cross_targets)[index]
                : AreaNumber{reinterpret_cast<device float *>(a.cross_targets)[index], 0};
 }
+inline float area_confidence_decode(constant AreaArguments &a, uint value) {
+    return aw::decode_confidence(value, a.config->history_cap_policy);
+}
+inline uint area_confidence_encode(constant AreaArguments &a, float value) {
+    return aw::encode_confidence(value, a.config->history_cap_policy);
+}
 inline bool area_confidence_valid(constant AreaArguments &a, uint value) {
-    return area_enhanced(a) ? confidence::valid_source({value, 1}) : value == 0;
+    return area_enhanced(a) ? (a.config->history_cap_policy
+                                   ? confidence::valid_source({area_confidence_decode(a, value), 1})
+                                   : fixed_confidence::valid_source({value, 1}))
+                            : value == 0;
 }
 inline bool area_zero(wire::Point xyz) {
     return ((as_type<uint>(xyz.x) | as_type<uint>(xyz.y) | as_type<uint>(xyz.z)) & 0x7fffffffu) ==
@@ -381,6 +394,8 @@ inline bool area_history(constant AreaArguments &a, uint pixel, const thread aw:
 inline bool area_temporal_confidence(constant AreaArguments &a, uint pixel,
                                      thread confidence::Temporal &result) {
     confidence::Source previous{};
+    uint duplication_count = 0;
+    bool selected_null = false;
     if (a.config->history_used) {
         uint source_pixel;
         if (!area_temporal_source(a, pixel, source_pixel))
@@ -388,12 +403,27 @@ inline bool area_temporal_confidence(constant AreaArguments &a, uint pixel,
         const auto source = a.history_source[source_pixel];
         if (!area_history(a, source_pixel, source))
             return false;
-        previous = {source.confidence, 1};
+        previous = {area_confidence_decode(a, source.confidence), 1};
+        if (a.config->history_cap_policy) {
+            duplication_count = a.previous_duplication_counts[source_pixel];
+            selected_null = source.selected_slot == cw::enhanced_null_slot;
+        }
     }
-    result = confidence::temporal(previous, a.config->enhanced_history_cap);
+    if (a.config->history_cap_policy)
+        result = confidence::temporal(previous, a.config->enhanced_history_cap, duplication_count,
+                                      selected_null);
+    else {
+        const auto fixed = fixed_confidence::temporal({uint(previous.confidence), previous.present},
+                                                      a.config->enhanced_history_cap);
+        result = {{float(fixed.fresh.confidence), fixed.fresh.present},
+                  {float(fixed.history.confidence), fixed.history.present},
+                  {float(fixed.output.confidence), fixed.output.present},
+                  fixed.status};
+    }
     if (result.status != confidence::Status::ok) {
         AREA_DETAIL(a, aw::invalid_value, result.status,
-                    uint4(previous.confidence, previous.present, 0, 0));
+                    uint4(as_type<uint>(previous.confidence), previous.present, duplication_count,
+                          selected_null));
         return false;
     }
     return true;
@@ -564,14 +594,28 @@ inline bool area_update(constant AreaArguments &a, uint pixel, thread aw::Accumu
     if (area_enhanced(a)) {
         // Score0/null does not delete its input domain. Only an absent boundary
         // neighbor has confidence0; logical scheduling still observes that slot.
-        if (accumulator.confidence > confidence::maximum_confidence ||
-            !confidence::valid_source({source_confidence, uint(source_confidence != 0)}) ||
-            source_confidence > confidence::maximum_confidence - accumulator.confidence ||
-            (source_confidence == 0 && !enhanced_reservoir::zero(score))) {
-            AREA_FAIL(a, aw::invalid_value);
-            return false;
+        if (!a.config->history_cap_policy) {
+            if (accumulator.confidence > fixed_confidence::maximum_confidence ||
+                !fixed_confidence::valid_source(
+                    {source_confidence, uint(source_confidence != 0)}) ||
+                source_confidence > fixed_confidence::maximum_confidence - accumulator.confidence ||
+                (source_confidence == 0 && !enhanced_reservoir::zero(score))) {
+                AREA_FAIL(a, aw::invalid_value);
+                return false;
+            }
+            accumulator.confidence += source_confidence;
+        } else {
+            const float accumulated = area_confidence_decode(a, accumulator.confidence);
+            const float incoming = area_confidence_decode(a, source_confidence);
+            if (!(accumulated >= 0 && accumulated <= fixed_confidence::maximum_confidence) ||
+                !confidence::valid_source({incoming, uint(source_confidence != 0)}) ||
+                incoming > fixed_confidence::maximum_confidence - accumulated ||
+                (source_confidence == 0 && !enhanced_reservoir::zero(score))) {
+                AREA_FAIL(a, aw::invalid_value);
+                return false;
+            }
+            accumulator.confidence = area_confidence_encode(a, accumulated + incoming);
         }
-        accumulator.confidence += source_confidence;
         if (accumulator.logical_count >= aw::spatial_candidates ||
             !enhanced_reservoir::valid_number(score) || !enhanced_reservoir::valid_number(target) ||
             (!enhanced_reservoir::zero(score) &&
@@ -829,7 +873,7 @@ inline bool area_add_output(constant AreaArguments &a, uint pixel, AreaNumber sc
     a.raw_xyz[pixel] = sum;
     return true;
 }
-kernel void rypath_area_contract_v20(device aw::Contract *out [[buffer(0)]]) {
+kernel void rypath_area_contract_v21(device aw::Contract *out [[buffer(0)]]) {
     *out = {aw::contract,
             sizeof(aw::Config),
             sizeof(aw::History),
@@ -1017,7 +1061,7 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
     uint expected = 0;
     uint source_confidence = 0;
     if (a.config->phase == aw::fresh) {
-        source_confidence = area_enhanced(a) ? 1u : 0u;
+        source_confidence = area_enhanced(a) ? area_confidence_encode(a, 1.f) : 0u;
         if (area_contribution(a))
             score = fresh_normalizer;
         a.temporal[pixel] = {payload,           score.fraction, xyz,
@@ -1039,12 +1083,12 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         confidence::Temporal temporal_confidence{};
         if (area_enhanced(a)) {
-            if (source.confidence != 1 ||
+            if (source.confidence != area_confidence_encode(a, 1.f) ||
                 !area_temporal_confidence(a, pixel, temporal_confidence)) {
                 AREA_FAIL(a, aw::invalid_value);
                 return;
             }
-            source_confidence = temporal_confidence.fresh.confidence;
+            source_confidence = area_confidence_encode(a, temporal_confidence.fresh.confidence);
         }
         const auto checked =
             area_enhanced(a)
@@ -1084,7 +1128,7 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         if (area_enhanced(a)) {
             if (!area_temporal_confidence(a, pixel, temporal_confidence))
                 return;
-            source_confidence = temporal_confidence.history.confidence;
+            source_confidence = area_confidence_encode(a, temporal_confidence.history.confidence);
         }
         const auto checked =
             area_enhanced(a)
@@ -1137,10 +1181,12 @@ kernel void rypath_area_merge(constant AreaArguments &a [[buffer(1)]],
         }
         const auto checked =
             area_enhanced(a)
-                ? boundary ? AreaNumberResult{{0, 0}, reservoir::Status::ok}
-                           : enhanced_path::pair_score(
-                                 {area_Z(source), area_T(source), target, float(source.confidence),
-                                  float(center.confidence), a.config->spatial_mode ? 1.f : .25f})
+                ? boundary
+                      ? AreaNumberResult{{0, 0}, reservoir::Status::ok}
+                      : enhanced_path::pair_score({area_Z(source), area_T(source), target,
+                                                   area_confidence_decode(a, source.confidence),
+                                                   area_confidence_decode(a, center.confidence),
+                                                   a.config->spatial_mode ? 1.f : .25f})
                 : area_legacy(reuse_mis::spatial_pair_score(source.normalizer, target.fraction,
                                                             source.target));
         if (checked.status != reservoir::Status::ok) {
@@ -1216,7 +1262,8 @@ inline void area_temporal_finish_body(constant AreaArguments &a, uint pixel,
     if (area_enhanced(a)) {
         confidence::Temporal temporal_confidence{};
         if (!area_temporal_confidence(a, pixel, temporal_confidence) ||
-            accumulator.confidence != temporal_confidence.output.confidence) {
+            accumulator.confidence !=
+                area_confidence_encode(a, temporal_confidence.output.confidence)) {
             AREA_FAIL(a, aw::invalid_count);
             return;
         }
@@ -1266,7 +1313,8 @@ kernel void rypath_area_fresh_finalize_v1(constant AreaArguments &a [[buffer(1)]
     }
     const auto accumulator = a.accumulators[pixel];
     AreaNumber Z;
-    if (accumulator.confidence != 1 || !area_finish(a, pixel, accumulator, 1, Z)) {
+    if (accumulator.confidence != area_confidence_encode(a, 1.f) ||
+        !area_finish(a, pixel, accumulator, 1, Z)) {
         AREA_FAIL(a, aw::invalid_count);
         return;
     }
@@ -1312,7 +1360,9 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
     AreaNumber center_score{0, 0};
     confidence::Spatial spatial_confidence{};
     if (area_enhanced(a))
-        spatial_confidence = confidence::spatial_begin({center.confidence, 1});
+        spatial_confidence =
+            confidence::spatial_begin({area_confidence_decode(a, center.confidence), 1});
+    float neighbor_sum = 0.f;
     for (uint direction = 1; direction <= 4; ++direction) {
         const uint neighbor = area_neighbor_direction(a, pixel, direction);
         if (area_failed(a))
@@ -1327,12 +1377,12 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
             : neighbor == pixel
                 ? area_T(center)
                 : area_cross_load(a, area_cross_index(a, reverse_direction, neighbor));
-        uint neighbor_confidence = 0;
+        float neighbor_confidence = 0;
         if (area_enhanced(a) && neighbor != pixel) {
             const auto source = a.temporal[neighbor];
             if (!area_temporal_valid(a, pixel, source))
                 return;
-            neighbor_confidence = source.confidence;
+            neighbor_confidence = area_confidence_decode(a, source.confidence);
         }
         if (area_enhanced(a) &&
             confidence::add_neighbor(spatial_confidence,
@@ -1341,13 +1391,14 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
             AREA_FAIL(a, aw::invalid_count);
             return;
         }
+        neighbor_sum += neighbor_confidence;
         if (!selected_canonical)
             continue;
         const auto part = area_enhanced(a)
                               ? enhanced_path::canonical_score(
                                     area_Z(center), area_T(center),
                                     neighbor == pixel ? AreaNumber{0, 0} : reverse_target,
-                                    float(center.confidence),
+                                    area_confidence_decode(a, center.confidence),
                                     neighbor == pixel ? 1.f : float(neighbor_confidence),
                                     a.config->spatial_mode ? 1.f : .25f)
                               : area_legacy(reuse_mis::spatial_pair_score(
@@ -1382,11 +1433,10 @@ inline void area_finalize_body(constant AreaArguments &a, uint pixel,
         }
         // Confidence describes all structurally admitted domains, not the two
         // Monte Carlo term choices, even when a sampled score or shift is null.
-        accumulator.confidence = spatial_confidence.confidence - center.confidence;
+        accumulator.confidence = area_confidence_encode(a, neighbor_sum);
     }
-    if (area_enhanced(a) &&
-        (spatial_confidence.status != confidence::Status::ok ||
-         accumulator.confidence != spatial_confidence.confidence - center.confidence)) {
+    if (area_enhanced(a) && (spatial_confidence.status != confidence::Status::ok ||
+                             accumulator.confidence != area_confidence_encode(a, neighbor_sum))) {
         AREA_FAIL(a, aw::invalid_count);
         return;
     }

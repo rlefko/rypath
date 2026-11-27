@@ -25,6 +25,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -34,13 +35,13 @@ namespace wf = wavefront_wire;
 namespace aw = area_wire;
 static_assert(wf::contract == 23 && sizeof(wf::Contract) == 112 && sizeof(wf::Config) == 64);
 static_assert(wf::contribution_evaluation_id == 18 && wf::contribution_state_id == 19);
-static_assert(aw::contract == 20 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 120);
+static_assert(aw::contract == 21 && sizeof(aw::Contract) == 48 && sizeof(aw::Config) == 124);
 static_assert(contribution_wire::enhanced_canonical_law == 4 && enhanced_wire::record_version == 2);
 static_assert(wf::enhanced_records_id == 20 && wf::enhanced_evaluation_id == 21 &&
               aw::enhanced_records_id == 11 && aw::enhanced_evaluation_id == 12 &&
               wf::enhanced_suffix_id == 22 && wf::work_list_id == 23 &&
               aw::enhanced_suffix_id == 13 && aw::paired_atlas_id == 15 &&
-              aw::paired_config_id == 16);
+              aw::paired_config_id == 16 && aw::previous_duplication_counts_id == 17);
 static_assert(sizeof(rypath_area_pair_atlas::Config) == 112 &&
               sizeof(rypath_area_pair_atlas::Entry) == 2);
 static_assert(sizeof(wf::Counters) == 64 && offsetof(wf::Counters, work_count) == 52 &&
@@ -56,32 +57,33 @@ void require(bool value, const std::string &why) {
 void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue) {
     std::string why;
     auto contract_pipeline =
-        metal::load_pipeline(device, library, @"rypath_area_contract_v20", why);
+        metal::load_pipeline(device, library, @"rypath_area_contract_v21", why);
     require(contract_pipeline != nil, why);
     require([library newFunctionWithName:@"rypath_area_contract"] == nil &&
-                [library newFunctionWithName:@"rypath_area_contract_v19"] == nil,
-            "Unversioned and stale Area contracts must be absent before reading v20");
+                [library newFunctionWithName:@"rypath_area_contract_v19"] == nil &&
+                [library newFunctionWithName:@"rypath_area_contract_v20"] == nil,
+            "Unversioned and stale Area contracts must be absent before reading v21");
     auto contract_buffer = [device newBufferWithLength:sizeof(aw::Contract)
                                                options:MTLResourceStorageModeShared];
-    require(contract_buffer != nil, "Area v20 contract allocation");
+    require(contract_buffer != nil, "Area v21 contract allocation");
     std::memset(contract_buffer.contents, 0, contract_buffer.length);
     auto command = [queue commandBuffer];
     auto encoder = [command computeCommandEncoder];
-    require(command && encoder, "Area v20 contract encoder");
+    require(command && encoder, "Area v21 contract encoder");
     [encoder setComputePipelineState:contract_pipeline];
     [encoder setBuffer:contract_buffer offset:0 atIndex:0];
     [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
     [encoder endEncoding];
-    require(metal::complete(command, "Area v20 contract").empty(), "Area contract completion");
+    require(metal::complete(command, "Area v21 contract").empty(), "Area contract completion");
     aw::Contract contract{};
     std::memcpy(&contract, contract_buffer.contents, sizeof(contract));
-    require(contract.version == 20 && contract.config_bytes == 120 &&
+    require(contract.version == 21 && contract.config_bytes == 124 &&
                 contract.history_bytes == 88 && contract.temporal_bytes == 92 &&
                 contract.accumulator_bytes == 104 && contract.replay_bytes == 32 &&
                 contract.counters_bytes == 112 && contract.contribution_evaluation_bytes == 16 &&
                 contract.suffix_entry_bytes == 160 && contract.donor_bytes == 16 &&
                 contract.paired_config_bytes == 112 && contract.paired_entry_bytes == 2,
-            "Area v20 contract mismatch; stale Area libraries are incompatible");
+            "Area v21 contract mismatch; stale Area libraries are incompatible");
     auto function = metal::load_function(library, @"rypath_area_reset", why);
     auto reset = metal::load_pipeline(device, library, @"rypath_area_reset", why);
     auto prepare = metal::load_pipeline(device, library, @"rypath_area_prepare", why);
@@ -96,8 +98,8 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
     require(arguments != nil, "Area disabled arguments allocation");
     [argument_encoder setArgumentBuffer:arguments offset:0];
     constexpr unsigned pixels = 4, guard = 256;
-    std::array<id<MTLBuffer>, aw::paired_config_id + 1> buffers{};
-    const std::array<std::size_t, aw::paired_config_id + 1> lengths{
+    std::array<id<MTLBuffer>, aw::previous_duplication_counts_id + 1> buffers{};
+    const std::array<std::size_t, aw::previous_duplication_counts_id + 1> lengths{
         sizeof(aw::Config) + guard,
         pixels * sizeof(rypath_replay::ReplayState) + guard,
         pixels * sizeof(render_wire::Point) + guard,
@@ -114,7 +116,8 @@ void area_disabled_wire(id<MTLDevice> device, id<MTLLibrary> library, id<MTLComm
         sizeof(rypath_enhanced_suffix_tape::Entry),
         sizeof(enhanced_motion_wire::Donor),
         16,
-        sizeof(rypath_area_pair_atlas::Config)};
+        sizeof(rypath_area_pair_atlas::Config),
+        pixels * sizeof(std::uint16_t)};
     for (unsigned i = 0; i < buffers.size(); ++i) {
         buffers[i] = [device newBufferWithLength:lengths[i] options:MTLResourceStorageModeShared];
         require(buffers[i] != nil, "Area disabled pool allocation");
@@ -961,7 +964,7 @@ void enhanced_null_owners(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCo
 // prepare. The scalar reference uses direct double MIS formulas, not shared
 // reservoir/target/confidence helpers or the GPU's categorical decisions.
 void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTLCommandQueue> queue,
-                            bool duplication_probe = false) {
+                            bool duplication_probe = false, bool adaptive_probe = false) {
     namespace cw = contribution_wire;
     namespace ew = enhanced_wire;
     // Radius16 is the smallest authored reciprocal stencil; this extent
@@ -988,8 +991,8 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
     auto arguments = [device newBufferWithLength:argument_encoder.encodedLength
                                          options:MTLResourceStorageModeShared];
     require(arguments != nil, "Area protocol arguments");
-    std::array<id<MTLBuffer>, aw::paired_config_id + 1> buffers{};
-    std::array<std::size_t, aw::paired_config_id + 1> lengths{
+    std::array<id<MTLBuffer>, aw::previous_duplication_counts_id + 1> buffers{};
+    std::array<std::size_t, aw::previous_duplication_counts_id + 1> lengths{
         sizeof(aw::Config),
         pixels * sizeof(rypath_replay::ReplayState),
         pixels * sizeof(render_wire::Point),
@@ -1006,7 +1009,8 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
         sizeof(rypath_enhanced_suffix_tape::Entry),
         pixels * sizeof(enhanced_motion_wire::Donor),
         16,
-        sizeof(rypath_area_pair_atlas::Config)};
+        sizeof(rypath_area_pair_atlas::Config),
+        pixels * sizeof(std::uint16_t)};
     for (unsigned i = 0; i < buffers.size(); ++i) {
         buffers[i] = [device newBufferWithLength:lengths[i] + 2 * guard
                                          options:MTLResourceStorageModeShared];
@@ -1168,7 +1172,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
                             evaluations[pixel].suffix_context_high == config.suffix_context_high,
                         "Every prepared/cached receipt must carry its evaluator context");
         }
-        if (pipeline == merge || pipeline == mutation_finish)
+        if (!allow_failure && (pipeline == merge || pipeline == mutation_finish))
             for (unsigned p = 0; p < pixels; ++p)
                 require(requests[p].ready == 0 && evaluations[p].ready == 0,
                         "Every successful merge/mutation consumes both receipts");
@@ -1224,6 +1228,228 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
         config.temporal_cache = 0;
         dispatch(prepare); // Restore the independent nonidentity replay fixture below.
     };
+
+    if (adaptive_probe) {
+        // Production Area stages with injected transport, not a duplicate test
+        // implementation. Distinct d/s counts detect owner-indexed map fetches.
+        auto *old = reinterpret_cast<aw::History *>(data(aw::history_source_id));
+        auto *published = reinterpret_cast<aw::History *>(data(aw::history_destination_id));
+        auto *donors = reinterpret_cast<enhanced_motion_wire::Donor *>(data(aw::donors_id));
+        auto *counts = reinterpret_cast<std::uint16_t *>(data(aw::previous_duplication_counts_id));
+        const auto decode = [](unsigned word) { return std::bit_cast<float>(word); };
+        const auto cap = [](unsigned count) {
+            return 20.L - 19.L * std::pow(static_cast<long double>(count) / 288.L, .1L);
+        };
+        const auto neighbor = [](unsigned owner, unsigned direction) {
+            const auto x = owner % width, y = owner / width;
+            switch (direction) {
+            case 1:
+                return x ? owner - 1 : owner;
+            case 2:
+                return x + 1 < width ? owner + 1 : owner;
+            case 3:
+                return y ? owner - width : owner;
+            case 4:
+                return y + 1 < height ? owner + width : owner;
+            default:
+                throw std::runtime_error("Adaptive oracle direction");
+            }
+        };
+        config.history_cap_policy = 1;
+        config.enhanced_history_cap = 20;
+        config.history_source_bank = 1;
+        config.temporal_reprojection = 1;
+        config.stencil = aw::adjacent_stencil;
+        config.serial_low = 1;
+        // Both nonzero/zero shifted target and TRUE null histories must retain
+        // their proper coefficient. Fresh null is also structurally present.
+        for (unsigned scenario = 0; scenario < 4; ++scenario) {
+            const bool null_history = scenario == 2, cold = scenario == 3;
+            const bool positive_shift = scenario == 0;
+            const bool null_fresh = null_history;
+            config.history_used = !cold;
+            config.temporal_reprojection = !cold;
+            for (unsigned source = 0; source < pixels; ++source) {
+                counts[source] = (null_history || cold)
+                                     ? 0xffffu
+                                     : std::array<unsigned, 4>{0, 1, 36, 288}[source % 4];
+                auto &h = old[source];
+                h = {};
+                h.payload = rypath_replay::fresh({source, 111, 113, 127, 131});
+                h.valid = 1;
+                h.xyz = null_history ? render_wire::Point{}
+                                     : render_wire::Point{float(4 + source), 0, 0};
+                h.selected_slot = null_history ? cw::enhanced_null_slot : 1;
+                h.confidence = std::bit_cast<unsigned>(null_history ? 7.25f : 21.f);
+                h.record = {config.history_source_bank, source};
+                h.target_h_fraction = .5f;
+                h.target_h_exponent = 1;
+                const auto [T, exponent] = scale(proxy(h.xyz, 1));
+                h.target = h.normalizer = T;
+                h.target_exponent = exponent;
+                h.normalizer_exponent = T == 0 ? 0 : exponent + 1;
+                record_at(h.record) = null_history ? ew::empty_record() : descriptor(source, 0);
+                donors[source] = {(source + 1) % pixels,
+                                  unsigned(rypath_enhanced_motion::Classification::ordinary), 1, 0};
+            }
+            std::array<aw::History, pixels> immutable{};
+            std::memcpy(immutable.data(), old, sizeof(immutable));
+            std::array<long double, pixels> M{}, alpha{}, expected_Z{}, canonical{};
+            config.phase = aw::fresh;
+            config.candidate = 0;
+            dispatch(reset, 1);
+            dispatch(prepare);
+            for (unsigned owner = 0; owner < pixels; ++owner) {
+                const auto xyz =
+                    null_fresh ? render_wire::Point{} : render_wire::Point{float(12 + owner), 0, 0};
+                alpha[owner] = proxy(xyz, 1);
+                response(owner, xyz, 1, null_fresh ? cw::enhanced_null_slot : 1,
+                         2 * float(alpha[owner]));
+                record_at(evaluations[owner].result) =
+                    null_fresh ? ew::empty_record() : descriptor(owner, 1);
+                const auto source = donors[owner].source_pixel;
+                M[owner] = cold ? 0.L : null_history ? 7.25L : cap(counts[source]);
+            }
+            dispatch(merge);
+            if (!cold) {
+                config.phase = aw::temporal_reverse;
+                dispatch(prepare);
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    const auto source = donors[owner].source_pixel;
+                    const auto xyz = render_wire::Point{float(8 + 3 * source), 0, 0};
+                    const auto inverse = null_history ? 0.f : proxy(xyz, 1);
+                    response(owner, null_history ? render_wire::Point{} : xyz, 1,
+                             null_fresh ? cw::enhanced_null_slot : 1);
+                    canonical[owner] = alpha[owner] == 0 ? 0
+                                                         : 2 * alpha[owner] * alpha[owner] /
+                                                               (alpha[owner] + M[owner] * inverse);
+                }
+                dispatch(merge);
+                for (unsigned owner = 0; owner < pixels; ++owner)
+                    scalar_near(accumulator[owner].state.score_sum,
+                                accumulator[owner].score_exponent, canonical[owner],
+                                "Adaptive inverse MIS uses mapped fractional cap");
+                config.phase = aw::temporal;
+                config.candidate = 1;
+                dispatch(prepare);
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    const auto source = donors[owner].source_pixel;
+                    const auto xyz = positive_shift
+                                         ? render_wire::Point{float(10 + 2 * owner), 0, 0}
+                                         : render_wire::Point{};
+                    const auto shifted_target = proxy(xyz, 1);
+                    const auto old_T = number(old[source].target, old[source].target_exponent);
+                    const auto old_Z =
+                        number(old[source].normalizer, old[source].normalizer_exponent);
+                    const long double shifted = old_Z == 0 || shifted_target == 0
+                                                    ? 0
+                                                    : old_Z * M[owner] * shifted_target /
+                                                          (M[owner] * old_T + shifted_target);
+                    expected_Z[owner] = canonical[owner] + shifted;
+                    response(owner, xyz, 1, null_history ? cw::enhanced_null_slot : 1);
+                }
+                dispatch(merge);
+            } else {
+                for (unsigned owner = 0; owner < pixels; ++owner)
+                    expected_Z[owner] = 2 * alpha[owner];
+            }
+            dispatch(finish);
+            for (unsigned owner = 0; owner < pixels; ++owner) {
+                near(decode(temporal[owner].confidence), 1 + M[owner],
+                     "Actual temporal publication preserves fractional confidence");
+                scalar_near(temporal[owner].normalizer, temporal[owner].normalizer_exponent,
+                            expected_Z[owner], "Adaptive complementary MIS normalizer");
+                if (!cold && !null_history && counts[donors[owner].source_pixel] == 36)
+                    require(std::abs(decode(temporal[owner].confidence) -
+                                     (1 + cap(counts[owner]))) > .001L,
+                            "Distinct donor count must differ from owner-indexed wrong cap");
+            }
+            require(std::memcmp(immutable.data(), old, sizeof(immutable)) == 0,
+                    "Adaptive temporal stages never overwrite mapped source history");
+            // Actual spatial stage consumes the fractional TEMPORAL inputs, not
+            // their words interpreted as integers or cap-floor approximations.
+            config.phase = aw::spatial;
+            config.candidate = 0;
+            dispatch(spatial_begin);
+            std::array<long double, pixels> target{};
+            for (unsigned owner = 0; owner < pixels; ++owner)
+                target[owner] = null_history ? 0 : proxy({float(6 + owner), 0, 0}, 1);
+            for (unsigned k = 1; k <= 4; ++k) {
+                config.candidate = k;
+                dispatch(prepare);
+                for (unsigned owner = 0; owner < pixels; ++owner) {
+                    const auto source = neighbor(owner, k);
+                    response(owner,
+                             null_history ? render_wire::Point{}
+                                          : render_wire::Point{float(6 + owner), 0, 0},
+                             1, temporal[source].selected_slot);
+                }
+                dispatch(merge);
+            }
+            config.phase = aw::spatial_final;
+            config.candidate = 0;
+            dispatch(finalize);
+            for (unsigned owner = 0; owner < pixels; ++owner) {
+                long double confidence = 1 + M[owner], Z = 0;
+                const auto Tp = number(temporal[owner].target, temporal[owner].target_exponent);
+                for (unsigned k = 1; k <= 4; ++k) {
+                    const auto source = neighbor(owner, k);
+                    if (source == owner) {
+                        Z += expected_Z[owner] / 4;
+                        continue;
+                    }
+                    const auto Mp = 1 + M[owner], Ms = 1 + M[source];
+                    confidence += Ms;
+                    const auto Ts =
+                        number(temporal[source].target, temporal[source].target_exponent);
+                    if (expected_Z[source] > 0 && target[owner] > 0)
+                        Z += expected_Z[source] * Ms * target[owner] /
+                             (Ms * Ts + Mp * target[owner]) / 4;
+                    if (expected_Z[owner] > 0)
+                        Z += expected_Z[owner] * Mp * Tp / (Mp * Tp + Ms * target[source]) / 4;
+                }
+                near(decode(published[owner].confidence), confidence,
+                     "Published history sums ALL fractional spatial source domains");
+                scalar_near(published[owner].normalizer, published[owner].normalizer_exponent, Z,
+                            "Spatial MIS consumes fractional confidence on both sides");
+            }
+        }
+        // Missing map is legal for a cold cut above; it is a visible failure
+        // for a structurally present NONNULL old reservoir.
+        config.history_used = 1;
+        config.temporal_reprojection = 1;
+        config.phase = aw::fresh;
+        config.candidate = 0;
+        dispatch(reset, 1);
+        dispatch(prepare);
+        for (unsigned owner = 0; owner < pixels; ++owner) {
+            response(owner, {4, 0, 0}, 1, 1, 2 * proxy({4, 0, 0}, 1));
+            record_at(evaluations[owner].result) = descriptor(owner, 1);
+        }
+        dispatch(merge);
+        config.phase = aw::temporal_reverse;
+        dispatch(prepare);
+        for (unsigned owner = 0; owner < pixels; ++owner)
+            response(owner, {4, 0, 0}, 1, 1);
+        dispatch(merge, pixels, true);
+        aw::Counters missing{};
+        std::memcpy(&missing, data(aw::failure_id), sizeof(missing));
+        require((missing.failure & aw::invalid_value) != 0,
+                "Present nonnull history cannot invent a count when the prior map is missing");
+        config.phase = aw::fresh;
+        config.candidate = 0;
+        config.history_used = 0;
+        config.history_cap_policy = 2;
+        config.temporal_reprojection = 0;
+        dispatch(reset, 1, true);
+        aw::Counters policy{};
+        std::memcpy(&policy, data(aw::failure_id), sizeof(policy));
+        require((policy.failure & aw::invalid_config) != 0,
+                "Unknown confidence policy fails before transport");
+        std::cout << "Adaptive production Area mapped-count, fractional MIS, null/cut and spatial "
+                     "confidence controls passed\n";
+        return;
+    }
     if (duplication_probe) {
         namespace dw = enhanced_duplication_wire;
         namespace dup = rypath_enhanced_duplication;
@@ -2459,7 +2685,7 @@ void enhanced_area_protocol(id<MTLDevice> device, id<MTLLibrary> library, id<MTL
                 std::memcmp(data(aw::paired_config_id), &paired_config, sizeof(paired_config)) == 0,
             "Actual atlas passes preserve frozen source tuples, asset and all frame poses");
 }
-int run(const std::filesystem::path &path) {
+int run(const std::filesystem::path &path, bool adaptive_only = false) {
     auto device = MTLCreateSystemDefaultDevice();
 #ifdef RYPATH_ALLOW_NO_METAL_DEVICE
     if (!device)
@@ -2469,6 +2695,12 @@ int run(const std::filesystem::path &path) {
     std::string why;
     auto library = metal::load_library(device, path, why);
     require(library != nil, why);
+    if (adaptive_only) {
+        auto queue = [device newCommandQueue];
+        require(queue != nil, "Adaptive protocol queue");
+        enhanced_area_protocol(device, library, queue, false, true);
+        return 0;
+    }
     auto function = metal::load_function(library, @"rypath_wavefront_advance", why);
     require(function != nil, why);
     auto pipeline = metal::load_pipeline(device, library, @"rypath_wavefront_advance", why);
@@ -3008,8 +3240,9 @@ int run(const std::filesystem::path &path) {
 int main(int argc, char **argv) {
     @autoreleasepool {
         try {
-            require(argc == 2, "Expected metallib path");
-            return run(argv[1]);
+            const bool adaptive = argc == 3 && std::string_view(argv[2]) == "--adaptive-confidence";
+            require(argc == 2 || adaptive, "Expected metallib path [--adaptive-confidence]");
+            return run(argv[1], adaptive);
         } catch (const std::exception &error) {
             std::cerr << error.what() << '\n';
             return 1;

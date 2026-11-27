@@ -70,6 +70,7 @@ struct Options {
     rypath::FrameSpatialMode spatial_mode = rypath::FrameSpatialMode::all;
     bool enhanced_temporal_reprojection = false;
     rypath::FrameAreaDuplication area_duplication = rypath::FrameAreaDuplication::off;
+    rypath::FrameHistoryCapPolicy history_cap_policy = rypath::FrameHistoryCapPolicy::fixed;
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
@@ -148,6 +149,13 @@ std::string precise_float(float value) {
     out << value;
     return out.str();
 }
+std::string temporal_cap_value(rypath::FrameHistoryCapPolicy policy,
+                               rypath::FrameEstimator estimator, rypath::FrameAreaReuse reuse,
+                               std::uint32_t maximum, bool json = true) {
+    if (policy == rypath::FrameHistoryCapPolicy::duplication)
+        return json ? "null" : "adaptive-duplication";
+    return std::to_string(rypath::frame_temporal_reuse_cap(estimator, reuse, maximum));
+}
 const char *usage =
     "Usage: rypath-frame-benchmark (--scene SCENE.pbrt | --demo) --output REPORT.json\n"
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
@@ -157,7 +165,9 @@ const char *usage =
     "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
-    "  [--area-history-cap N (Enhanced fixed temporal confidence, 1 through 20)]\n"
+    "  [--area-history-cap N (Enhanced maximum temporal confidence, 1 through 20)]\n"
+    "  [--area-history-cap-policy fixed|duplication (default: fixed; duplication implies "
+    "initial-seed)]\n"
     "  [--area-path-domain summed|contribution|enhanced (Area only; default: summed)]\n"
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
     "  [--area-contribution-replay full|prefix (contribution only; default: full)]\n"
@@ -377,6 +387,11 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.area_duplication = rypath::FrameAreaDuplication::current;
             else
                 return "area duplication must be off, initial-seed, initial-atom, or current";
+        } else if (key == "--area-history-cap-policy") {
+            const auto policy = rypath::parse_frame_history_cap_policy(value);
+            if (!policy)
+                return "area history cap policy must be fixed or duplication";
+            o.history_cap_policy = *policy;
         } else if (key == "--area-history-cap") {
             if (!integer(value, o.enhanced_history_cap) || o.enhanced_history_cap < 1 ||
                 o.enhanced_history_cap > 20)
@@ -474,10 +489,19 @@ std::string parse(int argc, char **argv, Options &o) {
     }
     if (seen.contains("--area-output") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area output requires area-replay estimator";
-    if (seen.contains("--area-history-cap") &&
+    if ((seen.contains("--area-history-cap") || seen.contains("--area-history-cap-policy")) &&
         (o.estimator != rypath::FrameEstimator::area_replay ||
          o.area_path_domain != rypath::FrameAreaPathDomain::enhanced))
-        return "area history cap requires Enhanced Area replay";
+        return "area history cap and policy require Enhanced Area replay";
+    if (o.history_cap_policy == rypath::FrameHistoryCapPolicy::duplication) {
+        if (o.execution != rypath::FrameExecution::wavefront ||
+            o.area_reuse != rypath::FrameAreaReuse::full)
+            return "duplication history cap requires full-reuse wavefront Enhanced Area";
+        if (seen.contains("--area-duplication") &&
+            o.area_duplication != rypath::FrameAreaDuplication::initial_seed)
+            return "duplication history cap requires initial-seed duplication; explicit mode "
+                   "conflicts";
+    }
     if (seen.contains("--area-path-domain") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area path domain requires area-replay estimator";
     if (seen.contains("--area-contribution-replay") &&
@@ -802,6 +826,7 @@ struct Observation : rypath::FrameStatisticsSample {
     bool history_used = false, temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
     std::uint32_t enhanced_history_cap = 0;
+    rypath::FrameHistoryCapPolicy history_cap_policy = rypath::FrameHistoryCapPolicy::fixed;
     bool enhanced_pair_compaction = false;
     bool stochastic_spatial_pairs = false;
     rypath::FrameAreaReuse area_reuse = rypath::FrameAreaReuse::full;
@@ -1144,10 +1169,38 @@ struct Report {
                                        : "enhanced-hybrid-confidence-scaled-mis-v4")
                                 : "source-target-mis-v1")
                          : "none")
-            << ",\"requested_area_history_cap\":" << options.enhanced_history_cap
+            << ",\"requested_area_history_cap_policy\":"
+            << quote(rypath::frame_history_cap_policy_name(options.history_cap_policy))
+            << ",\"effective_area_history_cap_policy\":"
+            << (area_path_domain_effective
+                    ? quote(rypath::frame_history_cap_policy_name(options.history_cap_policy))
+                    : "null")
+            << ",\"requested_area_history_cap_max\":" << options.enhanced_history_cap
+            << ",\"effective_area_history_cap_max\":"
+            << (area_path_domain_effective
+                    ? std::to_string(
+                          options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                              ? rypath::frame_temporal_reuse_cap(options.estimator,
+                                                                 options.area_reuse,
+                                                                 options.enhanced_history_cap)
+                              : 0u)
+                    : "null")
+            << ",\"area_duplication_implied_by_history_cap\":"
+            << (options.history_cap_policy == rypath::FrameHistoryCapPolicy::duplication ? "true"
+                                                                                         : "false")
+            << ",\"requested_area_history_cap\":"
+            << (options.history_cap_policy == rypath::FrameHistoryCapPolicy::fixed
+                    ? std::to_string(options.enhanced_history_cap)
+                    : "null")
+            << ",\"area_history_cap_min\":"
+            << (options.history_cap_policy == rypath::FrameHistoryCapPolicy::duplication ? "1"
+                                                                                         : "null")
+            << ",\"area_history_cap_alpha\":"
+            << (options.history_cap_policy == rypath::FrameHistoryCapPolicy::duplication ? "0.1"
+                                                                                         : "null")
             << ",\"area_temporal_reuse\":"
-            << rypath::frame_temporal_reuse_cap(options.estimator, options.area_reuse,
-                                                options.enhanced_history_cap)
+            << temporal_cap_value(options.history_cap_policy, options.estimator, options.area_reuse,
+                                  options.enhanced_history_cap)
             << ",\"mutation_steps\":" << options.mutation_steps << ",\"effective_mutation_steps\":"
             << (options.estimator == rypath::FrameEstimator::area_replay ? options.mutation_steps
                                                                          : 0)
@@ -1390,7 +1443,13 @@ struct Report {
                                         {f.stochastic_forward_atlas, f.stochastic_canonical_atlas})
                                   : 4u)
                         : "null")
-                << ",\"enhanced_history_cap\":" << f.enhanced_history_cap
+                << ",\"area_history_cap_policy\":"
+                << quote(rypath::frame_history_cap_policy_name(f.history_cap_policy))
+                << ",\"enhanced_history_cap_max\":" << f.enhanced_history_cap
+                << ",\"enhanced_history_cap\":"
+                << (f.history_cap_policy == rypath::FrameHistoryCapPolicy::fixed
+                        ? std::to_string(f.enhanced_history_cap)
+                        : "null")
                 << ",\"compacted_null_evaluations\":" << f.compacted_null_evaluations
                 << ",\"enhanced_suffix_cache\":" << (f.enhanced_suffix_cache ? "true" : "false")
                 << ",\"enhanced_suffix_hits\":[" << f.enhanced_suffix_hits[0] << ','
@@ -1661,12 +1720,16 @@ int run(const Options &options) {
         config.area_output = options.area_output;
         config.cache_temporal_evaluations = options.cache_temporal_evaluations;
         config.enhanced_history_cap = options.enhanced_history_cap;
+        config.history_cap_policy = options.history_cap_policy;
         config.enhanced_suffix_cache = options.enhanced_suffix_cache;
         config.compact_enhanced_pairs = options.compact_enhanced_pairs;
         config.spatial_mode = options.spatial_mode;
         config.area_reuse = options.area_reuse;
         config.enhanced_temporal_reprojection = options.enhanced_temporal_reprojection;
-        config.area_duplication = options.area_duplication;
+        config.area_duplication =
+            options.history_cap_policy == rypath::FrameHistoryCapPolicy::duplication
+                ? rypath::FrameAreaDuplication::initial_seed
+                : options.area_duplication;
         config.target_scale = options.target_scale;
         config.mutation_steps = options.mutation_steps;
         config.mutation_policy = options.mutation_policy;
@@ -1699,7 +1762,7 @@ int run(const Options &options) {
             report.diagnostic =
                 built.diagnostic.empty() ? "frame session unavailable" : built.diagnostic;
         } else {
-            report.actual_area_duplication = options.area_duplication;
+            report.actual_area_duplication = config.area_duplication;
             report.shadow_traversal = built.shadow_traversal;
             const auto warmup_start = Clock::now();
             std::unique_ptr<rypath::Frame> last;
@@ -1804,6 +1867,8 @@ int run(const Options &options) {
                         static_cast<std::uint32_t>(options.seed),
                         static_cast<std::uint32_t>(options.seed >> 32), options.spatial_mode);
                     const bool spatial_selection_valid =
+                        info.history_cap_policy == options.history_cap_policy &&
+                        info.duplication.mode == config.area_duplication &&
                         info.area_reuse == options.area_reuse &&
                         (options.area_reuse != rypath::FrameAreaReuse::fresh ||
                          (!info.history_used && info.history_generation == 0 &&
@@ -1881,6 +1946,7 @@ int run(const Options &options) {
                     observation.history_used = info.history_used;
                     observation.enhanced_suffix_cache = info.enhanced_suffix_cache;
                     observation.enhanced_history_cap = info.enhanced_history_cap;
+                    observation.history_cap_policy = info.history_cap_policy;
                     observation.enhanced_pair_compaction = info.enhanced_pair_compaction;
                     observation.stochastic_spatial_pairs = info.stochastic_spatial_pairs;
                     observation.spatial_mode = info.spatial_mode;
@@ -2093,9 +2159,15 @@ int run(const Options &options) {
                                        : "enhanced-hybrid-confidence-scaled-mis-v4")
                                 : "source-target-mis-v1")
                          : "none"},
+                    {"rypath.area.history_cap_req",
+                     rypath::frame_history_cap_policy_name(options.history_cap_policy)},
+                    {"rypath.area.history_cap_policy",
+                     rypath::frame_history_cap_policy_name(frame_info.history_cap_policy)},
+                    {"rypath.area.history_cap_max",
+                     std::to_string(frame_info.enhanced_history_cap)},
                     {"rypath.area.temporal_reuse",
-                     std::to_string(rypath::frame_temporal_reuse_cap(
-                         options.estimator, options.area_reuse, options.enhanced_history_cap))},
+                     temporal_cap_value(options.history_cap_policy, options.estimator,
+                                        options.area_reuse, options.enhanced_history_cap, false)},
                     {"rypath.area.spatial_mode_requested",
                      rypath::frame_spatial_mode_name(options.spatial_mode)},
                     {"rypath.area.stochastic_forward_atlas",
@@ -2318,9 +2390,15 @@ int run(const Options &options) {
                                        : "enhanced-hybrid-confidence-scaled-mis-v4")
                                 : "source-target-mis-v1")
                          : "none"},
+                    {"rypath.area.history_cap_req",
+                     rypath::frame_history_cap_policy_name(options.history_cap_policy)},
+                    {"rypath.area.history_cap_policy",
+                     rypath::frame_history_cap_policy_name(info.source.history_cap_policy)},
+                    {"rypath.area.history_cap_max",
+                     std::to_string(info.source.enhanced_history_cap)},
                     {"rypath.area.temporal_reuse",
-                     std::to_string(rypath::frame_temporal_reuse_cap(
-                         options.estimator, options.area_reuse, options.enhanced_history_cap))},
+                     temporal_cap_value(options.history_cap_policy, options.estimator,
+                                        options.area_reuse, options.enhanced_history_cap, false)},
                     {"rypath.area.mutations",
                      std::to_string(options.estimator == rypath::FrameEstimator::area_replay
                                         ? options.mutation_steps
