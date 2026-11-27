@@ -176,7 +176,9 @@ per-frame accounting and raw/reconstructed FLOATs. Relevant studies are
 `enhanced-certification-outline-native-001`, `enhanced-finish-view-native-001`,
 `enhanced-simd-queues-native-001`, `enhanced-fresh-transaction-native-001`,
 `enhanced-shared-as-pavilion-001`, `enhanced-quality-screen-001` and
-`enhanced-quality-screen-001-analysis`.
+`enhanced-quality-screen-001-analysis`,
+`enhanced-followup-validation/typed-serializer-release-001` and
+`profiling/typed-qualified-event-001`.
 Independent review receipts
 are in `enhanced-followup-research/`. These large local artifacts are excluded
 from Git; this record does not claim that they accompany a clone.
@@ -200,9 +202,25 @@ The integration build at `3dc8b9d` passes the required Debug script, including
 all 311 tests, and a full Release build. This is mechanical and bounded numerical
 validation; it does not overturn the performance or reconstruction findings.
 
-The complete material-event specialization probe remains unqualified. An
-instrumented event observes the expected local selector update, while a separate
-serializer reports zeros. That store/readout boundary must be resolved before
-the probe can establish equivalent events or support compiler-resource claims.
+The isolated complete material-event specialization probe at `93c9ef5` passes
+its bounded diffuse correctness gate after replacing typed pointer walks with
+explicit field serialization. Independent raw-buffer readback agrees with the
+serialized next-slot, observed-count and selected-XYZ fields. Generic and typed
+entries preserve exact canonical state, mutable arenas and guards at primary,
+pivot and interior events for all 16 lanes. The complete runtime probe also passes
+its positive-term, earlier-label zero, forced replay and appended-occluder controls.
+The original failed receipts and captures remain preserved; the repair does not
+establish a unique compiler cause. This fixture disables suffix caching and does
+not qualify mixed materials, sparse masks, production queues or performance.
+The subsequent paired capture passes its strict pre/post-capture event checks.
+Xcode reports 192 allocated registers for both complete-event entries, with
+16.75 KiB spill storage for generic current versus 14.72 KiB for typed diffuse
+current (about 12% less). These are strict `-O1` probe kernels at 16 lanes and
+three event states, with generic historical state retained; their absolute
+allocations are not comparable to the production shade profile above. The
+capture wrapper rejected three Metal-created internal file aliases; independent
+review inventories the 26 regular files and three same-directory aliases while
+preserving the original wrapper failure. Successful replay and resource inspection
+support a production specialization experiment, not a native-frame speedup.
 Production adoption still requires lower complete-frame cost and preserved
 transport, including unsupported charts, coatings and spectral behavior.

@@ -30,8 +30,10 @@ zero-mutation regression relative to contribution-prefix replay. Exact diagnosti
 counts show fewer path-step calls, while current shader profiles show greater
 spill storage. Outlining, completion-state, queue and fresh-reservoir experiments
 provide no useful recovery and remain unadopted; their failed image controls are
-preserved. The complete-event specialization probe still has an unresolved
-store/readout discrepancy. The integration at `3dc8b9d` passes all 311 required
+preserved. Explicit field serialization and independent raw-buffer readback now
+qualify the bounded diffuse complete-event probe. Its paired Xcode capture reduces
+spill storage about 12%, with unchanged register allocation; production-frame
+qualification remains open. The integration at `3dc8b9d` passes all 311 required
 Debug tests and a full Release build, without meeting the frame-rate targets.
 
 The fixed four-scene lower-resolution study completes 3072 evaluation frames
