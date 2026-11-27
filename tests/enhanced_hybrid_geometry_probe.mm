@@ -26,6 +26,8 @@ struct Case {
     unsigned primary_ready = 1, needed = 0;
     float normal_offset = 0;
     bool duplicate_primary = false;
+    unsigned geometric_status = ok, edge_status = ok;
+    bool exact_ray = false;
 };
 void need(bool value, const std::string &message) {
     if (!value)
@@ -465,6 +467,57 @@ std::vector<Case> cases() {
     need(std::ldexp(1.L, -16) / q0 < .0002L * 4 * std::acos(-1.L),
          "Declared rough inverse-footprint negative has separated independent bound");
     all.push_back(c);
+    // Incoming scattering survives a native hit whose two stored FLOAT
+    // positions coincide. The independently specified ray is retained bit for
+    // bit; geometric-only replay has no direction and would reject these cases.
+    const auto incoming = [&](std::array<float, 3> current, std::array<float, 3> previous,
+                              std::array<float, 3> ray, unsigned status, unsigned geometric,
+                              unsigned chart_status, bool exact_ray) {
+        auto value = edge(current, previous, {0, 0, 1});
+        value.query[0] = 8;
+        value.status = status;
+        value.geometric_status = geometric;
+        value.edge_status = chart_status;
+        value.exact_ray = exact_ray;
+        for (unsigned k = 0; k < 3; ++k) {
+            value.query[32 + k] = bits(ray[k]);
+            if (exact_ray)
+                value.direction[k] = ray[k];
+        }
+        all.push_back(value);
+    };
+    incoming({0, 0, 0}, {0, 0, 0}, {0, 0, 1}, outside, outside, outside, true);
+    incoming({1, -2, 4}, {1, -2, 4}, {1, -0.f, 0}, outside, outside, outside, true);
+    incoming({0, -0.f, 0}, {-0.f, 0, -0.f}, {0, -1, -0.f}, outside, outside, outside, true);
+    // Accepted near-unit ray must not be normalized or replaced by an epsilon
+    // edge. Its literal length remains within the existing unit predicate.
+    incoming({1, 2, 3}, {1, 2, 3}, {0, 0, 1 + 0x1p-18f}, outside, outside, outside, true);
+    const auto maximum = std::numeric_limits<float>::max();
+    incoming({maximum, -maximum, maximum}, {maximum, -maximum, maximum}, {0, 0, -1}, outside,
+             outside, outside, true);
+    for (const auto ray :
+         {std::array{0.f, 0.f, 0.f}, std::array{0.f, 0.f, 2.f}, std::array{0.f, 0.f, 1 + 0x1p-15f},
+          std::array{std::numeric_limits<float>::quiet_NaN(), 0.f, 1.f},
+          std::array{0.f, std::numeric_limits<float>::infinity(), 1.f},
+          std::array{maximum, maximum, maximum},
+          std::array{0.f, 0.f, std::numeric_limits<float>::denorm_min()}})
+        incoming({1, 2, 3}, {1, 2, 3}, ray, invalid, outside, outside, false);
+    // Disagreeing valid rays cannot override a nonzero geometric edge. The
+    // expected direction/distance come from the independent long-double oracle.
+    incoming({0, 0, 0}, {0, 0, 2}, {1, 0, 0}, ok, ok, ok, false);
+    incoming({1, 2, 3}, {4, 2, 7}, {0, 0, -1}, ok, ok, ok, false);
+    incoming({0, 0, 0}, {0, 0, -std::numeric_limits<float>::denorm_min()}, {1, 0, 0}, ok, ok, ok,
+             false);
+    incoming({maximum, 0, 0}, {-maximum, 0, 0}, {0, 0, 1}, ok, ok, outside, false);
+    // A valid fallback ray never masks malformed positions or a unit component
+    // that cannot be materialized from a nonzero extreme geometric edge.
+    incoming({std::numeric_limits<float>::quiet_NaN(), 0, 0}, {0, 0, 0}, {0, 0, 1}, invalid,
+             invalid, invalid, false);
+    incoming({std::numeric_limits<float>::infinity(), 0, 0},
+             {std::numeric_limits<float>::infinity(), 0, 0}, {0, 0, 1}, invalid, invalid, invalid,
+             false);
+    incoming({0, 0, 0}, {maximum, std::numeric_limits<float>::denorm_min(), 0}, {0, 0, 1}, invalid,
+             invalid, invalid, false);
     return all;
 }
 int run(const std::filesystem::path &path) {
@@ -555,6 +608,31 @@ int run(const std::filesystem::path &path) {
             close(scaled(v[24], v[25]), c.r2, label + " independent physical distance squared");
             if (c.tangent_direction)
                 need(v[32] == outside, label + " direction survives normal-cosine chart rejection");
+        } else if (c.query[0] == 8) {
+            need(v[32] == c.geometric_status && v[33] == c.edge_status,
+                 label + " independent geometric direction and chart status");
+            if (c.status == outside) {
+                need(c.exact_ray && v[24] == 0 && v[25] == 0,
+                     label + " coincident fallback retains zero geometric distance");
+                bool differs_from_geometric = false;
+                for (unsigned k = 0; k < 3; ++k) {
+                    need(v[20 + k] == c.query[32 + k],
+                         label + " coincident incoming preserves exact traced ray bits");
+                    need(v[36 + k] == 0,
+                         label + " geometric-only negative control has no direction");
+                    differs_from_geometric |= v[20 + k] != v[36 + k];
+                }
+                need(differs_from_geometric && v[33] == outside,
+                     label + " ray fallback restores scattering without admitting zero-edge chart");
+            } else if (c.status == ok) {
+                for (unsigned k = 0; k < 3; ++k) {
+                    close(f32(v[20 + k]), c.direction[k],
+                          label + " independent incoming direction");
+                    need(v[20 + k] == v[36 + k],
+                         label + " nonzero incoming retains geometric direction bits");
+                }
+                close(scaled(v[24], v[25]), c.r2, label + " independent incoming distance squared");
+            }
         } else if (c.query[0] == 4) {
             need(v[31] == c.primary_ready, label + " primary readiness");
             if (c.status != ok) {

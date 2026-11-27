@@ -305,9 +305,10 @@
                 break;
             }
             if (family.status == enhanced_hybrid_geometry::Status::ok) {
-                const auto direction = enhanced_hybrid_geometry::physical_direction(
-                    v.point.position, state.latest.point.position);
-                if (direction.status != enhanced_hybrid_geometry::Status::ok) {
+                const auto direction = enhanced_hybrid_geometry::incoming_direction(
+                    v.point.position, state.latest.point.position, v.wo);
+                if (direction.status != enhanced_hybrid_geometry::Status::ok &&
+                    direction.status != enhanced_hybrid_geometry::Status::outside_support) {
                     sample.status = wire::invalid_arithmetic;
                     break;
                 }

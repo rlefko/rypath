@@ -356,6 +356,13 @@ inert. Wrong identity, blocked connections, unsupported fixed pivots, or a chang
 first-eligible label have zero support in that chart; they do not substitute a
 generic path. Invalid arithmetic remains an error.
 
+For an admitted secondary surface, the incoming scattering direction comes from
+the represented predecessor and current positions. A native hit can round to the
+same stored position as its predecessor. In that exact zero-edge case, retain
+the traced ray's validated incoming direction; the zero-length connection remains
+ineligible for an owned chart. This does not clamp geometry, drop a contribution,
+or replace a nonzero edge whose arithmetic failed.
+
 The rolling predecessor certificate checks whether the newly forced direction
 would have made the preceding vertex eligible. Incoming and outgoing hero
 updates are recomputed from the saved predecessor beta and density, without
@@ -380,6 +387,14 @@ Discovery is fixed at one in that arithmetic fixture; it is not a mean oracle.
 The subsequent native probe also passes blocked-connection and changed-first-label
 controls. Full-scene qualification remains pending; no native-v4 scene timing or
 Pavilion highlight improvement is established by these fixtures.
+
+The first native-1080p cache qualification at `f539c19` stopped on Cornell's first
+frame with both cache settings. Tagged diagnostics identified the coincident-position
+case above. After the repair, both first-frame controls complete, and five focused
+Release suites pass: legacy contribution, Enhanced physical/mean, suffix execution,
+forced hybrid and 111 pure geometry cases. Nineteen added cases check exact incoming
+ray bits, signed zeros, invalid fallback directions and nonzero range failures.
+This restores the failing case; the four-scene cache/timing study still needs to finish.
 
 ## Bounded sequential suffix cache
 

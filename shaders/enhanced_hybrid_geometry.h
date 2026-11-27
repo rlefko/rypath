@@ -280,6 +280,21 @@ inline PhysicalDirection physical_direction(float3 from, float3 to) {
         out.status = Status::invalid_arithmetic;
     return out;
 }
+// A valid native hit can round to the same stored position as its predecessor.
+// There is then no geometric direction or invertible connection chart, but the
+// traced ray still supplies the incoming scattering direction. Preserve it
+// exactly for this zero-edge case; never turn an arithmetic failure into replay.
+// outside_support remains visible to distinguish this from a geometric edge.
+inline PhysicalDirection incoming_direction(float3 current, float3 previous, float3 ray_wo) {
+    auto out = physical_direction(current, previous);
+    if (out.status == Status::outside_support) {
+        if (!unit(ray_wo))
+            out.status = Status::invalid_arithmetic;
+        else
+            out.direction = ray_wo;
+    }
+    return out;
+}
 struct Edge {
     float3 direction = 0;
     rm::Scaled distance_squared{0, 0}, G_destination{0, 0}, G_source{0, 0};

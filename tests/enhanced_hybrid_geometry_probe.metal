@@ -96,6 +96,22 @@ kernel void rypath_enhanced_hybrid_geometry_probe(device const uint *queries [[b
         // of the material/normal chart's geometric-cosine support predicate.
         const auto e = g::edge(from, float3(1, 0, 0), to, float3(1, 0, 0));
         out[32] = uint(e.status);
+    } else if (q[0] == 8) {
+        const float3 current(as_type<float>(q[4]), as_type<float>(q[5]), as_type<float>(q[6]));
+        const float3 previous(as_type<float>(q[12]), as_type<float>(q[13]), as_type<float>(q[14]));
+        const float3 ray_wo(as_type<float>(q[32]), as_type<float>(q[33]), as_type<float>(q[34]));
+        const auto incoming = g::incoming_direction(current, previous, ray_wo);
+        const auto geometric = g::physical_direction(current, previous);
+        const auto e = g::edge(current, float3(0, 0, 1), previous, float3(0, 0, 1));
+        out[0] = uint(incoming.status);
+        for (uint k = 0; k < 3; ++k) {
+            out[20 + k] = as_type<uint>(incoming.direction[k]);
+            out[36 + k] = as_type<uint>(geometric.direction[k]);
+        }
+        out[24] = as_type<uint>(incoming.distance_squared.fraction);
+        out[25] = as_type<uint>(incoming.distance_squared.exponent);
+        out[32] = uint(geometric.status);
+        out[33] = uint(e.status);
     } else if (q[0] == 4) {
         namespace runtime = rypath_bdpt::enhanced_hybrid_runtime;
         rypath_enhanced_hybrid::HybridState state{};
