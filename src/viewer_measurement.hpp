@@ -27,7 +27,11 @@ inline WorkloadPose workload_pose(const Options &o, std::uint64_t sample) {
     if (o.workload == "static")
         return {"static"};
     if (o.workload == "translation" || o.workload == "rotation") {
-        const double t = count > 1 ? double(index) / double(count - 1) : 0;
+        double t = count > 1 ? double(index) / double(count - 1) : 0;
+        if (o.motion_period) {
+            const auto phase = index % o.motion_period;
+            t = double(std::min(phase, o.motion_period - phase)) / double(o.motion_period / 2);
+        }
         return {o.workload == "translation" ? "translation" : "rotation",
                 o.workload == "translation" ? o.motion_distance * t : 0,
                 o.workload == "rotation" ? o.rotation_radians * t : 0};
@@ -194,6 +198,9 @@ inline std::string measurement_report(const Options &o,
                                                                           : "raw-rgb")
         << ",\"estimator\":"
         << json_string(o.estimator == FrameEstimator::independent ? "independent" : "area-replay")
+        << ",\"area_temporal_reprojection_requested\":"
+        << json_string(o.enhanced_temporal_reprojection ? "dual" : "off")
+        << ",\"motion_period_frames\":" << o.motion_period
         << ",\"motion_distance\":" << o.motion_distance
         << ",\"rotation_radians\":" << o.rotation_radians << ",\"requested_frames\":" << o.frames
         << ",\"startup_frames\":" << o.warmup << ",\"elapsed_seconds\":" << elapsed
@@ -247,6 +254,13 @@ inline std::string measurement_report(const Options &o,
             << ",\"effective_path_domain\":"
             << json_string(frame_area_path_domain_name(f.effective.area_path_domain))
             << ",\"effective_history_cap\":" << f.effective.enhanced_history_cap
+            << ",\"enhanced_temporal_reprojection\":"
+            << (f.effective.enhanced_temporal_reprojection ? "true" : "false")
+            << ",\"enhanced_temporal_reprojection_used\":"
+            << (f.effective.enhanced_temporal_reprojection_used ? "true" : "false")
+            << ",\"enhanced_motion_routes\":[" << f.effective.enhanced_motion_routes[0] << ','
+            << f.effective.enhanced_motion_routes[1] << ',' << f.effective.enhanced_motion_routes[2]
+            << ',' << f.effective.enhanced_motion_routes[3] << ']'
             << ",\"history_used\":" << (f.effective.history_used ? "true" : "false")
             << ",\"reconstruction_history_reset\":" << (f.reconstruction_reset ? "true" : "false")
             << '}';

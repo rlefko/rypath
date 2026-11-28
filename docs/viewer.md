@@ -45,6 +45,7 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | `--measurement-json PATH` | Fresh JSON file for a finite run, with pipeline and drawable observations |
 | `--warmup N` | Startup frames excluded from measured presentation statistics, default 0; included in `--frames` |
 | `--workload static\|motion\|translation\|rotation` | Deterministic camera poses; omitted retains interactive controls |
+| `--area-temporal-reprojection off\|dual` | Enhanced camera-motion donor selection, default off |
 | `--motion-distance D --rotation-radians R` | Total camera-right translation in scene units and yaw in radians, default .1 each |
 | `--seed N` | Render seed, default 1 |
 | `--exposure EV` | Display EV, default 0; range −24 to +24 |
@@ -192,7 +193,10 @@ remaining fourth-quarter frames are `settled`. At least eight measured frames,
 divisible by four, are required. Startup holds the authored pose. Translation and
 rotation reach their requested excursions exactly, using absolute sample-indexed
 poses rather than elapsed time. `translation` and `rotation` span the entire
-measured run for sustained motion checks. Deterministic workloads ignore camera,
+measured run. For sustained checks, add an even `--motion-period` of at least four
+frames. The camera travels from the authored pose to its requested excursion
+and back in that fixed period. Extending a run then repeats the same movement
+at the same displacement per source frame. Deterministic workloads ignore camera,
 mode and exposure edits; Escape still cancels. A rejected camera-medium move
 fails the workload rather than quietly measuring a stationary substitute.
 

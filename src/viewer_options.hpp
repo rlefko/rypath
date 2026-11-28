@@ -10,7 +10,7 @@ struct Options {
     bool demo = false, help = false;
     std::uint32_t width = 1920, height = 1080, mutation_steps = 1;
     std::uint32_t output_width = 0, output_height = 0;
-    std::uint64_t warmup = 0;
+    std::uint64_t warmup = 0, motion_period = 0;
     std::string workload = "interactive";
     double motion_distance = .1, rotation_radians = .1;
     std::uint64_t frames = 0, seed = 1; // Zero frames means interactive/unlimited.
@@ -20,6 +20,7 @@ struct Options {
     FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
     FrameContributionReplay contribution_replay = FrameContributionReplay::full;
+    bool enhanced_temporal_reprojection = false;
     FrameSpatialMode spatial_mode = FrameSpatialMode::all;
     std::uint32_t enhanced_history_cap = FrameConfig{}.enhanced_history_cap;
     FrameHistoryCapPolicy history_cap_policy = FrameHistoryCapPolicy::fixed;

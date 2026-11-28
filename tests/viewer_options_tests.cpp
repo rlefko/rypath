@@ -306,6 +306,30 @@ void measurement_contracts() {
                 !viewer::workload_pose(o, 9).cut &&
                 std::string(viewer::workload_pose(o, 9).phase) == "settled",
             "Absolute workload has startup, translation, rotation, one cut, and settled frames");
+    require(viewer::frame_configuration(
+                accepted({"--scene", "fixture.pbrt", "--spectral-transport", "hero", "--estimator",
+                          "area-replay", "--area-path-domain", "enhanced", "--area-mutation-policy",
+                          "spectral-refresh", "--area-stencil", "paired-gaussian16",
+                          "--area-contribution-replay", "prefix", "--area-temporal-reprojection",
+                          "dual"}))
+                .enhanced_temporal_reprojection,
+            "Viewer passes Enhanced motion donor policy to frame session");
+    rejected({"--demo", "--area-temporal-reprojection", "dual"}, "dual with independent tracing");
+    rejected({"--demo", "--area-temporal-reprojection", "bad"}, "unknown reprojection");
+    const auto loop = accepted({"--demo", "--frames", "20", "--warmup", "3", "--workload",
+                                "translation", "--motion-period", "8", "--motion-distance", "1"});
+    for (unsigned i = 3; i < 19; ++i) {
+        const auto a = viewer::workload_pose(loop, i), b = viewer::workload_pose(loop, i + 1);
+        require(std::abs(a.translation - b.translation) == .25 && !a.cut && !b.cut,
+                "Sustained camera movement has a fixed speed through each reversal");
+    }
+    require(viewer::workload_pose(loop, 7).translation == 1 &&
+                viewer::workload_pose(loop, 11).translation == 0,
+            "Camera repeats the bounded excursion without accumulated drift");
+    rejected({"--demo", "--frames", "10", "--workload", "static", "--motion-period", "8"},
+             "camera period on static workload");
+    rejected({"--demo", "--frames", "10", "--workload", "rotation", "--motion-period", "3"},
+             "invalid camera period");
     const std::vector<viewer::PipelineObservation> frames{
         {0, .1, .1, "startup", true},   {1, .2, .1, "static", false},
         {2, .3, .1, "static", false},   {3, .4, .1, "rotation", false},

@@ -25,6 +25,7 @@ const char *usage() {
            "  --output-width W --output-height H  MetalFX output size (default: internal)\n"
            "  --measurement-json PATH --warmup N  finite-run presentation report, fresh path\n"
            "  --workload static|motion|translation|rotation  deterministic per-frame camera\n"
+           "  --motion-period N  repeat a translation or yaw excursion every N measured frames\n"
            "  --motion-distance .1 --rotation-radians .1  total translation/yaw excursion\n"
            "  --mode temporal|metalfx|raw  (default: temporal, native resolution)\n"
            "  --reconstruction temporal|metalfx|raw-rgb  alternate option spelling\n"
@@ -34,6 +35,8 @@ const char *usage() {
            "auto|adjacent|reciprocal16|paired-gaussian16\n"
            "  --area-path-domain summed|contribution|enhanced --area-contribution-replay "
            "full|prefix\n"
+           "  --area-temporal-reprojection off|dual  Enhanced motion donor selection (default: "
+           "off)\n"
            "  --area-spatial-mode all|stochastic-pairs|stochastic-shared (default: all)\n"
            "  --area-history-cap N  Enhanced temporal confidence ceiling, 1 through 20\n"
            "  --area-history-cap-policy fixed|duplication (default: fixed; duplication is biased)\n"
@@ -69,6 +72,7 @@ FrameConfig frame_configuration(const Options &o) {
     c.mutation_steps = o.estimator == FrameEstimator::area_replay ? o.mutation_steps : 0;
     c.area_path_domain = o.area_path_domain;
     c.contribution_replay = o.contribution_replay;
+    c.enhanced_temporal_reprojection = o.enhanced_temporal_reprojection;
     c.spatial_mode = o.spatial_mode;
     c.enhanced_history_cap = o.enhanced_history_cap;
     c.history_cap_policy = o.history_cap_policy;
@@ -111,6 +115,9 @@ std::string parse_options(int argc, char **argv, Options &o) {
             if (value.empty())
                 return "measurement path must not be empty";
             o.measurement_json = value;
+        } else if (key == "--motion-period") {
+            if (!integer(value, o.motion_period) || o.motion_period < 4 || o.motion_period % 2)
+                return "motion period must be even and at least four frames";
         } else if (key == "--workload") {
             if (value != "static" && value != "motion" && value != "translation" &&
                 value != "rotation")
@@ -181,6 +188,10 @@ std::string parse_options(int argc, char **argv, Options &o) {
                 return "contribution replay must be full or prefix";
             o.contribution_replay =
                 value == "full" ? FrameContributionReplay::full : FrameContributionReplay::prefix;
+        } else if (key == "--area-temporal-reprojection") {
+            if (value != "off" && value != "dual")
+                return "area temporal reprojection must be off or dual";
+            o.enhanced_temporal_reprojection = value == "dual";
         } else if (key == "--area-spatial-mode") {
             if (value != "all" && value != "stochastic-pairs" && value != "stochastic-shared")
                 return "area spatial mode must be all, stochastic-pairs, or stochastic-shared";
@@ -251,6 +262,9 @@ std::string parse_options(int argc, char **argv, Options &o) {
     if (seen.contains("--area-contribution-replay") &&
         !frame_area_contribution_family(o.area_path_domain))
         return "contribution replay requires contribution or enhanced path domain";
+    if (o.enhanced_temporal_reprojection && (o.estimator != FrameEstimator::area_replay ||
+                                             o.area_path_domain != FrameAreaPathDomain::enhanced))
+        return "dual temporal reprojection requires Enhanced Area replay";
     if ((seen.contains("--area-history-cap") || seen.contains("--area-history-cap-policy")) &&
         (o.estimator != FrameEstimator::area_replay ||
          o.area_path_domain != FrameAreaPathDomain::enhanced))
@@ -287,6 +301,8 @@ std::string parse_options(int argc, char **argv, Options &o) {
     if ((!o.measurement_json.empty() || o.workload != "interactive" || seen.contains("--warmup")) &&
         (!o.frames || o.warmup >= o.frames))
         return "measurement and workloads require frames greater than warmup";
+    if (o.motion_period && (o.workload != "translation" && o.workload != "rotation"))
+        return "motion period requires a translation or rotation workload";
     if (o.workload == "motion" && (o.frames - o.warmup < 8 || (o.frames - o.warmup) % 4))
         return "motion requires at least eight measured frames divisible by four";
     if ((seen.contains("--motion-distance") || seen.contains("--rotation-radians")) &&
