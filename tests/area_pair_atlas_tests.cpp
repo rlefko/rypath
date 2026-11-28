@@ -342,6 +342,20 @@ void production_asset() {
 } // namespace
 int main() {
     try {
+        for (unsigned operation = 0; operation < 3; ++operation) {
+            bool rejected = false;
+            try {
+                if (operation == 0)
+                    (void)ref::labels(65536, 0, 0);
+                else if (operation == 1)
+                    (void)ref::lifted_pairs({}, 2, 65536, 65536, 0, 0, 0);
+                else
+                    (void)ref::handwritten(65536, 0);
+            } catch (const std::runtime_error &) {
+                rejected = true;
+            }
+            need(rejected, "Oracle rejects extent beyond 32-bit IDs before allocation");
+        }
         rng_and_construction();
         finite_and_poses();
         narrow_lookup_controls();
