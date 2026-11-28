@@ -34,10 +34,18 @@ template <> struct PTNeighbor<true> {
     using Type = HeroNeighbor;
 };
 #include "hero_pt_helpers.h"
-template <typename Previous, bool Compact = false> struct PTWalkState {
+
+// Owned-light evaluation consumes the original hero technique helpers above.
+#include "enhanced_light.h"
+
+// Hybrid direction queries share those BSDF and scaled geometry conventions.
+#include "enhanced_hybrid_geometry.h"
+template <typename Previous, bool Compact = false,
+          typename CurrentType = typename PTCurrent<Compact>::Type>
+struct PTWalkState {
     enum { compact_hero = Compact };
     using Neighbor = typename PTNeighbor<Compact>::Type;
-    using Current = typename PTCurrent<Compact>::Type;
+    using Current = CurrentType;
     // PT retains only its latest frozen BSDF/frame. The older endpoint enters
     // represented_scattering_pdf only through type and position: a continuing
     // walk contains camera/surface history, never a terminal environment vertex.
@@ -131,6 +139,11 @@ inline SurfaceHit packet_pt_trace(thread Resources &r, thread wire::Sample &samp
                : trace_surface(closest, incoming, r.scene, all_visible, r.intersection_table);
 }
 
+// Fixed-chart certification uses precisely the ordinary closest-hit route.
+#include "enhanced_hybrid_runtime.h"
+#include "enhanced_suffix_capture.h"
+#include "enhanced_suffix_lookup.h"
+
 // The ordinary function expands to f0d8494's original body and statement order.
 // Only the split variant replaces event tracing; all event arithmetic is shared.
 template <typename State>
@@ -216,6 +229,28 @@ packet_pt_step_contribution_pretraced(thread Resources &r, thread State &state,
 inline void packet_pt_step(thread Resources &r, thread HeroWalkState &state,
                            thread const rypath_replay::ReplayState *replay = nullptr) {
     packet_pt_step_compact_inplace(r, state, replay);
+}
+inline void packet_pt_step(thread Resources &r, thread DiffuseWalk &state,
+                           thread const rypath_replay::ReplayState *replay = nullptr) {
+    packet_pt_step_compact_inplace(r, state, replay);
+}
+// Canonical Enhanced atoms omit outer transport roulette. Only the fresh sink
+// discovers atoms with its independent, accounted roulette law; coating walks
+// retain their original internal transport policy.
+template <typename State, typename Sink>
+[[clang::always_inline]] inline void
+packet_pt_step_enhanced(thread Resources &r, thread State &state,
+                        thread const rypath_replay::ReplayState *replay, thread Sink &sink) {
+    static_assert(State::compact_hero, "Enhanced events require hero transport");
+#define RYPATH_PACKET_EVENT_PRETRACED 0
+#define RYPATH_PACKET_EVENT_REUSE_CURRENT 1
+#define RYPATH_PACKET_EVENT_CONTRIBUTION 1
+#define RYPATH_PACKET_EVENT_ENHANCED 1
+#include "packet_pt_event_body.inc"
+#undef RYPATH_PACKET_EVENT_ENHANCED
+#undef RYPATH_PACKET_EVENT_CONTRIBUTION
+#undef RYPATH_PACKET_EVENT_REUSE_CURRENT
+#undef RYPATH_PACKET_EVENT_PRETRACED
 }
 inline void packet_pt_step_pretraced(thread Resources &r, thread HeroWalkState &state,
                                      thread const rypath_replay::ReplayState *replay,

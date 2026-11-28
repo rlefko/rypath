@@ -12,6 +12,7 @@ struct FrameWorkPass {
     std::string kind;
     std::uint32_t index = 0;
     std::uint64_t commands = 0, encoded_rounds = 0, completed_evaluations = 0;
+    std::uint64_t packet_step_invocations = 0;
     std::uint64_t boundary_active_sum = 0;
     std::uint32_t boundary_active_max = 0;
     double gpu_seconds = 0, inter_command_seconds = 0, encode_seconds = 0;
@@ -19,6 +20,7 @@ struct FrameWorkPass {
 };
 struct FrameWorkDiagnostics {
     bool requested = false, complete = true;
+    bool packet_step_invocations_supported = false;
     std::string status = "disabled";
     std::uint64_t state_pool_bytes = 0;
     std::vector<FrameWorkPass> passes;
@@ -31,10 +33,23 @@ inline void invalidate_frame_work(FrameWorkDiagnostics &out, const char *reason)
     for (auto &pass : out.passes)
         pass.gpu_time_valid = false;
 }
+// On the packed one-event path every consumed queue slot calls packet_pt_step,
+// except noncompact analytic nulls. Count invocations, not intersections/bounces.
+inline bool frame_packet_step_delta(std::uint64_t queued, std::uint32_t nulls, bool compact,
+                                    std::uint64_t &previous, std::uint64_t &delta) {
+    if (!compact && queued < nulls)
+        return false;
+    const auto total = compact ? queued : queued - nulls;
+    if (total < previous)
+        return false;
+    delta = total - previous;
+    previous = total;
+    return true;
+}
 inline void add_frame_work(FrameWorkDiagnostics &out, const char *kind, std::uint32_t index,
                            std::uint64_t rounds, std::uint64_t completed, std::uint32_t active,
                            double gpu_seconds, double gap_seconds, double encode_seconds,
-                           bool gpu_valid) {
+                           bool gpu_valid, std::uint64_t packet_step_invocations = 0) {
     if (!out.requested)
         return;
     auto found = std::find_if(out.passes.begin(), out.passes.end(), [&](const auto &pass) {
@@ -53,6 +68,11 @@ inline void add_frame_work(FrameWorkDiagnostics &out, const char *kind, std::uin
     ++pass.commands;
     pass.encoded_rounds += rounds;
     pass.completed_evaluations += completed;
+    if (packet_step_invocations > UINT64_MAX - pass.packet_step_invocations) {
+        invalidate_frame_work(out, "invalid: packet step invocation overflow");
+        return;
+    }
+    pass.packet_step_invocations += packet_step_invocations;
     pass.boundary_active_sum += active;
     pass.boundary_active_max = std::max(pass.boundary_active_max, active);
     const auto finite_time = [](double seconds) { return std::isfinite(seconds) && seconds >= 0; };

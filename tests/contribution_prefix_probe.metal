@@ -233,3 +233,477 @@ kernel void rypath_contribution_prefix_differential(
     out[8 * n + 7] = (uint(full_failed) << 0) | (uint(prefix_failed) << 1) |
                      (uint(atoms[j].w != 0) << 2) | (variant << 8);
 }
+
+// Sixteen additional one-event controls. These retain the original full-event
+// Collector as oracle, and use analytic arrival emission when omitted future
+// work makes that oracle fail before readout. Still zero NEE and no AS trace.
+kernel void rypath_contribution_selected_event(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config &config [[buffer(1)]],
+    device const wire::Instance *instances [[buffer(2)]],
+    device const wire::Point *positions [[buffer(3)]],
+    device const wire::Triangle *triangles [[buffer(4)]],
+    device const wire::Material *materials [[buffer(5)]],
+    device const wire::AreaEmission *emissions [[buffer(6)]],
+    device const float *environment [[buffer(7)]], device const wire::Point *cie [[buffer(8)]],
+    device uchar *sidecars [[buffer(9)]], device float4 *collected [[buffer(10)]],
+    device uint *out [[buffer(11)]], constant wire::TextureParameters &tp [[buffer(12)]],
+    device const wire::TextureFrame *frames [[buffer(13)]],
+    device const wire::SpectralKnot *knots [[buffer(14)]], device const uint *data [[buffer(15)]],
+    constant wire::TextureGraphParameters &gp [[buffer(16)]],
+    device const wire::SurfaceVertex *vertices [[buffer(17)]],
+    device const wire::SurfaceTransform *transforms [[buffer(18)]],
+    uint n [[thread_position_in_grid]]) {
+    using namespace prefix_probe;
+    if (n >= 16)
+        return;
+    const uint fixture = n / 2, j = 2u + (n & 1u), slots = 2u * p.max_depth + 1u;
+    auto atoms = collected + n * (slots + 1u);
+    for (uint k = 0; k <= slots; ++k)
+        atoms[k] = 0;
+    Resources r{};
+    r.alpha.parameters = &p;
+    r.alpha.instances = instances;
+    r.alpha.positions = positions;
+    r.alpha.triangles = triangles;
+    r.alpha.materials = materials;
+    r.alpha.material_data = data;
+    r.alpha.frames = frames;
+    r.alpha.vertices = vertices;
+    r.alpha.transforms = transforms;
+    r.alpha.graph.parameters = &gp;
+    r.alpha.graph.images.parameters = &tp;
+    r.knots = knots;
+    r.emissions = emissions;
+    r.environment = environment;
+    r.tables = reinterpret_cast<device const sobol::Tables *>(environment);
+    auto source = initial(n, 0, p);
+    source.count = 2;           // E1/N1: RR is eligible, and texture context is secondary.
+    source.latest.delta = true; // Isolate arrival emission from preceding MIS.
+    source.beta = .25f;
+    if (fixture == 1)
+        source.hero.density.lane[0] = {}; // Preparation succeeds; collapse must fail.
+    source.hero.roulette_enabled = fixture == 5 || fixture == 6;
+    auto u = replay(100u + fixture);
+    bool gate_witness = fixture != 5 && fixture != 6;
+    for (uint attempt = 0; !gate_witness && attempt < 128; ++attempt) {
+        const auto words = random(r, source.sample, source.index, 5u, &u);
+        const bool survives = sample_uniform(p, words.w) >= .75f;
+        gate_witness = survives == (fixture == 6);
+        if (!gate_witness)
+            u.tail_key[0] += 7919u;
+    }
+    const SurfaceHit h{intersection_type::triangle, fixture, 0, 0, 2, float2(.25f), true,
+                       wire::triangle_primitive};
+    auto full = source;
+    Collector oracle{atoms, cie, slots};
+    packet_pt_step_contribution_pretraced(r, full, &u, oracle, h);
+    auto actual = source;
+    auto pool = reinterpret_cast<device cr::State *>(sidecars);
+    const cw::Evaluation request{j, 0xffffffffu, 0.f, 0};
+    pool[n] = cr::begin(request, config);
+    auto selection = pool[n];
+    cr::Sink sink{selection, cie, p, config, n};
+    packet_pt_step_contribution_pretraced(r, actual, &u, sink, h);
+    cw::Evaluation result{};
+    float3 value(0);
+    const bool finished = actual.complete && actual.sample.status == wire::success &&
+                          sink.finish(request, value, result);
+    pool[n] = selection;
+
+    const bool endpoint = (j & 1u) == 0;
+    const bool full_bad = fixture == 1 || fixture == 2 || fixture == 4 || fixture == 7;
+    const bool prefix_bad =
+        fixture == 4 || (fixture == 1 && !endpoint) || (fixture == 7 && endpoint);
+    uint bad = 0;
+    if (!gate_witness ||
+        full.sample.status != (full_bad ? wire::invalid_arithmetic : wire::success) ||
+        oracle.failed ||
+        actual.sample.status != (prefix_bad ? wire::invalid_arithmetic : wire::success) ||
+        finished == prefix_bad || selection.failed)
+        bad |= 1;
+    if (full.count != (fixture == 4 ? 2u : 3u) || actual.count != (fixture == 4 ? 2u : 3u) ||
+        !actual.complete)
+        bad |= 2;
+    if (finished) {
+        // At E1 the previous delta vertex gives unit technique MIS. Emission is
+        // the known .125 at each wavelength, and arrival beta is exactly .25.
+        Collector expected{atoms, cie, slots + 1u};
+        expected.add(slots, endpoint ? float4(.03125f) : float4(0), source.lambda);
+        if (expected.failed || !same(value, atoms[slots].xyz) ||
+            (!full_bad && !same(value, atoms[j].xyz)))
+            bad |= 4;
+        if (result.requested_slot != j || result.selected_slot != j || result.ready != 1 ||
+            as_type<uint>(result.normalizer) != 0 || selection.next_slot != slots)
+            bad |= 8;
+    }
+    if (fixture == 0) {
+        // Both outputs may match even without the cut. These state assertions
+        // prove E did not collapse, while N did collapse before stopping.
+        if (full.hero.active_mask != 1 || actual.hero.active_mask != (endpoint ? 15u : 1u) ||
+            (endpoint ? any(actual.beta != source.beta)
+                      : actual.beta[0] != 1.f || any(actual.beta.yzw != 0)) ||
+            actual.latest.bsdf.kind != (endpoint ? 0xffffffffu : 5u))
+            bad |= 16;
+    }
+    if (fixture == 2 || fixture == 3) {
+        const auto words = random(r, source.sample, source.index, 5u, &u);
+        const auto probe = hero_sample_current(
+            full.latest.bsdf, full.latest.frame.local(float3(0, 0, 1)), sample_uniform(p, words.x),
+            uniform2(p, words.yz), full.latest.seed, Mode::Radiance);
+        if (fixture == 2 ? probe.valid || full.latest.bsdf.kind != 1
+                         : !probe.valid || probe.accepted || !full.complete)
+            bad |= 32;
+    }
+    if (fixture == 5 && (!full.complete || any(full.beta != source.beta) || atoms[3].w != 0))
+        bad |= 64;
+    if (fixture == 6 && (full.complete || atoms[3].w != 1 ||
+                         (endpoint ? any(actual.beta != source.beta) : any(actual.beta != 1))))
+        bad |= 128;
+    out[8 * n] = bad;
+    out[8 * n + 1] = full.sample.status;
+    out[8 * n + 2] = actual.sample.status;
+    out[8 * n + 3] = full.hero.active_mask;
+    out[8 * n + 4] = actual.hero.active_mask;
+    out[8 * n + 5] = full.count;
+    out[8 * n + 6] = actual.count;
+    out[8 * n + 7] = uint(finished) | (uint(endpoint && finished) << 1) |
+                     (uint(full_bad && finished) << 2) | (fixture << 8);
+}
+
+// Actual Enhanced sink discovery/selection protocol, with known spectral terms.
+// This isolates weighting and observation order; it is not a transport/AS test.
+kernel void rypath_enhanced_discovery_witness(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *owned_evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
+    uint n [[thread_position_in_grid]]) {
+    if (n >= 6)
+        return;
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace cw = rypath::contribution_wire;
+    using namespace rypath_bdpt;
+    const device auto &config = configs[n];
+    const bool imported = n == 4, black = n == 5, unit = n == 3 || black;
+    const cw::Evaluation request{imported ? 5u : ep::fresh_slot, ep::fresh_slot, 0.f, 0};
+    auto pool = reinterpret_cast<device er::State *>(sidecars);
+    const auto owned_request = owned_evaluations[n];
+    pool[n] = er::begin(request, config, n, owned_request);
+    auto state = pool[n];
+    er::Sink sink{state, cie, p, config, n, records, owned_evaluations, suffixes};
+    Wavelengths lambda{};
+    const float wavelengths[4] = {400, 500, 600, 700};
+    const float pdfs[4] = {1, 2, 4, 8};
+    for (uint k = 0; k < 4; ++k) {
+        lambda.lambda[k] = wavelengths[k];
+        lambda.pdf[k] = pdfs[k];
+    }
+    // term[k]/pdf[k] is exactly the slot coefficient. Distinct original sensor
+    // PDFs make lost companion projection or an extra collapse factor visible.
+    const float4 basis(1, 2, 4, 8);
+    const float coefficients[7] = {.0625f, 0, .125f, .25f, .375f, .5f, 1};
+    HeroTrack track;
+    bool first = true, first_skip = true;
+    uint second = 2; // Not executed after a first-gate cutoff.
+    if (imported) {
+        sink.begin_event();
+        first = sink.continue_discovery(float4(.5f), track, 2);
+        second = sink.continue_discovery(float4(.25f), track, 3);
+        sink.add(5, basis * coefficients[5], lambda);
+    } else {
+        sink.begin_event();
+        sink.add(0, black ? float4(0) : basis * coefficients[0], lambda);
+        first_skip = sink.continue_discovery(float4(.5f), track, 1);
+        sink.add(1, float4(0), lambda);
+        sink.begin_event();
+        first = sink.continue_discovery(float4(unit ? 1.f : .5f), track, 2);
+        sink.add(2, black ? float4(0) : basis * coefficients[2], lambda);
+        if (first) {
+            sink.add(3, black ? float4(0) : basis * coefficients[3], lambda);
+            sink.begin_event();
+            second = sink.continue_discovery(float4(unit ? 1.f : .25f), track, 3);
+            sink.add(4, black ? float4(0) : basis * coefficients[4], lambda);
+            if (second) {
+                sink.add(5, black ? float4(0) : basis * coefficients[5], lambda);
+                sink.begin_event();
+                sink.add(6, black ? float4(0) : basis * coefficients[6], lambda);
+            }
+        }
+    }
+    // A separate dispatch reloads these bytes, preventing thread/device copy
+    // forwarding from turning the persistence check into a thread-local test.
+    pool[n] = state;
+    out[36u * n] = uint(!first_skip);
+    out[36u * n + 25u] = uint(first);
+    out[36u * n + 26u] = second;
+}
+
+kernel void rypath_enhanced_discovery_finish(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *owned_evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
+    uint n [[thread_position_in_grid]]) {
+    if (n >= 6)
+        return;
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace cw = rypath::contribution_wire;
+    const device auto &config = configs[n];
+    const cw::Evaluation request{n == 4 ? 5u : ep::fresh_slot, ep::fresh_slot, 0.f, 0};
+    auto pool = reinterpret_cast<device er::State *>(sidecars);
+    auto persisted = pool[n];
+    er::Sink final_sink{persisted, cie, p, config, n, records, owned_evaluations, suffixes};
+    namespace ew = rypath::enhanced_wire;
+    const auto pending = owned_evaluations[n];
+    const ew::Reference expected_source =
+        n == 4 ? ew::Reference{ew::history_bank_0, n} : ew::absent();
+    const ew::Reference expected_result =
+        n == 4 ? expected_source : ew::Reference{ew::fresh_bank, n};
+    // First dispatch may select/store a generic record, but only finish can
+    // publish the owned evaluation. Both buffer stages are independently bound.
+    const bool owned_pending = pending.source.bank == expected_source.bank &&
+                               pending.source.pixel == expected_source.pixel &&
+                               pending.result.bank == expected_result.bank &&
+                               pending.result.pixel == expected_result.pixel &&
+                               as_type<uint>(pending.target_h_fraction) == 0 &&
+                               pending.target_h_exponent == 0 && pending.ready == 0 &&
+                               pending.normalizer_exponent == 0;
+    cw::Evaluation result{};
+    float3 value(0);
+    const bool finished = final_sink.finish(request, value, result);
+    const auto published = owned_evaluations[n];
+    cw::Evaluation duplicate_result{};
+    float3 duplicate_value(0);
+    const bool duplicate_finished = final_sink.finish(request, duplicate_value, duplicate_result);
+    const auto after_duplicate = owned_evaluations[n];
+    const bool unchanged = published.source.bank == after_duplicate.source.bank &&
+                           published.source.pixel == after_duplicate.source.pixel &&
+                           published.result.bank == after_duplicate.result.bank &&
+                           published.result.pixel == after_duplicate.result.pixel &&
+                           as_type<uint>(published.target_h_fraction) ==
+                               as_type<uint>(after_duplicate.target_h_fraction) &&
+                           published.target_h_exponent == after_duplicate.target_h_exponent &&
+                           published.ready == after_duplicate.ready &&
+                           published.normalizer_exponent == after_duplicate.normalizer_exponent;
+    pool[n] = persisted;
+    const uint base = 36u * n;
+    out[base] |=
+        uint(!finished || persisted.failed || !owned_pending || duplicate_finished || !unchanged);
+    out[base + 1] = result.requested_slot;
+    out[base + 2] = result.selected_slot;
+    out[base + 3] = result.ready;
+    out[base + 4] = as_type<uint>(result.normalizer);
+    out[base + 5] = persisted.selection.observed;
+    out[base + 6] = persisted.next_slot;
+    out[base + 7] = persisted.discovery.gates;
+    out[base + 8] = as_type<uint>(persisted.discovery.probability);
+    out[base + 9] = as_type<uint>(persisted.arrival_probability);
+    out[base + 10] = as_type<uint>(persisted.direct_probability);
+    out[base + 11] = persisted.rr_cut;
+    out[base + 12] = as_type<uint>(persisted.selection.selected_target.fraction);
+    out[base + 13] = persisted.selection.selected_slot;
+    out[base + 14] = as_type<uint>(value.x);
+    out[base + 15] = as_type<uint>(value.y);
+    out[base + 16] = as_type<uint>(value.z);
+    out[base + 17] = as_type<uint>(persisted.selection.selected_xyz.x);
+    out[base + 18] = as_type<uint>(persisted.selection.selected_xyz.y);
+    out[base + 19] = as_type<uint>(persisted.selection.selected_xyz.z);
+    out[base + 20] = persisted.failed;
+    out[base + 21] = persisted.selection.descriptor.slot_count;
+    out[base + 22] = uint(persisted.selection.status);
+    out[base + 23] = uint(persisted.discovery.status);
+    out[base + 24] = uint(final_sink.fresh());
+    out[base + 27] = as_type<uint>(persisted.selection.score_sum.fraction);
+    out[base + 28] = as_type<uint>(persisted.requested_xyz.x);
+    out[base + 29] = as_type<uint>(persisted.requested_xyz.y);
+    out[base + 30] = as_type<uint>(persisted.requested_xyz.z);
+    out[base + 31] = persisted.pixel;
+    out[base + 32] = as_type<uint>(persisted.selection.selected_target.exponent);
+    out[base + 33] = as_type<uint>(persisted.selection.score_sum.exponent);
+    out[base + 34] = as_type<uint>(published.normalizer_exponent);
+    out[base + 35] = sizeof(er::State);
+}
+
+// Actual v4 Sink chart routing without geometry/traversal integration. Every
+// incoming C is finite; only h is outside FLOAT range in the extreme cases.
+namespace hybrid_sink_probe {
+constant uint count = 17, words = 32;
+inline bool imported(uint n) { return (n >= 5 && n <= 12) || n == 16; }
+inline uint slot(uint n) { return n == 3 || n == 6 || n == 10 ? 5u : 4u; }
+inline rypath::enhanced_wire::Record interior(uint primitive = 1) {
+    namespace ew = rypath::enhanced_wire;
+    return {ew::record_version,
+            rypath_enhanced_chart::interior_zomega,
+            as_type<uint>(0.f),
+            1,
+            0,
+            primitive,
+            rypath::render_wire::triangle_primitive,
+            as_type<uint>(0.f),
+            {as_type<uint>(.25f), as_type<uint>(.25f), as_type<uint>(1.f), 0}};
+}
+inline rypath_reuse_mis::Scaled density(uint n) {
+    return n == 0 || n == 1 || n == 5 ? rypath_reuse_mis::Scaled{.5f, -159}
+           : n == 2 || n == 6         ? rypath_reuse_mis::Scaled{.5f, 161}
+                                      : rypath_reuse_mis::Scaled{.5f, 4};
+}
+} // namespace hybrid_sink_probe
+kernel void rypath_enhanced_hybrid_sink_witness(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
+    uint n [[thread_position_in_grid]]) {
+    if (n >= hybrid_sink_probe::count)
+        return;
+    namespace hp = hybrid_sink_probe;
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace cw = rypath::contribution_wire;
+    const device auto &config = configs[n];
+    const cw::Evaluation request{hp::imported(n) ? hp::slot(n) : ep::fresh_slot, ep::fresh_slot, 0,
+                                 0};
+    const auto pending = evaluations[n];
+    auto state = er::begin(request, config, n, pending);
+    er::Sink sink{state, cie, p, config, n, records, evaluations, suffixes};
+    rypath_bdpt::Wavelengths lambda{};
+    for (uint k = 0; k < 4; ++k) {
+        lambda.lambda[k] = 400 + 100 * k;
+        lambda.pdf[k] = float(1u << k);
+    }
+    const float4 basis(1, 2, 4, 8);
+    sink.begin_event();
+    for (uint slot = 0; slot < 4; ++slot)
+        sink.add(slot, n == 4 && slot == 0 ? basis : float4(0), lambda);
+    const uint base = hp::words * n;
+    out[base + 24] =
+        uint(sink.has_interior()) | (state.next_slot << 8) | (state.selection.observed << 16);
+    out[base + 25] = state.selection.selected_slot;
+    state.hybrid.first.selected = 2;
+    state.hybrid.first.next = 3;
+    const auto record = hp::interior(n == 8 ? 2u : 1u);
+    const auto h = hp::density(n);
+    const rypath_reuse_mis::Scaled generation =
+        n == 1 ? rypath_reuse_mis::Scaled{.5f, 2} : rypath_reuse_mis::Scaled{.5f, 1};
+    out[base + 19] = n == 7 ? 0u : uint(sink.activate_hybrid(record, h, generation));
+    out[base + 20] = n == 13 ? uint(sink.activate_hybrid(record, h, generation)) : 0u;
+    if (n == 11 || n == 14)
+        state.hybrid.outside = 1;
+    if (n == 16)
+        state.hybrid.outside = 2;
+    sink.begin_event();
+    const float coefficient = n == 0 || n == 1 || n == 5 ? 0x1p120f
+                              : n == 2 || n == 6         ? 0x1p-120f
+                                                         : 1.f;
+    for (uint slot = 4; slot < 7; ++slot)
+        sink.add(slot, n != 4 && slot == hp::slot(n) ? basis * coefficient : float4(0), lambda);
+    if (n == 15)
+        state.hybrid.outside = 1; // A second guard: add passed, finish must fail.
+    reinterpret_cast<device er::State *>(sidecars)[n] = state;
+}
+kernel void rypath_enhanced_hybrid_sink_finish(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config *configs [[buffer(1)]],
+    device const wire::Point *cie [[buffer(2)]], device uchar *sidecars [[buffer(3)]],
+    device uint *out [[buffer(4)]], device rypath::enhanced_wire::Record *records [[buffer(5)]],
+    device rypath::enhanced_wire::Evaluation *evaluations [[buffer(6)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(7)]],
+    uint n [[thread_position_in_grid]]) {
+    if (n >= hybrid_sink_probe::count)
+        return;
+    namespace hp = hybrid_sink_probe;
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace cw = rypath::contribution_wire;
+    const device auto &config = configs[n];
+    auto state = reinterpret_cast<device er::State *>(sidecars)[n];
+    er::Sink sink{state, cie, p, config, n, records, evaluations, suffixes};
+    const cw::Evaluation request{hp::imported(n) ? hp::slot(n) : ep::fresh_slot, ep::fresh_slot, 0,
+                                 0};
+    cw::Evaluation result{};
+    float3 xyz(0);
+    const bool finished = sink.finish(request, xyz, result);
+    const auto receipt = evaluations[n];
+    const uint base = hp::words * n;
+    out[base] = uint(finished);
+    out[base + 1] = state.failed;
+    out[base + 2] = result.selected_slot;
+    out[base + 3] = receipt.ready;
+    out[base + 4] = as_type<uint>(result.normalizer);
+    out[base + 5] = as_type<uint>(receipt.normalizer_exponent);
+    out[base + 6] = as_type<uint>(state.selection.selected_target.fraction);
+    out[base + 7] = as_type<uint>(state.selection.selected_target.exponent);
+    out[base + 8] = as_type<uint>(xyz.x);
+    out[base + 9] = as_type<uint>(xyz.y);
+    out[base + 10] = as_type<uint>(xyz.z);
+    out[base + 11] = uint(sink.has_interior());
+    out[base + 12] = state.hybrid.active_record.tag;
+    out[base + 14] = state.selection.observed;
+    out[base + 15] = state.next_slot;
+    out[base + 16] = as_type<uint>(receipt.target_h_fraction);
+    out[base + 17] = as_type<uint>(receipt.target_h_exponent);
+    out[base + 18] = sizeof(er::State);
+    out[base + 21] = as_type<uint>(state.hybrid.active_generation_h.fraction);
+    out[base + 22] = as_type<uint>(state.hybrid.active_generation_h.exponent);
+    out[base + 23] = state.hybrid.first.selected;
+    out[base + 26] = state.hybrid.first.next;
+    out[base + 27] = as_type<uint>(state.hybrid.active_h.fraction);
+    out[base + 28] = as_type<uint>(state.hybrid.active_h.exponent);
+    out[base + 29] = as_type<uint>(state.selection.score_sum.fraction);
+    out[base + 30] = as_type<uint>(state.selection.score_sum.exponent);
+    out[base + 31] = state.selection.selected_slot;
+}
+
+// Actual capture permissions and append-only writes. No transport, WRS or
+// readout equations are reproduced here; the host checks every arena byte.
+kernel void rypath_enhanced_suffix_ownership(
+    constant wire::Parameters &p [[buffer(0)]],
+    device const rypath::wavefront_wire::Config &config [[buffer(1)]],
+    device rypath::enhanced_wire::Evaluation *evaluations [[buffer(2)]],
+    device rypath_enhanced_suffix_tape::Entry *suffixes [[buffer(3)]],
+    device uint *out [[buffer(4)]], constant uint &which [[buffer(5)]]) {
+    namespace er = rypath_enhanced_runtime;
+    namespace ep = rypath_enhanced_path;
+    namespace ew = rypath::enhanced_wire;
+    const bool fresh = which != 1 && which != 2 && which != 3 && which != 7 && which != 9;
+    const rypath::contribution_wire::Evaluation request{fresh ? ep::fresh_slot : 5u, ep::fresh_slot,
+                                                        0.f, 0};
+    const auto owned = evaluations[0];
+    auto state = er::begin(request, config, 0, owned);
+    er::Sink sink{state, nullptr, p, config, 0, nullptr, evaluations, suffixes};
+    out[0] = er::pending_owned(owned, config.pixel_count, 0, fresh);
+    out[1] = er::suffix_capture_owned(owned, config.pixel_count, 0, fresh);
+    out[2] = state.failed;
+    bool activated = false;
+    if (!state.failed) {
+        state.hybrid.first.selected = 2;
+        state.hybrid.first.next = 3;
+        activated = sink.activate_hybrid(hybrid_sink_probe::interior(1), {.5f, 1}, {.5f, 1});
+    }
+    out[3] = activated;
+    out[4] = sink.suffix_capture_index();
+    if (which >= 10) {
+        state.suffix_count = which == 10 ? 1u : 2u;
+        state.suffix_coverage = which == 10 ? 0xffu : 0xffffu;
+    }
+    // Overflow must preserve the earlier selected entry, including its header.
+    if (which < 10)
+        sink.invalidate_suffix();
+    const bool staged =
+        sink.stage_suffix(float4(1, 2, 4, 8), float4(.5f, .25f, .125f, .0625f), 15, true);
+    sink.advance_suffix(staged, 15);
+    out[5] = staged;
+    out[6] = state.suffix_count;
+    out[7] = state.suffix_coverage;
+    out[8] = state.failed;
+    out[9] = sink.has_interior();
+}

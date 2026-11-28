@@ -11,6 +11,7 @@
 #include "reconstruction.hpp"
 #include "render_identity.hpp"
 #include "resource_limits.hpp"
+#include "stochastic_spatial_shared.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -21,6 +22,7 @@
 #include <iostream>
 #include <limits>
 #include <locale>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -62,6 +64,12 @@ struct Options {
     fs::path scene, output, capture, preview, reconstructed_capture;
     bool demo = false, profile_stages = false;
     bool cache_temporal_evaluations = true;
+    bool enhanced_suffix_cache = true;
+    bool compact_enhanced_pairs = false;
+    rypath::FrameAreaReuse area_reuse = rypath::FrameAreaReuse::full;
+    rypath::FrameSpatialMode spatial_mode = rypath::FrameSpatialMode::all;
+    bool enhanced_temporal_reprojection = false;
+    rypath::FrameAreaDuplication area_duplication = rypath::FrameAreaDuplication::off;
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
@@ -84,10 +92,11 @@ struct Options {
     rypath::FrameContributionReplay contribution_replay = rypath::FrameContributionReplay::full;
     rypath::FrameAreaOutput area_output = rypath::FrameAreaOutput::conditional_mean;
     float target_scale = 1.f;
-    std::uint32_t mutation_steps = 1;
+    std::uint32_t mutation_steps = 1, enhanced_history_cap = 20;
     std::uint32_t capacity = rypath::FrameConfig{}.capacity;
     std::uint32_t quantum = rypath::FrameConfig{}.quantum;
     std::uint32_t group_width = rypath::FrameConfig{}.group_width;
+    bool specialize_diffuse_events = false;
     std::uint32_t packet_events = 1;
     rypath::FramePacketLayout packet_layout = rypath::FramePacketLayout::packed;
     std::uint32_t width = 1920, height = 1080;
@@ -148,15 +157,24 @@ const char *usage =
     "  [--shadow-traversal query|opaque-auto (default: query)]\n"
     "  [--execution wavefront|megakernel (default: wavefront)]\n"
     "  [--estimator independent|area-replay (default: independent)] [--target-scale 1]\n"
-    "  [--area-path-domain summed|contribution (Area only; default: summed)]\n"
+    "  [--area-history-cap N (Enhanced fixed temporal confidence, 1 through 20)]\n"
+    "  [--area-path-domain summed|contribution|enhanced (Area only; default: summed)]\n"
     "  [--area-output selected|conditional-mean (Area only; default: conditional-mean)]\n"
     "  [--area-contribution-replay full|prefix (contribution only; default: full)]\n"
     "  [--spectral-transport auto|scalar|packet|hero (default: auto)]\n"
     "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
-    "auto|adjacent|reciprocal16\n"
+    "auto|adjacent|reciprocal16|paired-gaussian16\n"
+    "  [--area-duplication off|initial-seed|initial-atom|current (diagnostic only; default: off)]\n"
     "  [--mutations 0|1|2|4 (default: 1)]\n"
     "  [--area-temporal-cache on|off (exact memoization; default: on)]\n"
+    "  [--area-suffix-cache on|off (Enhanced sequential suffix replay; default: on)]\n"
+    "  [--area-reuse full|fresh (Enhanced fresh diagnostic; default: full)]\n"
+    "  [--area-spatial-mode all|stochastic-pairs|stochastic-shared (default: all)]\n"
+    "  [--area-pair-compaction on|off (experimental Enhanced null admission; default: off)]\n"
+    "  [--area-temporal-reprojection off|dual (experimental camera-only Enhanced motion; default: "
+    "off)]\n"
+    "  [--diffuse-events auto|generic (default: generic)]\n"
     "  [--packet-events 1|2|4 (default: 1)] [--packet-layout "
     "packed|hot-cold|split-trace]\n"
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
@@ -281,8 +299,11 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.area_stencil = rypath::FrameAreaStencil::adjacent;
             else if (value == "reciprocal16")
                 o.area_stencil = rypath::FrameAreaStencil::reciprocal16;
+            else if (value == "paired-gaussian16")
+                o.area_stencil = rypath::FrameAreaStencil::paired_gaussian16;
             else
-                throw std::runtime_error("Area stencil must be auto, adjacent, or reciprocal16");
+                throw std::runtime_error(
+                    "Area stencil must be auto, adjacent, reciprocal16, or paired-gaussian16");
         } else if (key == "--spectral-transport") {
             const auto selection = rypath::parse_spectral_transport(value);
             if (!selection)
@@ -300,8 +321,10 @@ std::string parse(int argc, char **argv, Options &o) {
                 o.area_path_domain = rypath::FrameAreaPathDomain::summed;
             else if (value == "contribution")
                 o.area_path_domain = rypath::FrameAreaPathDomain::contribution;
+            else if (value == "enhanced")
+                o.area_path_domain = rypath::FrameAreaPathDomain::enhanced;
             else
-                return "area path domain must be summed or contribution";
+                return "area path domain must be summed, contribution, or enhanced";
         } else if (key == "--area-contribution-replay") {
             if (value == "full")
                 o.contribution_replay = rypath::FrameContributionReplay::full;
@@ -320,6 +343,44 @@ std::string parse(int argc, char **argv, Options &o) {
             if (value != "on" && value != "off")
                 return "area temporal cache must be on or off";
             o.cache_temporal_evaluations = value == "on";
+        } else if (key == "--area-suffix-cache") {
+            if (value != "on" && value != "off")
+                return "area suffix cache must be on or off";
+            o.enhanced_suffix_cache = value == "on";
+        } else if (key == "--area-reuse") {
+            if (value != "full" && value != "fresh")
+                return "area reuse must be full or fresh";
+            o.area_reuse =
+                value == "fresh" ? rypath::FrameAreaReuse::fresh : rypath::FrameAreaReuse::full;
+        } else if (key == "--area-spatial-mode") {
+            if (value != "all" && value != "stochastic-pairs" && value != "stochastic-shared")
+                return "area spatial mode must be all, stochastic-pairs, or stochastic-shared";
+            o.spatial_mode = value == "all"                ? rypath::FrameSpatialMode::all
+                             : value == "stochastic-pairs" ? rypath::FrameSpatialMode::independent
+                                                           : rypath::FrameSpatialMode::shared;
+        } else if (key == "--area-pair-compaction") {
+            if (value != "on" && value != "off")
+                return "area pair compaction must be on or off";
+            o.compact_enhanced_pairs = value == "on";
+        } else if (key == "--area-temporal-reprojection") {
+            if (value != "off" && value != "dual")
+                return "area temporal reprojection must be off or dual";
+            o.enhanced_temporal_reprojection = value == "dual";
+        } else if (key == "--area-duplication") {
+            if (value == "off")
+                o.area_duplication = rypath::FrameAreaDuplication::off;
+            else if (value == "initial-seed")
+                o.area_duplication = rypath::FrameAreaDuplication::initial_seed;
+            else if (value == "initial-atom")
+                o.area_duplication = rypath::FrameAreaDuplication::initial_atom;
+            else if (value == "current")
+                o.area_duplication = rypath::FrameAreaDuplication::current;
+            else
+                return "area duplication must be off, initial-seed, initial-atom, or current";
+        } else if (key == "--area-history-cap") {
+            if (!integer(value, o.enhanced_history_cap) || o.enhanced_history_cap < 1 ||
+                o.enhanced_history_cap > 20)
+                return "area history cap must be 1 through 20";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
@@ -364,6 +425,10 @@ std::string parse(int argc, char **argv, Options &o) {
             if (!integer(value, o.packet_events) ||
                 (o.packet_events != 1 && o.packet_events != 2 && o.packet_events != 4))
                 return "packet events must be 1, 2, or 4";
+        } else if (key == "--diffuse-events") {
+            if (value != "auto" && value != "generic")
+                return "diffuse events must be auto or generic";
+            o.specialize_diffuse_events = value == "auto";
         } else if (key == "--group-width") {
             if (!integer(value, o.group_width) || !o.group_width || o.group_width > 256)
                 return "group width must be in [1,256]";
@@ -409,12 +474,16 @@ std::string parse(int argc, char **argv, Options &o) {
     }
     if (seen.contains("--area-output") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area output requires area-replay estimator";
+    if (seen.contains("--area-history-cap") &&
+        (o.estimator != rypath::FrameEstimator::area_replay ||
+         o.area_path_domain != rypath::FrameAreaPathDomain::enhanced))
+        return "area history cap requires Enhanced Area replay";
     if (seen.contains("--area-path-domain") && o.estimator != rypath::FrameEstimator::area_replay)
         return "area path domain requires area-replay estimator";
     if (seen.contains("--area-contribution-replay") &&
-        o.area_path_domain != rypath::FrameAreaPathDomain::contribution)
+        !rypath::frame_area_contribution_family(o.area_path_domain))
         return "area contribution replay requires contribution path domain";
-    if (o.area_path_domain == rypath::FrameAreaPathDomain::contribution) {
+    if (rypath::frame_area_contribution_family(o.area_path_domain)) {
         if (o.execution != rypath::FrameExecution::wavefront ||
             o.packet_layout != rypath::FramePacketLayout::packed || o.packet_events != 1)
             return "contribution path domain requires packed wavefront state and one event";
@@ -422,6 +491,26 @@ std::string parse(int argc, char **argv, Options &o) {
             o.spectral_transport == rypath::SpectralTransportSelection::packet)
             return "contribution path domain requires a PBRT scene with effective hero transport";
     }
+    if (o.area_reuse == rypath::FrameAreaReuse::fresh &&
+        (o.estimator != rypath::FrameEstimator::area_replay ||
+         o.execution != rypath::FrameExecution::wavefront ||
+         o.area_path_domain != rypath::FrameAreaPathDomain::enhanced || o.mutation_steps != 0 ||
+         o.spatial_mode != rypath::FrameSpatialMode::all || o.compact_enhanced_pairs ||
+         o.enhanced_temporal_reprojection ||
+         o.area_duplication != rypath::FrameAreaDuplication::off))
+        return "fresh extraction requires Enhanced wavefront Area, zero mutations, full spatial "
+               "mode and no reprojection/compaction/duplication";
+    if (rypath_stochastic_spatial::enabled(o.spatial_mode) &&
+        (o.execution != rypath::FrameExecution::wavefront ||
+         o.estimator != rypath::FrameEstimator::area_replay ||
+         o.area_path_domain != rypath::FrameAreaPathDomain::enhanced ||
+         o.area_stencil != rypath::FrameAreaStencil::paired_gaussian16))
+        return "stochastic spatial pairs require wavefront Enhanced paired-gaussian16";
+    if (o.area_duplication != rypath::FrameAreaDuplication::off &&
+        (o.execution != rypath::FrameExecution::wavefront ||
+         o.estimator != rypath::FrameEstimator::area_replay ||
+         o.area_path_domain != rypath::FrameAreaPathDomain::enhanced))
+        return "area duplication diagnostics require wavefront Enhanced Area";
     if ((seen.contains("--variance-policy") || seen.contains("--variance-prefilter") ||
          seen.contains("--strict-spatial-segments")) &&
         o.reconstruction != rypath::ReconstructionMode::temporal)
@@ -704,12 +793,31 @@ struct Observation : rypath::FrameStatisticsSample {
     std::optional<rypath::FrameCamera> camera;
     std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0,
                   command_count = 0, area_serial = 0, history_generation = 0,
-                  completed_evaluations = 0, cached_evaluations = 0, logical_evaluations = 0,
-                  fresh_candidates = 0, mutation_attempts = 0, mutation_accepts = 0;
+                  completed_evaluations = 0, cached_evaluations = 0, analytic_null_evaluations = 0,
+                  logical_evaluations = 0, fresh_candidates = 0, mutation_attempts = 0,
+                  mutation_accepts = 0;
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
+    std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
+    bool diffuse_events = false;
     bool history_used = false, temporal_evaluation_cache_used = false;
+    bool enhanced_suffix_cache = false;
+    std::uint32_t enhanced_history_cap = 0;
+    bool enhanced_pair_compaction = false;
+    bool stochastic_spatial_pairs = false;
+    rypath::FrameAreaReuse area_reuse = rypath::FrameAreaReuse::full;
+    rypath::FrameSpatialMode spatial_mode = rypath::FrameSpatialMode::all;
+    std::uint32_t stochastic_forward_atlas = 0, stochastic_canonical_atlas = 0;
+    bool enhanced_temporal_reprojection_requested = false;
+    bool enhanced_temporal_reprojection = false, enhanced_temporal_reprojection_used = false;
+    std::uint64_t enhanced_geometry_generated = 0, enhanced_geometry_reused = 0;
+    std::array<std::uint64_t, 4> enhanced_motion_routes{};
+    std::uint64_t compacted_null_evaluations = 0;
+    std::array<std::uint64_t, 3> enhanced_suffix_hits{};
+    std::uint64_t enhanced_suffix_misses = 0;
     rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::legacy;
     rypath::FrameAreaStencil area_stencil = rypath::FrameAreaStencil::adjacent;
+    rypath::FrameAreaAtlasInfo paired_atlas{};
+    rypath::FrameAreaDuplicationInfo duplication{};
     rypath::FrameContributionReplay contribution_replay = rypath::FrameContributionReplay::full;
     std::array<std::int32_t, 4> area_stencil_offsets{};
     rypath::GPUStageDiagnostics gpu_stages;
@@ -723,6 +831,8 @@ struct Observation : rypath::FrameStatisticsSample {
 void write_path_work(std::ostream &out, const rypath::FrameWorkDiagnostics &d) {
     out << "{\"requested\":" << (d.requested ? "true" : "false")
         << ",\"complete\":" << (d.complete ? "true" : "false") << ",\"status\":" << quote(d.status)
+        << ",\"packet_step_invocations_supported\":"
+        << (d.packet_step_invocations_supported ? "true" : "false")
         << ",\"state_pool_bytes\":" << d.state_pool_bytes << ",\"passes\":[";
     bool first = true;
     for (const auto &p : d.passes) {
@@ -731,7 +841,12 @@ void write_path_work(std::ostream &out, const rypath::FrameWorkDiagnostics &d) {
         first = false;
         out << "{\"kind\":" << quote(p.kind) << ",\"index\":" << p.index
             << ",\"commands\":" << p.commands << ",\"encoded_rounds\":" << p.encoded_rounds
-            << ",\"completed_evaluations\":" << p.completed_evaluations
+            << ",\"packet_step_invocations\":";
+        if (d.packet_step_invocations_supported && d.complete)
+            out << p.packet_step_invocations;
+        else
+            out << "null";
+        out << ",\"completed_evaluations\":" << p.completed_evaluations
             << ",\"boundary_active_sum\":" << p.boundary_active_sum
             << ",\"boundary_active_max\":" << p.boundary_active_max
             << ",\"encode_seconds\":" << p.encode_seconds << ",\"gpu_seconds\":";
@@ -817,7 +932,75 @@ void write_counters(std::ostream &out, const rypath::ReconstructionCounters &c) 
     }
     out << '}';
 }
+void write_duplication(std::ostream &out, const rypath::FrameAreaDuplicationInfo &d) {
+    if (!d.version) {
+        out << "null";
+        return;
+    }
+    if (d.histogram.size() != 291)
+        throw std::runtime_error("Duplication summary histogram size mismatch");
+    out << "{\"mode\":" << quote(rypath::frame_area_duplication_name(d.mode))
+        << ",\"version\":" << d.version << ",\"denominator\":" << d.denominator
+        << ",\"edge_policy\":\"17x17-exclude-center-oob-zero-fixed288\""
+        << ",\"equality_policy\":" << quote(rypath::frame_area_duplication_key_policy(d.mode))
+        << ",\"independence_claim\":false"
+        << ",\"valid_pixels\":" << d.valid_pixels << ",\"null_pixels\":" << d.null_pixels
+        << ",\"unknown_pixels\":" << d.unknown_pixels << ",\"mean_d\":" << d.mean_d
+        << ",\"histogram\":[";
+    for (std::size_t i = 0; i < d.histogram.size(); ++i) {
+        if (i)
+            out << ',';
+        out << d.histogram[i];
+    }
+    out << "]}";
+}
+void write_paired_atlas(std::ostream &out, const rypath::FrameAreaAtlasInfo &atlas,
+                        bool include_poses = true) {
+    if (!atlas.version) {
+        out << "null";
+        return;
+    }
+    out << "{\"version\":" << atlas.version << ",\"widths\":[";
+    for (unsigned k = 0; k < 4; ++k) {
+        if (k)
+            out << ',';
+        out << atlas.widths[k];
+    }
+    out << "],\"sigma\":" << atlas.sigma << ",\"iterations\":" << atlas.iterations << ",\"seed\":["
+        << atlas.seed[0] << ',' << atlas.seed[1] << "]"
+        << ",\"sha256\":" << quote(atlas.sha256) << ",\"entry_count\":" << atlas.entry_count
+        << ",\"asset_bytes\":" << atlas.asset_bytes;
+    if (include_poses) {
+        out << ",\"poses\":[";
+        for (unsigned k = 0; k < 4; ++k) {
+            if (k)
+                out << ',';
+            out << '[' << atlas.poses[k][0] << ',' << atlas.poses[k][1] << ',' << atlas.poses[k][2]
+                << ']';
+        }
+        out << ']';
+    }
+    out << '}';
+}
+std::string paired_atlas_widths(const rypath::FrameAreaAtlasInfo &atlas) {
+    return std::to_string(atlas.widths[0]) + "," + std::to_string(atlas.widths[1]) + "," +
+           std::to_string(atlas.widths[2]) + "," + std::to_string(atlas.widths[3]);
+}
+std::string paired_atlas_poses(const rypath::FrameAreaAtlasInfo &atlas) {
+    std::ostringstream out;
+    out << '[';
+    for (unsigned k = 0; k < 4; ++k) {
+        if (k)
+            out << ',';
+        out << '[' << atlas.poses[k][0] << ',' << atlas.poses[k][1] << ',' << atlas.poses[k][2]
+            << ']';
+    }
+    out << ']';
+    return out.str();
+}
 struct Report {
+    rypath::FrameAreaDuplication actual_area_duplication = rypath::FrameAreaDuplication::off;
+    rypath::FrameAreaAtlasInfo paired_atlas_identity{};
     Options options;
     rypath::AccelerationBuildInfo acceleration_build;
     std::string diagnostic, device, architecture, integrator, os, source_identity,
@@ -825,6 +1008,7 @@ struct Report {
     std::uint64_t registry_id = 0, warmup_completed = 0, frames_completed = 0;
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
+    std::optional<bool> effective_diffuse_events;
     bool packet_controls_effective = false;
     bool area_path_domain_effective = false;
     std::vector<std::string> provenance;
@@ -876,6 +1060,26 @@ struct Report {
             << ",\"hero_wavelengths\":" << quote(hero_wavelengths)
             << ",\"requested_area_mutation_policy\":"
             << quote(rypath::frame_mutation_policy_name(options.mutation_policy))
+            << ",\"requested_area_reuse\":"
+            << quote(rypath::frame_area_reuse_name(options.area_reuse))
+            << ",\"effective_area_reuse\":"
+            << (area_path_domain_effective
+                    ? quote(rypath::frame_area_reuse_name(options.area_reuse))
+                    : "null")
+            << ",\"requested_area_spatial_mode\":"
+            << quote(rypath::frame_spatial_mode_name(options.spatial_mode))
+            << ",\"area_spatial_mode\":"
+            << quote(area_path_domain_effective
+                         ? (rypath::frame_spatial_mode_name(options.spatial_mode))
+                         : "not-applicable")
+            << ",\"effective_area_spatial_mode\":"
+            << (area_path_domain_effective
+                    ? quote(rypath::frame_spatial_mode_name(options.spatial_mode))
+                    : "null")
+            << ",\"stochastic_spatial_law\":"
+            << (rypath_stochastic_spatial::enabled(options.spatial_mode)
+                    ? rypath_stochastic_spatial::law_version
+                    : 0)
             << ",\"requested_area_stencil\":"
             << quote(rypath::frame_area_stencil_name(options.area_stencil))
             << ",\"estimator\":" << quote(estimator_name(options.estimator))
@@ -892,22 +1096,26 @@ struct Report {
             << ",\"requested_area_contribution_replay\":"
             << quote(rypath::frame_contribution_replay_name(options.contribution_replay))
             << ",\"area_contribution_replay\":"
-            << quote(options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+            << quote(rypath::frame_area_contribution_family(options.area_path_domain)
                          ? rypath::frame_contribution_replay_name(options.contribution_replay)
                          : "not-applicable")
             << ",\"effective_area_contribution_replay\":"
             << (area_path_domain_effective &&
-                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                        rypath::frame_area_contribution_family(options.area_path_domain)
                     ? quote(rypath::frame_contribution_replay_name(options.contribution_replay))
                     : "null")
+            << ",\"canonical_transport_version\":"
+            << rypath::frame_area_canonical_version(options.area_path_domain)
+            << ",\"fresh_discovery_version\":"
+            << rypath::frame_area_discovery_version(options.area_path_domain)
             << ",\"contribution_depth\":"
             << (area_path_domain_effective &&
-                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                        rypath::frame_area_contribution_family(options.area_path_domain)
                     ? std::to_string(max_depth)
                     : "null")
             << ",\"contribution_slot_count\":"
             << (area_path_domain_effective &&
-                        options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                        rypath::frame_area_contribution_family(options.area_path_domain)
                     ? std::to_string(2u * max_depth + 1u)
                     : "null")
             << ",\"area_contract\":"
@@ -923,14 +1131,23 @@ struct Report {
                          ? area_output_name(options.area_output)
                          : "not-applicable")
             << ",\"area_target\":"
-            << quote(options.estimator == rypath::FrameEstimator::area_replay ? "quarter-l1-v1"
-                                                                              : "none")
+            << quote(options.estimator == rypath::FrameEstimator::area_replay
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "quarter-l1-hybrid-scaled-zero-v4"
+                                : "quarter-l1-v1")
+                         : "none")
             << ",\"area_source_mis\":"
             << quote(options.estimator == rypath::FrameEstimator::area_replay
-                         ? "source-target-mis-v1"
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? (options.area_reuse == rypath::FrameAreaReuse::fresh
+                                       ? "fresh-local-selection-v1"
+                                       : "enhanced-hybrid-confidence-scaled-mis-v4")
+                                : "source-target-mis-v1")
                          : "none")
+            << ",\"requested_area_history_cap\":" << options.enhanced_history_cap
             << ",\"area_temporal_reuse\":"
-            << (options.estimator == rypath::FrameEstimator::area_replay ? 20 : 0)
+            << rypath::frame_temporal_reuse_cap(options.estimator, options.area_reuse,
+                                                options.enhanced_history_cap)
             << ",\"mutation_steps\":" << options.mutation_steps << ",\"effective_mutation_steps\":"
             << (options.estimator == rypath::FrameEstimator::area_replay ? options.mutation_steps
                                                                          : 0)
@@ -938,16 +1155,80 @@ struct Report {
             << (options.cache_temporal_evaluations ? "true" : "false")
             << ",\"area_temporal_cache\":"
             << (options.estimator == rypath::FrameEstimator::area_replay &&
-                        options.cache_temporal_evaluations
+                        options.cache_temporal_evaluations &&
+                        options.area_reuse == rypath::FrameAreaReuse::full
                     ? "true"
                     : "false")
-            << ",\"target_scale\":" << options.target_scale
+            << ",\"requested_area_suffix_cache\":"
+            << (options.enhanced_suffix_cache ? "true" : "false") << ",\"area_suffix_cache\":"
+            << (options.estimator == rypath::FrameEstimator::area_replay &&
+                        options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                        options.contribution_replay == rypath::FrameContributionReplay::prefix &&
+                        options.enhanced_suffix_cache &&
+                        options.area_reuse == rypath::FrameAreaReuse::full
+                    ? "true"
+                    : "false")
+            << ",\"effective_area_suffix_cache\":"
+            << (area_path_domain_effective
+                    ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                               options.contribution_replay ==
+                                   rypath::FrameContributionReplay::prefix &&
+                               options.enhanced_suffix_cache &&
+                               options.area_reuse == rypath::FrameAreaReuse::full
+                           ? "true"
+                           : "false")
+                    : "null")
+            << ",\"requested_area_pair_compaction\":"
+            << (options.compact_enhanced_pairs ? "true" : "false") << ",\"area_pair_compaction\":"
+            << (options.execution == rypath::FrameExecution::wavefront &&
+                        options.estimator == rypath::FrameEstimator::area_replay &&
+                        options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                        options.compact_enhanced_pairs
+                    ? "true"
+                    : "false")
+            << ",\"effective_area_pair_compaction\":"
+            << (area_path_domain_effective
+                    ? (options.execution == rypath::FrameExecution::wavefront &&
+                               options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                               options.compact_enhanced_pairs
+                           ? "true"
+                           : "false")
+                    : "null")
+            << ",\"requested_area_temporal_reprojection\":"
+            << quote(options.enhanced_temporal_reprojection ? "dual" : "off")
+            << ",\"area_temporal_reprojection\":"
+            << quote(options.execution == rypath::FrameExecution::wavefront &&
+                             options.estimator == rypath::FrameEstimator::area_replay &&
+                             options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                             options.enhanced_temporal_reprojection
+                         ? "dual"
+                         : "off")
+            << ",\"effective_area_temporal_reprojection\":"
+            << (area_path_domain_effective
+                    ? quote(options.execution == rypath::FrameExecution::wavefront &&
+                                    options.area_path_domain ==
+                                        rypath::FrameAreaPathDomain::enhanced &&
+                                    options.enhanced_temporal_reprojection
+                                ? "dual"
+                                : "off")
+                    : "null")
+            << ",\"requested_area_duplication\":"
+            << quote(rypath::frame_area_duplication_name(options.area_duplication))
+            << ",\"area_duplication\":"
+            << quote(rypath::frame_area_duplication_name(actual_area_duplication))
+            << ",\"paired_atlas_identity\":";
+        write_paired_atlas(out, paired_atlas_identity, false);
+        out << ",\"target_scale\":" << options.target_scale
             << ",\"fresh_paths_per_pixel_per_frame\":1"
             << ",\"capacity\":" << options.capacity << ",\"effective_capacity\":"
             << (options.execution == rypath::FrameExecution::wavefront
                     ? std::to_string(std::min<std::uint64_t>(
                           options.capacity, std::uint64_t(options.width) * options.height))
                     : "null")
+            << ",\"requested_diffuse_events\":"
+            << quote(options.specialize_diffuse_events ? "auto" : "generic")
+            << ",\"effective_diffuse_events\":"
+            << (effective_diffuse_events ? (*effective_diffuse_events ? "true" : "false") : "null")
             << ",\"packet_layout\":" << quote(packet_layout_name(options.packet_layout))
             << ",\"packet_events\":" << options.packet_events << ",\"effective_packet_events\":"
             << (packet_controls_effective ? std::to_string(options.packet_events) : "null")
@@ -1067,17 +1348,54 @@ struct Report {
                 << ",\"phase\":" << quote(f.pose.phase) << ",\"motion_offset\":" << f.pose.offset
                 << ",\"camera\":";
             write_camera(out, f.camera);
+            out << ",\"duplication\":";
+            write_duplication(out, f.duplication);
             out << ",\"warmup\":" << (f.warmup ? "true" : "false")
                 << ",\"complete\":" << (f.complete ? "true" : "false")
                 << ",\"completed_samples\":" << f.completed_samples
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
+                << ",\"diffuse_events\":" << (f.diffuse_events ? "true" : "false")
                 << ",\"command_count\":" << f.command_count << ",\"area_serial\":" << f.area_serial
                 << ",\"area_contribution_replay\":"
-                << (f.complete &&
-                            options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                << (f.complete && rypath::frame_area_contribution_family(options.area_path_domain)
                         ? quote(rypath::frame_contribution_replay_name(f.contribution_replay))
                         : "null")
+                << ",\"canonical_transport_version\":" << f.canonical_transport_version
+                << ",\"fresh_discovery_version\":" << f.fresh_discovery_version
                 << ",\"history_used\":" << (f.history_used ? "true" : "false")
+                << ",\"enhanced_temporal_reprojection_requested\":"
+                << (f.enhanced_temporal_reprojection_requested ? "true" : "false")
+                << ",\"enhanced_temporal_reprojection\":"
+                << (f.enhanced_temporal_reprojection ? "true" : "false")
+                << ",\"enhanced_temporal_reprojection_used\":"
+                << (f.enhanced_temporal_reprojection_used ? "true" : "false")
+                << ",\"enhanced_geometry_generated\":" << f.enhanced_geometry_generated
+                << ",\"enhanced_geometry_reused\":" << f.enhanced_geometry_reused
+                << ",\"enhanced_motion_routes\":[" << f.enhanced_motion_routes[0] << ','
+                << f.enhanced_motion_routes[1] << ',' << f.enhanced_motion_routes[2] << ','
+                << f.enhanced_motion_routes[3] << ']' << ",\"enhanced_pair_compaction\":"
+                << (f.enhanced_pair_compaction ? "true" : "false") << ",\"area_spatial_mode\":"
+                << quote(rypath::frame_spatial_mode_name(f.spatial_mode))
+                << ",\"area_reuse\":" << quote(rypath::frame_area_reuse_name(f.area_reuse))
+                << ",\"stochastic_spatial_pairs\":"
+                << (f.stochastic_spatial_pairs ? "true" : "false")
+                << ",\"stochastic_forward_atlas\":" << f.stochastic_forward_atlas
+                << ",\"stochastic_canonical_atlas\":" << f.stochastic_canonical_atlas
+                << ",\"spatial_evaluation_maps\":"
+                << (f.complete && options.estimator == rypath::FrameEstimator::area_replay
+                        ? std::to_string(
+                              f.area_reuse == rypath::FrameAreaReuse::fresh ? 0u
+                              : f.stochastic_spatial_pairs
+                                  ? rypath_stochastic_spatial::evaluations(
+                                        {f.stochastic_forward_atlas, f.stochastic_canonical_atlas})
+                                  : 4u)
+                        : "null")
+                << ",\"enhanced_history_cap\":" << f.enhanced_history_cap
+                << ",\"compacted_null_evaluations\":" << f.compacted_null_evaluations
+                << ",\"enhanced_suffix_cache\":" << (f.enhanced_suffix_cache ? "true" : "false")
+                << ",\"enhanced_suffix_hits\":[" << f.enhanced_suffix_hits[0] << ','
+                << f.enhanced_suffix_hits[1] << ',' << f.enhanced_suffix_hits[2] << ']'
+                << ",\"enhanced_suffix_misses\":" << f.enhanced_suffix_misses
 
                 << ",\"area_mutation_policy\":"
                 << quote(options.estimator == rypath::FrameEstimator::area_replay
@@ -1089,8 +1407,9 @@ struct Report {
                              : "not-applicable")
                 << ",\"area_stencil_offsets\":[" << f.area_stencil_offsets[0] << ','
                 << f.area_stencil_offsets[1] << ',' << f.area_stencil_offsets[2] << ','
-                << f.area_stencil_offsets[3] << ']'
-                << ",\"history_generation\":" << f.history_generation
+                << f.area_stencil_offsets[3] << ']' << ",\"paired_atlas\":";
+            write_paired_atlas(out, f.paired_atlas);
+            out << ",\"history_generation\":" << f.history_generation
                 << ",\"temporal_candidates\":" << f.temporal_candidates
                 << ",\"spatial_candidates\":" << f.spatial_candidates
                 << ",\"mutation_attempts\":" << f.mutation_attempts
@@ -1098,6 +1417,7 @@ struct Report {
                 << ",\"temporal_evaluation_cache_used\":"
                 << (f.temporal_evaluation_cache_used ? "true" : "false")
                 << ",\"completed_evaluations\":" << f.completed_evaluations
+                << ",\"analytic_null_evaluations\":" << f.analytic_null_evaluations
                 << ",\"cached_evaluations\":" << f.cached_evaluations
                 << ",\"logical_evaluations\":" << f.logical_evaluations
                 << ",\"fresh_candidates\":" << f.fresh_candidates << ",\"gpu_stages\":";
@@ -1272,7 +1592,7 @@ int run(const Options &options) {
         scene.integrator =
             scene.volume_transport ? rypath::IntegratorKind::volpath : rypath::IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
-        if (options.area_path_domain == rypath::FrameAreaPathDomain::contribution &&
+        if (rypath::frame_area_contribution_family(options.area_path_domain) &&
             scene.max_depth > 65)
             throw std::runtime_error(
                 "Contribution path domain requires finite authored depth from 0 to 65");
@@ -1283,7 +1603,7 @@ int run(const Options &options) {
             throw std::runtime_error(error);
         if (options.hero_wavelengths && scene.spectral_transport != rypath::SpectralTransport::hero)
             throw std::runtime_error("--hero-wavelengths requires effective hero transport");
-        if (options.area_path_domain == rypath::FrameAreaPathDomain::contribution &&
+        if (rypath::frame_area_contribution_family(options.area_path_domain) &&
             scene.spectral_transport != rypath::SpectralTransport::hero)
             throw std::runtime_error("Contribution path domain requires effective hero transport");
         if (options.hero_wavelengths)
@@ -1340,6 +1660,13 @@ int run(const Options &options) {
         config.contribution_replay = options.contribution_replay;
         config.area_output = options.area_output;
         config.cache_temporal_evaluations = options.cache_temporal_evaluations;
+        config.enhanced_history_cap = options.enhanced_history_cap;
+        config.enhanced_suffix_cache = options.enhanced_suffix_cache;
+        config.compact_enhanced_pairs = options.compact_enhanced_pairs;
+        config.spatial_mode = options.spatial_mode;
+        config.area_reuse = options.area_reuse;
+        config.enhanced_temporal_reprojection = options.enhanced_temporal_reprojection;
+        config.area_duplication = options.area_duplication;
         config.target_scale = options.target_scale;
         config.mutation_steps = options.mutation_steps;
         config.mutation_policy = options.mutation_policy;
@@ -1347,6 +1674,7 @@ int run(const Options &options) {
         config.capacity = options.capacity;
         config.quantum = options.quantum;
         config.group_width = options.group_width;
+        config.specialize_diffuse_events = options.specialize_diffuse_events;
         config.packet_events = options.packet_events;
         config.packet_layout = options.packet_layout;
         auto built = rypath::build_frame_session(scene, config);
@@ -1371,6 +1699,7 @@ int run(const Options &options) {
             report.diagnostic =
                 built.diagnostic.empty() ? "frame session unavailable" : built.diagnostic;
         } else {
+            report.actual_area_duplication = options.area_duplication;
             report.shadow_traversal = built.shadow_traversal;
             const auto warmup_start = Clock::now();
             std::unique_ptr<rypath::Frame> last;
@@ -1411,23 +1740,121 @@ int run(const Options &options) {
                     const auto pixels = std::uint64_t(options.width) * options.height;
                     const bool evaluation_counts =
                         options.estimator == rypath::FrameEstimator::area_replay
-                            ? rypath::valid_area_evaluation_accounting(
-                                  pixels, info.history_used, options.mutation_steps,
-                                  info.temporal_evaluation_cache_used, info.completed_evaluations,
-                                  info.cached_evaluations, info.logical_evaluations) &&
+                            ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                   ? rypath::valid_enhanced_area_evaluation_accounting(
+                                         pixels, info.history_used, options.mutation_steps,
+                                         info.temporal_evaluation_cache_used,
+                                         info.completed_evaluations, info.cached_evaluations,
+                                         info.analytic_null_evaluations, info.logical_evaluations,
+                                         rypath_stochastic_spatial::enabled(options.spatial_mode)
+                                             ? rypath_stochastic_spatial::evaluations(
+                                                   {info.stochastic_forward_atlas,
+                                                    info.stochastic_canonical_atlas})
+                                             : 4u,
+                                         options.area_reuse == rypath::FrameAreaReuse::fresh)
+                                   : info.analytic_null_evaluations == 0 &&
+                                         rypath::valid_area_evaluation_accounting(
+                                             pixels, info.history_used, options.mutation_steps,
+                                             info.temporal_evaluation_cache_used,
+                                             info.completed_evaluations, info.cached_evaluations,
+                                             info.logical_evaluations)) &&
                                   (!info.temporal_evaluation_cache_used ||
                                    options.cache_temporal_evaluations)
                             : info.completed_evaluations == pixels &&
                                   info.cached_evaluations == 0 &&
+                                  info.analytic_null_evaluations == 0 &&
                                   info.logical_evaluations == pixels &&
                                   !info.temporal_evaluation_cache_used;
+                    const auto routes =
+                        std::accumulate(info.enhanced_motion_routes.begin(),
+                                        info.enhanced_motion_routes.end(), std::uint64_t{0});
+                    const bool motion_counts =
+                        info.enhanced_temporal_reprojection
+                            ? (info.enhanced_geometry_generated + info.enhanced_geometry_reused ==
+                                   pixels &&
+                               (info.enhanced_geometry_generated
+                                    ? (info.enhanced_geometry_generated == pixels &&
+                                       routes == pixels &&
+                                       info.enhanced_temporal_reprojection_used ==
+                                           info.history_used &&
+                                       info.enhanced_motion_routes[0] ==
+                                           (info.history_used ? 0 : pixels))
+                                    : (info.enhanced_geometry_reused == pixels && routes == 0 &&
+                                       !info.enhanced_temporal_reprojection_used)))
+                            : (info.enhanced_geometry_generated == 0 &&
+                               info.enhanced_geometry_reused == 0 && routes == 0 &&
+                               !info.enhanced_temporal_reprojection_used);
+                    const bool paired =
+                        options.estimator == rypath::FrameEstimator::area_replay &&
+                        options.area_stencil == rypath::FrameAreaStencil::paired_gaussian16;
+                    const bool atlas_identity =
+                        paired ? (info.paired_atlas.version == 1 &&
+                                  info.paired_atlas.entry_count == 199152 &&
+                                  info.paired_atlas.asset_bytes == 398304 &&
+                                  info.paired_atlas.sigma == 16 &&
+                                  info.paired_atlas.iterations == 128 &&
+                                  info.paired_atlas.sha256.size() == 64 &&
+                                  info.paired_atlas.widths ==
+                                      std::array<std::uint32_t, 4>{254, 230, 210, 194} &&
+                                  info.area_stencil_offsets == std::array<std::int32_t, 4>{})
+                               : info.paired_atlas.version == 0;
+                    const auto spatial_selection = rypath_stochastic_spatial::draw(
+                        static_cast<std::uint32_t>(info.area_serial),
+                        static_cast<std::uint32_t>(info.area_serial >> 32),
+                        static_cast<std::uint32_t>(options.seed),
+                        static_cast<std::uint32_t>(options.seed >> 32), options.spatial_mode);
+                    const bool spatial_selection_valid =
+                        info.area_reuse == options.area_reuse &&
+                        (options.area_reuse != rypath::FrameAreaReuse::fresh ||
+                         (!info.history_used && info.history_generation == 0 &&
+                          info.temporal_candidates == 0 && info.spatial_candidates == 0)) &&
+                        info.spatial_mode == options.spatial_mode &&
+                        info.stochastic_spatial_pairs ==
+                            rypath_stochastic_spatial::enabled(options.spatial_mode) &&
+                        (rypath_stochastic_spatial::enabled(options.spatial_mode)
+                             ? info.stochastic_forward_atlas == spatial_selection.forward &&
+                                   info.stochastic_canonical_atlas == spatial_selection.canonical
+                             : info.stochastic_forward_atlas == 0 &&
+                                   info.stochastic_canonical_atlas == 0);
                     observation.complete =
-                        info.status == rypath::FrameStatus::complete &&
+                        spatial_selection_valid && info.status == rypath::FrameStatus::complete &&
+                        info.enhanced_suffix_cache ==
+                            (options.estimator == rypath::FrameEstimator::area_replay &&
+                             options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                             options.contribution_replay ==
+                                 rypath::FrameContributionReplay::prefix &&
+                             options.enhanced_suffix_cache &&
+                             options.area_reuse == rypath::FrameAreaReuse::full) &&
+                        atlas_identity && motion_counts &&
+                        info.enhanced_temporal_reprojection_requested ==
+                            options.enhanced_temporal_reprojection &&
+                        info.enhanced_temporal_reprojection ==
+                            (options.execution == rypath::FrameExecution::wavefront &&
+                             options.estimator == rypath::FrameEstimator::area_replay &&
+                             options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                             options.enhanced_temporal_reprojection) &&
+                        info.enhanced_history_cap ==
+                            (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                 ? rypath::frame_temporal_reuse_cap(options.estimator,
+                                                                    options.area_reuse,
+                                                                    options.enhanced_history_cap)
+                                 : 0u) &&
+                        info.enhanced_pair_compaction ==
+                            (options.execution == rypath::FrameExecution::wavefront &&
+                             options.estimator == rypath::FrameEstimator::area_replay &&
+                             options.area_path_domain == rypath::FrameAreaPathDomain::enhanced &&
+                             options.compact_enhanced_pairs) &&
+                        info.compacted_null_evaluations <= info.analytic_null_evaluations &&
+                        (info.enhanced_pair_compaction || info.compacted_null_evaluations == 0) &&
                         info.completed_samples == pixels && evaluation_counts &&
                         info.area_path_domain == options.area_path_domain &&
+                        info.canonical_transport_version ==
+                            rypath::frame_area_canonical_version(options.area_path_domain) &&
+                        info.fresh_discovery_version ==
+                            rypath::frame_area_discovery_version(options.area_path_domain) &&
                         info.contribution_replay == options.contribution_replay &&
                         info.contribution_depth ==
-                            (options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                            (rypath::frame_area_contribution_family(options.area_path_domain)
                                  ? scene.max_depth
                                  : 0u);
                     observation.completed_samples = info.completed_samples;
@@ -1437,15 +1864,48 @@ int run(const Options &options) {
                     observation.command_count = info.command_count;
                     observation.mutation_policy = info.mutation_policy;
                     observation.area_stencil = info.area_stencil;
+                    observation.paired_atlas = info.paired_atlas;
+                    if (info.paired_atlas.version)
+                        report.paired_atlas_identity = info.paired_atlas;
                     observation.area_stencil_offsets = info.area_stencil_offsets;
+                    observation.diffuse_events = info.diffuse_events;
+                    if (report.effective_diffuse_events &&
+                        *report.effective_diffuse_events != info.diffuse_events)
+                        throw std::runtime_error(
+                            "Diffuse event dispatch changed during immutable session");
+                    report.effective_diffuse_events = info.diffuse_events;
                     observation.area_serial = info.area_serial;
                     observation.contribution_replay = info.contribution_replay;
+                    observation.canonical_transport_version = info.canonical_transport_version;
+                    observation.fresh_discovery_version = info.fresh_discovery_version;
                     observation.history_used = info.history_used;
+                    observation.enhanced_suffix_cache = info.enhanced_suffix_cache;
+                    observation.enhanced_history_cap = info.enhanced_history_cap;
+                    observation.enhanced_pair_compaction = info.enhanced_pair_compaction;
+                    observation.stochastic_spatial_pairs = info.stochastic_spatial_pairs;
+                    observation.spatial_mode = info.spatial_mode;
+                    observation.area_reuse = info.area_reuse;
+                    observation.stochastic_forward_atlas = info.stochastic_forward_atlas;
+                    observation.stochastic_canonical_atlas = info.stochastic_canonical_atlas;
+                    observation.duplication = info.duplication;
+                    observation.enhanced_temporal_reprojection_requested =
+                        info.enhanced_temporal_reprojection_requested;
+                    observation.enhanced_temporal_reprojection =
+                        info.enhanced_temporal_reprojection;
+                    observation.enhanced_temporal_reprojection_used =
+                        info.enhanced_temporal_reprojection_used;
+                    observation.enhanced_geometry_generated = info.enhanced_geometry_generated;
+                    observation.enhanced_geometry_reused = info.enhanced_geometry_reused;
+                    observation.enhanced_motion_routes = info.enhanced_motion_routes;
+                    observation.compacted_null_evaluations = info.compacted_null_evaluations;
+                    observation.enhanced_suffix_hits = info.enhanced_suffix_hits;
+                    observation.enhanced_suffix_misses = info.enhanced_suffix_misses;
                     observation.history_generation = info.history_generation;
                     observation.temporal_candidates = info.temporal_candidates;
                     observation.spatial_candidates = info.spatial_candidates;
                     observation.completed_evaluations = info.completed_evaluations;
                     observation.cached_evaluations = info.cached_evaluations;
+                    observation.analytic_null_evaluations = info.analytic_null_evaluations;
                     observation.logical_evaluations = info.logical_evaluations;
                     observation.temporal_evaluation_cache_used =
                         info.temporal_evaluation_cache_used;
@@ -1587,16 +2047,22 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_path_domain_name(options.area_path_domain)
                          : "not-applicable"},
+                    {"rypath.area.canonical_transport_version",
+                     std::to_string(
+                         rypath::frame_area_canonical_version(options.area_path_domain))},
+                    {"rypath.area.fresh_discovery_version",
+                     std::to_string(
+                         rypath::frame_area_discovery_version(options.area_path_domain))},
                     {"rypath.area.contribution_replay",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? rypath::frame_contribution_replay_name(frame_info.contribution_replay)
                          : "not-applicable"},
                     {"rypath.area.contribution_depth",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(report.max_depth)
                          : "not-applicable"},
                     {"rypath.area.contribution_slot_count",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(2u * report.max_depth + 1u)
                          : "0"},
                     {"rypath.area.contract",
@@ -1613,15 +2079,29 @@ int run(const Options &options) {
                     {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
                                                ? area_output_name(options.area_output)
                                                : "not-applicable"},
-                    {"rypath.area.target", options.estimator == rypath::FrameEstimator::area_replay
-                                               ? "quarter-l1-v1"
-                                               : "none"},
+                    {"rypath.area.target",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "quarter-l1-hybrid-scaled-zero-v4"
+                                : "quarter-l1-v1")
+                         : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
-                         ? "source-target-mis-v1"
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? (options.area_reuse == rypath::FrameAreaReuse::fresh
+                                       ? "fresh-local-selection-v1"
+                                       : "enhanced-hybrid-confidence-scaled-mis-v4")
+                                : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
-                     options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
+                     std::to_string(rypath::frame_temporal_reuse_cap(
+                         options.estimator, options.area_reuse, options.enhanced_history_cap))},
+                    {"rypath.area.spatial_mode_requested",
+                     rypath::frame_spatial_mode_name(options.spatial_mode)},
+                    {"rypath.area.stochastic_forward_atlas",
+                     std::to_string(frame_info.stochastic_forward_atlas)},
+                    {"rypath.area.stochastic_canonical_atlas",
+                     std::to_string(frame_info.stochastic_canonical_atlas)},
                     {"rypath.area.serial", std::to_string(frame_info.area_serial)},
                     {"rypath.hero.requested",
                      options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
@@ -1630,6 +2110,9 @@ int run(const Options &options) {
                     {"rypath.hero.effective", report.hero_wavelengths},
                     {"rypath.area.requested_mutation",
                      rypath::frame_mutation_policy_name(options.mutation_policy)},
+                    {"rypath.area.reuse", rypath::frame_area_reuse_name(options.area_reuse)},
+                    {"rypath.area.spatial_mode",
+                     rypath::frame_spatial_mode_name(options.spatial_mode)},
                     {"rypath.area.requested_stencil",
                      rypath::frame_area_stencil_name(options.area_stencil)},
                     {"rypath.area.mutation_policy",
@@ -1640,6 +2123,23 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_stencil_name(frame_info.area_stencil)
                          : "not-applicable"},
+                    {"rypath.area.paired_atlas_version",
+                     std::to_string(frame_info.paired_atlas.version)},
+                    {"rypath.area.paired_atlas_widths",
+                     paired_atlas_widths(frame_info.paired_atlas)},
+                    {"rypath.area.paired_atlas_sigma",
+                     std::to_string(frame_info.paired_atlas.sigma)},
+                    {"rypath.area.paired_atlas_iterations",
+                     std::to_string(frame_info.paired_atlas.iterations)},
+                    {"rypath.area.paired_atlas_seed",
+                     std::to_string(frame_info.paired_atlas.seed[0]) + "," +
+                         std::to_string(frame_info.paired_atlas.seed[1])},
+                    {"rypath.area.paired_atlas_sha256", frame_info.paired_atlas.sha256},
+                    {"rypath.area.paired_atlas_entry_count",
+                     std::to_string(frame_info.paired_atlas.entry_count)},
+                    {"rypath.area.paired_atlas_asset_bytes",
+                     std::to_string(frame_info.paired_atlas.asset_bytes)},
+                    {"rypath.area.paired_atlas_poses", paired_atlas_poses(frame_info.paired_atlas)},
                     {"rypath.area.stencil_offsets",
                      std::to_string(frame_info.area_stencil_offsets[0]) + "," +
                          std::to_string(frame_info.area_stencil_offsets[1]) + "," +
@@ -1648,12 +2148,56 @@ int run(const Options &options) {
                     {"rypath.area.history_used", frame_info.history_used ? "true" : "false"},
                     {"rypath.area.temporal_cache_requested",
                      options.cache_temporal_evaluations ? "true" : "false"},
+                    {"rypath.area.temporal_cache_enabled",
+                     options.cache_temporal_evaluations ? "true" : "false"},
                     {"rypath.area.temporal_cache_used",
                      frame_info.temporal_evaluation_cache_used ? "true" : "false"},
+                    {"rypath.area.temporal_reprojection_requested",
+                     options.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_enabled",
+                     frame_info.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_used",
+                     frame_info.enhanced_temporal_reprojection_used ? "true" : "false"},
+                    {"rypath.area.geometry_generated",
+                     std::to_string(frame_info.enhanced_geometry_generated)},
+                    {"rypath.area.geometry_reused",
+                     std::to_string(frame_info.enhanced_geometry_reused)},
+                    {"rypath.area.motion_cold",
+                     std::to_string(frame_info.enhanced_motion_routes[0])},
+                    {"rypath.area.motion_ordinary",
+                     std::to_string(frame_info.enhanced_motion_routes[1])},
+                    {"rypath.area.motion_dual",
+                     std::to_string(frame_info.enhanced_motion_routes[2])},
+                    {"rypath.area.motion_fallback",
+                     std::to_string(frame_info.enhanced_motion_routes[3])},
+                    {"rypath.area.pair_compaction_requested",
+                     options.compact_enhanced_pairs ? "true" : "false"},
+                    {"rypath.area.pair_compaction_enabled",
+                     frame_info.enhanced_pair_compaction ? "true" : "false"},
+                    {"rypath.frame.compacted_null_evaluations",
+                     std::to_string(frame_info.compacted_null_evaluations)},
+                    {"rypath.area.suffix_cache_requested",
+                     options.enhanced_suffix_cache ? "true" : "false"},
+                    {"rypath.area.suffix_cache_enabled",
+                     frame_info.enhanced_suffix_cache ? "true" : "false"},
+                    {"rypath.area.suffix_hits_0",
+                     std::to_string(frame_info.enhanced_suffix_hits[0])},
+                    {"rypath.area.suffix_hits_1",
+                     std::to_string(frame_info.enhanced_suffix_hits[1])},
+                    {"rypath.area.suffix_hits_2",
+                     std::to_string(frame_info.enhanced_suffix_hits[2])},
+                    {"rypath.area.suffix_misses",
+                     std::to_string(frame_info.enhanced_suffix_misses)},
                     {"rypath.area.generation", std::to_string(frame_info.history_generation)},
                     {"rypath.area.temporal_count", std::to_string(frame_info.temporal_candidates)},
                     {"rypath.area.spatial_count", std::to_string(frame_info.spatial_candidates)},
                     {"rypath.frame.evaluations", std::to_string(frame_info.completed_evaluations)},
+                    {"rypath.frame.analytic_null_evaluations",
+                     std::to_string(frame_info.analytic_null_evaluations)},
+                    {"rypath.frame.canonical_transport_version",
+                     std::to_string(frame_info.canonical_transport_version)},
+                    {"rypath.frame.fresh_discovery_version",
+                     std::to_string(frame_info.fresh_discovery_version)},
                     {"rypath.frame.cached_evaluations",
                      std::to_string(frame_info.cached_evaluations)},
                     {"rypath.frame.logical_evaluations",
@@ -1717,6 +2261,13 @@ int run(const Options &options) {
                      metalfx_guide_policy_name(options.metalfx_guide_policy)},
                     {"rypath.recon.reset", info.history_reset ? "true" : "false"},
                     {"rypath.recon.defocus", info.defocus_approximation ? "true" : "false"},
+                    {"rypath.frame.evaluations", std::to_string(info.source.completed_evaluations)},
+                    {"rypath.frame.analytic_null_evaluations",
+                     std::to_string(info.source.analytic_null_evaluations)},
+                    {"rypath.frame.cached_evaluations",
+                     std::to_string(info.source.cached_evaluations)},
+                    {"rypath.frame.logical_evaluations",
+                     std::to_string(info.source.logical_evaluations)},
                     {"rypath.frame.sample", std::to_string(info.source.sample_index)},
                     {"rypath.frame.epoch", std::to_string(info.source.epoch)},
                     {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
@@ -1728,16 +2279,22 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_path_domain_name(options.area_path_domain)
                          : "not-applicable"},
+                    {"rypath.area.canonical_transport_version",
+                     std::to_string(
+                         rypath::frame_area_canonical_version(options.area_path_domain))},
+                    {"rypath.area.fresh_discovery_version",
+                     std::to_string(
+                         rypath::frame_area_discovery_version(options.area_path_domain))},
                     {"rypath.area.contribution_replay",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? rypath::frame_contribution_replay_name(info.source.contribution_replay)
                          : "not-applicable"},
                     {"rypath.area.contribution_depth",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(report.max_depth)
                          : "not-applicable"},
                     {"rypath.area.contribution_slot_count",
-                     options.area_path_domain == rypath::FrameAreaPathDomain::contribution
+                     rypath::frame_area_contribution_family(options.area_path_domain)
                          ? std::to_string(2u * report.max_depth + 1u)
                          : "0"},
                     {"rypath.area.contract",
@@ -1747,19 +2304,33 @@ int run(const Options &options) {
                     {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
                                                ? area_output_name(options.area_output)
                                                : "not-applicable"},
-                    {"rypath.area.target", options.estimator == rypath::FrameEstimator::area_replay
-                                               ? "quarter-l1-v1"
-                                               : "none"},
+                    {"rypath.area.target",
+                     options.estimator == rypath::FrameEstimator::area_replay
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? "quarter-l1-hybrid-scaled-zero-v4"
+                                : "quarter-l1-v1")
+                         : "none"},
                     {"rypath.area.source_mis",
                      options.estimator == rypath::FrameEstimator::area_replay
-                         ? "source-target-mis-v1"
+                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                                ? (options.area_reuse == rypath::FrameAreaReuse::fresh
+                                       ? "fresh-local-selection-v1"
+                                       : "enhanced-hybrid-confidence-scaled-mis-v4")
+                                : "source-target-mis-v1")
                          : "none"},
                     {"rypath.area.temporal_reuse",
-                     options.estimator == rypath::FrameEstimator::area_replay ? "20" : "0"},
+                     std::to_string(rypath::frame_temporal_reuse_cap(
+                         options.estimator, options.area_reuse, options.enhanced_history_cap))},
                     {"rypath.area.mutations",
                      std::to_string(options.estimator == rypath::FrameEstimator::area_replay
                                         ? options.mutation_steps
                                         : 0)},
+                    {"rypath.area.spatial_mode_requested",
+                     rypath::frame_spatial_mode_name(options.spatial_mode)},
+                    {"rypath.area.stochastic_forward_atlas",
+                     std::to_string(info.source.stochastic_forward_atlas)},
+                    {"rypath.area.stochastic_canonical_atlas",
+                     std::to_string(info.source.stochastic_canonical_atlas)},
                     {"rypath.area.serial", std::to_string(info.source.area_serial)},
                     {"rypath.hero.requested",
                      options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
@@ -1768,6 +2339,9 @@ int run(const Options &options) {
                     {"rypath.hero.effective", report.hero_wavelengths},
                     {"rypath.area.requested_mutation",
                      rypath::frame_mutation_policy_name(options.mutation_policy)},
+                    {"rypath.area.reuse", rypath::frame_area_reuse_name(options.area_reuse)},
+                    {"rypath.area.spatial_mode",
+                     rypath::frame_spatial_mode_name(options.spatial_mode)},
                     {"rypath.area.requested_stencil",
                      rypath::frame_area_stencil_name(options.area_stencil)},
                     {"rypath.area.mutation_policy",
@@ -1778,6 +2352,24 @@ int run(const Options &options) {
                      options.estimator == rypath::FrameEstimator::area_replay
                          ? rypath::frame_area_stencil_name(info.source.area_stencil)
                          : "not-applicable"},
+                    {"rypath.area.paired_atlas_version",
+                     std::to_string(info.source.paired_atlas.version)},
+                    {"rypath.area.paired_atlas_widths",
+                     paired_atlas_widths(info.source.paired_atlas)},
+                    {"rypath.area.paired_atlas_sigma",
+                     std::to_string(info.source.paired_atlas.sigma)},
+                    {"rypath.area.paired_atlas_iterations",
+                     std::to_string(info.source.paired_atlas.iterations)},
+                    {"rypath.area.paired_atlas_seed",
+                     std::to_string(info.source.paired_atlas.seed[0]) + "," +
+                         std::to_string(info.source.paired_atlas.seed[1])},
+                    {"rypath.area.paired_atlas_sha256", info.source.paired_atlas.sha256},
+                    {"rypath.area.paired_atlas_entry_count",
+                     std::to_string(info.source.paired_atlas.entry_count)},
+                    {"rypath.area.paired_atlas_asset_bytes",
+                     std::to_string(info.source.paired_atlas.asset_bytes)},
+                    {"rypath.area.paired_atlas_poses",
+                     paired_atlas_poses(info.source.paired_atlas)},
                     {"rypath.area.stencil_offsets",
                      std::to_string(info.source.area_stencil_offsets[0]) + "," +
                          std::to_string(info.source.area_stencil_offsets[1]) + "," +
@@ -1795,6 +2387,42 @@ int run(const Options &options) {
                     {"rypath.frame.intersections", profile_name(options.intersection_profile)},
                     {"rypath.frame.as_build",
                      std::string(rypath::acceleration_build_policy_name(options.as_build))},
+                    {"rypath.area.temporal_reprojection_requested",
+                     options.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_enabled",
+                     info.source.enhanced_temporal_reprojection ? "dual" : "off"},
+                    {"rypath.area.temporal_reprojection_used",
+                     info.source.enhanced_temporal_reprojection_used ? "true" : "false"},
+                    {"rypath.area.geometry_generated",
+                     std::to_string(info.source.enhanced_geometry_generated)},
+                    {"rypath.area.geometry_reused",
+                     std::to_string(info.source.enhanced_geometry_reused)},
+                    {"rypath.area.motion_cold",
+                     std::to_string(info.source.enhanced_motion_routes[0])},
+                    {"rypath.area.motion_ordinary",
+                     std::to_string(info.source.enhanced_motion_routes[1])},
+                    {"rypath.area.motion_dual",
+                     std::to_string(info.source.enhanced_motion_routes[2])},
+                    {"rypath.area.motion_fallback",
+                     std::to_string(info.source.enhanced_motion_routes[3])},
+                    {"rypath.area.pair_compaction_requested",
+                     options.compact_enhanced_pairs ? "true" : "false"},
+                    {"rypath.area.pair_compaction_enabled",
+                     info.source.enhanced_pair_compaction ? "true" : "false"},
+                    {"rypath.frame.compacted_null_evaluations",
+                     std::to_string(info.source.compacted_null_evaluations)},
+                    {"rypath.area.suffix_cache_requested",
+                     options.enhanced_suffix_cache ? "true" : "false"},
+                    {"rypath.area.suffix_cache_enabled",
+                     info.source.enhanced_suffix_cache ? "true" : "false"},
+                    {"rypath.area.suffix_hits_0",
+                     std::to_string(info.source.enhanced_suffix_hits[0])},
+                    {"rypath.area.suffix_hits_1",
+                     std::to_string(info.source.enhanced_suffix_hits[1])},
+                    {"rypath.area.suffix_hits_2",
+                     std::to_string(info.source.enhanced_suffix_hits[2])},
+                    {"rypath.area.suffix_misses",
+                     std::to_string(info.source.enhanced_suffix_misses)},
                     {"rypath.recon.color_negative", std::to_string(info.counters.color_negative)},
                     {"rypath.recon.color_high", std::to_string(info.counters.color_high)}};
                 reconstructed_capture.linear_rgb(image, metadata);

@@ -213,7 +213,7 @@ int pbrt(std::string_view scenario, const PbrtPaths &paths) {
         std::cout
             << "; hero PT fixed packet dimension blocks; keyed material-local Philox streams; "
                "independent coating hash/PCG domains\n"
-               "Hero sampling: four uniform visible wavelengths; cumulative spectral and "
+               "Hero sampling: four visible wavelengths; cumulative spectral and "
                "direct-light balance MIS";
     else if (mode == "packet")
         std::cout << "; packet fixed dimension allocation [0,920); keyed material-local Philox "

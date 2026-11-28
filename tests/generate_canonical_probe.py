@@ -27,8 +27,12 @@ PROBE_KERNELS = (
     'rypath_probe_canonical_finalizer',
 )
 FULL_KERNELS = ('strategy_context21_probe', 'rypath_probe_canonical_full_readback')
-TAIL = (b'#include "wavefront.metal"\n\n#include "area_reuse.metal"\n'
-        b'#include "reconstruction_guides.metal"\n\n#include "camera_medium.metal"\n')
+TAIL = (b'// Runtime kernels depend on definitions from the preceding includes.\n'
+        b'// clang-format off\n'
+        b'#include "wavefront.metal"\n#include "enhanced_duplication.metal"\n'
+        b'#include "area_reuse.metal"\n#include "reconstruction_guides.metal"\n'
+        b'#include "enhanced_motion.metal"\n#include "camera_medium.metal"\n'
+        b'// clang-format on\n')
 FULL_MARKER = b'// Original full retention reproducer: all executed body statements retained.\n'
 
 
@@ -136,7 +140,7 @@ def render_isolation_edits(render, replacement):
     edits = [('packet transport include', at, at + len(TRANSPORT), replacement)]
     edits += [omission(render, name, begin, end) for name, begin, end in render_rows]
     for include in TAIL.splitlines(keepends=True):
-        if not include.strip():
+        if not include.startswith(b'#include '):
             continue
         if render.count(include) != 1:
             raise ValueError('Missing or duplicate entrypoint include')

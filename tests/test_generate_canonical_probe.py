@@ -32,7 +32,7 @@ class CanonicalProbeGenerationTests(unittest.TestCase):
             self.assertEqual(derived, original)
         self.assertEqual(generator.kernels(render), [])
         self.assertEqual(tuple(row[0] for row in generator.kernels(probe)), generator.PROBE_KERNELS)
-        self.assertEqual(len(render_edits), 15)
+        self.assertEqual(len(render_edits), 17)
         self.assertEqual(len(transport_edits), 1)
         self.assertEqual(len(probe_edits), 2)
         # All five executed kernel bodies remain exact production source slices.
@@ -48,6 +48,38 @@ class CanonicalProbeGenerationTests(unittest.TestCase):
         # original final include, with a reversible line-preserving marker.
         self.assertTrue(transport.startswith(self.transport[:self.transport.index(generator.PT_STEP)]))
         self.assertNotIn(b'namespace strategy_context21', probe)
+
+    def test_reviewed_entrypoint_tail_is_omitted_in_both_probe_modes(self):
+        current_probe = (ROOT / 'tests/hero_current_probe.metal').read_bytes()
+        step = (ROOT / 'shaders/packet_pt_step.h').read_bytes()
+        canonical = generator.transform(self.render, self.probe, self.transport)[0]
+        current = generator.transform_current_details(
+            self.render, current_probe, self.transport, step)[0]
+        for mode, derived in (('canonical', canonical), ('current', current)):
+            for name in ('wavefront', 'enhanced_duplication', 'area_reuse',
+                         'reconstruction_guides', 'enhanced_motion', 'camera_medium'):
+                include = f'#include "{name}.metal"'.encode()
+                with self.subTest(mode=mode, include=include):
+                    self.assertNotIn(b'\n' + include + b'\n', derived)
+                    self.assertEqual(derived.count(generator.PREFIX + include + b'\n'), 1)
+
+    def test_entrypoint_tail_drift_fails_in_both_probe_modes(self):
+        current_probe = (ROOT / 'tests/hero_current_probe.metal').read_bytes()
+        step = (ROOT / 'shaders/packet_pt_step.h').read_bytes()
+        variants = [self.render + b'#include "unknown_entrypoint.metal"\n',
+                    self.render.replace(b'#include "enhanced_motion.metal"\n',
+                                        b'#include "unknown_entrypoint.metal"\n')]
+        for name in ('wavefront', 'enhanced_duplication', 'area_reuse',
+                     'reconstruction_guides', 'enhanced_motion', 'camera_medium'):
+            include = f'#include "{name}.metal"\n'.encode()
+            variants.extend((self.render.replace(include, b''),
+                             self.render.replace(include, include * 2),
+                             include + self.render))
+        for index, render in enumerate(variants):
+            with self.subTest(variant=index, mode='canonical'), self.assertRaises(ValueError):
+                generator.transform(render, self.probe, self.transport)
+            with self.subTest(variant=index, mode='current'), self.assertRaises(ValueError):
+                generator.transform_current_details(render, current_probe, self.transport, step)
 
     def test_balanced_scanner_ignores_literals_and_comments(self):
         source = b'''// kernel void fake() {\n
@@ -136,6 +168,9 @@ kernel void real() { const char *s = "} /* kernel \\\"";
                              record['retained_helper_files'])
             self.assertNotIn(str((ROOT / 'shaders/hero_current_bsdf.h').resolve()),
                              record['retained_helper_files'])
+            for name in ('enhanced_duplication.metal', 'enhanced_motion.metal'):
+                self.assertNotIn(str((ROOT / 'shaders' / name).resolve()),
+                                 record['retained_helper_files'])
             self.assertIn('canonical_packet_transport.h', record['generated_files'])
             self.assertEqual(len(record['edits']['transport']), 1)
             self.assertFalse(record['numeric_or_capability_policy_changes'])
@@ -232,6 +267,8 @@ class CurrentProbeGenerationTests(unittest.TestCase):
             self.assertIn('hero_pt_state.h', closure)
             self.assertNotIn('packet_pt_step.h', closure)
             self.assertNotIn('packet_pt_event_body.inc', closure)
+            self.assertNotIn('enhanced_duplication.metal', closure)
+            self.assertNotIn('enhanced_motion.metal', closure)
             self.assertFalse(record['numeric_or_capability_policy_changes'])
         self.assertEqual(tuple(p.read_bytes() for p in self.paths), self.sources)
 

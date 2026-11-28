@@ -45,7 +45,10 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/camera_medium.metal"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/camera_medium_wire.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/shaders/reconstruction_guides.metal"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/reconstruction_guide_wire.h")
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/reconstruction_guide_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_motion.metal"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_motion_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_motion_shared.h")
     endif()
     if(shader STREQUAL "render" OR shader STREQUAL "medium_probe")
         list(APPEND shader_options -fno-fast-math)
@@ -98,6 +101,10 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
         list(APPEND shader_options -Os)
     endif()
     if(shader STREQUAL "render")
+        file(GLOB rypath_enhanced_headers CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_*.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_*.h")
+        list(APPEND shader_dependencies ${rypath_enhanced_headers})
         list(APPEND shader_dependencies
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_sampling.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/light_emission_sampling.h"
@@ -106,6 +113,12 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/scalar_transport.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/wavefront.metal"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/contribution_sink.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_sink.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_path_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_confidence_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_light.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_decision_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_path_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_decision_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_wire.h"
@@ -125,8 +138,14 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_frozen_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_current_bsdf.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hero_current_vertex.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/diffuse_current.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/area_stencil_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/stochastic_spatial_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/area_pair_atlas_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_duplication_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/enhanced_duplication_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/enhanced_duplication.metal"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/light_geometry_sampling_shared.h")
         list(APPEND shader_dependencies "${CMAKE_CURRENT_SOURCE_DIR}/src/checkpoint_contract.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/offset_rounding_shared.h"
@@ -489,6 +508,72 @@ add_custom_command(OUTPUT "${rypath_contribution_prefix_library}"
         "${CMAKE_SOURCE_DIR}/tests/contribution_prefix_probe.metal"
     VERBATIM)
 add_custom_target(rypath_contribution_prefix_shader DEPENDS "${rypath_contribution_prefix_library}")
+
+# Owned terminal-light record/measure arithmetic; no ray-tracing device required.
+set(rypath_enhanced_light_library "${rypath_runtime_directory}/rypath-enhanced-light-probe.metallib")
+set(rypath_enhanced_light_air "${rypath_runtime_directory}/CMakeFiles/rypath-enhanced-light-probe.air")
+add_custom_command(OUTPUT "${rypath_enhanced_light_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/enhanced_light_probe.metal"
+        -o "${rypath_enhanced_light_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_enhanced_light_air}"
+        -o "${rypath_enhanced_light_library}"
+    DEPENDS ${rypath_hero_current_headers}
+        "${CMAKE_SOURCE_DIR}/tests/enhanced_light_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_enhanced_light_shader DEPENDS "${rypath_enhanced_light_library}")
+
+# Sequential suffix arithmetic; no ray-tracing device required.
+set(rypath_enhanced_suffix_library "${rypath_runtime_directory}/rypath-enhanced-suffix-probe.metallib")
+set(rypath_enhanced_suffix_air "${rypath_runtime_directory}/CMakeFiles/rypath-enhanced-suffix-probe.air")
+add_custom_command(OUTPUT "${rypath_enhanced_suffix_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/enhanced_suffix_probe.metal"
+        -o "${rypath_enhanced_suffix_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_enhanced_suffix_air}"
+        -o "${rypath_enhanced_suffix_library}"
+    DEPENDS ${rypath_hero_current_headers}
+        "${CMAKE_SOURCE_DIR}/tests/enhanced_suffix_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_enhanced_suffix_shader DEPENDS "${rypath_enhanced_suffix_library}")
+
+# Hybrid chart BSDF/geometry arithmetic; no ray-tracing device required.
+set(rypath_enhanced_hybrid_geometry_library "${rypath_runtime_directory}/rypath-enhanced-hybrid-geometry-probe.metallib")
+set(rypath_enhanced_hybrid_geometry_air "${rypath_runtime_directory}/CMakeFiles/rypath-enhanced-hybrid-geometry-probe.air")
+add_custom_command(OUTPUT "${rypath_enhanced_hybrid_geometry_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/enhanced_hybrid_geometry_probe.metal"
+        -o "${rypath_enhanced_hybrid_geometry_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_enhanced_hybrid_geometry_air}"
+        -o "${rypath_enhanced_hybrid_geometry_library}"
+    DEPENDS ${rypath_hero_current_headers}
+        "${CMAKE_SOURCE_DIR}/tests/enhanced_hybrid_geometry_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_enhanced_hybrid_geometry_shader DEPENDS "${rypath_enhanced_hybrid_geometry_library}")
+
+# Actual native-AS fixed-chart source/import controls and removed-coordinate poisoning.
+set(rypath_enhanced_hybrid_runtime_library "${rypath_runtime_directory}/rypath-enhanced-hybrid-runtime-probe.metallib")
+set(rypath_enhanced_hybrid_runtime_air "${rypath_runtime_directory}/CMakeFiles/rypath-enhanced-hybrid-runtime-probe.air")
+add_custom_command(OUTPUT "${rypath_enhanced_hybrid_runtime_library}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${rypath_runtime_directory}/CMakeFiles"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metal -std=metal3.1 "${rypath_metal_min_version}"
+        "-fmodules-cache-path=${rypath_metal_cache}" -fno-fast-math -O1
+        -c "${CMAKE_SOURCE_DIR}/tests/enhanced_hybrid_runtime_probe.metal"
+        -o "${rypath_enhanced_hybrid_runtime_air}"
+    COMMAND "${RYPATH_XCRUN}" --sdk macosx metallib "${rypath_enhanced_hybrid_runtime_air}"
+        "${rypath_runtime_directory}/CMakeFiles/rypath-geometry.air"
+        -o "${rypath_enhanced_hybrid_runtime_library}"
+    DEPENDS ${rypath_hero_current_headers}
+        "${rypath_runtime_directory}/CMakeFiles/rypath-geometry.air"
+        "${CMAKE_SOURCE_DIR}/tests/enhanced_hybrid_runtime_probe.metal"
+    VERBATIM)
+add_custom_target(rypath_enhanced_hybrid_runtime_shader DEPENDS "${rypath_enhanced_hybrid_runtime_library}")
 
 # Full-render-TU differential: genuine Vertex and compact current/light endpoints.
 set(rypath_hero_light_endpoint_library "${rypath_runtime_directory}/rypath-hero-light-endpoint.metallib")

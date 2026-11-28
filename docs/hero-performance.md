@@ -71,6 +71,22 @@ Timestamp failures make timing unavailable without inventing zero-duration work.
 Failed frames invalidate the diagnostic result. Existing per-dispatch timestamps
 retain their separate scope and encoder-splitting overhead.
 
+Packed one-event packet/hero execution also reports exact
+`packet_step_invocations` per pass. This counts calls, including initialized-complete
+paths and transparent-boundary crossings, rather than intersections or bounces.
+The refill control accumulates consumed queue slots in a checked two-word counter;
+noncompacted analytic null completions are subtracted because they bypass the
+event. Compacted nulls never enter that queue. Exact temporal-cache hits execute
+no event, and the final-publication pass reports zero calls. Scalar, separated
+and multiple-event execution report unsupported with JSON `null`, never a
+fabricated zero. Counter specialization is limited to reset/refill programs;
+the shade program has no added per-path atomic operation. Profiling still has
+structural overhead, so these counts do not qualify uninstrumented FPS.
+
+The [Enhanced regression investigation](enhanced-performance.md) uses these
+counts to test whether more packet-step calls explain the slowdown. A call can
+contain multiple ray queries and other work; the count does not measure them.
+
 ## Ordered follow-up
 
 1. Bind reproducible baseline/candidate runs and expose replay costs.

@@ -3,6 +3,7 @@
 // Included after render.metal's scalar and packet definitions, never compiled separately.
 #include "../src/wavefront_wire.h"
 #include "contribution_sink.h"
+#include "enhanced_sink.h"
 #include "frame_sensor.h"
 #include "packet_event_gate.h"
 namespace wf = rypath::wavefront_wire;
@@ -11,6 +12,17 @@ namespace wf = rypath::wavefront_wire;
 constant uint rypath_wavefront_packet_layout [[function_constant(wf::packet_layout_constant)]];
 constant uint rypath_wavefront_packet_events [[function_constant(wf::packet_events_constant)]];
 constant bool rypath_wavefront_contribution [[function_constant(wf::contribution_mode_constant)]];
+constant bool rypath_wavefront_enhanced [[function_constant(wf::enhanced_mode_constant)]];
+constant bool rypath_wavefront_queued_slots [[function_constant(wf::queued_slots_constant)]];
+inline bool wavefront_queued_slots() {
+    return is_function_constant_defined(rypath_wavefront_queued_slots)
+               ? rypath_wavefront_queued_slots
+               : false;
+}
+inline bool wavefront_enhanced() {
+    return is_function_constant_defined(rypath_wavefront_enhanced) ? rypath_wavefront_enhanced
+                                                                   : false;
+}
 inline bool wavefront_contribution() {
     return is_function_constant_defined(rypath_wavefront_contribution)
                ? rypath_wavefront_contribution
@@ -49,6 +61,12 @@ struct WavefrontArguments {
     device rypath::contribution_wire::Evaluation *contribution_evaluation
         [[id(wf::contribution_evaluation_id)]];
     device uchar *contribution_state [[id(wf::contribution_state_id)]];
+    device rypath::enhanced_wire::Record *enhanced_records [[id(wf::enhanced_records_id)]];
+    device rypath::enhanced_wire::Evaluation *enhanced_evaluation
+        [[id(wf::enhanced_evaluation_id)]];
+    device rypath_enhanced_suffix_tape::Entry *enhanced_suffix [[id(wf::enhanced_suffix_id)]];
+    device uint *work_list [[id(wf::work_list_id)]];
+    device const rypath::enhanced_motion_wire::Donor *donors [[id(wf::donors_id)]];
 };
 inline void wavefront_fail(constant WavefrontArguments &a, uint failure) {
     atomic_fetch_or_explicit(&a.counters->failure, failure, memory_order_relaxed);
@@ -67,8 +85,11 @@ inline bool wavefront_config_valid(constant WavefrontArguments &a) {
            c.packet_layout == wavefront_packet_layout() &&
            c.packet_events == wavefront_packet_events() &&
            c.contribution_replay <= rypath::contribution_wire::prefix_replay &&
-           c.reserved2[0] == 0 && c.reserved2[1] == 0 &&
-           c.contribution_mode == uint(wavefront_contribution()) &&
+           c.compact_enhanced_pairs <= 1 && c.mapped_evaluation <= 1 &&
+           (!c.mapped_evaluation || wavefront_enhanced()) &&
+           (!c.compact_enhanced_pairs || wavefront_enhanced()) &&
+           (!wavefront_enhanced() || wavefront_contribution()) &&
+           c.contribution_mode == (wavefront_enhanced() ? 2u : uint(wavefront_contribution())) &&
            (wavefront_contribution()
                 ? (c.packet == 2 && c.replay_enabled == 1 && c.packet_layout == 0 &&
                    c.packet_events == 1 && c.contribution_depth <= 65 &&
@@ -76,6 +97,28 @@ inline bool wavefront_config_valid(constant WavefrontArguments &a) {
                 : (c.contribution_replay == rypath::contribution_wire::full_replay &&
                    c.contribution_depth == 0 && as_type<uint>(c.contribution_target_scale) == 0 &&
                    c.contribution_serial_low == 0 && c.contribution_serial_high == 0));
+}
+// Storage owner d and actual camera/evaluator pixel s differ ONLY for a
+// frozen temporal reverse map. All publication and scratch ownership stays d.
+inline bool wavefront_evaluation_pixel(constant WavefrontArguments &a, uint owner,
+                                       thread uint &evaluation_pixel) {
+    if (owner >= a.config->pixel_count) {
+        wavefront_fail(a, wf::invalid_sample);
+        return false;
+    }
+    evaluation_pixel = owner;
+    if (!a.config->mapped_evaluation)
+        return true; // Disabled typed sentinel is never read.
+    const auto donor = a.donors[owner];
+    if (!wavefront_enhanced() ||
+        !rypath::enhanced_motion_wire::valid_donor(donor, a.config->pixel_count,
+                                                   a.config->contribution_serial_low,
+                                                   a.config->contribution_serial_high)) {
+        wavefront_fail(a, wf::invalid_sample);
+        return false;
+    }
+    evaluation_pixel = donor.source_pixel;
+    return true;
 }
 inline void wavefront_dispatch(device wf::DispatchArguments *args, uint count, uint group) {
     // Division plus remainder avoids the count+group-1 overflow.
@@ -125,11 +168,10 @@ inline rypath_bdpt::PacketPTHot wavefront_packet_hot(const thread State &state) 
 inline rypath_bdpt::PacketPTState wavefront_load_packet(constant WavefrontArguments &a, uint slot) {
     return wavefront_packet(a, slot);
 }
-template <bool Separated>
-inline rypath_bdpt::HeroWalkState wavefront_load_hero_layout(constant WavefrontArguments &a,
-                                                             uint slot) {
+template <bool Separated, typename State = rypath_bdpt::HeroWalkState>
+inline State wavefront_load_hero_layout(constant WavefrontArguments &a, uint slot) {
     const auto hot = Separated ? a.packet_hot[slot] : wavefront_hero_persistent(a, slot).hot;
-    rypath_bdpt::HeroWalkState state;
+    State state;
     state.latest =
         Separated ? wavefront_hero_cold(a, slot) : wavefront_hero_persistent(a, slot).latest;
     state.preceding_position = hot.preceding_position;
@@ -165,8 +207,9 @@ inline rypath_bdpt::HeroWalkState wavefront_load_hero(constant WavefrontArgument
     return wavefront_packet_layout() == 0 ? wavefront_load_hero_packed(a, slot)
                                           : wavefront_load_hero_separated(a, slot);
 }
+template <typename State>
 inline void wavefront_store_hero_packed(constant WavefrontArguments &a, uint slot,
-                                        const thread rypath_bdpt::HeroWalkState &state) {
+                                        const thread State &state) {
     wavefront_hero_persistent(a, slot) = {state.latest, wavefront_packet_hot(state)};
 }
 inline void wavefront_store_packet_separated(constant WavefrontArguments &a, uint slot,
@@ -245,17 +288,124 @@ inline void wavefront_append(constant WavefrontArguments &a, device atomic_uint 
     queue[position] = slot;
 }
 inline void wavefront_publish(constant WavefrontArguments &a, uint pixel,
-                              const thread float3 &value) {
+                              const thread float3 &value, bool admission_null = false) {
     if (pixel >= a.config->pixel_count || !all(isfinite(value))) {
         wavefront_fail(a, wf::invalid_sample);
         return;
     }
-    if (atomic_exchange_explicit(a.done + pixel, 1u, memory_order_relaxed) != 0) {
+    // Compact real owners claim 2 before initialization; admission nulls and
+    // the legacy dense path publish directly from 0. Final receipts remain 1.
+    const uint expected = a.config->compact_enhanced_pairs && !admission_null ? 2u : 0u;
+    if (atomic_exchange_explicit(a.done + pixel, 1u, memory_order_relaxed) != expected) {
         wavefront_fail(a, wf::duplicate_sample);
         return;
     }
     a.raw_xyz[pixel] = {value.x, value.y, value.z};
     atomic_fetch_add_explicit(&a.counters->completed, 1u, memory_order_relaxed);
+}
+// The same selected-null validation/publication law serves a queued slot and
+// admission's local begin state. Admission never reads the ray/BSDF/hero pools.
+inline bool wavefront_publish_null(constant WavefrontArguments &a,
+                                   const thread rypath_enhanced_runtime::State &pending,
+                                   bool admission_null) {
+    if (pending.requested_slot == rypath::contribution_wire::enhanced_null_slot) {
+        const uint pixel = pending.pixel;
+        if (pending.failed || pixel >= a.config->pixel_count || pending.next_slot != 0 ||
+            pending.rr_cut != 0 || pending.suffix_count || pending.suffix_coverage ||
+            !rypath_enhanced_path::valid_state(pending.selection) ||
+            !rypath_enhanced_runtime::unstarted_hybrid(pending.hybrid)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return true;
+        }
+        uint evaluation_pixel;
+        if (!wavefront_evaluation_pixel(a, pixel, evaluation_pixel))
+            return true;
+        const auto request = a.contribution_evaluation[pixel];
+        if (request.ready != 0 || request.requested_slot != pending.requested_slot ||
+            request.selected_slot != rypath_enhanced_path::fresh_slot ||
+            as_type<uint>(request.normalizer) != 0) {
+            wavefront_fail(a, wf::invalid_sample);
+            return true;
+        }
+        auto owned = a.enhanced_evaluation[pixel];
+        if (!rypath_enhanced_runtime::pending_owned(owned, a.config->pixel_count, pixel, false)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return true;
+        }
+        owned.target_h_fraction = .5f;
+        owned.target_h_exponent = 1;
+        owned.ready = 1;
+        if (owned.source.bank != owned.result.bank || owned.source.pixel != owned.result.pixel)
+            a.enhanced_records[ulong(owned.result.bank) * a.config->pixel_count +
+                               owned.result.pixel] = rypath::enhanced_wire::empty_record();
+        a.enhanced_evaluation[pixel] = owned;
+        a.contribution_evaluation[pixel] = {pending.requested_slot, pending.requested_slot, 0.f, 1};
+        wavefront_publish(a, pixel, float3(0), admission_null);
+        if (wavefront_failed(a))
+            return true;
+        atomic_fetch_add_explicit(&a.counters->null_completed, 1u, memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+inline bool wavefront_complete_null(constant WavefrontArguments &a, uint slot) {
+    const auto pending =
+        reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
+    if (!wavefront_publish_null(a, pending, false))
+        return false;
+    if (!wavefront_failed(a))
+        wavefront_append(a, &a.counters->free, a.free_slots, slot);
+    return true;
+}
+inline void
+wavefront_clear_owned_suffix(constant WavefrontArguments &a, uint pixel,
+                             const thread rypath::contribution_wire::Evaluation &request,
+                             const thread rypath::enhanced_wire::Evaluation &owned) {
+    if (rypath_enhanced_runtime::suffix_capture_owned(owned, a.config->pixel_count, pixel,
+                                                      request.requested_slot ==
+                                                          rypath_enhanced_path::fresh_slot)) {
+        const ulong owner = ulong(owned.result.bank) * a.config->pixel_count + owned.result.pixel;
+        a.enhanced_suffix[owner] = rypath_enhanced_suffix_tape::Entry{};
+    }
+}
+// A claimed owner must not be present twice in a damaged/injected work list.
+// Claim before replay, sidecar, record or suffix initialization can write it.
+inline bool wavefront_work_pixel(constant WavefrontArguments &a, uint position,
+                                 thread uint &pixel) {
+    const uint work = atomic_load_explicit(&a.counters->work_count, memory_order_relaxed);
+    if (position >= work || work > a.config->pixel_count) {
+        wavefront_fail(a, wf::invalid_counters);
+        return false;
+    }
+    pixel = a.work_list[position];
+    if (pixel >= a.config->pixel_count) {
+        wavefront_fail(a, wf::invalid_sample);
+        return false;
+    }
+    uint evaluation_pixel;
+    if (!wavefront_evaluation_pixel(a, pixel, evaluation_pixel))
+        return false;
+    uint expected = 0;
+    if (!atomic_compare_exchange_weak_explicit(a.done + pixel, &expected, 2u, memory_order_relaxed,
+                                               memory_order_relaxed)) {
+        // Weak CAS may fail spuriously: retry only while the pixel is unclaimed.
+        while (expected == 0)
+            if (atomic_compare_exchange_weak_explicit(a.done + pixel, &expected, 2u,
+                                                      memory_order_relaxed, memory_order_relaxed))
+                return true;
+        wavefront_fail(a, wf::duplicate_sample);
+        return false;
+    }
+    return true;
+}
+inline bool wavefront_work_counters(constant WavefrontArguments &a, uint next, uint completed,
+                                    uint null_completed) {
+    const uint work = atomic_load_explicit(&a.counters->work_count, memory_order_relaxed);
+    if (!a.config->compact_enhanced_pairs)
+        return work == 0;
+    return null_completed <= a.config->pixel_count &&
+           work == a.config->pixel_count - null_completed && next >= null_completed &&
+           completed >= null_completed && completed <= next && next - null_completed <= work;
 }
 inline bool wavefront_parameters(constant WavefrontArguments &a, constant wire::Parameters &p) {
     if (!wavefront_config_valid(a) || p.pixel_begin != 0 ||
@@ -273,6 +423,9 @@ inline bool wavefront_parameters(constant WavefrontArguments &a, constant wire::
 inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant wire::Parameters &p,
                                        const device sobol::Tables &tables,
                                        const device float *environment, uint slot, uint pixel) {
+    uint evaluation_pixel;
+    if (!wavefront_evaluation_pixel(a, pixel, evaluation_pixel))
+        return;
     rypath_replay::ReplayState replay{};
     if (a.config->replay_enabled) {
         replay = a.replay_input[pixel];
@@ -281,7 +434,22 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
             return;
         }
     }
-    if (wavefront_contribution()) {
+    if (wavefront_enhanced()) {
+        const auto request = a.contribution_evaluation[pixel];
+        const auto owned = a.enhanced_evaluation[pixel];
+        const auto state = rypath_enhanced_runtime::begin(request, *a.config, pixel, owned);
+        reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot] =
+            state;
+        if (state.failed ||
+            (a.config->compact_enhanced_pairs &&
+             request.requested_slot == rypath::contribution_wire::enhanced_null_slot)) {
+            wavefront_fail(a, wf::invalid_sample);
+            return;
+        }
+        wavefront_clear_owned_suffix(a, pixel, request, owned);
+        if (request.requested_slot == rypath::contribution_wire::enhanced_null_slot)
+            return; // Queued owner, completed by shade without reading ray/BSDF storage.
+    } else if (wavefront_contribution()) {
         const auto request = a.contribution_evaluation[pixel];
         const auto state = rypath_contribution_runtime::begin(request, *a.config);
         reinterpret_cast<device rypath_contribution_runtime::State *>(a.contribution_state)[slot] =
@@ -294,7 +462,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
     if (a.config->packet) {
         ulong index = 0;
         wire::Sample sample = a.config->replay_enabled
-                                  ? begin_replay_sample(p, tables, pixel, replay)
+                                  ? begin_replay_sample(p, tables, evaluation_pixel, replay)
                                   : begin_sample(p, tables, pixel, index);
         if (!a.config->replay_enabled) {
             const auto lens = draw_words(p, tables, sample, index, 1);
@@ -328,7 +496,7 @@ inline void wavefront_initialize_owner(constant WavefrontArguments &a, constant 
 }
 // Version the entry when its output grows: an older host must fail function
 // lookup before binding its shorter contract buffer to this kernel.
-kernel void rypath_wavefront_contract_v14(device wf::Contract *out [[buffer(0)]]) {
+kernel void rypath_wavefront_contract_v23(device wf::Contract *out [[buffer(0)]]) {
     *out = {wf::contract,
             sizeof(rypath_scalar::ScalarState),
             alignof(rypath_scalar::ScalarState),
@@ -350,7 +518,13 @@ kernel void rypath_wavefront_contract_v14(device wf::Contract *out [[buffer(0)]]
             sizeof(rypath_bdpt::HeroPrevious),
             alignof(rypath_bdpt::HeroPrevious),
             sizeof(rypath_contribution_runtime::State),
-            alignof(rypath_contribution_runtime::State)};
+            alignof(rypath_contribution_runtime::State),
+            sizeof(rypath_enhanced_runtime::State),
+            alignof(rypath_enhanced_runtime::State),
+            sizeof(rypath::enhanced_wire::Record),
+            sizeof(rypath::enhanced_wire::Evaluation),
+            sizeof(rypath_enhanced_suffix_tape::Entry),
+            sizeof(rypath::enhanced_motion_wire::Donor)};
 }
 kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
                                    uint lane [[thread_position_in_grid]]) {
@@ -359,18 +533,81 @@ kernel void rypath_wavefront_reset(constant WavefrontArguments &a [[buffer(1)]],
     if (lane != 0)
         return;
     const bool valid = wavefront_config_valid(a);
-    const uint count = valid ? min(a.config->pixel_count, a.config->capacity) : 0u;
+    const uint count = valid && !a.config->compact_enhanced_pairs
+                           ? min(a.config->pixel_count, a.config->capacity)
+                           : 0u;
     atomic_store_explicit(&a.counters->current, count, memory_order_relaxed);
     atomic_store_explicit(&a.counters->out, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->free, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->next_pixel, count, memory_order_relaxed);
     atomic_store_explicit(&a.counters->completed, 0u, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->null_completed, 0u, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->work_count, 0u, memory_order_relaxed);
+    if (wavefront_queued_slots()) {
+        atomic_store_explicit(&a.counters->queued_slots_lo, 0u, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->queued_slots_hi, 0u, memory_order_relaxed);
+    }
+    for (uint k = 0; k < 3; ++k)
+        atomic_store_explicit(&a.counters->suffix_hits[k], 0u, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->suffix_misses, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->failure, valid ? 0u : wf::invalid_config,
                           memory_order_relaxed);
     atomic_store_explicit(&a.counters->rounds, 0u, memory_order_relaxed);
     atomic_store_explicit(&a.counters->refill_begin, 0u, memory_order_relaxed);
     wavefront_dispatch(a.current_dispatch, count, a.config->group_width);
     wavefront_dispatch(a.refill_dispatch, 0, a.config->group_width);
+}
+kernel void rypath_wavefront_admit_all_pixels(constant wire::Parameters &p [[buffer(0)]],
+                                              constant WavefrontArguments &a [[buffer(1)]],
+                                              uint pixel [[thread_position_in_grid]]) {
+    if (!wavefront_parameters(a, p) || !a.config->compact_enhanced_pairs ||
+        pixel >= a.config->pixel_count)
+        return;
+    uint evaluation_pixel;
+    if (!wavefront_evaluation_pixel(a, pixel, evaluation_pixel))
+        return;
+    const auto replay = a.replay_input[pixel];
+    const auto request = a.contribution_evaluation[pixel];
+    const auto owned = a.enhanced_evaluation[pixel];
+    const auto state = rypath_enhanced_runtime::begin(request, *a.config, pixel, owned);
+    if (!rypath_replay::valid(replay) || state.failed) {
+        wavefront_fail(a, wf::invalid_sample);
+        return;
+    }
+    if (request.requested_slot == rypath::contribution_wire::enhanced_null_slot) {
+        wavefront_clear_owned_suffix(a, pixel, request, owned);
+        wavefront_publish_null(a, state, true);
+        return;
+    }
+    const uint position =
+        atomic_fetch_add_explicit(&a.counters->work_count, 1u, memory_order_relaxed);
+    if (position >= a.config->pixel_count) {
+        wavefront_fail(a, wf::queue_overflow);
+        return;
+    }
+    a.work_list[position] = pixel;
+}
+kernel void rypath_wavefront_finalize_admission(constant wire::Parameters &p [[buffer(0)]],
+                                                constant WavefrontArguments &a [[buffer(1)]],
+                                                uint lane [[thread_position_in_grid]]) {
+    if (lane != 0 || !wavefront_parameters(a, p) || !a.config->compact_enhanced_pairs)
+        return;
+    const uint work = atomic_load_explicit(&a.counters->work_count, memory_order_relaxed);
+    const uint nulls = atomic_load_explicit(&a.counters->null_completed, memory_order_relaxed);
+    const uint completed = atomic_load_explicit(&a.counters->completed, memory_order_relaxed);
+    if (work > a.config->pixel_count || nulls > a.config->pixel_count ||
+        work != a.config->pixel_count - nulls || completed != nulls ||
+        atomic_load_explicit(&a.counters->current, memory_order_relaxed) != 0 ||
+        atomic_load_explicit(&a.counters->next_pixel, memory_order_relaxed) != 0 ||
+        atomic_load_explicit(&a.counters->out, memory_order_relaxed) != 0 ||
+        atomic_load_explicit(&a.counters->free, memory_order_relaxed) != 0) {
+        wavefront_fail(a, wf::invalid_counters);
+        return;
+    }
+    const uint count = min(a.config->capacity, work);
+    atomic_store_explicit(&a.counters->current, count, memory_order_relaxed);
+    atomic_store_explicit(&a.counters->next_pixel, nulls + count, memory_order_relaxed);
+    wavefront_dispatch(a.current_dispatch, count, a.config->group_width);
 }
 kernel void rypath_wavefront_initialize(constant wire::Parameters &p [[buffer(0)]],
                                         constant WavefrontArguments &a [[buffer(1)]],
@@ -379,11 +616,27 @@ kernel void rypath_wavefront_initialize(constant wire::Parameters &p [[buffer(0)
                                         uint lane [[thread_position_in_grid]]) {
     if (!wavefront_parameters(a, p))
         return;
-    const uint count = min(a.config->capacity, a.config->pixel_count);
+    uint count = min(a.config->capacity, a.config->pixel_count);
+    if (a.config->compact_enhanced_pairs) {
+        const uint work = atomic_load_explicit(&a.counters->work_count, memory_order_relaxed);
+        const uint nulls = atomic_load_explicit(&a.counters->null_completed, memory_order_relaxed);
+        const uint completed = atomic_load_explicit(&a.counters->completed, memory_order_relaxed);
+        const uint next = atomic_load_explicit(&a.counters->next_pixel, memory_order_relaxed);
+        count = atomic_load_explicit(&a.counters->current, memory_order_relaxed);
+        if (!wavefront_work_counters(a, next, completed, nulls) || completed != nulls ||
+            count != min(a.config->capacity, work) || next != nulls + count) {
+            wavefront_fail(a, wf::invalid_counters);
+            return;
+        }
+    }
     if (lane >= count)
         return;
-    wavefront_initialize_owner(a, p, tables, environment, lane, lane);
-    a.queue_in[lane] = lane;
+    uint pixel = lane;
+    if (a.config->compact_enhanced_pairs && !wavefront_work_pixel(a, lane, pixel))
+        return;
+    wavefront_initialize_owner(a, p, tables, environment, lane, pixel);
+    if (!wavefront_failed(a))
+        a.queue_in[lane] = lane;
 }
 
 #define RYPATH_WAVEFRONT_PARAMETERS(TableType)                                                     \
@@ -588,6 +841,22 @@ rypath_wavefront_shade_packet(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_
 #undef RYPATH_PACKET_SHADE_SEPARATED
 }
 
+// Host selects this entry only after a conservative immutable whole-scene proof.
+kernel void
+rypath_wavefront_shade_diffuse(RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
+#define RYPATH_PACKET_SHADE_DIFFUSE 1
+#define RYPATH_PACKET_SHADE_HERO 1
+#define RYPATH_PACKET_SHADE_SEPARATED 0
+#define RYPATH_PACKET_SHADE_EVENTS 1
+#define RYPATH_PACKET_SHADE_PRETRACED 0
+#include "packet_shade_body.inc"
+#undef RYPATH_PACKET_SHADE_PRETRACED
+#undef RYPATH_PACKET_SHADE_EVENTS
+#undef RYPATH_PACKET_SHADE_SEPARATED
+#undef RYPATH_PACKET_SHADE_HERO
+#undef RYPATH_PACKET_SHADE_DIFFUSE
+}
+
 kernel void rypath_wavefront_shade_packet_packed_2(
     RYPATH_WAVEFRONT_PARAMETERS(instance_acceleration_structure)) {
 #define RYPATH_PACKET_SHADE_SEPARATED 0
@@ -665,15 +934,37 @@ kernel void rypath_wavefront_prepare_refill(constant WavefrontArguments &a [[buf
     const uint current = atomic_load_explicit(&a.counters->current, memory_order_relaxed);
     const uint next = atomic_load_explicit(&a.counters->next_pixel, memory_order_relaxed);
     const uint completed = atomic_load_explicit(&a.counters->completed, memory_order_relaxed);
+    const uint null_completed =
+        atomic_load_explicit(&a.counters->null_completed, memory_order_relaxed);
     if (!wavefront_config_valid(a))
         wavefront_fail(a, wf::invalid_config);
     if (free > a.config->capacity || out > a.config->capacity || current > a.config->capacity ||
         free + out != current || next > a.config->pixel_count || completed > next ||
-        out != next - completed)
+        out != next - completed || null_completed > completed ||
+        (!wavefront_enhanced() && null_completed != 0) ||
+        !wavefront_work_counters(a, next, completed, null_completed))
         wavefront_fail(a, wf::invalid_counters);
     if (wavefront_failed(a)) {
         wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);
         return;
+    }
+    // Count the queue consumed by this round only after successful validation.
+    // Lane zero is the sole writer; dispatch barriers publish the two-word sum.
+    // This includes initialized-complete and transparent-boundary calls. Empty
+    // tail rounds add zero. Analytic nulls are removed by the host for noncompact
+    // queues; admission-compacted nulls never entered this queue.
+    if (wavefront_queued_slots()) {
+        const uint lo = atomic_load_explicit(&a.counters->queued_slots_lo, memory_order_relaxed);
+        const uint hi = atomic_load_explicit(&a.counters->queued_slots_hi, memory_order_relaxed);
+        const uint next_lo = lo + current;
+        const uint carry = uint(next_lo < lo);
+        if (carry && hi == 0xffffffffu) {
+            wavefront_fail(a, wf::invalid_counters);
+            wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);
+            return;
+        }
+        atomic_store_explicit(&a.counters->queued_slots_lo, next_lo, memory_order_relaxed);
+        atomic_store_explicit(&a.counters->queued_slots_hi, hi + carry, memory_order_relaxed);
     }
     // The previous dispatch has finished producing the free list. Reserve one
     // contiguous owner range here; lane i owns begin+i without a global CAS
@@ -706,9 +997,20 @@ kernel void rypath_wavefront_refill(constant wire::Parameters &p [[buffer(0)]],
         wavefront_fail(a, wf::invalid_slot);
         return;
     }
-    const uint pixel = begin + lane;
+    uint pixel = begin + lane;
+    if (a.config->compact_enhanced_pairs) {
+        const uint nulls = atomic_load_explicit(&a.counters->null_completed, memory_order_relaxed);
+        const uint completed = atomic_load_explicit(&a.counters->completed, memory_order_relaxed);
+        if (!wavefront_work_counters(a, next, completed, nulls) || begin < nulls) {
+            wavefront_fail(a, wf::invalid_counters);
+            return;
+        }
+        if (!wavefront_work_pixel(a, begin - nulls + lane, pixel))
+            return;
+    }
     wavefront_initialize_owner(a, p, tables, environment, slot, pixel);
-    wavefront_append(a, &a.counters->out, a.queue_out, slot);
+    if (!wavefront_failed(a))
+        wavefront_append(a, &a.counters->out, a.queue_out, slot);
 }
 kernel void rypath_wavefront_advance(constant WavefrontArguments &a [[buffer(1)]],
                                      uint lane [[thread_position_in_grid]]) {
@@ -717,10 +1019,15 @@ kernel void rypath_wavefront_advance(constant WavefrontArguments &a [[buffer(1)]
     uint count = atomic_load_explicit(&a.counters->out, memory_order_relaxed);
     const uint free = atomic_load_explicit(&a.counters->free, memory_order_relaxed);
     const uint completed = atomic_load_explicit(&a.counters->completed, memory_order_relaxed);
+    const uint null_completed =
+        atomic_load_explicit(&a.counters->null_completed, memory_order_relaxed);
     const uint next = atomic_load_explicit(&a.counters->next_pixel, memory_order_relaxed);
     if (count > a.config->capacity || free > a.config->capacity ||
         completed > a.config->pixel_count || next > a.config->pixel_count ||
-        (count == 0 && completed != a.config->pixel_count))
+        (a.config->compact_enhanced_pairs && (completed > next || count != next - completed)) ||
+        (count == 0 && completed != a.config->pixel_count) || null_completed > completed ||
+        (!wavefront_enhanced() && null_completed != 0) ||
+        !wavefront_work_counters(a, next, completed, null_completed))
         wavefront_fail(a, wf::invalid_counters);
     if (wavefront_failed(a))
         count = 0;
@@ -731,6 +1038,50 @@ kernel void rypath_wavefront_advance(constant WavefrontArguments &a [[buffer(1)]
     atomic_fetch_add_explicit(&a.counters->rounds, 1u, memory_order_relaxed);
     wavefront_dispatch(a.current_dispatch, count, a.config->group_width);
     wavefront_dispatch(a.refill_dispatch, 0u, a.config->group_width);
+}
+
+// Exercise the same pre-traversal publication helper with poisoned ray/BSDF pools.
+kernel void rypath_wavefront_null_probe(constant WavefrontArguments &a [[buffer(1)]],
+                                        uint lane [[thread_position_in_grid]]) {
+    uint slot;
+    if (!wavefront_slot(a, lane, slot))
+        return;
+    if (!wavefront_enhanced() || !wavefront_complete_null(a, slot))
+        wavefront_fail(a, wf::invalid_sample);
+}
+
+// Synthetic real-owner completion for queue tests only. Production initialize
+// and refill establish the owner mapping; this skips tracing/shading and thus
+// supplies queue/accounting evidence, not transport or radiance evidence.
+kernel void rypath_wavefront_pair_probe(constant WavefrontArguments &a [[buffer(1)]],
+                                        uint lane [[thread_position_in_grid]]) {
+    if (!wavefront_config_valid(a) || !wavefront_enhanced() || !a.config->compact_enhanced_pairs) {
+        wavefront_fail(a, wf::invalid_config);
+        return;
+    }
+    uint slot;
+    if (!wavefront_slot(a, lane, slot))
+        return;
+    const auto state =
+        reinterpret_cast<device rypath_enhanced_runtime::State *>(a.contribution_state)[slot];
+    if (state.failed || state.pixel >= a.config->pixel_count ||
+        state.requested_slot == rypath::contribution_wire::enhanced_null_slot) {
+        wavefront_fail(a, wf::invalid_sample);
+        return;
+    }
+    uint evaluation_pixel;
+    if (!wavefront_evaluation_pixel(a, state.pixel, evaluation_pixel))
+        return;
+    const uint sampled_pixel = wavefront_hero_persistent(a, slot).hot.sample.pixel;
+    if (sampled_pixel != evaluation_pixel) {
+        wavefront_fail(a, wf::invalid_sample);
+        return;
+    }
+    // Diagnostic X exposes actual mapped camera identity; publication still owns d.
+    const float3 value(a.config->mapped_evaluation ? float(sampled_pixel) : 0.f, 0, 0);
+    wavefront_publish(a, state.pixel, value); // Requires the real owner's done=2 claim.
+    if (!wavefront_failed(a))
+        wavefront_append(a, &a.counters->free, a.free_slots, slot);
 }
 
 // Test-only layout witness lets the host inspect persisted scalar bytes

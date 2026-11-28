@@ -77,3 +77,42 @@ static_assert(sizeof(HeroPrevious) == 224 && sizeof(HeroPrevious) < sizeof(Verte
                   alignof(HeroPTState) <= 16 &&
                   sizeof(HeroPTState) == sizeof(HeroPrevious) + sizeof(PacketPTHot),
               "Hero history must reduce persistent state without padding surprises");
+
+inline void hero_store_previous(thread HeroPrevious &out, const thread DiffuseCurrent &v) {
+    HeroFrozenBSDF frozen{};
+    frozen.kind = hero_current_structure(v.bsdf) ? 0u : 0xffffffffu;
+    frozen.active_mask = v.bsdf.active_mask;
+    if (frozen.kind == 0u)
+        for (uint k = 0; k < 4; ++k)
+            frozen.payload[k] = as_type<uint>(v.bsdf.reflectance[k]);
+    out = {frozen, v.frame, {v.point.position, v.point.geometric_normal, v.point.shading_normal},
+           v.type, v.seed,  v.path_id,
+           v.delta};
+}
+using DiffuseWalk = PTWalkState<HeroPrevious, true, DiffuseCurrent>;
+static_assert(sizeof(DiffuseWalk) == sizeof(HeroWalkState) &&
+                  alignof(DiffuseWalk) == alignof(HeroWalkState),
+              "Diffuse current specialization must preserve persistent walk ABI");
+#define RYPATH_DIFFUSE_WALK_OFFSET(field)                                                          \
+    static_assert(__builtin_offsetof(DiffuseWalk, field) ==                                        \
+                      __builtin_offsetof(HeroWalkState, field),                                    \
+                  "Diffuse persistent field offset: " #field)
+RYPATH_DIFFUSE_WALK_OFFSET(latest);
+RYPATH_DIFFUSE_WALK_OFFSET(preceding_position);
+RYPATH_DIFFUSE_WALK_OFFSET(preceding_type);
+RYPATH_DIFFUSE_WALK_OFFSET(sample);
+RYPATH_DIFFUSE_WALK_OFFSET(lambda);
+RYPATH_DIFFUSE_WALK_OFFSET(radiance);
+RYPATH_DIFFUSE_WALK_OFFSET(beta);
+RYPATH_DIFFUSE_WALK_OFFSET(ray_origin);
+RYPATH_DIFFUSE_WALK_OFFSET(ray_direction);
+RYPATH_DIFFUSE_WALK_OFFSET(pdf);
+RYPATH_DIFFUSE_WALK_OFFSET(ray_min_distance);
+RYPATH_DIFFUSE_WALK_OFFSET(ray_max_distance);
+RYPATH_DIFFUSE_WALK_OFFSET(roulette_eta);
+RYPATH_DIFFUSE_WALK_OFFSET(hero);
+RYPATH_DIFFUSE_WALK_OFFSET(index);
+RYPATH_DIFFUSE_WALK_OFFSET(count);
+RYPATH_DIFFUSE_WALK_OFFSET(crossings);
+RYPATH_DIFFUSE_WALK_OFFSET(complete);
+#undef RYPATH_DIFFUSE_WALK_OFFSET

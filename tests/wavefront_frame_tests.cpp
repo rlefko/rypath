@@ -7,6 +7,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 
@@ -276,6 +277,54 @@ FrameCapture scheduling_case(const RenderScene &scene, std::string_view label,
         compare(capture(*frame, config, quantum == 1), expected, label);
     }
     return expected;
+}
+// Profiling is diagnostic work, so these are exactness/count controls, not FPS.
+void packet_step_invocation_cases() {
+    for (unsigned fixture_index = 0; fixture_index < 3; ++fixture_index) {
+        auto scene = fixture_index == 2 ? packet_history(false, 4) : base(true);
+        if (fixture_index < 2)
+            scene.max_depth = fixture_index;
+        auto control = configuration(FrameExecution::wavefront);
+        control.capacity = 17;
+        control.quantum = 1;
+        auto baseline = build_frame_session(scene, control);
+        require(baseline.status == GeometryStatus::success && baseline.session,
+                baseline.diagnostic);
+        const auto expected = capture(*submit(*baseline.session), control, false);
+        std::optional<std::uint64_t> expected_calls;
+        for (const auto capacity : {1u, 17u, 65536u})
+            for (const auto quantum : {1u, 8u}) {
+                auto config = control;
+                config.capacity = capacity;
+                config.quantum = quantum;
+                config.profile_stages = true;
+                auto built = build_frame_session(scene, config);
+                require(built.status == GeometryStatus::success && built.session, built.diagnostic);
+                auto frame = submit(*built.session);
+                const auto actual = capture(*frame, config, false);
+                const auto info = frame->wait();
+                require(info.path_work.complete &&
+                            info.path_work.packet_step_invocations_supported &&
+                            info.path_work.passes.size() == 1,
+                        "Exact packet count diagnostics");
+                const auto calls = info.path_work.passes[0].packet_step_invocations;
+                if (fixture_index < 2)
+                    require(
+                        calls == actual.raw_xyz.size(),
+                        "Depth0 initialized-complete and environment owners each call step once");
+                else
+                    require(calls > actual.raw_xyz.size(),
+                            "Transparent crossings count as step invocations");
+                require(!expected_calls || calls == *expected_calls,
+                        "Capacity/quantum/empty-tail invariant packet count");
+                expected_calls = calls;
+                for (std::size_t pixel = 0; pixel < actual.raw_xyz.size(); ++pixel)
+                    for (unsigned channel = 0; channel < 3; ++channel)
+                        require(std::bit_cast<std::uint32_t>(actual.raw_xyz[pixel][channel]) ==
+                                    std::bit_cast<std::uint32_t>(expected.raw_xyz[pixel][channel]),
+                                "Profiling on/off preserves physical raw bits");
+            }
+    }
 }
 void packet_history_cases() {
     for (const bool invisible : {false, true}) {
@@ -612,6 +661,7 @@ int main() {
         scheduling_case(diffuse(false), "Scalar diffuse");
         scheduling_case(diffuse(true), "Packet diffuse");
         packet_history_cases();
+        packet_step_invocation_cases();
         scheduling_case(glass(false), "Scalar dispersive glass chain");
         scheduling_case(glass(true), "Packet dispersive glass chain");
         scheduling_case(fixture("coated-path.pbrt"), "Packet coating");

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include "reconstruction.hpp"
+#include "resource_limits.hpp"
 
 namespace rypath::viewer {
 struct Options {
@@ -12,6 +13,12 @@ struct Options {
     std::optional<HeroWavelengthSampling> hero_wavelengths;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
     FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
+    FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
+    FrameContributionReplay contribution_replay = FrameContributionReplay::full;
+    FrameSpatialMode spatial_mode = FrameSpatialMode::all;
+    std::uint32_t enhanced_history_cap = FrameConfig{}.enhanced_history_cap;
+    ResourceProfile resource_profile = ResourceProfile::standard;
+    SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
     FrameEstimator estimator = FrameEstimator::independent;
     ReconstructionMode reconstruction = ReconstructionMode::temporal;
     double exposure_ev = 0, near_plane = .001;
@@ -19,6 +26,10 @@ struct Options {
 // Parsing never opens scenes, creates capture directories, or initializes Metal.
 std::string parse_options(int argc, char **argv, Options &);
 const char *usage();
+// The native viewer uses these same configurations; CPU tests validate plumbing.
+FrameConfig frame_configuration(const Options &);
+ReconstructionConfig reconstruction_configuration(const Options &, ReconstructionMode);
+
 // R compares raw output with the selected denoiser; an initially raw viewer
 // uses signed temporal reconstruction as its explicit comparison preference.
 ReconstructionMode preferred_denoiser(ReconstructionMode selected);

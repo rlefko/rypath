@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "area_evaluation_context.hpp"
 #include "area_wire.h"
+#include "frame_qualification_identity.hpp"
 #include "frame_session.hpp"
 #include "image_output.hpp"
 #include "pbrt_render.hpp"
 #include "reconstruction.hpp"
 #include "render_identity.hpp"
+#include "resource_limits.hpp"
 
 #include <algorithm>
 #include <array>
@@ -79,16 +81,78 @@ struct Options {
     std::optional<HeroWavelengthSampling> hero_wavelengths;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
     FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
+    FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
+    FrameContributionReplay contribution_replay = FrameContributionReplay::full;
+    ResourceProfile resource_profile = ResourceProfile::standard;
+    SpatialVariancePolicy variance_policy = SpatialVariancePolicy::paired;
+    bool suffix_cache = true, compact_pairs = false, temporal_reprojection = false;
+    std::uint32_t enhanced_history_cap = 20;
+    bool compare_reconstruction = false;
+    FrameSpatialMode spatial_mode = FrameSpatialMode::all;
+    FrameAreaReuse area_reuse = FrameAreaReuse::full;
+    std::vector<int> arms{-1, 0, 1, 2, 4};
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     fs::path scene, output_dir;
     std::uint32_t width = 320, height = 180, frames = 32, seeds = 8;
     std::uint32_t reference_spp = 4096, reference_batches = 8;
+    std::uint32_t first_evaluation_seed_index = 0;
+    bool every_pose_references = false;
     ReconstructionMode reconstruction = ReconstructionMode::temporal;
     FrameAreaOutput area_output = FrameAreaOutput::conditional_mean;
     std::optional<float> motion_offset;
 };
+std::uint64_t additional_reference_export_bound(const Options &o) {
+    if (!o.every_pose_references || !o.motion_offset)
+        return 0;
+    const auto multiply = [](std::uint64_t a, std::uint64_t b) {
+        require(!a || b <= std::numeric_limits<std::uint64_t>::max() / a,
+                "Motion reference export bound overflow");
+        return a * b;
+    };
+    const auto pixels = multiply(o.width, o.height);
+    const auto payload = multiply(16, pixels);
+    require(payload <= std::numeric_limits<std::uint64_t>::max() - (1ull << 20),
+            "Motion reference image bound overflow");
+    // FLOAT RGB plus conservative chunk/header overhead; uncompressed upper bound.
+    const auto per_image = payload + (1ull << 20);
+    const auto extra_contexts = o.frames / 4 - 1;
+    return multiply(multiply(extra_contexts, std::uint64_t(o.reference_batches) + 2), per_image);
+}
 const char *area_output_name(FrameAreaOutput output) {
     return output == FrameAreaOutput::selected ? "selected" : "conditional-mean";
+}
+const char *variance_name(SpatialVariancePolicy policy) {
+    return policy == SpatialVariancePolicy::paired   ? "paired"
+           : policy == SpatialVariancePolicy::center ? "center"
+                                                     : "conservative";
+}
+const char *target_name(const Options &o) {
+    return o.area_path_domain == FrameAreaPathDomain::enhanced ? "quarter-l1-hybrid-scaled-zero-v4"
+                                                               : "quarter-l1-v1";
+}
+const char *source_mis_name(const Options &o) {
+    if (o.area_reuse == FrameAreaReuse::fresh)
+        return "fresh-local-selection-v1";
+    return o.area_path_domain == FrameAreaPathDomain::enhanced
+               ? "enhanced-hybrid-confidence-scaled-mis-v4"
+               : "source-target-mis-v1";
+}
+std::string atlas_json(const FrameAreaAtlasInfo &atlas) {
+    if (!atlas.version)
+        return "null";
+    auto out = json_stream();
+    out << "{\"version\":" << atlas.version << ",\"entry_count\":" << atlas.entry_count
+        << ",\"asset_bytes\":" << atlas.asset_bytes << ",\"sigma\":" << atlas.sigma
+        << ",\"iterations\":" << atlas.iterations << ",\"sha256\":" << quote(atlas.sha256)
+        << ",\"seed\":[" << atlas.seed[0] << ',' << atlas.seed[1] << "],\"widths\":[";
+    for (unsigned i = 0; i < atlas.widths.size(); ++i)
+        out << (i ? "," : "") << atlas.widths[i];
+    out << "],\"poses\":[";
+    for (unsigned i = 0; i < atlas.poses.size(); ++i)
+        out << (i ? "," : "") << '[' << atlas.poses[i][0] << ',' << atlas.poses[i][1] << ','
+            << atlas.poses[i][2] << ']';
+    out << "]}";
+    return out.str();
 }
 const char *reconstruction_name(ReconstructionMode mode) {
     return mode == ReconstructionMode::temporal ? "temporal" : "metalfx";
@@ -102,10 +166,20 @@ const char *usage =
     "  --spectral-transport auto|scalar|packet|hero (default: auto)\n"
     "  --hero-wavelengths uniform|visible (hero only; default: visible)\n"
     "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
-    "auto|adjacent|reciprocal16\n"
+    "auto|adjacent|reciprocal16|paired-gaussian16\n"
+    "  [--area-path-domain summed|contribution|enhanced] [--area-contribution-replay full|prefix]\n"
+    "  [--area-reuse full|fresh (fresh requires --mutation-arms 0)]\n"
+    "  [--area-spatial-mode all|stochastic-pairs|stochastic-shared (default: all)]\n"
+    "  [--area-suffix-cache on|off] [--area-pair-compaction on|off]\n"
+    "  [--area-temporal-reprojection off|dual] [--mutation-arms 0|0,1|0,1,2,4]\n"
+    "  [--resource-profile standard|large] [--variance-policy paired|center|conservative]\n"
     "  [--width 320] [--height 180] [--frames 32] [--seeds 8]\n"
     "  [--reconstruction temporal|metalfx (default: temporal)]\n"
+    "  [--area-history-cap N (Enhanced fixed temporal confidence, 1 through 20)]\n"
+    "  [--compare-reconstruction on|off (same-frame signed filter ablations and native MetalFX)]\n"
     "  [--area-output selected|conditional-mean (Area arms only; default: conditional-mean)]\n"
+    "  [--first-evaluation-seed-index N (default: 0)]\n"
+    "  [--motion-references anchors|every-pose (default: anchors)]\n"
     "  [--reference-spp 4096] [--reference-batches 8] [--motion-offset WORLD_X]\n"
     "Reference SPP must divide equally across at least two independent batches.\n"
     "Explicit native-resolution reconstruction; optional four-phase translation; one fresh "
@@ -120,7 +194,54 @@ Options parse(int argc, char **argv) {
         require(i + 1 < argc && !std::string_view(argv[i + 1]).starts_with("--"),
                 "Missing qualification option value");
         const std::string_view value = argv[++i];
-        if (key == "--hero-wavelengths") {
+        if (key == "--area-path-domain") {
+            require(value == "summed" || value == "contribution" || value == "enhanced",
+                    "Area path domain must be summed, contribution, or enhanced");
+            o.area_path_domain = value == "summed"         ? FrameAreaPathDomain::summed
+                                 : value == "contribution" ? FrameAreaPathDomain::contribution
+                                                           : FrameAreaPathDomain::enhanced;
+        } else if (key == "--area-contribution-replay") {
+            require(value == "full" || value == "prefix",
+                    "Contribution replay must be full or prefix");
+            o.contribution_replay =
+                value == "full" ? FrameContributionReplay::full : FrameContributionReplay::prefix;
+        } else if (key == "--area-suffix-cache" || key == "--area-pair-compaction") {
+            require(value == "on" || value == "off", "Area execution switches must be on or off");
+            (key == "--area-suffix-cache" ? o.suffix_cache : o.compact_pairs) = value == "on";
+        } else if (key == "--area-reuse") {
+            require(value == "full" || value == "fresh", "Area reuse must be full or fresh");
+            o.area_reuse = value == "fresh" ? FrameAreaReuse::fresh : FrameAreaReuse::full;
+        } else if (key == "--area-spatial-mode") {
+            require(value == "all" || value == "stochastic-pairs" || value == "stochastic-shared",
+                    "Area spatial mode must be all, stochastic-pairs, or stochastic-shared");
+            o.spatial_mode = value == "all"                ? FrameSpatialMode::all
+                             : value == "stochastic-pairs" ? FrameSpatialMode::independent
+                                                           : FrameSpatialMode::shared;
+        } else if (key == "--area-temporal-reprojection") {
+            require(value == "off" || value == "dual", "Temporal reprojection must be off or dual");
+            o.temporal_reprojection = value == "dual";
+        } else if (key == "--mutation-arms") {
+            if (value == "0")
+                o.arms = {-1, 0};
+            else if (value == "0,1")
+                o.arms = {-1, 0, 1};
+            else
+                require(value == "0,1,2,4", "Mutation arms must be 0, 0,1 or 0,1,2,4");
+        } else if (key == "--compare-reconstruction") {
+            require(value == "on" || value == "off", "Reconstruction comparison must be on or off");
+            o.compare_reconstruction = value == "on";
+        } else if (key == "--resource-profile") {
+            const auto profile = parse_resource_profile(value);
+            if (!profile)
+                throw std::runtime_error("Resource profile must be standard or large");
+            o.resource_profile = *profile;
+        } else if (key == "--variance-policy") {
+            require(value == "paired" || value == "center" || value == "conservative",
+                    "Variance policy must be paired, center, or conservative");
+            o.variance_policy = value == "paired"   ? SpatialVariancePolicy::paired
+                                : value == "center" ? SpatialVariancePolicy::center
+                                                    : SpatialVariancePolicy::conservative;
+        } else if (key == "--hero-wavelengths") {
             o.hero_wavelengths = parse_hero_wavelength_sampling(value);
             if (!o.hero_wavelengths)
                 throw std::runtime_error("Hero wavelengths must be uniform or visible");
@@ -141,8 +262,11 @@ Options parse(int argc, char **argv) {
                 o.area_stencil = FrameAreaStencil::adjacent;
             else if (value == "reciprocal16")
                 o.area_stencil = FrameAreaStencil::reciprocal16;
+            else if (value == "paired-gaussian16")
+                o.area_stencil = FrameAreaStencil::paired_gaussian16;
             else
-                throw std::runtime_error("Area stencil must be auto, adjacent, or reciprocal16");
+                throw std::runtime_error(
+                    "Area stencil must be auto, adjacent, reciprocal16, or paired-gaussian16");
         } else if (key == "--spectral-transport") {
             const auto selection = parse_spectral_transport(value);
             if (!selection)
@@ -163,6 +287,15 @@ Options parse(int argc, char **argv) {
                     "Area output must be selected or conditional-mean");
             o.area_output =
                 value == "selected" ? FrameAreaOutput::selected : FrameAreaOutput::conditional_mean;
+        } else if (key == "--motion-references") {
+            require(value == "anchors" || value == "every-pose",
+                    "Motion references must be anchors or every-pose");
+            o.every_pose_references = value == "every-pose";
+        } else if (key == "--first-evaluation-seed-index") {
+            const auto result = std::from_chars(value.data(), value.data() + value.size(),
+                                                o.first_evaluation_seed_index);
+            require(result.ec == std::errc{} && result.ptr == value.data() + value.size(),
+                    "First evaluation seed index must be a uint32 value");
         } else if (key == "--motion-offset") {
             float offset = 0;
             std::istringstream parsed{std::string(value)};
@@ -176,7 +309,10 @@ Options parse(int argc, char **argv) {
             const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
             require(result.ec == std::errc{} && result.ptr == value.data() + value.size() && number,
                     "Qualification counts/dimensions must be positive uint32 values");
-            if (key == "--width")
+            if (key == "--area-history-cap") {
+                require(number <= 20, "Area history cap must be 1 through 20");
+                o.enhanced_history_cap = number;
+            } else if (key == "--width")
                 o.width = number;
             else if (key == "--height")
                 o.height = number;
@@ -193,6 +329,29 @@ Options parse(int argc, char **argv) {
         }
     }
     require(!o.scene.empty() && !o.output_dir.empty(), "--scene and --output-dir are required");
+    require(o.area_reuse != FrameAreaReuse::fresh ||
+                (o.area_path_domain == FrameAreaPathDomain::enhanced &&
+                 o.arms == std::vector<int>{-1, 0} && o.spatial_mode == FrameSpatialMode::all &&
+                 !o.compact_pairs && !o.temporal_reprojection),
+            "Fresh extraction requires Enhanced, mutation-arms 0, full spatial mode and no "
+            "reprojection/compaction");
+    require(!rypath_stochastic_spatial::enabled(o.spatial_mode) ||
+                (o.area_path_domain == FrameAreaPathDomain::enhanced &&
+                 o.area_stencil == FrameAreaStencil::paired_gaussian16),
+            "Stochastic spatial pairs require Enhanced paired-gaussian16");
+    require(o.contribution_replay == FrameContributionReplay::full ||
+                frame_area_contribution_family(o.area_path_domain),
+            "Prefix replay requires contribution or enhanced path domain");
+    require((!o.compact_pairs && !o.temporal_reprojection) ||
+                o.area_path_domain == FrameAreaPathDomain::enhanced,
+            "Pair compaction and dual motion require enhanced path domain");
+    require(!seen.contains("--variance-policy") || o.reconstruction == ReconstructionMode::temporal,
+            "Variance policy requires temporal reconstruction");
+    require(!seen.contains("--area-history-cap") ||
+                o.area_path_domain == FrameAreaPathDomain::enhanced,
+            "Area history cap requires Enhanced path domain");
+    require(!o.compare_reconstruction || o.reconstruction == ReconstructionMode::temporal,
+            "Same-frame comparison requires temporal as the primary reconstruction");
     require(o.width <= reconstruction_dimension_limit && o.height <= reconstruction_dimension_limit,
             "Qualification dimensions exceed 16384");
     require(o.frames <= 1000000 && o.seeds <= 4096 && o.reference_spp <= 100000000 &&
@@ -202,13 +361,25 @@ Options parse(int argc, char **argv) {
             "Counts exceed qualification limits or reference SPP does not divide into >=2 batches");
     require(!o.motion_offset || (o.frames >= 8 && o.frames % 4 == 0),
             "Motion requires at least eight frames divisible by four");
+    require(std::uint64_t(o.first_evaluation_seed_index) + o.seeds <= (1ull << 32),
+            "Evaluation seed index range exceeds uint32");
+    // Opt-in references retain three double RGB images per additional context.
+    // A conservative pose bound is checked before scene loading or GPU work.
+    const std::uint64_t extra_poses =
+        o.every_pose_references && o.motion_offset ? o.frames / 4 - 1 : 0;
+    const auto pixels = std::uint64_t(o.width) * o.height;
+    require(pixels * ((o.motion_offset ? 320u : 192u) + 72 * extra_poses) <= (1ull << 30),
+            "Qualification per-pose reference workspace exceeds 1 GiB");
+    (void)additional_reference_export_bound(o); // Checked arithmetic before output reservation.
     // Bound this driver's simultaneously retained CPU means, variance, and captures.
     require(std::uint64_t(o.width) * o.height * (o.motion_offset ? 320u : 192u) <= (1ull << 30),
             "Qualification CPU image workspace exceeds 1 GiB");
     return o;
 }
 std::uint64_t evaluation_seed(std::uint32_t i) { return 0x1000000000000000ull + i + 1; }
-std::uint64_t reference_seed(std::uint32_t i, bool end = false) {
+std::uint64_t reference_seed(std::uint32_t i, bool end = false, std::uint32_t context = 0) {
+    if (context >= 2)
+        return 0x4000000000000000ull + (std::uint64_t(context - 2) << 32) + i + 1;
     return (end ? 0x3000000000000000ull : 0x2000000000000000ull) + i + 1;
 }
 
@@ -402,14 +573,15 @@ struct Scene {
     std::vector<fs::path> dependencies;
 };
 Scene load_scene(const Options &o) {
-    auto checked = pbrt::check(o.scene);
+    const auto limits = resource_limits(o.resource_profile).pbrt;
+    auto checked = pbrt::check(o.scene, limits);
     require(checked.exit_code() == 0 && checked.scene.has_value(), pbrt::report(checked));
     Scene result;
     result.dependencies.push_back(o.scene);
     for (const auto &dependency : checked.document.dependencies)
         result.dependencies.push_back(dependency.resolved_path);
     result.provenance = overrides(checked, o);
-    auto translated = pbrt::translate(checked, {o.scene.string()}, {}, o.spectral_transport);
+    auto translated = pbrt::translate(checked, {o.scene.string()}, limits, o.spectral_transport);
     for (const auto &diagnostic : translated.diagnostics)
         std::cerr << pbrt::format_diagnostic(diagnostic);
     if (translated.exit_code() != 0)
@@ -437,6 +609,10 @@ Scene load_scene(const Options &o) {
         throw std::runtime_error("--hero-wavelengths requires effective hero transport");
     if (o.hero_wavelengths)
         scene.hero_wavelengths = *o.hero_wavelengths;
+    if (frame_area_contribution_family(o.area_path_domain))
+        require(scene.model == RenderModel::pbrt &&
+                    scene.spectral_transport == SpectralTransport::hero && scene.max_depth <= 65,
+                "Contribution domains require PBRT hero transport and finite authored depth 0..65");
     result.provenance.push_back(spectral_provenance);
     result.provenance.push_back("all arms and reference use native wavefront, independent tape, "
                                 "fixed footprint_samples=1, material_seed=0, unexposed output");
@@ -611,22 +787,43 @@ Metadata metadata(const Options &o, const std::string &source, std::string kind,
             {"rypath.output.width", std::to_string(o.width)},
             {"rypath.output.height", std::to_string(o.height)}};
 }
+std::string camera_key(const FrameCamera &camera) {
+    auto out = json_stream();
+    write_camera(out, camera);
+    return out.str();
+}
 struct Reference {
-    Image mean, variance_of_mean;
+    Image mean, variance_of_mean, presentation;
     double noise_floor_mse = 0;
+    float offset = 0;
+    std::uint32_t context = 0;
+    std::string prefix, camera, context_identity;
 };
 Reference reference(const Scene &scene, const Options &o, Output &output, MetalDeviceInfo &device,
-                    bool end = false) {
+                    bool end = false, std::optional<float> intermediate = {},
+                    std::uint32_t context = 0) {
     require(!end || o.motion_offset.has_value(), "End reference requires motion");
-    const float offset = end ? o.motion_offset.value_or(0) : 0;
-    const std::string prefix = o.motion_offset ? (end ? "end-" : "start-") : "";
+    const float offset = intermediate.value_or(end ? o.motion_offset.value_or(0) : 0);
+    const std::string prefix = intermediate      ? "pose-" + std::to_string(context) + "-"
+                               : o.motion_offset ? (end ? "end-" : "start-")
+                                                 : "";
     const auto camera =
         o.motion_offset ? std::optional(camera_pose(scene.value, offset)) : std::nullopt;
     const auto pixels = std::uint64_t(o.width) * o.height;
-    Reference result{Image(pixels), Image(pixels)};
+    Reference result;
+    result.mean.resize(pixels);
+    result.variance_of_mean.resize(pixels);
+    result.offset = offset;
+    result.context = end ? 1u : context;
+    result.prefix = prefix;
+    result.camera = camera_key(camera ? *camera : camera_pose(scene.value, 0));
+    const auto base_identity = identity(scene.value, o, 1);
+    const auto context_text = "qualification-camera-context-v1:" + base_identity + result.camera;
+    result.context_identity = digest_hex(
+        sha256({reinterpret_cast<const std::uint8_t *>(context_text.data()), context_text.size()}));
     const auto count = o.reference_spp / o.reference_batches;
     for (std::uint32_t batch = 0; batch < o.reference_batches; ++batch) {
-        const auto seed = reference_seed(batch, end);
+        const auto seed = reference_seed(batch, end, context);
         auto renderer = session(scene.value, configuration(o, seed), device);
         Image sum(pixels);
         for (std::uint32_t sample = 0; sample < count; ++sample) {
@@ -659,6 +856,7 @@ Reference reference(const Scene &scene, const Options &o, Output &output, MetalD
         auto attributes =
             metadata(o, identity(scene.value, o, seed), "independent-reference-batch-mean",
                      std::to_string(seed), "independent", count - 1);
+        attributes.emplace_back("rypath.reference.context", result.context_identity);
         attributes.emplace_back("rypath.reference.spp", std::to_string(count));
         attributes.emplace_back("rypath.camera.offset_x", optional_number(offset));
         output.exr(prefix + "reference-batch-" + std::to_string(batch) + ".exr", batch_mean, o,
@@ -671,15 +869,33 @@ Reference reference(const Scene &scene, const Options &o, Output &output, MetalD
                     "Invalid reference batch variance of the mean");
             result.noise_floor_mse += value / (3 * double(pixels));
         }
-    auto attributes =
-        metadata(o, identity(scene.value, o, 1), "independent-reference-aggregate-mean",
-                 "disjoint-reference-seed-batches", "independent");
+    auto attributes = metadata(o, base_identity, "independent-reference-aggregate-mean",
+                               "disjoint-reference-seed-batches", "independent");
+    attributes.emplace_back("rypath.reference.context", result.context_identity);
     attributes.emplace_back("rypath.reference.spp", std::to_string(o.reference_spp));
     attributes.emplace_back("rypath.reference.batches", std::to_string(o.reference_batches));
     attributes.emplace_back("rypath.camera.offset_x", optional_number(offset));
     output.exr(prefix + "reference.exr", result.mean, o, attributes);
     attributes.front().second = "physical-rgb-reference-variance-of-mean";
     output.exr(prefix + "reference-variance-of-mean.exr", result.variance_of_mean, o, attributes);
+    result.presentation = result.mean;
+    for (auto &pixel : result.presentation)
+        for (auto &value : pixel)
+            value = std::clamp(value, 0., 65504.);
+    auto receipt = json_stream();
+    receipt << "{\"schema\":1,\"reference_context_id\":" << quote(result.context_identity)
+            << ",\"base_source_identity\":" << quote(base_identity)
+            << ",\"camera_offset_x\":" << offset << result.camera
+            << ",\"reference_spp\":" << o.reference_spp
+            << ",\"reference_batches\":" << o.reference_batches
+            << ",\"noise_floor_physical_rgb_mse\":" << result.noise_floor_mse
+            << ",\"mean\":" << quote(prefix + "reference.exr")
+            << ",\"variance_of_mean\":" << quote(prefix + "reference-variance-of-mean.exr")
+            << ",\"seeds\":[";
+    for (unsigned i = 0; i < o.reference_batches; ++i)
+        receipt << (i ? "," : "") << reference_seed(i, end, context);
+    receipt << "]}\n";
+    output.text(prefix + "reference-context.json", receipt.str());
     return result;
 }
 struct Metric {
@@ -752,6 +968,7 @@ struct SeedAggregate {
     std::string arm;
     std::string reconstruction;
     std::uint64_t seed = 0;
+    std::uint32_t evaluation_seed_index = 0;
     std::uint32_t warm_frames = 0, metric_frames = 0, valid_gpu_frames = 0;
     double raw_mse = 0, reconstructed_mse = 0, presentation_mse = 0, wall = 0, gpu = 0;
     double session_startup = 0, reconstruction_startup = 0;
@@ -759,6 +976,7 @@ struct SeedAggregate {
     std::string json() const {
         auto out = json_stream();
         out << "{\"arm\":" << quote(arm) << ",\"seed\":" << seed
+            << ",\"evaluation_seed_index\":" << evaluation_seed_index
             << ",\"reconstruction\":" << quote(reconstruction)
             << ",\"valid_metric_frames\":" << metric_frames << ",\"warm_frames\":" << warm_frames
             << ",\"raw_mse_mean\":" << raw_mse / metric_frames
@@ -787,15 +1005,75 @@ struct SeedAggregate {
 std::optional<double> gpu_time(double value, bool valid) {
     return valid && std::isfinite(value) && value >= 0 ? std::optional(value) : std::nullopt;
 }
+// Each variant owns a history stream for the entire seed/arm. The primary result
+// already covers history 64 with five spatial passes. Submit each remaining
+// variant the exact completed raw Frame before the transport session advances.
+struct ComparisonFilter {
+    const char *name;
+    ReconstructionConfig config;
+    std::unique_ptr<ReconstructionStream> stream{};
+};
+void compare_filters(std::ostream &line, std::span<ComparisonFilter> filters, const Frame &raw,
+                     const FrameInfo &source_frame, const Image *truth, const Options &o,
+                     Output &output, std::string_view arm, std::string_view source,
+                     std::uint32_t seed_index, std::uint32_t sample) {
+    line << ",\"comparison_filters\":{";
+    for (auto &filter : filters) {
+        if (!filter.stream) {
+            auto built = build_reconstruction_stream(raw, filter.config);
+            require(built.status == GeometryStatus::success && built.stream, built.diagnostic);
+            filter.stream = std::move(built.stream);
+        }
+        auto submitted = filter.stream->submit(raw);
+        require(submitted.status == GeometryStatus::success && submitted.frame && !submitted.busy,
+                submitted.diagnostic);
+        const auto info = submitted.frame->wait();
+        const auto pixels = std::uint64_t(o.width) * o.height;
+        require(info.status == ReconstructionStatus::complete && info.mode == filter.config.mode &&
+                    info.width == o.width && info.height == o.height &&
+                    info.source.epoch == source_frame.epoch &&
+                    info.source.sample_index == source_frame.sample_index &&
+                    info.counters.completed == pixels && !info.counters.failure,
+                info.diagnostic.empty() ? "Comparison filter frame incomplete" : info.diagnostic);
+        auto image = reconstructed_rgb(submitted.frame->capture(), pixels);
+        line << (&filter == filters.data() ? "" : ",") << quote(filter.name)
+             << ":{\"history_reset\":" << (info.history_reset ? "true" : "false")
+             << ",\"gpu_seconds\":"
+             << optional_number(gpu_time(info.gpu_seconds, info.gpu_time_valid))
+             << ",\"physical\":";
+        if (truth)
+            metric_json(line, metric(image, *truth));
+        else
+            line << "null";
+        line << '}';
+        if (sample + 1 == o.frames) {
+            auto attrs =
+                metadata(o, std::string(source), reconstructed_kind(info.mode),
+                         std::to_string(evaluation_seed(seed_index)), std::string(arm), sample);
+            for (auto &[key, value] : attrs) {
+                if (key == "rypath.qual.reconstruction")
+                    value = reconstruction_name(info.mode);
+                if (key == "rypath.frame.epoch")
+                    value = std::to_string(info.source.epoch);
+            }
+            attrs.emplace_back("rypath.qual.filter", filter.name);
+            output.exr(std::string(arm) + "-seed-" + std::to_string(seed_index) + "-final-" +
+                           filter.name + ".exr",
+                       image, o, attrs);
+        }
+    }
+    line << '}';
+}
 SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &reference,
-                       const Image &presentation_reference,
                        const std::optional<Reference> &end_reference,
-                       const Image &end_presentation_reference, std::uint32_t seed_index,
-                       Output &output, int mutations, MetalDeviceInfo &device) {
+                       const std::vector<Reference> &intermediate_references,
+                       std::uint32_t seed_index, Output &output, int mutations,
+                       MetalDeviceInfo &device) {
     SeedAggregate aggregate;
     aggregate.arm = mutations < 0 ? "independent" : "area-" + std::to_string(mutations);
     aggregate.reconstruction = reconstruction_name(o.reconstruction);
     aggregate.seed = evaluation_seed(seed_index);
+    aggregate.evaluation_seed_index = seed_index;
     const auto source_id = identity(scene.value, o, aggregate.seed);
     const auto startup = Clock::now();
     auto config = configuration(o, aggregate.seed);
@@ -804,9 +1082,31 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
     config.mutation_policy = o.mutation_policy;
     config.area_stencil = o.area_stencil;
     config.area_output = o.area_output;
+    if (mutations >= 0) {
+        config.area_path_domain = o.area_path_domain;
+        config.contribution_replay = o.contribution_replay;
+        config.enhanced_history_cap = o.enhanced_history_cap;
+        config.enhanced_suffix_cache = o.suffix_cache;
+        config.compact_enhanced_pairs = o.compact_pairs;
+        config.spatial_mode = o.spatial_mode;
+        config.area_reuse = o.area_reuse;
+        config.enhanced_temporal_reprojection = o.temporal_reprojection;
+    }
     auto renderer = session(scene.value, config, device);
     aggregate.session_startup = elapsed(startup);
+    std::string atlas_digest; // Freeze the first validated immutable asset identity.
     std::unique_ptr<ReconstructionStream> reconstruction;
+    std::array<ComparisonFilter, 4> comparison{
+        {{"temporal-h1-s0",
+          {.mode = ReconstructionMode::temporal, .history_limit = 1, .spatial_iterations = 0}},
+         {"temporal-h1-s5",
+          {.mode = ReconstructionMode::temporal, .history_limit = 1, .spatial_iterations = 5}},
+         {"temporal-h64-s0",
+          {.mode = ReconstructionMode::temporal, .history_limit = 64, .spatial_iterations = 0}},
+         {"metalfx-native", {.mode = ReconstructionMode::metalfx}}}};
+    for (auto &filter : comparison)
+        if (filter.config.mode == ReconstructionMode::temporal)
+            filter.config.spatial_variance_policy = o.variance_policy;
     const auto pixels = std::uint64_t(o.width) * o.height;
     const unsigned excluded = o.frames > 4 ? 4 : 0;
     for (std::uint32_t sample = 0; sample < o.frames; ++sample) {
@@ -822,26 +1122,17 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
             auto raw = frame(*renderer, sample, pixels, camera, pose.epoch);
             raw_info = raw->poll();
             const auto raw_wall = elapsed(start);
-            const bool evaluation_counts =
-                mutations < 0
-                    ? raw_info->completed_evaluations == pixels &&
-                          raw_info->cached_evaluations == 0 &&
-                          raw_info->logical_evaluations == pixels &&
-                          !raw_info->temporal_evaluation_cache_used
-                    : valid_area_evaluation_accounting(
-                          pixels, raw_info->history_used, unsigned(mutations),
-                          raw_info->temporal_evaluation_cache_used, raw_info->completed_evaluations,
-                          raw_info->cached_evaluations, raw_info->logical_evaluations);
-            require(raw_info->fresh_candidates == pixels && evaluation_counts,
-                    "Evaluation arm path accounting mismatch");
-            require(raw_info->mutation_attempts ==
-                            pixels * (mutations < 0 ? 0u : unsigned(mutations)) &&
-                        raw_info->mutation_accepts <= raw_info->mutation_attempts,
-                    "Evaluation arm mutation accounting mismatch");
+            std::string identity_diagnostic;
+            const bool identity_valid = valid_frame_qualification_identity(
+                config, *raw_info, scene.value.max_depth, &identity_diagnostic, atlas_digest);
+            require(identity_valid, identity_diagnostic);
+            if (raw_info->paired_atlas.version && atlas_digest.empty())
+                atlas_digest = raw_info->paired_atlas.sha256;
             const bool creation = !reconstruction;
             if (creation) {
                 const auto creation_start = Clock::now();
-                auto built = build_reconstruction_stream(*raw, {.mode = o.reconstruction});
+                auto built = build_reconstruction_stream(
+                    *raw, {.mode = o.reconstruction, .spatial_variance_policy = o.variance_policy});
                 aggregate.reconstruction_startup = elapsed(creation_start);
                 require(built.status == GeometryStatus::success && built.stream, built.diagnostic);
                 reconstruction = std::move(built.stream);
@@ -870,24 +1161,47 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
             const auto raw_image = raw_rgb(raw->capture(), scene.value.model, pixels);
             const auto denoised = reconstructed_rgb(submitted.frame->capture(), pixels);
             std::optional<Metric> physical, reconstructed_physical, presentation;
-            if (pose.metric_valid) {
-                const auto &truth = pose.end_reference ? end_reference->mean : reference.mean;
-                const auto &display_truth =
-                    pose.end_reference ? end_presentation_reference : presentation_reference;
-                physical = metric(raw_image, truth);
-                reconstructed_physical = metric(denoised, truth);
-                presentation = metric(denoised, display_truth, true);
+            const Reference *truth_reference = nullptr;
+            if (o.every_pose_references) {
+                const auto key = camera_key(camera ? *camera : camera_pose(scene.value, 0));
+                if (reference.camera == key)
+                    truth_reference = &reference;
+                else if (end_reference && end_reference->camera == key)
+                    truth_reference = &*end_reference;
+                else
+                    for (const auto &candidate : intermediate_references)
+                        if (candidate.camera == key) {
+                            truth_reference = &candidate;
+                            break;
+                        }
+                require(truth_reference, "Missing exact physical-pose reference");
+            } else if (pose.metric_valid)
+                truth_reference = pose.end_reference ? &*end_reference : &reference;
+            if (truth_reference) {
+                physical = metric(raw_image, truth_reference->mean);
+                reconstructed_physical = metric(denoised, truth_reference->mean);
+                presentation = metric(denoised, truth_reference->presentation, true);
             }
             auto line = json_stream();
             line << "{\"complete\":true,\"source_identity\":" << quote(source_id)
-                 << ",\"seed\":" << aggregate.seed << ",\"arm\":" << quote(aggregate.arm)
+                 << ",\"seed\":" << aggregate.seed << ",\"evaluation_seed_index\":" << seed_index
+                 << ",\"arm\":" << quote(aggregate.arm)
                  << ",\"reconstruction\":" << quote(reconstruction_name(o.reconstruction))
                  << ",\"reconstructed_output_kind\":" << quote(reconstructed_kind(o.reconstruction))
                  << ",\"sample_index\":" << sample << ",\"phase\":" << quote(pose.phase)
                  << ",\"camera_offset_x\":" << pose.offset;
             write_camera(line, camera ? *camera : camera_pose(scene.value, 0));
             line << ",\"quality_reference_anchor\":"
-                 << (pose.metric_valid ? quote(pose.end_reference ? "end" : "start") : "null")
+                 << (truth_reference
+                         ? quote(truth_reference == &reference ? "start"
+                                 : end_reference && truth_reference == &*end_reference
+                                     ? "end"
+                                     : "pose-" + std::to_string(truth_reference->context))
+                         : "null")
+                 << ",\"reference_context_id\":"
+                 << (truth_reference ? quote(truth_reference->context_identity) : "null")
+                 << ",\"reference_noise_floor_physical_rgb_mse\":"
+                 << (truth_reference ? optional_number(truth_reference->noise_floor_mse) : "null")
                  << ",\"epoch\":" << pose.epoch
                  << ",\"warm\":" << (sample >= excluded ? "true" : "false")
                  << ",\"pipeline_wall_seconds\":" << wall << ",\"raw_wall_seconds\":" << raw_wall
@@ -899,6 +1213,33 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"fresh_candidates\":" << raw_info->fresh_candidates
                  << ",\"completed_evaluations\":" << raw_info->completed_evaluations
                  << ",\"cached_evaluations\":" << raw_info->cached_evaluations
+                 << ",\"analytic_null_evaluations\":" << raw_info->analytic_null_evaluations
+                 << ",\"compacted_null_evaluations\":" << raw_info->compacted_null_evaluations
+                 << ",\"enhanced_pair_compaction\":"
+                 << (raw_info->enhanced_pair_compaction ? "true" : "false")
+                 << ",\"requested_area_reuse\":" << quote(frame_area_reuse_name(o.area_reuse))
+                 << ",\"area_reuse\":" << quote(frame_area_reuse_name(raw_info->area_reuse))
+                 << ",\"requested_area_spatial_mode\":"
+                 << quote(frame_spatial_mode_name(o.spatial_mode)) << ",\"area_spatial_mode\":"
+                 << quote(frame_spatial_mode_name(raw_info->spatial_mode))
+                 << ",\"stochastic_forward_atlas\":" << raw_info->stochastic_forward_atlas
+                 << ",\"stochastic_canonical_atlas\":" << raw_info->stochastic_canonical_atlas
+                 << ",\"enhanced_suffix_cache\":"
+                 << (raw_info->enhanced_suffix_cache ? "true" : "false")
+                 << ",\"enhanced_temporal_reprojection_enabled\":"
+                 << (raw_info->enhanced_temporal_reprojection ? "true" : "false")
+                 << ",\"enhanced_temporal_reprojection_used\":"
+                 << (raw_info->enhanced_temporal_reprojection_used ? "true" : "false")
+                 << ",\"area_path_domain\":"
+                 << quote(mutations < 0 ? "not-applicable"
+                                        : frame_area_path_domain_name(raw_info->area_path_domain))
+                 << ",\"area_contribution_replay\":"
+                 << quote(mutations < 0
+                              ? "not-applicable"
+                              : frame_contribution_replay_name(raw_info->contribution_replay))
+                 << ",\"canonical_transport_version\":" << raw_info->canonical_transport_version
+                 << ",\"fresh_discovery_version\":" << raw_info->fresh_discovery_version
+                 << ",\"paired_atlas\":" << atlas_json(raw_info->paired_atlas)
                  << ",\"logical_evaluations\":" << raw_info->logical_evaluations
                  << ",\"temporal_evaluation_cache_used\":"
                  << (raw_info->temporal_evaluation_cache_used ? "true" : "false")
@@ -909,10 +1250,11 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                  << ",\"area_contract\":" << (mutations < 0 ? 0 : area_wire::contract)
                  << ",\"area_output\":"
                  << quote(mutations < 0 ? "not-applicable" : area_output_name(o.area_output))
-                 << ",\"area_target\":" << quote(mutations < 0 ? "none" : "quarter-l1-v1")
-                 << ",\"area_source_mis\":"
-                 << quote(mutations < 0 ? "none" : "source-target-mis-v1")
-                 << ",\"area_temporal_reuse\":" << (mutations < 0 ? 0 : 20)
+                 << ",\"area_target\":" << quote(mutations < 0 ? "none" : target_name(o))
+                 << ",\"area_source_mis\":" << quote(mutations < 0 ? "none" : source_mis_name(o))
+                 << ",\"area_temporal_reuse\":"
+                 << frame_temporal_reuse_cap(config.estimator, config.area_reuse,
+                                             config.enhanced_history_cap)
 
                  << ",\"requested_area_mutation_policy\":"
                  << quote(frame_mutation_policy_name(o.mutation_policy))
@@ -960,6 +1302,11 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                 metric_json(line, *presentation);
             else
                 line << "null";
+            if (o.compare_reconstruction) {
+                const Image *truth = truth_reference ? &truth_reference->mean : nullptr;
+                compare_filters(line, comparison, *raw, *raw_info, truth, o, output, aggregate.arm,
+                                source_id, seed_index, sample);
+            }
             line << "}\n";
             if (sample >= excluded) {
                 ++aggregate.warm_frames;
@@ -1006,11 +1353,51 @@ SeedAggregate evaluate(const Scene &scene, const Options &o, const Reference &re
                                             mutations < 0 ? "not-applicable"
                                                           : area_output_name(o.area_output));
                     attributes.emplace_back("rypath.area.target",
-                                            mutations < 0 ? "none" : "quarter-l1-v1");
+                                            mutations < 0 ? "none" : target_name(o));
                     attributes.emplace_back("rypath.area.source_mis",
-                                            mutations < 0 ? "none" : "source-target-mis-v1");
-                    attributes.emplace_back("rypath.area.temporal_reuse",
-                                            mutations < 0 ? "0" : "20");
+                                            mutations < 0 ? "none" : source_mis_name(o));
+                    attributes.emplace_back(
+                        "rypath.area.path_domain",
+                        mutations < 0 ? "not-applicable"
+                                      : frame_area_path_domain_name(raw_info->area_path_domain));
+                    attributes.emplace_back("rypath.area.contribution_replay",
+                                            mutations < 0 ? "not-applicable"
+                                                          : frame_contribution_replay_name(
+                                                                raw_info->contribution_replay));
+                    attributes.emplace_back("rypath.area.canonical_transport_version",
+                                            std::to_string(raw_info->canonical_transport_version));
+                    attributes.emplace_back("rypath.area.fresh_discovery_version",
+                                            std::to_string(raw_info->fresh_discovery_version));
+                    attributes.emplace_back("rypath.area.reuse",
+                                            frame_area_reuse_name(raw_info->area_reuse));
+                    attributes.emplace_back("rypath.area.requested_spatial_mode",
+                                            frame_spatial_mode_name(o.spatial_mode));
+                    attributes.emplace_back("rypath.area.spatial_mode",
+                                            frame_spatial_mode_name(raw_info->spatial_mode));
+                    attributes.emplace_back("rypath.area.stochastic_forward_atlas",
+                                            std::to_string(raw_info->stochastic_forward_atlas));
+                    attributes.emplace_back("rypath.area.stochastic_canonical_atlas",
+                                            std::to_string(raw_info->stochastic_canonical_atlas));
+                    attributes.emplace_back("rypath.area.paired_atlas",
+                                            atlas_json(raw_info->paired_atlas));
+                    attributes.emplace_back("rypath.area.suffix_cache_enabled",
+                                            raw_info->enhanced_suffix_cache ? "true" : "false");
+                    attributes.emplace_back("rypath.area.pair_compaction_enabled",
+                                            raw_info->enhanced_pair_compaction ? "true" : "false");
+                    attributes.emplace_back("rypath.area.temporal_reprojection_enabled",
+                                            raw_info->enhanced_temporal_reprojection ? "true"
+                                                                                     : "false");
+                    attributes.emplace_back(
+                        "rypath.area.temporal_reprojection_used",
+                        raw_info->enhanced_temporal_reprojection_used ? "true" : "false");
+                    attributes.emplace_back("rypath.recon.variance_policy",
+                                            variance_name(o.variance_policy));
+                    attributes.emplace_back("rypath.frame.resource_profile",
+                                            std::string(resource_profile_name(o.resource_profile)));
+                    attributes.emplace_back(
+                        "rypath.area.temporal_reuse",
+                        std::to_string(frame_temporal_reuse_cap(config.estimator, config.area_reuse,
+                                                                config.enhanced_history_cap)));
                     attributes.emplace_back("rypath.area.mutation_steps",
                                             std::to_string(mutations < 0 ? 0 : mutations));
                     attributes.emplace_back("rypath.hero.requested",
@@ -1093,9 +1480,35 @@ std::string settings_json(const Options &o) {
         << ",\"height\":" << o.height << ",\"frames\":" << o.frames << ",\"seeds\":" << o.seeds
         << ",\"area_contract\":" << area_wire::contract
         << ",\"area_output\":" << quote(area_output_name(o.area_output))
-        << ",\"area_target\":\"quarter-l1-v1\",\"area_source_mis\":\"source-target-mis-v1\",\"area_"
-           "temporal_reuse\":20"
-        << ",\"reference_spp\":" << o.reference_spp
+        << ",\"area_target\":" << quote(target_name(o))
+        << ",\"area_source_mis\":" << quote(source_mis_name(o))
+        << ",\"requested_area_history_cap\":" << o.enhanced_history_cap
+        << ",\"area_temporal_reuse\":"
+        << frame_temporal_reuse_cap(FrameEstimator::area_replay, o.area_reuse,
+                                    o.enhanced_history_cap)
+        << ",\"requested_area_path_domain\":"
+        << quote(frame_area_path_domain_name(o.area_path_domain))
+        << ",\"requested_area_contribution_replay\":"
+        << quote(frame_contribution_replay_name(o.contribution_replay))
+        << ",\"requested_area_suffix_cache\":" << (o.suffix_cache ? "true" : "false")
+        << ",\"requested_area_pair_compaction\":" << (o.compact_pairs ? "true" : "false")
+        << ",\"requested_area_temporal_reprojection\":"
+        << quote(o.temporal_reprojection ? "dual" : "off")
+        << ",\"requested_area_reuse\":" << quote(frame_area_reuse_name(o.area_reuse))
+        << ",\"requested_area_spatial_mode\":" << quote(frame_spatial_mode_name(o.spatial_mode))
+        << ",\"requested_area_stencil\":" << quote(frame_area_stencil_name(o.area_stencil))
+        << ",\"requested_area_mutation_policy\":"
+        << quote(frame_mutation_policy_name(o.mutation_policy))
+        << ",\"resource_profile\":" << quote(resource_profile_name(o.resource_profile))
+        << ",\"variance_policy\":" << quote(variance_name(o.variance_policy))
+        << ",\"mutation_arms\":"
+        << quote(o.arms.size() == 2   ? "0"
+                 : o.arms.size() == 3 ? "0,1"
+                                      : "0,1,2,4")
+        << ",\"first_evaluation_seed_index\":" << o.first_evaluation_seed_index
+        << ",\"motion_references\":" << quote(o.every_pose_references ? "every-pose" : "anchors")
+        << ",\"additional_reference_export_upper_bound_bytes\":"
+        << additional_reference_export_bound(o) << ",\"reference_spp\":" << o.reference_spp
         << ",\"reference_batches\":" << o.reference_batches
         << ",\"reference_spp_per_batch\":" << o.reference_spp / o.reference_batches
         << ",\"warm_frames_excluded\":" << (o.frames > 4 ? 4 : 0)
@@ -1103,6 +1516,8 @@ std::string settings_json(const Options &o) {
            "1,\"material_seed\":0"
         << ",\"sampler\":\"independent\",\"target_scale\":1,\"reconstruction\":"
         << quote(reconstruction_name(o.reconstruction))
+        << ",\"same_frame_reconstruction_comparison\":"
+        << (o.compare_reconstruction ? "true" : "false")
         << ",\"reconstruction_resolution\":\"native\",\"reconstructed_output_kind\":"
         << quote(reconstructed_kind(o.reconstruction)) << ",\"reconstructed_storage\":"
         << quote(o.reconstruction == ReconstructionMode::temporal ? "signed-rgba32-float"
@@ -1114,10 +1529,16 @@ std::string settings_json(const Options &o) {
         << ",\"reconstruction_substitution\":false,\"exposure\":1"
         << ",\"motion_offset\":" << optional_number(o.motion_offset) << ",\"metric_scope\":"
         << quote(o.motion_offset
-                     ? "anchor-only mixed-pose warm-frame means; translation metrics null"
+                     ? (o.every_pose_references
+                            ? "every-pose signed physical RGB metrics; mixed-pose warm-frame means"
+                            : "anchor-only mixed-pose warm-frame means; translation metrics null")
                      : "static warm-frame means")
-        << ",\"motion_phase_schedule\":\"equal quarters: hold-start, translate fractions 1/q..1, "
-           "hold-end, cut-start epoch 1; all translation metrics null\""
+        << ",\"motion_phase_schedule\":"
+        << quote(o.every_pose_references
+                     ? "equal quarters: hold-start, translate fractions 1/q..1, hold-end, "
+                       "cut-start epoch 1; metrics against shared physical-pose references"
+                     : "equal quarters: hold-start, translate fractions 1/q..1, hold-end, "
+                       "cut-start epoch 1; all translation metrics null")
         << ",\"motion_limitations\":\"translation only; fixed orientation/lens; no distinct medium "
            "interfaces\""
         << ",\"reference_end_seeds\":[";
@@ -1137,9 +1558,15 @@ std::string settings_json(const Options &o) {
     for (unsigned i = 0; i < o.seeds; ++i) {
         if (i)
             out << ',';
-        out << evaluation_seed(i);
+        out << evaluation_seed(o.first_evaluation_seed_index + i);
     }
-    out << "],\"arms\":[\"independent\",\"area-0\",\"area-1\",\"area-2\",\"area-4\"]}";
+    out << "],\"arms\":[";
+    for (std::size_t i = 0; i < o.arms.size(); ++i) {
+        if (i)
+            out << ',';
+        out << quote(o.arms[i] < 0 ? "independent" : "area-" + std::to_string(o.arms[i]));
+    }
+    out << "]}";
     return out.str();
 }
 std::string summary_json(const Options &o, const std::vector<SeedAggregate> &aggregates,
@@ -1149,9 +1576,10 @@ std::string summary_json(const Options &o, const std::vector<SeedAggregate> &agg
                          std::string_view diagnostic, bool complete) {
     auto out = json_stream();
     out << "{\"schema\":2,\"complete\":" << (complete ? "true" : "false")
-        << ",\"quality_pass_claimed\":false,\"scope\":\"static/translation anchor measurement; not "
-           "a "
-           "quality acceptance gate\""
+        << ",\"quality_pass_claimed\":false,\"scope\":"
+        << quote(o.every_pose_references
+                     ? "static/translation every-pose measurement; not a quality acceptance gate"
+                     : "static/translation anchor measurement; not a quality acceptance gate")
         << ",\"diagnostic\":" << quote(diagnostic) << ",\"settings\":" << settings_json(o)
         << ",\"source_identity\":" << quote(source_id)
         << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"device\":" << quote(device.name)
@@ -1183,7 +1611,9 @@ std::string summary_json(const Options &o, const std::vector<SeedAggregate> &agg
            "its pipeline GPU is null\""
         << ",\"tone_map_mse\":null,\"arms\":[";
     bool first = true;
-    for (const auto arm : {"independent", "area-0", "area-1", "area-2", "area-4"}) {
+    for (const auto mutations : o.arms) {
+        const auto arm =
+            mutations < 0 ? std::string("independent") : "area-" + std::to_string(mutations);
         Statistic raw, denoised, presentation, latency;
         std::uint64_t metric_frames = 0, timed_frames = 0;
         std::array<Statistic, 3> raw_bias, denoised_bias;
@@ -1228,11 +1658,23 @@ int run(const Options &o) {
     const auto start = Clock::now();
     std::unique_ptr<Output> output;
     std::optional<Reference> reference_image, end_reference;
+    std::vector<Reference> intermediate_references;
     std::vector<SeedAggregate> aggregates;
     MetalDeviceInfo device;
     std::string source_id;
     try {
         output = std::make_unique<Output>(o.output_dir);
+        std::optional<std::uint64_t> available_reference_bytes;
+        const auto export_bound = additional_reference_export_bound(o);
+        if (export_bound) {
+            std::error_code error;
+            const auto space = fs::space(o.output_dir, error);
+            require(!error && space.available != std::uintmax_t(-1),
+                    "Cannot determine available disk for additional pose references");
+            available_reference_bytes = space.available;
+            require(export_bound <= space.available,
+                    "Additional pose reference export bound exceeds available disk");
+        }
         const auto scene = load_scene(o);
         if (o.motion_offset) {
             // Validate both anchors and the smallest translation before any GPU work.
@@ -1245,7 +1687,12 @@ int run(const Options &o) {
         auto manifest = json_stream();
         manifest << "{\"schema\":2,\"complete\":false,\"status\":\"running; summary.json "
                     "determines final completion\",\"settings\":"
-                 << settings_json(o) << ",\"source_identity\":" << quote(source_id)
+                 << settings_json(o) << ",\"available_reference_export_bytes_at_preflight\":"
+                 << (available_reference_bytes ? std::to_string(*available_reference_bytes)
+                                               : "null")
+                 << ",\"additional_reference_export_bound_method\":\"16 bytes/pixel plus 1 MiB per "
+                    "image; batch means, mean and variance; upper bound on distinct extra poses\""
+                 << ",\"source_identity\":" << quote(source_id)
                  << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"sensor_model\":"
                  << quote(scene.value.model == RenderModel::pbrt ? "pbrt" : "demo")
 
@@ -1276,21 +1723,43 @@ int run(const Options &o) {
         reference_image = reference(scene, o, *output, device);
         if (o.motion_offset)
             end_reference = reference(scene, o, *output, device, true);
-        Image end_presentation = end_reference ? end_reference->mean : Image{};
-        for (auto &pixel : end_presentation)
-            for (auto &value : pixel)
-                value = std::clamp(value, 0., 65504.);
-        Image presentation = reference_image->mean;
-        for (auto &pixel : presentation)
-            for (auto &value : pixel)
-                value = std::clamp(value, 0., 65504.);
+        if (o.every_pose_references && o.motion_offset) {
+            std::set<std::string> contexts{reference_image->camera, end_reference->camera};
+            for (unsigned sample = o.frames / 4; sample < o.frames / 2; ++sample) {
+                const auto pose = pose_at(o, sample);
+                const auto camera = camera_pose(scene.value, pose.offset);
+                if (contexts.insert(camera_key(camera)).second)
+                    intermediate_references.push_back(
+                        reference(scene, o, *output, device, false, pose.offset,
+                                  2u + static_cast<std::uint32_t>(intermediate_references.size())));
+            }
+        }
+        auto reference_index = json_stream();
+        reference_index << "{\"schema\":1,\"complete\":true,\"contexts\":[";
+        bool first_context = true;
+        const auto index_reference = [&](const Reference &value) {
+            reference_index << (first_context ? "" : ",")
+                            << "{\"reference_context_id\":" << quote(value.context_identity)
+                            << ",\"receipt\":" << quote(value.prefix + "reference-context.json")
+                            << '}';
+            first_context = false;
+        };
+        index_reference(*reference_image);
+        if (end_reference)
+            index_reference(*end_reference);
+        for (const auto &value : intermediate_references)
+            index_reference(value);
+        reference_index << "]}\n";
+        output->text("reference-contexts.json", reference_index.str());
         // Rotate arm execution order across seeds to expose rather than freeze an order effect.
-        constexpr std::array<int, 5> arms{-1, 0, 1, 2, 4};
-        for (unsigned seed = 0; seed < o.seeds; ++seed)
+        const auto &arms = o.arms;
+        for (unsigned seed = 0; seed < o.seeds; ++seed) {
+            const auto seed_index = o.first_evaluation_seed_index + seed;
             for (unsigned i = 0; i < arms.size(); ++i)
-                aggregates.push_back(evaluate(scene, o, *reference_image, presentation,
-                                              end_reference, end_presentation, seed, *output,
-                                              arms[(i + seed) % arms.size()], device));
+                aggregates.push_back(evaluate(
+                    scene, o, *reference_image, end_reference, intermediate_references, seed_index,
+                    *output, arms[(std::uint64_t(i) + seed_index) % arms.size()], device));
+        }
         require(aggregates.size() == std::uint64_t(o.seeds) * arms.size(),
                 "Completed seed-arm count mismatch");
         output->text("summary.json", summary_json(o, aggregates, reference_image, end_reference,

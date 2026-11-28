@@ -27,7 +27,13 @@ const char *usage() {
            "  --estimator independent|area-replay  (default: independent)\n"
            "  --spectral-transport auto|scalar|packet|hero --hero-wavelengths uniform|visible\n"
            "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
-           "auto|adjacent|reciprocal16\n"
+           "auto|adjacent|reciprocal16|paired-gaussian16\n"
+           "  --area-path-domain summed|contribution|enhanced --area-contribution-replay "
+           "full|prefix\n"
+           "  --area-spatial-mode all|stochastic-pairs|stochastic-shared (default: all)\n"
+           "  --area-history-cap N  Enhanced fixed temporal confidence, 1 through 20\n"
+           "  --resource-profile standard|large (default: standard)\n"
+           "  --variance-policy paired|center|conservative (temporal only; default: paired)\n"
            "  --mutations 0|1|2|4  (default: 1 for Area; independent uses zero)\n"
            "  --frames N  exit after N completed pipeline frames; omitted means unlimited\n"
            "  --seed 1 --exposure 0 --near-plane .001 --capture-dir DIR (default: "
@@ -43,6 +49,31 @@ ReconstructionMode preferred_denoiser(ReconstructionMode selected) {
 ReconstructionMode toggle_comparison(ReconstructionMode current, ReconstructionMode preferred) {
     return current == ReconstructionMode::raw_rgb ? preferred_denoiser(preferred)
                                                   : ReconstructionMode::raw_rgb;
+}
+FrameConfig frame_configuration(const Options &o) {
+    FrameConfig c;
+    c.width = o.width;
+    c.height = o.height;
+    c.seed = o.seed;
+    c.footprint_samples = 1;
+    c.intersection_profile = IntersectionProfile::native;
+    c.execution = FrameExecution::wavefront;
+    c.estimator = o.estimator;
+    c.mutation_policy = o.mutation_policy;
+    c.area_stencil = o.area_stencil;
+    c.mutation_steps = o.estimator == FrameEstimator::area_replay ? o.mutation_steps : 0;
+    c.area_path_domain = o.area_path_domain;
+    c.contribution_replay = o.contribution_replay;
+    c.spatial_mode = o.spatial_mode;
+    c.enhanced_history_cap = o.enhanced_history_cap;
+    return c;
+}
+ReconstructionConfig reconstruction_configuration(const Options &o, ReconstructionMode mode) {
+    ReconstructionConfig c;
+    c.mode = mode;
+    c.near_plane = o.near_plane;
+    c.spatial_variance_policy = o.variance_policy;
+    return c;
 }
 std::string parse_options(int argc, char **argv, Options &o) {
     bool mode_seen = false;
@@ -105,8 +136,45 @@ std::string parse_options(int argc, char **argv, Options &o) {
                 o.area_stencil = FrameAreaStencil::adjacent;
             else if (value == "reciprocal16")
                 o.area_stencil = FrameAreaStencil::reciprocal16;
+            else if (value == "paired-gaussian16")
+                o.area_stencil = FrameAreaStencil::paired_gaussian16;
             else
-                return "area stencil must be auto, adjacent, or reciprocal16";
+                return "area stencil must be auto, adjacent, reciprocal16, or paired-gaussian16";
+        } else if (key == "--area-path-domain") {
+            if (value != "summed" && value != "contribution" && value != "enhanced")
+                return "area path domain must be summed, contribution, or enhanced";
+            o.area_path_domain = value == "summed"         ? FrameAreaPathDomain::summed
+                                 : value == "contribution" ? FrameAreaPathDomain::contribution
+                                                           : FrameAreaPathDomain::enhanced;
+        } else if (key == "--area-contribution-replay") {
+            if (value != "full" && value != "prefix")
+                return "contribution replay must be full or prefix";
+            o.contribution_replay =
+                value == "full" ? FrameContributionReplay::full : FrameContributionReplay::prefix;
+        } else if (key == "--area-spatial-mode") {
+            if (value != "all" && value != "stochastic-pairs" && value != "stochastic-shared")
+                return "area spatial mode must be all, stochastic-pairs, or stochastic-shared";
+            o.spatial_mode = value == "all"                ? FrameSpatialMode::all
+                             : value == "stochastic-pairs" ? FrameSpatialMode::independent
+                                                           : FrameSpatialMode::shared;
+        } else if (key == "--area-history-cap") {
+            if (!integer(value, o.enhanced_history_cap) || o.enhanced_history_cap < 1 ||
+                o.enhanced_history_cap > 20)
+                return "area history cap must be 1 through 20";
+        } else if (key == "--resource-profile") {
+            if (value != "standard" && value != "large")
+                return "resource profile must be standard or large";
+            o.resource_profile =
+                value == "standard" ? ResourceProfile::standard : ResourceProfile::large;
+        } else if (key == "--variance-policy") {
+            if (value == "paired")
+                o.variance_policy = SpatialVariancePolicy::paired;
+            else if (value == "center")
+                o.variance_policy = SpatialVariancePolicy::center;
+            else if (value == "conservative")
+                o.variance_policy = SpatialVariancePolicy::conservative;
+            else
+                return "variance policy must be paired, center, or conservative";
         } else if (key == "--mutations") {
             if (!integer(value, o.mutation_steps) ||
                 (o.mutation_steps != 0 && o.mutation_steps != 1 && o.mutation_steps != 2 &&
@@ -143,6 +211,26 @@ std::string parse_options(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if (seen.contains("--area-path-domain") && o.estimator != FrameEstimator::area_replay)
+        return "area path domain requires area-replay estimator";
+    if (seen.contains("--area-contribution-replay") &&
+        !frame_area_contribution_family(o.area_path_domain))
+        return "contribution replay requires contribution or enhanced path domain";
+    if (seen.contains("--area-history-cap") &&
+        (o.estimator != FrameEstimator::area_replay ||
+         o.area_path_domain != FrameAreaPathDomain::enhanced))
+        return "area history cap requires Enhanced Area replay";
+    if (frame_area_contribution_family(o.area_path_domain) &&
+        (o.demo || o.spectral_transport == SpectralTransportSelection::scalar ||
+         o.spectral_transport == SpectralTransportSelection::packet))
+        return "contribution path domains require a PBRT scene with effective hero transport";
+    if (rypath_stochastic_spatial::enabled(o.spatial_mode) &&
+        (o.estimator != FrameEstimator::area_replay ||
+         o.area_path_domain != FrameAreaPathDomain::enhanced ||
+         o.area_stencil != FrameAreaStencil::paired_gaussian16))
+        return "stochastic spatial modes require Enhanced paired-gaussian16";
+    if (seen.contains("--variance-policy") && o.reconstruction != ReconstructionMode::temporal)
+        return "variance policy requires temporal reconstruction";
     if (!o.help && o.demo == !o.scene.empty())
         return "choose exactly one of --scene and --demo";
     if (o.width > reconstruction_dimension_limit || o.height > reconstruction_dimension_limit ||

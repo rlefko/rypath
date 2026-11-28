@@ -3,6 +3,10 @@
 // Copyright (c) 1998–2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
 // See third_party/pbrt/LICENSE.txt. Packet scheduling and storage are rypath adaptations.
 #pragma once
+#include "../src/enhanced_hybrid_state_shared.h"
+#include "../src/enhanced_path_shared.h"
+#include "../src/enhanced_suffix_tape_shared.h"
+#include "../src/enhanced_wire.h"
 #include "../src/hero_spectrum_shared.h"
 #include "../src/packet_spectrum_shared.h"
 #include "../src/packet_wire.h"

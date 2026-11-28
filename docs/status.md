@@ -1,11 +1,51 @@
 # Project status
 
-The [Enhanced ReSTIR follow-up](restir-enhanced.md) targets native-1080p,
-Area reuse, one mutation and denoising at 20 FPS for Cornell/Prism and 10+ FPS
-for Pavilion day/night. The opt-in finite-depth contribution-path representation
-adds selected-prefix replay with exact bounded controls and retains full replay
-as its default oracle. Hybrid reconnection and the complete Enhanced algorithm
-remain unfinished. The frame-rate targets are unmet.
+The native-1080p Enhanced Area pipeline supports zero or more corrected
+mutations, visible-hero spectral transport, Metal hardware traversal and
+either signed temporal reconstruction or native MetalFX. Its optional
+one-map spatial estimator roughly halves frame time against exhaustive
+four-map reuse on the M4 Max. The 50 ms Cornell/Prism and 100 ms Pavilion
+budgets remain open. Fresh spectral path evaluation alone exceeds them.
+[Zero-mutation performance study](zero-mutation-performance.md)
+
+The finite-depth Enhanced implementation includes reciprocal Gaussian spatial
+maps, camera-only dual-motion reprojection, owned terminal and interior
+reconnection on supported surfaces, bounded spectral suffix caching and
+selected-null compaction. The chapter on the estimator records the paper
+mechanisms covered and the material-dependent fallbacks.
+[Enhanced ReSTIR implementation](restir-enhanced.md)
+
+Native comparisons against independent references show persistent bright
+patches on the Pavilion night roof and stone. A 104-frame trace captured a
+large raw luminance excursion followed by a longer-lived signed reconstruction.
+The pool reflection and day textures require separate checks when evaluating
+changes to denoising or reservoir confidence.
+[Highlight and texture measurements](zero-mutation-performance.md#pavilion-night-highlight-persistence)
+
+Cold expansion arithmetic repairs a reproduced Enhanced geometric-cancellation
+failure. Its 185 GPU geometry controls pass, and the formerly failing native
+Pavilion-night sequence completes all 40 submissions with finite final raw and
+reconstructed FLOAT captures. This is numerical recovery, not scene-quality or
+performance qualification; see the [validation record](restir-enhanced.md#geometric-cancellation-recovery).
+
+The [Enhanced execution investigation](enhanced-performance.md) confirms a native
+zero-mutation regression relative to contribution-prefix replay. Exact diagnostic
+counts show fewer path-step calls, while current shader profiles show greater
+spill storage. Outlining, completion-state, queue and fresh-reservoir experiments
+provide no useful recovery and remain unadopted; their failed image controls are
+preserved. Explicit field serialization and independent raw-buffer readback now
+qualify the bounded diffuse complete-event probe. Its paired Xcode capture reduces
+spill storage about 12%, with unchanged register allocation; production-frame
+qualification remains open. The integration at `3dc8b9d` passes all 311 required
+Debug tests and a full Release build, without meeting the frame-rate targets.
+
+The fixed four-scene lower-resolution study completes 3072 evaluation frames
+and 424 finite FLOAT captures with independent artifact/metric review. Enhanced
+reduces the reported Cornell/Prism raw MSE relative to PT, but signed temporal
+reconstruction produces higher MSE than reconstructed PT. Pavilion has large
+seed variation; highlight repair is unestablished. The study has no prior Area
+quality arm and supplies no native-FPS or equal-quality speedup claim. See the
+[quality evidence](enhanced-performance.md#lower-resolution-quality-screen).
 
 The [hero execution follow-up](hero-execution.md) combines exact temporal
 memoization with smaller current, historical and sampled-light state. Its short

@@ -12,8 +12,9 @@ struct AreaPathDomainContext {
     std::uint32_t mode = 0, depth = 0;
     float target_scale = 1;
     std::uint32_t replay = 0;
+    std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
 };
-static_assert(sizeof(AreaPathDomainContext) == 16, "Area path-domain context has no padding");
+static_assert(sizeof(AreaPathDomainContext) == 24, "Area path-domain context has no padding");
 inline bool same_area_path_domain_context(const AreaPathDomainContext &a,
                                           const AreaPathDomainContext &b) {
     return std::memcmp(&a, &b, sizeof(a)) == 0;
@@ -125,5 +126,24 @@ inline bool valid_area_evaluation_accounting(std::uint64_t pixels, bool history,
     const auto expected_cached = cache_used && history ? 2 * pixels : 0;
     return (!cache_used || history) && logical == expected && cached == expected_cached &&
            completed == expected - expected_cached;
+}
+// Physical transport, cached responses and analytic null completions are
+// disjoint categories. A cached null response remains a cache hit, not a
+// fabricated wavefront completion. Every fresh owner executes physical work.
+inline bool valid_enhanced_area_evaluation_accounting(
+    std::uint64_t pixels, bool history, std::uint32_t mutations, bool cache_used,
+    std::uint64_t physical, std::uint64_t cached, std::uint64_t analytic_null,
+    std::uint64_t logical, std::uint32_t spatial_evaluations = 4, bool fresh_only = false) {
+    if (fresh_only)
+        return !history && mutations == 0 && !cache_used && physical == pixels && cached == 0 &&
+               analytic_null == 0 && logical == pixels;
+    if (spatial_evaluations < 1 || spatial_evaluations > 4)
+        return false;
+    const auto expected =
+        logical_area_evaluations(pixels, history, mutations) - (4 - spatial_evaluations) * pixels;
+    const auto expected_cached = cache_used && history ? 2 * pixels : 0;
+    return (!cache_used || history) && logical == expected && cached == expected_cached &&
+           physical >= pixels && physical <= expected - expected_cached &&
+           analytic_null == expected - expected_cached - physical;
 }
 } // namespace rypath

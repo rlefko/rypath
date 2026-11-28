@@ -689,3 +689,21 @@ interpolation is not implemented or counted. This snapshot contains no new nativ
 coverage remains open; the historical Pavilion quality failure is separate
 evidence, and its investigation remains deferred in [status](status.md).
 Offline acceptance also remains open.
+
+
+## Paired reconstruction diagnostics
+
+Use `--mutation-arms 0 --compare-reconstruction on --reconstruction temporal`
+to submit each completed independent or zero-mutation Area frame to five
+separate reconstruction histories. The primary signed filter uses history
+limit 64 and five spatial passes. The additional signed streams use 1/0,
+1/5, and 64/0 for history limit/spatial passes. The fifth stream runs
+native-resolution MetalFX. Each signed stream uses the selected variance
+policy. An unavailable filter fails the comparison.
+
+The per-frame `comparison_filters` object reports each additional filter's
+reset flag, GPU time when available, and signed-linear physical error at
+reference camera poses. Final FLOAT EXRs identify the filter in their
+filename and metadata. Use a separate frame-benchmark run for throughput.
+Captures, additional reconstructions, and metric readback share this device
+and affect subsequent frames.

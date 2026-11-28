@@ -31,6 +31,13 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | `--width W --height H` | Fixed internal and reconstruction resolution; defaults to 1920×1080 |
 | `--mode temporal\|metalfx\|raw` | Explicit output mode; temporal is the default |
 | `--estimator area-replay\|independent` | Independent by default; Area replay selects the experimental reuse pipeline |
+| `--area-path-domain summed\|contribution\|enhanced` | Opt-in contribution/Enhanced representation; summed remains default |
+| `--area-contribution-replay full\|prefix` | Full or selected-prefix replay in contribution domains |
+| `--area-stencil auto\|adjacent\|reciprocal16\|paired-gaussian16` | Explicit spatial source domains |
+| `--area-spatial-mode all\|stochastic-pairs\|stochastic-shared` | All four spatial terms by default; opt-in independent or shared stochastic terms require Enhanced paired atlas |
+| `--area-history-cap N` | Fixed Enhanced prior-frame confidence cap, 1–20; default 20 |
+| `--resource-profile standard\|large` | Existing PBRT scene loading budgets; Pavilion requires large |
+| `--variance-policy paired\|center\|conservative` | Temporal reconstruction policy; paired remains default |
 | `--mutations 0\|1\|2\|4` | Area replay uses one corrected mutation by default; independent uses zero |
 | `--frames N` | Exit after N completed pipeline frames; omitted means unlimited |
 | `--seed N` | Render seed, default 1 |
@@ -44,6 +51,24 @@ The full [golden pipeline candidate](golden-pipeline.md) is selected explicitly:
 build/release/rypath-viewer.app/Contents/MacOS/rypath-viewer --demo \
   --estimator area-replay --mutations 1 --mode temporal
 ```
+
+The bounded Enhanced controls are also available explicitly, for example:
+
+```sh
+build/release/rypath-viewer.app/Contents/MacOS/rypath-viewer \
+  --scene tests/fixtures/pbrt-render/cornell-box-adapted.pbrt \
+  --estimator area-replay --spectral-transport hero --hero-wavelengths visible \
+  --area-path-domain enhanced --area-contribution-replay prefix \
+  --area-stencil paired-gaussian16 --area-spatial-mode stochastic-shared \
+  --area-history-cap 20 --mutations 0 --variance-policy conservative
+```
+
+Use `--resource-profile large` for Pavilion's existing scene-loading limits.
+The controls preserve the renderer's explicit unsupported-combination diagnostics;
+no preset or automatic quality/performance selection is introduced. Stochastic
+policies and confidence caps change the estimator, so capture metadata records
+the actual path domain, replay policy, spatial mode/atlas IDs and fixed cap.
+These experimental paths remain subject to the [Enhanced validation scope](restir-enhanced.md).
 
 `--reconstruction temporal|metalfx|raw-rgb` is the alternate mode spelling;
 specify the mode only once. Dimensions must be positive and no greater than

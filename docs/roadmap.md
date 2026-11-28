@@ -209,7 +209,27 @@ The [Enhanced ReSTIR sequence](restir-enhanced.md) adds a weighted contribution
 domain, selected-path replay and invertible reconnection before complete-pipeline
 quality/time qualification. Its target includes native 1080p, hero transport,
 Area reuse, one MCMC mutation and denoising: 20 FPS Cornell/Prism and 10+ FPS
-Pavilion. The merged acceleration stack (#74–77) does not satisfy those budgets.
+Pavilion. The merged acceleration stack and contribution-prefix runtime (#74–78) do not
+satisfy those budgets. The opt-in Enhanced domain adds canonical/discovery
+sampling, owned terminal-light reconnection and strict confidence. The scaled
+range repair has a four-scene native baseline; law 4 activates supported interior
+charts with forced connections and first-eligible checks. Focused physical,
+matched-mean and frame-history controls pass. Bounded two-operation suffix caching
+passes focused CPU/GPU and exact diffuse/conductor controls. Native static cache/null-compaction screens retain exact controls but show limited,
+scene-dependent gains. Camera-only dual motion passes focused runtime controls.
+Paired Gaussian spatial textures pass independent integer/GPU and bounded
+rendering controls. Optional exact duplication diagnostics pass focused CPU/GPU,
+off/on rendering and publication-lifetime controls; native diagnostic cost,
+moving-scene quality and complete quality/time qualification remain open. Adaptive biased caps remain outside this
+diagnostic.
+
+The original Enhanced cost study identified a native frame-time regression.
+Sampling a single reciprocal map recovers roughly half of the exhaustive
+frame interval. Fresh spectral evaluation and imported spatial path evaluation
+still exceed the real-time budgets. Further changes need complete-frame
+profiling, independent image references and separate checks of Pavilion
+texture, dark-surface outliers and reflection detail.
+[Zero-mutation performance study](zero-mutation-performance.md)
 
 [Compact native triangle metadata](geometry.md#compact-native-triangle-metadata)
 reduces retained AS memory with bounded exact image controls; it establishes no
@@ -252,9 +272,10 @@ fixtures, while the suite target remains unmet. Query shadows, default native AS
 builds and packed one-event execution remain selected; the other policies retain
 their opt-in experiments and measured limits.
 
-The next interactive work should improve importance sampling, replay/reconnection
-efficiency, guide generation during motion and filtering, then demonstrate quality
-per unit time against the independent control. The current adaptation does not
+The [zero-mutation study](zero-mutation-performance.md) reduces spatial work
+to one reciprocal map. Fresh discovery and the remaining path evaluation both
+need to fit the complete-frame budget. Compare changes against the exhaustive
+and independent controls at matched quality through camera motion. The current adaptation does not
 reproduce the papers' optimized reconnection implementations, and completed studies do not imply
 universal quality or performance acceptance.
 
