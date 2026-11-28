@@ -66,7 +66,8 @@ int main(int argc, char **argv) {
         auto checked = pbrt::check(argv[1]);
         need(checked.exit_code() == 0, pbrt::report(checked));
         auto translated = pbrt::translate(checked, {argv[1]}, {}, SpectralTransportSelection::hero);
-        need(translated.exit_code() == 0 && translated.scene.has_value(), "Fixture translation");
+        if (translated.exit_code() != 0 || !translated.scene)
+            throw std::runtime_error("Could not translate coating fixture");
         auto scene = std::move(*translated.scene);
         scene.integrator = IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
