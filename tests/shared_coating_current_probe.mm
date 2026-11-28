@@ -34,14 +34,14 @@ int main(int argc, char **argv) {
             if (!pipeline)
                 std::cerr << error.localizedDescription.UTF8String << '\n';
             require(pipeline != nil, "Pipeline failed");
-            auto output = [device newBufferWithLength:64 * 4 options:MTLResourceStorageModeShared];
+            auto output = [device newBufferWithLength:96 * 4 options:MTLResourceStorageModeShared];
             auto queue = [device newCommandQueue];
             require(output && queue, "Allocation failed");
             auto command = [queue commandBuffer];
             auto encoder = [command computeCommandEncoder];
             [encoder setComputePipelineState:pipeline];
             [encoder setBuffer:output offset:0 atIndex:0];
-            [encoder dispatchThreads:MTLSizeMake(64, 1, 1)
+            [encoder dispatchThreads:MTLSizeMake(96, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
             [encoder endEncoding];
             [command commit];
@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
             unsigned failed = 0;
             std::ofstream file(argv[2]);
             file << "{\"schema\":1,\"case_failure_masks\":[";
-            for (unsigned i = 0; i < 64; ++i) {
+            for (unsigned i = 0; i < 96; ++i) {
                 file << (i ? "," : "") << results[i];
                 if (results[i]) {
                     ++failed;
@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
             file.close();
             require(bool(file), "Output failed");
             require(failed == 0, "Shared coating current/full contract mismatch");
-            std::cout << "64 shared coating current/full/frozen/prefix controls passed\n";
+            std::cout << "96 shared coating current/full/frozen/prefix controls passed\n";
             return 0;
         } catch (const std::exception &e) {
             std::cerr << e.what() << '\n';

@@ -20,6 +20,25 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def verify_completed_provenance(report, directory, effective):
+    """Audit stored completed records without rendering again."""
+    shared = effective == "shared-diffuse"
+    source = "explicit-frame-session-v1" if shared else "legacy-default"
+    assert report["settings"]["coating_proposal_source"] == source
+    assert len(report["frames"]) == report["completed_frames"]
+    for row in report["frames"]:
+        assert row["complete"]
+        assert row["coating_proposal"] == effective
+        assert row["coating_proposal_contract"] == int(shared)
+        assert row["coating_proposal_capability_verified"] == shared
+    for label in ["raw", "signed"]:
+        with OpenEXR.File(str(directory / (label + ".exr"))) as f:
+            h = f.header()
+            assert h["rypath.frame.coating_proposal_source"] == source
+            assert h["rypath.frame.source_identity"] == report["source_identity"]
+            assert h["rypath.frame.physical_source_identity"] == report["physical_source_identity"]
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for key in ["benchmark", "legacy-benchmark", "old-metallib", "work-dir", "scene"]:
@@ -91,6 +110,7 @@ def main():
             assert s["coating_proposal_capability_verified"] == (policy == "shared-diffuse")
             assert s["coating_proposal_contract"] == (1 if policy == "shared-diffuse" else 0)
             assert (report["source_identity"] != report["physical_source_identity"]) == (policy == "shared-diffuse")
+            verify_completed_provenance(report, d, effective)
         return images
 
     legacy = run("legacy-default", "legacy")

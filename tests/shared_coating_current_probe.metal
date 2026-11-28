@@ -3,14 +3,14 @@
 using namespace rypath_bdpt;
 kernel void rypath_shared_coating_current_contract(device uint *out [[buffer(0)]],
                                                    uint id [[thread_position_in_grid]]) {
-    if (id >= 64u)
+    if (id >= 96u)
         return;
     rypath_packet::Prepared full{};
-    full.active_mask = 15;
+    full.active_mask = id < 64u ? 15u : id < 80u ? 5u : 9u;
     HeroFrozenBSDF compact{};
     compact.kind = 5;
-    compact.active_mask = 15;
-    uint variant = id % 16u;
+    compact.active_mask = full.active_mask;
+    uint variant = id < 64u ? id % 16u : 0u;
     for (uint k = 0; k < 4; ++k) {
         thread auto &lane = full.lane[k];
         lane.kind = 5;
@@ -75,12 +75,18 @@ kernel void rypath_shared_coating_current_contract(device uint *out [[buffer(0)]
                 fail |= 8u;
     }
     HeroTrack a, b;
+    a.active_mask = b.active_mask = full.active_mask;
     for (uint k = 0; k < 4; ++k) {
         a.density.lane[k] = b.density.lane[k] = (full.active_mask & (1u << k))
                                                     ? rypath_hero::number(exp2(-float(k)))
                                                     : rypath_hero::Number{};
     }
-    float4 ba(1, .25f, .5f, .75f), bb = ba;
+    float4 ba(1, .25f, .5f, .75f);
+    for (uint k = 0; k < 4; ++k)
+        if (!(full.active_mask & (1u << k)))
+            ba[k] = 0;
+    const float4 incoming_beta = ba;
+    float4 bb = ba;
     const bool pa = hero_prepare_future(a, ba, full), pb = hero_prepare_future(b, bb, compact);
     if (pa != pb || any(as_type<uint4>(ba) != as_type<uint4>(bb)))
         fail |= 16u;
@@ -89,10 +95,10 @@ kernel void rypath_shared_coating_current_contract(device uint *out [[buffer(0)]
             a.density.lane[k].exponent != b.density.lane[k].exponent)
             fail |= 32u;
     if (expect && full.active_mask != 1u &&
-        any(as_type<uint4>(ba) != as_type<uint4>(float4(1, .25f, .5f, .75f))))
+        any(as_type<uint4>(ba) != as_type<uint4>(incoming_beta)))
         fail |= 64u;
     const float3 wo = normalize(float3(.3f, .2f, 1)), wi = normalize(float3(-.2f, .1f, 1));
-    const float uc = (id / 16u) * .3f + .01f;
+    const float uc = (id < 64u ? id / 16u : id % 4u) * .3f + .01f;
     const auto sa = rypath_hero_scattering::sample(full, wo, uc, float2(.15f, .25f), 719);
     const auto sb = hero_current_sample(compact, wo, uc, float2(.15f, .25f), 719);
     if (sa.valid != sb.valid || sa.accepted != sb.accepted || sa.fallback != sb.fallback ||

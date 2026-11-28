@@ -14,7 +14,7 @@ class CommonCoatingMeasure(unittest.TestCase):
                   [F(0), F(0), F(1, 8), F(0)]]
         common_survival = [F(1, 2), F(3, 4), F(1, 8)]
         for posterior in [[F(1, 4)] * 4, [F(16, 27), F(8, 27), F(2, 27), F(1, 27)]]:
-            for active in [1, 3, 15]:
+            for active in [1, 3, 5, 9, 15]:
                 normalized = [p * bool(active & (1 << k)) for k, p in enumerate(posterior)]
                 total = sum(normalized)
                 normalized = [p / total for p in normalized]
