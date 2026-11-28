@@ -4,7 +4,9 @@
 // endpoint, transform or lookup helpers participate in these expected results.
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 namespace atlas_oracle {
@@ -13,6 +15,11 @@ using Entry = std::uint16_t;
 inline void require(bool value, const char *why) {
     if (!value)
         throw std::runtime_error(why);
+}
+inline std::size_t pixel_count(unsigned width, unsigned height) {
+    const auto count = std::uint64_t(width) * height;
+    require(count <= std::numeric_limits<Word>::max(), "Independent 32-bit pixel ID extent");
+    return std::size_t(count);
 }
 inline std::array<Word, 4> philox(std::array<Word, 4> v, std::array<Word, 2> key) {
     for (unsigned round = 0; round < 10; ++round) {
@@ -55,7 +62,7 @@ inline int modulo(long long x, unsigned width) {
     return int(r < 0 ? r + width : r);
 }
 inline std::vector<Entry> endpoints(const std::vector<Word> &labels, unsigned width) {
-    require(width >= 2 && width % 2 == 0 && labels.size() == std::size_t(width) * width,
+    require(width >= 2 && width % 2 == 0 && labels.size() == pixel_count(width, width),
             "Independent endpoint extent");
     std::vector<std::array<unsigned, 2>> positions(labels.size() / 2);
     std::vector<unsigned> counts(positions.size());
@@ -84,7 +91,7 @@ inline std::vector<Entry> endpoints(const std::vector<Word> &labels, unsigned wi
 }
 inline std::vector<Word> labels(unsigned width, unsigned atlas, unsigned passes = 128) {
     require(width >= 2 && width % 2 == 0, "Independent shuffle extent");
-    std::vector<Word> labels(width * width);
+    std::vector<Word> labels(pixel_count(width, width));
     for (unsigned p = 0; p < labels.size(); ++p)
         labels[p] = p / 2;
     const auto table = permutations();
@@ -93,9 +100,10 @@ inline std::vector<Word> labels(unsigned width, unsigned atlas, unsigned passes 
         const unsigned parity = pass % 2;
         for (unsigned by = 0; by < width / 2; ++by)
             for (unsigned bx = 0; bx < width / 2; ++bx) {
-                std::array<unsigned, 4> pixel{}, old{};
+                std::array<std::size_t, 4> pixel{};
+                std::array<unsigned, 4> old{};
                 for (unsigned j = 0; j < 4; ++j) {
-                    pixel[j] = ((2 * by + parity + j / 2) % width) * width +
+                    pixel[j] = std::size_t((2 * by + parity + j / 2) % width) * width +
                                (2 * bx + parity + j % 2) % width;
                     old[j] = labels[pixel[j]];
                     if (!coverage.empty())
@@ -139,7 +147,7 @@ inline std::array<int, 2> inverse(int x, int y, unsigned orientation) {
 inline std::vector<unsigned> lifted_pairs(const std::vector<Entry> &entries, unsigned L,
                                           unsigned width, unsigned height, unsigned orientation,
                                           unsigned ox, unsigned oy) {
-    std::vector<unsigned> result(width * height);
+    std::vector<unsigned> result(pixel_count(width, height));
     for (unsigned p = 0; p < result.size(); ++p)
         result[p] = p;
     const int reach = int(std::max(width, height) / L) + 3;
@@ -159,12 +167,12 @@ inline std::vector<unsigned> lifted_pairs(const std::vector<Entry> &entries, uns
                     return v[0] >= 0 && v[1] >= 0 && v[0] < int(width) && v[1] < int(height);
                 };
                 if (inside(p) && inside(q)) {
-                    const unsigned pi = unsigned(p[1]) * width + unsigned(p[0]),
-                                   qi = unsigned(q[1]) * width + unsigned(q[0]);
+                    const std::size_t pi = std::size_t(p[1]) * width + unsigned(p[0]),
+                                      qi = std::size_t(q[1]) * width + unsigned(q[0]);
                     require(result[pi] == pi && result[qi] == qi,
                             "Independent transformed endpoint pairs are disjoint");
-                    result[pi] = qi;
-                    result[qi] = pi;
+                    result[pi] = unsigned(qi);
+                    result[qi] = unsigned(pi);
                 }
             }
     }
@@ -175,7 +183,7 @@ inline unsigned neighbor(const std::vector<Entry> &entries, unsigned tile_width,
                          unsigned oy) {
     const auto t = transform(pixel % width, pixel / width, orientation);
     const auto index =
-        unsigned(modulo(t[1] + oy, tile_width)) * tile_width + modulo(t[0] + ox, tile_width);
+        std::size_t(modulo(t[1] + oy, tile_width)) * tile_width + modulo(t[0] + ox, tile_width);
     const auto d = decode(entries.at(index));
     const auto lifted = inverse(d[0], d[1], orientation);
     const long long x = static_cast<long long>(pixel % width) + lifted[0],
@@ -185,17 +193,17 @@ inline unsigned neighbor(const std::vector<Entry> &entries, unsigned tile_width,
 } // namespace atlas_oracle
 namespace atlas_oracle {
 inline std::vector<Entry> handwritten(unsigned width, unsigned candidate) {
-    std::vector<Entry> entries(width * width);
+    std::vector<Entry> entries(pixel_count(width, width));
     for (unsigned y = 0; y < width; ++y)
         for (unsigned x = 0; x < width; ++x) {
             if (candidate == 0 || (candidate == 1 && y % 2 == 0))
-                entries[y * width + x] = pack(x % 2 ? -1 : 1, 0);
+                entries[std::size_t(y) * width + x] = pack(x % 2 ? -1 : 1, 0);
             else if (candidate == 1)
-                entries[y * width + x] = pack(x % 2 ? 1 : -1, 0);
+                entries[std::size_t(y) * width + x] = pack(x % 2 ? 1 : -1, 0);
             else if (candidate == 2)
-                entries[y * width + x] = pack(0, y % 2 ? -1 : 1);
+                entries[std::size_t(y) * width + x] = pack(0, y % 2 ? -1 : 1);
             else
-                entries[y * width + x] = pack(x % 2 ? -1 : 1, y % 2 ? -1 : 1);
+                entries[std::size_t(y) * width + x] = pack(x % 2 ? -1 : 1, y % 2 ? -1 : 1);
         }
     return entries;
 }
