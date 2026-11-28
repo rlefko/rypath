@@ -119,6 +119,11 @@ void rotate(FrameCamera &camera, Vec axis, double angle) {
                 camera.texture_camera->camera_from_world[row * 3 + col] = float(rows[row][col]);
     }
 }
+std::string float_text(float value) {
+    std::ostringstream text;
+    text << std::setprecision(std::numeric_limits<float>::max_digits10) << value;
+    return text.str();
+}
 NSString *native(const std::string &text) {
     auto value = [[NSString alloc] initWithBytes:text.data()
                                           length:text.size()
@@ -395,6 +400,8 @@ class ViewerState {
                                          options.measurement_json.string());
         }
 
+        std::cout << "Film sampling: " << (config.coherent_film_jitter ? "coherent" : "independent")
+                  << '\n';
         std::cout << "Live overrides: " << options.width << 'x' << options.height
                   << ", PT/volpath, independent sample stream, one fresh path/pixel/frame, "
                      "footprint=1, unclamped raw XYZ\n"
@@ -782,6 +789,10 @@ class ViewerState {
             {"rypath.output", "raw-unexposed-unclamped"},
             {"rypath.scene", options.demo ? "demo" : options.scene.string()},
             {"rypath.sample_index", std::to_string(info.source.sample_index)},
+            {"rypath.frame.film_sampling",
+             info.source.coherent_film_jitter ? "coherent" : "independent"},
+            {"rypath.frame.film_jitter_x", float_text(info.source.film_jitter[0])},
+            {"rypath.frame.film_jitter_y", float_text(info.source.film_jitter[1])},
             {"rypath.epoch", std::to_string(info.source.epoch)},
             {"rypath.seed", std::to_string(options.seed)},
             {"rypath.estimator", estimator_name()},

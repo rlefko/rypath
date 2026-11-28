@@ -32,6 +32,7 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | `--output-width W --output-height H` | Reconstruction output dimensions; default to internal dimensions. MetalFX supports upscaling; raw and signed temporal require native dimensions |
 | `--mode temporal\|metalfx\|raw` | Explicit output mode; temporal is the default |
 | `--estimator area-replay\|independent` | Independent by default; Area replay selects the experimental reuse pipeline |
+| `--film-jitter independent\|coherent` | Common per-frame film offsets for independent hero transport with a half-pixel box filter. Defaults to per-pixel independent sampling; other filter footprints fail explicitly. |
 | `--coating-proposal hero-only\|shared-diffuse` | Experimental joint proposal for compatible non-scattering coated diffuse materials. Requires explicit PBRT hero transport with independent or Enhanced sampling. The default is hero-only. |
 | `--area-path-domain summed\|contribution\|enhanced` | Opt-in contribution/Enhanced representation; summed remains default |
 | `--area-contribution-replay full\|prefix` | Full or selected-prefix replay in contribution domains |
@@ -235,6 +236,15 @@ increase `--frames` when needed. A small functional run or a mean rate does not
 qualify motion quality or a p95 frame-time target.
 
 ## Validation boundary
+
+The opt-in `--film-jitter coherent` option uses the same sampling and guide path
+as the [bounded coherent-film experiment](reconstruction.md). Presentation receipts
+retain the requested mode plus each source's actual coherent flag and film offsets;
+raw and reconstructed captures retain those same offsets. This permits actual
+presented-frame comparisons without treating display repeats as new samples.
+Prism's authored triangle filter is preserved and explicitly rejected by coherent
+mode; stock `--film-jitter independent` remains available. The Cornell static
+upscale result does not qualify native or moving-camera output.
 
 The presented-frame measurement extension passes Debug/Release viewer builds,
 portable option/report tests, focused Apple Clang analysis and formatting checks.

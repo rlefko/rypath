@@ -168,6 +168,8 @@ inline std::string measurement_report(const Options &o,
     out << std::setprecision(17) << "{\"schema\":1,\"status\":" << json_string(status)
         << ",\"timing_scope\":\"CAMetalDrawable presentedTime; distinct source frames; "
            "nearest-rank p95\""
+        << ",\"film_jitter_requested\":"
+        << json_string(o.coherent_film_jitter ? "coherent" : "independent")
         << ",\"frame_scheduling\":" << json_string(o.completion_wakeup ? "completion" : "timer")
         << ",\"device\":" << json_string(device) << ",\"os\":" << json_string(os)
         << ",\"mutations\":" << (o.estimator == FrameEstimator::area_replay ? o.mutation_steps : 0)
@@ -260,6 +262,9 @@ inline std::string measurement_report(const Options &o,
                                             ? std::optional{f.effective.gpu_seconds}
                                             : std::nullopt);
         gpu_duration("reconstruction_gpu_seconds", f.reconstruction_gpu_seconds);
+        out << ",\"coherent_film_jitter\":" << (f.effective.coherent_film_jitter ? "true" : "false")
+            << ",\"film_jitter\":[" << f.effective.film_jitter[0] << ','
+            << f.effective.film_jitter[1] << ']';
         vector("camera_origin", f.camera_origin);
         vector("camera_forward", f.camera_forward);
         vector("camera_up", f.camera_up);

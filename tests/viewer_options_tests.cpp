@@ -43,6 +43,19 @@ void rejected(std::initializer_list<std::string> arguments, const std::string &r
     require(!parse(arguments).diagnostic.empty(), "Invalid options accepted: " + reason);
 }
 void spectral_and_area_policies() {
+    const auto coherent = accepted(
+        {"--scene", "fixture.pbrt", "--spectral-transport", "hero", "--film-jitter", "coherent"});
+    require(viewer::frame_configuration(coherent).coherent_film_jitter &&
+                !viewer::frame_configuration(accepted({"--demo"})).coherent_film_jitter &&
+                !viewer::frame_configuration(accepted({"--demo", "--film-jitter", "independent"}))
+                     .coherent_film_jitter,
+            "Film jitter mode reaches the production frame configuration and defaults off");
+    rejected({"--demo", "--film-jitter", "invalid"}, "unknown film jitter");
+    rejected({"--demo", "--film-jitter", "coherent", "--spectral-transport", "scalar"},
+             "coherent scalar film sampling");
+    rejected({"--demo", "--film-jitter", "coherent", "--spectral-transport", "hero", "--estimator",
+              "area-replay"},
+             "coherent Area film sampling");
     const auto shared = accepted({"--scene", "fixture.pbrt", "--spectral-transport", "hero",
                                   "--coating-proposal", "shared-diffuse"});
     require(viewer::frame_configuration(shared).coating_proposal ==
@@ -354,6 +367,8 @@ void measurement_contracts() {
         {2, .3, .1, "static", false},   {3, .4, .1, "rotation", false},
         {4, .5, .1, "rotation", false}, {5, .6, .1, "rotation", false},
         {6, .7, .1, "rotation", false}};
+    frames[0].effective.coherent_film_jitter = true;
+    frames[0].effective.film_jitter = {.25f, -.375f};
     frames[0].effective.gpu_time_valid = true;
     frames[0].effective.gpu_seconds = .125;
     frames[0].reconstruction_gpu_seconds = 0;
@@ -361,6 +376,10 @@ void measurement_contracts() {
         {0, .1, 1, true}, {1, .2, 2, true}, {1, .25, 2.5, true}, {2, .3, 3, true},
         {3, .4, 4, true}, {4, .5, 0, true}, {5, .6, 0, false}};
     const auto report = viewer::measurement_report(o, frames, drawables, "complete", 7);
+    require(report.find("\"film_jitter_requested\":\"independent\"") != std::string::npos &&
+                report.find("\"coherent_film_jitter\":true,\"film_jitter\":[0.25,-0.375]") !=
+                    std::string::npos,
+            "Viewer receipts distinguish requested mode and actual submitted film offsets");
     require(report.find("\"raw_gpu_seconds\":0.125,\"reconstruction_gpu_seconds\":0,") !=
                     std::string::npos &&
                 report.find("\"raw_gpu_seconds\":null,\"reconstruction_gpu_seconds\":null,") !=

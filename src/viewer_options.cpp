@@ -45,6 +45,8 @@ const char *usage() {
            "  --area-history-cap-policy fixed|duplication (default: fixed; duplication is biased)\n"
            "  --resource-profile standard|large (default: standard)\n"
            "  --variance-policy paired|center|conservative (temporal only; default: paired)\n"
+           "  --film-jitter independent|coherent  common film offsets for box-filtered independent "
+           "hero\n"
            "  --mutations 0|1|2|4  (default: 1 for Area; independent uses zero)\n"
            "  --frames N  exit after N completed pipeline frames; omitted means unlimited\n"
            "  --seed 1 --exposure 0 --near-plane .001 --capture-dir DIR (default: "
@@ -71,6 +73,7 @@ FrameConfig frame_configuration(const Options &o) {
     c.execution = FrameExecution::wavefront;
     c.estimator = o.estimator;
     c.coating_proposal = o.coating_proposal;
+    c.coherent_film_jitter = o.coherent_film_jitter;
     c.mutation_policy = o.mutation_policy;
     c.area_stencil = o.area_stencil;
     c.mutation_steps = o.estimator == FrameEstimator::area_replay ? o.mutation_steps : 0;
@@ -165,6 +168,10 @@ std::string parse_options(int argc, char **argv, Options &o) {
             o.hero_wavelengths = parse_hero_wavelength_sampling(value);
             if (!o.hero_wavelengths)
                 return "hero wavelengths must be uniform or visible";
+        } else if (key == "--film-jitter") {
+            if (value != "independent" && value != "coherent")
+                return "film jitter must be independent or coherent";
+            o.coherent_film_jitter = value == "coherent";
         } else if (key == "--coating-proposal") {
             const auto policy = parse_frame_coating_proposal(value);
             if (!policy)
@@ -270,6 +277,11 @@ std::string parse_options(int argc, char **argv, Options &o) {
         } else
             return "unknown option: " + std::string(key);
     }
+    if (o.coherent_film_jitter && (o.estimator != FrameEstimator::independent ||
+                                   o.spectral_transport == SpectralTransportSelection::scalar ||
+                                   o.spectral_transport == SpectralTransportSelection::packet))
+        return "coherent film jitter requires independent hero transport and a half-pixel box "
+               "filter";
     if (seen.contains("--area-path-domain") && o.estimator != FrameEstimator::area_replay)
         return "area path domain requires area-replay estimator";
     if (seen.contains("--area-contribution-replay") &&
