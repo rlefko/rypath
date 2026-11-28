@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "area_evaluation_context.hpp"
 #include "area_wire.h"
+#include "coherent_film_jitter.hpp"
 #include "frame_benchmark_motion.hpp"
+#include "frame_sampling_identity.hpp"
 #include "frame_session.hpp"
 #include "frame_statistics.hpp"
 #include "gpu_capture.hpp"
@@ -2239,13 +2241,19 @@ int run(const Options &options) {
                     observation.coating_proposal_contract = info.coating_proposal_contract;
                     observation.coating_proposal_capability_verified =
                         info.coating_proposal_capability_verified;
-                    if (info.coating_proposal == rypath::FrameCoatingProposal::shared_diffuse) {
-                        const auto binding =
-                            report.physical_source_identity + "|frame-coating:shared-diffuse-v1";
-                        report.source_identity = rypath::digest_hex(rypath::sha256(
-                            std::span(reinterpret_cast<const std::uint8_t *>(binding.data()),
-                                      binding.size())));
-                    }
+                    const auto expected_film =
+                        options.coherent_film_jitter
+                            ? rypath::coherent_film_offset(
+                                  rypath::coherent_film_words(options.seed, info.sample_index))
+                            : std::array<float, 2>{};
+                    if (info.coherent_film_jitter != options.coherent_film_jitter ||
+                        info.film_jitter != expected_film)
+                        throw std::runtime_error(
+                            "Actual frame film sampling/offset differs from request");
+                    report.source_identity = rypath::frame_benchmark::sampling_source_identity(
+                        report.physical_source_identity,
+                        info.coating_proposal == rypath::FrameCoatingProposal::shared_diffuse,
+                        info.coherent_film_jitter);
                     if (report.effective_diffuse_events &&
                         *report.effective_diffuse_events != info.diffuse_events)
                         throw std::runtime_error(

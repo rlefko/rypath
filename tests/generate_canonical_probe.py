@@ -16,7 +16,7 @@ PT_STEP = b'#include "packet_pt_step.h"\n'
 TRANSPORT_END = PT_STEP + b'} // namespace rypath_bdpt\n'
 PREFIX = b'// canonical-probe omitted: '
 RENDER_KERNELS = (
-    'rypath_checkpoint_contract', 'rypath_sobol_probe', 'rypath_coherent_film_words',
+    'rypath_checkpoint_contract', 'rypath_sobol_probe', 'rypath_coherent_film_words_v1',
     'rypath_lens_probe',
     'rypath_probe_blackbody', 'rypath_scattering_continuation_probe',
     'rypath_scattering_frame_probe', 'rypath_render_sky', 'rypath_render_paths',

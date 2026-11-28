@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "coherent_film_jitter.hpp"
+#include "frame_sampling_identity.hpp"
 #include "reconstruction_camera.hpp"
 #include "reconstruction_continuity.hpp"
 #include "reconstruction_guide_cache.hpp"
@@ -179,6 +180,19 @@ void guide_key_dependencies() {
     }
 }
 int main() try {
+    using rypath::frame_benchmark::sampling_source_identity;
+    require(sampling_source_identity("legacy-physical-source", false, false) ==
+                "legacy-physical-source",
+            "Default sampling identity changed");
+    require(sampling_source_identity("legacy-physical-source", true, false) ==
+                "e1d410b89e909554ae09b18fcb3b1b710e82e0255e2b07b9863635a02d60d210",
+            "Legacy shared-coating sampling identity changed");
+    require(sampling_source_identity("legacy-physical-source", false, true) ==
+                "b9bd194f7412d54b168878a131460c19707f048a957a16b4314bc348e932db11",
+            "Coherent sampling identity omits the executed policy");
+    require(sampling_source_identity("legacy-physical-source", true, true) ==
+                "9aa73352ed57947c6510ee2eba94da9616cfed6d8fc3f13381ff9556d33e8de1",
+            "Coherent and shared-coating identities do not compose");
     {
         rypath::GeometryMesh mesh;
         mesh.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}};

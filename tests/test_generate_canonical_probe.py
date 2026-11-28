@@ -66,7 +66,7 @@ class CanonicalProbeGenerationTests(unittest.TestCase):
     def test_coherent_film_diagnostic_is_reviewed_and_omitted_in_both_modes(self):
         current_probe = (ROOT / 'tests/hero_current_probe.metal').read_bytes()
         step = (ROOT / 'shaders/packet_pt_step.h').read_bytes()
-        name = 'rypath_coherent_film_words'
+        name = 'rypath_coherent_film_words_v1'
         self.assertIn(name, generator.RENDER_KERNELS)
         for derived in (generator.transform(self.render, self.probe, self.transport)[0],
                         generator.transform_current_details(
@@ -193,6 +193,8 @@ kernel void real() { const char *s = "} /* kernel \\\"";
                 self.assertNotIn(str((ROOT / 'shaders' / name).resolve()),
                                  record['retained_helper_files'])
             self.assertIn('canonical_packet_transport.h', record['generated_files'])
+            self.assertIn(str((ROOT / 'src/coherent_film_shared.h').resolve()),
+                          record['retained_helper_files'])
             self.assertEqual(len(record['edits']['transport']), 1)
             self.assertFalse(record['numeric_or_capability_policy_changes'])
         self.assertEqual(render.read_bytes(), self.render)
@@ -283,6 +285,7 @@ class CurrentProbeGenerationTests(unittest.TestCase):
                 for path, digest in record[field].items():
                     self.assertEqual(hashlib.sha256(Path(path).read_bytes()).hexdigest(), digest)
             closure = {Path(p).name for p in record['retained_helper_files']}
+            self.assertIn('coherent_film_shared.h', closure)
             self.assertIn('hero_current_bsdf.h', closure)
             self.assertIn('hero_frozen_bsdf.h', closure)
             self.assertIn('hero_pt_state.h', closure)

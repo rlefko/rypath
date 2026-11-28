@@ -909,7 +909,7 @@ void coherent_word_contract() {
     std::string error;
     auto library = metal::load_library(device, {}, error);
     require(library != nil, error);
-    auto pipeline = metal::load_pipeline(device, library, @"rypath_coherent_film_words", error);
+    auto pipeline = metal::load_pipeline(device, library, @"rypath_coherent_film_words_v1", error);
     require(pipeline != nil, error);
     std::vector<std::uint32_t> modes{0};
     for (unsigned bit = 0; bit < 32; ++bit)
@@ -973,6 +973,28 @@ void coherent_word_contract() {
     if (const auto legacy = std::getenv("RYPATH_LEGACY_METALLIB")) {
         auto scene = plane();
         scene.spectral_transport = SpectralTransport::hero;
+        FrameConfig legacy_config{.width = side, .height = side, .seed = 197};
+        legacy_config.coherent_film_jitter = true;
+        const auto unsupported = build_frame_session(scene, legacy_config, legacy);
+        require(!unsupported.session &&
+                    unsupported.diagnostic.find("coherent film sampling capability v1") !=
+                        std::string::npos,
+                "Legacy selected raw library admitted coherent sampling or failed without "
+                "capability diagnostic");
+        legacy_config.coherent_film_jitter = false;
+        auto independent = build_frame_session(scene, legacy_config, legacy);
+        require(independent.session != nullptr,
+                "Legacy independent raw session rejected: " + independent.diagnostic);
+        auto raw = source(*independent.session);
+        source_complete(*raw);
+        require(!raw->poll().coherent_film_jitter &&
+                    raw->poll().film_jitter == std::array<float, 2>{},
+                "Legacy independent source claimed coherent film offsets");
+        auto incompatible_guides =
+            build_reconstruction_stream(*raw, {.mode = ReconstructionMode::temporal});
+        require(!incompatible_guides.stream &&
+                    incompatible_guides.diagnostic.find("shader ABI mismatch") != std::string::npos,
+                "Legacy guides admitted the extended jitter layout");
         for (const auto profile : {IntersectionProfile::native, IntersectionProfile::compensated})
             for (const auto transport : {SpectralTransport::scalar, SpectralTransport::hero}) {
                 scene.spectral_transport = transport;
@@ -1153,8 +1175,10 @@ int availability(ReconstructionMode mode) {
 int main(int argc, char **argv) {
     if (argc != 2 ||
         (std::string_view(argv[1]) != "--raw" && std::string_view(argv[1]) != "--metalfx" &&
-         std::string_view(argv[1]) != "--temporal")) {
-        std::cerr << "Usage: reconstruction_stream_tests --raw|--metalfx|--temporal\n";
+         std::string_view(argv[1]) != "--temporal" &&
+         std::string_view(argv[1]) != "--coherent-film")) {
+        std::cerr
+            << "Usage: reconstruction_stream_tests --raw|--metalfx|--temporal|--coherent-film\n";
         return 1;
     }
     @autoreleasepool {
@@ -1165,6 +1189,14 @@ int main(int argc, char **argv) {
                                   : ReconstructionMode::metalfx;
             if (const auto unavailable = availability(mode))
                 return unavailable;
+            if (std::string_view(argv[1]) == "--coherent-film") {
+                coherent_word_contract();
+                coherent_jitter_guides(ReconstructionMode::temporal);
+                coherent_jitter_guides(ReconstructionMode::metalfx);
+                std::cout
+                    << "Coherent film word, library capability, and motion qualification passed\n";
+                return 0;
+            }
             if (mode == ReconstructionMode::temporal)
                 coherent_word_contract();
             coherent_jitter_guides(mode);

@@ -572,6 +572,7 @@ struct FramePairAtlasAsset {
 };
 
 struct MetalRenderScene::Impl {
+    bool coherent_film_capability = false;
     std::unique_ptr<MetalGeometryScene> geometry;
     id<MTLAccelerationStructure> empty_packet_structure = nil;
     AccelerationBuildInfo acceleration_build;
@@ -3036,6 +3037,13 @@ struct FrameSession::Impl {
         auto library = metal::load_library(r.device, library_path, error);
         if (library == nil)
             return error;
+        // This versioned production diagnostic is a selected-library capability,
+        // independent of the unchanged legacy frame layout/handshake. Check raw
+        // and frame AIR contexts so mixed libraries cannot claim shifted sampling.
+        if (config.coherent_film_jitter &&
+            (!r.coherent_film_capability ||
+             [library newFunctionWithName:@"rypath_coherent_film_words_v1"] == nil))
+            return "Selected Metal library lacks coherent film sampling capability v1";
         frame_library = library;
         initialize = metal::load_pipeline(r.device, library, @"rypath_frame_initialize", error);
         if (initialize == nil)
@@ -6440,6 +6448,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (library == nil) {
             return result;
         }
+        impl->coherent_film_capability =
+            [library newFunctionWithName:@"rypath_coherent_film_words_v1"] != nil;
         if (!verify_shader_contract(impl->device, impl->queue, library, result.diagnostic)) {
             return result;
         }

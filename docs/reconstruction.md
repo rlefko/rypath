@@ -105,10 +105,11 @@ Frame receipts retain whether coherent sampling actually ran and its per-frame
 ray offsets. The wire parameter layout remains unchanged. A non-power-of-two tag occupies the
 former `emitter_slots` padding word; old hosts used only zero or a power-of-two
 count there, and shaders no longer use the word for light indexing. Exact-tag
-matching preserves every legacy value as per-pixel sampling. The live frame ABI
-handshake advances independently of persisted offline contracts, so an
-incompatible live metallib fails admission while unchanged offline checkpoints
-remain readable. Word probes compare the shader's production sample initialization
+matching preserves every legacy value as per-pixel sampling. The unchanged frame-layout handshake preserves legacy independent raw sessions.
+Coherent admission instead requires the selected raw/frame library's versioned
+`rypath_coherent_film_words_v1` capability. Legacy raw shaders cannot silently
+claim shifted sampling, and the guide contract separately rejects legacy layouts.
+Persisted offline contracts and checkpoints remain unchanged. Word probes compare the shader's production sample initialization
 with host expectations for zero, every legacy power of two, the coherent tag and
 an invalid tag. An optional legacy-library control additionally compares default
 scalar/hero offline output through native and compensated traversal. The native
@@ -117,6 +118,11 @@ classifier continues to use the authored camera pose; coherent offsets alone do
 not assert an authored pose change. Transmission/defocus correspondence under
 this shifted guide grid remains unqualified. This experimental control is not
 a new default or a general anti-aliasing quality claim.
+
+Benchmark qualification checks requested versus actual film policy and exact
+per-frame offsets before deriving `source_identity`. Coherent policy is hashed
+into that sampling identity after any actual shared-coating policy; historical
+default/shared-coating-only identities and `physical_source_identity` are preserved.
 
 On M4 Max, macOS 26.6 and Xcode 26.6, the coherent-film experiment passes
 Debug temporal/MetalFX stream checks with Metal API validation, including the

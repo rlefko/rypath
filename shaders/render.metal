@@ -322,10 +322,10 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
 
 // Exercises the production film-word selection under the legacy reserved-word
 // domain as well as the tagged coherent mode. No transport work or timing path.
-kernel void rypath_coherent_film_words(constant wire::Parameters &p [[buffer(0)]],
-                                       const device sobol::Tables &tables [[buffer(1)]],
-                                       device wire::Sample *out [[buffer(2)]],
-                                       uint lane [[thread_position_in_grid]]) {
+kernel void rypath_coherent_film_words_v1(constant wire::Parameters &p [[buffer(0)]],
+                                          const device sobol::Tables &tables [[buffer(1)]],
+                                          device wire::Sample *out [[buffer(2)]],
+                                          uint lane [[thread_position_in_grid]]) {
     ulong index = 0;
     out[lane] = begin_sample(p, tables, lane, index);
 }
