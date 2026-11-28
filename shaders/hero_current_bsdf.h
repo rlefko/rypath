@@ -90,8 +90,6 @@ inline bool prepare_hero_current(const thread Resources &r, const device wire::M
     out = {};
     out.kind = material.scattering;
     out.active_mask = active_mask;
-    bool shared_coating =
-        rypath_packet_layered::shared_diffuse_enabled() && material.scattering == 5;
     for (uint k = 0; k < 4; ++k) {
         if (!(active_mask & (1u << k)))
             continue;
@@ -111,14 +109,10 @@ inline bool prepare_hero_current(const thread Resources &r, const device wire::M
         }
         // Every active companion is prepared and validated even for coatings,
         // although only hero0's coating survives in the tagged payload.
-        if (shared_coating) {
-            const auto reference = k ? hero_frozen_coated(out) : lane.layered;
-            shared_coating = hero_shared_coating_controls(reference, lane.layered);
-        }
+        // This is the sole proof writer: lane0 initializes the tag and each
+        // active companion monotonically clears it if controls differ.
         hero_current_store_lane(out, k, lane);
     }
-    if (shared_coating)
-        out.payload[20] = 0x53434431u;
     return hero_current_structure(out);
 }
 inline bool hero_current_coated_compatible(const thread HeroFrozenBSDF &p) {
