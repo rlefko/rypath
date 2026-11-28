@@ -29,7 +29,8 @@ inline HeroPrevious hero_freeze_previous(const thread HeroCurrentVertex &v) {
     // sentinel AND zero payload, rather than persisting a queryable coating.
     if (!hero_current_structure(v.bsdf) ||
         ((v.bsdf.kind == 5 || v.bsdf.kind == 6) &&
-         (v.bsdf.active_mask != 1 || !hero_current_coated_compatible(v.bsdf))))
+         ((v.bsdf.active_mask != 1 && !hero_frozen_shared_coating(v.bsdf)) ||
+          !hero_current_coated_compatible(v.bsdf))))
         frozen.kind = 0xffffffffu;
     else
         frozen = v.bsdf;

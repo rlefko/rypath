@@ -16,6 +16,32 @@ struct Parameters {
     rypath_layered::Parameters lane[4];
     uint active_mask;
 };
+// Compile-time experiment: the default scalar hero fallback is unchanged.
+#ifndef RYPATH_HERO_SHARED_COATED_DIFFUSE
+#define RYPATH_HERO_SHARED_COATED_DIFFUSE 0
+#endif
+inline bool shared_diffuse_controls(const thread rypath_layered::Parameters &a,
+                                    const thread rypath_layered::Parameters &b) {
+    return !a.conductor_base && !b.conductor_base && a.albedo == 0 && b.albedo == 0 &&
+           valid_parameters(a) && valid_parameters(b) && a.interface.eta == b.interface.eta &&
+           a.interface.alpha_x == b.interface.alpha_x &&
+           a.interface.alpha_y == b.interface.alpha_y && a.interface.smooth == b.interface.smooth &&
+           a.thickness == b.thickness && a.g == b.g && a.max_depth == b.max_depth &&
+           a.samples == b.samples && a.material_seed == b.material_seed;
+}
+inline bool shared_diffuse(const thread Parameters &p) {
+#if RYPATH_HERO_SHARED_COATED_DIFFUSE
+    if (!(p.active_mask & 1u) || (p.active_mask & ~15u))
+        return false;
+    for (uint k = 0; k < 4; ++k)
+        if ((p.active_mask & (1u << k)) && !shared_diffuse_controls(p.lane[0], p.lane[k]))
+            return false;
+    return true;
+#else
+    (void)p;
+    return false;
+#endif
+}
 struct Evaluation {
     float4 f;
     float pdf;

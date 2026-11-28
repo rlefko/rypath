@@ -75,6 +75,35 @@ inline rypath_layered::Parameters hero_frozen_coated(const thread HeroFrozenBSDF
             p.payload[15],
             as_type<int>(p.payload[16])};
 }
+// Experimental shared hidden proposal for nondispersive, non-scattering coated
+// diffuse layers. Disabled in production builds until scene-quality qualification.
+#ifndef RYPATH_HERO_SHARED_COATED_DIFFUSE
+#define RYPATH_HERO_SHARED_COATED_DIFFUSE 0
+#endif
+inline bool hero_frozen_shared_coating(const thread HeroFrozenBSDF &p) {
+#if RYPATH_HERO_SHARED_COATED_DIFFUSE
+    return p.kind == 5 && p.payload[20] == 0x53434431u;
+#else
+    (void)p;
+    return false;
+#endif
+}
+inline bool hero_shared_coating_controls(const thread rypath_layered::Parameters &a,
+                                         const thread rypath_layered::Parameters &b) {
+    return rypath_packet_layered::shared_diffuse_controls(a, b);
+}
+inline rypath_packet_layered::Parameters
+hero_frozen_layered_packet(const thread HeroFrozenBSDF &p) {
+    rypath_packet_layered::Parameters q;
+    q.active_mask = p.active_mask;
+    const auto base = hero_frozen_coated(p);
+    for (uint k = 0; k < 4; ++k) {
+        q.lane[k] = base;
+        if (k && hero_frozen_shared_coating(p))
+            q.lane[k].reflectance = hero_frozen_float(p, 16u + k);
+    }
+    return q;
+}
 inline HeroFrozenTable hero_frozen_table(const thread HeroFrozenBSDF &p, uint k) {
     const uint b = 6 * k;
     return {hero_frozen_pointer<uint>(p.payload + b), hero_frozen_pointer<float>(p.payload + b + 2),
@@ -165,13 +194,22 @@ inline HeroFrozenBSDF hero_freeze_bsdf(const thread rypath_packet::Prepared &p) 
     }
     // Multi-lane coatings occur only in terminal history (before collapse).
     // Their legacy hero query is invalid; retain that result without four coats.
-    if ((f.kind == 5 || f.kind == 6) && (f.active_mask != 1 || !rypath_packet::compatible(p))) {
+    const bool shared_coating =
+        f.kind == 5 && rypath_packet_layered::shared_diffuse(rypath_packet::layered(p));
+    if ((f.kind == 5 || f.kind == 6) &&
+        ((f.active_mask != 1 && !shared_coating) || !rypath_packet::compatible(p))) {
         f.kind = 0xffffffffu;
         return f;
     }
     for (uint k = 0; k < 4; ++k)
         if (f.active_mask & (1u << k))
             hero_frozen_store_lane(f, k, p.lane[k]);
+    if (shared_coating) {
+        for (uint k = 1; k < 4; ++k)
+            if (f.active_mask & (1u << k))
+                hero_frozen_store_float(f, 16u + k, p.lane[k].layered.reflectance);
+        f.payload[20] = 0x53434431u;
+    }
     return f;
 }
 inline rypath_hero_scattering::Evaluation hero_frozen_evaluate(const thread HeroFrozenBSDF &p,
@@ -182,22 +220,22 @@ inline rypath_hero_scattering::Evaluation hero_frozen_evaluate(const thread Hero
     if (!(p.active_mask & 1u) || (p.active_mask & ~15u) || !all(isfinite(wo)) || !all(isfinite(wi)))
         return out;
     if (p.kind == 5 || p.kind == 6) {
-        if (p.active_mask != 1 || !rypath_packet::has_surface() || !rypath_packet::has_coated())
+        if ((p.active_mask != 1 && !hero_frozen_shared_coating(p)) ||
+            !rypath_packet::has_surface() || !rypath_packet::has_coated())
             return out;
         const auto coated = hero_frozen_coated(p);
         if (!rypath_layered::valid_parameters(coated))
             return out;
         // Reuse the packet float4 estimator and both directional validations;
         // scalar layered evaluation has a different arithmetic/RNG contract.
-        rypath_packet_layered::Parameters q;
-        q.active_mask = 1;
-        for (uint k = 0; k < 4; ++k)
-            q.lane[k] = coated;
+        const auto q = hero_frozen_layered_packet(p);
         auto forward = rypath_packet_layered::directional_pdf(q, wo, wi);
         auto reverse = rypath_packet_layered::directional_pdf(q, wi, wo);
         auto e = rypath_packet_layered::evaluate(q, wo, wi, seed, mode == Mode::Importance);
         out.f = e.f;
-        out.pdf[0] = forward.pdf;
+        for (uint k = 0; k < 4; ++k)
+            if (p.active_mask & (1u << k))
+                out.pdf[k] = forward.pdf;
         out.valid = e.valid && forward.valid && reverse.valid && isfinite(forward.pdf) &&
                     forward.pdf >= 0 && isfinite(reverse.pdf) && reverse.pdf >= 0 &&
                     nonnegative(out.f) && nonnegative(out.pdf);
