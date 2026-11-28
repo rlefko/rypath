@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "diffuse_event_eligibility.hpp"
 #include "frame_session_test_access.hpp"
+#include "metal_backend.hpp"
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -331,6 +332,17 @@ int main(int argc, char **argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--proof-only")
             return 0;
         need(argc == 1, "Only --proof-only is accepted");
+        const auto device = query_metal_device();
+#ifdef RYPATH_ALLOW_NO_METAL_DEVICE
+        if (device.status == MetalStatus::no_device)
+            return 77;
+#endif
+        need(device.status == MetalStatus::success, device.diagnostic);
+#ifdef RYPATH_ALLOW_NO_METAL_RAY_TRACING
+        if (!device.device.compute_ray_tracing)
+            return 77;
+#endif
+        need(device.device.compute_ray_tracing, "Diffuse event tests require compute ray tracing");
         gpu_controls();
         return 0;
     } catch (const std::exception &e) {
