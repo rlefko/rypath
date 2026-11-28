@@ -32,6 +32,8 @@ const char *usage() {
            "  --reconstruction temporal|metalfx|raw-rgb  alternate option spelling\n"
            "  --estimator independent|area-replay  (default: independent)\n"
            "  --spectral-transport auto|scalar|packet|hero --hero-wavelengths uniform|visible\n"
+           "  --coating-proposal hero-only|shared-diffuse  hero coating sampling (default: "
+           "hero-only)\n"
            "  --area-mutation-policy auto|legacy|spectral-refresh --area-stencil "
            "auto|adjacent|reciprocal16|paired-gaussian16\n"
            "  --area-path-domain summed|contribution|enhanced --area-contribution-replay "
@@ -68,6 +70,7 @@ FrameConfig frame_configuration(const Options &o) {
     c.intersection_profile = IntersectionProfile::native;
     c.execution = FrameExecution::wavefront;
     c.estimator = o.estimator;
+    c.coating_proposal = o.coating_proposal;
     c.mutation_policy = o.mutation_policy;
     c.area_stencil = o.area_stencil;
     c.mutation_steps = o.estimator == FrameEstimator::area_replay ? o.mutation_steps : 0;
@@ -162,6 +165,11 @@ std::string parse_options(int argc, char **argv, Options &o) {
             o.hero_wavelengths = parse_hero_wavelength_sampling(value);
             if (!o.hero_wavelengths)
                 return "hero wavelengths must be uniform or visible";
+        } else if (key == "--coating-proposal") {
+            const auto policy = parse_frame_coating_proposal(value);
+            if (!policy)
+                return "coating proposal must be hero-only or shared-diffuse";
+            o.coating_proposal = *policy;
         } else if (key == "--area-mutation-policy") {
             if (value == "auto")
                 o.mutation_policy = FrameMutationPolicy::automatic;
@@ -270,6 +278,12 @@ std::string parse_options(int argc, char **argv, Options &o) {
     if (o.enhanced_temporal_reprojection && (o.estimator != FrameEstimator::area_replay ||
                                              o.area_path_domain != FrameAreaPathDomain::enhanced))
         return "dual temporal reprojection requires Enhanced Area replay";
+    if (o.coating_proposal == FrameCoatingProposal::shared_diffuse &&
+        (o.demo || o.spectral_transport != SpectralTransportSelection::hero ||
+         (o.estimator == FrameEstimator::area_replay &&
+          o.area_path_domain != FrameAreaPathDomain::enhanced)))
+        return "shared-diffuse coating proposals require PBRT hero transport with independent or "
+               "Enhanced frames";
     if ((seen.contains("--area-history-cap") || seen.contains("--area-history-cap-policy")) &&
         (o.estimator != FrameEstimator::area_replay ||
          o.area_path_domain != FrameAreaPathDomain::enhanced))

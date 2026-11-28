@@ -25,6 +25,14 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
     };
     if (diagnostic)
         diagnostic->clear();
+    if (!validate_frame_coating_proposal(c).empty() ||
+        f.coating_proposal_requested != c.coating_proposal ||
+        f.coating_proposal != c.coating_proposal ||
+        (c.coating_proposal == FrameCoatingProposal::shared_diffuse
+             ? !f.coating_proposal_capability_verified ||
+                   f.coating_proposal_contract != shared_coating_contract::version
+             : f.coating_proposal_capability_verified || f.coating_proposal_contract))
+        return fail("Qualification coating proposal identity/capability mismatch");
     const auto n = std::uint64_t(c.width) * c.height;
     const bool area = c.estimator == FrameEstimator::area_replay;
     const bool enhanced = area && c.area_path_domain == FrameAreaPathDomain::enhanced;

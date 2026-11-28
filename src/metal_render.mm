@@ -3000,6 +3000,8 @@ struct FrameSession::Impl {
                         const FrameConfig &settings, const std::filesystem::path &library_path) {
         renderer = std::move(owner);
         config = settings;
+        if (const auto error = validate_frame_coating_scene(scene, config); !error.empty())
+            return error;
         if (const auto error = validate_history_cap_policy(config); !error.empty())
             return error;
         if (config.history_cap_policy == FrameHistoryCapPolicy::duplication)
@@ -3123,6 +3125,7 @@ struct FrameSession::Impl {
         return {};
     }
     bool diffuse_events = false;
+    bool coating_capability_verified = false;
     std::string prepare_wavefront(id<MTLLibrary> library) {
         auto &r = *renderer->impl_;
         NSString *shade_entry = @"rypath_wavefront_shade_scalar";
@@ -3256,9 +3259,25 @@ struct FrameSession::Impl {
         }
         const bool contribution = frame_area_contribution_family(config.area_path_domain);
         const bool enhanced = config.area_path_domain == FrameAreaPathDomain::enhanced;
+        const bool shared_coating = config.coating_proposal == FrameCoatingProposal::shared_diffuse;
+        if (shared_coating) {
+            if (r.parameters.packet_transport != 2)
+                return "Shared coating proposals require effective four-wavelength hero transport";
+            auto declaration = [library newFunctionWithName:shade_entry];
+            bool declared = false;
+            for (MTLFunctionConstant *value in declaration.functionConstantsDictionary.allValues)
+                declared |= value.index == shared_coating_contract::function_constant &&
+                            value.type == MTLDataTypeBool;
+            if (!declared)
+                return "Selected Metal shade kernel lacks shared coating proposal capability v1";
+        }
         MTLFunctionConstantValues *transport_constants = [r.function_constants copy];
         if (transport_constants == nil)
             return "Wavefront transport specialization constants allocation failed";
+        if (shared_coating)
+            [transport_constants setConstantValue:&shared_coating
+                                             type:MTLDataTypeBool
+                                          atIndex:shared_coating_contract::function_constant];
         [transport_constants setConstantValue:&contribution
                                          type:MTLDataTypeBool
                                       atIndex:wavefront_wire::contribution_mode_constant];
@@ -3368,6 +3387,7 @@ struct FrameSession::Impl {
         wavefront->argument_encoder = [function newArgumentEncoderWithBufferIndex:1];
         if (wavefront->argument_encoder == nil)
             return "Wavefront argument encoder creation failed";
+        coating_capability_verified = shared_coating;
         config.capacity =
             std::min<std::uint64_t>(config.capacity, std::uint64_t(config.width) * config.height);
         const bool separated = config.packet_layout != FramePacketLayout::packed;
@@ -5365,6 +5385,13 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
                        .epoch = request.epoch,
                        .camera_upload_bytes = camera_upload_bytes};
         frame->info.diffuse_events = impl_->diffuse_events;
+        frame->info.coating_proposal_requested = impl_->config.coating_proposal;
+        frame->info.coating_proposal = impl_->coating_capability_verified
+                                           ? FrameCoatingProposal::shared_diffuse
+                                           : FrameCoatingProposal::hero_only;
+        frame->info.coating_proposal_contract =
+            impl_->coating_capability_verified ? shared_coating_contract::version : 0;
+        frame->info.coating_proposal_capability_verified = impl_->coating_capability_verified;
         frame->info.area_path_domain = c.area_path_domain;
         frame->info.contribution_replay = frame_area_contribution_family(c.area_path_domain)
                                               ? c.contribution_replay
@@ -5735,6 +5762,10 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     FrameSessionBuildResult result;
     result.shadow_traversal.requested = config.shadow_traversal;
     result.acceleration_build.requested = config.acceleration_build_policy;
+    if (const auto error = validate_frame_coating_scene(scene, config); !error.empty()) {
+        result.diagnostic = error;
+        return result;
+    }
     if (const auto error = validate_history_cap_policy(config); !error.empty()) {
         result.diagnostic = error;
         return result;
@@ -5949,12 +5980,12 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         // Stencil changes spatial source domains, never an execution-only toggle.
         a.area_stencil == b.area_stencil && a.spatial_mode == b.spatial_mode &&
         a.enhanced_history_cap == b.enhanced_history_cap;
-    // A policy contrast is an explicit statistical test arm, like the existing
+    // A coating-policy contrast is an explicit statistical test arm, like the existing
     // fresh/full contrast above; all other physical configuration remains matched.
     if (!same) {
         result.diagnostic = "Shared-scene validation configurations differ beyond temporal/suffix "
                             "caches, diffuse specialization, pair compaction, temporal "
-                            "reprojection or duplication diagnostics";
+                            "reprojection, duplication diagnostics or coating proposal policy";
         return result;
     }
     if (a.execution != FrameExecution::wavefront) {

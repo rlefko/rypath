@@ -33,6 +33,13 @@ auto state = wavefront_load_packet_separated(a, slot);
 #else
 auto state = wavefront_load_packet(a, slot);
 #endif
+// Keep the opt-in capability in every actual packed shade entry, including
+// all-diffuse specializations. A constant supplied to an unrelated/old entry
+// must never be reported as an admitted transport policy.
+if (rypath_packet_layered::shared_diffuse_enabled() && !rypath_bdpt::hero_enabled(p)) {
+    wavefront_fail(a, wf::invalid_config);
+    return;
+}
 uint owner = state.sample.pixel;
 uint evaluation_pixel = state.sample.pixel;
 #if RYPATH_PACKET_SHADE_HERO && !RYPATH_PACKET_SHADE_SEPARATED

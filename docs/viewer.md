@@ -32,6 +32,7 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | `--output-width W --output-height H` | Reconstruction output dimensions; default to internal dimensions. MetalFX supports upscaling; raw and signed temporal require native dimensions |
 | `--mode temporal\|metalfx\|raw` | Explicit output mode; temporal is the default |
 | `--estimator area-replay\|independent` | Independent by default; Area replay selects the experimental reuse pipeline |
+| `--coating-proposal hero-only\|shared-diffuse` | Experimental joint proposal for compatible non-scattering coated diffuse materials. Requires explicit PBRT hero transport with independent or Enhanced sampling. The default is hero-only. |
 | `--area-path-domain summed\|contribution\|enhanced` | Opt-in contribution/Enhanced representation; summed remains default |
 | `--area-contribution-replay full\|prefix` | Full or selected-prefix replay in contribution domains |
 | `--area-stencil auto\|adjacent\|reciprocal16\|paired-gaussian16` | Explicit spatial source domains |

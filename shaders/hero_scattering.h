@@ -32,6 +32,8 @@ struct Sample {
     bool fallback;
 };
 inline bool requires_single_hero(const thread Prepared &p) {
+    if (p.lane[0].kind == 5 && rypath_packet_layered::shared_diffuse(packet::layered(p)))
+        return false;
     for (uint i = 0; i < 4; ++i)
         if ((p.active_mask & (1u << i)) && (p.lane[i].kind == 5 || p.lane[i].kind == 6))
             return true;
@@ -69,15 +71,17 @@ inline Evaluation evaluate(const thread Prepared &p, float3 wo, float3 wi, uint 
     Evaluation out{float4(0), float4(0), false};
     if (!valid_structure(p) || !all(isfinite(wo)) || !all(isfinite(wi)))
         return out;
-    if (requires_single_hero(p)) {
+    if (p.lane[0].kind == 5 || p.lane[0].kind == 6) {
         // A layered walk's joint hidden-path density is unavailable. The caller
         // must collapse BEFORE both direct evaluation and sampling. Its legacy
         // directional PDF is allowed only as a complementary MIS proxy.
-        if (p.active_mask != 1)
+        if (p.active_mask != 1 && requires_single_hero(p))
             return out;
         const auto legacy = packet::evaluate(p, wo, wi, seed, mode);
         out.f = legacy.f;
-        out.pdf[0] = legacy.pdf;
+        for (uint k = 0; k < 4; ++k)
+            if (p.active_mask & (1u << k))
+                out.pdf[k] = legacy.pdf;
         out.valid = legacy.valid && nonnegative(out.f) && nonnegative(out.pdf);
         return out;
     }
@@ -162,8 +166,8 @@ inline bool dirac_lane(const thread rypath_scattering::Prepared &p, float3 wo, f
     out.valid = false;
     if (!valid_structure(p) || !all(isfinite(wo)) || !rypath_transmission::randoms(uc, u))
         return out;
-    if (requires_single_hero(p)) {
-        if (p.active_mask != 1)
+    if (p.lane[0].kind == 5 || p.lane[0].kind == 6) {
+        if (p.active_mask != 1 && requires_single_hero(p))
             return out;
         const auto legacy = packet::sample(p, wo, uc, u, seed, mode);
         out.wi = legacy.wi;

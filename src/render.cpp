@@ -1533,24 +1533,39 @@ std::optional<SpectralTransportSelection> parse_spectral_transport(std::string_v
         return SpectralTransportSelection::hero;
     return std::nullopt;
 }
-std::string select_spectral_transport(RenderScene &scene, SpectralTransportSelection requested,
-                                      std::string *provenance) {
-    const auto valid_medium = [&](std::uint32_t id) {
-        return id == no_medium || id < scene.media.size();
-    };
-    if (!valid_medium(scene.camera_medium) ||
-        std::ranges::any_of(scene.instance_media, [&](const auto &medium) {
-            return !valid_medium(medium.inside) || !valid_medium(medium.outside);
-        }))
-        return "Spectral selection requires valid medium indices";
-    // Include declared nonzero media conservatively: light endpoint medium assignments
-    // are not retained in RenderScene. Never select vacuum transport for such a scene.
-    const bool active = std::ranges::any_of(scene.media, [](const auto &medium) {
+namespace {
+bool valid_medium_assignments(const RenderScene &scene) {
+    const auto valid = [&](std::uint32_t id) { return id == no_medium || id < scene.media.size(); };
+    return valid(scene.camera_medium) &&
+           std::ranges::all_of(scene.instance_media, [&](const auto &medium) {
+               return valid(medium.inside) && valid(medium.outside);
+           });
+}
+bool declared_nonzero_media(const RenderScene &scene) {
+    return std::ranges::any_of(scene.media, [](const auto &medium) {
         const auto nonzero = [](float value) { return value != 0; };
         return std::ranges::any_of(medium.sigma_a, nonzero) ||
                std::ranges::any_of(medium.sigma_s, nonzero) ||
                std::ranges::any_of(medium.emission, nonzero);
     });
+}
+bool camera_or_medium_changes(const RenderScene &scene) {
+    return scene.camera_medium != no_medium ||
+           std::ranges::any_of(scene.instance_media,
+                               [](const auto &medium) { return medium.inside != medium.outside; });
+}
+} // namespace
+bool has_proven_vacuum_media(const RenderScene &scene) {
+    return valid_medium_assignments(scene) && !declared_nonzero_media(scene) &&
+           !camera_or_medium_changes(scene);
+}
+std::string select_spectral_transport(RenderScene &scene, SpectralTransportSelection requested,
+                                      std::string *provenance) {
+    if (!valid_medium_assignments(scene))
+        return "Spectral selection requires valid medium indices";
+    // Include declared nonzero media conservatively: light endpoint medium assignments
+    // are not retained in RenderScene. Never select vacuum transport for such a scene.
+    const bool active = declared_nonzero_media(scene);
     SpectralTransport mode = scene.spectral_transport;
     std::string reason;
     switch (requested) {
@@ -1784,10 +1799,7 @@ std::string validate_render_scene(const RenderScene &scene) {
     };
     if (!valid_medium(scene.camera_medium))
         return "Camera medium index is out of range";
-    const bool active_media = scene.camera_medium != no_medium ||
-                              std::ranges::any_of(scene.instance_media, [](const auto &m) {
-                                  return m.inside != m.outside;
-                              });
+    const bool active_media = camera_or_medium_changes(scene);
     if (active_media && uses_packet_transport(scene.spectral_transport))
         return "Packet transport currently requires vacuum camera and surface medium interfaces";
     if (active_media && (!scene.volume_transport || scene.model != RenderModel::pbrt))

@@ -3,6 +3,7 @@
 // pbrt is Copyright(c) 1998-2020 Matt Pharr, Wenzel Jakob, and Greg Humphreys.
 // See third_party/pbrt/LICENSE.txt.
 #pragma once
+#include "../src/shared_coating_contract.h"
 #include "layered.h"
 // Renderer specialization and all-family probes require distinct symbols.
 // Separate namespaces prevent weak-ODR coalescing when their AIR shares a metallib.
@@ -16,6 +17,39 @@ struct Parameters {
     rypath_layered::Parameters lane[4];
     uint active_mask;
 };
+// Standalone probes can select the law at compile time. Renderer sessions use
+// optional capability constant32; absence preserves legacy.
+#ifndef RYPATH_HERO_SHARED_COATED_DIFFUSE
+#define RYPATH_HERO_SHARED_COATED_DIFFUSE 0
+#endif
+#if defined(RYPATH_PACKET_RENDER)
+constant bool rypath_frame_shared_coating
+    [[function_constant(rypath::shared_coating_contract::function_constant)]];
+inline bool shared_diffuse_enabled() {
+    return is_function_constant_defined(rypath_frame_shared_coating) ? rypath_frame_shared_coating
+                                                                     : false;
+}
+#else
+inline bool shared_diffuse_enabled() { return RYPATH_HERO_SHARED_COATED_DIFFUSE != 0; }
+#endif
+inline bool shared_diffuse_controls(const thread rypath_layered::Parameters &a,
+                                    const thread rypath_layered::Parameters &b) {
+    return !a.conductor_base && !b.conductor_base && a.albedo == 0 && b.albedo == 0 &&
+           valid_parameters(a) && valid_parameters(b) && a.interface.eta == b.interface.eta &&
+           a.interface.alpha_x == b.interface.alpha_x &&
+           a.interface.alpha_y == b.interface.alpha_y && a.interface.smooth == b.interface.smooth &&
+           a.thickness == b.thickness && a.g == b.g && a.max_depth == b.max_depth &&
+           a.samples == b.samples && a.material_seed == b.material_seed;
+}
+inline bool shared_diffuse(const thread Parameters &p) {
+    if (!shared_diffuse_enabled() || !(p.active_mask & 1u) || (p.active_mask & ~15u))
+        return false;
+    for (uint k = 0; k < 4; ++k)
+        if ((p.active_mask & (1u << k)) && !shared_diffuse_controls(p.lane[0], p.lane[k]))
+            return false;
+    return true;
+}
+
 struct Evaluation {
     float4 f;
     float pdf;

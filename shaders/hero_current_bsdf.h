@@ -13,11 +13,20 @@ inline bool hero_current_structure(const thread HeroFrozenBSDF &p) {
             p.kind == 5 || p.kind == 6 || p.kind == 7 || p.kind == 8 || p.kind == 11);
 }
 inline bool hero_current_requires_single(const thread HeroFrozenBSDF &p) {
-    return (p.active_mask & 15u) && (p.kind == 5 || p.kind == 6);
+    return (p.active_mask & 15u) && (p.kind == 5 || p.kind == 6) && !hero_frozen_shared_coating(p);
 }
 inline void hero_current_store_lane(thread HeroFrozenBSDF &out, uint k,
                                     const thread rypath_scattering::Prepared &s) {
     hero_frozen_store_lane(out, k, s);
+    if (rypath_packet_layered::shared_diffuse_enabled() && out.kind == 5) {
+        if (k == 0)
+            out.payload[20] = hero_shared_coating_controls(s.layered, s.layered) ? 0x53434431u : 0u;
+        else {
+            hero_frozen_store_float(out, 16u + k, s.layered.reflectance);
+            if (!hero_shared_coating_controls(hero_frozen_coated(out), s.layered))
+                out.payload[20] = 0;
+        }
+    }
 }
 // One scalar staging value at a time; never reconstruct the four-lane Prepared.
 inline rypath_scattering::Prepared hero_current_scalar(const thread HeroFrozenBSDF &p, uint k) {
@@ -45,6 +54,8 @@ inline rypath_scattering::Prepared hero_current_scalar(const thread HeroFrozenBS
     case 5:
     case 6:
         s.layered = hero_frozen_coated(p);
+        if (k && hero_frozen_shared_coating(p))
+            s.layered.reflectance = hero_frozen_float(p, 16u + k);
         break;
     case 7:
     case 8: {
@@ -98,6 +109,8 @@ inline bool prepare_hero_current(const thread Resources &r, const device wire::M
         }
         // Every active companion is prepared and validated even for coatings,
         // although only hero0's coating survives in the tagged payload.
+        // This is the sole proof writer: lane0 initializes the tag and each
+        // active companion monotonically clears it if controls differ.
         hero_current_store_lane(out, k, lane);
     }
     return hero_current_structure(out);
@@ -113,8 +126,9 @@ inline bool hero_current_coated_compatible(const thread HeroFrozenBSDF &p) {
 inline rypath_hero_scattering::Evaluation hero_current_evaluate(const thread HeroFrozenBSDF &p,
                                                                 float3 wo, float3 wi, uint seed,
                                                                 Mode mode = Mode::Radiance) {
-    if (!hero_current_structure(p) || ((p.kind == 5 || p.kind == 6) &&
-                                       (p.active_mask != 1 || !hero_current_coated_compatible(p))))
+    if (!hero_current_structure(p) ||
+        ((p.kind == 5 || p.kind == 6) && ((p.active_mask != 1 && !hero_frozen_shared_coating(p)) ||
+                                          !hero_current_coated_compatible(p))))
         return {float4(0), float4(0), false};
     return hero_frozen_evaluate(p, wo, wi, seed, mode);
 }
@@ -127,17 +141,13 @@ hero_current_sample(const thread HeroFrozenBSDF &p, float3 wo, float uc, float2 
     out.eta = 1;
     if (!hero_current_structure(p) || !all(isfinite(wo)) || !rypath_transmission::randoms(uc, u))
         return out;
-    if (hero_current_requires_single(p)) {
-        if (p.active_mask != 1)
+    if (p.kind == 5 || p.kind == 6) {
+        if (p.active_mask != 1 && !hero_frozen_shared_coating(p))
             return out;
         out.fallback = true;
         if (!hero_current_coated_compatible(p) || !packet::has_surface() || !packet::has_coated())
             return out;
-        const auto coated = hero_frozen_coated(p);
-        rypath_packet_layered::Parameters q;
-        q.active_mask = 1;
-        for (uint k = 0; k < 4; ++k)
-            q.lane[k] = coated;
+        const auto q = hero_frozen_layered_packet(p);
         const auto a = rypath_packet_layered::sample(q, wo, uc, u, seed, mode == Mode::Importance);
         out.wi = a.wi;
         out.delta = a.delta;

@@ -3,8 +3,10 @@
 #include "frame_work_diagnostics.hpp"
 #include "gpu_diagnostics.hpp"
 #include "metal_render.hpp"
+#include "shared_coating_contract.h"
 #include "stochastic_spatial_shared.h"
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -15,6 +17,30 @@ namespace rypath {
 enum class FrameExecution { megakernel, wavefront };
 enum class FramePacketLayout { packed, hot_cold, split_trace };
 enum class FrameEstimator { independent, area_replay };
+enum class FrameCoatingProposal { hero_only = 0, shared_diffuse = 1 };
+inline constexpr const char *frame_coating_proposal_name(FrameCoatingProposal policy) {
+    switch (policy) {
+    case FrameCoatingProposal::hero_only:
+        return "hero-only";
+    case FrameCoatingProposal::shared_diffuse:
+        return "shared-diffuse";
+    }
+    return "invalid";
+}
+inline constexpr std::optional<FrameCoatingProposal>
+parse_frame_coating_proposal(std::string_view name) {
+    if (name == "hero-only")
+        return FrameCoatingProposal::hero_only;
+    if (name == "shared-diffuse")
+        return FrameCoatingProposal::shared_diffuse;
+    return std::nullopt;
+}
+inline constexpr const char *frame_coating_proposal_source_name(FrameCoatingProposal policy) {
+    return policy == FrameCoatingProposal::hero_only        ? "legacy-default"
+           : policy == FrameCoatingProposal::shared_diffuse ? "explicit-frame-session-v1"
+                                                            : "invalid";
+}
+
 enum class FrameAreaPathDomain { summed = 0, contribution = 1, enhanced = 2 };
 inline constexpr bool frame_area_contribution_family(FrameAreaPathDomain domain) {
     return domain == FrameAreaPathDomain::contribution || domain == FrameAreaPathDomain::enhanced;
@@ -214,7 +240,32 @@ struct FrameConfig {
     // Automatic retains the legacy/adjacent defaults until a quality decision.
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
     FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
+    // Shared proposals require a declared selected-kernel capability; no fallback.
+    FrameCoatingProposal coating_proposal = FrameCoatingProposal::hero_only;
 };
+inline std::string validate_frame_coating_proposal(const FrameConfig &c) {
+    if (c.coating_proposal == FrameCoatingProposal::hero_only)
+        return {};
+    if (c.coating_proposal != FrameCoatingProposal::shared_diffuse)
+        return "Invalid frame coating proposal policy";
+    if (c.execution != FrameExecution::wavefront || c.packet_layout != FramePacketLayout::packed ||
+        c.packet_events != 1 ||
+        (c.estimator != FrameEstimator::independent &&
+         (c.estimator != FrameEstimator::area_replay ||
+          c.area_path_domain != FrameAreaPathDomain::enhanced)))
+        return "Shared coating proposals require packed one-event wavefront independent or "
+               "Enhanced frames";
+    return {};
+}
+inline std::string validate_frame_coating_scene(const RenderScene &scene, const FrameConfig &c) {
+    if (const auto error = validate_frame_coating_proposal(c); !error.empty())
+        return error;
+    if (c.coating_proposal == FrameCoatingProposal::shared_diffuse &&
+        (scene.model != RenderModel::pbrt || scene.spectral_transport != SpectralTransport::hero ||
+         !has_proven_vacuum_media(scene)))
+        return "Shared coating proposals require explicit vacuum PBRT hero transport";
+    return {};
+}
 struct FrameCamera {
     RenderCamera camera;
     // Preserve the scene medium unless specified. Callers must update this on
@@ -296,6 +347,10 @@ struct FrameInfo {
     // origins in the same free slot reuse those records without uploading.
     std::uint64_t camera_upload_bytes = 0;
     std::string diagnostic;
+    FrameCoatingProposal coating_proposal_requested = FrameCoatingProposal::hero_only;
+    FrameCoatingProposal coating_proposal = FrameCoatingProposal::hero_only;
+    std::uint32_t coating_proposal_contract = 0;
+    bool coating_proposal_capability_verified = false;
 };
 struct FrameCapture {
     GeometryStatus status = GeometryStatus::failure;
