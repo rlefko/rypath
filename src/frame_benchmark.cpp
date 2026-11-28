@@ -1617,18 +1617,19 @@ void write_reconstructed(rypath::ReconstructedFrame &frame, Output &reconstructe
                          const Report &report) {
     const auto &options = report.options;
     const auto info = frame.poll();
+    if (options.reconstruction != info.mode)
+        throw std::runtime_error("Reconstructed capture mode differs from request");
     const auto captured_pose = rypath::frame_benchmark::motion_pose(
         info.source.sample_index, options.warmup, options.frames, options.motion_offset);
     const auto image = frame.capture();
     if (image.status != rypath::GeometryStatus::success)
         throw std::runtime_error("reconstructed capture failed: " + image.diagnostic);
     const std::vector<std::pair<std::string, std::string>> metadata{
-        {"rypath.output.kind", *options.reconstruction == rypath::ReconstructionMode::metalfx
-                                   ? "metalfx-denoised-linear-rgb"
-                               : *options.reconstruction == rypath::ReconstructionMode::temporal
-                                   ? "temporal-denoised-linear-rgb"
-                                   : "raw-rgb-color-conversion"},
-        {"rypath.recon.mode", reconstruction_name(options.reconstruction)},
+        {"rypath.output.kind",
+         info.mode == rypath::ReconstructionMode::metalfx    ? "metalfx-denoised-linear-rgb"
+         : info.mode == rypath::ReconstructionMode::temporal ? "temporal-denoised-linear-rgb"
+                                                             : "raw-rgb-color-conversion"},
+        {"rypath.recon.mode", reconstruction_name(info.mode)},
         {"rypath.output.space", "linear-srgb"},
         {"rypath.recon.exposure", precise_float(info.exposure)},
         {"rypath.recon.requested_exposure", precise_float(options.metalfx_exposure)},
