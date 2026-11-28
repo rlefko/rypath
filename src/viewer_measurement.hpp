@@ -180,6 +180,8 @@ inline std::string measurement_report(const Options &o,
         << ",\"contribution_replay\":"
         << json_string(frame_contribution_replay_name(o.contribution_replay))
         << ",\"mutation_policy\":" << json_string(frame_mutation_policy_name(o.mutation_policy))
+        << ",\"coating_proposal_requested\":"
+        << json_string(frame_coating_proposal_name(o.coating_proposal))
         << ",\"spectral_transport_requested\":"
         << json_string(o.spectral_transport == SpectralTransportSelection::automatic ? "auto"
                        : o.spectral_transport == SpectralTransportSelection::hero    ? "hero"
@@ -267,6 +269,13 @@ inline std::string measurement_report(const Options &o,
             << json_string(frame_mutation_policy_name(f.effective.mutation_policy))
             << ",\"effective_path_domain\":"
             << json_string(frame_area_path_domain_name(f.effective.area_path_domain))
+            << ",\"coating_proposal_effective\":"
+            << json_string(frame_coating_proposal_name(f.effective.coating_proposal))
+            << ",\"coating_proposal_source\":"
+            << json_string(frame_coating_proposal_source_name(f.effective.coating_proposal))
+            << ",\"coating_proposal_contract\":" << f.effective.coating_proposal_contract
+            << ",\"coating_proposal_capability_verified\":"
+            << (f.effective.coating_proposal_capability_verified ? "true" : "false")
             << ",\"effective_history_cap\":" << f.effective.enhanced_history_cap
             << ",\"enhanced_temporal_reprojection\":"
             << (f.effective.enhanced_temporal_reprojection ? "true" : "false")

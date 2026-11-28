@@ -43,6 +43,20 @@ void rejected(std::initializer_list<std::string> arguments, const std::string &r
     require(!parse(arguments).diagnostic.empty(), "Invalid options accepted: " + reason);
 }
 void spectral_and_area_policies() {
+    const auto shared = accepted({"--scene", "fixture.pbrt", "--spectral-transport", "hero",
+                                  "--coating-proposal", "shared-diffuse"});
+    require(viewer::frame_configuration(shared).coating_proposal ==
+                FrameCoatingProposal::shared_diffuse,
+            "Viewer shared spectral coating policy");
+    require(viewer::frame_configuration(accepted({"--demo"})).coating_proposal ==
+                FrameCoatingProposal::hero_only,
+            "Viewer default coating policy");
+    rejected({"--demo", "--coating-proposal", "invalid"}, "unknown coating proposal");
+    rejected({"--demo", "--spectral-transport", "hero", "--coating-proposal", "shared-diffuse"},
+             "shared coating on a demo");
+    rejected({"--scene", "fixture.pbrt", "--spectral-transport", "scalar", "--coating-proposal",
+              "shared-diffuse"},
+             "shared coating with scalar transport");
     const auto o =
         accepted({"--demo", "--spectral-transport", "hero", "--hero-wavelengths", "uniform",
                   "--area-mutation-policy", "spectral-refresh", "--area-stencil", "reciprocal16"});

@@ -17,6 +17,7 @@ struct Options {
     std::uint64_t frames = 0, seed = 1; // Zero frames means interactive/unlimited.
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     std::optional<HeroWavelengthSampling> hero_wavelengths;
+    FrameCoatingProposal coating_proposal = FrameCoatingProposal::hero_only;
     FrameMutationPolicy mutation_policy = FrameMutationPolicy::automatic;
     FrameAreaStencil area_stencil = FrameAreaStencil::automatic;
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
