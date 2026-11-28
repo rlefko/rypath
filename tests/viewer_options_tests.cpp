@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "viewer_measurement.hpp"
 #include "viewer_options.hpp"
 
 #include <array>
@@ -279,6 +280,65 @@ void syntax_and_help() {
     rejected({"--width", "--demo"}, "another option cannot supply a missing value");
     rejected({"--demo", "--capture-dir", ""}, "empty capture directory");
 }
+void measurement_contracts() {
+    const auto native = accepted({"--demo"});
+    require(native.output_width == native.width && native.output_height == native.height,
+            "Default output retains internal dimensions");
+    const auto scaled = accepted({"--demo", "--width", "64", "--height", "36", "--mode", "metalfx",
+                                  "--output-width", "128", "--output-height", "72"});
+    const auto config = viewer::reconstruction_configuration(scaled, ReconstructionMode::metalfx);
+    require(config.output_width == 128 && config.output_height == 72,
+            "Output sizing reaches actual reconstruction creation");
+    rejected({"--demo", "--output-width", "3840"}, "temporal cannot upscale");
+    rejected({"--demo", "--mode", "raw", "--output-height", "2160"}, "raw cannot upscale");
+    rejected({"--demo", "--mode", "metalfx", "--output-width", "100"}, "MetalFX cannot downscale");
+    rejected({"--demo", "--output-width", "16385"}, "output dimension bound");
+    rejected({"--demo", "--measurement-json", "report.json"}, "report requires finite frames");
+    rejected({"--demo", "--frames", "8", "--warmup", "8"}, "measured frames must remain");
+    rejected({"--demo", "--frames", "9", "--workload", "motion"}, "motion quarters must be equal");
+    rejected({"--demo", "--workload", "unknown", "--frames", "8"}, "unknown workload");
+    const auto o = accepted({"--demo", "--frames", "10", "--warmup", "2", "--workload", "motion",
+                             "--motion-distance", ".2", "--rotation-radians", ".4"});
+    require(std::string(viewer::workload_pose(o, 0).phase) == "startup" &&
+                std::string(viewer::workload_pose(o, 2).phase) == "static" &&
+                viewer::workload_pose(o, 5).translation == .2 &&
+                viewer::workload_pose(o, 7).rotation == .4 && viewer::workload_pose(o, 8).cut &&
+                !viewer::workload_pose(o, 9).cut &&
+                std::string(viewer::workload_pose(o, 9).phase) == "settled",
+            "Absolute workload has startup, translation, rotation, one cut, and settled frames");
+    const std::vector<viewer::PipelineObservation> frames{
+        {0, .1, .1, "startup", true},   {1, .2, .1, "static", false},
+        {2, .3, .1, "static", false},   {3, .4, .1, "rotation", false},
+        {4, .5, .1, "rotation", false}, {5, .6, .1, "rotation", false},
+        {6, .7, .1, "rotation", false}};
+    const std::vector<viewer::DrawableObservation> drawables{
+        {0, .1, 1, true}, {1, .2, 2, true}, {1, .25, 2.5, true}, {2, .3, 3, true},
+        {3, .4, 4, true}, {4, .5, 0, true}, {5, .6, 0, false}};
+    const auto report = viewer::measurement_report(o, frames, drawables, "complete", 7);
+    require(report.find("\"distinct_displayed_frames\":4") != std::string::npos &&
+                report.find("\"missing_callbacks\":1") != std::string::npos &&
+                report.find("\"zero_time_callbacks\":1") != std::string::npos &&
+                report.find("\"repeated_source_callbacks\":1") != std::string::npos &&
+                report.find("\"unsubmitted_sources\":1") != std::string::npos &&
+                report.find("\"undisplayed_sources\":3") != std::string::npos,
+            "Report accounts for repeated, dropped, missing, and unsubmitted sources");
+    require(
+        report.find("\"static\":{\"interval_count\":1,\"mean_ms\":1000,\"p95_ms\":1000}") !=
+                std::string::npos &&
+            report.find("\"rotation\":{\"interval_count\":0,\"mean_ms\":null,\"p95_ms\":null}") !=
+                std::string::npos,
+        "Phase intervals exclude startup, repeated redraws, and phase boundaries");
+    auto unordered = drawables;
+    std::reverse(unordered.begin(), unordered.end());
+    const auto reordered_report = viewer::measurement_report(o, frames, unordered, "complete", 7);
+    require(reordered_report.find(
+                "\"static\":{\"interval_count\":1,\"mean_ms\":1000,\"p95_ms\":1000}") !=
+                    std::string::npos &&
+                reordered_report.find("\"distinct_displayed_frames\":4") != std::string::npos,
+            "Callback arrival order does not change presentation interval accounting");
+    require(viewer::json_string("a\n").find("\\u000a") != std::string::npos,
+            "JSON escapes control characters");
+}
 void paths_are_only_parsed() {
     const auto root = fs::temp_directory_path() /
                       ("rypath-viewer-options-" +
@@ -310,6 +370,7 @@ int main() {
         real_boundaries();
         syntax_and_help();
         paths_are_only_parsed();
+        measurement_contracts();
         std::cout << "Viewer option parsing checks passed\n";
         return 0;
     } catch (const std::exception &error) {

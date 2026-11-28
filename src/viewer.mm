@@ -5,6 +5,7 @@
 #include "metal_execution.hpp"
 #include "metal_reconstruction_access.hpp"
 #include "pbrt_render.hpp"
+#include "viewer_measurement.hpp"
 #include "viewer_options.hpp"
 
 #import <AppKit/AppKit.h>
@@ -299,6 +300,7 @@ struct Presentation {
     std::atomic<bool> pending{false};
     std::mutex mutex;
     std::string error;
+    std::vector<viewer::DrawableObservation> drawables;
 };
 } // namespace
 
@@ -324,6 +326,9 @@ class ViewerState {
     int exit_code = 0;
     std::uint64_t sample = 0, epoch = 0, completed = 0, capture_serial = 0;
     std::string diagnostic;
+    std::vector<viewer::PipelineObservation> measurements;
+    double measurement_origin = CACurrentMediaTime(), finish_started = 0;
+    int measurement_fd = -1;
     Clock::time_point previous_tick = Clock::now(), pipeline_start = previous_tick;
     std::deque<Clock::time_point> completed_times;
     std::shared_ptr<Presentation> presentation = std::make_shared<Presentation>();
@@ -338,6 +343,10 @@ class ViewerState {
           pipeline_mode(options.reconstruction),
           comparison_denoiser(viewer::preferred_denoiser(options.reconstruction)),
           ev(options.exposure_ev) {
+        if (!options.output_width)
+            options.output_width = options.width;
+        if (!options.output_height)
+            options.output_height = options.height;
         scene.integrator = scene.volume_transport ? IntegratorKind::volpath : IntegratorKind::path;
         scene.max_component_value = std::numeric_limits<double>::infinity();
         authored = {.camera = scene.camera,
@@ -355,6 +364,14 @@ class ViewerState {
         if (built.status != GeometryStatus::success || !built.session)
             throw std::runtime_error(built.diagnostic);
         renderer = std::move(built.session);
+        if (!options.measurement_json.empty()) {
+            measurement_fd = ::open(options.measurement_json.c_str(),
+                                    O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+            if (measurement_fd < 0)
+                throw std::runtime_error("Could not reserve fresh measurement JSON: " +
+                                         options.measurement_json.string());
+        }
+
         std::cout << "Live overrides: " << options.width << 'x' << options.height
                   << ", PT/volpath, independent sample stream, one fresh path/pixel/frame, "
                      "footprint=1, unclamped raw XYZ\n"
@@ -369,6 +386,43 @@ class ViewerState {
                   << "; resources=" << resource_profile_name(options.resource_profile)
                   << "; spectral=" << spectral_transport_name(scene.spectral_transport)
                   << "; film exposure=" << scene.exposure << "; display EV=" << ev << '\n';
+    }
+    ~ViewerState() {
+        if (measurement_fd >= 0)
+            ::close(measurement_fd);
+    }
+    void finish_measurement() {
+        if (measurement_fd < 0)
+            return;
+        std::lock_guard lock(presentation->mutex);
+        const auto report = viewer::measurement_report(
+            options, measurements, presentation->drawables,
+            exit_code                     ? "failed"
+            : completed == options.frames ? "complete"
+                                          : "cancelled",
+            CACurrentMediaTime() - measurement_origin,
+            layer.device ? layer.device.name.UTF8String : "unavailable",
+            NSProcessInfo.processInfo.operatingSystemVersionString.UTF8String,
+            spectral_transport_name(scene.spectral_transport),
+            scene.spectral_transport == SpectralTransport::hero
+                ? hero_wavelength_sampling_name(scene.hero_wavelengths)
+                : "not-applicable");
+        std::size_t done = 0;
+        while (done < report.size()) {
+            const auto count = ::write(measurement_fd, report.data() + done, report.size() - done);
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count <= 0) {
+                exit_code = 1;
+                std::cerr << "Could not write measurement JSON\n";
+                break;
+            }
+            done += std::size_t(count);
+        }
+        if (::close(measurement_fd))
+            exit_code = 1;
+        measurement_fd = -1;
+        std::cout << "Presentation measurement: " << options.measurement_json << '\n';
     }
     const char *estimator_name() const {
         return options.estimator == FrameEstimator::area_replay ? "area-replay" : "independent";
@@ -386,6 +440,7 @@ class ViewerState {
     }
     void close() {
         closing = true;
+        finish_measurement();
         stop_application();
     }
     void halt(const std::string &error) {
@@ -400,6 +455,12 @@ class ViewerState {
         }
     }
     void toggle() {
+        if (options.workload != "interactive")
+            return;
+        if (options.output_width != options.width || options.output_height != options.height) {
+            diagnostic = "Raw comparison requires native output dimensions";
+            return;
+        }
         options.reconstruction =
             viewer::toggle_comparison(options.reconstruction, comparison_denoiser);
         if (paused) {
@@ -410,15 +471,21 @@ class ViewerState {
         diagnostic = std::string("Requested ") + mode_name(options.reconstruction);
     }
     void reset() {
+        if (options.workload != "interactive")
+            return;
         home = true;
         paused = false;
         diagnostic.clear();
     }
     void exposure(double amount) {
+        if (options.workload != "interactive")
+            return;
         ev = std::clamp(ev + amount, -24., 24.);
         redraw = true;
     }
     void input(double dt) {
+        if (options.workload != "interactive")
+            return;
         const double step = speed * dt * (fast ? 4 : 1);
         translation[0] += (double(keys.contains(2)) - double(keys.contains(0))) * step;
         translation[1] += (double(keys.contains(14)) - double(keys.contains(12))) * step;
@@ -440,6 +507,14 @@ class ViewerState {
                           add(add(mul(b.right, translation[0]), mul(b.up, translation[1])),
                               mul(b.forward, translation[2])));
         }
+        if (options.workload != "interactive") {
+            const auto scheduled = viewer::workload_pose(options, sample);
+            candidate = authored;
+            candidate.camera_medium = pose.camera_medium;
+            translate(candidate, mul(basis(authored).right, scheduled.translation));
+            rotate(candidate, basis(authored).up, scheduled.rotation);
+            home = scheduled.cut;
+        }
         const auto from = origin(pose), to = origin(candidate);
         const bool translated = from.x != to.x || from.y != to.y || from.z != to.z;
         if (translated && interfaces) {
@@ -450,6 +525,8 @@ class ViewerState {
                     auto built = CameraMediumTracker::build(*latest_raw);
                     if (!built.tracker) {
                         diagnostic = "Camera move rejected: " + built.diagnostic;
+                        if (options.workload != "interactive")
+                            throw std::runtime_error(diagnostic);
                         candidate = pose;
                     } else
                         medium_tracker = std::move(built.tracker);
@@ -460,6 +537,8 @@ class ViewerState {
                         candidate.camera_medium = classified.medium;
                     else {
                         diagnostic = "Camera move rejected: " + classified.diagnostic;
+                        if (options.workload != "interactive")
+                            throw std::runtime_error(diagnostic);
                         candidate = pose;
                     }
                 }
@@ -581,7 +660,9 @@ class ViewerState {
             throw std::runtime_error("Signed temporal display requires float32 texture filtering");
         if (display_pipeline == nil)
             prepare_display(acquired.lease->device());
-        const auto backing = [view convertRectToBacking:view.bounds].size;
+        const auto backing = options.measurement_json.empty()
+                                 ? [view convertRectToBacking:view.bounds].size
+                                 : CGSizeMake(options.output_width, options.output_height);
         if (backing.width < 1 || backing.height < 1)
             return;
         layer.contentsScale = window.backingScaleFactor;
@@ -599,8 +680,8 @@ class ViewerState {
         if (command == nil || encoder == nil)
             throw std::runtime_error("Display encoder creation failed");
         const double scale =
-            std::min(backing.width / options.width, backing.height / options.height);
-        const double width = options.width * scale, height = options.height * scale;
+            std::min(backing.width / options.output_width, backing.height / options.output_height);
+        const double width = options.output_width * scale, height = options.output_height * scale;
         [encoder setViewport:MTLViewport{(backing.width - width) / 2, (backing.height - height) / 2,
                                          width, height, 0, 1}];
         [encoder setRenderPipelineState:display_pipeline];
@@ -612,8 +693,28 @@ class ViewerState {
         const auto error = acquired.lease->retain_until_completed(command);
         if (!error.empty())
             throw std::runtime_error(error);
-        [command presentDrawable:drawable];
         const auto retained = presentation;
+        if (!options.measurement_json.empty()) {
+            const auto source = latest_image->poll().source.sample_index;
+            std::size_t index;
+            {
+                std::lock_guard lock(retained->mutex);
+                index = retained->drawables.size();
+                retained->drawables.push_back({source, CACurrentMediaTime() - measurement_origin, 0,
+                                               false, std::uint32_t(drawable.texture.width),
+                                               std::uint32_t(drawable.texture.height)});
+            }
+            const double origin_time = measurement_origin;
+            [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
+              std::lock_guard lock(retained->mutex);
+              auto &event = retained->drawables[index];
+              event.callback = true;
+              // A zero timestamp denotes a drawable that was not displayed.
+              event.presented_time =
+                  presented.presentedTime > 0 ? presented.presentedTime - origin_time : 0;
+            }];
+        }
+        [command presentDrawable:drawable];
         retained->pending.store(true);
         [command addCompletedHandler:^(id<MTLCommandBuffer> completed_command) {
           if (completed_command.status == MTLCommandBufferStatusError) {
@@ -807,6 +908,15 @@ class ViewerState {
                     latest_pipeline_seconds =
                         std::chrono::duration<double>(Clock::now() - pipeline_start).count();
                     ++completed;
+                    if (!options.measurement_json.empty())
+                        measurements.push_back(
+                            {info.source.sample_index, CACurrentMediaTime() - measurement_origin,
+                             latest_pipeline_seconds,
+                             viewer::workload_pose(options, info.source.sample_index).phase,
+                             info.source.sample_index < options.warmup, info.width, info.height,
+                             info.source.epoch, submitted_pose.camera_medium.value_or(no_medium),
+                             vec(origin(submitted_pose)), basis(submitted_pose).forward,
+                             basis(submitted_pose).up, info.source, info.history_reset, info.mode});
                     completed_times.push_back(Clock::now());
                     if (completed_times.size() > 32)
                         completed_times.pop_front();
@@ -847,6 +957,15 @@ class ViewerState {
             title();
             if (options.frames && completed >= options.frames) {
                 if (!presentation->pending.load()) {
+                    if (!options.measurement_json.empty()) {
+                        if (!finish_started)
+                            finish_started = CACurrentMediaTime();
+                        std::lock_guard lock(presentation->mutex);
+                        const bool callbacks_pending = std::ranges::any_of(
+                            presentation->drawables, [](const auto &d) { return !d.callback; });
+                        if (callbacks_pending && CACurrentMediaTime() - finish_started < 2)
+                            return;
+                    }
                     std::cout << "Viewer completed " << completed << " pipeline frames; " << fps()
                               << " rendered fps\n";
                     close();
@@ -1028,8 +1147,11 @@ int main(int argc, char **argv) {
             auto delegate = [RypathViewerDelegate new];
             delegate->viewer = &state;
             app.delegate = delegate;
-            const double width = std::clamp(double(options.width), 640., 1100.);
-            const double height = std::clamp(width * options.height / options.width, 360., 750.);
+            const auto output_width = options.output_width ? options.output_width : options.width;
+            const auto output_height =
+                options.output_height ? options.output_height : options.height;
+            const double width = std::clamp(double(output_width), 640., 1100.);
+            const double height = std::clamp(width * output_height / output_width, 360., 750.);
             auto window = [[NSWindow alloc]
                 initWithContentRect:NSMakeRect(0, 0, width, height)
                           styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |

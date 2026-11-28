@@ -22,6 +22,10 @@ bool real(std::string_view text, double &output) {
 const char *usage() {
     return "Usage: rypath-viewer (--scene SCENE.pbrt | --demo) [options]\n"
            "  --width 1920 --height 1080  fixed internal resolution\n"
+           "  --output-width W --output-height H  MetalFX output size (default: internal)\n"
+           "  --measurement-json PATH --warmup N  finite-run presentation report, fresh path\n"
+           "  --workload static|motion|translation|rotation  deterministic per-frame camera\n"
+           "  --motion-distance .1 --rotation-radians .1  total translation/yaw excursion\n"
            "  --mode temporal|metalfx|raw  (default: temporal, native resolution)\n"
            "  --reconstruction temporal|metalfx|raw-rgb  alternate option spelling\n"
            "  --estimator independent|area-replay  (default: independent)\n"
@@ -73,6 +77,8 @@ FrameConfig frame_configuration(const Options &o) {
 ReconstructionConfig reconstruction_configuration(const Options &o, ReconstructionMode mode) {
     ReconstructionConfig c;
     c.mode = mode;
+    c.output_width = o.output_width;
+    c.output_height = o.output_height;
     c.near_plane = o.near_plane;
     c.spatial_variance_policy = o.variance_policy;
     return c;
@@ -101,6 +107,28 @@ std::string parse_options(int argc, char **argv, Options &o) {
             if (value.empty())
                 return "capture directory must not be empty";
             o.capture_directory = value;
+        } else if (key == "--measurement-json") {
+            if (value.empty())
+                return "measurement path must not be empty";
+            o.measurement_json = value;
+        } else if (key == "--workload") {
+            if (value != "static" && value != "motion" && value != "translation" &&
+                value != "rotation")
+                return "workload must be static, motion, translation, or rotation";
+            o.workload = value;
+        } else if (key == "--warmup") {
+            if (!integer(value, o.warmup))
+                return "invalid warmup";
+        } else if (key == "--motion-distance" || key == "--rotation-radians") {
+            double &target = key == "--motion-distance" ? o.motion_distance : o.rotation_radians;
+            if (!real(value, target) || target == 0 || std::abs(target) > 10000)
+                return "motion excursion must be finite, nonzero, and at most 10000 in magnitude";
+        } else if (key == "--output-width") {
+            if (!integer(value, o.output_width) || !o.output_width)
+                return "invalid output width";
+        } else if (key == "--output-height") {
+            if (!integer(value, o.output_height) || !o.output_height)
+                return "invalid output height";
         } else if (key == "--width") {
             if (!integer(value, o.width) || !o.width)
                 return "invalid width";
@@ -243,6 +271,27 @@ std::string parse_options(int argc, char **argv, Options &o) {
     if (o.width > reconstruction_dimension_limit || o.height > reconstruction_dimension_limit ||
         std::uint64_t(o.width) * o.height > UINT32_MAX)
         return "resolution exceeds reconstruction limits";
+    if (!o.output_width)
+        o.output_width = o.width;
+    if (!o.output_height)
+        o.output_height = o.height;
+    if (o.output_width > reconstruction_dimension_limit ||
+        o.output_height > reconstruction_dimension_limit ||
+        std::uint64_t(o.output_width) * o.output_height > UINT32_MAX)
+        return "output resolution exceeds reconstruction limits";
+    if (o.reconstruction != ReconstructionMode::metalfx &&
+        (o.output_width != o.width || o.output_height != o.height))
+        return "raw and temporal output dimensions must equal internal dimensions";
+    if (o.output_width < o.width || o.output_height < o.height)
+        return "metalfx does not support downscaling";
+    if ((!o.measurement_json.empty() || o.workload != "interactive" || seen.contains("--warmup")) &&
+        (!o.frames || o.warmup >= o.frames))
+        return "measurement and workloads require frames greater than warmup";
+    if (o.workload == "motion" && (o.frames - o.warmup < 8 || (o.frames - o.warmup) % 4))
+        return "motion requires at least eight measured frames divisible by four";
+    if ((seen.contains("--motion-distance") || seen.contains("--rotation-radians")) &&
+        (o.workload == "interactive" || o.workload == "static"))
+        return "motion excursions require a moving workload";
     return {};
 }
 } // namespace rypath::viewer

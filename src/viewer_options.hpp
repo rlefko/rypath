@@ -5,9 +5,14 @@
 
 namespace rypath::viewer {
 struct Options {
-    std::filesystem::path scene, capture_directory; // Empty resolves to Pictures/rypath in the app.
+    std::filesystem::path scene, capture_directory,
+        measurement_json; // Empty resolves to Pictures/rypath in the app.
     bool demo = false, help = false;
     std::uint32_t width = 1920, height = 1080, mutation_steps = 1;
+    std::uint32_t output_width = 0, output_height = 0;
+    std::uint64_t warmup = 0;
+    std::string workload = "interactive";
+    double motion_distance = .1, rotation_radians = .1;
     std::uint64_t frames = 0, seed = 1; // Zero frames means interactive/unlimited.
     SpectralTransportSelection spectral_transport = SpectralTransportSelection::automatic;
     std::optional<HeroWavelengthSampling> hero_wavelengths;
