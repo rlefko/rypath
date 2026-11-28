@@ -130,7 +130,12 @@ the mismatches arise on reactivated unprepared lanes. Production callers pass
 the path mask through preparation, and imported expansions prepare the needed
 superset first. The corrected 96-case probe covers masks 1, 3, 5, 9 and 15.
 All 96 failure masks were zero on the M4 Max with Metal API validation enabled
-before removing the duplicate preparation check.
+before removing the duplicate preparation check. The shipping Metal library
+then passed the same 96 controls, eight native policy and provenance controls,
+and four independent session-order comparisons on one shared acceleration
+structure. All six raw and signed fixture images from independent PT, full
+Enhanced and fresh-only Enhanced were bitwise identical to the previous
+shared-proposal implementation.
 
 Evidence is outside Git in `.cache/highlight-origin-001/`: the predeclared
 `shared-probe-protocol.json`, four FLOAT populations, `shared-probe-analysis.json`,
