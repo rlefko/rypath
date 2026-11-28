@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Owned vacuum scene intentionally omits Integrator: PBRT defaults to volpath.
+# Optical geometry, materials, lights, camera and sensor match coated-path.pbrt.
+Camera "perspective" "float fov" [28]
+Film "rgb" "float maxcomponentvalue" [1e30] "integer xresolution" [8] "integer yresolution" [8]
+ "string sensor" "cie1931" "float iso" [100] "bool savefp16" [false]
+PixelFilter "box"
+Sampler "independent" "integer pixelsamples" [4096] "integer seed" [0]
+WorldBegin
+LightSource "infinite" "float scale" [1]
+AttributeBegin
+Material "diffuse" "rgb reflectance" [0 0 0]
+AreaLightSource "diffuse" "float scale" [3] "bool twosided" [true]
+Shape "trianglemesh" "point3 P" [-1.5 -1 4 2.5 -1 4 2.5 1 4 -1.5 1 4]
+ "integer indices" [0 1 2 0 2 3]
+AttributeEnd
+Material "coateddiffuse" "rgb reflectance" [.25 .4 .55] "float roughness" [.15] "float eta" [1.5] "float thickness" [.02] "integer maxdepth" [10] "integer nsamples" [1]
+Shape "trianglemesh" "point3 P" [-2 -2 2 2 -2 2 2 2 2 -2 2 2]
+ "point2 uv" [0 0 1 0 1 1 0 1] "integer indices" [0 2 1 0 3 2]

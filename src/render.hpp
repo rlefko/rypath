@@ -275,6 +275,10 @@ struct RenderScene {
     std::size_t triangle_frame_limit = render_patch_corner_limit;
     std::size_t preparation_byte_limit = std::numeric_limits<std::size_t>::max();
 };
+// Conservative packet/hero vacuum property, independent of the integrator mode.
+// Includes declared media because light-endpoint assignments are not retained.
+// Equal interface sides retain the incoming medium. Full scene validation remains required.
+bool has_proven_vacuum_media(const RenderScene &scene);
 // Select after entry-point integrator/film overrides. Does not change authored depth.
 // Explicit unsupported requests return an error without selecting a fallback.
 std::string select_spectral_transport(RenderScene &scene, SpectralTransportSelection requested,

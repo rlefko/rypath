@@ -2306,12 +2306,32 @@ set_tests_properties(frame.qualification_identity PROPERTIES TIMEOUT 30)
 
 add_executable(rypath_frame_coating_policy_tests frame_coating_policy_tests.cpp)
 target_include_directories(rypath_frame_coating_policy_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+target_link_libraries(rypath_frame_coating_policy_tests PRIVATE rypath_render)
 rypath_configure_host_target(rypath_frame_coating_policy_tests)
 add_test(NAME frame.coating_policy COMMAND rypath_frame_coating_policy_tests)
 add_test(NAME frame.coating_math COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/shared_coating_math_tests.py")
 set_tests_properties(frame.coating_policy frame.coating_math PROPERTIES TIMEOUT 30)
 if(RYPATH_ENABLE_METAL)
+    add_executable(rypath_frame_coating_vacuum_tests frame_coating_vacuum_tests.cpp)
+    target_link_libraries(rypath_frame_coating_vacuum_tests PRIVATE
+        rypath_metal_backend rypath_pbrt_render rypath_checkpoint)
+    rypath_configure_host_target(rypath_frame_coating_vacuum_tests)
+    set_target_properties(rypath_frame_coating_vacuum_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+    add_test(NAME metal.frame_coating_vacuum COMMAND rypath_frame_coating_vacuum_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt-render/packet-transport/coated-path.pbrt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pbrt-render/packet-transport/coated-vacuum-volpath.pbrt"
+        "${rypath_metal_library}")
+    set_tests_properties(metal.frame_coating_vacuum PROPERTIES
+        TIMEOUT 180 RUN_SERIAL TRUE ENVIRONMENT "MTL_DEBUG_LAYER=1")
+    foreach(capability DEVICE RAY_TRACING)
+        if(RYPATH_ALLOW_NO_METAL_${capability})
+            target_compile_definitions(rypath_frame_coating_vacuum_tests PRIVATE
+                RYPATH_ALLOW_NO_METAL_${capability}=1)
+            set_tests_properties(metal.frame_coating_vacuum PROPERTIES SKIP_RETURN_CODE 77)
+        endif()
+    endforeach()
     add_executable(rypath_frame_coating_session_tests frame_coating_session_tests.cpp)
     target_link_libraries(rypath_frame_coating_session_tests PRIVATE
         rypath_metal_backend rypath_pbrt_render rypath_checkpoint)

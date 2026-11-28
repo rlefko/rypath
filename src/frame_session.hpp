@@ -257,6 +257,15 @@ inline std::string validate_frame_coating_proposal(const FrameConfig &c) {
                "Enhanced frames";
     return {};
 }
+inline std::string validate_frame_coating_scene(const RenderScene &scene, const FrameConfig &c) {
+    if (const auto error = validate_frame_coating_proposal(c); !error.empty())
+        return error;
+    if (c.coating_proposal == FrameCoatingProposal::shared_diffuse &&
+        (scene.model != RenderModel::pbrt || scene.spectral_transport != SpectralTransport::hero ||
+         !has_proven_vacuum_media(scene)))
+        return "Shared coating proposals require explicit vacuum PBRT hero transport";
+    return {};
+}
 struct FrameCamera {
     RenderCamera camera;
     // Preserve the scene medium unless specified. Callers must update this on

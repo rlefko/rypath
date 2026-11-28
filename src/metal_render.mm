@@ -3000,12 +3000,8 @@ struct FrameSession::Impl {
                         const FrameConfig &settings, const std::filesystem::path &library_path) {
         renderer = std::move(owner);
         config = settings;
-        if (const auto error = validate_frame_coating_proposal(config); !error.empty())
+        if (const auto error = validate_frame_coating_scene(scene, config); !error.empty())
             return error;
-        if (config.coating_proposal == FrameCoatingProposal::shared_diffuse &&
-            (scene.model != RenderModel::pbrt ||
-             scene.spectral_transport != SpectralTransport::hero || scene.volume_transport))
-            return "Shared coating proposals require explicit vacuum PBRT hero transport";
         if (const auto error = validate_history_cap_policy(config); !error.empty())
             return error;
         if (config.history_cap_policy == FrameHistoryCapPolicy::duplication)
@@ -5766,14 +5762,8 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
     FrameSessionBuildResult result;
     result.shadow_traversal.requested = config.shadow_traversal;
     result.acceleration_build.requested = config.acceleration_build_policy;
-    if (const auto error = validate_frame_coating_proposal(config); !error.empty()) {
+    if (const auto error = validate_frame_coating_scene(scene, config); !error.empty()) {
         result.diagnostic = error;
-        return result;
-    }
-    if (config.coating_proposal == FrameCoatingProposal::shared_diffuse &&
-        (scene.model != RenderModel::pbrt || scene.spectral_transport != SpectralTransport::hero ||
-         scene.volume_transport)) {
-        result.diagnostic = "Shared coating proposals require explicit vacuum PBRT hero transport";
         return result;
     }
     if (const auto error = validate_history_cap_policy(config); !error.empty()) {

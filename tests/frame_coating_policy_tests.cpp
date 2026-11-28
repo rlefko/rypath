@@ -74,11 +74,61 @@ void receipts() {
     c.coating_proposal = FrameCoatingProposal::hero_only;
     check(!valid_frame_qualification_identity(c, f, 5), "unrequested changed law rejected");
 }
+void vacuum_scenes() {
+    RenderScene scene;
+    scene.model = RenderModel::pbrt;
+    scene.spectral_transport = SpectralTransport::hero;
+    scene.integrator = IntegratorKind::volpath;
+    scene.volume_transport = true;
+    FrameConfig config;
+    config.coating_proposal = FrameCoatingProposal::shared_diffuse;
+    const auto admitted = [&](const RenderScene &s) {
+        return has_proven_vacuum_media(s) && validate_frame_coating_scene(s, config).empty();
+    };
+    check(admitted(scene), "vacuum volpath mode admitted without flag edits");
+    scene.instance_media = {{no_medium, no_medium}, {no_medium, no_medium}};
+    check(admitted(scene), "translated empty instance assignments admitted");
+    scene.media.emplace_back();
+    scene.instance_media[0] = {0, 0};
+    check(admitted(scene), "equal sides retain vacuum with zero coefficients");
+    auto bad = scene;
+    bad.camera_medium = 0;
+    check(!admitted(bad), "camera medium assignment rejected");
+    bad = scene;
+    bad.instance_media[0] = {0, no_medium};
+    check(!admitted(bad), "reachable medium change rejected");
+    bad = scene;
+    bad.instance_media[0] = {7, 7};
+    check(!admitted(bad), "invalid equal medium indices rejected");
+    for (unsigned component = 0; component < 3; ++component) {
+        bad = scene;
+        if (component == 0)
+            bad.media[0].sigma_a[0] = .1f;
+        else if (component == 1)
+            bad.media[0].sigma_s[470] = .1f;
+        else
+            bad.media[0].emission[42] = .1f;
+        check(!admitted(bad), "declared active medium covers unknown light endpoints");
+        auto legacy = config;
+        legacy.coating_proposal = FrameCoatingProposal::hero_only;
+        check(validate_frame_coating_scene(bad, legacy).empty(), "legacy admission unchanged");
+        check(!select_spectral_transport(bad, SpectralTransportSelection::hero).empty(),
+              "existing explicit hero medium proof unchanged");
+    }
+    scene.camera_medium = 0;
+    scene.instance_media[0] = {0, no_medium};
+    check(select_spectral_transport(scene, SpectralTransportSelection::hero).empty(),
+          "zero-coefficient assignments retain explicit selection behavior");
+    check(scene.volume_transport && scene.camera_medium == no_medium &&
+              scene.instance_media.empty() && admitted(scene),
+          "selection normalizes vacuum assignments without changing volpath mode");
+}
 } // namespace
 int main() {
     try {
         parameters();
         receipts();
+        vacuum_scenes();
         std::cout << checks << " frame coating policy checks passed\n";
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';
