@@ -29,6 +29,16 @@ inline bool valid_frame_qualification_identity(const FrameConfig &c, const Frame
     const bool area = c.estimator == FrameEstimator::area_replay;
     const bool enhanced = area && c.area_path_domain == FrameAreaPathDomain::enhanced;
     const bool wavefront = c.execution == FrameExecution::wavefront;
+    const bool adaptive = c.history_cap_policy == FrameHistoryCapPolicy::duplication;
+    const auto duplication = adaptive && c.area_duplication == FrameAreaDuplication::off
+                                 ? FrameAreaDuplication::initial_seed
+                                 : c.area_duplication;
+    if ((c.history_cap_policy != FrameHistoryCapPolicy::fixed && !adaptive) ||
+        f.history_cap_policy != c.history_cap_policy ||
+        (adaptive && (!enhanced || !wavefront || c.area_reuse != FrameAreaReuse::full ||
+                      duplication != FrameAreaDuplication::initial_seed)) ||
+        (!area && duplication != FrameAreaDuplication::off) || f.duplication.mode != duplication)
+        return fail("Qualification history cap policy/duplication identity mismatch");
     const bool suffix = enhanced && c.contribution_replay == FrameContributionReplay::prefix &&
                         c.enhanced_suffix_cache && c.area_reuse == FrameAreaReuse::full;
     const bool compact = enhanced && wavefront && c.compact_enhanced_pairs;

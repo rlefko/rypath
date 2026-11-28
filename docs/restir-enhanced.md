@@ -21,7 +21,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Mechanism | Current coverage |
 | --- | --- |
 | Contribution-aware resampling MIS | Source/destination target adaptation |
-| Confidence recurrence, §2.2 | Enhanced uses a fixed temporal cap (default 20) before MIS and sums structural spatial inputs |
+| Confidence recurrence, §2.2 | Enhanced caps the historical input before MIS and sums structural spatial inputs. The default is a fixed cap of 20 |
 | Reciprocal spatial work sharing, §3 | Opt-in per-pixel Gaussian pairing atlases and shared same-pair reverse targets |
 | Final vector-weight shading, §6.3 | Conditional-mean readout, separate from the selected history sample |
 | NEE candidate sampling, §§6.1 and 7 | Existing light proposals; the evaluation's 32/B² light-candidate schedule is not reproduced |
@@ -33,7 +33,7 @@ one fresh evaluation, one mutation, and four spatial evaluations.
 | Selective shift-pair compaction, §6.2.2 | Opt-in admission skips structurally selected-null requests; all nonnull requests retain canonical evaluation |
 | Initial-only external roulette, §6.2.4 | Opt-in `enhanced`: independent discovery gates and canonical no-outer-roulette imports |
 | Reservoir reprojection and dual motion, §6.4 | Opt-in camera-only dual motion; focused controls and four-scene native motion smoke pass |
-| Duplication diagnostics, §5 | Opt-in ancestry/current-coordinate maps; focused exactness and lifecycle controls pass; biased adaptive cap absent |
+| Duplication-based history cap, §5 | Optional initial-seed neighborhood cap with fractional temporal and spatial confidence. Other ancestry maps remain available for diagnosis |
 
 Published performance is evidence about that implementation and hardware, not a
 forecast for M4 Max or for our spectral/coated-material model.
@@ -265,8 +265,7 @@ Enhanced confidence is separate from the reservoir normalizer and age. Fresh
 confidence is one, temporal input is capped at 20 before both MIS evaluations,
 and spatial output sums structurally present source confidences. Null selected
 samples retain their proposal domains. Out-of-bounds self aliases do not invent
-neighbors; duplicate valid stencil slots count per occurrence. There is no
-extra division by confidence and no duplication-dependent biased cap.
+neighbors; duplicate valid stencil slots count per occurrence. The original fixed-cap implementation has no extra division by confidence.
 
 Release GPU checks before memoization restoration passed the six physical
 fixtures and the independent multibounce mean check, plus three independent
@@ -754,8 +753,8 @@ weights and immutable records. Their results do not establish native throughput.
 `--area-duplication off|initial-seed|initial-atom|current` is diagnostic-only and
 defaults to `off`. It requires wavefront Enhanced Area. Disabled sessions retain
 the original Area entry points and allocate no diagnostic buffers or dispatches.
-The maps do not affect confidence, targets, weights, mutation acceptance, caps or
-radiance; no adaptive cap or clamp is introduced.
+Under the fixed policy these maps only collect measurements. The experimental
+duplication policy below consumes the initial-seed map.
 
 Fresh winners receive an exact 16-byte provenance label: original pixel, 64-bit
 sample label and initial contribution slot `j`. `initial-seed` compares the pixel
@@ -846,12 +845,35 @@ Primary foundations: [GRIS](https://graphics.cs.utah.edu/research/projects/gris/
 [Area ReSTIR](https://research.nvidia.com/publication/2024-07_area-restir-resampling-real-time-defocus-and-antialiasing),
 and [wavefront path tracing](https://research.nvidia.com/publication/2013-07_megakernels-considered-harmful-wavefront-path-tracing-gpus).
 
-## Fixed temporal confidence
+## Temporal confidence policies
 
 `--area-history-cap N` sets the previous frame's maximum confidence for
 Enhanced replay. The supported range is 1 through 20. The default is 20.
 The cap enters both sides of temporal MIS and the published temporal
 confidence. Spatial passes accumulate the confidence of all admitted sources
 as before. The cap stays constant over the session and is independent of each
-sample's radiance, selection, or duplication. Lin et al. describe a separate
-sample-dependent cap in section 5 and measure its bias.
+sample's radiance, selection, or duplication under the default fixed policy.
+
+The benchmark, qualifier and viewer accept `--area-history-cap-policy duplication`
+for full Enhanced Area replay. This opt-in policy requires the initial-seed
+ancestry map. For each historical donor, its previous published map stores
+the number of other pixels sharing that initial seed in a 17×17 window. The
+center is excluded. Out-of-bounds pixels contribute zero. The denominator
+is always 288. With user maximum `H` and matching fraction `D`, the cap is
+`H + (1 - H) * D^0.1`. The shader applies the lower of this cap and the
+donor's structural confidence to both temporal MIS terms. Fractional confidence
+survives accumulation and spatial MIS. Reprojection reads the count at the
+same previous pixel as its reservoir. Cuts invalidate both histories.
+
+A selected-null donor has no seed to match. Our adaptation assigns it zero
+duplication and retains its structural confidence subject to the ordinary
+maximum. Invalid ancestry on a positive donor is a frame error. Conditional
+weights depend on the selected sample under this policy and can introduce
+bias. Lin et al. measured 3.25% average absolute relative bias in their
+Kitchen scene. That value applies to their experiment. The published method
+and our Area implementation need separate image and cost measurements.
+[Lin et al., section 5](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/lin2026restirptenhanced.pdf)
+
+The four-scene M4 Max evaluation includes native timings, held-out image comparisons
+and the Pavilion night artifact diagnosis.
+[Duplication-based confidence study](duplication-cap-study.md)

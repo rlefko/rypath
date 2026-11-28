@@ -2204,6 +2204,149 @@ void enhanced_duplication_controls() {
     enhanced_duplication_exact_controls();
     enhanced_duplication_lifetime_controls();
 }
+
+void enhanced_adaptive_cap_controls() {
+    need(FrameConfig{}.history_cap_policy == FrameHistoryCapPolicy::fixed,
+         "History cap remains fixed by default");
+    const auto decode = [](unsigned word) { return std::bit_cast<float>(word); };
+    const auto cap = [](unsigned count) {
+        return 20.L - 19.L * std::pow(static_cast<long double>(count) / 288.L, .1L);
+    };
+    const auto close = [](float actual, long double expected) {
+        const auto bound =
+            128.L * std::numeric_limits<float>::epsilon() * std::max(1.L, std::abs(expected));
+        need(std::isfinite(actual) &&
+                 std::abs(static_cast<long double>(actual) - expected) <= bound,
+             "Actual published confidence follows independent previous-count recurrence");
+    };
+    constexpr unsigned width = 9, height = 9, pixels = width * height;
+    const auto spatial_sources = [](unsigned p) {
+        const auto x = p % width, y = p / width;
+        return std::array<unsigned, 4>{x ? p - 1 : p, x + 1 < width ? p + 1 : p, y ? p - width : p,
+                                       y + 1 < height ? p + width : p};
+    };
+    auto scene = enhanced_cavity();
+    scene.max_depth = 1;
+    auto c = enhanced_config();
+    c.width = width;
+    c.height = height;
+    c.capacity = 37;
+    c.mutation_steps = 0;
+    c.contribution_replay = FrameContributionReplay::prefix;
+    c.area_stencil = FrameAreaStencil::adjacent;
+    c.cache_temporal_evaluations = true;
+    c.enhanced_history_cap = 20;
+    auto fixed = c;
+    fixed.history_cap_policy = FrameHistoryCapPolicy::fixed;
+    auto diagnostic = fixed;
+    diagnostic.area_duplication = FrameAreaDuplication::initial_seed;
+    auto baseline = FrameSessionTestAccess::build_shared_scene(scene, fixed, diagnostic);
+    need(baseline.status == GeometryStatus::success && baseline.shared_renderer &&
+             baseline.independent_history && baseline.independent_duplication_storage,
+         baseline.diagnostic);
+    for (unsigned frame = 0; frame < 2; ++frame) {
+        const auto a = motion_capture(*baseline.sessions[0]);
+        const auto b = motion_capture(*baseline.sessions[1]);
+        exact(a.image, b.image);
+        const auto x = FrameSessionTestAccess::snapshot_enhanced(*baseline.sessions[0], frame);
+        const auto y = FrameSessionTestAccess::snapshot_enhanced(*baseline.sessions[1], frame,
+                                                                 false, false, true);
+        need(a.info.history_cap_policy == FrameHistoryCapPolicy::fixed &&
+                 b.info.history_cap_policy == FrameHistoryCapPolicy::fixed &&
+                 equal_wire_bytes(x.history, y.history) && equal_wire_bytes(x.temporal, y.temporal),
+             "Default fixed/off and diagnostic-on preserve last raw and INTEGER tuple bytes");
+        for (const auto &t : x.temporal)
+            need(t.confidence >= 1 && t.confidence <= 21,
+                 "Fixed wire remains old integer confidence, not FLOAT bits");
+    }
+    bool fractional = false, known_prior_count = false;
+    for (const bool black : {false, true}) {
+        auto current_scene = scene;
+        if (black)
+            for (auto &emitter : current_scene.area_emissions)
+                emitter.radiance.fill(0);
+        frames(current_scene); // CPU validation before the first GPU acquisition.
+        auto automatic = c;
+        automatic.history_cap_policy = FrameHistoryCapPolicy::duplication;
+        need(automatic.area_duplication == FrameAreaDuplication::off,
+             "Caller does not have to request diagnostics for adaptive ancestry");
+        auto explicit_mode = automatic;
+        explicit_mode.area_duplication = FrameAreaDuplication::initial_seed;
+        auto pair =
+            FrameSessionTestAccess::build_shared_scene(current_scene, automatic, explicit_mode);
+        need(pair.status == GeometryStatus::success && pair.shared_renderer &&
+                 pair.independent_history && pair.independent_owned_records &&
+                 pair.independent_duplication_storage && pair.duplication_enabled[0] &&
+                 pair.duplication_enabled[1],
+             pair.diagnostic);
+        EnhancedSessionSnapshot prior;
+        for (unsigned frame = 0; frame < 5; ++frame) {
+            const bool cut = frame == 4, history = frame != 0 && !cut;
+            const auto epoch = cut ? 74u : 73u;
+            const auto a = motion_capture(*pair.sessions[0], {}, epoch);
+            const auto b = motion_capture(*pair.sessions[1], {}, epoch);
+            exact(a.image, b.image);
+            need(a.info.history_cap_policy == FrameHistoryCapPolicy::duplication &&
+                     b.info.history_cap_policy == FrameHistoryCapPolicy::duplication &&
+                     a.info.duplication.mode == FrameAreaDuplication::initial_seed &&
+                     b.info.duplication.mode == FrameAreaDuplication::initial_seed &&
+                     a.info.history_used == history && b.info.history_used == history &&
+                     a.info.completed_samples == pixels && a.info.fresh_candidates == pixels &&
+                     a.info.completed_evaluations + a.info.cached_evaluations +
+                             a.info.analytic_null_evaluations ==
+                         a.info.logical_evaluations,
+                 "Adaptive normal entry automatically admits ancestry and conserves work");
+            const auto x = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[0], frame,
+                                                                     false, false, true);
+            const auto y = FrameSessionTestAccess::snapshot_enhanced(*pair.sessions[1], frame,
+                                                                     false, false, true);
+            need(x.status == GeometryStatus::success && y.status == GeometryStatus::success &&
+                     equal_wire_bytes(x.history, y.history) &&
+                     equal_wire_bytes(x.temporal, y.temporal) &&
+                     x.duplication_counts == y.duplication_counts,
+                 "Automatic and explicit initial-seed paths publish identical fractional tuples");
+            duplication_snapshot_oracle(x, a.info);
+            std::array<long double, pixels> temporal{};
+            for (unsigned p = 0; p < pixels; ++p) {
+                long double input = 0;
+                if (history) {
+                    need(prior.history.size() == pixels &&
+                             prior.duplication_counts.size() == pixels,
+                         "Adaptive input is an ACTUAL prior published count map");
+                    const auto &old = prior.history[p];
+                    const bool null = old.selected_slot == contribution_wire::enhanced_null_slot;
+                    const auto count = prior.duplication_counts[p];
+                    need(null ? count == 0xffffu : count <= 288,
+                         "Known prior null/nonnull map semantics");
+                    const auto H = null ? 20.L : cap(count);
+                    input = std::min(static_cast<long double>(decode(old.confidence)), H);
+                    known_prior_count |= !null && count > 0 && count <= 288;
+                }
+                temporal[p] = input + 1;
+                close(decode(x.temporal[p].confidence), temporal[p]);
+                fractional |= !black && std::abs(temporal[p] - std::round(temporal[p])) > .01L;
+                if (black)
+                    need(x.history[p].selected_slot == contribution_wire::enhanced_null_slot,
+                         "Null selected history retains a positive structural confidence domain");
+            }
+            for (unsigned p = 0; p < pixels; ++p) {
+                long double total = temporal[p];
+                for (const auto n : spatial_sources(p))
+                    if (n != p)
+                        total += temporal[n];
+                close(decode(x.history[p].confidence), total);
+            }
+            std::cout << "adaptive normal-entry black=" << black << " frame=" << frame
+                      << " actual prior-map/confidence recurrence passed\n";
+            prior = x;
+        }
+    }
+    need(known_prior_count && fractional, "Actual adaptive GPU entry must consume positive prior "
+                                          "counts and publish NONINTEGER confidence");
+    std::cout << "Adaptive normal-entry shared-AS, fixed/off, null, cut and fractional propagation "
+                 "passed\n";
+}
+
 void enhanced_motion_static_controls() {
     auto scene = motion_disocclusion_scene();
     auto off = enhanced_config();
@@ -3076,6 +3219,7 @@ void enhanced_fresh_only_controls() {
 
 int main(int argc, char **argv) {
     try {
+        const bool adaptive_cap = argc == 2 && std::string_view(argv[1]) == "--adaptive-cap";
         const bool contribution_only =
             argc == 2 && std::string_view(argv[1]) == "--contribution-only";
         const bool event_counts = argc == 2 && std::string_view(argv[1]) == "--event-counts";
@@ -3089,9 +3233,9 @@ int main(int argc, char **argv) {
         const bool enhanced_pairs = argc == 2 && std::string_view(argv[1]) == "--enhanced-pairs";
         const bool enhanced_suffix = argc == 2 && std::string_view(argv[1]) == "--enhanced-suffix";
         const bool enhanced_hybrid = argc == 2 && std::string_view(argv[1]) == "--enhanced-hybrid";
-        need(argc == 1 || event_counts || contribution_only || enhanced_only || enhanced_nee ||
-                 enhanced_hybrid || enhanced_suffix || enhanced_pairs || enhanced_motion ||
-                 enhanced_atlas || enhanced_duplication || enhanced_fresh,
+        need(argc == 1 || adaptive_cap || event_counts || contribution_only || enhanced_only ||
+                 enhanced_nee || enhanced_hybrid || enhanced_suffix || enhanced_pairs ||
+                 enhanced_motion || enhanced_atlas || enhanced_duplication || enhanced_fresh,
              "Expected optional --contribution-only, --enhanced, --enhanced-nee or "
              "--enhanced-hybrid, --enhanced-suffix, --enhanced-pairs, --enhanced-motion or "
              "--enhanced-atlas, --enhanced-duplication or --event-counts");
@@ -3110,6 +3254,10 @@ int main(int argc, char **argv) {
         need(capability.status == GeometryStatus::success && capability.scene,
              capability.diagnostic);
         capability.scene.reset();
+        if (adaptive_cap) {
+            enhanced_adaptive_cap_controls();
+            return 0;
+        }
         if (enhanced_fresh) {
             enhanced_fresh_only_controls();
             return 0;

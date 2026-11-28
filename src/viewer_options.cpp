@@ -31,7 +31,8 @@ const char *usage() {
            "  --area-path-domain summed|contribution|enhanced --area-contribution-replay "
            "full|prefix\n"
            "  --area-spatial-mode all|stochastic-pairs|stochastic-shared (default: all)\n"
-           "  --area-history-cap N  Enhanced fixed temporal confidence, 1 through 20\n"
+           "  --area-history-cap N  Enhanced temporal confidence ceiling, 1 through 20\n"
+           "  --area-history-cap-policy fixed|duplication (default: fixed; duplication is biased)\n"
            "  --resource-profile standard|large (default: standard)\n"
            "  --variance-policy paired|center|conservative (temporal only; default: paired)\n"
            "  --mutations 0|1|2|4  (default: 1 for Area; independent uses zero)\n"
@@ -66,6 +67,7 @@ FrameConfig frame_configuration(const Options &o) {
     c.contribution_replay = o.contribution_replay;
     c.spatial_mode = o.spatial_mode;
     c.enhanced_history_cap = o.enhanced_history_cap;
+    c.history_cap_policy = o.history_cap_policy;
     return c;
 }
 ReconstructionConfig reconstruction_configuration(const Options &o, ReconstructionMode mode) {
@@ -161,6 +163,11 @@ std::string parse_options(int argc, char **argv, Options &o) {
             if (!integer(value, o.enhanced_history_cap) || o.enhanced_history_cap < 1 ||
                 o.enhanced_history_cap > 20)
                 return "area history cap must be 1 through 20";
+        } else if (key == "--area-history-cap-policy") {
+            const auto policy = parse_frame_history_cap_policy(value);
+            if (!policy)
+                return "area history cap policy must be fixed or duplication";
+            o.history_cap_policy = *policy;
         } else if (key == "--resource-profile") {
             if (value != "standard" && value != "large")
                 return "resource profile must be standard or large";
@@ -216,7 +223,7 @@ std::string parse_options(int argc, char **argv, Options &o) {
     if (seen.contains("--area-contribution-replay") &&
         !frame_area_contribution_family(o.area_path_domain))
         return "contribution replay requires contribution or enhanced path domain";
-    if (seen.contains("--area-history-cap") &&
+    if ((seen.contains("--area-history-cap") || seen.contains("--area-history-cap-policy")) &&
         (o.estimator != FrameEstimator::area_replay ||
          o.area_path_domain != FrameAreaPathDomain::enhanced))
         return "area history cap requires Enhanced Area replay";

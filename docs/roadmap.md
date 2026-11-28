@@ -220,8 +220,10 @@ scene-dependent gains. Camera-only dual motion passes focused runtime controls.
 Paired Gaussian spatial textures pass independent integer/GPU and bounded
 rendering controls. Optional exact duplication diagnostics pass focused CPU/GPU,
 off/on rendering and publication-lifetime controls; native diagnostic cost,
-moving-scene quality and complete quality/time qualification remain open. Adaptive biased caps remain outside this
-diagnostic.
+moving-scene quality and complete quality/time qualification remain open for
+the diagnostic. The [duplication-cap study](duplication-cap-study.md) separately
+evaluates the sample-dependent policy from section 5. Fixed confidence remains
+the default.
 
 The original Enhanced cost study identified a native frame-time regression.
 Sampling a single reciprocal map recovers roughly half of the exhaustive

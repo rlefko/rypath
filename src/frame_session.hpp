@@ -4,6 +4,8 @@
 #include "gpu_diagnostics.hpp"
 #include "metal_render.hpp"
 #include "stochastic_spatial_shared.h"
+#include <optional>
+#include <string_view>
 #include <vector>
 
 namespace rypath {
@@ -46,6 +48,24 @@ inline constexpr const char *frame_contribution_replay_name(FrameContributionRep
     return "invalid";
 }
 enum class FrameAreaReuse { full, fresh };
+enum class FrameHistoryCapPolicy { fixed, duplication };
+inline constexpr const char *frame_history_cap_policy_name(FrameHistoryCapPolicy policy) {
+    switch (policy) {
+    case FrameHistoryCapPolicy::fixed:
+        return "fixed";
+    case FrameHistoryCapPolicy::duplication:
+        return "duplication";
+    }
+    return "invalid";
+}
+inline constexpr std::optional<FrameHistoryCapPolicy>
+parse_frame_history_cap_policy(std::string_view name) {
+    if (name == "fixed")
+        return FrameHistoryCapPolicy::fixed;
+    if (name == "duplication")
+        return FrameHistoryCapPolicy::duplication;
+    return std::nullopt;
+}
 inline constexpr std::uint32_t frame_temporal_reuse_cap(FrameEstimator estimator,
                                                         FrameAreaReuse reuse,
                                                         std::uint32_t configured_cap) {
@@ -175,8 +195,9 @@ struct FrameConfig {
     // Enhanced retains the selected owned record/scale; camera/context changes
     // replay both directions. False provides a full-replay validation control.
     bool cache_temporal_evaluations = true;
-    // Fixed prior-frame confidence, independent of sample values.
+    // Upper limit on prior-frame confidence. Duplication-based reduction is biased.
     std::uint32_t enhanced_history_cap = 20;
+    FrameHistoryCapPolicy history_cap_policy = FrameHistoryCapPolicy::fixed;
     // Effective only for Enhanced Area prefix replay; disabled mode replays suffixes.
     bool enhanced_suffix_cache = true;
     // Experimental admission of nonnull Enhanced requests; all fresh owners run.
@@ -237,7 +258,8 @@ struct FrameInfo {
     std::uint64_t area_serial = 0;
     bool history_used = false;
     bool temporal_evaluation_cache_used = false;
-    std::uint32_t enhanced_history_cap = 0; // Zero without Enhanced temporal reuse.
+    std::uint32_t enhanced_history_cap = 0; // Maximum, zero without Enhanced temporal reuse.
+    FrameHistoryCapPolicy history_cap_policy = FrameHistoryCapPolicy::fixed;
     bool enhanced_suffix_cache = false;
     bool enhanced_pair_compaction = false;
     bool stochastic_spatial_pairs = false;

@@ -111,7 +111,8 @@ void enhanced_configuration() {
     require(defaults.area_path_domain == FrameAreaPathDomain::summed &&
                 defaults.contribution_replay == FrameContributionReplay::full &&
                 defaults.spatial_mode == FrameSpatialMode::all &&
-                defaults.enhanced_history_cap == 20 && defaults.mutation_steps == 0,
+                defaults.enhanced_history_cap == 20 && defaults.mutation_steps == 0 &&
+                defaults.history_cap_policy == FrameHistoryCapPolicy::fixed,
             "New opt-ins preserve independent and full-replay defaults");
     for (const auto cap : {"0", "21", "-1", "4294967296", "1x"})
         rejected({"--scene", "fixture.pbrt", "--estimator", "area-replay", "--area-path-domain",
@@ -128,6 +129,16 @@ void enhanced_configuration() {
     rejected({"--demo", "--area-path-domain", "invalid"}, "Unknown path domain");
     rejected({"--demo", "--area-contribution-replay", "invalid"}, "Unknown replay policy");
     rejected({"--demo", "--area-history-cap", "1"}, "Cap needs Enhanced");
+    const auto adaptive =
+        accepted({"--scene", "fixture.pbrt", "--estimator", "area-replay", "--area-path-domain",
+                  "enhanced", "--area-history-cap-policy", "duplication"});
+    require(viewer::frame_configuration(adaptive).history_cap_policy ==
+                FrameHistoryCapPolicy::duplication,
+            "Opt-in duplication policy reaches the viewer session");
+    rejected({"--demo", "--area-history-cap-policy", "duplication"}, "Policy needs Enhanced");
+    rejected({"--scene", "fixture.pbrt", "--estimator", "area-replay", "--area-path-domain",
+              "enhanced", "--area-history-cap-policy", "automatic"},
+             "Unsupported cap policy");
     rejected({"--scene", "fixture.pbrt", "--area-path-domain", "enhanced"},
              "Path domain needs Area estimator");
     rejected({"--demo", "--estimator", "area-replay", "--area-path-domain", "enhanced"},

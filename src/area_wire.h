@@ -7,17 +7,36 @@
 #include "render_wire.h"
 #include "replay_shared.h"
 #include "reservoir_shared.h"
+#if !defined(__METAL_VERSION__)
+#include <bit>
+#endif
 namespace rypath {
 namespace area_wire {
 using Word = render_wire::Word;
 enum : Word {
-    contract = 20,
+    contract = 21,
     spatial_candidates = 5,
     config_count = 13,
     mutation_config_begin = 7,
     temporal_reverse_config = 11,
     spatial_finalize_config = 12
 };
+// Policy is validated before use. Fixed conversion is exact for the accepted
+// integer domain; duplication stores the full fractional binary32 coefficient.
+inline float decode_confidence(Word value, Word policy) {
+#if defined(__METAL_VERSION__)
+    return policy == 1 ? as_type<float>(value) : float(value);
+#else
+    return policy == 1 ? std::bit_cast<float>(value) : float(value);
+#endif
+}
+inline Word encode_confidence(float value, Word policy) {
+#if defined(__METAL_VERSION__)
+    return policy == 1 ? as_type<Word>(value) : Word(value);
+#else
+    return policy == 1 ? std::bit_cast<Word>(value) : Word(value);
+#endif
+}
 enum Phase : Word {
     fresh = 0,
     temporal = 1,
@@ -59,6 +78,7 @@ struct Config {
     // 0=all, 1=independent uniform terms, 2=one shared uniform pair.
     Word spatial_mode, forward_atlas, canonical_atlas;
     Word enhanced_history_cap = 20;
+    Word history_cap_policy = 0; // 0: exact integer fixed law; 1: IEEE float duplication law
 };
 #if defined(__METAL_VERSION__)
 using Counter = metal::atomic_uint;
@@ -83,7 +103,8 @@ struct History {
     Word valid, selected_slot;
     // Exact selected pre-weight F(payload[,j]); never the conditional mean.
     render_wire::Point xyz;
-    // Structural Enhanced confidence; legacy records require the zero sentinel.
+    // Fixed: exact integer confidence. Duplication: IEEE binary32 bits.
+    // Legacy records require the zero sentinel.
     Word confidence;
     enhanced_wire::Reference record;
     float target_h_fraction;
@@ -138,7 +159,8 @@ enum Argument : Word {
     enhanced_suffix_id,
     donors_id,
     paired_atlas_id,
-    paired_config_id
+    paired_config_id,
+    previous_duplication_counts_id
 };
 struct Contract {
     Word version, config_bytes, history_bytes, temporal_bytes;
@@ -152,7 +174,7 @@ static_assert(__builtin_offsetof(History, confidence) == 60 &&
               "Area v10 structural confidence word offsets");
 static_assert(sizeof(FirstFailure) == 96 && sizeof(FirstFailure) <= 256,
               "Area first-failure record ABI");
-static_assert(sizeof(Config) == 120 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
+static_assert(sizeof(Config) == 124 && sizeof(History) == 88 && sizeof(Temporal) == 92 &&
                   sizeof(Accumulator) == 104 && sizeof(Contract) == 48 && sizeof(Counters) == 112,
               "Area replay host/shader ABI");
 } // namespace area_wire
@@ -164,3 +186,7 @@ static_assert(rypath::area_wire::donors_id == 14 &&
 
 static_assert(rypath::area_wire::paired_atlas_id == 15 && rypath::area_wire::paired_config_id == 16,
               "Area v16 immutable paired atlas arguments");
+
+static_assert(rypath::area_wire::previous_duplication_counts_id == 17 &&
+                  __builtin_offsetof(rypath::area_wire::Config, history_cap_policy) == 120,
+              "Area v21 duplication confidence policy and previous-map ABI");

@@ -257,6 +257,7 @@ def qualification_checks(executable):
     assert help_result.returncode == 0 and "reference-spp" in help_result.stdout
     assert "--first-evaluation-seed-index N (default: 0)" in help_result.stdout
     assert "--motion-references anchors|every-pose (default: anchors)" in help_result.stdout
+    assert "--area-history-cap-policy fixed|duplication" in help_result.stdout
     assert all(word in help_result.stdout for word in ("reconstruction", "temporal", "metalfx", "--area-output"))
     with tempfile.TemporaryDirectory(prefix="rypath-qualification-cli-") as temporary:
         root = Path(temporary)
@@ -290,6 +291,11 @@ def qualification_checks(executable):
             base + ["--area-history-cap", "0"],
             base + ["--area-history-cap", "21"],
             base + ["--area-history-cap", "2"],
+            base + ["--area-history-cap-policy", "invalid"],
+            base + ["--area-history-cap-policy", "Duplication"],
+            base + ["--area-history-cap-policy", "fixed"],
+            base + ["--area-path-domain", "enhanced", "--area-reuse", "fresh",
+                    "--mutation-arms", "0", "--area-history-cap-policy", "duplication"],
             base + ["--mutation-arms", "1,0"],
             base + ["--mutation-arms", "0,1,1"],
             base + ["--variance-policy", "invalid"],
@@ -340,7 +346,7 @@ def qualification_checks(executable):
                                 object_pairs_hook=unique_object)
             assert report["complete"] is False
             assert report["schema"] == 2
-            assert report["settings"]["area_contract"] == 20
+            assert report["settings"]["area_contract"] == 21
             assert report["settings"]["area_output"] == "conditional-mean"
             assert report["settings"]["area_target"] == "quarter-l1-v1"
             assert report["settings"]["area_source_mis"] == "source-target-mis-v1"
@@ -362,7 +368,7 @@ def qualification_checks(executable):
         assert result.returncode != 0
         selected = json.loads((destination / "summary.json").read_text())
         assert selected["schema"] == 2 and selected["settings"]["area_output"] == "selected"
-        assert selected["settings"]["area_contract"] == 20
+        assert selected["settings"]["area_contract"] == 21
         # These are requested settings of a failed preflight, never fabricated
         # runtime evidence. Independent reference/arm stay separate from Area.
         destination = root / "enhanced-configuration"
@@ -400,6 +406,26 @@ def qualification_checks(executable):
         shared = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
         assert shared["settings"]["requested_area_spatial_mode"] == "stochastic-shared"
         assert shared["complete"] is False
+        for policy in ("fixed", "duplication"):
+            destination = root / f"history-cap-{policy}"
+            result = run(executable, ["--scene", source, "--output-dir", destination,
+                                     "--spectral-transport", "hero", "--area-path-domain", "enhanced",
+                                     "--area-history-cap", "7", "--area-history-cap-policy", policy])
+            assert result.returncode != 0
+            report = json.loads((destination / "summary.json").read_text(), object_pairs_hook=unique_object)
+            settings = report["settings"]
+            assert settings["requested_area_history_cap_policy"] == policy
+            assert settings["requested_area_history_cap_max"] == 7
+            assert settings["requested_area_history_cap"] == (7 if policy == "fixed" else None)
+            assert settings["area_temporal_reuse"] == (7 if policy == "fixed" else None)
+            assert settings["area_history_cap_min"] == (1 if policy == "duplication" else None)
+            assert settings["area_history_cap_alpha"] == (0.1 if policy == "duplication" else None)
+            for arm in report["arms"]:
+                assert arm["configured_area_history_cap_policy"] == ("fixed" if arm["arm"] == "independent" else policy)
+                assert arm["effective_area_history_cap_policy"] is None
+                assert arm["effective_area_duplication"] is None
+                assert arm["effective_area_history_cap_max"] is None
+            assert not list(destination.glob("*.exr"))
         destination = root / "fresh-extraction"
         result = run(executable, ["--scene", source, "--output-dir", destination,
                                  "--spectral-transport", "hero", "--area-path-domain", "enhanced",

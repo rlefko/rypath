@@ -37,6 +37,7 @@ for value in ("invalid", "stochastic-pairs"):
     invoke(["--demo", "--output", "x.json", "--area-spatial-mode", value])
 assert "--area-temporal-reprojection off|dual" in help_text
 assert "--area-duplication off|initial-seed|initial-atom|current" in help_text
+assert "--area-history-cap-policy fixed|duplication" in help_text
 assert "auto|adjacent|reciprocal16|paired-gaussian16" in help_text
 assert "--spectral-transport auto|scalar|packet|hero" in help_text
 for flag in ("--variance-policy paired|center|conservative", "--variance-prefilter on|off",
@@ -96,6 +97,7 @@ for option, values in (
     ("--area-pair-compaction", ("invalid", "On", "0")),
     ("--area-temporal-reprojection", ("invalid", "Dual", "on", "0")),
     ("--area-duplication", ("invalid", "Initial-Seed", "on", "0")),
+    ("--area-history-cap-policy", ("invalid", "Duplication", "on", "0")),
     ("--execution", ("invalid",)),
     ("--estimator", ("invalid",)),
     ("--mutations", ("3", "5", "-1", "nan", "4294967296", "1x")),
@@ -451,7 +453,7 @@ with tempfile.TemporaryDirectory() as directory:
             "--estimator", "area-replay", "--target-scale", "0.125"])
     settings = json.loads(destination.read_text())["settings"]
     assert settings["estimator"] == "area-replay" and settings["replay_contract"] == 1
-    assert settings["area_contract"] == 20
+    assert settings["area_contract"] == 21
     assert settings["requested_area_path_domain"] == settings["area_path_domain"] == "summed"
     assert settings["effective_area_path_domain"] is None
     for mode in ("off", "initial-seed", "initial-atom", "current"):
@@ -462,6 +464,33 @@ with tempfile.TemporaryDirectory() as directory:
         duplication_settings = json.loads(destination.read_text())["settings"]
         assert duplication_settings["requested_area_duplication"] == mode
         assert duplication_settings["area_duplication"] == "off"
+    for policy in ("fixed", "duplication"):
+        destination = root / f"cap-policy-{policy}.json"
+        args = ["--scene", str(malformed), "--output", str(destination),
+                "--estimator", "area-replay", "--area-path-domain", "enhanced",
+                "--spectral-transport", "hero", "--area-history-cap", "7",
+                "--area-history-cap-policy", policy]
+        invoke(args)
+        selected = json.loads(destination.read_text())["settings"]
+        assert selected["requested_area_history_cap_policy"] == policy
+        assert selected["effective_area_history_cap_policy"] is None
+        assert selected["effective_area_history_cap_max"] is None
+        assert selected["requested_area_history_cap_max"] == 7
+        assert selected["requested_area_history_cap"] == (7 if policy == "fixed" else None)
+        assert selected["area_temporal_reuse"] == (7 if policy == "fixed" else None)
+        assert selected["area_duplication_implied_by_history_cap"] == (policy == "duplication")
+        assert selected["area_history_cap_alpha"] == (0.1 if policy == "duplication" else None)
+        assert selected["area_history_cap_min"] == (1 if policy == "duplication" else None)
+        if policy == "duplication":
+            for mode in ("off", "initial-atom", "current"):
+                result = invoke(args + ["--area-duplication", mode])
+                assert "conflict" in result.stderr.lower()
+            invoke(args + ["--area-duplication", "initial-seed"])
+            for extra in (["--area-reuse", "fresh", "--mutations", "0"],
+                          ["--execution", "megakernel"]):
+                result = invoke(args + extra)
+                assert "history cap" in result.stderr.lower() or "contribution" in result.stderr.lower()
+    invoke(["--demo", "--output", "x.json", "--area-history-cap-policy", "fixed"])
     for stencil in ("adjacent", "reciprocal16", "paired-gaussian16"):
         destination = root / f"area-atlas-parse-{stencil}.json"
         invoke(["--scene", str(malformed), "--output", str(destination),
@@ -594,7 +623,7 @@ with tempfile.TemporaryDirectory() as directory:
                 "--estimator", "area-replay"])
         settings = json.loads(destination.read_text())["settings"]
         assert settings["requested_area_output"] == settings["area_output"] == policy
-        assert settings["area_contract"] == 20
+        assert settings["area_contract"] == 21
         assert settings["area_source_mis"] == "source-target-mis-v1"
     destination = root / "shared-spatial-mode.json"
     invoke(["--scene", str(malformed), "--output", str(destination),
