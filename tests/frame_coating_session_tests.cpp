@@ -4,6 +4,7 @@
 #include "pbrt_render.hpp"
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -67,6 +68,8 @@ int main(int argc, char **argv) {
         auto translated = pbrt::translate(checked, {argv[1]}, {}, SpectralTransportSelection::hero);
         need(translated.exit_code() == 0 && translated.scene.has_value(), "Fixture translation");
         auto scene = std::move(*translated.scene);
+        scene.integrator = IntegratorKind::path;
+        scene.max_component_value = std::numeric_limits<double>::infinity();
         FrameConfig c;
         c.width = c.height = 8;
         c.seed = 702211;
