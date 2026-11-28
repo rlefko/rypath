@@ -9,6 +9,13 @@ namespace d = rypath_enhanced_duplication;
 namespace ref = duplication_oracle;
 void need(bool value, const char *why) { ref::require(value, why); }
 void finite_maps() {
+    bool rejected = false;
+    try {
+        (void)ref::fixture(65536, 65536, 0);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    need(rejected, "Oracle rejects extent beyond 32-bit IDs before allocation");
     const auto constant = ref::count(ref::fixture(17, 17, 0), 17, 17, 1);
     need(constant.counts[0] == 80 && constant.counts[8] == 152 &&
              constant.counts[8 * 17 + 8] == 288,
