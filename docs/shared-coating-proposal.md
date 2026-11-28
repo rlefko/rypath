@@ -1,13 +1,12 @@
 # Shared coating proposal policy
 
-The retained original Pavilion-night highlight trace identifies a
-nondispersive coated diffuse surface that unnecessarily loses three wavelength
-lanes under the current hero fallback. This experiment changes the sampling law,
-not authored materials, finite coating depth, illumination, exposure, raw
-accumulation, reconstruction or history policy.
+On a coated diffuse surface in Pavilion night, the hero fallback discards three
+wavelengths even though all four can sample the same scattering direction. The
+shared proposal follows the authored finite-depth coating walk with all eligible
+wavelengths. They share directions and carry their own spectral throughput.
 
 `--coating-proposal shared-diffuse` explicitly selects the policy for frame
-benchmark sessions. `hero-only` remains the default. The frame API uses
+benchmark and viewer sessions. The default is `hero-only`. The frame API uses
 `FrameCoatingProposal` and `FrameConfig::coating_proposal`. Admission requires
 explicit vacuum PBRT hero transport, packed one-event wavefront execution, and
 either independent or Enhanced Area frames. Enhanced full/fresh extraction and
@@ -153,5 +152,5 @@ with a frozen matched legacy executable/library, tests an actual proposal change
 checks raw/reconstruction provenance and rejects opt-in against the old library.
 Its caller must hold the project's GPU lease and provide fresh output paths.
 Primary foundations remain [hero wavelength sampling](hero-wavelength.md), the
-[pinned PBRT layered model](https://pbr-book.org/4ed/Reflection_Models/Layered_BxDFs)
+[pinned PBRT layered model](https://pbr-book.org/4ed/Light_Transport_II_Volume_Rendering/Scattering_from_Layered_Materials)
 and the existing packet coating model/limitations in [Pavilion validation](pavilion-validation.md).
