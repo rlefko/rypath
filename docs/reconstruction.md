@@ -324,6 +324,13 @@ kind, dimensions and source identity metadata. RGB is never passed through an
 XYZ interpretation. Fresh destinations and sibling pending files are required.
 Tone mapping and display exposure are separate consumers.
 
+For matched-history images in a single run, use `--warmup 0 --frames 104
+--reconstructed-capture image.exr --reconstructed-samples 0,7,31`. Earlier
+captures are named `image-sample-0.exr`, `image-sample-7.exr` and
+`image-sample-31.exr`. The final file contains frame 104. Each file records
+its zero-based source sample and shares the same reconstruction history.
+Measure uninterrupted frame cadence in a separate run with captures disabled.
+
 ## Validation boundary
 
 The initial SIMD counter-aggregation working tree based on `4b1cc65` passed five

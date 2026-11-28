@@ -28,7 +28,8 @@ options. PBRT scenes must pass the existing preflight and render translation.
 
 | Option | Behavior |
 | --- | --- |
-| `--width W --height H` | Fixed internal and reconstruction resolution; defaults to 1920×1080 |
+| `--width W --height H` | Fixed internal render resolution; defaults to 1920×1080 |
+| `--output-width W --output-height H` | Reconstruction output dimensions; default to internal dimensions. MetalFX supports upscaling; raw and signed temporal require native dimensions |
 | `--mode temporal\|metalfx\|raw` | Explicit output mode; temporal is the default |
 | `--estimator area-replay\|independent` | Independent by default; Area replay selects the experimental reuse pipeline |
 | `--area-path-domain summed\|contribution\|enhanced` | Opt-in contribution/Enhanced representation; summed remains default |
@@ -41,6 +42,12 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | `--variance-policy paired\|center\|conservative` | Temporal reconstruction policy; paired remains default |
 | `--mutations 0\|1\|2\|4` | Area replay uses one corrected mutation by default; independent uses zero |
 | `--frames N` | Exit after N completed pipeline frames; omitted means unlimited |
+| `--frame-scheduling timer\|completion` | Advance a completed GPU stage at the next UI timer tick (default) or wake the main run loop on completion |
+| `--measurement-json PATH` | Fresh JSON file for a finite run, with pipeline and drawable observations |
+| `--warmup N` | Startup frames excluded from measured presentation statistics, default 0; included in `--frames` |
+| `--workload static\|motion\|translation\|rotation` | Deterministic camera poses; omitted retains interactive controls |
+| `--area-temporal-reprojection off\|dual` | Enhanced camera-motion donor selection, default off |
+| `--motion-distance D --rotation-radians R` | Total camera-right translation in scene units and yaw in radians, default .1 each |
 | `--seed N` | Render seed, default 1 |
 | `--exposure EV` | Display EV, default 0; range −24 to +24 |
 | `--near-plane D` | Positive normal-float guide near plane, default .001; raw rays are unchanged |
@@ -157,7 +164,88 @@ bounded numerical classifier for consistent, opaque interfaces, not a proof of
 watertightness or support for arbitrary overlapping volumes. Ambiguous shared-edge
 or tangent configurations may reject otherwise plausible motion.
 
+## Measuring displayed source frames
+
+A finite run can record actual drawable presentation independently of pipeline
+completion. For example, this run uses 16 startup frames and 240 measured frames:
+
+```sh
+build/release/rypath-viewer.app/Contents/MacOS/rypath-viewer \
+  --scene tests/fixtures/pbrt-render/cornell-box-adapted.pbrt \
+  --width 960 --height 540 --output-width 1920 --output-height 1080 \
+  --mode metalfx --frames 256 --warmup 16 --workload motion \
+  --motion-distance .1 --rotation-radians .1 \
+  --measurement-json /tmp/rypath-presentations.json
+```
+
+The parent directory must exist and the JSON path must be fresh. The file is
+reserved at startup and written on normal completion, cancellation or a handled
+pipeline failure. A process kill can leave an incomplete file. `--frames` still
+counts completed raw/reconstruction pipeline frames, including startup. Each
+frame retains its sample, phase, epoch, effective camera origin/orientation,
+resolved controls, actual output size and complete pipeline time.
+Each source also records the summed GPU command durations for raw transport and
+reconstruction. A missing timestamp is reported as `null`. The display interval
+comes from successive distinct drawable presentations.
+
+`motion` divides the measured frames into four equal quarters: authored static
+pose, translation along the authored camera's right vector, yaw around its up
+vector while holding the translated position, then a cut to the authored pose.
+The cut advances the history epoch and is labeled for that one frame; the
+remaining fourth-quarter frames are `settled`. At least eight measured frames,
+divisible by four, are required. Startup holds the authored pose. Translation and
+rotation reach their requested excursions exactly, using absolute sample-indexed
+poses rather than elapsed time. `translation` and `rotation` span the entire
+measured run. For sustained checks, add an even `--motion-period` of at least four
+frames. The camera travels from the authored pose to its requested excursion
+and back in that fixed period. Extending a run then repeats the same movement
+at the same displacement per source frame. Deterministic workloads ignore camera,
+mode and exposure edits; Escape still cancels. A rejected camera-medium move
+fails the workload rather than quietly measuring a stationary substitute.
+
+The display registers `MTLDrawable.addPresentedHandler` before scheduling
+presentation. Its `presentedTime` is recorded relative to the same monotonic
+origin as host observations. GPU command completion alone does not imply display
+presentation. The report retains every submitted drawable, including repeated
+redraws, absent callbacks and callbacks with zero timestamps. Completed source
+frames never submitted to a drawable and those never observed on screen are
+counted separately. Measurement drawables are fixed to the requested reconstruction output dimensions,
+independent of window backing scale, and the report records their actual size.
+Ordinary interactive runs keep sizing drawables to the window backing and can
+scale and letterbox the output.
+
+Summary intervals use consecutive **distinct source frames** with valid
+presentation timestamps. Startup-to-measured boundaries are excluded; phase
+summaries additionally require adjacent presentations in the same phase. Thus a
+single cut has no within-phase interval. Mean and nearest-rank p95 are null when
+no intervals exist. Repeated redraws cannot inflate the source-frame rate.
+Missing or non-displayed sources remain visible in the counts; intervals across
+them retain the full display gap. Normal finite exit allows two seconds after
+GPU completion for outstanding callbacks, then reports any still missing.
+Cancellation records callbacks observed at cancellation without that grace period.
+
+Use repeated Release runs without API validation for performance studies. Keep
+the window visible, avoid capture requests and competing GPU work, and retain the
+JSON with the revision and toolchain. The report includes the device, OS, seed,
+requested configuration and actual measured presentation span. Frame counts do
+not establish a sustained duration: require `measured_displayed_span_seconds` to
+reach the study's dwell target (at least 60 seconds for a sustained check), and
+increase `--frames` when needed. A small functional run or a mean rate does not
+qualify motion quality or a p95 frame-time target.
+
 ## Validation boundary
+
+The presented-frame measurement extension passes Debug/Release viewer builds,
+portable option/report tests, focused Apple Clang analysis and formatting checks.
+The portable controls include missing, dropped, repeated and out-of-order callback
+accounting. Small native temporal-motion and MetalFX-upscale launches complete
+36 and 20 pipeline frames, respectively, and a three-frame launch preserves the
+existing finite-run behavior. In the initial execution session the temporal run
+has no drawable submissions; the MetalFX run has 18 zero-time and two missing
+callbacks. These establish rendering and failure accounting, not successful
+on-screen presentation or throughput. Evidence is retained in
+`.cache/validation/viewer-presentation-001`. Sustained display qualification
+requires valid distinct presentation timestamps in a visible session.
 
 The following historical checks cover the earlier MetalFX/raw viewer and its
 camera tracker, before signed temporal display was integrated.

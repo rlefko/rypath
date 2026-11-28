@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "viewer_measurement.hpp"
 #include "viewer_options.hpp"
 
 #include <array>
@@ -279,6 +280,102 @@ void syntax_and_help() {
     rejected({"--width", "--demo"}, "another option cannot supply a missing value");
     rejected({"--demo", "--capture-dir", ""}, "empty capture directory");
 }
+void measurement_contracts() {
+    require(!accepted({"--demo"}).completion_wakeup &&
+                !accepted({"--demo", "--frame-scheduling", "timer"}).completion_wakeup &&
+                accepted({"--demo", "--frame-scheduling", "completion"}).completion_wakeup,
+            "Explicit stage completion scheduling");
+    rejected({"--demo", "--frame-scheduling", "unknown"}, "unknown frame scheduling");
+    const auto native = accepted({"--demo"});
+    require(native.output_width == native.width && native.output_height == native.height,
+            "Default output retains internal dimensions");
+    const auto scaled = accepted({"--demo", "--width", "64", "--height", "36", "--mode", "metalfx",
+                                  "--output-width", "128", "--output-height", "72"});
+    const auto config = viewer::reconstruction_configuration(scaled, ReconstructionMode::metalfx);
+    require(config.output_width == 128 && config.output_height == 72,
+            "Output sizing reaches actual reconstruction creation");
+    rejected({"--demo", "--output-width", "3840"}, "temporal cannot upscale");
+    rejected({"--demo", "--mode", "raw", "--output-height", "2160"}, "raw cannot upscale");
+    rejected({"--demo", "--mode", "metalfx", "--output-width", "100"}, "MetalFX cannot downscale");
+    rejected({"--demo", "--output-width", "16385"}, "output dimension bound");
+    rejected({"--demo", "--measurement-json", "report.json"}, "report requires finite frames");
+    rejected({"--demo", "--frames", "8", "--warmup", "8"}, "measured frames must remain");
+    rejected({"--demo", "--frames", "9", "--workload", "motion"}, "motion quarters must be equal");
+    rejected({"--demo", "--workload", "unknown", "--frames", "8"}, "unknown workload");
+    const auto o = accepted({"--demo", "--frames", "10", "--warmup", "2", "--workload", "motion",
+                             "--motion-distance", ".2", "--rotation-radians", ".4"});
+    require(std::string(viewer::workload_pose(o, 0).phase) == "startup" &&
+                std::string(viewer::workload_pose(o, 2).phase) == "static" &&
+                viewer::workload_pose(o, 5).translation == .2 &&
+                viewer::workload_pose(o, 7).rotation == .4 && viewer::workload_pose(o, 8).cut &&
+                !viewer::workload_pose(o, 9).cut &&
+                std::string(viewer::workload_pose(o, 9).phase) == "settled",
+            "Absolute workload has startup, translation, rotation, one cut, and settled frames");
+    require(viewer::frame_configuration(
+                accepted({"--scene", "fixture.pbrt", "--spectral-transport", "hero", "--estimator",
+                          "area-replay", "--area-path-domain", "enhanced", "--area-mutation-policy",
+                          "spectral-refresh", "--area-stencil", "paired-gaussian16",
+                          "--area-contribution-replay", "prefix", "--area-temporal-reprojection",
+                          "dual"}))
+                .enhanced_temporal_reprojection,
+            "Viewer passes Enhanced motion donor policy to frame session");
+    rejected({"--demo", "--area-temporal-reprojection", "dual"}, "dual with independent tracing");
+    rejected({"--demo", "--area-temporal-reprojection", "bad"}, "unknown reprojection");
+    const auto loop = accepted({"--demo", "--frames", "20", "--warmup", "3", "--workload",
+                                "translation", "--motion-period", "8", "--motion-distance", "1"});
+    for (unsigned i = 3; i < 19; ++i) {
+        const auto a = viewer::workload_pose(loop, i), b = viewer::workload_pose(loop, i + 1);
+        require(std::abs(a.translation - b.translation) == .25 && !a.cut && !b.cut,
+                "Sustained camera movement has a fixed speed through each reversal");
+    }
+    require(viewer::workload_pose(loop, 7).translation == 1 &&
+                viewer::workload_pose(loop, 11).translation == 0,
+            "Camera repeats the bounded excursion without accumulated drift");
+    rejected({"--demo", "--frames", "10", "--workload", "static", "--motion-period", "8"},
+             "camera period on static workload");
+    rejected({"--demo", "--frames", "10", "--workload", "rotation", "--motion-period", "3"},
+             "invalid camera period");
+    std::vector<viewer::PipelineObservation> frames{
+        {0, .1, .1, "startup", true},   {1, .2, .1, "static", false},
+        {2, .3, .1, "static", false},   {3, .4, .1, "rotation", false},
+        {4, .5, .1, "rotation", false}, {5, .6, .1, "rotation", false},
+        {6, .7, .1, "rotation", false}};
+    frames[0].effective.gpu_time_valid = true;
+    frames[0].effective.gpu_seconds = .125;
+    frames[0].reconstruction_gpu_seconds = 0;
+    const std::vector<viewer::DrawableObservation> drawables{
+        {0, .1, 1, true}, {1, .2, 2, true}, {1, .25, 2.5, true}, {2, .3, 3, true},
+        {3, .4, 4, true}, {4, .5, 0, true}, {5, .6, 0, false}};
+    const auto report = viewer::measurement_report(o, frames, drawables, "complete", 7);
+    require(report.find("\"raw_gpu_seconds\":0.125,\"reconstruction_gpu_seconds\":0,") !=
+                    std::string::npos &&
+                report.find("\"raw_gpu_seconds\":null,\"reconstruction_gpu_seconds\":null,") !=
+                    std::string::npos,
+            "Only available command timestamps produce per-stage GPU durations");
+    require(report.find("\"distinct_displayed_frames\":4") != std::string::npos &&
+                report.find("\"missing_callbacks\":1") != std::string::npos &&
+                report.find("\"zero_time_callbacks\":1") != std::string::npos &&
+                report.find("\"repeated_source_callbacks\":1") != std::string::npos &&
+                report.find("\"unsubmitted_sources\":1") != std::string::npos &&
+                report.find("\"undisplayed_sources\":3") != std::string::npos,
+            "Report accounts for repeated, dropped, missing, and unsubmitted sources");
+    require(
+        report.find("\"static\":{\"interval_count\":1,\"mean_ms\":1000,\"p95_ms\":1000}") !=
+                std::string::npos &&
+            report.find("\"rotation\":{\"interval_count\":0,\"mean_ms\":null,\"p95_ms\":null}") !=
+                std::string::npos,
+        "Phase intervals exclude startup, repeated redraws, and phase boundaries");
+    auto unordered = drawables;
+    std::reverse(unordered.begin(), unordered.end());
+    const auto reordered_report = viewer::measurement_report(o, frames, unordered, "complete", 7);
+    require(reordered_report.find(
+                "\"static\":{\"interval_count\":1,\"mean_ms\":1000,\"p95_ms\":1000}") !=
+                    std::string::npos &&
+                reordered_report.find("\"distinct_displayed_frames\":4") != std::string::npos,
+            "Callback arrival order does not change presentation interval accounting");
+    require(viewer::json_string("a\n").find("\\u000a") != std::string::npos,
+            "JSON escapes control characters");
+}
 void paths_are_only_parsed() {
     const auto root = fs::temp_directory_path() /
                       ("rypath-viewer-options-" +
@@ -310,6 +407,7 @@ int main() {
         real_boundaries();
         syntax_and_help();
         paths_are_only_parsed();
+        measurement_contracts();
         std::cout << "Viewer option parsing checks passed\n";
         return 0;
     } catch (const std::exception &error) {

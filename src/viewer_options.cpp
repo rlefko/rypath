@@ -22,6 +22,12 @@ bool real(std::string_view text, double &output) {
 const char *usage() {
     return "Usage: rypath-viewer (--scene SCENE.pbrt | --demo) [options]\n"
            "  --width 1920 --height 1080  fixed internal resolution\n"
+           "  --output-width W --output-height H  MetalFX output size (default: internal)\n"
+           "  --frame-scheduling timer|completion  wake on GPU stage completion (default: timer)\n"
+           "  --measurement-json PATH --warmup N  finite-run presentation report, fresh path\n"
+           "  --workload static|motion|translation|rotation  deterministic per-frame camera\n"
+           "  --motion-period N  repeat a translation or yaw excursion every N measured frames\n"
+           "  --motion-distance .1 --rotation-radians .1  total translation/yaw excursion\n"
            "  --mode temporal|metalfx|raw  (default: temporal, native resolution)\n"
            "  --reconstruction temporal|metalfx|raw-rgb  alternate option spelling\n"
            "  --estimator independent|area-replay  (default: independent)\n"
@@ -30,6 +36,8 @@ const char *usage() {
            "auto|adjacent|reciprocal16|paired-gaussian16\n"
            "  --area-path-domain summed|contribution|enhanced --area-contribution-replay "
            "full|prefix\n"
+           "  --area-temporal-reprojection off|dual  Enhanced motion donor selection (default: "
+           "off)\n"
            "  --area-spatial-mode all|stochastic-pairs|stochastic-shared (default: all)\n"
            "  --area-history-cap N  Enhanced temporal confidence ceiling, 1 through 20\n"
            "  --area-history-cap-policy fixed|duplication (default: fixed; duplication is biased)\n"
@@ -65,6 +73,7 @@ FrameConfig frame_configuration(const Options &o) {
     c.mutation_steps = o.estimator == FrameEstimator::area_replay ? o.mutation_steps : 0;
     c.area_path_domain = o.area_path_domain;
     c.contribution_replay = o.contribution_replay;
+    c.enhanced_temporal_reprojection = o.enhanced_temporal_reprojection;
     c.spatial_mode = o.spatial_mode;
     c.enhanced_history_cap = o.enhanced_history_cap;
     c.history_cap_policy = o.history_cap_policy;
@@ -73,6 +82,8 @@ FrameConfig frame_configuration(const Options &o) {
 ReconstructionConfig reconstruction_configuration(const Options &o, ReconstructionMode mode) {
     ReconstructionConfig c;
     c.mode = mode;
+    c.output_width = o.output_width;
+    c.output_height = o.output_height;
     c.near_plane = o.near_plane;
     c.spatial_variance_policy = o.variance_policy;
     return c;
@@ -101,6 +112,35 @@ std::string parse_options(int argc, char **argv, Options &o) {
             if (value.empty())
                 return "capture directory must not be empty";
             o.capture_directory = value;
+        } else if (key == "--frame-scheduling") {
+            if (value != "timer" && value != "completion")
+                return "frame scheduling must be timer or completion";
+            o.completion_wakeup = value == "completion";
+        } else if (key == "--measurement-json") {
+            if (value.empty())
+                return "measurement path must not be empty";
+            o.measurement_json = value;
+        } else if (key == "--motion-period") {
+            if (!integer(value, o.motion_period) || o.motion_period < 4 || o.motion_period % 2)
+                return "motion period must be even and at least four frames";
+        } else if (key == "--workload") {
+            if (value != "static" && value != "motion" && value != "translation" &&
+                value != "rotation")
+                return "workload must be static, motion, translation, or rotation";
+            o.workload = value;
+        } else if (key == "--warmup") {
+            if (!integer(value, o.warmup))
+                return "invalid warmup";
+        } else if (key == "--motion-distance" || key == "--rotation-radians") {
+            double &target = key == "--motion-distance" ? o.motion_distance : o.rotation_radians;
+            if (!real(value, target) || target == 0 || std::abs(target) > 10000)
+                return "motion excursion must be finite, nonzero, and at most 10000 in magnitude";
+        } else if (key == "--output-width") {
+            if (!integer(value, o.output_width) || !o.output_width)
+                return "invalid output width";
+        } else if (key == "--output-height") {
+            if (!integer(value, o.output_height) || !o.output_height)
+                return "invalid output height";
         } else if (key == "--width") {
             if (!integer(value, o.width) || !o.width)
                 return "invalid width";
@@ -153,6 +193,10 @@ std::string parse_options(int argc, char **argv, Options &o) {
                 return "contribution replay must be full or prefix";
             o.contribution_replay =
                 value == "full" ? FrameContributionReplay::full : FrameContributionReplay::prefix;
+        } else if (key == "--area-temporal-reprojection") {
+            if (value != "off" && value != "dual")
+                return "area temporal reprojection must be off or dual";
+            o.enhanced_temporal_reprojection = value == "dual";
         } else if (key == "--area-spatial-mode") {
             if (value != "all" && value != "stochastic-pairs" && value != "stochastic-shared")
                 return "area spatial mode must be all, stochastic-pairs, or stochastic-shared";
@@ -223,6 +267,9 @@ std::string parse_options(int argc, char **argv, Options &o) {
     if (seen.contains("--area-contribution-replay") &&
         !frame_area_contribution_family(o.area_path_domain))
         return "contribution replay requires contribution or enhanced path domain";
+    if (o.enhanced_temporal_reprojection && (o.estimator != FrameEstimator::area_replay ||
+                                             o.area_path_domain != FrameAreaPathDomain::enhanced))
+        return "dual temporal reprojection requires Enhanced Area replay";
     if ((seen.contains("--area-history-cap") || seen.contains("--area-history-cap-policy")) &&
         (o.estimator != FrameEstimator::area_replay ||
          o.area_path_domain != FrameAreaPathDomain::enhanced))
@@ -243,6 +290,29 @@ std::string parse_options(int argc, char **argv, Options &o) {
     if (o.width > reconstruction_dimension_limit || o.height > reconstruction_dimension_limit ||
         std::uint64_t(o.width) * o.height > UINT32_MAX)
         return "resolution exceeds reconstruction limits";
+    if (!o.output_width)
+        o.output_width = o.width;
+    if (!o.output_height)
+        o.output_height = o.height;
+    if (o.output_width > reconstruction_dimension_limit ||
+        o.output_height > reconstruction_dimension_limit ||
+        std::uint64_t(o.output_width) * o.output_height > UINT32_MAX)
+        return "output resolution exceeds reconstruction limits";
+    if (o.reconstruction != ReconstructionMode::metalfx &&
+        (o.output_width != o.width || o.output_height != o.height))
+        return "raw and temporal output dimensions must equal internal dimensions";
+    if (o.output_width < o.width || o.output_height < o.height)
+        return "metalfx does not support downscaling";
+    if ((!o.measurement_json.empty() || o.workload != "interactive" || seen.contains("--warmup")) &&
+        (!o.frames || o.warmup >= o.frames))
+        return "measurement and workloads require frames greater than warmup";
+    if (o.motion_period && (o.workload != "translation" && o.workload != "rotation"))
+        return "motion period requires a translation or rotation workload";
+    if (o.workload == "motion" && (o.frames - o.warmup < 8 || (o.frames - o.warmup) % 4))
+        return "motion requires at least eight measured frames divisible by four";
+    if ((seen.contains("--motion-distance") || seen.contains("--rotation-radians")) &&
+        (o.workload == "interactive" || o.workload == "static"))
+        return "motion excursions require a moving workload";
     return {};
 }
 } // namespace rypath::viewer
