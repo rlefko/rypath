@@ -2313,6 +2313,18 @@ add_test(NAME frame.coating_math COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/shared_coating_math_tests.py")
 set_tests_properties(frame.coating_policy frame.coating_math PROPERTIES TIMEOUT 30)
 if(RYPATH_ENABLE_METAL)
+    # Standalone diagnostics use an explicitly supplied probe metallib. Keep
+    # their host build flags available to static analysis without GPU CTests.
+    foreach(probe IN ITEMS shared_coating shared_coating_current)
+        add_executable(rypath_${probe}_probe EXCLUDE_FROM_ALL ${probe}_probe.mm)
+        target_link_libraries(rypath_${probe}_probe PRIVATE
+            "${RYPATH_METAL_FRAMEWORK}" "${RYPATH_FOUNDATION_FRAMEWORK}")
+        target_compile_options(rypath_${probe}_probe PRIVATE -fobjc-arc)
+        set_target_properties(rypath_${probe}_probe PROPERTIES
+            OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES
+            RUNTIME_OUTPUT_DIRECTORY "${rypath_runtime_directory}")
+        rypath_configure_host_target(rypath_${probe}_probe)
+    endforeach()
     add_executable(rypath_frame_coating_vacuum_tests frame_coating_vacuum_tests.cpp)
     target_link_libraries(rypath_frame_coating_vacuum_tests PRIVATE
         rypath_metal_backend rypath_pbrt_render rypath_checkpoint)
