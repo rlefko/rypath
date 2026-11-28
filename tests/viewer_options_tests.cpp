@@ -335,15 +335,23 @@ void measurement_contracts() {
              "camera period on static workload");
     rejected({"--demo", "--frames", "10", "--workload", "rotation", "--motion-period", "3"},
              "invalid camera period");
-    const std::vector<viewer::PipelineObservation> frames{
+    std::vector<viewer::PipelineObservation> frames{
         {0, .1, .1, "startup", true},   {1, .2, .1, "static", false},
         {2, .3, .1, "static", false},   {3, .4, .1, "rotation", false},
         {4, .5, .1, "rotation", false}, {5, .6, .1, "rotation", false},
         {6, .7, .1, "rotation", false}};
+    frames[0].effective.gpu_time_valid = true;
+    frames[0].effective.gpu_seconds = .125;
+    frames[0].reconstruction_gpu_seconds = 0;
     const std::vector<viewer::DrawableObservation> drawables{
         {0, .1, 1, true}, {1, .2, 2, true}, {1, .25, 2.5, true}, {2, .3, 3, true},
         {3, .4, 4, true}, {4, .5, 0, true}, {5, .6, 0, false}};
     const auto report = viewer::measurement_report(o, frames, drawables, "complete", 7);
+    require(report.find("\"raw_gpu_seconds\":0.125,\"reconstruction_gpu_seconds\":0,") !=
+                    std::string::npos &&
+                report.find("\"raw_gpu_seconds\":null,\"reconstruction_gpu_seconds\":null,") !=
+                    std::string::npos,
+            "Only available command timestamps produce per-stage GPU durations");
     require(report.find("\"distinct_displayed_frames\":4") != std::string::npos &&
                 report.find("\"missing_callbacks\":1") != std::string::npos &&
                 report.find("\"zero_time_callbacks\":1") != std::string::npos &&

@@ -184,7 +184,9 @@ pipeline failure. A process kill can leave an incomplete file. `--frames` still
 counts completed raw/reconstruction pipeline frames, including startup. Each
 frame retains its sample, phase, epoch, effective camera origin/orientation,
 resolved controls, actual output size and complete pipeline time.
-The raw transport and reconstruction algorithms are unchanged.
+Each source also records the summed GPU command durations for raw transport and
+reconstruction. A missing timestamp is reported as `null`. The display interval
+comes from successive distinct drawable presentations.
 
 `motion` divides the measured frames into four equal quarters: authored static
 pose, translation along the authored camera's right vector, yaw around its up

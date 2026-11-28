@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -73,6 +74,7 @@ struct PipelineObservation {
     FrameInfo effective{};
     bool reconstruction_reset = false;
     ReconstructionMode mode = ReconstructionMode::raw_rgb;
+    std::optional<double> reconstruction_gpu_seconds{};
 };
 struct DrawableObservation {
     std::uint64_t sample = 0;
@@ -245,6 +247,17 @@ inline std::string measurement_report(const Options &o,
         const auto vector = [&](std::string_view name, const auto &v) {
             out << ',' << json_string(name) << ":[" << v[0] << ',' << v[1] << ',' << v[2] << ']';
         };
+        const auto gpu_duration = [&](std::string_view name, std::optional<double> seconds) {
+            out << ',' << json_string(name) << ':';
+            if (seconds && std::isfinite(*seconds) && *seconds >= 0)
+                out << *seconds;
+            else
+                out << "null";
+        };
+        gpu_duration("raw_gpu_seconds", f.effective.gpu_time_valid
+                                            ? std::optional{f.effective.gpu_seconds}
+                                            : std::nullopt);
+        gpu_duration("reconstruction_gpu_seconds", f.reconstruction_gpu_seconds);
         vector("camera_origin", f.camera_origin);
         vector("camera_forward", f.camera_forward);
         vector("camera_up", f.camera_up);

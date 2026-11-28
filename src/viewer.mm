@@ -946,7 +946,8 @@ class ViewerState {
                              info.source.sample_index < options.warmup, info.width, info.height,
                              info.source.epoch, submitted_pose.camera_medium.value_or(no_medium),
                              vec(origin(submitted_pose)), basis(submitted_pose).forward,
-                             basis(submitted_pose).up, info.source, info.history_reset, info.mode});
+                             basis(submitted_pose).up, info.source, info.history_reset, info.mode,
+                             info.gpu_time_valid ? std::optional{info.gpu_seconds} : std::nullopt});
                     completed_times.push_back(Clock::now());
                     if (completed_times.size() > 32)
                         completed_times.pop_front();
