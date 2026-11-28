@@ -124,6 +124,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/src/contribution_wire.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/frame_sensor.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/wavefront_wire.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/shared_coating_contract.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/replay_sampler.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/area_reuse.metal"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/replay_shared.h"

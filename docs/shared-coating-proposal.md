@@ -1,18 +1,38 @@
-# Shared coating proposal experiment
+# Shared coating proposal policy
 
-The [original highlight trace](spectral-highlight-origins.md) identifies a
+The retained original Pavilion-night highlight trace identifies a
 nondispersive coated diffuse surface that unnecessarily loses three wavelength
 lanes under the current hero fallback. This experiment changes the sampling law,
 not authored materials, finite coating depth, illumination, exposure, raw
 accumulation, reconstruction or history policy.
 
-`RYPATH_HERO_SHARED_COATED_DIFFUSE=1` is an explicitly compiled experiment. Its
-production default is **0**; it is not a supported CLI or checkpoint policy.
-Before promotion, the renderer/sampling identity must distinguish this law,
-checkpoint controls must be updated, and physical reference, motion, tail and
-complete-pipeline cost gates must pass. A local variance result alone is
-insufficient. Coated conductors and unsupported coated diffuse layers retain the
-existing compensated hero-only fallback.
+`--coating-proposal shared-diffuse` explicitly selects the policy for frame
+benchmark sessions. `hero-only` remains the default. The frame API uses
+`FrameCoatingProposal` and `FrameConfig::coating_proposal`. Admission requires
+explicit vacuum PBRT hero transport, packed one-event wavefront execution, and
+either independent or Enhanced Area frames. Enhanced full/fresh extraction and
+full/prefix evaluation retain their existing exact replay contracts. Other
+configurations fail before rendering.
+
+Function constant **32** declares the selected shade kernel's capability v1.
+The host verifies that declaration before supplying the opt-in constant and
+building the pipeline; an older library rejects the request. Unspecified
+constant32 means the legacy law, including offline rendering. Sessions keep their
+own specialization and history resources even when a test shares an acceleration
+structure. Offline sampling and checkpoint identities are unchanged.
+
+Completed `FrameInfo` records distinguish requested/effective policy, capability
+verification and contract version. Benchmark settings, per-frame timing records,
+raw EXR and reconstruction EXR metadata retain actual execution provenance.
+`physical_source_identity` retains the unchanged physical render identity; an
+admitted shared policy derives a separate sampling `source_identity`. A failed
+admission never claims an effective shared policy. The source label is
+`legacy-default` or `explicit-frame-session-v1`.
+
+Physical reference, motion, tail and complete-pipeline cost gates remain required
+before any default adoption. A local variance result alone is insufficient.
+Coated conductors and unsupported coated diffuse layers retain the existing
+compensated hero-only fallback.
 
 ## Restricted common proposal
 
@@ -81,13 +101,21 @@ required for equality of the means.
 Evidence is outside Git in `.cache/highlight-origin-001/`: the predeclared
 `shared-probe-protocol.json`, four FLOAT populations, `shared-probe-analysis.json`,
 commands and completion logs. The no-diagnostic runtime is separately bound in
-`nodiagnostic-final/`. The original illustrative native trace is described in the
-highlight record. All are experiments, not default adoption or scene acceptance.
+`nodiagnostic-final/`. The original illustrative native trace is retained beside
+these artifacts. These measurements do not establish default adoption or scene
+acceptance.
 
 The local tests are [the scalar/shared population probe](../tests/shared_coating_probe.metal),
 [the full/current/frozen contract probe](../tests/shared_coating_current_probe.metal)
 and [the independent reduction](../scripts/analyze_shared_coating_probe.py).
 Their runners require actual Metal and fail when no device is available.
+`frame.coating_policy` exercises parameter and actual-receipt admission.
+`metal.frame_coating_sessions` exercises both policy construction orders on a
+shared immutable renderer with separate histories and owned records.
+`tests/frame_coating_policy_native.py` additionally compares default/off pixels
+with a frozen matched legacy executable/library, tests an actual proposal change,
+checks raw/reconstruction provenance and rejects opt-in against the old library.
+Its caller must hold the project's GPU lease and provide fresh output paths.
 Primary foundations remain [hero wavelength sampling](hero-wavelength.md), the
 [pinned PBRT layered model](https://pbr-book.org/4ed/Reflection_Models/Layered_BxDFs)
 and the existing packet coating model/limitations in [Pavilion validation](pavilion-validation.md).

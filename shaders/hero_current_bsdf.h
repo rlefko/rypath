@@ -18,8 +18,7 @@ inline bool hero_current_requires_single(const thread HeroFrozenBSDF &p) {
 inline void hero_current_store_lane(thread HeroFrozenBSDF &out, uint k,
                                     const thread rypath_scattering::Prepared &s) {
     hero_frozen_store_lane(out, k, s);
-#if RYPATH_HERO_SHARED_COATED_DIFFUSE
-    if (out.kind == 5) {
+    if (rypath_packet_layered::shared_diffuse_enabled() && out.kind == 5) {
         if (k == 0)
             out.payload[20] = hero_shared_coating_controls(s.layered, s.layered) ? 0x53434431u : 0u;
         else {
@@ -28,7 +27,6 @@ inline void hero_current_store_lane(thread HeroFrozenBSDF &out, uint k,
                 out.payload[20] = 0;
         }
     }
-#endif
 }
 // One scalar staging value at a time; never reconstruct the four-lane Prepared.
 inline rypath_scattering::Prepared hero_current_scalar(const thread HeroFrozenBSDF &p, uint k) {
@@ -92,7 +90,8 @@ inline bool prepare_hero_current(const thread Resources &r, const device wire::M
     out = {};
     out.kind = material.scattering;
     out.active_mask = active_mask;
-    bool shared_coating = RYPATH_HERO_SHARED_COATED_DIFFUSE && material.scattering == 5;
+    bool shared_coating =
+        rypath_packet_layered::shared_diffuse_enabled() && material.scattering == 5;
     for (uint k = 0; k < 4; ++k) {
         if (!(active_mask & (1u << k)))
             continue;
@@ -118,10 +117,8 @@ inline bool prepare_hero_current(const thread Resources &r, const device wire::M
         }
         hero_current_store_lane(out, k, lane);
     }
-#if RYPATH_HERO_SHARED_COATED_DIFFUSE
     if (shared_coating)
         out.payload[20] = 0x53434431u;
-#endif
     return hero_current_structure(out);
 }
 inline bool hero_current_coated_compatible(const thread HeroFrozenBSDF &p) {

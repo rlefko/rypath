@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-only
-#define RYPATH_HERO_SHARED_COATED_DIFFUSE 1
 #include "../shaders/render.metal"
 using namespace rypath_bdpt;
 kernel void rypath_shared_coating_current_contract(device uint *out [[buffer(0)]],

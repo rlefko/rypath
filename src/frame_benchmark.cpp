@@ -99,6 +99,7 @@ struct Options {
     std::uint32_t quantum = rypath::FrameConfig{}.quantum;
     std::uint32_t group_width = rypath::FrameConfig{}.group_width;
     bool specialize_diffuse_events = false;
+    rypath::FrameCoatingProposal coating_proposal = rypath::FrameCoatingProposal::hero_only;
     std::uint32_t packet_events = 1;
     rypath::FramePacketLayout packet_layout = rypath::FramePacketLayout::packed;
     std::uint32_t width = 1920, height = 1080;
@@ -191,6 +192,7 @@ const char *usage =
     "  [--capacity 65536] [--quantum 8] [--group-width 32]\n"
     "  [--motion-offset WORLD_X (measured quarters: hold A, translate, hold B, cut A)]\n"
     "  [--profile-stages] [--capture-frame N --capture-path FRAME.gputrace]\n"
+    "  [--coating-proposal hero-only|shared-diffuse]\n"
     "  [--capture FLOAT.exr] [--preview IMAGE.png]\n"
     "  [--reconstruction none|raw-rgb|metalfx|temporal (default: none)]\n"
     "  [--variance-policy paired|center|conservative (temporal only)]\n"
@@ -454,6 +456,11 @@ std::string parse(int argc, char **argv, Options &o) {
             if (!integer(value, o.packet_events) ||
                 (o.packet_events != 1 && o.packet_events != 2 && o.packet_events != 4))
                 return "packet events must be 1, 2, or 4";
+        } else if (key == "--coating-proposal") {
+            const auto policy = rypath::parse_frame_coating_proposal(value);
+            if (!policy)
+                return "coating proposal must be hero-only or shared-diffuse";
+            o.coating_proposal = *policy;
         } else if (key == "--diffuse-events") {
             if (value != "auto" && value != "generic")
                 return "diffuse events must be auto or generic";
@@ -589,6 +596,14 @@ std::string parse(int argc, char **argv, Options &o) {
     if (o.reconstruction == rypath::ReconstructionMode::metalfx &&
         (o.output_width < o.width || o.output_height < o.height))
         return "metalfx does not support downscaling";
+    if (o.coating_proposal == rypath::FrameCoatingProposal::shared_diffuse &&
+        (o.demo || o.spectral_transport != rypath::SpectralTransportSelection::hero ||
+         o.execution != rypath::FrameExecution::wavefront ||
+         o.packet_layout != rypath::FramePacketLayout::packed || o.packet_events != 1 ||
+         (o.estimator == rypath::FrameEstimator::area_replay &&
+          o.area_path_domain != rypath::FrameAreaPathDomain::enhanced)))
+        return "shared-diffuse coating proposals require explicit PBRT hero packed one-event "
+               "wavefront independent or Enhanced frames";
     if (o.capture_frame.has_value() != !o.capture_path.empty())
         return "--capture-frame and --capture-path require each other";
     if (o.capture_frame && *o.capture_frame >= o.warmup + o.frames)
@@ -850,6 +865,9 @@ struct Observation : rypath::FrameStatisticsSample {
     std::uint32_t temporal_candidates = 0, spatial_candidates = 0;
     std::uint32_t canonical_transport_version = 0, fresh_discovery_version = 0;
     bool diffuse_events = false;
+    rypath::FrameCoatingProposal coating_proposal = rypath::FrameCoatingProposal::hero_only;
+    std::uint32_t coating_proposal_contract = 0;
+    bool coating_proposal_capability_verified = false;
     bool history_used = false, temporal_evaluation_cache_used = false;
     bool enhanced_suffix_cache = false;
     std::uint32_t enhanced_history_cap = 0;
@@ -1061,6 +1079,10 @@ struct Report {
     double startup_seconds = 0, warmup_seconds = 0, reconstruction_startup_seconds = 0;
     std::uint32_t max_depth = 0;
     std::optional<bool> effective_diffuse_events;
+    std::optional<rypath::FrameCoatingProposal> effective_coating_proposal;
+    std::uint32_t coating_proposal_contract = 0;
+    bool coating_proposal_capability_verified = false;
+    std::string physical_source_identity;
     bool packet_controls_effective = false;
     bool area_path_domain_effective = false;
     std::vector<std::string> provenance;
@@ -1077,6 +1099,7 @@ struct Report {
                                  : "failed")
             << ",\"exit_code\":" << code << ",\"diagnostic\":" << quote(diagnostic)
             << ",\"source_identity\":" << quote(source_identity)
+            << ",\"physical_source_identity\":" << quote(physical_source_identity)
             << ",\"build\":" << quote(RYPATH_BUILD_DESCRIPTION) << ",\"os\":" << quote(os)
             << ",\"scene\":" << quote(options.demo ? "demo" : options.scene.string())
             << ",\"motion_offset\":"
@@ -1305,6 +1328,19 @@ struct Report {
                     ? std::to_string(std::min<std::uint64_t>(
                           options.capacity, std::uint64_t(options.width) * options.height))
                     : "null")
+            << ",\"coating_proposal_requested\":"
+            << quote(rypath::frame_coating_proposal_name(options.coating_proposal))
+            << ",\"coating_proposal_effective\":"
+            << (effective_coating_proposal
+                    ? quote(rypath::frame_coating_proposal_name(*effective_coating_proposal))
+                    : "null")
+            << ",\"coating_proposal_contract\":" << coating_proposal_contract
+            << ",\"coating_proposal_capability_verified\":"
+            << (coating_proposal_capability_verified ? "true" : "false")
+            << ",\"coating_proposal_source\":"
+            << (effective_coating_proposal
+                    ? quote(rypath::frame_coating_proposal_source_name(*effective_coating_proposal))
+                    : "null")
             << ",\"requested_diffuse_events\":"
             << quote(options.specialize_diffuse_events ? "auto" : "generic")
             << ",\"effective_diffuse_events\":"
@@ -1435,6 +1471,11 @@ struct Report {
                 << ",\"completed_samples\":" << f.completed_samples
                 << ",\"camera_upload_bytes\":" << f.camera_upload_bytes
                 << ",\"diffuse_events\":" << (f.diffuse_events ? "true" : "false")
+                << ",\"coating_proposal\":"
+                << quote(rypath::frame_coating_proposal_name(f.coating_proposal))
+                << ",\"coating_proposal_contract\":" << f.coating_proposal_contract
+                << ",\"coating_proposal_capability_verified\":"
+                << (f.coating_proposal_capability_verified ? "true" : "false")
                 << ",\"command_count\":" << f.command_count << ",\"area_serial\":" << f.area_serial
                 << ",\"area_contribution_replay\":"
                 << (f.complete && rypath::frame_area_contribution_family(options.area_path_domain)
@@ -1632,6 +1673,16 @@ void write_reconstructed(rypath::ReconstructedFrame &frame, Output &reconstructe
         {"rypath.recon.mode", reconstruction_name(info.mode)},
         {"rypath.output.space", "linear-srgb"},
         {"rypath.recon.exposure", precise_float(info.exposure)},
+        {"rypath.frame.coating_proposal_requested",
+         rypath::frame_coating_proposal_name(info.source.coating_proposal_requested)},
+        {"rypath.frame.coating_proposal",
+         rypath::frame_coating_proposal_name(info.source.coating_proposal)},
+        {"rypath.frame.coating_proposal_contract",
+         std::to_string(info.source.coating_proposal_contract)},
+        {"rypath.frame.coating_proposal_capability_verified",
+         info.source.coating_proposal_capability_verified ? "true" : "false"},
+        {"rypath.frame.coating_proposal_source",
+         rypath::frame_coating_proposal_source_name(info.source.coating_proposal)},
         {"rypath.recon.requested_exposure", precise_float(options.metalfx_exposure)},
         {"rypath.recon.variance_policy", variance_policy_name(options.variance_policy)},
         {"rypath.recon.variance_prefilter", options.variance_prefilter ? "true" : "false"},
@@ -1754,6 +1805,7 @@ void write_reconstructed(rypath::ReconstructedFrame &frame, Output &reconstructe
         {"rypath.output.height", std::to_string(image.height)},
         {"rypath.frame.resource_profile",
          std::string(rypath::resource_profile_name(options.resource_profile))},
+        {"rypath.frame.physical_source_identity", report.physical_source_identity},
         {"rypath.frame.source_identity", report.source_identity},
         {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
         {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},
@@ -1909,6 +1961,7 @@ int run(const Options &options) {
         identity_settings.sampler.kind = rypath::SamplerKind::independent;
         report.source_identity =
             rypath::digest_hex(rypath::render_identity(scene, identity_settings));
+        report.physical_source_identity = report.source_identity;
         rypath::FrameConfig config;
         config.width = options.width;
         config.height = options.height;
@@ -1944,6 +1997,7 @@ int run(const Options &options) {
         config.quantum = options.quantum;
         config.group_width = options.group_width;
         config.specialize_diffuse_events = options.specialize_diffuse_events;
+        config.coating_proposal = options.coating_proposal;
         config.packet_events = options.packet_events;
         config.packet_layout = options.packet_layout;
         auto built = rypath::build_frame_session(scene, config);
@@ -2140,6 +2194,41 @@ int run(const Options &options) {
                         report.paired_atlas_identity = info.paired_atlas;
                     observation.area_stencil_offsets = info.area_stencil_offsets;
                     observation.diffuse_events = info.diffuse_events;
+                    if (info.coating_proposal_requested != options.coating_proposal ||
+                        info.coating_proposal != options.coating_proposal ||
+                        (info.coating_proposal == rypath::FrameCoatingProposal::shared_diffuse
+                             ? !info.coating_proposal_capability_verified ||
+                                   info.coating_proposal_contract !=
+                                       rypath::shared_coating_contract::version
+                             : info.coating_proposal_capability_verified ||
+                                   info.coating_proposal_contract))
+                        throw std::runtime_error(
+                            "Actual frame coating proposal/capability differs from request");
+                    if (report.effective_coating_proposal &&
+                        *report.effective_coating_proposal != info.coating_proposal)
+                        throw std::runtime_error(
+                            "Coating proposal changed during immutable frame session");
+                    if (!report.effective_coating_proposal)
+                        report.provenance.push_back(
+                            std::string("effective coating proposal ") +
+                            rypath::frame_coating_proposal_name(info.coating_proposal) +
+                            "; source " +
+                            rypath::frame_coating_proposal_source_name(info.coating_proposal));
+                    report.effective_coating_proposal = info.coating_proposal;
+                    report.coating_proposal_contract = info.coating_proposal_contract;
+                    report.coating_proposal_capability_verified =
+                        info.coating_proposal_capability_verified;
+                    observation.coating_proposal = info.coating_proposal;
+                    observation.coating_proposal_contract = info.coating_proposal_contract;
+                    observation.coating_proposal_capability_verified =
+                        info.coating_proposal_capability_verified;
+                    if (info.coating_proposal == rypath::FrameCoatingProposal::shared_diffuse) {
+                        const auto binding =
+                            report.physical_source_identity + "|frame-coating:shared-diffuse-v1";
+                        report.source_identity = rypath::digest_hex(rypath::sha256(
+                            std::span(reinterpret_cast<const std::uint8_t *>(binding.data()),
+                                      binding.size())));
+                    }
                     if (report.effective_diffuse_events &&
                         *report.effective_diffuse_events != info.diffuse_events)
                         throw std::runtime_error(
@@ -2505,9 +2594,20 @@ int run(const Options &options) {
                      std::string(rypath::spectral_transport_name(scene.spectral_transport))},
                     {"rypath.frame.resource_profile",
                      std::string(rypath::resource_profile_name(options.resource_profile))},
+                    {"rypath.frame.physical_source_identity", report.physical_source_identity},
                     {"rypath.frame.source_identity", report.source_identity},
                     {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
                     {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},
+                    {"rypath.frame.coating_proposal_requested",
+                     rypath::frame_coating_proposal_name(frame_info.coating_proposal_requested)},
+                    {"rypath.frame.coating_proposal",
+                     rypath::frame_coating_proposal_name(frame_info.coating_proposal)},
+                    {"rypath.frame.coating_proposal_contract",
+                     std::to_string(frame_info.coating_proposal_contract)},
+                    {"rypath.frame.coating_proposal_capability_verified",
+                     frame_info.coating_proposal_capability_verified ? "true" : "false"},
+                    {"rypath.frame.coating_proposal_source",
+                     rypath::frame_coating_proposal_source_name(frame_info.coating_proposal)},
                     {"rypath.frame.output", "raw-unexposed-unclamped"}};
                 if (!options.capture.empty())
                     capture.image(film, true, metadata);

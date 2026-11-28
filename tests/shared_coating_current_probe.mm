@@ -25,6 +25,7 @@ int main(int argc, char **argv) {
                 [values setConstantValue:&yes type:MTLDataTypeBool atIndex:i];
             [values setConstantValue:&no type:MTLDataTypeBool atIndex:20];
             [values setConstantValue:&yes type:MTLDataTypeBool atIndex:25];
+            [values setConstantValue:&yes type:MTLDataTypeBool atIndex:32];
             auto function = [library newFunctionWithName:@"rypath_shared_coating_current_contract"
                                           constantValues:values
                                                    error:&error];

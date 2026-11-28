@@ -75,19 +75,13 @@ inline rypath_layered::Parameters hero_frozen_coated(const thread HeroFrozenBSDF
             p.payload[15],
             as_type<int>(p.payload[16])};
 }
-// Experimental shared hidden proposal for nondispersive, non-scattering coated
-// diffuse layers. Disabled in production builds until scene-quality qualification.
-#ifndef RYPATH_HERO_SHARED_COATED_DIFFUSE
-#define RYPATH_HERO_SHARED_COATED_DIFFUSE 0
-#endif
+// Explicit shared hidden proposal for nondispersive, non-scattering coated
+// diffuse layers. Renderer sessions opt in through capability constant32.
 inline bool hero_frozen_shared_coating(const thread HeroFrozenBSDF &p) {
-#if RYPATH_HERO_SHARED_COATED_DIFFUSE
-    return p.kind == 5 && p.payload[20] == 0x53434431u;
-#else
-    (void)p;
-    return false;
-#endif
+    return rypath_packet_layered::shared_diffuse_enabled() && p.kind == 5 &&
+           p.payload[20] == 0x53434431u;
 }
+
 inline bool hero_shared_coating_controls(const thread rypath_layered::Parameters &a,
                                          const thread rypath_layered::Parameters &b) {
     return rypath_packet_layered::shared_diffuse_controls(a, b);
