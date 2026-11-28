@@ -128,10 +128,9 @@ path mask remained 15 while its material payload was prepared for mask 1 or 3.
 Component captures show bit-identical values on every originally prepared lane;
 the mismatches arise on reactivated unprepared lanes. Production callers pass
 the path mask through preparation, and imported expansions prepare the needed
-superset first. Failed receipts remain retained. A corrected 96-case probe adds
-noncontiguous masks 5 and 9; its hardware result is pending. The shader-only removal
-of duplicate preparation validation at `43e5a46` has a separately frozen runtime
-and pending critical controls; previously measured binaries are unchanged.
+superset first. The corrected 96-case probe covers masks 1, 3, 5, 9 and 15.
+All 96 failure masks were zero on the M4 Max with Metal API validation enabled
+before removing the duplicate preparation check.
 
 Evidence is outside Git in `.cache/highlight-origin-001/`: the predeclared
 `shared-probe-protocol.json`, four FLOAT populations, `shared-probe-analysis.json`,
@@ -154,3 +153,25 @@ Its caller must hold the project's GPU lease and provide fresh output paths.
 Primary foundations remain [hero wavelength sampling](hero-wavelength.md), the
 [pinned PBRT layered model](https://pbr-book.org/4ed/Light_Transport_II_Volume_Rendering/Scattering_from_Layered_Materials)
 and the existing packet coating model/limitations in [Pavilion validation](pavilion-validation.md).
+
+To run the portable estimator math and session-policy checks:
+
+```sh
+cmake --preset release
+cmake --build --preset release
+ctest --preset release -R '^frame\.coating_(math|policy)$' --output-on-failure
+```
+
+To reproduce the 96 full/current/frozen mask and prefix controls on an M4 Max,
+run these commands from the checkout root. The probe compiles the complete
+transport translation unit with the production strict floating-point flags.
+
+```sh
+probe_dir=$(mktemp -d)
+xcrun --sdk macosx metal -std=metal3.1 -mmacosx-version-min=14.0 -Ishaders \
+    -fno-fast-math -O1 -c tests/shared_coating_current_probe.metal -o "$probe_dir/probe.air"
+xcrun --sdk macosx metallib "$probe_dir/probe.air" -o "$probe_dir/probe.metallib"
+xcrun --sdk macosx clang++ -std=c++20 -fobjc-arc -framework Metal -framework Foundation \
+    tests/shared_coating_current_probe.mm -o "$probe_dir/probe"
+MTL_DEBUG_LAYER=1 "$probe_dir/probe" "$probe_dir/probe.metallib" "$probe_dir/result.json"
+```

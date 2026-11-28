@@ -2308,7 +2308,9 @@ add_executable(rypath_frame_coating_policy_tests frame_coating_policy_tests.cpp)
 target_include_directories(rypath_frame_coating_policy_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
 rypath_configure_host_target(rypath_frame_coating_policy_tests)
 add_test(NAME frame.coating_policy COMMAND rypath_frame_coating_policy_tests)
-set_tests_properties(frame.coating_policy PROPERTIES TIMEOUT 30)
+add_test(NAME frame.coating_math COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shared_coating_math_tests.py")
+set_tests_properties(frame.coating_policy frame.coating_math PROPERTIES TIMEOUT 30)
 if(RYPATH_ENABLE_METAL)
     add_executable(rypath_frame_coating_session_tests frame_coating_session_tests.cpp)
     target_link_libraries(rypath_frame_coating_session_tests PRIVATE
