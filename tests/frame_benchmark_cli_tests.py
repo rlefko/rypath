@@ -44,9 +44,14 @@ for flag in ("--variance-policy paired|center|conservative", "--variance-prefilt
              "--strict-spatial-segments on|off", "--metalfx-guide-policy primary|appearance",
              "--metalfx-exposure"):
     assert flag in help_text
-assert "--reconstructed-capture" in help_text
+assert "--reconstructed-capture" in help_text and "--reconstructed-samples" in help_text
 assert "--profile-stages" in help_text
 assert "--capture-frame" in help_text and "--capture-path" in help_text
+for bad_samples in ("", "-1", "0,", "0,0", "0,1", "7"):
+    result = invoke(["--demo", "--output", "x.json", "--warmup", "0", "--frames", "2",
+                     "--reconstruction", "raw-rgb", "--reconstructed-capture", "image.exr",
+                     "--reconstructed-samples", bad_samples])
+    assert "reconstructed sample" in result.stderr
 for flag in ("--hero-wavelengths", "--area-mutation-policy", "--area-stencil"):
     assert flag in help_text
     for value in ("invalid", "Visible", ""):
@@ -249,6 +254,12 @@ with tempfile.TemporaryDirectory() as directory:
     invoke(["--demo", "--output", str(overlap) + ".pending", "--reconstruction", "raw-rgb",
             "--reconstructed-capture", str(overlap)])
     assert not overlap.exists() and not Path(str(overlap) + ".pending").exists()
+    checkpoint = root / "snapshot-sample-0.exr"
+    checkpoint.write_text("original")
+    invoke(["--demo", "--output", str(report), "--frames", "2", "--warmup", "0",
+            "--reconstruction", "raw-rgb", "--reconstructed-capture", str(root / "snapshot.exr"),
+            "--reconstructed-samples", "0"])
+    assert checkpoint.read_text() == "original" and not report.exists()
     locked_capture = root / "locked.exr"
     Path(str(locked_capture) + ".pending").write_text("keep reconstructed pending")
     destination = root / "locked-report.json"

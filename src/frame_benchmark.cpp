@@ -74,6 +74,7 @@ struct Options {
     rypath::ResourceProfile resource_profile = rypath::ResourceProfile::standard;
     std::optional<float> motion_offset;
     std::optional<std::uint64_t> capture_frame;
+    std::set<std::uint64_t> reconstructed_samples;
     fs::path capture_path;
     std::optional<rypath::ReconstructionMode> reconstruction;
     bool guide_cache = false;
@@ -199,6 +200,7 @@ const char *usage =
     "  [--metalfx-exposure POSITIVE_HALF (MetalFX metadata only)]\n"
     "  [--guide-cache on|off (default: on for temporal/metalfx, off otherwise)]\n"
     "  [--output-width WIDTH] [--output-height HEIGHT] [--reconstructed-capture FLOAT.exr]\n"
+    "  [--reconstructed-samples LIST (additional earlier zero-based samples, comma separated)]\n"
     "Fresh output paths required. One fresh path/pixel/frame; Area reuse adds complete replays.\n";
 std::string parse(int argc, char **argv, Options &o) {
     std::set<std::string_view> seen;
@@ -239,7 +241,19 @@ std::string parse(int argc, char **argv, Options &o) {
             o.preview = value;
         else if (key == "--reconstructed-capture")
             o.reconstructed_capture = value;
-        else if (key == "--output-width") {
+        else if (key == "--reconstructed-samples") {
+            auto remaining = value;
+            while (true) {
+                const auto comma = remaining.find(',');
+                std::uint64_t sample;
+                if (!integer(remaining.substr(0, comma), sample) ||
+                    !o.reconstructed_samples.insert(sample).second)
+                    return "invalid or duplicate reconstructed sample";
+                if (comma == std::string_view::npos)
+                    break;
+                remaining.remove_prefix(comma + 1);
+            }
+        } else if (key == "--output-width") {
             if (!integer(value, o.output_width) || !o.output_width)
                 return "invalid output width";
         } else if (key == "--output-height") {
@@ -606,6 +620,11 @@ std::string parse(int argc, char **argv, Options &o) {
         return "resolution exceeds pixel indexing limit";
     if (o.warmup > UINT64_MAX - o.frames)
         return "frame sample count overflow";
+    if (!o.reconstructed_samples.empty() &&
+        (o.reconstructed_capture.empty() ||
+         *o.reconstructed_samples.rbegin() >= o.warmup + o.frames - 1))
+        return "additional reconstructed samples require a reconstructed capture and must precede "
+               "the final sample";
     return {};
 }
 // Keep a descriptor for each reservation; verify inode ownership before publication.
@@ -717,10 +736,18 @@ class Output {
             throw std::runtime_error("reconstructed capture publication failed");
     }
 };
+fs::path reconstructed_sample_path(const Options &options, std::uint64_t sample) {
+    const auto &final = options.reconstructed_capture;
+    return final.parent_path() /
+           (final.stem().string() + "-sample-" + std::to_string(sample) + ".exr");
+}
 void validate_paths(const Options &o, const std::vector<fs::path> &inputs) {
     std::set<fs::path> outputs;
-    for (const auto &path :
-         {o.output, o.capture, o.preview, o.reconstructed_capture, o.capture_path}) {
+    std::vector<fs::path> requested{o.output, o.capture, o.preview, o.reconstructed_capture,
+                                    o.capture_path};
+    for (const auto sample : o.reconstructed_samples)
+        requested.push_back(reconstructed_sample_path(o, sample));
+    for (const auto &path : requested) {
         if (path.empty())
             continue;
         for (auto candidate : {path, fs::path(path.string() + ".pending")}) {
@@ -1586,6 +1613,180 @@ struct Report {
         return out.str();
     }
 };
+void write_reconstructed(rypath::ReconstructedFrame &frame, Output &reconstructed_capture,
+                         const Report &report) {
+    const auto &options = report.options;
+    const auto info = frame.poll();
+    const auto captured_pose = rypath::frame_benchmark::motion_pose(
+        info.source.sample_index, options.warmup, options.frames, options.motion_offset);
+    const auto image = frame.capture();
+    if (image.status != rypath::GeometryStatus::success)
+        throw std::runtime_error("reconstructed capture failed: " + image.diagnostic);
+    const std::vector<std::pair<std::string, std::string>> metadata{
+        {"rypath.output.kind", *options.reconstruction == rypath::ReconstructionMode::metalfx
+                                   ? "metalfx-denoised-linear-rgb"
+                               : *options.reconstruction == rypath::ReconstructionMode::temporal
+                                   ? "temporal-denoised-linear-rgb"
+                                   : "raw-rgb-color-conversion"},
+        {"rypath.recon.mode", reconstruction_name(options.reconstruction)},
+        {"rypath.output.space", "linear-srgb"},
+        {"rypath.recon.exposure", precise_float(info.exposure)},
+        {"rypath.recon.requested_exposure", precise_float(options.metalfx_exposure)},
+        {"rypath.recon.variance_policy", variance_policy_name(options.variance_policy)},
+        {"rypath.recon.variance_prefilter", options.variance_prefilter ? "true" : "false"},
+        {"rypath.recon.strict_spatial_segments",
+         options.strict_spatial_segments ? "true" : "false"},
+        {"rypath.recon.metalfx_guide_policy",
+         metalfx_guide_policy_name(options.metalfx_guide_policy)},
+        {"rypath.recon.reset", info.history_reset ? "true" : "false"},
+        {"rypath.recon.defocus", info.defocus_approximation ? "true" : "false"},
+        {"rypath.frame.evaluations", std::to_string(info.source.completed_evaluations)},
+        {"rypath.frame.analytic_null_evaluations",
+         std::to_string(info.source.analytic_null_evaluations)},
+        {"rypath.frame.cached_evaluations", std::to_string(info.source.cached_evaluations)},
+        {"rypath.frame.logical_evaluations", std::to_string(info.source.logical_evaluations)},
+        {"rypath.frame.sample", std::to_string(info.source.sample_index)},
+        {"rypath.frame.epoch", std::to_string(info.source.epoch)},
+        {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
+        {"rypath.frame.motion_offset", precise_float(captured_pose.offset)},
+        {"rypath.frame.seed", std::to_string(options.seed)},
+        {"rypath.frame.material_seed", std::to_string(options.material_seed)},
+        {"rypath.frame.estimator", estimator_name(options.estimator)},
+        {"rypath.area.path_domain",
+         options.estimator == rypath::FrameEstimator::area_replay
+             ? rypath::frame_area_path_domain_name(options.area_path_domain)
+             : "not-applicable"},
+        {"rypath.area.canonical_transport_version",
+         std::to_string(rypath::frame_area_canonical_version(options.area_path_domain))},
+        {"rypath.area.fresh_discovery_version",
+         std::to_string(rypath::frame_area_discovery_version(options.area_path_domain))},
+        {"rypath.area.contribution_replay",
+         rypath::frame_area_contribution_family(options.area_path_domain)
+             ? rypath::frame_contribution_replay_name(info.source.contribution_replay)
+             : "not-applicable"},
+        {"rypath.area.contribution_depth",
+         rypath::frame_area_contribution_family(options.area_path_domain)
+             ? std::to_string(report.max_depth)
+             : "not-applicable"},
+        {"rypath.area.contribution_slot_count",
+         rypath::frame_area_contribution_family(options.area_path_domain)
+             ? std::to_string(2u * report.max_depth + 1u)
+             : "0"},
+        {"rypath.area.contract",
+         std::to_string(options.estimator == rypath::FrameEstimator::area_replay
+                            ? rypath::area_wire::contract
+                            : 0)},
+        {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
+                                   ? area_output_name(options.area_output)
+                                   : "not-applicable"},
+        {"rypath.area.target",
+         options.estimator == rypath::FrameEstimator::area_replay
+             ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                    ? "quarter-l1-hybrid-scaled-zero-v4"
+                    : "quarter-l1-v1")
+             : "none"},
+        {"rypath.area.source_mis",
+         options.estimator == rypath::FrameEstimator::area_replay
+             ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
+                    ? (options.area_reuse == rypath::FrameAreaReuse::fresh
+                           ? "fresh-local-selection-v1"
+                           : "enhanced-hybrid-confidence-scaled-mis-v4")
+                    : "source-target-mis-v1")
+             : "none"},
+        {"rypath.area.history_cap_req",
+         rypath::frame_history_cap_policy_name(options.history_cap_policy)},
+        {"rypath.area.history_cap_policy",
+         rypath::frame_history_cap_policy_name(info.source.history_cap_policy)},
+        {"rypath.area.history_cap_max", std::to_string(info.source.enhanced_history_cap)},
+        {"rypath.area.temporal_reuse",
+         temporal_cap_value(options.history_cap_policy, options.estimator, options.area_reuse,
+                            options.enhanced_history_cap, false)},
+        {"rypath.area.mutations",
+         std::to_string(options.estimator == rypath::FrameEstimator::area_replay
+                            ? options.mutation_steps
+                            : 0)},
+        {"rypath.area.spatial_mode_requested",
+         rypath::frame_spatial_mode_name(options.spatial_mode)},
+        {"rypath.area.stochastic_forward_atlas",
+         std::to_string(info.source.stochastic_forward_atlas)},
+        {"rypath.area.stochastic_canonical_atlas",
+         std::to_string(info.source.stochastic_canonical_atlas)},
+        {"rypath.area.serial", std::to_string(info.source.area_serial)},
+        {"rypath.hero.requested",
+         options.hero_wavelengths
+             ? std::string(rypath::hero_wavelength_sampling_name(*options.hero_wavelengths))
+             : "default"},
+        {"rypath.hero.effective", report.hero_wavelengths},
+        {"rypath.area.requested_mutation",
+         rypath::frame_mutation_policy_name(options.mutation_policy)},
+        {"rypath.area.reuse", rypath::frame_area_reuse_name(options.area_reuse)},
+        {"rypath.area.spatial_mode", rypath::frame_spatial_mode_name(options.spatial_mode)},
+        {"rypath.area.requested_stencil", rypath::frame_area_stencil_name(options.area_stencil)},
+        {"rypath.area.mutation_policy",
+         options.estimator == rypath::FrameEstimator::area_replay
+             ? rypath::frame_mutation_policy_name(info.source.mutation_policy)
+             : "not-applicable"},
+        {"rypath.area.stencil", options.estimator == rypath::FrameEstimator::area_replay
+                                    ? rypath::frame_area_stencil_name(info.source.area_stencil)
+                                    : "not-applicable"},
+        {"rypath.area.paired_atlas_version", std::to_string(info.source.paired_atlas.version)},
+        {"rypath.area.paired_atlas_widths", paired_atlas_widths(info.source.paired_atlas)},
+        {"rypath.area.paired_atlas_sigma", std::to_string(info.source.paired_atlas.sigma)},
+        {"rypath.area.paired_atlas_iterations",
+         std::to_string(info.source.paired_atlas.iterations)},
+        {"rypath.area.paired_atlas_seed", std::to_string(info.source.paired_atlas.seed[0]) + "," +
+                                              std::to_string(info.source.paired_atlas.seed[1])},
+        {"rypath.area.paired_atlas_sha256", info.source.paired_atlas.sha256},
+        {"rypath.area.paired_atlas_entry_count",
+         std::to_string(info.source.paired_atlas.entry_count)},
+        {"rypath.area.paired_atlas_asset_bytes",
+         std::to_string(info.source.paired_atlas.asset_bytes)},
+        {"rypath.area.paired_atlas_poses", paired_atlas_poses(info.source.paired_atlas)},
+        {"rypath.area.stencil_offsets",
+         std::to_string(info.source.area_stencil_offsets[0]) + "," +
+             std::to_string(info.source.area_stencil_offsets[1]) + "," +
+             std::to_string(info.source.area_stencil_offsets[2]) + "," +
+             std::to_string(info.source.area_stencil_offsets[3])},
+        {"rypath.internal.width", std::to_string(options.width)},
+        {"rypath.internal.height", std::to_string(options.height)},
+        {"rypath.output.width", std::to_string(image.width)},
+        {"rypath.output.height", std::to_string(image.height)},
+        {"rypath.frame.resource_profile",
+         std::string(rypath::resource_profile_name(options.resource_profile))},
+        {"rypath.frame.source_identity", report.source_identity},
+        {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
+        {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},
+        {"rypath.frame.intersections", profile_name(options.intersection_profile)},
+        {"rypath.frame.as_build",
+         std::string(rypath::acceleration_build_policy_name(options.as_build))},
+        {"rypath.area.temporal_reprojection_requested",
+         options.enhanced_temporal_reprojection ? "dual" : "off"},
+        {"rypath.area.temporal_reprojection_enabled",
+         info.source.enhanced_temporal_reprojection ? "dual" : "off"},
+        {"rypath.area.temporal_reprojection_used",
+         info.source.enhanced_temporal_reprojection_used ? "true" : "false"},
+        {"rypath.area.geometry_generated", std::to_string(info.source.enhanced_geometry_generated)},
+        {"rypath.area.geometry_reused", std::to_string(info.source.enhanced_geometry_reused)},
+        {"rypath.area.motion_cold", std::to_string(info.source.enhanced_motion_routes[0])},
+        {"rypath.area.motion_ordinary", std::to_string(info.source.enhanced_motion_routes[1])},
+        {"rypath.area.motion_dual", std::to_string(info.source.enhanced_motion_routes[2])},
+        {"rypath.area.motion_fallback", std::to_string(info.source.enhanced_motion_routes[3])},
+        {"rypath.area.pair_compaction_requested",
+         options.compact_enhanced_pairs ? "true" : "false"},
+        {"rypath.area.pair_compaction_enabled",
+         info.source.enhanced_pair_compaction ? "true" : "false"},
+        {"rypath.frame.compacted_null_evaluations",
+         std::to_string(info.source.compacted_null_evaluations)},
+        {"rypath.area.suffix_cache_requested", options.enhanced_suffix_cache ? "true" : "false"},
+        {"rypath.area.suffix_cache_enabled", info.source.enhanced_suffix_cache ? "true" : "false"},
+        {"rypath.area.suffix_hits_0", std::to_string(info.source.enhanced_suffix_hits[0])},
+        {"rypath.area.suffix_hits_1", std::to_string(info.source.enhanced_suffix_hits[1])},
+        {"rypath.area.suffix_hits_2", std::to_string(info.source.enhanced_suffix_hits[2])},
+        {"rypath.area.suffix_misses", std::to_string(info.source.enhanced_suffix_misses)},
+        {"rypath.recon.color_negative", std::to_string(info.counters.color_negative)},
+        {"rypath.recon.color_high", std::to_string(info.counters.color_high)}};
+    reconstructed_capture.linear_rgb(image, metadata);
+}
 int run(const Options &options) {
     const auto start = Clock::now();
     Report report;
@@ -1597,6 +1798,10 @@ int run(const Options &options) {
                                 std::to_string(options.height) + "; reconstruction output " +
                                 std::to_string(options.output_width) + "x" +
                                 std::to_string(options.output_height));
+    for (const auto sample : options.reconstructed_samples)
+        report.provenance.push_back(
+            "additional reconstructed sample " + std::to_string(sample) +
+            " after frame timing: " + reconstructed_sample_path(options, sample).string());
     if (options.reconstruction)
         report.provenance.push_back("reconstructed output is separate unexposed linear RGB "
                                     "presentation data; raw XYZ is retained");
@@ -2071,6 +2276,11 @@ int run(const Options &options) {
                                             : observation.diagnostic;
                     break;
                 }
+                if (options.reconstructed_samples.contains(sample)) {
+                    Output snapshot;
+                    snapshot.reserve(reconstructed_sample_path(options, sample));
+                    write_reconstructed(*last_reconstructed, snapshot, report);
+                }
                 if (warmup)
                     ++report.warmup_completed;
                 else
@@ -2305,206 +2515,8 @@ int run(const Options &options) {
                     preview.image(film, false);
                 }
             }
-            if (last_reconstructed && !options.reconstructed_capture.empty()) {
-                const auto info = last_reconstructed->poll();
-                const auto captured_pose =
-                    rypath::frame_benchmark::motion_pose(info.source.sample_index, options.warmup,
-                                                         options.frames, options.motion_offset);
-                const auto image = last_reconstructed->capture();
-                if (image.status != rypath::GeometryStatus::success)
-                    throw std::runtime_error("reconstructed capture failed: " + image.diagnostic);
-                const std::vector<std::pair<std::string, std::string>> metadata{
-                    {"rypath.output.kind",
-                     *options.reconstruction == rypath::ReconstructionMode::metalfx
-                         ? "metalfx-denoised-linear-rgb"
-                     : *options.reconstruction == rypath::ReconstructionMode::temporal
-                         ? "temporal-denoised-linear-rgb"
-                         : "raw-rgb-color-conversion"},
-                    {"rypath.recon.mode", reconstruction_name(options.reconstruction)},
-                    {"rypath.output.space", "linear-srgb"},
-                    {"rypath.recon.exposure", precise_float(info.exposure)},
-                    {"rypath.recon.requested_exposure", precise_float(options.metalfx_exposure)},
-                    {"rypath.recon.variance_policy", variance_policy_name(options.variance_policy)},
-                    {"rypath.recon.variance_prefilter",
-                     options.variance_prefilter ? "true" : "false"},
-                    {"rypath.recon.strict_spatial_segments",
-                     options.strict_spatial_segments ? "true" : "false"},
-                    {"rypath.recon.metalfx_guide_policy",
-                     metalfx_guide_policy_name(options.metalfx_guide_policy)},
-                    {"rypath.recon.reset", info.history_reset ? "true" : "false"},
-                    {"rypath.recon.defocus", info.defocus_approximation ? "true" : "false"},
-                    {"rypath.frame.evaluations", std::to_string(info.source.completed_evaluations)},
-                    {"rypath.frame.analytic_null_evaluations",
-                     std::to_string(info.source.analytic_null_evaluations)},
-                    {"rypath.frame.cached_evaluations",
-                     std::to_string(info.source.cached_evaluations)},
-                    {"rypath.frame.logical_evaluations",
-                     std::to_string(info.source.logical_evaluations)},
-                    {"rypath.frame.sample", std::to_string(info.source.sample_index)},
-                    {"rypath.frame.epoch", std::to_string(info.source.epoch)},
-                    {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
-                    {"rypath.frame.motion_offset", precise_float(captured_pose.offset)},
-                    {"rypath.frame.seed", std::to_string(options.seed)},
-                    {"rypath.frame.material_seed", std::to_string(options.material_seed)},
-                    {"rypath.frame.estimator", estimator_name(options.estimator)},
-                    {"rypath.area.path_domain",
-                     options.estimator == rypath::FrameEstimator::area_replay
-                         ? rypath::frame_area_path_domain_name(options.area_path_domain)
-                         : "not-applicable"},
-                    {"rypath.area.canonical_transport_version",
-                     std::to_string(
-                         rypath::frame_area_canonical_version(options.area_path_domain))},
-                    {"rypath.area.fresh_discovery_version",
-                     std::to_string(
-                         rypath::frame_area_discovery_version(options.area_path_domain))},
-                    {"rypath.area.contribution_replay",
-                     rypath::frame_area_contribution_family(options.area_path_domain)
-                         ? rypath::frame_contribution_replay_name(info.source.contribution_replay)
-                         : "not-applicable"},
-                    {"rypath.area.contribution_depth",
-                     rypath::frame_area_contribution_family(options.area_path_domain)
-                         ? std::to_string(report.max_depth)
-                         : "not-applicable"},
-                    {"rypath.area.contribution_slot_count",
-                     rypath::frame_area_contribution_family(options.area_path_domain)
-                         ? std::to_string(2u * report.max_depth + 1u)
-                         : "0"},
-                    {"rypath.area.contract",
-                     std::to_string(options.estimator == rypath::FrameEstimator::area_replay
-                                        ? rypath::area_wire::contract
-                                        : 0)},
-                    {"rypath.area.output", options.estimator == rypath::FrameEstimator::area_replay
-                                               ? area_output_name(options.area_output)
-                                               : "not-applicable"},
-                    {"rypath.area.target",
-                     options.estimator == rypath::FrameEstimator::area_replay
-                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? "quarter-l1-hybrid-scaled-zero-v4"
-                                : "quarter-l1-v1")
-                         : "none"},
-                    {"rypath.area.source_mis",
-                     options.estimator == rypath::FrameEstimator::area_replay
-                         ? (options.area_path_domain == rypath::FrameAreaPathDomain::enhanced
-                                ? (options.area_reuse == rypath::FrameAreaReuse::fresh
-                                       ? "fresh-local-selection-v1"
-                                       : "enhanced-hybrid-confidence-scaled-mis-v4")
-                                : "source-target-mis-v1")
-                         : "none"},
-                    {"rypath.area.history_cap_req",
-                     rypath::frame_history_cap_policy_name(options.history_cap_policy)},
-                    {"rypath.area.history_cap_policy",
-                     rypath::frame_history_cap_policy_name(info.source.history_cap_policy)},
-                    {"rypath.area.history_cap_max",
-                     std::to_string(info.source.enhanced_history_cap)},
-                    {"rypath.area.temporal_reuse",
-                     temporal_cap_value(options.history_cap_policy, options.estimator,
-                                        options.area_reuse, options.enhanced_history_cap, false)},
-                    {"rypath.area.mutations",
-                     std::to_string(options.estimator == rypath::FrameEstimator::area_replay
-                                        ? options.mutation_steps
-                                        : 0)},
-                    {"rypath.area.spatial_mode_requested",
-                     rypath::frame_spatial_mode_name(options.spatial_mode)},
-                    {"rypath.area.stochastic_forward_atlas",
-                     std::to_string(info.source.stochastic_forward_atlas)},
-                    {"rypath.area.stochastic_canonical_atlas",
-                     std::to_string(info.source.stochastic_canonical_atlas)},
-                    {"rypath.area.serial", std::to_string(info.source.area_serial)},
-                    {"rypath.hero.requested",
-                     options.hero_wavelengths ? std::string(rypath::hero_wavelength_sampling_name(
-                                                    *options.hero_wavelengths))
-                                              : "default"},
-                    {"rypath.hero.effective", report.hero_wavelengths},
-                    {"rypath.area.requested_mutation",
-                     rypath::frame_mutation_policy_name(options.mutation_policy)},
-                    {"rypath.area.reuse", rypath::frame_area_reuse_name(options.area_reuse)},
-                    {"rypath.area.spatial_mode",
-                     rypath::frame_spatial_mode_name(options.spatial_mode)},
-                    {"rypath.area.requested_stencil",
-                     rypath::frame_area_stencil_name(options.area_stencil)},
-                    {"rypath.area.mutation_policy",
-                     options.estimator == rypath::FrameEstimator::area_replay
-                         ? rypath::frame_mutation_policy_name(info.source.mutation_policy)
-                         : "not-applicable"},
-                    {"rypath.area.stencil",
-                     options.estimator == rypath::FrameEstimator::area_replay
-                         ? rypath::frame_area_stencil_name(info.source.area_stencil)
-                         : "not-applicable"},
-                    {"rypath.area.paired_atlas_version",
-                     std::to_string(info.source.paired_atlas.version)},
-                    {"rypath.area.paired_atlas_widths",
-                     paired_atlas_widths(info.source.paired_atlas)},
-                    {"rypath.area.paired_atlas_sigma",
-                     std::to_string(info.source.paired_atlas.sigma)},
-                    {"rypath.area.paired_atlas_iterations",
-                     std::to_string(info.source.paired_atlas.iterations)},
-                    {"rypath.area.paired_atlas_seed",
-                     std::to_string(info.source.paired_atlas.seed[0]) + "," +
-                         std::to_string(info.source.paired_atlas.seed[1])},
-                    {"rypath.area.paired_atlas_sha256", info.source.paired_atlas.sha256},
-                    {"rypath.area.paired_atlas_entry_count",
-                     std::to_string(info.source.paired_atlas.entry_count)},
-                    {"rypath.area.paired_atlas_asset_bytes",
-                     std::to_string(info.source.paired_atlas.asset_bytes)},
-                    {"rypath.area.paired_atlas_poses",
-                     paired_atlas_poses(info.source.paired_atlas)},
-                    {"rypath.area.stencil_offsets",
-                     std::to_string(info.source.area_stencil_offsets[0]) + "," +
-                         std::to_string(info.source.area_stencil_offsets[1]) + "," +
-                         std::to_string(info.source.area_stencil_offsets[2]) + "," +
-                         std::to_string(info.source.area_stencil_offsets[3])},
-                    {"rypath.internal.width", std::to_string(options.width)},
-                    {"rypath.internal.height", std::to_string(options.height)},
-                    {"rypath.output.width", std::to_string(image.width)},
-                    {"rypath.output.height", std::to_string(image.height)},
-                    {"rypath.frame.resource_profile",
-                     std::string(rypath::resource_profile_name(options.resource_profile))},
-                    {"rypath.frame.source_identity", report.source_identity},
-                    {"rypath.frame.source", options.demo ? "demo" : options.scene.string()},
-                    {"rypath.frame.build", RYPATH_BUILD_DESCRIPTION},
-                    {"rypath.frame.intersections", profile_name(options.intersection_profile)},
-                    {"rypath.frame.as_build",
-                     std::string(rypath::acceleration_build_policy_name(options.as_build))},
-                    {"rypath.area.temporal_reprojection_requested",
-                     options.enhanced_temporal_reprojection ? "dual" : "off"},
-                    {"rypath.area.temporal_reprojection_enabled",
-                     info.source.enhanced_temporal_reprojection ? "dual" : "off"},
-                    {"rypath.area.temporal_reprojection_used",
-                     info.source.enhanced_temporal_reprojection_used ? "true" : "false"},
-                    {"rypath.area.geometry_generated",
-                     std::to_string(info.source.enhanced_geometry_generated)},
-                    {"rypath.area.geometry_reused",
-                     std::to_string(info.source.enhanced_geometry_reused)},
-                    {"rypath.area.motion_cold",
-                     std::to_string(info.source.enhanced_motion_routes[0])},
-                    {"rypath.area.motion_ordinary",
-                     std::to_string(info.source.enhanced_motion_routes[1])},
-                    {"rypath.area.motion_dual",
-                     std::to_string(info.source.enhanced_motion_routes[2])},
-                    {"rypath.area.motion_fallback",
-                     std::to_string(info.source.enhanced_motion_routes[3])},
-                    {"rypath.area.pair_compaction_requested",
-                     options.compact_enhanced_pairs ? "true" : "false"},
-                    {"rypath.area.pair_compaction_enabled",
-                     info.source.enhanced_pair_compaction ? "true" : "false"},
-                    {"rypath.frame.compacted_null_evaluations",
-                     std::to_string(info.source.compacted_null_evaluations)},
-                    {"rypath.area.suffix_cache_requested",
-                     options.enhanced_suffix_cache ? "true" : "false"},
-                    {"rypath.area.suffix_cache_enabled",
-                     info.source.enhanced_suffix_cache ? "true" : "false"},
-                    {"rypath.area.suffix_hits_0",
-                     std::to_string(info.source.enhanced_suffix_hits[0])},
-                    {"rypath.area.suffix_hits_1",
-                     std::to_string(info.source.enhanced_suffix_hits[1])},
-                    {"rypath.area.suffix_hits_2",
-                     std::to_string(info.source.enhanced_suffix_hits[2])},
-                    {"rypath.area.suffix_misses",
-                     std::to_string(info.source.enhanced_suffix_misses)},
-                    {"rypath.recon.color_negative", std::to_string(info.counters.color_negative)},
-                    {"rypath.recon.color_high", std::to_string(info.counters.color_high)}};
-                reconstructed_capture.linear_rgb(image, metadata);
-            }
+            if (last_reconstructed && !options.reconstructed_capture.empty())
+                write_reconstructed(*last_reconstructed, reconstructed_capture, report);
         }
     } catch (const std::exception &error) {
         code = 1;
