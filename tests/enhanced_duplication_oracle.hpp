@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 namespace duplication_oracle {
@@ -21,6 +23,12 @@ inline void require(bool value, const char *why) {
     if (!value)
         throw std::runtime_error(why);
 }
+inline std::size_t pixel_count(unsigned width, unsigned height) {
+    const auto count = std::uint64_t(width) * height;
+    require(count <= std::numeric_limits<std::uint32_t>::max(),
+            "Independent 32-bit pixel ID extent");
+    return std::size_t(count);
+}
 inline bool same(const Pixel &a, const Pixel &b, unsigned mode) {
     if (mode == 3)
         return a.current == b.current;
@@ -33,7 +41,7 @@ inline bool same(const Pixel &a, const Pixel &b, unsigned mode) {
 // Independent all-pairs finite-coordinate definition. No halo load, tiling,
 // clamping, production label helper, hash or radius-offset loop is used.
 inline Map count(const std::vector<Pixel> &pixels, unsigned width, unsigned height, unsigned mode) {
-    require(width && height && std::uint64_t(width) * height == pixels.size(),
+    require(width && height && pixel_count(width, height) == pixels.size(),
             "Independent map dimensions");
     require(mode >= 1 && mode <= 3, "Independent comparison mode");
     Map result;
@@ -62,7 +70,7 @@ inline Map count(const std::vector<Pixel> &pixels, unsigned width, unsigned heig
     return result;
 }
 inline std::vector<Pixel> fixture(unsigned width, unsigned height, unsigned pattern) {
-    std::vector<Pixel> result(width * height);
+    std::vector<Pixel> result(pixel_count(width, height));
     for (unsigned p = 0; p < result.size(); ++p) {
         const unsigned x = p % width, y = p / width;
         auto &v = result[p];
