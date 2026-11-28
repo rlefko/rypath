@@ -281,6 +281,11 @@ void syntax_and_help() {
     rejected({"--demo", "--capture-dir", ""}, "empty capture directory");
 }
 void measurement_contracts() {
+    require(!accepted({"--demo"}).completion_wakeup &&
+                !accepted({"--demo", "--frame-scheduling", "timer"}).completion_wakeup &&
+                accepted({"--demo", "--frame-scheduling", "completion"}).completion_wakeup,
+            "Explicit stage completion scheduling");
+    rejected({"--demo", "--frame-scheduling", "unknown"}, "unknown frame scheduling");
     const auto native = accepted({"--demo"});
     require(native.output_width == native.width && native.output_height == native.height,
             "Default output retains internal dimensions");

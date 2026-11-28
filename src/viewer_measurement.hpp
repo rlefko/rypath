@@ -166,6 +166,7 @@ inline std::string measurement_report(const Options &o,
     out << std::setprecision(17) << "{\"schema\":1,\"status\":" << json_string(status)
         << ",\"timing_scope\":\"CAMetalDrawable presentedTime; distinct source frames; "
            "nearest-rank p95\""
+        << ",\"frame_scheduling\":" << json_string(o.completion_wakeup ? "completion" : "timer")
         << ",\"device\":" << json_string(device) << ",\"os\":" << json_string(os)
         << ",\"mutations\":" << (o.estimator == FrameEstimator::area_replay ? o.mutation_steps : 0)
         << ",\"area_path_domain\":" << json_string(frame_area_path_domain_name(o.area_path_domain))

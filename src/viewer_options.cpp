@@ -23,6 +23,7 @@ const char *usage() {
     return "Usage: rypath-viewer (--scene SCENE.pbrt | --demo) [options]\n"
            "  --width 1920 --height 1080  fixed internal resolution\n"
            "  --output-width W --output-height H  MetalFX output size (default: internal)\n"
+           "  --frame-scheduling timer|completion  wake on GPU stage completion (default: timer)\n"
            "  --measurement-json PATH --warmup N  finite-run presentation report, fresh path\n"
            "  --workload static|motion|translation|rotation  deterministic per-frame camera\n"
            "  --motion-period N  repeat a translation or yaw excursion every N measured frames\n"
@@ -111,6 +112,10 @@ std::string parse_options(int argc, char **argv, Options &o) {
             if (value.empty())
                 return "capture directory must not be empty";
             o.capture_directory = value;
+        } else if (key == "--frame-scheduling") {
+            if (value != "timer" && value != "completion")
+                return "frame scheduling must be timer or completion";
+            o.completion_wakeup = value == "completion";
         } else if (key == "--measurement-json") {
             if (value.empty())
                 return "measurement path must not be empty";

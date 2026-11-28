@@ -313,8 +313,28 @@ class ViewerState {
     std::unique_ptr<CameraMediumTracker> medium_tracker;
     std::unique_ptr<ReconstructionStream> reconstruction;
     std::optional<ReconstructionMode> stream_mode;
-    std::unique_ptr<Frame> pending_raw, latest_raw;
-    std::unique_ptr<ReconstructedFrame> pending_image, latest_image;
+    std::shared_ptr<Frame> pending_raw, latest_raw;
+    std::shared_ptr<ReconstructedFrame> pending_image, latest_image;
+    // The target is owned and dereferenced on the main thread only. A delayed
+    // completion may outlive the window, the run loop, or this stack object.
+    std::shared_ptr<ViewerState *> wake_target = std::make_shared<ViewerState *>(this);
+    template <class Stage> void wake_on_completion(const std::shared_ptr<Stage> &pending) {
+        if (!options.completion_wakeup)
+            return;
+        const auto retained = pending;
+        std::weak_ptr<ViewerState *> target = wake_target;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+          @autoreleasepool {
+              // The renderer signals a condition variable on success and on failure.
+              // A single source progresses through two stages in order.
+              (void)retained->wait();
+          }
+          dispatch_async(dispatch_get_main_queue(), ^{
+            if (const auto live = target.lock())
+                (*live)->tick();
+          });
+        });
+    }
     ReconstructionMode pipeline_mode;
     const ReconstructionMode comparison_denoiser;
     std::set<unsigned short> keys;
@@ -568,6 +588,7 @@ class ViewerState {
         submitted_pose = candidate;
         pipeline_mode = options.reconstruction;
         pending_raw = std::move(result.frame);
+        wake_on_completion(pending_raw);
     }
     double fps() const {
         if (completed_times.size() < 2)
@@ -953,6 +974,7 @@ class ViewerState {
                             return;
                         }
                         pending_image = std::move(result.frame);
+                        wake_on_completion(pending_image);
                         reset_submission = false;
                     }
                 }

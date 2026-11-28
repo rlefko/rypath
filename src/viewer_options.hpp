@@ -5,6 +5,7 @@
 
 namespace rypath::viewer {
 struct Options {
+    bool completion_wakeup = false;
     std::filesystem::path scene, capture_directory,
         measurement_json; // Empty resolves to Pictures/rypath in the app.
     bool demo = false, help = false;

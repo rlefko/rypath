@@ -42,6 +42,7 @@ options. PBRT scenes must pass the existing preflight and render translation.
 | `--variance-policy paired\|center\|conservative` | Temporal reconstruction policy; paired remains default |
 | `--mutations 0\|1\|2\|4` | Area replay uses one corrected mutation by default; independent uses zero |
 | `--frames N` | Exit after N completed pipeline frames; omitted means unlimited |
+| `--frame-scheduling timer\|completion` | Advance a completed GPU stage at the next UI timer tick (default) or wake the main run loop on completion |
 | `--measurement-json PATH` | Fresh JSON file for a finite run, with pipeline and drawable observations |
 | `--warmup N` | Startup frames excluded from measured presentation statistics, default 0; included in `--frames` |
 | `--workload static\|motion\|translation\|rotation` | Deterministic camera poses; omitted retains interactive controls |
