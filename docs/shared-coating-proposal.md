@@ -89,14 +89,50 @@ For posterior (16,8,2,1)/27 they are **0.064–0.111** and **0.0044–0.020**.
 The old collapse's hero choice is integrated analytically over all four
 probabilities. These describe a local BSDF experiment with hypothetical companion
 reflectances; they do not include scene visibility, resampling, reconstruction,
-reference uncertainty or native frame cost. The actual-material and NEE controls
-and static scene comparison are separate follow-up evidence.
+reference uncertainty or native frame cost.
+
+The subsequent actual-material population uses prepared reflectances
+(0.52414638, 0.56152672, 0.41252500, 0.48088554), plus a separate black-hero
+stress spectrum. Both the sampled hidden walk and cosine-light NEE with ordinary
+complementary proxy MIS pass all **32 predeclared lane mean gates** across the
+same eight seed clusters and two angles. The actual positive spectrum's local
+equal-posterior XYZ variance ratios are 0.248–0.251 for sampling and 0.097–0.138
+for NEE; opponent-chroma ratios are 0.007–0.013 and 0.009–0.010 respectively.
+These remain fixed-illumination BSDF measurements, with hero choice integrated
+analytically, rather than scene-convergence results. The retained protocol and
+reductions are `actual-probe-protocol.json`, `actual-sample-analysis.json` and
+`actual-nee-analysis.json`.
 
 The experiment retains 10,704–18,622 lane outcomes per case where the common walk
 survives and the corresponding scalar walk is zero. With positive reflectance and
 shared geometric/RNG controls, differing compensated internal roulette supplies
 these complementary outcomes; preserving scalar stopping decisions is not
 required for equality of the means.
+
+At policy revision `14c2ed1`, eight strict native controls pass on the owned
+16x16 coating fixture: old/default/explicit-off raw and signed pixels are exact,
+the opt-in changes the proposal, Enhanced full/fresh sessions complete, and the
+older selected kernel rejects opt-in. All six current-host runs also pass the
+completed timing-record and raw/reconstruction source-identity audit. These are
+API and provenance controls, not a scene-quality qualification.
+
+The first matched 320x170 Pavilion-night independent tuning run uses seed 702201,
+eight submitted frames and the frozen physical 2048-SPP reference. Raw last-fresh
+RGB MSE is 0.32852 for the baseline and 0.36409 for shared coating; final signed
+RGB MSE is 0.28788 and 0.12576. The raw regression and signed improvement are both
+retained. One tuning seed at equal frame count does not establish a speed or
+quality decision. Area, additional seeds, other scenes, motion and held-out
+comparisons remain separate gates.
+
+The first 64-case full/current probe failed eight partial-mask cases because its
+path mask remained 15 while its material payload was prepared for mask 1 or 3.
+Component captures show bit-identical values on every originally prepared lane;
+the mismatches arise on reactivated unprepared lanes. Production callers pass
+the path mask through preparation, and imported expansions prepare the needed
+superset first. Failed receipts remain retained. A corrected 96-case probe adds
+noncontiguous masks 5 and 9; its hardware result is pending. The shader-only removal
+of duplicate preparation validation at `43e5a46` has a separately frozen runtime
+and pending critical controls; previously measured binaries are unchanged.
 
 Evidence is outside Git in `.cache/highlight-origin-001/`: the predeclared
 `shared-probe-protocol.json`, four FLOAT populations, `shared-probe-analysis.json`,
