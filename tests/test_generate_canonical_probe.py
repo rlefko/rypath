@@ -32,7 +32,7 @@ class CanonicalProbeGenerationTests(unittest.TestCase):
             self.assertEqual(derived, original)
         self.assertEqual(generator.kernels(render), [])
         self.assertEqual(tuple(row[0] for row in generator.kernels(probe)), generator.PROBE_KERNELS)
-        self.assertEqual(len(render_edits), 17)
+        self.assertEqual(len(render_edits), 18)
         self.assertEqual(len(transport_edits), 1)
         self.assertEqual(len(probe_edits), 2)
         # All five executed kernel bodies remain exact production source slices.
@@ -62,6 +62,27 @@ class CanonicalProbeGenerationTests(unittest.TestCase):
                 with self.subTest(mode=mode, include=include):
                     self.assertNotIn(b'\n' + include + b'\n', derived)
                     self.assertEqual(derived.count(generator.PREFIX + include + b'\n'), 1)
+
+    def test_coherent_film_diagnostic_is_reviewed_and_omitted_in_both_modes(self):
+        current_probe = (ROOT / 'tests/hero_current_probe.metal').read_bytes()
+        step = (ROOT / 'shaders/packet_pt_step.h').read_bytes()
+        name = 'rypath_coherent_film_words'
+        self.assertIn(name, generator.RENDER_KERNELS)
+        for derived in (generator.transform(self.render, self.probe, self.transport)[0],
+                        generator.transform_current_details(
+                            self.render, current_probe, self.transport, step)[0]):
+            self.assertEqual(derived.count(generator.PREFIX + name.encode()), 1)
+            self.assertEqual(generator.kernels(derived), [])
+        begin, end = next((begin, end) for kernel, begin, end in generator.kernels(self.render)
+                          if kernel == name)
+        mutations = [self.render[:begin] + self.render[end:],
+                     self.render + self.render[begin:end],
+                     self.render.replace(b'kernel void ' + name.encode(), b'kernel void renamed_film_probe')]
+        for source in mutations:
+            with self.subTest(size=len(source)), self.assertRaisesRegex(ValueError, 'inventory'):
+                generator.transform(source, self.probe, self.transport)
+            with self.subTest(size=len(source), mode='current'), self.assertRaisesRegex(ValueError, 'inventory'):
+                generator.transform_current_details(source, current_probe, self.transport, step)
 
     def test_entrypoint_tail_drift_fails_in_both_probe_modes(self):
         current_probe = (ROOT / 'tests/hero_current_probe.metal').read_bytes()
