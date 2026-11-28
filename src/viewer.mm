@@ -321,12 +321,15 @@ class ViewerState {
     template <class Stage> void wake_on_completion(const std::shared_ptr<Stage> &pending) {
         if (!options.completion_wakeup)
             return;
-        const auto retained = pending;
+        const std::weak_ptr<Stage> stage = pending;
         std::weak_ptr<ViewerState *> target = wake_target;
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
           @autoreleasepool {
               // The renderer signals a condition variable on success and on failure.
               // A single source progresses through two stages in order.
+              const auto retained = stage.lock();
+              if (!retained)
+                  return;
               (void)retained->wait();
           }
           dispatch_async(dispatch_get_main_queue(), ^{
