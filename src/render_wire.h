@@ -295,7 +295,7 @@ struct Parameters {
     Word knot_count;
     Word emission_count;
     Word emitter_count;
-    Word emitter_slots; // Reserved legacy padding; combined selection uses light_count.
+    Word film_sampling = 0; // Former emitter_slots padding; tagged modes in coherent_film_shared.h.
     Word filter_kind;
     float filter_x_radius;
     float filter_y_radius;
@@ -453,7 +453,7 @@ static_assert(sizeof(Parameters) == 368 && alignof(Parameters) == 4 &&
                   __builtin_offsetof(Parameters, knot_count) == 140 &&
                   __builtin_offsetof(Parameters, emission_count) == 144 &&
                   __builtin_offsetof(Parameters, emitter_count) == 148 &&
-                  __builtin_offsetof(Parameters, emitter_slots) == 152 &&
+                  __builtin_offsetof(Parameters, film_sampling) == 152 &&
                   __builtin_offsetof(Parameters, filter_kind) == 156 &&
                   __builtin_offsetof(Parameters, filter_x_radius) == 160 &&
                   __builtin_offsetof(Parameters, filter_y_radius) == 164 &&

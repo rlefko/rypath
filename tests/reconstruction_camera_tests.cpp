@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "coherent_film_jitter.hpp"
 #include "reconstruction_camera.hpp"
 #include "reconstruction_continuity.hpp"
 #include "reconstruction_guide_cache.hpp"
@@ -56,6 +57,61 @@ rc::Camera built(const rypath::RasterCamera &source, const rc::CameraConfig &con
 }
 } // namespace
 
+void coherent_jitter_contract() {
+    using namespace rypath;
+    std::array<double, 2> sum{}, squared{};
+    double cross = 0;
+    constexpr std::uint64_t count = 65536;
+    for (std::uint64_t i = 0; i < count; ++i) {
+        const auto words = coherent_film_words(197, i);
+        const auto jitter = coherent_film_offset(words);
+        for (unsigned axis = 0; axis < 2; ++axis) {
+            require(jitter[axis] >= -.5f && jitter[axis] < .5f,
+                    "Jitter outside half-open box support");
+            sum[axis] += jitter[axis];
+            squared[axis] += double(jitter[axis]) * jitter[axis];
+        }
+        cross += double(jitter[0]) * jitter[1];
+    }
+    for (unsigned axis = 0; axis < 2; ++axis) {
+        close(sum[axis] / count, 0, .004, "Uniform jitter first moment");
+        close(squared[axis] / count, 1. / 12, .002, "Uniform jitter second moment");
+    }
+    close(cross / count, 0, .002, "Jitter axes covariance");
+    require(coherent_film_words(197, 1) != coherent_film_words(197, 1ull << 32) &&
+                coherent_film_words(197, 1) != coherent_film_words((1ull << 32) + 197, 1),
+            "Jitter retains high sample and seed words");
+    const RasterCamera raster{{}, {-.4f, .4f, 1}, {.8f, 0, 0}, {0, -.8f, 0}};
+    const auto camera = built(raster, {128, 128, .001, {}});
+    for (const std::array<float, 2> jitter :
+         {std::array<float, 2>{.25f, -.125f}, std::array<float, 2>{-1, -1},
+          std::array<float, 2>{.999f, -.999f}, std::array<float, 2>{.125f, .125f}}) {
+        const auto projection = coherent_film_projection(camera.view_to_clip(), 128, 128, jitter);
+        const rc::Point hit{
+            2 * (double(raster.corner.x) + double(raster.dx.x) * (61.5 + jitter[0]) / 128),
+            2 * (double(raster.corner.y) + double(raster.dy.y) * (62.5 + jitter[1]) / 128), 2};
+        const auto view = transform(camera.world_to_view(), {hit[0], hit[1], hit[2], 1});
+        const auto clip = transform(projection, view);
+        close((clip[0] / clip[3] + 1) * 64, 61.5, 2e-5,
+              "Jittered projection does not register shifted X ray to pixel center");
+        close((1 - clip[1] / clip[3]) * 64, 62.5, 2e-5,
+              "Jittered projection does not register shifted Y ray to pixel center");
+        close(clip[2] / clip[3], camera.project(hit).depth, 1e-10, "Jitter changed reversed depth");
+    }
+    render_wire::Parameters p{};
+    render_wire::TextureParameters t{};
+    reconstruction_guide_wire::Config c{};
+    const auto original = reconstruction::surface_guide_key(p, t, c);
+    p.film_sampling = rypath_film_jitter::coherent_tag;
+    const auto enabled = reconstruction::surface_guide_key(p, t, c);
+    require(enabled != original, "Guide cache omits coherent sampling mode");
+    p.sample_low = 123;
+    const auto moved = reconstruction::surface_guide_key(p, t, c);
+    require(moved != enabled, "Guide cache omits sampled film position");
+    c.previous_jitter[1] = .25f;
+    require(reconstruction::surface_guide_key(p, t, c) != moved,
+            "Guide cache omits previous jitter for temporal motion");
+}
 void guide_key_dependencies() {
     using namespace rypath;
     render_wire::Parameters p{};
@@ -150,6 +206,7 @@ int main() try {
                 "Stable anchor rejects transitive bending");
     }
     guide_key_dependencies();
+    coherent_jitter_contract();
     using namespace rypath;
     const rc::CameraConfig config{4, 2, .25, {}};
     RenderCamera demo;

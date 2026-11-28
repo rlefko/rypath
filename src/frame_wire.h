@@ -4,7 +4,7 @@
 namespace rypath {
 namespace frame_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 1 };
+enum : Word { contract = 2 };
 struct Parameters {
     Word count, pixel_begin, sample_low, sample_high;
     Word stride, packet, model, scratch_bytes;

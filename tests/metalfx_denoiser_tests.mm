@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Standalone native qualification. Synthetic planes test API execution only;
 // they do not establish path-traced image quality or interactive performance.
+#include "coherent_film_jitter.hpp"
 #include "metalfx_denoiser.hpp"
+#include "render.hpp"
 
 #import <Foundation/Foundation.h>
 #if __has_include(<MetalFX/MTLFXTemporalDenoisedScaler.h>)
@@ -14,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -221,6 +224,97 @@ void validation_cases(MetalFXDenoiser &effect, id<MTLDevice> device, id<MTLComma
     completed(command);
     rejected(effect.encode(command, valid), "already committed");
 }
+double jitter_registration(id<MTLDevice> device, id<MTLCommandQueue> queue, float api_sign,
+                           bool physical_projection, bool triangle = false) {
+    auto built = MetalFXDenoiser::create(device, {128, 128, 256, 256});
+    require(built.denoiser != nullptr, built.diagnostic);
+    auto frame = inputs(device, built.denoiser->requirements());
+    const auto signal = [](double x, double y) {
+        return float(.5 + .2 * std::sin(2 * 3.141592653589793 * .125 * x) +
+                     .15 * std::sin(2 * 3.141592653589793 * .1875 * y));
+    };
+    id<MTLBuffer> readback = nil;
+    const NSUInteger row = ((frame.output.width * 8 + 255) / 256) * 256;
+    std::array<float, 16> base_projection{};
+    std::memcpy(base_projection.data(), &frame.view_to_clip, sizeof(base_projection));
+    constexpr unsigned samples = 48;
+    for (unsigned sample = 0; sample < samples; ++sample) {
+        @autoreleasepool {
+            const auto film_words = coherent_film_words(197, sample);
+            auto jitter = coherent_film_offset(film_words);
+            if (triangle) {
+                std::array<float, 2> u{sample_uniform(film_words[0]),
+                                       sample_uniform(film_words[1])};
+                constexpr std::array<std::array<float, 2>, 8> diagonal{{{0, 0},
+                                                                        {1 - 0x1p-24f, 0},
+                                                                        {.5f, .5f},
+                                                                        {.75f, .25f},
+                                                                        {.25f, .75f},
+                                                                        {.51f, .49f},
+                                                                        {.00005f, .99995f},
+                                                                        {.99995f, .99995f}}};
+                if (sample < diagonal.size())
+                    u = diagonal[sample];
+                jitter = {triangle_filter_offset(u[0], 1), triangle_filter_offset(u[1], 1)};
+            }
+            auto command = [queue commandBuffer];
+            auto producer = [command blitCommandEncoder];
+            require(command != nil && producer != nil, "Jitter producer allocation");
+            std::vector<id<MTLBuffer>> staging;
+            const auto pattern = [&](NSUInteger x, NSUInteger y) {
+                const float v = signal(double(x) + .5 + jitter[0], double(y) + .5 + jitter[1]);
+                return Color{v, v, v, 1};
+            };
+            const auto constant = [](Color c) { return [c](NSUInteger, NSUInteger) { return c; }; };
+            upload(device, producer, frame.color, pattern, staging);
+            upload(device, producer, frame.diffuse_albedo, pattern, staging);
+            upload(device, producer, frame.depth, constant({.05f, 0, 0, 0}), staging);
+            upload(device, producer, frame.motion, constant({0, 0, 0, 0}), staging);
+            upload(device, producer, frame.specular_albedo, constant({0, 0, 0, 1}), staging);
+            upload(device, producer, frame.normal, constant({0, 0, -1, 1}), staging);
+            upload(device, producer, frame.roughness, constant({1, 0, 0, 0}), staging);
+            upload(device, producer, frame.exposure, constant({1, 0, 0, 0}), staging);
+            [producer endEncoding];
+            frame.reset_history = sample == 0;
+            if (physical_projection) {
+                const auto projected = coherent_film_projection(base_projection, 128, 128, jitter);
+                std::memcpy(&frame.view_to_clip, projected.data(), sizeof(projected));
+            }
+            frame.jitter_x = api_sign * jitter[0];
+            frame.jitter_y = api_sign * jitter[1];
+            require(built.denoiser->encode(command, frame).empty(), "Jitter encode");
+            if (sample + 1 == samples) {
+                readback = [device newBufferWithLength:row * frame.output.height
+                                               options:MTLResourceStorageModeShared];
+                auto reader = [command blitCommandEncoder];
+                require(readback != nil && reader != nil, "Jitter readback allocation");
+                [reader copyFromTexture:frame.output
+                                 sourceSlice:0
+                                 sourceLevel:0
+                                sourceOrigin:MTLOriginMake(0, 0, 0)
+                                  sourceSize:MTLSizeMake(frame.output.width, frame.output.height, 1)
+                                    toBuffer:readback
+                           destinationOffset:0
+                      destinationBytesPerRow:row
+                    destinationBytesPerImage:row * frame.output.height];
+                [reader endEncoding];
+            }
+            completed(command);
+        }
+    }
+    double squared_error = 0;
+    std::uint64_t count = 0;
+    for (NSUInteger y = 16; y + 16 < frame.output.height; ++y)
+        for (NSUInteger x = 16; x + 16 < frame.output.width; ++x) {
+            const auto *pixel = reinterpret_cast<const _Float16 *>(
+                static_cast<const unsigned char *>(readback.contents) + row * y + x * 8);
+            const double expected = signal((double(x) + .5) / 2, (double(y) + .5) / 2);
+            require(std::isfinite(float(pixel[0])), "Jitter output nonfinite");
+            squared_error += (double(pixel[0]) - expected) * (double(pixel[0]) - expected);
+            ++count;
+        }
+    return squared_error / double(count);
+}
 void plane_sequence(MetalFXDenoiser &effect, id<MTLDevice> device, id<MTLCommandQueue> queue,
                     MetalFXDenoiserInputs frame, bool noisy, Color base = {.25f, .5f, .75f, 1},
                     float exposure = 1, bool small_feature = false) {
@@ -372,6 +466,40 @@ int run(bool require_supported) {
         const auto smaller = inputs(device, upscaled.denoiser->requirements());
         plane_sequence(*upscaled.denoiser, device, queue, smaller, false);
         plane_sequence(*upscaled.denoiser, device, queue, smaller, true);
+        const double negative = jitter_registration(device, queue, -1, false);
+        const double positive = jitter_registration(device, queue, 1, false);
+        std::cout << "Jitter analytic registration MSE: negative-film=" << negative
+                  << "; positive-film=" << positive << '\n';
+        const double negative_physical = jitter_registration(device, queue, -1, true);
+        const double positive_physical = jitter_registration(device, queue, 1, true);
+        std::cout << "Jitter physical-projection registration MSE: negative-film="
+                  << negative_physical << "; positive-film=" << positive_physical << '\n';
+        require(negative_physical < positive_physical * .9,
+                "MetalFX jitter sign fails analytic oracle with the physical projection");
+        if (std::getenv("RYPATH_PROBE_TRIANGLE_JITTER")) {
+            try {
+                const double triangle_reference =
+                    jitter_registration(device, queue, -1, false, true);
+                const double triangle_reference_opposite =
+                    jitter_registration(device, queue, 1, false, true);
+                const double triangle_physical = jitter_registration(device, queue, -1, true, true);
+                const double triangle_opposite = jitter_registration(device, queue, 1, true, true);
+                std::cout
+                    << "Triangle-radius1 registration MSE (includes diagonal offsets near support "
+                       "endpoints): reference="
+                    << triangle_reference
+                    << "; reference-opposite-sign=" << triangle_reference_opposite
+                    << "; physical=" << triangle_physical << "; opposite-sign=" << triangle_opposite
+                    << "; physical-over-box=" << triangle_physical / negative_physical << '\n';
+            } catch (const std::exception &error) {
+                std::cout << "Triangle-radius1 registration unsupported: " << error.what() << '\n';
+            }
+        }
+        std::cout << "Reference-projection sign comparison: "
+                  << (negative < positive * .9   ? "negative-film lower error"
+                      : positive < negative * .9 ? "positive-film lower error"
+                                                 : "ambiguous")
+                  << '\n';
         std::cout << "MetalFX synthetic runtime qualification passed; image quality unqualified\n";
         return 0;
     }

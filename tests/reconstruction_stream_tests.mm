@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "coherent_film_jitter.hpp"
+#include "metal_execution.hpp"
 #include "metal_frame_access.hpp"
 #include "metal_reconstruction_access.hpp"
 #include "reconstruction.hpp"
+#include "reconstruction_camera.hpp"
+#include "sobol_shared.h"
 #include "texture_footprint.hpp"
 
 #import <Foundation/Foundation.h>
@@ -16,6 +20,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -48,7 +53,7 @@ RenderScene plane() {
     scene.instance_surface_transforms[0].placement = identity;
     return scene;
 }
-std::unique_ptr<FrameSession> session(RenderScene scene) {
+std::unique_ptr<FrameSession> session(RenderScene scene, bool coherent = false) {
     for (std::size_t i = 0; i < scene.geometry.instances.size(); ++i) {
         if (!instance_uses_texture_context(scene, i))
             continue;
@@ -60,7 +65,9 @@ std::unique_ptr<FrameSession> session(RenderScene scene) {
             surface.placement, scene.instance_texture_frames[i]);
         require(diagnostic.empty(), "Fixture texture frame construction: " + diagnostic);
     }
-    auto result = build_frame_session(scene, {.width = side, .height = side, .seed = 197});
+    FrameConfig config{.width = side, .height = side, .seed = 197};
+    config.coherent_film_jitter = coherent;
+    auto result = build_frame_session(scene, config);
     require(result.status == GeometryStatus::success && result.session, result.diagnostic);
     return std::move(result.session);
 }
@@ -896,6 +903,215 @@ void diagnostic_capture(ReconstructionMode mode) {
                 "Diagnostic snapshot borrowed expired output storage");
     }
 }
+void coherent_word_contract() {
+    auto device = MTLCreateSystemDefaultDevice();
+    auto queue = [device newCommandQueue];
+    std::string error;
+    auto library = metal::load_library(device, {}, error);
+    require(library != nil, error);
+    auto pipeline = metal::load_pipeline(device, library, @"rypath_coherent_film_words", error);
+    require(pipeline != nil, error);
+    std::vector<std::uint32_t> modes{0};
+    for (unsigned bit = 0; bit < 32; ++bit)
+        modes.push_back(1u << bit);
+    for (unsigned pixel = 0; pixel < 8; ++pixel)
+        modes.push_back(rypath_film_jitter::coherent_tag);
+    modes.push_back(3); // Invalid modern tag, distinct from every valid legacy value.
+    auto table = [device newBufferWithLength:sizeof(sobol::Tables)
+                                     options:MTLResourceStorageModeShared];
+    auto output = [device newBufferWithLength:sizeof(render_wire::Sample) * modes.size()
+                                      options:MTLResourceStorageModeShared];
+    require(table != nil && output != nil, "Film-word probe buffers");
+    std::memset(table.contents, 0, table.length);
+    std::memset(output.contents, 0xff, output.length);
+    auto command = [queue commandBuffer];
+    auto encoder = [command computeCommandEncoder];
+    require(command != nil && encoder != nil, "Film-word probe encoder");
+    [encoder setComputePipelineState:pipeline];
+    [encoder setBuffer:table offset:0 atIndex:1];
+    std::vector<rypath_replay::Words4> expected;
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        render_wire::Parameters p{};
+        p.width = p.height = 64;
+        p.pixel_begin = std::uint32_t(i + 11);
+        p.pixel_count = p.lane_count = 1;
+        p.seed_low = 197;
+        p.seed_high = 123;
+        p.sample_low = modes[i] == rypath_film_jitter::coherent_tag ? UINT32_MAX - 7
+                                                                    : UINT32_MAX - std::uint32_t(i);
+        p.sample_high = 91;
+        p.sampler_kind = render_wire::independent_sampler;
+        p.filter_kind = render_wire::box_filter;
+        p.filter_x_radius = p.filter_y_radius = .5f;
+        p.film_sampling = modes[i];
+        auto words = rypath_replay::philox({p.pixel_begin, p.sample_low, p.sample_high, 0},
+                                           {p.seed_low, p.seed_high});
+        if (modes[i] == rypath_film_jitter::coherent_tag) {
+            const auto film =
+                coherent_film_words((std::uint64_t(p.seed_high) << 32) | p.seed_low,
+                                    (std::uint64_t(p.sample_high) << 32) | p.sample_low);
+            words.x = film[0];
+            words.y = film[1];
+        }
+        expected.push_back(words);
+        [encoder setBytes:&p length:sizeof(p) atIndex:0];
+        [encoder setBuffer:output offset:i * sizeof(render_wire::Sample) atIndex:2];
+        [encoder dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+    }
+    [encoder endEncoding];
+    require(metal::complete(command, "coherent film word probe").empty(),
+            "Film-word GPU completion");
+    const auto *actual = static_cast<const render_wire::Sample *>(output.contents);
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        require(std::memcmp(actual[i].random_words, &expected[i], sizeof(expected[i])) == 0,
+                "Shader/host film or wavelength/path words differ, including legacy emitter-slot "
+                "values");
+        require(actual[i].status ==
+                    (modes[i] == 3 ? render_wire::invalid_arithmetic : render_wire::success),
+                "Reserved film-mode validator disagrees across host and shader");
+    }
+    if (const auto legacy = std::getenv("RYPATH_LEGACY_METALLIB")) {
+        auto scene = plane();
+        scene.spectral_transport = SpectralTransport::hero;
+        for (const auto profile : {IntersectionProfile::native, IntersectionProfile::compensated})
+            for (const auto transport : {SpectralTransport::scalar, SpectralTransport::hero}) {
+                scene.spectral_transport = transport;
+                auto current = build_metal_renderer(scene, {}, {.intersection_profile = profile});
+                auto old = build_metal_renderer(scene, legacy, {.intersection_profile = profile});
+                require(current.scene && old.scene,
+                        "Legacy/default offline shader admission: " + old.diagnostic);
+                const RenderRequest request{
+                    .width = 8, .height = 8, .seed = 197, .pixel_count = 64, .sample_count = 1};
+                const auto a = current.scene->sample(request), b = old.scene->sample(request);
+                require(a.status == GeometryStatus::success &&
+                            b.status == GeometryStatus::success &&
+                            a.samples.size() == b.samples.size() &&
+                            a.packet_samples.size() == b.packet_samples.size() &&
+                            a.samples.size() + a.packet_samples.size() == 64,
+                        "Legacy/default offline sample execution: current=" + a.diagnostic +
+                            "; legacy=" + b.diagnostic);
+                for (std::size_t i = 0; i < a.samples.size(); ++i)
+                    require(a.samples[i].wavelength == b.samples[i].wavelength &&
+                                a.samples[i].radiance == b.samples[i].radiance &&
+                                a.samples[i].scatterings == b.samples[i].scatterings &&
+                                a.samples[i].random_words == b.samples[i].random_words,
+                            "Default scalar offline output changed against the legacy shader");
+                for (std::size_t i = 0; i < a.packet_samples.size(); ++i)
+                    require(a.packet_samples[i].wavelengths == b.packet_samples[i].wavelengths &&
+                                a.packet_samples[i].wavelength_pdfs ==
+                                    b.packet_samples[i].wavelength_pdfs &&
+                                a.packet_samples[i].radiance == b.packet_samples[i].radiance,
+                            "Default hero offline output changed against the legacy shader");
+            }
+    }
+}
+void coherent_jitter_guides(ReconstructionMode mode) {
+    if (mode == ReconstructionMode::raw_rgb)
+        return;
+    auto scene = plane();
+    scene.spectral_transport = SpectralTransport::hero;
+    FrameConfig invalid{.width = side, .height = side};
+    invalid.coherent_film_jitter = true;
+    auto scalar = scene;
+    scalar.spectral_transport = SpectralTransport::scalar;
+    require(!build_frame_session(scalar, invalid).session,
+            "Coherent jitter admitted scalar transport");
+    auto wide = scene;
+    wide.filter.x_radius = 1;
+    require(!build_frame_session(wide, invalid).session, "Coherent jitter admitted a wider filter");
+    auto triangle = scene;
+    triangle.filter = {PixelFilterKind::triangle, 1, 1};
+    require(!build_frame_session(triangle, invalid).session,
+            "Box-only coherent experiment admitted the authored Prism triangle distribution");
+    invalid.estimator = FrameEstimator::area_replay;
+    require(!build_frame_session(scene, invalid).session, "Coherent jitter admitted Area replay");
+    auto owner = session(scene, true);
+    std::unique_ptr<ReconstructionStream> stream;
+    std::unique_ptr<ReconstructedFrame> output;
+    std::array<float, 2> previous{};
+    const auto half_value = [](unsigned short h) {
+        const unsigned exponent = (h >> 10) & 31, fraction = h & 1023;
+        const float value = exponent == 0
+                                ? std::ldexp(float(fraction), -24)
+                                : std::ldexp(1 + float(fraction) / 1024, int(exponent) - 15);
+        return h & 0x8000 ? -value : value;
+    };
+    std::optional<rypath::reconstruction::Camera> previous_camera;
+    for (std::uint64_t index = 0; index < 4; ++index) {
+        auto camera = snapshot(scene);
+        if (index == 1 || index == 2)
+            camera.raster_camera->origin.x = .01f;
+        if (index == 2) {
+            const auto rotate = [](GeometryPoint p) {
+                constexpr double angle = .02;
+                return GeometryPoint{float(std::cos(angle) * p.x + std::sin(angle) * p.z), p.y,
+                                     float(-std::sin(angle) * p.x + std::cos(angle) * p.z)};
+            };
+            camera.raster_camera->corner = rotate(camera.raster_camera->corner);
+            camera.raster_camera->dx = rotate(camera.raster_camera->dx);
+            camera.raster_camera->dy = rotate(camera.raster_camera->dy);
+        }
+        const auto oracle =
+            rypath::reconstruction::Camera::build(*camera.raster_camera, {side, side, .001, {}});
+        require(oracle.camera.has_value(), oracle.diagnostic);
+        auto input = source(*owner, index, index == 3 ? 8 : 7, camera);
+        source_complete(*input);
+        const auto before = input->capture();
+        const auto jitter = coherent_film_offset(coherent_film_words(197, index));
+        require(input->poll().coherent_film_jitter && input->poll().film_jitter == jitter,
+                "Source exposes exact coherent film offset");
+        if (!stream)
+            stream = ::stream(*input, mode);
+        output.reset();
+        output = submit(*stream, *input);
+        const auto info = complete(*output, mode);
+        require(!info.guide_cache_hit, "Changing coherent ray offset must regenerate guides");
+        const auto guides = MetalReconstructionStreamProbe::capture_guides(*stream);
+        require(guides.diagnostic.empty(), guides.diagnostic);
+        for (unsigned y : {3u, 61u, 120u})
+            for (unsigned x : {3u, 61u, 120u}) {
+                const auto pixel = y * side + x;
+                unsigned short motion[2]{};
+                std::memcpy(motion, guides.textures[1].data() + pixel * 4, 4);
+                const auto &r = *camera.raster_camera;
+                const double u = (double(x) + .5 + jitter[0]) / side;
+                const double v = (double(y) + .5 + jitter[1]) / side;
+                const std::array<double, 3> direction{r.corner.x + u * r.dx.x + v * r.dy.x,
+                                                      r.corner.y + u * r.dx.y + v * r.dy.y,
+                                                      r.corner.z + u * r.dx.z + v * r.dy.z};
+                const double t = (2 - r.origin.z) / direction[2];
+                const rypath::reconstruction::Point hit{r.origin.x + t * direction[0],
+                                                        r.origin.y + t * direction[1], 2};
+                const auto current_projection = oracle.camera->project(hit);
+                const auto previous_projection =
+                    previous_camera ? previous_camera->project(hit) : current_projection;
+                for (unsigned axis = 0; axis < 2; ++axis) {
+                    double expected = index && index != 3 ? previous_projection.pixel[axis] -
+                                                                current_projection.pixel[axis]
+                                                          : 0;
+                    if (index && index != 3 && mode == ReconstructionMode::temporal)
+                        expected += jitter[axis] - previous[axis];
+                    require(std::abs(half_value(motion[axis]) - expected) < .003,
+                            "Jittered temporal/unjittered MetalFX motion oracle through "
+                            "translation, rotation and cut");
+                }
+                if (mode == ReconstructionMode::temporal) {
+                    float position[4]{};
+                    std::memcpy(position, guides.textures[8].data() + pixel * 16, 16);
+                    require(
+                        std::abs(position[0] - (hit[0] - r.origin.x)) < 2e-6 &&
+                            std::abs(position[1] - (hit[1] - r.origin.y)) < 2e-6 &&
+                            std::abs(position[2] - (hit[2] - r.origin.z)) < 2e-6,
+                        "Guide hit position disagrees with independent jittered plane-ray oracle");
+                }
+            }
+        unchanged(*input, before);
+        require(index != 3 || info.history_reset,
+                "Coherent camera cut did not reset reconstruction");
+        previous_camera = oracle.camera;
+        previous = jitter;
+    }
+}
 int availability(ReconstructionMode mode) {
     const auto device = query_metal_device();
     if (device.status == MetalStatus::no_device) {
@@ -949,6 +1165,9 @@ int main(int argc, char **argv) {
                                   : ReconstructionMode::metalfx;
             if (const auto unavailable = availability(mode))
                 return unavailable;
+            if (mode == ReconstructionMode::temporal)
+                coherent_word_contract();
+            coherent_jitter_guides(mode);
             exposure_metadata(mode);
             diagnostic_capture(mode);
             surface_cache_pair(mode);

@@ -47,7 +47,7 @@ capture staging, but cannot account for MetalFX's private internal allocations.
 
 ## Guides and approximation policy
 
-A center pinhole ray uses the same native triangles, analytic primitives, patches,
+By default a center pinhole ray uses the same native triangles, analytic primitives, patches,
 instances, alpha tests and surface-detail resources as transport. Null interfaces
 and invisible emitter placements pass through. Mix visibility uses the existing
 deterministic material choice at 550 nm. Invalid IDs, arithmetic, projections or
@@ -58,8 +58,107 @@ pixel motion use the actual camera basis. Host matrices are rebased around each
 camera origin. Background motion ignores translation. A previous projection
 behind the camera receives a counted off-raster motion value. A current surface
 before the guide near plane fails reconstruction; raw transport has no new near
-cutoff. Per-path film/lens sampling is not a global projection jitter, so the
-MetalFX jitter properties remain zero.
+cutoff. In the default mode, per-path film/lens sampling is not a global
+projection jitter, so the MetalFX jitter properties remain zero.
+
+The opt-in frame-benchmark control `--film-jitter coherent` replaces the two
+per-pixel film draws with a common, frame-indexed uniform offset. It requires
+independent hero transport and a box filter of radius .5 in both axes; other
+estimators, transport profiles and filter footprints fail explicitly. The default
+`independent` mode retains the existing per-pixel sampling. No authored offline
+sampler or checkpoint encoding changes.
+
+```sh
+build/release/rypath-frame-benchmark --scene tests/fixtures/pbrt-render/cornell-box-adapted.pbrt \
+  --spectral-transport hero --hero-wavelengths visible --estimator independent \
+  --width 160 --height 90 --output-width 320 --output-height 180 \
+  --reconstruction metalfx --film-jitter coherent --frames 64 --warmup 8 --seed 81101 \
+  --output /tmp/coherent-film.json --reconstructed-capture /tmp/coherent-film.exr
+```
+
+The offset comes from a separate Philox counter domain, keyed by both halves of
+the seed and absolute sample index. Wavelength, lens and path dimensions keep
+their existing per-pixel streams. Under the renderer's pseudorandom-stream
+assumption, every pixel retains the same uniform box marginal and transport
+weight. Pixels now share film-position randomness, so spatial covariance and
+finite-frame variance change. This does not establish exact independence or
+unbiased denoising; reconstruction remains an approximation.
+
+Coherent frames trace surface guides at the same film offset as transport.
+Guide-cache identity includes the actual film words and both history offsets.
+Native temporal motion maps between the two shifted guide grids, adding current
+minus previous film offset to geometric pixel motion. MetalFX receives geometric
+motion without jitter and a separate global projection offset, following the
+[MetalFX denoising motion guidance](https://developer.apple.com/videos/play/wwdc2026/359/). With top-left
+pixel coordinates, ray sampling at `pixel + .5 + offset` shifts projected image
+features by `-offset`; the MetalFX offset is therefore the negative ray offset.
+This follows Apple's [pixel/clip-space convention](https://github.com/apple/game-porting-toolkit/blob/main/game-porting-skills/skills/using-metalfx-temporal-upscaler/references/integration-guide.md)
+and the [jitter property contract](https://developer.apple.com/documentation/metalfx/mtlfxtemporaldenoisedscalerbase/jitteroffsetx).
+The synthetic registration control compares both signs against a known analytic
+signal rather than treating a plausible image as proof of registration. It also
+compares physical shifted and reference projection matrices. The denoiser SDK
+header does not specify which matrix convention is expected, so camera math alone
+cannot establish that API contract; the experiment retains a real-scaler matrix
+ablation and labels an ambiguous comparison explicitly.
+
+Frame receipts retain whether coherent sampling actually ran and its per-frame
+ray offsets. The wire parameter layout remains unchanged. A non-power-of-two tag occupies the
+former `emitter_slots` padding word; old hosts used only zero or a power-of-two
+count there, and shaders no longer use the word for light indexing. Exact-tag
+matching preserves every legacy value as per-pixel sampling. The live frame ABI
+handshake advances independently of persisted offline contracts, so an
+incompatible live metallib fails admission while unchanged offline checkpoints
+remain readable. Word probes compare the shader's production sample initialization
+with host expectations for zero, every legacy power of two, the coherent tag and
+an invalid tag. An optional legacy-library control additionally compares default
+scalar/hero offline output through native and compensated traversal. The native
+coherent-motion oracle covers opaque surfaces. The existing approximation reset
+classifier continues to use the authored camera pose; coherent offsets alone do
+not assert an authored pose change. Transmission/defocus correspondence under
+this shifted guide grid remains unqualified. This experimental control is not
+a new default or a general anti-aliasing quality claim.
+
+On M4 Max, macOS 26.6 and Xcode 26.6, the coherent-film experiment passes
+Debug temporal/MetalFX stream checks with Metal API validation, including the
+production host/shader word probe, the optional actual legacy-metallib comparison,
+and opaque-plane translation, rotation and cut oracles. Portable camera, sampling
+and CLI checks pass in Debug and Release. The real 128²→256² sinusoid registration
+control measures MSE `7.60315e-5` with negative ray offsets versus `0.00278906`
+with the opposite sign. Physical and reference projection matrices produce
+identical decoded reconstruction in this fixture and every retained scene pair;
+these results do not resolve which matrix convention the SDK promises.
+
+Four fixed seeds (`81101`–`81104`), eight startup frames and 64 measured frames
+compare the final static Cornell image at 320×180 output. References are inherited
+2,048-SPP totals, each averaged from eight independent 256-SPP batches, with
+retained variance-of-mean images; this is finite-reference screening, not a new
+reference qualification. Ratios below are geometric means of per-seed coherent /
+per-pixel error. High-frequency error uses the residual from a reflected-padding
+3×3 box; edge error uses the reference's highest-energy quartile.
+
+| Input → output | Linear RGB MSE ratio | High-frequency MSE ratio | Edge MSE ratio |
+| --- | ---: | ---: | ---: |
+| 320×180 → 320×180 | 1.20247 | 1.35889 | 1.19530 |
+| 160×90 → 320×180 | 0.83473 | 0.41766 | 0.71427 |
+
+The upscale MSE improves in three of four seeds; its edge and high-frequency
+errors improve in all four. Native output regresses. All 32 retained runs complete:
+24 Cornell sampling/matrix arms and eight stock Prism runs, with matching effective
+offsets and output metadata. Projection-only pairs preserve raw transport
+byte-for-byte. Receipts and analysis are retained locally under
+`.cache/validation/coherent-film-jitter-001/`. The adoption decision is to retain
+an opt-in box-filter experiment, without changing the default or claiming native,
+moving-camera, defocus or transmission quality.
+
+Prism retains its authored radius-one triangle filter. Apple's integration guide
+uses offsets in `[-.5, .5]`; the denoised-scaler SDK property description does not
+specify a numeric range. An optional real-scaler diagnostic maps common draws
+through the existing triangle inverse CDF, including diagonal offsets near ±1.
+It accepts those inputs and measures MSE `5.51596e-5` versus `0.006146` with the
+opposite sign on this device. That observed registration does not establish a
+portable supported range or qualify Prism's refractive guides. Production coherent
+mode therefore remains explicitly box-only; the retained Prism measurements use
+its stock per-pixel triangle distribution.
 
 Albedo guides use sixteen fixed midpoint D65/CIE spectral samples, normalized to
 RGB white. This deterministic quadrature is approximate, particularly for narrow

@@ -207,6 +207,7 @@ struct FrameConfig {
     std::uint32_t packet_events = 1;
     FramePacketLayout packet_layout = FramePacketLayout::packed;
     FrameEstimator estimator = FrameEstimator::independent;
+    bool coherent_film_jitter = false; // Opt-in common box-film offset for independent hero frames.
     // Opt-in finite contribution slots; summed preserves the full-path oracle.
     FrameAreaPathDomain area_path_domain = FrameAreaPathDomain::summed;
     FrameContributionReplay contribution_replay = FrameContributionReplay::full;
@@ -297,6 +298,8 @@ struct FrameAreaAtlasInfo {
 struct FrameInfo {
     // Effective entry selection, after scene proof/configuration/library admission.
     bool diffuse_events = false;
+    bool coherent_film_jitter = false;
+    std::array<float, 2> film_jitter{}; // Ray-sample displacement from pixel center, in pixels.
     GPUStageDiagnostics gpu_stages{};
     FrameWorkDiagnostics path_work{};
     std::uint32_t width = 0, height = 0;

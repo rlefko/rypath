@@ -83,6 +83,7 @@ struct Options {
     rypath::MetalFXGuidePolicy metalfx_guide_policy = rypath::MetalFXGuidePolicy::primary_surface;
     float metalfx_exposure = 1;
     std::uint32_t output_width = 0, output_height = 0;
+    bool coherent_film_jitter = false;
     rypath::FrameExecution execution = rypath::FrameConfig{}.execution;
     std::optional<rypath::HeroWavelengthSampling> hero_wavelengths;
     rypath::FrameMutationPolicy mutation_policy = rypath::FrameMutationPolicy::automatic;
@@ -160,6 +161,7 @@ std::string temporal_cap_value(rypath::FrameHistoryCapPolicy policy,
 }
 const char *usage =
     "Usage: rypath-frame-benchmark (--scene SCENE.pbrt | --demo) --output REPORT.json\n"
+    "  [--film-jitter independent|coherent (independent hero box-filter frames only)]\n"
     "  [--width 1920] [--height 1080] [--frames 120] [--warmup 8]\n"
     "  [--as-build default|fast-blas|fast-tlas|fast-all (default: default)]\n"
     "  [--seed 1] [--material-seed 0] [--intersections native|compensated (default: native)]\n"
@@ -416,6 +418,10 @@ std::string parse(int argc, char **argv, Options &o) {
             if (!integer(value, o.mutation_steps) ||
                 !rypath_mutation::valid_step_count(o.mutation_steps))
                 return "mutations must be 0, 1, 2, or 4";
+        } else if (key == "--film-jitter") {
+            if (value != "independent" && value != "coherent")
+                return "film jitter must be independent or coherent";
+            o.coherent_film_jitter = value == "coherent";
         } else if (key == "--motion-offset") {
             float offset = 0;
             std::istringstream input{std::string(value)};
@@ -857,6 +863,8 @@ std::vector<std::string> overrides(rypath::pbrt::Result &checked, const Options 
 struct Observation : rypath::FrameStatisticsSample {
     rypath::frame_benchmark::MotionPose pose;
     std::optional<rypath::FrameCamera> camera;
+    std::array<float, 2> film_jitter{};
+    bool coherent_film_jitter = false;
     std::uint64_t sample_index = 0, completed_samples = 0, camera_upload_bytes = 0,
                   command_count = 0, area_serial = 0, history_generation = 0,
                   completed_evaluations = 0, cached_evaluations = 0, analytic_null_evaluations = 0,
@@ -1120,6 +1128,8 @@ struct Report {
             << quote(metalfx_guide_policy_name(options.metalfx_guide_policy))
             << ",\"metalfx_exposure\":" << precise_float(options.metalfx_exposure)
             << ",\"internal_width\":" << options.width << ",\"internal_height\":" << options.height
+            << ",\"film_jitter\":"
+            << quote(options.coherent_film_jitter ? "coherent" : "independent")
             << ",\"output_width\":" << options.output_width
             << ",\"output_height\":" << options.output_height
             << ",\"output_pixels_per_input_pixel\":"
@@ -1462,6 +1472,8 @@ struct Report {
                 out << ',';
             out << "{\"sample_index\":" << f.sample_index << ",\"epoch\":" << f.pose.epoch
                 << ",\"phase\":" << quote(f.pose.phase) << ",\"motion_offset\":" << f.pose.offset
+                << ",\"film_jitter\":[" << f.film_jitter[0] << ',' << f.film_jitter[1] << ']'
+                << ",\"coherent_film_jitter\":" << (f.coherent_film_jitter ? "true" : "false")
                 << ",\"camera\":";
             write_camera(out, f.camera);
             out << ",\"duplication\":";
@@ -1698,6 +1710,10 @@ void write_reconstructed(rypath::ReconstructedFrame &frame, Output &reconstructe
         {"rypath.frame.cached_evaluations", std::to_string(info.source.cached_evaluations)},
         {"rypath.frame.logical_evaluations", std::to_string(info.source.logical_evaluations)},
         {"rypath.frame.sample", std::to_string(info.source.sample_index)},
+        {"rypath.frame.film_sampling",
+         info.source.coherent_film_jitter ? "coherent" : "independent"},
+        {"rypath.frame.film_jitter_x", precise_float(info.source.film_jitter[0])},
+        {"rypath.frame.film_jitter_y", precise_float(info.source.film_jitter[1])},
         {"rypath.frame.epoch", std::to_string(info.source.epoch)},
         {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
         {"rypath.frame.motion_offset", precise_float(captured_pose.offset)},
@@ -1974,6 +1990,7 @@ int run(const Options &options) {
         config.acceleration_build_policy = options.as_build;
         config.execution = options.execution;
         config.estimator = options.estimator;
+        config.coherent_film_jitter = options.coherent_film_jitter;
         config.area_path_domain = options.area_path_domain;
         config.contribution_replay = options.contribution_replay;
         config.area_output = options.area_output;
@@ -2264,6 +2281,8 @@ int run(const Options &options) {
                     observation.history_generation = info.history_generation;
                     observation.temporal_candidates = info.temporal_candidates;
                     observation.spatial_candidates = info.spatial_candidates;
+                    observation.film_jitter = info.film_jitter;
+                    observation.coherent_film_jitter = info.coherent_film_jitter;
                     observation.completed_evaluations = info.completed_evaluations;
                     observation.cached_evaluations = info.cached_evaluations;
                     observation.analytic_null_evaluations = info.analytic_null_evaluations;
@@ -2401,6 +2420,10 @@ int run(const Options &options) {
                     frame_info.sample_index, options.warmup, options.frames, options.motion_offset);
                 const std::vector<std::pair<std::string, std::string>> metadata{
                     {"rypath.frame.sample_index", std::to_string(frame_info.sample_index)},
+                    {"rypath.frame.film_sampling",
+                     frame_info.coherent_film_jitter ? "coherent" : "independent"},
+                    {"rypath.frame.film_jitter_x", precise_float(frame_info.film_jitter[0])},
+                    {"rypath.frame.film_jitter_y", precise_float(frame_info.film_jitter[1])},
                     {"rypath.frame.epoch", std::to_string(frame_info.epoch)},
                     {"rypath.frame.motion_phase", std::string(captured_pose.phase)},
                     {"rypath.frame.motion_offset", precise_float(captured_pose.offset)},

@@ -40,7 +40,7 @@ static_assert(
             sizeof(render_wire::Parameters::knot_count) +
             sizeof(render_wire::Parameters::emission_count) +
             sizeof(render_wire::Parameters::emitter_count) +
-            sizeof(render_wire::Parameters::emitter_slots) +
+            sizeof(render_wire::Parameters::film_sampling) +
             sizeof(render_wire::Parameters::filter_kind) +
             sizeof(render_wire::Parameters::filter_x_radius) +
             sizeof(render_wire::Parameters::filter_y_radius) +
