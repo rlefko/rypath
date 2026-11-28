@@ -9,6 +9,7 @@ struct Options {
     std::filesystem::path scene, capture_directory,
         measurement_json; // Empty resolves to Pictures/rypath in the app.
     bool demo = false, help = false;
+    bool coherent_film_jitter = false;
     std::uint32_t width = 1920, height = 1080, mutation_steps = 1;
     std::uint32_t output_width = 0, output_height = 0;
     std::uint64_t warmup = 0, motion_period = 0;

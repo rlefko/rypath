@@ -4,6 +4,7 @@
 #include <metal_stdlib>
 
 #include "../src/checkpoint_contract.h"
+#include "../src/coherent_film_shared.h"
 #include "../src/lens_probe_wire.h"
 #include "../src/offset_rounding_shared.h"
 #include "../src/qmc_probe_wire.h"
@@ -263,6 +264,12 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
     } else {
         words = philox(uint4(pixel, sample_low, sample_high, 0), uint2(p.seed_low, p.seed_high));
     }
+    if (rypath_film_jitter::coherent(p.film_sampling)) {
+        const auto film =
+            rypath_film_jitter::words(p.seed_low, p.seed_high, sample_low, sample_high);
+        words.x = film.x;
+        words.y = film.y;
+    }
     uint2 lens_words(0);
     if (p.lens_radius > 0) {
         if (p.sampler_kind == wire::sobol_sampler) {
@@ -295,6 +302,8 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
                         {words.x, words.y, words.z, words.w},
                         {lens_words.x, lens_words.y},
                         {0, 0}};
+    if (!rypath_film_jitter::valid_mode(p.film_sampling))
+        result.status = wire::invalid_arithmetic;
     if (p.filter_kind == wire::gaussian_filter) {
         const float ux =
             p.sampler_kind == wire::sobol_sampler
@@ -309,6 +318,16 @@ static wire::Sample begin_sample(constant wire::Parameters &p, const device sobo
         result.filter_offsets[1] = offsets.y;
     }
     return result;
+}
+
+// Exercises the production film-word selection under the legacy reserved-word
+// domain as well as the tagged coherent mode. No transport work or timing path.
+kernel void rypath_coherent_film_words_v1(constant wire::Parameters &p [[buffer(0)]],
+                                          const device sobol::Tables &tables [[buffer(1)]],
+                                          device wire::Sample *out [[buffer(2)]],
+                                          uint lane [[thread_position_in_grid]]) {
+    ulong index = 0;
+    out[lane] = begin_sample(p, tables, lane, index);
 }
 
 // Replay's canonical coordinates are separate from current destination/output identity.

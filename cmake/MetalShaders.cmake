@@ -127,6 +127,7 @@ foreach(shader IN ITEMS viewer frame temporal_denoiser smoke geometry analytic_p
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/replay_sampler.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/shaders/area_reuse.metal"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/replay_shared.h"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/coherent_film_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/reservoir_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/mutation_shared.h"
             "${CMAKE_CURRENT_SOURCE_DIR}/src/reuse_mis_shared.h"

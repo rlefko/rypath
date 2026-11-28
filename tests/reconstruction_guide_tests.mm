@@ -186,7 +186,7 @@ Captured guide(const RenderScene &scene, gw::Config cfg, const std::string &libr
          "Guide contract execution: " + error(command.error));
     gw::Contract actual{};
     std::memcpy(&actual, contract.contents, sizeof(actual));
-    need(actual.version == gw::contract && actual.config_bytes == 368 &&
+    need(actual.version == gw::contract && actual.config_bytes == 384 &&
              actual.counters_bytes == sizeof(gw::Counters) && actual.node_bytes == 16 &&
              actual.nodes == 16 && actual.argument_count == gw::continuity_id + 1,
          "Native reconstruction guide contract");

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include "coherent_film_jitter.hpp"
 #include "metal_execution.hpp"
 #include "metal_frame_access.hpp"
 #include "metal_gpu_diagnostics.hpp"
@@ -111,6 +112,7 @@ struct ReconstructionStream::Impl {
     std::uint64_t epoch = 0;
     std::optional<reconstruction::Camera> previous;
     float previous_lens_radius = 0, previous_focal_distance = 0;
+    std::array<float, 2> previous_jitter{};
     std::uint32_t previous_camera_medium = UINT32_MAX;
     bool previous_approximation = false;
     std::optional<FrameCamera> previous_frame_camera;
@@ -440,6 +442,7 @@ struct ReconstructionStream::Impl {
                                     sizeof(state->guide_counts));
                     }
                     state->previous = current;
+                    state->previous_jitter = frame->info.source.film_jitter;
                     state->previous_lens_radius = source->parameters().lens_radius;
                     state->previous_focal_distance = source->parameters().focal_distance;
                     state->previous_camera_medium = source->parameters().camera_medium;
@@ -481,6 +484,9 @@ struct ReconstructionStream::Impl {
             cfg.height = s.height;
             cfg.model = s.model;
             cfg.previous_valid = previous_valid;
+            std::ranges::copy(frame->info.source.film_jitter, cfg.current_jitter);
+            std::ranges::copy(previous_valid ? s.previous_jitter : frame->info.source.film_jitter,
+                              cfg.previous_jitter);
             std::ranges::copy(current->world_to_view(), cfg.current_world_to_view);
             std::ranges::copy(current->view_to_clip(), cfg.current_view_to_clip);
             std::ranges::copy(previous.world_to_view(), cfg.previous_world_to_view);
@@ -681,9 +687,14 @@ struct ReconstructionStream::Impl {
                 inputs.exposure = exposure;
                 inputs.output = frame->output->texture;
                 inputs.world_to_view = simd_matrix(current->world_to_view());
-                inputs.view_to_clip = simd_matrix(current->view_to_clip());
+                inputs.view_to_clip = simd_matrix(
+                    coherent_film_projection(current->view_to_clip(), state->width, state->height,
+                                             frame->info.source.film_jitter));
                 inputs.motion_scale_x = inputs.motion_scale_y = 1;
-                inputs.jitter_x = inputs.jitter_y = 0;
+                // MetalFX describes projection-feature displacement, opposite to
+                // the ray's film-sample offset (top-left, pixel-space convention).
+                inputs.jitter_x = -frame->info.source.film_jitter[0];
+                inputs.jitter_y = -frame->info.source.film_jitter[1];
                 inputs.depth_reversed = true;
                 inputs.reset_history = frame->info.history_reset;
                 if (state->temporal) {

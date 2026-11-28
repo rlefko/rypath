@@ -34,6 +34,10 @@ inline bool reconstruction_guide_valid(constant ReconstructionGuideArguments &a)
         c.spectral_nodes != gw::node_count ||
         ((c.flags & gw::signed_temporal) && (c.flags & gw::appearance_guides)) ||
         (c.flags & ~uint(gw::media_scene | gw::signed_temporal | gw::appearance_guides)) != 0 ||
+        !all(isfinite(float4(c.current_jitter[0], c.current_jitter[1], c.previous_jitter[0],
+                             c.previous_jitter[1]))) ||
+        any(abs(float4(c.current_jitter[0], c.current_jitter[1], c.previous_jitter[0],
+                       c.previous_jitter[1])) > .5f) ||
         c.reserved[0] != 0 || c.reserved[1] != 0) {
         reconstruction_guide_fail(a, gw::invalid_config);
         return false;
@@ -88,6 +92,11 @@ inline bool reconstruction_guide_motion(constant ReconstructionGuideArguments &a
                                          background ? relative : relative + previous_offset,
                                          background, dimensions, previous, previous_depth)) {
             motion = previous - current;
+            // Native temporal indexes jittered guide textures. MetalFX consumes
+            // unjittered geometric motion and receives its separate API jitter.
+            if (c->flags & gw::signed_temporal)
+                motion += float2(c->current_jitter[0] - c->previous_jitter[0],
+                                 c->current_jitter[1] - c->previous_jitter[1]);
         } else {
             // Explicitly force an off-raster previous lookup. Zero motion here
             // would incorrectly claim correspondence to a visible old pixel.
@@ -673,6 +682,12 @@ kernel void rypath_reconstruction_guide_surface(RYPATH_RECONSTRUCTION_GUIDE_PARA
                         {0x80000000u, 0x80000000u, 0, 0},
                         {0x80000000u, 0x80000000u},
                         {0, 0}};
+    if (rypath_film_jitter::coherent(p.film_sampling)) {
+        const auto film =
+            rypath_film_jitter::words(p.seed_low, p.seed_high, p.sample_low, p.sample_high);
+        sample.random_words[0] = film.x;
+        sample.random_words[1] = film.y;
+    }
     const ray incoming = primary_ray(p, sample);
     if (!all(isfinite(incoming.origin)) || !all(isfinite(incoming.direction)) ||
         !any(incoming.direction != float3(0))) {

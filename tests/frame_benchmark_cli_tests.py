@@ -15,6 +15,10 @@ def invoke(args, expected=1):
     return result
 
 help_text = invoke(["--help"], 0).stdout
+assert "--film-jitter independent|coherent" in help_text
+for value in ("invalid", "Coherent", ""):
+    result = invoke(["--demo", "--output", "x.json", "--film-jitter", value])
+    assert "film jitter must be independent or coherent" in result.stderr
 assert "--intersections native|compensated" in help_text
 assert "--packet-layout packed|hot-cold|split-trace" in help_text
 assert "--diffuse-events auto|generic (default: generic)" in help_text
@@ -653,4 +657,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert settings["requested_area_reuse"] == "fresh" and settings["effective_area_reuse"] is None
     assert settings["area_temporal_reuse"] == 0 and settings["area_temporal_cache"] is False
     assert settings["area_suffix_cache"] is False and settings["area_source_mis"] == "fresh-local-selection-v1"
+    destination = root / "coherent-film.json"
+    invoke(["--scene", str(malformed), "--output", str(destination), "--film-jitter", "coherent"])
+    assert json.loads(destination.read_text())["settings"]["film_jitter"] == "coherent"
 print("frame benchmark CLI checks passed")

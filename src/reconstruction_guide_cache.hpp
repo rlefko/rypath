@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
+#include "coherent_film_shared.h"
 #include "reconstruction_guide_wire.h"
 #include <bit>
 #include <vector>
@@ -9,7 +10,12 @@ namespace rypath::reconstruction {
 inline std::vector<std::uint32_t> surface_guide_key(render_wire::Parameters p,
                                                     const render_wire::TextureParameters &t,
                                                     const reconstruction_guide_wire::Config &c) {
-    p.sample_low = p.sample_high = 0; // Center-pinhole guides never sample transport.
+    const auto film =
+        rypath_film_jitter::coherent(p.film_sampling)
+            ? rypath_film_jitter::words(p.seed_low, p.seed_high, p.sample_low, p.sample_high)
+            : rypath_replay::Words2{};
+    p.sample_low = p.sample_high =
+        0; // Film identity above is separate from transport sample indices.
     std::vector<std::uint32_t> key;
     key.reserve((sizeof(p) + sizeof(t) + sizeof(c)) / sizeof(std::uint32_t));
     const auto add = [&](auto value) { key.push_back(std::bit_cast<std::uint32_t>(value)); };
@@ -42,7 +48,7 @@ inline std::vector<std::uint32_t> surface_guide_key(render_wire::Parameters p,
     add(p.knot_count);
     add(p.emission_count);
     add(p.emitter_count);
-    add(p.emitter_slots);
+    add(p.film_sampling);
     add(p.filter_kind);
     add(p.filter_x_radius);
     add(p.filter_y_radius);
@@ -72,6 +78,8 @@ inline std::vector<std::uint32_t> surface_guide_key(render_wire::Parameters p,
     add(p.bidirectional);
     add(p.packet_lane_bytes);
     add(p.packet_filter_weight);
+    add(film.x);
+    add(film.y);
     point(p.scene_center);
     add(p.scene_radius);
     point(p.camera_normal);
@@ -121,6 +129,10 @@ inline std::vector<std::uint32_t> surface_guide_key(render_wire::Parameters p,
     add(c.spectral_nodes);
     add(c.flags);
     for (auto value : c.reserved)
+        add(value);
+    for (auto value : c.current_jitter)
+        add(value);
+    for (auto value : c.previous_jitter)
         add(value);
     return key;
 }

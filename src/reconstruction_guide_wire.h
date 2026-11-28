@@ -4,7 +4,7 @@
 namespace rypath {
 namespace reconstruction_guide_wire {
 using Word = render_wire::Word;
-enum : Word { contract = 5, node_count = 16 };
+enum : Word { contract = 7, node_count = 16 };
 enum Flag : Word { media_scene = 1u, signed_temporal = 2u, appearance_guides = 4u };
 enum Failure : Word {
     invalid_config = 1u,
@@ -24,6 +24,7 @@ struct Config {
     float current_camera_to_matrix_origin[4], previous_camera_to_matrix_origin[4];
     float xyz_to_rgb[12]; // Three padded rows; w is zero, no exposure.
     Word spectral_nodes, flags, reserved[2];
+    float current_jitter[2]{}, previous_jitter[2]{}; // Ray-sample offsets from centers, in pixels.
 };
 struct SpectralNode {
     float wavelength, r, g, b; // Host-prepared CIE/D65 quadrature RGB weights.
@@ -69,7 +70,7 @@ struct Contract {
     Word version, config_bytes, node_bytes, counters_bytes;
     Word nodes, argument_count, reserved[2];
 };
-static_assert(sizeof(Config) == 368 && sizeof(SpectralNode) == 16 && sizeof(Counters) == 80 &&
+static_assert(sizeof(Config) == 384 && sizeof(SpectralNode) == 16 && sizeof(Counters) == 80 &&
                   sizeof(Contract) == 32,
               "Reconstruction guide ABI");
 } // namespace reconstruction_guide_wire

@@ -8,6 +8,7 @@
 #include "area_wire.h"
 #include "bsdf_table.hpp"
 #include "checkpoint_contract.h"
+#include "coherent_film_jitter.hpp"
 #include "diffuse_event_eligibility.hpp"
 #include "enhanced_duplication_wire.h"
 #include "enhanced_motion_host.hpp"
@@ -571,6 +572,7 @@ struct FramePairAtlasAsset {
 };
 
 struct MetalRenderScene::Impl {
+    bool coherent_film_capability = false;
     std::unique_ptr<MetalGeometryScene> geometry;
     id<MTLAccelerationStructure> empty_packet_structure = nil;
     AccelerationBuildInfo acceleration_build;
@@ -1283,7 +1285,7 @@ struct MetalRenderScene::Impl {
             }
         }
         parameters.emitter_count = static_cast<wire::Word>(emitter_count);
-        parameters.emitter_slots = std::bit_ceil(parameters.emitter_count);
+        parameters.film_sampling = 0; // Legacy emitter_slots is no longer used for light selection.
         std::vector<wire::AreaEmission> packed_emissions(
             std::max<std::size_t>(1, parameters.emission_count));
         for (std::size_t i = 0; i < scene.area_emissions.size(); ++i) {
@@ -3035,6 +3037,13 @@ struct FrameSession::Impl {
         auto library = metal::load_library(r.device, library_path, error);
         if (library == nil)
             return error;
+        // This versioned production diagnostic is a selected-library capability,
+        // independent of the unchanged legacy frame layout/handshake. Check raw
+        // and frame AIR contexts so mixed libraries cannot claim shifted sampling.
+        if (config.coherent_film_jitter &&
+            (!r.coherent_film_capability ||
+             [library newFunctionWithName:@"rypath_coherent_film_words_v1"] == nil))
+            return "Selected Metal library lacks coherent film sampling capability v1";
         frame_library = library;
         initialize = metal::load_pipeline(r.device, library, @"rypath_frame_initialize", error);
         if (initialize == nil)
@@ -5357,6 +5366,11 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         p.seed_low = static_cast<wire::Word>(c.seed);
         p.seed_high = static_cast<wire::Word>(c.seed >> 32);
         p.material_seed = c.material_seed;
+        p.film_sampling = c.coherent_film_jitter ? rypath_film_jitter::coherent_tag : 0;
+        if (!rypath_film_jitter::valid_mode(p.film_sampling)) {
+            result.diagnostic = "Invalid film sampling tag";
+            return result;
+        }
         p.sampler_kind = wire::independent_sampler;
         p.emergency_limit = render_emergency_limit;
         p.boundary_limit = medium_boundary_limit;
@@ -5392,6 +5406,10 @@ FrameSubmitResult FrameSession::submit(const FrameRequest &request) {
         frame->info.coating_proposal_contract =
             impl_->coating_capability_verified ? shared_coating_contract::version : 0;
         frame->info.coating_proposal_capability_verified = impl_->coating_capability_verified;
+        frame->info.coherent_film_jitter = c.coherent_film_jitter;
+        if (c.coherent_film_jitter)
+            frame->info.film_jitter =
+                coherent_film_offset(coherent_film_words(c.seed, request.sample_index));
         frame->info.area_path_domain = c.area_path_domain;
         frame->info.contribution_replay = frame_area_contribution_family(c.area_path_domain)
                                               ? c.contribution_replay
@@ -5770,6 +5788,15 @@ FrameSessionBuildResult build_frame_session(const RenderScene &scene, const Fram
         result.diagnostic = error;
         return result;
     }
+    if (config.coherent_film_jitter &&
+        (config.estimator != FrameEstimator::independent ||
+         scene.spectral_transport != SpectralTransport::hero ||
+         scene.filter.kind != PixelFilterKind::box || scene.filter.x_radius != .5f ||
+         scene.filter.y_radius != .5f)) {
+        result.diagnostic =
+            "Coherent film jitter requires independent hero transport and a half-pixel box filter";
+        return result;
+    }
     const auto pixels = std::uint64_t(config.width) * config.height;
     if (!pixels || pixels > max_index || !config.footprint_samples ||
         !config.transient_byte_limit) {
@@ -5971,7 +5998,8 @@ FrameSessionTestAccess::build_shared_scene(const RenderScene &scene, const Frame
         a.acceleration_build_policy == b.acceleration_build_policy && a.execution == b.execution &&
         a.capacity == b.capacity && a.quantum == b.quantum && a.group_width == b.group_width &&
         a.packet_events == b.packet_events && a.packet_layout == b.packet_layout &&
-        a.estimator == b.estimator && a.area_path_domain == b.area_path_domain &&
+        a.estimator == b.estimator && a.coherent_film_jitter == b.coherent_film_jitter &&
+        a.area_path_domain == b.area_path_domain &&
         a.contribution_replay == b.contribution_replay && a.target_scale == b.target_scale &&
         a.area_output == b.area_output && a.mutation_steps == b.mutation_steps &&
         a.mutation_policy == b.mutation_policy &&
@@ -6420,6 +6448,8 @@ RenderBuildResult build_metal_renderer(const RenderScene &scene,
         if (library == nil) {
             return result;
         }
+        impl->coherent_film_capability =
+            [library newFunctionWithName:@"rypath_coherent_film_words_v1"] != nil;
         if (!verify_shader_contract(impl->device, impl->queue, library, result.diagnostic)) {
             return result;
         }
